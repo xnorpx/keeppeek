@@ -1053,8 +1053,9 @@ mod tests {
         client.play().unwrap();
 
         let shutdown = Shutdown::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
         assert!(matches!(
-            client.next_item(&shutdown, None).unwrap(),
+            client.next_item(&shutdown, Some(deadline)).unwrap(),
             Some(CodecItem::VideoFrame(_))
         ));
         let error = client
@@ -1115,8 +1116,9 @@ mod tests {
         client.play().unwrap();
 
         let shutdown = Shutdown::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
         assert!(matches!(
-            client.next_item(&shutdown, None).unwrap(),
+            client.next_item(&shutdown, Some(deadline)).unwrap(),
             Some(CodecItem::VideoFrame(_))
         ));
         drop(client);
