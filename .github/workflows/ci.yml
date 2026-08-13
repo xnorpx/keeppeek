@@ -203,3 +203,146 @@ jobs:
       - name: Fail when coverage generation fails
         if: always() && (steps.install-rust-coverage.outcome != 'success' || steps.rust-coverage.outcome != 'success' || steps.install-ui-coverage.outcome != 'success' || steps.ui-coverage.outcome != 'success')
         run: exit 1
+
+  quality-report:
+    name: Quality Report
+    if: always() && github.event_name == 'pull_request'
+    needs: [fmt, clippy, build-and-test, ui, coverage]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download coverage reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+          path: quality-reports/coverage
+
+      - name: Write quality report and update pull request
+        uses: actions/github-script@v7
+        env:
+          COVERAGE_DIRECTORY: quality-reports/coverage
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const marker = '<!-- keeppeek-quality-report -->';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const checkNames = [
+              'Format',
+              'Clippy',
+              'Build & Test (ubuntu-latest)',
+              'Build & Test (macos-latest)',
+              'Build & Test (windows-latest)',
+              'UI (ubuntu-latest)',
+              'UI (macos-latest)',
+              'UI (windows-latest)',
+              'Coverage (Rust + UI)'
+            ];
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+              per_page: 100
+            });
+            const jobsByName = new Map(jobs.map((job) => [job.name, job]));
+            const statusIcon = {
+              success: '✅',
+              failure: '❌',
+              cancelled: '⚪',
+              skipped: '⚪'
+            };
+            const formatStatus = (job) => {
+              const status = job?.conclusion ?? job?.status ?? 'not run';
+              return `${statusIcon[status] ?? '⚠️'} ${status}`;
+            };
+            const findFile = (directory, fileName) => {
+              if (!fs.existsSync(directory)) return undefined;
+              for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                const entryPath = path.join(directory, entry.name);
+                if (entry.isFile() && entry.name === fileName) return entryPath;
+                if (entry.isDirectory()) {
+                  const result = findFile(entryPath, fileName);
+                  if (result) return result;
+                }
+              }
+              return undefined;
+            };
+            const readJson = (fileName) => {
+              const report = findFile(path.join(process.env.GITHUB_WORKSPACE, process.env.COVERAGE_DIRECTORY), fileName);
+              if (!report) return undefined;
+              try {
+                return JSON.parse(fs.readFileSync(report, 'utf8'));
+              } catch (error) {
+                core.warning(`Unable to parse ${fileName}: ${error.message}`);
+                return undefined;
+              }
+            };
+            const metric = (totals, key) => {
+              const value = totals?.[key]?.percent ?? totals?.[key]?.pct;
+              return typeof value === 'number' ? `${value.toFixed(1)}%` : 'n/a';
+            };
+
+            const rustTotals = readJson('coverage.json')?.data?.[0]?.totals;
+            const uiTotals = readJson('coverage-summary.json')?.total;
+            const checkRows = checkNames
+              .map((name) => `| ${name} | ${formatStatus(jobsByName.get(name))} |`)
+              .join('\n');
+            const report = [
+              '## Quality Report',
+              '',
+              '### Checks',
+              '',
+              '| Check | Result |',
+              '| --- | --- |',
+              checkRows,
+              '',
+              '### Coverage',
+              '',
+              '| Runtime | Lines | Functions | Branches |',
+              '| --- | ---: | ---: | ---: |',
+              `| Rust | ${metric(rustTotals, 'lines')} | ${metric(rustTotals, 'functions')} | ${metric(rustTotals, 'branches')} |`,
+              `| Svelte / TypeScript | ${metric(uiTotals, 'lines')} | ${metric(uiTotals, 'functions')} | ${metric(uiTotals, 'branches')} |`,
+              '',
+              `[Open workflow run and artifacts](${runUrl})`
+            ].join('\n');
+
+            await core.summary.addRaw(report).write();
+
+            const pullRequest = context.payload.pull_request;
+            if (!pullRequest || pullRequest.head.repo?.full_name !== context.repo.owner + '/' + context.repo.repo) {
+              core.info('Skipping pull request comment for an external contribution.');
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequest.number,
+              per_page: 100
+            });
+            const existingComment = comments.find(
+              (comment) => comment.user?.login === 'github-actions[bot]' && comment.body.includes(marker)
+            );
+            const body = `${marker}\n${report}`;
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequest.number,
+                body
+              });
+            }
