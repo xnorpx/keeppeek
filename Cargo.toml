@@ -19,12 +19,10 @@ members = [
 	"crates/rouille/rouille-multipart",
 	"crates/test-camera",
 	"crates/test-frame",
-	"crates/typemap",
 ]
 
 [patch.crates-io]
 chunked_transfer = { path = "crates/chunked-transfer" }
-typemap = { path = "crates/typemap" }
 
 [package]
 name = "keeppeek"

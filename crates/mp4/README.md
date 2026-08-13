@@ -59,8 +59,6 @@ fn main() -> Result<()> {
 }
 ```
 
-See [examples/](examples/) for more examples.
-
 #### Install
 ```
 cargo add mp4

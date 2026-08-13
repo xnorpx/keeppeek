@@ -50,17 +50,8 @@ macro_rules! try_read_entry {
 mod boundary;
 mod field;
 
-#[cfg(feature = "hyper")]
-pub mod hyper;
-
-#[cfg(feature = "iron")]
-pub mod iron;
-
 #[cfg(feature = "tiny_http")]
 pub mod tiny_http;
-
-#[cfg(feature = "nickel")]
-pub mod nickel;
 
 pub mod save;
 

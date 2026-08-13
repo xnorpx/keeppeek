@@ -2,8 +2,7 @@
 
 Client- and server-side abstractions for HTTP file uploads (POST requests with  `Content-Type: multipart/form-data`).
 
-Supports several different (**sync**hronous API) HTTP crates. 
-**Async**hronous (i.e. `futures`-based) API support will be provided by [multipart-async].
+Provides backend-agnostic synchronous APIs that HTTP clients and servers can adapt.
 
 ##### Minimum supported Rust version: 1.36.0
 
@@ -14,34 +13,9 @@ API form becomes dubious. This crate in its current form is usable enough, so as
 is now in passive maintenance mode; bug reports will be addressed as time permits and PRs will be
 accepted but otherwise no new development of the existing API is taking place.
 
-Look for a release of [multipart-async] soon which targets newer releases of Hyper.
-
 ### [Documentation](http://docs.rs/multipart/)
 
 ## Integrations
-
-Example files demonstrating how to use `multipart` with these crates are available under [`examples/`](examples).
-
-### [Hyper ![](https://img.shields.io/crates/v/hyper.svg)](https://crates.io/crates/hyper) 
-via the `hyper` feature (enabled by default). 
-
-**Note: Hyper 0.9, 0.10 (synchronous API) only**; support for asynchronous APIs will be provided by [multipart-async].
- 
-Client integration includes support for regular `hyper::client::Request` objects via `multipart::client::Multipart`, as well
-as integration with the new `hyper::Client` API via `multipart::client::lazy::Multipart` (new in 0.5).
-
-Server integration for `hyper::server::Request` via `multipart::server::Multipart`.
-
-### [Iron ![](https://img.shields.io/crates/v/iron.svg)](https://crates.io/crates/iron) 
-via the `iron` feature.
-
-Provides regular server-side integration with `iron::Request` via `multipart::server::Multipart`, 
-as well as a convenient `BeforeMiddleware` implementation in `multipart::server::iron::Intercept`.
-
-### [Nickel ![](https://img.shields.io/crates/v/nickel.svg)](https://crates.io/crates/nickel) <sup>returning to `multipart` in 0.14!</sup>
-via the `nickel` feature.
-
-Provides server-side integration with `&mut nickel::Request` via `multipart::server::Multipart`. 
 
 ### [tiny_http ![](https://img.shields.io/crates/v/tiny_http.svg)](https://crates.io/crates/tiny_http)
 via the `tiny_http` feature.
@@ -80,5 +54,3 @@ at your option.
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
 additional terms or conditions.
-
-[multipart-async]: https://github.com/abonander/multipart-async

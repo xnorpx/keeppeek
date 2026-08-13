@@ -16,16 +16,6 @@
 //! * `mock`: Provides mock implementations of core `client` and `server` traits for debugging
 //!   or non-standard use.
 //!
-//! * `hyper`: Integration with the [Hyper](https://crates.io/crates/hyper) HTTP library
-//!   for client and/or server depending on which other feature flags are set.
-//!
-//! * `iron`: Integration with the [Iron](http://crates.io/crates/iron) web application
-//!   framework. See the [`server::iron`](server/iron/index.html) module for more information.
-//!
-//! * `nickel` (returning in 0.14!): Integration with the [Nickel](https://crates.io/crates/nickel)
-//!   web application framework. See the [`server::nickel`](server/nickel/index.html) module for more
-//!   information.
-//!
 //! * `tiny_http`: Integration with the [`tiny_http`](https://crates.io/crates/tiny_http)
 //!   crate. See the [`server::tiny_http`](server/tiny_http/index.html) module for more information.
 //!
@@ -52,12 +42,6 @@ extern crate quick_error;
 
 #[cfg(feature = "server")]
 extern crate safemem;
-
-#[cfg(feature = "hyper")]
-extern crate hyper;
-
-#[cfg(feature = "iron")]
-extern crate iron;
 
 #[cfg(feature = "tiny_http")]
 extern crate tiny_http;
