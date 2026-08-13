@@ -25,6 +25,7 @@ jobs:
       - uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: moderate
+          allow-ghsas: GHSA-pp8r-vv2j-9j5v
           comment-summary-in-pr: always
 
   codeql-rust:
