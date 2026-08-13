@@ -1,0 +1,93 @@
+[package]
+name = "schema"
+version = "0.1.0"
+authors = ["Chris Bruce <chris@lumeo.com>"]
+edition = "2024"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+transport = { path = "../transport" }
+xml-rs = "0.8"
+xsd-types = { path = "../xsd-types" }
+
+# xsd
+common = { path = "../xsd_rs/common" }
+metadatastream = { path = "../xsd_rs/metadatastream", optional = true }
+onvif = { package = "onvif-xsd", path = "../xsd_rs/onvif_xsd" }
+radiometry = { path = "../xsd_rs/radiometry", optional = true }
+rules = { path = "../xsd_rs/rules", optional = true }
+soap_envelope = { path = "../xsd_rs/soap_envelope" }
+types = { path = "../xsd_rs/types" }
+xmlmime = { path = "../xsd_rs/xmlmime" }
+xop = { path = "../xsd_rs/xop" }
+
+# wsdl
+accesscontrol = { path = "../wsdl_rs/accesscontrol", optional = true }
+accessrules = { path = "../wsdl_rs/accessrules", optional = true }
+actionengine = { path = "../wsdl_rs/actionengine", optional = true }
+advancedsecurity = { path = "../wsdl_rs/advancedsecurity", optional = true }
+analytics = { path = "../wsdl_rs/analytics", optional = true }
+authenticationbehavior = { path = "../wsdl_rs/authenticationbehavior", optional = true }
+b_2 = { path = "../wsdl_rs/b_2" }
+bf_2 = { path = "../wsdl_rs/bf_2", optional = true }
+credential = { path = "../wsdl_rs/credential", optional = true }
+deviceio = { path = "../wsdl_rs/deviceio", optional = true }
+devicemgmt = { path = "../wsdl_rs/devicemgmt", optional = true }
+display = { path = "../wsdl_rs/display", optional = true }
+doorcontrol = { path = "../wsdl_rs/doorcontrol", optional = true }
+event = { path = "../wsdl_rs/event", optional = true }
+imaging = { path = "../wsdl_rs/imaging", optional = true }
+media = { path = "../wsdl_rs/media", optional = true }
+media2 = { path = "../wsdl_rs/media2", optional = true }
+provisioning = { path = "../wsdl_rs/provisioning", optional = true }
+ptz = { path = "../wsdl_rs/ptz", optional = true }
+receiver = { path = "../wsdl_rs/receiver", optional = true }
+recording = { path = "../wsdl_rs/recording", optional = true }
+replay = { path = "../wsdl_rs/replay", optional = true }
+schedule = { path = "../wsdl_rs/schedule", optional = true }
+search = { path = "../wsdl_rs/search", optional = true }
+t_1 = { path = "../wsdl_rs/t_1" }
+thermal = { path = "../wsdl_rs/thermal", optional = true }
+uplink = { path = "../wsdl_rs/uplink", optional = true }
+ws_addr = { path = "../wsdl_rs/ws_addr" }
+ws_discovery = { path = "../wsdl_rs/ws_discovery" }
+xml_xsd = { path = "../wsdl_rs/xml_xsd" }
+
+[dev-dependencies]
+assert_approx_eq = "1"
+yaserde = "0.12"
+yaserde_derive = "0.12"
+
+[features]
+default = []
+accesscontrol = ["dep:accesscontrol"]
+accessrules = ["dep:accessrules"]
+actionengine = ["dep:actionengine"]
+advancedsecurity = ["dep:advancedsecurity"]
+analytics = ["dep:analytics"]
+authenticationbehavior = ["dep:authenticationbehavior"]
+bf_2 = ["dep:bf_2"]
+credential = ["dep:credential"]
+deviceio = ["dep:deviceio", "devicemgmt"]
+devicemgmt = ["dep:devicemgmt"]
+display = ["dep:display"]
+doorcontrol = ["dep:doorcontrol"]
+event = ["dep:event"]
+imaging = ["dep:imaging"]
+media = ["dep:media"]
+media2 = ["dep:media2"]
+metadatastream = ["dep:metadatastream"]
+provisioning = ["dep:provisioning"]
+ptz = ["dep:ptz"]
+radiometry = ["dep:radiometry"]
+receiver = ["dep:receiver"]
+recording = ["dep:recording"]
+replay = ["dep:replay"]
+rules = ["dep:rules"]
+schedule = ["dep:schedule"]
+search = ["dep:search"]
+thermal = ["dep:thermal"]
+uplink = ["dep:uplink"]

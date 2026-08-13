@@ -1,0 +1,25 @@
+[package]
+name = "xsd-types"
+version = "0.1.0"
+authors = [
+    "Chris Bruce <chris@lumeo.com>",
+    "leonid.krutovsky <leonid.krutovsky@quantumsoft.ru>",
+    "DmitrySamoylov <dmitry.samoylov@quantumsoft.ru>",
+    "victor-soloviev <victor.soloviev@quantumsoft.ru>",
+]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+bigdecimal = "0.3"
+chrono = "0.4"
+num-bigint = "0.4"
+xml-rs = "0.8"
+xsd-macro-utils = { path = "../xsd-macro-utils" }
+yaserde = "0.12"
+
+[dev-dependencies]
+yaserde_derive = "0.12"

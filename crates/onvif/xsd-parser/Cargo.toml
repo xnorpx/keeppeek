@@ -1,0 +1,28 @@
+[package]
+name = "xsd-parser"
+version = "0.1.0"
+authors = [
+    "Chris Bruce <chris@lumeo.com>",
+    "leonid.krutovsky <leonid.krutovsky@quantumsoft.ru>",
+    "DmitrySamoylov <dmitry.samoylov@quantumsoft.ru>",
+    "victor-soloviev <victor.soloviev@quantumsoft.ru>",
+]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+Inflector = "0.11"
+roxmltree = "0.14"
+
+[dev-dependencies]
+num-bigint = "0.4"
+syn = { version = "1", features = ["extra-traits", "full"] }
+text-diff = "0.4"
+xml-rs = "0.8"
+xsd-macro-utils = { path = "../xsd-macro-utils" }
+xsd-types = { path = "../xsd-types" }
+yaserde = "0.12"
+yaserde_derive = "0.12"

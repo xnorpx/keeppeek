@@ -1,0 +1,30 @@
+[package]
+name = "mp4"
+version = "0.14.0"
+authors = ["Alf <alf.g.jr@gmail.com>"]
+edition = "2024"
+description = "MP4 reader and writer library in Rust."
+documentation = "https://docs.rs/mp4"
+readme = "README.md"
+homepage = "https://github.com/alfg/mp4-rust"
+repository = "https://github.com/alfg/mp4-rust"
+keywords = ["mp4", "iso-mp4", "isobmff", "video", "multimedia"]
+license = "MIT"
+include = ["src", "benches", "Cargo.toml", "README", "LICENSE"]
+
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_json", "num-rational/serde"]
+
+[dev-dependencies]
+test-frame = { path = "../test-frame" }
+
+[lints]
+workspace = true
+
+[dependencies]
+byteorder = "1.5"
+bytes = "1.11.1"
+num-rational = { version = "0.4.2", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["std", "derive"], optional = true }
+serde_json = { version = "1.0", default-features = false, features = ["std"], optional = true }

@@ -1,0 +1,701 @@
+import { expect, test } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+
+const healthSnapshot = {
+	status: 'degraded',
+	generated_at_ms: Date.UTC(2026, 7, 10, 12),
+	uptime_seconds: 3_661,
+	version: '0.1.0',
+	totals: {
+		configured_cameras: 9,
+		reporting_cameras: 8,
+		configured_video_streams: 18,
+		reporting_video_streams: 16,
+		ingress_fps: 280,
+		ingress_bitrate_bps: 42_000_000,
+		frames: 1_234_567,
+		keyframes: 12_345,
+		drops: 3,
+		errors: 4,
+		reconnects: 5
+	},
+	system: {
+		host_name: 'keeppeek.local',
+		os_name: 'macOS',
+		os_version: 'macOS 15.0',
+		kernel_version: '24.0.0',
+		architecture: 'aarch64',
+		system_uptime_seconds: 86_400,
+		boot_time_seconds: 1_723_204_800,
+		logical_cores: 8,
+		physical_cores: 8,
+		cpu_brand: 'Apple M-series',
+		system_cpu_percent: 32.5,
+		process: {
+			pid: 1234,
+			name: 'keeppeek',
+			executable: '/opt/keeppeek/bin/keeppeek',
+			working_directory: '/opt/keeppeek',
+			cpu_percent: 148,
+			cpu_capacity_percent: 18.5,
+			cpu_core_equivalents: 1.48,
+			resident_memory_bytes: 536_870_912,
+			memory_capacity_percent: 3.125,
+			virtual_memory_bytes: 1_073_741_824,
+			started_at_seconds: 1_723_204_800,
+			uptime_seconds: 3_661,
+			tasks: 24,
+			read_bytes_per_second: 2_000_000,
+			write_bytes_per_second: 8_000_000,
+			total_read_bytes: 10_000_000_000,
+			total_written_bytes: 20_000_000_000
+		},
+		memory: {
+			total_bytes: 17_179_869_184,
+			used_bytes: 10_000_000_000,
+			available_bytes: 7_179_869_184,
+			total_swap_bytes: 4_294_967_296,
+			used_swap_bytes: 500_000_000
+		},
+		load: { one_minute: 2.1, five_minutes: 1.8, fifteen_minutes: 1.5 },
+		cpus: [{ name: 'cpu0', usage_percent: 30, frequency_mhz: 3_200 }],
+		network_egress_bps: 18_765_432,
+		networks: [
+			{
+				name: 'en0',
+				received_bytes_per_second: 8_000_000,
+				transmitted_bytes_per_second: 2_000_000,
+				received_packets_per_second: 5_000,
+				transmitted_packets_per_second: 2_000,
+				receive_errors: 0,
+				transmit_errors: 0,
+				total_received_bytes: 1_000_000_000,
+				total_transmitted_bytes: 500_000_000
+			}
+		],
+		disks: [
+			{
+				name: 'Data',
+				kind: 'ssd',
+				file_system: 'apfs',
+				mount_point: '/',
+				total_bytes: 1_000_000_000_000,
+				available_bytes: 400_000_000_000,
+				used_bytes: 600_000_000_000,
+				removable: false,
+				stores_recordings: true
+			}
+		],
+		temperatures: [{ label: 'CPU', current_celsius: 52, max_celsius: 70, critical_celsius: 100 }]
+	},
+	storage: {
+		medium_term_path: '/recordings',
+		long_term_path: '/recordings',
+		paths_are_same: true,
+		short_term_seconds: 30,
+		medium_term_seconds: 60,
+		flush_interval_seconds: 10,
+		write_buffer_bytes: 1_048_576,
+		long_term_max_bytes: 500_000_000_000,
+		catalog_bytes: 8_388_608,
+		catalog: {
+			recording_files: 1_000,
+			finalized_files: 984,
+			active_files: 16,
+			fragments: 50_000,
+			fragment_bytes: 400_000_000_000,
+			events: 400,
+			open_events: 2,
+			event_thumbnails: 350
+		},
+		demand: {
+			active_streams: 1,
+			total_viewers: 1,
+			leased_streams: 1,
+			streams: [{ stream_id: 'front-door/main', viewers: 1, lease_remaining_ms: 20_000 }]
+		}
+	},
+	webrtc: {
+		active_sessions: 3,
+		adaptive_sessions: 1,
+		browser_sessions: 1,
+		browser_tracks: 2,
+		fixed_sessions: 1,
+		active_main: 2,
+		active_sub: 1,
+		requested_auto: 1,
+		requested_high: 1,
+		requested_low: 1,
+		estimated_bitrate_min_bps: 3_000_000,
+		estimated_bitrate_avg_bps: 6_000_000,
+		estimated_bitrate_max_bps: 9_000_000,
+		source_bitrate_bps: 42_000_000,
+		published_frames: 1_234_567,
+		published_bytes: 456_000_000_000,
+		delivered_frames: 23_456,
+		written_frames: 22_222,
+		queue_capacity: 1_000,
+		queued_frames: 3,
+		queue_depth_max: 3,
+		queue_high_water: 17,
+		queue_drops: 7,
+		queue_discarded_frames: 1_111,
+		queue_recovery_drops: 13,
+		session_queues: [
+			{
+				session_id: 42,
+				track_id: 'camera-0',
+				camera_ip: '192.168.137.199',
+				stream: 'sub',
+				depth: 3,
+				high_water: 17,
+				written_frames: 2_222,
+				full_drops: 5,
+				discarded_frames: 7,
+				recovery_drops: 9
+			}
+		],
+		sources: [
+			{
+				camera_ip: '192.168.137.199',
+				stream: 'main',
+				subscribers: 1,
+				bitrate_bps: 8_000_000,
+				has_keyframe: true,
+				keyframe_age_ms: 400
+			}
+		]
+	},
+	cameras: [
+		{
+			id: '192.168.137.121',
+			ip: '192.168.137.121',
+			name: 'North Courtyard',
+			manufacturer: 'Reolink',
+			model: 'RLC-820A',
+			firmware_version: 'v1',
+			backend: 'reo-proto',
+			transport: 'tcp',
+			state: 'offline',
+			lifecycle: 'starting',
+			last_error: null,
+			configured_profiles: [
+				{
+					name: 'mainStream',
+					stream: 'main',
+					encoding: 'h265',
+					resolution: '3840x2160',
+					framerate: 25
+				},
+				{ name: 'subStream', stream: 'sub', encoding: 'h264', resolution: '640x360', framerate: 15 }
+			],
+			streams: []
+		},
+		{
+			id: '192.168.137.199',
+			ip: '192.168.137.199',
+			name: 'Kitchen Deck',
+			manufacturer: 'Reolink',
+			model: 'RLC-820A',
+			firmware_version: 'v1',
+			backend: 'retina',
+			transport: 'udp',
+			state: 'online',
+			lifecycle: 'starting',
+			last_error: null,
+			configured_profiles: [
+				{
+					name: 'mainStream',
+					stream: 'main',
+					encoding: 'h265',
+					resolution: '3840x2160',
+					framerate: 25
+				}
+			],
+			streams: [
+				{
+					type: 'video_main',
+					codec: 'h265',
+					resolution: '3840x2160',
+					fps: 25,
+					expected_fps: 25,
+					kf_fps: 1,
+					kbps: 8_000,
+					max_frame_kb: 800,
+					gap_min_ms: 39,
+					gap_avg_ms: 40,
+					gap_max_ms: 50,
+					jitter_samples: 249,
+					jitter_p50_ms: 1.2,
+					jitter_p99_ms: 14.5,
+					frames: 100_000,
+					bytes: 10_000_000_000,
+					keyframes: 4_000,
+					reconnects: 1,
+					drops: 0,
+					errors: 0,
+					updated_at_ms: Date.UTC(2026, 7, 10, 12),
+					report_age_ms: 2_000
+				},
+				{
+					type: 'audio',
+					codec: 'aac',
+					fps: 15.6,
+					kbps: 64,
+					max_frame_kb: 0.4,
+					frames: 156,
+					bytes: 64_000,
+					updated_at_ms: Date.UTC(2026, 7, 10, 12),
+					report_age_ms: 2_000
+				}
+			]
+		}
+	],
+	issues: [
+		{
+			severity: 'warning',
+			scope: 'North Courtyard',
+			message: 'No stream health report has been received'
+		}
+	]
+};
+
+async function installMockPeerConnection(page: Page) {
+	await page.addInitScript(() => {
+		class MockPeerConnection {
+			localDescription: RTCSessionDescriptionInit | null = null;
+			iceGatheringState: RTCIceGatheringState = 'complete';
+			connectionState: RTCPeerConnectionState = 'connected';
+			iceConnectionState: RTCIceConnectionState = 'connected';
+			ontrack: RTCPeerConnection['ontrack'] = null;
+			onconnectionstatechange: RTCPeerConnection['onconnectionstatechange'] = null;
+			oniceconnectionstatechange: RTCPeerConnection['oniceconnectionstatechange'] = null;
+			private statsTimestamp = performance.now();
+			private bytesReceived = 1_000_000;
+			private framesReceived = 300;
+			private framesDecoded = 300;
+			private transceivers: RTCRtpTransceiver[] = [];
+			private receiver = {
+				getStats: async (): Promise<RTCStatsReport> => {
+					this.statsTimestamp += 1_000;
+					this.bytesReceived += 250_000;
+					this.framesReceived += 15;
+					this.framesDecoded += 15;
+					return new Map<string, object>([
+						[
+							'inbound',
+							{
+								id: 'inbound',
+								type: 'inbound-rtp',
+								kind: 'video',
+								ssrc: 1,
+								timestamp: this.statsTimestamp,
+								codecId: 'codec',
+								transportId: 'transport',
+								bytesReceived: this.bytesReceived,
+								packetsReceived: 10_000,
+								packetsLost: 2,
+								frameWidth: 640,
+								frameHeight: 360,
+								framesReceived: this.framesReceived,
+								framesPerSecond: 15,
+								framesDecoded: this.framesDecoded,
+								framesDropped: 3,
+								jitter: 0.004,
+								decoderImplementation: 'Mock decoder'
+							}
+						],
+						['codec', { id: 'codec', type: 'codec', mimeType: 'video/H264' }],
+						[
+							'transport',
+							{
+								id: 'transport',
+								type: 'transport',
+								selectedCandidatePairId: 'candidate-pair'
+							}
+						],
+						[
+							'candidate-pair',
+							{
+								id: 'candidate-pair',
+								type: 'candidate-pair',
+								currentRoundTripTime: 0.012
+							}
+						]
+					]) as unknown as RTCStatsReport;
+				}
+			} as RTCRtpReceiver;
+
+			addTransceiver(): RTCRtpTransceiver {
+				const transceiver = {
+					mid: null,
+					setCodecPreferences() {}
+				} as unknown as RTCRtpTransceiver;
+				this.transceivers.push(transceiver);
+				return transceiver;
+			}
+
+			async createOffer(): Promise<RTCSessionDescriptionInit> {
+				this.transceivers.forEach((transceiver, index) => {
+					(transceiver as unknown as { mid: string }).mid = `${index}`;
+				});
+				return { type: 'offer', sdp: 'v=0\r\n' };
+			}
+
+			async setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
+				this.localDescription = description;
+			}
+
+			async setRemoteDescription(): Promise<void> {
+				this.ontrack?.({
+					receiver: this.receiver,
+					streams: [new MediaStream()],
+					transceiver: this.transceivers[0]
+				} as unknown as RTCTrackEvent);
+			}
+
+			close() {}
+		}
+
+		Object.defineProperty(window, 'RTCPeerConnection', { value: MockPeerConnection });
+		Object.defineProperty(navigator, 'sendBeacon', { value: () => true });
+	});
+}
+
+async function expectMetric(scope: Locator, label: string, value: string | RegExp) {
+	const metric = scope.locator(`[data-health-metric="${label}"]`);
+	await expect(metric).toBeVisible();
+	await expect(metric).toContainText(value);
+}
+
+async function expectTexts(scope: Locator, values: Array<string | RegExp>) {
+	for (const value of values) await expect(scope).toContainText(value);
+}
+
+test('shows comprehensive server health and camera outages', async ({ page }) => {
+	await page.route('**/api/health', async (route) => {
+		await route.fulfill({ json: healthSnapshot });
+	});
+
+	await page.goto('/system-health');
+
+	await expect(page).toHaveTitle('Health - KeepPeek');
+	await expect(page.getByRole('heading', { name: 'Health', exact: true })).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Health', exact: true })).toHaveAttribute(
+		'aria-current',
+		'page'
+	);
+	const clientTab = page.getByRole('tab', { name: 'Client' });
+	const serverTab = page.getByRole('tab', { name: 'Server' });
+	await expect(serverTab).toHaveAttribute('aria-selected', 'true');
+	await clientTab.click();
+	await expect(clientTab).toHaveAttribute('aria-selected', 'true');
+	await expect(page.getByRole('heading', { name: 'Current client' })).toBeVisible();
+	await expect(page.getByText('No active client streams')).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Process and host' })).toHaveCount(0);
+	await serverTab.click();
+	await expect(page.getByText('degraded', { exact: true })).toBeVisible();
+	const summary = page.getByRole('region', { name: 'Health summary' });
+	await expectMetric(summary, 'Server egress', '18.8 Mbps');
+	await expect(summary).toContainText('Non-loopback host traffic');
+	await expectMetric(summary, 'Process CPU', '18.5%');
+	await expect(summary.locator('[data-health-metric="Process CPU"]')).toContainText(
+		'1.48 cores · host 32.5%'
+	);
+	await expectMetric(summary, 'Process memory', '537 MB');
+	await expect(summary.locator('[data-health-metric="Process memory"]')).toContainText(
+		'3.1% of 17.2 GB RAM'
+	);
+	await expect(page.getByText('North Courtyard', { exact: true }).first()).toBeVisible();
+	await expect(page.getByText('retina / udp', { exact: true }).first()).toBeVisible();
+	await expect(
+		page.getByRole('link', { name: 'Open Kitchen Deck camera information' })
+	).toHaveAttribute('href', '/camera?camera=192.168.137.199');
+	await expect(page.getByText('offline', { exact: true })).toBeVisible();
+	await expect(page.getByText('No stream health report has been received')).toBeVisible();
+	const streams = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Camera streams' })
+	});
+	await expectTexts(streams, [
+		'8 of 9 cameras · 16 of 18 streams reporting',
+		'1.2M frames',
+		'12.3K keyframes',
+		'3 drops',
+		'4 errors',
+		'5 reconnects'
+	]);
+	const videoRow = streams.getByRole('row').filter({ hasText: 'Kitchen Deck' });
+	await expectTexts(videoRow, [
+		/h265/i,
+		'3840x2160',
+		'25 / 25',
+		'8.0 Mbps',
+		'max 800 kB',
+		'4K total',
+		'100K frames · 10.0 GB',
+		'min 39 · avg 40 ms',
+		'max 50 ms',
+		'jitter p50 1.2 ms · p99 14.5 ms · 249 samples'
+	]);
+	const process = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Process and host' })
+	});
+	await expectTexts(process, [
+		'keeppeek',
+		'1234',
+		'CPU host capacity',
+		'18.5%',
+		'CPU core-equivalent',
+		'148.0% · 1.48 cores',
+		'Host CPU',
+		'32.5%',
+		'Resident memory',
+		'Host RAM share',
+		'3.1%',
+		'Virtual address space',
+		'537 MB',
+		'1.07 GB',
+		'24',
+		'1h 1m',
+		'2.00 MB/s',
+		'8.00 MB/s',
+		'10.0 GB',
+		'20.0 GB',
+		'7.18 GB available',
+		'10.0 GB / 17.2 GB',
+		'500 MB / 4.29 GB',
+		'2.10',
+		'1.80',
+		'1.50',
+		'cpu0',
+		'30.0%',
+		'3200 MHz',
+		'Apple M-series',
+		'8 physical / 8 logical cores'
+	]);
+	await expect(page.getByRole('heading', { name: 'Audio streams' })).toBeVisible();
+	await expect(
+		page.getByRole('row', { name: /Kitchen Deck.*aac.*15\.6.*400 B.*N\/A/ })
+	).toBeVisible();
+	await expect(page.getByText('jitter p50 1.2 ms · p99 14.5 ms')).toBeVisible();
+	const webrtc = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'WebRTC delivery' })
+	});
+	for (const [label, value] of [
+		['Sessions', '3'],
+		['Browser', '1'],
+		['Tracks', '2'],
+		['Adaptive', '1'],
+		['Fixed', '1'],
+		['Main', '2'],
+		['Sub', '1'],
+		['Auto', '1'],
+		['High', '1'],
+		['Low', '1'],
+		['BWE min', '3.0 Mbps'],
+		['BWE avg', '6.0 Mbps'],
+		['BWE max', '9.0 Mbps'],
+		['Source bitrate', '42.0 Mbps'],
+		['Queued', '3'],
+		['Deepest', '3'],
+		['Capacity', '1000'],
+		['Published', '1.2M'],
+		['Published bytes', '456 GB'],
+		['Enqueued', '23.5K'],
+		['Written', '22.2K'],
+		['Peak depth', '17'],
+		['Full drops', '7'],
+		['Discarded', '1.1K'],
+		['Recovery drops', '13']
+	] as const) {
+		await expectMetric(webrtc, label, value);
+	}
+	await expect(
+		webrtc.getByRole('row', {
+			name: /^42 camera-0 192\.168\.137\.199 sub 3 \/ 1000 17 2\.2K 7 5 9$/
+		})
+	).toBeVisible();
+	await expect(
+		webrtc.getByRole('row', { name: /^192\.168\.137\.199 main 1 8\.0 Mbps Ready now$/ })
+	).toBeVisible();
+	const storage = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Recording and storage' })
+	});
+	await expectTexts(storage, [
+		'Paths',
+		'Shared',
+		'30s',
+		'1m 0s',
+		'10s',
+		'1.05 MB',
+		'500 GB',
+		'8.39 MB',
+		'Active streams',
+		'Viewers',
+		'Leased streams',
+		'1K',
+		'984 / 16',
+		'50K',
+		'400 GB',
+		'400 / 2',
+		'350',
+		'/recordings',
+		'front-door/main',
+		'20s'
+	]);
+	await expect(
+		storage.getByRole('row', { name: /\/ Data ssd apfs 600 GB \/ 1\.00 TB 400 GB Recordings/ })
+	).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Network interfaces' })).toHaveCount(0);
+	await expect(page.getByRole('row', { name: /CPU 52\.0 °C 70\.0 °C 100\.0 °C/ })).toBeVisible();
+	const runtime = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Runtime identity' })
+	});
+	await expectTexts(runtime, [
+		'keeppeek.local',
+		'aarch64',
+		'macOS 15.0',
+		'Kernel 24.0.0',
+		'/opt/keeppeek/bin/keeppeek',
+		'/opt/keeppeek',
+		'1d 0h'
+	]);
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
+	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+});
+
+test('shows current client receiver and matching server queue counters', async ({ page }) => {
+	await installMockPeerConnection(page);
+	const pageErrors: string[] = [];
+	page.on('pageerror', (error) => pageErrors.push(error.message));
+	await page.route('http://127.0.0.1:4174/health', async (route) => {
+		await route.fulfill({
+			json: { status: 'ok', cameras: [{ id: '192.168.137.199', state: 'online' }] }
+		});
+	});
+	await page.route('**/api/cameras', async (route) => {
+		await route.fulfill({
+			json: [
+				{
+					id: '192.168.137.199',
+					ip: '192.168.137.199',
+					name: 'Kitchen Deck',
+					manufacturer: 'Reolink',
+					model: 'RLC-820A',
+					firmware_version: 'v1',
+					is_reolink: true,
+					profiles: [
+						{
+							name: 'Main',
+							stream: 'main',
+							encoding: 'h265',
+							resolution: '3840x2160',
+							framerate: 25
+						},
+						{
+							name: 'Sub',
+							stream: 'sub',
+							encoding: 'h264',
+							resolution: '640x360',
+							framerate: 15
+						}
+					]
+				}
+			]
+		});
+	});
+	let serverHealthRequests = 0;
+	await page.route('**/api/health', async (route) => {
+		serverHealthRequests += 1;
+		await route.fulfill({ json: healthSnapshot });
+	});
+	await page.route('**/api/live/browser/offer', async (route) => {
+		await route.fulfill({
+			json: {
+				session_id: 42,
+				answer: { type: 'answer', sdp: 'v=0\r\n' },
+				estimated_bitrate_bps: 1_500_000,
+				tracks: [
+					{
+						track_id: 'camera-0',
+						requested_quality: 'low',
+						active_stream: 'sub',
+						estimated_bitrate_bps: 1_500_000
+					}
+				]
+			}
+		});
+	});
+	await page.route('**/api/live/browser/42', async (route) => {
+		await route.fulfill({
+			json: {
+				estimated_bitrate_bps: 1_500_000,
+				tracks: [
+					{
+						track_id: 'camera-0',
+						requested_quality: 'low',
+						active_stream: 'sub',
+						estimated_bitrate_bps: 1_500_000
+					}
+				]
+			}
+		});
+	});
+	let closeRequests = 0;
+	await page.route('**/api/live/browser/42/close', async (route) => {
+		closeRequests += 1;
+		await route.fulfill({ status: 204 });
+	});
+	await page.route('**/api/recordings/192.168.137.199', async (route) => {
+		await route.fulfill({
+			json: { camera_id: '192.168.137.199', date: null, dates: [], segments: [] }
+		});
+	});
+
+	await page.goto('/');
+	await expect(page.locator('[data-session-id="42"]')).toBeVisible();
+	const healthRequestsBeforeNavigation = serverHealthRequests;
+	await page.getByRole('link', { name: 'Health', exact: true }).click();
+	await expect.poll(() => serverHealthRequests).toBeGreaterThan(healthRequestsBeforeNavigation);
+	await expect.poll(() => pageErrors).toEqual([]);
+	await page.getByRole('tab', { name: 'Client' }).click();
+
+	const client = page.getByRole('tabpanel', { name: 'Client' });
+	for (const [label, value] of [
+		['Session', '#42'],
+		['Connection', 'connected'],
+		['ICE', 'connected'],
+		['Tracks', '1'],
+		['Main', '0'],
+		['Sub', '1'],
+		['BWE avg', '1.5 Mbps']
+	] as const) {
+		await expectMetric(client, label, value);
+	}
+	const stream = client.getByRole('row').filter({ hasText: 'Kitchen Deck' });
+	await expectTexts(stream, [
+		'camera-0',
+		'live',
+		'low / sub',
+		/h264/i,
+		'640 × 360',
+		'2.0 Mbps',
+		'15 fps',
+		'BWE 1.5 Mbps',
+		'2 (0.02%)',
+		'10K received',
+		'4 ms',
+		'12 ms',
+		'3 dropped',
+		'Mock decoder',
+		'3 / 1000',
+		'peak 17',
+		'21',
+		'5 full · 7 discarded · 9 recovery',
+		'2.2K written'
+	]);
+	await expect(page.getByRole('heading', { name: 'Process and host' })).toHaveCount(0);
+	expect(closeRequests).toBe(0);
+});
