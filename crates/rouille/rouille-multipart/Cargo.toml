@@ -30,13 +30,12 @@ twoway = { version = "0.1", optional = true }
 quick-error = { version = "1.2", optional = true }
 
 # Optional Integrations
-tiny_http = { version = "0.6", optional = true }
 
 [dev-dependencies]
 env_logger = "0.5"
 
 [features]
 client = []
-default = ["client", "mock", "server", "tiny_http"]
+default = ["client", "mock", "server"]
 server = ["buffer-redux", "httparse", "quick-error", "safemem", "twoway"]
 mock = []

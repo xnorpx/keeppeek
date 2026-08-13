@@ -17,11 +17,6 @@ accepted but otherwise no new development of the existing API is taking place.
 
 ## Integrations
 
-### [tiny_http ![](https://img.shields.io/crates/v/tiny_http.svg)](https://crates.io/crates/tiny_http)
-via the `tiny_http` feature.
-
-Provides server-side integration with `tiny_http::Request` via `multipart::server::Multipart`.
-
 ## ⚡ Powered By ⚡
 
 ### [buf_redux ![](https://img.shields.io/crates/v/buf_redux.svg)](https://crates.io/crates/buf_redux)

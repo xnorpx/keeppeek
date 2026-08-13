@@ -16,9 +16,6 @@
 //! * `mock`: Provides mock implementations of core `client` and `server` traits for debugging
 //!   or non-standard use.
 //!
-//! * `tiny_http`: Integration with the [`tiny_http`](https://crates.io/crates/tiny_http)
-//!   crate. See the [`server::tiny_http`](server/tiny_http/index.html) module for more information.
-//!
 //! ### Note: Work in Progress
 //! I have left a number of Request-for-Comments (RFC) questions on various APIs and other places
 //! in the code as there are some cases where I'm not sure what the desirable behavior is.
@@ -42,9 +39,6 @@ extern crate quick_error;
 
 #[cfg(feature = "server")]
 extern crate safemem;
-
-#[cfg(feature = "tiny_http")]
-extern crate tiny_http;
 
 #[cfg(test)]
 extern crate env_logger;
