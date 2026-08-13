@@ -20,6 +20,7 @@ use url::Url;
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_USER_AGENT: &str = concat!("retina_", env!("CARGO_PKG_VERSION"));
+const MAX_PENDING_UDP_DATAGRAMS: usize = 64;
 
 /// A pair of caller-supplied clocks associated with an I/O event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -383,6 +384,13 @@ struct SetupResponseContext {
     url: Url,
 }
 
+struct PendingUdpDatagram {
+    time: Time,
+    stream: usize,
+    kind: UdpPacketKind,
+    data: Bytes,
+}
+
 /// A runtime-neutral RTSP control-plane client.
 pub struct RtspClient {
     options: ClientOptions,
@@ -395,6 +403,7 @@ pub struct RtspClient {
     session: Option<super::parse::SessionHeader>,
     connection_context: Option<crate::ConnectionContext>,
     requested_auth: Option<http_auth::PasswordClient>,
+    pending_udp: VecDeque<PendingUdpDatagram>,
     outputs: VecDeque<Output>,
 }
 
@@ -418,6 +427,7 @@ impl RtspClient {
             session: None,
             connection_context: None,
             requested_auth: None,
+            pending_udp: VecDeque::new(),
             outputs: VecDeque::new(),
         }
     }
@@ -507,6 +517,7 @@ impl RtspClient {
                 self.session = None;
                 self.connection_context = None;
                 self.requested_auth = None;
+                self.pending_udp.clear();
                 self.phase = Phase::Connecting { connection, url };
                 self.outputs
                     .push_back(Output::OpenTcp { connection, target });
@@ -965,14 +976,35 @@ impl RtspClient {
 
     fn handle_udp_data(
         &mut self,
-        _time: Time,
+        time: Time,
         stream_id: usize,
         kind: UdpPacketKind,
         data: &[u8],
     ) -> Result<(), CoreError> {
-        if !matches!(self.phase, Phase::Playing { .. }) {
+        if matches!(&self.phase, Phase::AwaitingPlayResponse { .. }) {
+            if self.pending_udp.len() < MAX_PENDING_UDP_DATAGRAMS {
+                self.pending_udp.push_back(PendingUdpDatagram {
+                    time,
+                    stream: stream_id,
+                    kind,
+                    data: Bytes::copy_from_slice(data),
+                });
+            }
             return Ok(());
         }
+        if !matches!(&self.phase, Phase::Playing { .. }) {
+            return Ok(());
+        }
+        self.handle_playing_udp_data(time, stream_id, kind, Bytes::copy_from_slice(data))
+    }
+
+    fn handle_playing_udp_data(
+        &mut self,
+        _time: Time,
+        stream_id: usize,
+        kind: UdpPacketKind,
+        data: Bytes,
+    ) -> Result<(), CoreError> {
         let connection_context = self.connection_context.ok_or_else(|| {
             CoreError::InvalidState("received UDP media without a connection context".to_string())
         })?;
@@ -998,7 +1030,6 @@ impl RtspClient {
                 )));
             }
         };
-        let data = Bytes::copy_from_slice(data);
         let items = match kind {
             UdpPacketKind::Rtp => {
                 let packet = rtp_handler
@@ -1050,6 +1081,18 @@ impl RtspClient {
         for item in items {
             self.outputs
                 .push_back(Output::Event(Event::CodecItem(item)));
+        }
+        Ok(())
+    }
+
+    fn drain_pending_udp(&mut self) -> Result<(), CoreError> {
+        while let Some(datagram) = self.pending_udp.pop_front() {
+            self.handle_playing_udp_data(
+                datagram.time,
+                datagram.stream,
+                datagram.kind,
+                datagram.data,
+            )?;
         }
         Ok(())
     }
@@ -1299,6 +1342,7 @@ impl RtspClient {
     ) -> Result<(), CoreError> {
         let (response, body) = expected_response(framed, cseq, "PLAY")?;
         if !response.status_code.is_success() {
+            self.pending_udp.clear();
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
             self.outputs.push_back(Output::Event(Event::PlayResponse {
@@ -1392,6 +1436,7 @@ impl RtspClient {
             Ok(())
         })();
         if let Err(description) = result {
+            self.pending_udp.clear();
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
             return Err(CoreError::UnexpectedResponse(format!(
@@ -1406,7 +1451,7 @@ impl RtspClient {
             response,
             body,
         }));
-        Ok(())
+        self.drain_pending_udp()
     }
 
     fn take_cseq(&mut self) -> Result<u32, CoreError> {
@@ -1480,6 +1525,7 @@ impl RtspClient {
             return Err(unexpected_connection(expected_connection, connection));
         }
 
+        self.pending_udp.clear();
         self.phase = Phase::Closed;
         self.outputs
             .push_back(Output::Event(Event::TcpClosed { connection }));
@@ -1512,6 +1558,7 @@ impl RtspClient {
             return Ok(());
         }
 
+        self.pending_udp.clear();
         self.phase = Phase::Failed;
         self.outputs
             .push_back(Output::Event(Event::RequestTimedOut { connection, cseq }));
@@ -2762,6 +2809,84 @@ mod tests {
             }) if actual == connection && response.status_code == msg::StatusCode::OK
         ));
         assert_eq!(client.state(), ClientState::Playing);
+    }
+
+    #[test]
+    fn play_queues_udp_data_before_response() {
+        let (mut client, connection, start) = described_client();
+        client
+            .handle_input(Input::Command {
+                time: time(start, Duration::from_millis(4)),
+                command: Command::SetupUdp {
+                    stream: 0,
+                    client_port: 50_000,
+                },
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(5)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(6)),
+                connection,
+                data: b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nSession: 708345999;timeout=60\r\nTransport: RTP/AVP/UDP;unicast;source=192.168.5.106;server_port=60000-60001;ssrc=4cacc3d1\r\n\r\n",
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        let _ = client.poll_output();
+
+        client
+            .handle_input(Input::Command {
+                time: time(start, Duration::from_millis(7)),
+                command: Command::Play,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+        client
+            .handle_input(Input::TcpWriteCompleted {
+                time: time(start, Duration::from_millis(8)),
+                connection,
+            })
+            .unwrap();
+        let _ = client.poll_output();
+
+        let mut packet = vec![0x80, 0xe0];
+        packet.extend_from_slice(&24_104_u16.to_be_bytes());
+        packet.extend_from_slice(&1_270_711_678_u32.to_be_bytes());
+        packet.extend_from_slice(&0x4cac_c3d1_u32.to_be_bytes());
+        packet.extend_from_slice(&[0x65, 0x88, 0x84, 0x21]);
+        client
+            .handle_input(Input::UdpData {
+                time: time(start, Duration::from_millis(9)),
+                stream: 0,
+                kind: UdpPacketKind::Rtp,
+                data: &packet,
+            })
+            .unwrap();
+        assert_eq!(client.pending_udp.len(), 1);
+
+        client
+            .handle_input(Input::TcpData {
+                time: time(start, Duration::from_millis(10)),
+                connection,
+                data: PLAY_RESPONSE,
+            })
+            .unwrap();
+        assert!(matches!(
+            client.poll_output(),
+            Output::Event(Event::PlayResponse { connection: actual, .. }) if actual == connection
+        ));
+        assert!(matches!(
+            client.poll_output(),
+            Output::Event(Event::CodecItem(crate::codec::CodecItem::VideoFrame(_)))
+        ));
+        assert!(client.pending_udp.is_empty());
     }
 
     #[test]
