@@ -1,0 +1,26 @@
+[package]
+name = "tiny_http"
+version = "0.12.0"
+authors = ["pierre.krieger1708@gmail.com",
+           "Corey Farwell <coreyf@rwell.org>"]
+description = "Low level HTTP server library"
+documentation = "https://tiny-http.github.io/tiny-http/tiny_http/index.html"
+readme = "README.md"
+keywords = ["http", "server", "web"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tiny-http/tiny-http"
+edition = "2024"
+rust-version = "1.85"
+include = ["src", "Cargo.toml", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
+
+[lints]
+workspace = true
+
+[dependencies]
+ascii = "1.0"
+chunked_transfer = "1"
+log = "0.4.4"
+httpdate = "1.0.2"
+
+native-tls = "0.2"
+zeroize = "1"

@@ -1,7 +1,7 @@
 # Changelog
 
 ## Version 3.6.2
-- Expose `new_ssl` feature for `rustls` support from `tiny-http`.
+- Expose `new_ssl` for native TLS support from `tiny-http`.
 - Switch to `sha1-smol` for a smaller footprint, more stable hash library.
 - Remove dependency on `num_cpus` using `std::thread::available_parallelism` instead.
 
@@ -11,8 +11,7 @@ Reverts [Added a number of default features](https://github.com/tomaka/rouille/p
 who were specifying `default-features = false`.
 
 ## Version 3.6.0
-- Added [`rustls`](https://github.com/rustls/rustls) support (via `tiny-http`), if you're currently using the `ssl` feature
-  you can switch from OpenSSL to Rustls by instead enabling the `rustls` feature in your `Cargo.toml`.
+- Added native TLS support via `tiny-http`; `Server::new_ssl` is always available in this fork.
 - [Added a number of default features](https://github.com/tomaka/rouille/pull/254) to allow users to reduce
   their dependency graph where they don't need all the functionality Rouille provides. `logging`, `assets`,
   `post` and `session` are now optional, but enabled by default for backwards compatibility.

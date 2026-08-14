@@ -17,9 +17,6 @@ workspace = true
 [features]
 default = ["gzip", "brotli"]
 gzip = ["deflate"]
-# Kept for compatibility; tiny_http supports only one TLS backend per build.
-ssl = ["rustls"]
-rustls = ["tiny_http/ssl-rustls"]
 
 [dependencies]
 base64 = "0.22"

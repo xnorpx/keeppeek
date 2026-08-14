@@ -19,10 +19,12 @@ members = [
 	"crates/rouille/rouille-multipart",
 	"crates/test-camera",
 	"crates/test-frame",
+	"crates/tiny-http",
 ]
 
 [patch.crates-io]
 chunked_transfer = { path = "crates/chunked-transfer" }
+tiny_http = { path = "crates/tiny-http" }
 
 [package]
 name = "keeppeek"
@@ -91,7 +93,7 @@ str0m = { version = "0.22.0", default-features = false }
 tracing = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 turso = { version = "=0.7.2", default-features = false }
-ureq = { version = "3", default-features = false, features = ["platform-verifier", "rustls"] }
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 url = { version = "*" }
 sysinfo = "0.39.6"
 quick-xml = { version = "0.41.0", features = ["serialize"] }

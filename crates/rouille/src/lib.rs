@@ -405,7 +405,6 @@ where
     ///
     /// Returns an error if there was an error while creating the listening socket, for example if
     /// the port is already in use.
-    #[cfg(any(feature = "ssl", feature = "rustls"))]
     pub fn new_ssl<A>(
         addr: A,
         handler: F,
