@@ -2,6 +2,7 @@
 
 use crate::{
     keeppeek::StreamKind,
+    media_time::duration_to_ticks,
     storage::{RecordingDemand, RecordingDemandGuard, VideoCodec, nal},
 };
 use bytes::Bytes;
@@ -178,7 +179,7 @@ struct LiveFrame {
     codec: VideoCodec,
     is_keyframe: bool,
     received_at: Instant,
-    camera_dts_90k: Option<u64>,
+    timestamp: Option<Duration>,
     data: Arc<LiveFrameData>,
 }
 
@@ -1186,7 +1187,7 @@ impl LiveHandle {
         codec: VideoCodec,
         is_keyframe: bool,
         received_at: Instant,
-        camera_dts_90k: Option<u64>,
+        timestamp: Option<Duration>,
         avcc: Bytes,
     ) {
         self.inner.published_frames.fetch_add(1, Ordering::Relaxed);
@@ -1208,7 +1209,7 @@ impl LiveHandle {
             codec,
             is_keyframe,
             received_at,
-            camera_dts_90k,
+            timestamp,
             data: Arc::new(LiveFrameData::new(avcc)),
         };
         if is_keyframe {
@@ -2565,7 +2566,7 @@ fn drain_browser_outputs(
 
 #[derive(Default)]
 struct MediaClock {
-    first_camera_dts: Option<u64>,
+    first_timestamp: Option<Duration>,
     first_received_at: Option<Instant>,
     source_base_media_time: u64,
     last_media_time: Option<u64>,
@@ -2573,7 +2574,7 @@ struct MediaClock {
 
 impl MediaClock {
     fn reset_source(&mut self) {
-        self.first_camera_dts = None;
+        self.first_timestamp = None;
         self.first_received_at = None;
         self.source_base_media_time = self
             .last_media_time
@@ -2582,15 +2583,18 @@ impl MediaClock {
 
     fn media_time(&mut self, frame: &LiveFrame) -> u64 {
         let base_received_at = *self.first_received_at.get_or_insert(frame.received_at);
-        let fallback = frame
-            .received_at
-            .saturating_duration_since(base_received_at)
-            .as_secs_f64()
-            .mul_add(90_000.0, self.source_base_media_time as f64) as u64;
-        let mut media_time = frame.camera_dts_90k.map_or(fallback, |camera_dts| {
-            let base = *self.first_camera_dts.get_or_insert(camera_dts);
+        let fallback = self
+            .source_base_media_time
+            .saturating_add(duration_to_ticks(
+                frame
+                    .received_at
+                    .saturating_duration_since(base_received_at),
+                90_000,
+            ));
+        let mut media_time = frame.timestamp.map_or(fallback, |timestamp| {
+            let base = *self.first_timestamp.get_or_insert(timestamp);
             self.source_base_media_time
-                .saturating_add(camera_dts.saturating_sub(base))
+                .saturating_add(duration_to_ticks(timestamp.saturating_sub(base), 90_000))
         });
         if let Some(last) = self.last_media_time
             && media_time <= last
@@ -2660,7 +2664,7 @@ mod tests {
             codec: VideoCodec::H264,
             is_keyframe,
             received_at,
-            camera_dts_90k: None,
+            timestamp: None,
             data: Arc::new(LiveFrameData::new(Bytes::from(vec![0; bytes]))),
         }
     }
@@ -2699,18 +2703,18 @@ mod tests {
         let now = Instant::now();
         let mut clock = MediaClock::default();
         let mut low_keyframe = live_frame_at(true, now, 4);
-        low_keyframe.camera_dts_90k = Some(900_000);
+        low_keyframe.timestamp = Some(Duration::from_secs(10));
         let mut low_delta = live_frame_at(false, now + Duration::from_millis(67), 4);
-        low_delta.camera_dts_90k = Some(906_000);
+        low_delta.timestamp = Some(Duration::from_secs(10) + Duration::from_nanos(66_666_667));
 
         assert_eq!(clock.media_time(&low_keyframe), 0);
         assert_eq!(clock.media_time(&low_delta), 6_000);
 
         clock.reset_source();
         let mut high_keyframe = live_frame_at(true, now + Duration::from_secs(1), 4);
-        high_keyframe.camera_dts_90k = Some(42_000);
+        high_keyframe.timestamp = Some(Duration::from_secs(42));
         let mut high_delta = live_frame_at(false, now + Duration::from_millis(40), 4);
-        high_delta.camera_dts_90k = Some(45_600);
+        high_delta.timestamp = Some(Duration::from_secs(42) + Duration::from_millis(40));
 
         assert_eq!(clock.media_time(&high_keyframe), 9_000);
         assert_eq!(clock.media_time(&high_delta), 12_600);

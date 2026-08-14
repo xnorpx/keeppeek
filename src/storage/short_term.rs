@@ -134,7 +134,7 @@ mod tests {
     fn video_frame(keyframe: bool, at: Instant) -> RecordingFrame {
         RecordingFrame {
             received_at: at,
-            camera_dts_90k: None,
+            timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
                 codec: VideoCodec::H264,
                 is_keyframe: keyframe,

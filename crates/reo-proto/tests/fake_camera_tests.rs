@@ -554,14 +554,14 @@ fn fake_camera_video_frame_delivery() {
             is_keyframe,
             codec,
             data,
-            microseconds,
+            timestamp,
             ..
         }) => {
             assert_eq!(channel, 0);
             assert!(is_keyframe);
             assert_eq!(codec, VideoCodec::H264);
             assert_eq!(data, nal_data);
-            assert_eq!(microseconds, 0);
+            assert_eq!(timestamp, Duration::ZERO);
         }
         other => panic!("expected VideoFrame, got {other:?}"),
     }
@@ -599,11 +599,11 @@ fn fake_camera_iframe_then_pframes() {
         match client.poll_output(&mut buf).unwrap() {
             Output::Event(Event::VideoFrame {
                 is_keyframe,
-                microseconds,
+                timestamp,
                 ..
             }) => {
                 assert!(!is_keyframe);
-                assert_eq!(microseconds, us);
+                assert_eq!(timestamp, Duration::from_micros(u64::from(us)));
             }
             other => panic!("expected P-frame, got {other:?}"),
         }
@@ -645,10 +645,12 @@ fn fake_camera_interleaved_video_and_audio() {
             stream_id,
             codec,
             data,
+            duration,
         }) => {
             assert_eq!(stream_id, 0);
             assert_eq!(codec, AudioCodec::Aac);
             assert_eq!(data, audio_samples);
+            assert_eq!(duration, Duration::from_millis(64));
         }
         other => panic!("expected AudioFrame, got {other:?}"),
     }
@@ -940,11 +942,11 @@ fn fake_camera_continuous_streaming_session() {
         match client.poll_output(&mut buf).unwrap() {
             Output::Event(Event::VideoFrame {
                 is_keyframe,
-                microseconds,
+                timestamp,
                 ..
             }) => {
                 assert_eq!(is_keyframe, is_key);
-                assert_eq!(microseconds, us);
+                assert_eq!(timestamp, Duration::from_micros(u64::from(us)));
             }
             other => panic!("expected P-frame, got {other:?}"),
         }
@@ -961,10 +963,12 @@ fn fake_camera_continuous_streaming_session() {
             stream_id,
             codec,
             data,
+            duration,
         }) => {
             assert_eq!(stream_id, 0);
             assert_eq!(codec, AudioCodec::Aac);
             assert_eq!(data, audio);
+            assert_eq!(duration, Duration::from_millis(64));
         }
         other => panic!("expected AudioFrame, got {other:?}"),
     }

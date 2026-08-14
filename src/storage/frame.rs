@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use std::fmt;
+use std::{fmt, time::Duration};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VideoCodec {
@@ -56,6 +56,7 @@ pub struct VideoFrame {
 pub struct AudioFrame {
     pub codec: AudioCodec,
     pub sample_rate: u32,
+    pub duration: Duration,
     pub data: Vec<u8>,
 }
 

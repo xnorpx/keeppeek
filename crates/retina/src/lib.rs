@@ -14,7 +14,7 @@ use std::{
     fmt::{Debug, Display},
     net::{IpAddr, SocketAddr},
     num::NonZeroU32,
-    time::{Instant, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 mod error;
@@ -137,6 +137,18 @@ impl Timestamp {
         (self.elapsed() as f64) / (self.clock_rate.get() as f64)
     }
 
+    /// Returns elapsed time since the stream start, or `None` when this
+    /// timestamp precedes the stream start.
+    pub fn elapsed_duration(&self) -> Option<Duration> {
+        let elapsed = u64::try_from(self.elapsed()).ok()?;
+        let clock_rate = u64::from(self.clock_rate.get());
+        let seconds = elapsed / clock_rate;
+        let remainder = elapsed % clock_rate;
+        let nanos =
+            u32::try_from(u128::from(remainder) * 1_000_000_000 / u128::from(clock_rate)).ok()?;
+        Some(Duration::new(seconds, nanos))
+    }
+
     /// Returns `self + delta` unless it would overflow.
     pub fn try_add(&self, delta: u32) -> Option<Self> {
         // Check for `timestamp` overflow only. We don't need to check for
@@ -166,6 +178,25 @@ impl Display for Timestamp {
 impl Debug for Timestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
+    }
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::Timestamp;
+    use std::{num::NonZeroU32, time::Duration};
+
+    #[test]
+    fn elapsed_duration_uses_the_rtp_clock_rate() {
+        let clock_rate = NonZeroU32::new(90_000).unwrap();
+        let timestamp = Timestamp::new(93_000, clock_rate, 0).unwrap();
+        let before_start = Timestamp::new(89_999, clock_rate, 90_000).unwrap();
+
+        assert_eq!(
+            timestamp.elapsed_duration(),
+            Some(Duration::new(1, 33_333_333))
+        );
+        assert_eq!(before_start.elapsed_duration(), None);
     }
 }
 

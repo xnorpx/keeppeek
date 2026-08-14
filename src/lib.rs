@@ -6,6 +6,7 @@ pub mod config;
 pub mod health;
 pub mod keeppeek;
 pub mod logging;
+mod media_time;
 pub mod reolink;
 pub mod rtsp;
 pub mod runtime;

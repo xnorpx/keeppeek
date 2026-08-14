@@ -1,6 +1,9 @@
 use crate::{
     battery_wake::BatteryWakeHandle,
-    cameras::{AudioEncoding, BAICHUAN_PORT, CameraTransport, VideoEncoding, local_broadcasts},
+    cameras::{
+        AudioEncoding, BAICHUAN_PORT, CameraTransport, SessionTimestampNormalizer, VideoEncoding,
+        local_broadcasts,
+    },
     keeppeek::{KeepPeekEvent, StreamKind, VideoMeta},
     shutdown::Shutdown,
     stats::{
@@ -320,50 +323,20 @@ fn run_udp_pump(
     }
 }
 
-/// Builds a monotonic 90 kHz clock from the Baichuan `microseconds` field.
-///
-/// The camera provides a sub-second timestamp (0–999 999 µs) per video frame.
-/// This tracker detects second-boundary wraps and accumulates a running
-/// offset so the resulting value is strictly non-decreasing.
-struct MonotonicClock {
-    prev_us: u32,
-    base_us: u64,
-}
-impl MonotonicClock {
-    const fn new() -> Self {
-        Self {
-            prev_us: 0,
-            base_us: 0,
-        }
-    }
-
-    const fn advance_90k(&mut self, microseconds: u32) -> u64 {
-        if self.base_us == 0 && self.prev_us == 0 && microseconds == 0 {
-            return 0;
-        }
-        if (microseconds as i64) < (self.prev_us as i64) - 500_000 {
-            self.base_us += 1_000_000;
-        }
-        self.prev_us = microseconds;
-        let total_us = self.base_us + microseconds as u64;
-        total_us * 90 / 1000
-    }
-}
-
 struct StreamEntry {
     stream_id: Option<u32>,
     kind: StreamKind,
     stats: IngressStats,
     prev: IngressSnapshot,
     meta: VideoMeta,
-    clock: MonotonicClock,
+    timestamps: SessionTimestampNormalizer,
     media_deadline: Option<Instant>,
 }
 
 fn reset_stream_bindings(streams: &mut [StreamEntry]) {
     for entry in streams {
         entry.stream_id = None;
-        entry.clock = MonotonicClock::new();
+        entry.timestamps.begin_session();
         entry.media_deadline = None;
         entry.prev = entry.stats.snapshot();
     }
@@ -380,7 +353,7 @@ fn bind_stream_entry(
         let entry = &mut streams[index];
         if entry.stream_id != Some(stream_id) {
             entry.stream_id = Some(stream_id);
-            entry.clock = MonotonicClock::new();
+            entry.timestamps.begin_session();
             entry.stats.on_connect();
             entry.media_deadline = Some(now + MEDIA_IDLE_TIMEOUT);
         }
@@ -396,7 +369,7 @@ fn bind_stream_entry(
         stats,
         prev,
         meta: expected_meta,
-        clock: MonotonicClock::new(),
+        timestamps: SessionTimestampNormalizer::new(),
         media_deadline: Some(now + MEDIA_IDLE_TIMEOUT),
     });
     streams
@@ -832,7 +805,7 @@ impl ReolinkLoop {
                             codec,
                             is_keyframe,
                             data,
-                            microseconds,
+                            timestamp,
                             ..
                         } => {
                             let (encoding, frame_codec) = match codec {
@@ -854,7 +827,7 @@ impl ReolinkLoop {
 
                             let received_at = Instant::now();
                             note_video_progress(entry, received_at);
-                            let camera_dts_90k = entry.clock.advance_90k(microseconds);
+                            let timestamp = entry.timestamps.normalize(timestamp);
                             entry.meta.encoding = encoding.clone();
                             entry.stats.set_stream_info(
                                 encoding,
@@ -874,7 +847,7 @@ impl ReolinkLoop {
                                     frame_codec,
                                     is_keyframe,
                                     received_at,
-                                    Some(camera_dts_90k),
+                                    Some(timestamp),
                                     avcc.clone(),
                                 );
                             }
@@ -891,7 +864,7 @@ impl ReolinkLoop {
                                     &camera_id,
                                     RecordingFrame {
                                         received_at,
-                                        camera_dts_90k: Some(camera_dts_90k),
+                                        timestamp: Some(timestamp),
                                         frame,
                                     },
                                 );
@@ -901,6 +874,7 @@ impl ReolinkLoop {
                             stream_id,
                             codec,
                             data,
+                            duration,
                         } => {
                             let preferred_kind = if self.enable_main {
                                 StreamKind::Main
@@ -949,6 +923,7 @@ impl ReolinkLoop {
                                     let frame = MediaFrame::Audio(AudioFrame {
                                         codec: fc,
                                         sample_rate,
+                                        duration,
                                         data: data.to_vec(),
                                     });
                                     let camera_id = format!("{}/{}", self.storage_label(), kind);
@@ -956,7 +931,7 @@ impl ReolinkLoop {
                                         &camera_id,
                                         RecordingFrame {
                                             received_at: Instant::now(),
-                                            camera_dts_90k: None,
+                                            timestamp: None,
                                             frame,
                                         },
                                     );
@@ -1397,6 +1372,11 @@ mod tests {
         let now = Instant::now();
         let entry = bind_stream_entry(&mut streams, 1, StreamKind::Main, meta.clone(), now);
         entry.stats.on_video_frame(true, 512);
+        assert_eq!(entry.timestamps.normalize(Duration::ZERO), Duration::ZERO);
+        assert_eq!(
+            entry.timestamps.normalize(Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
 
         reset_stream_bindings(&mut streams);
         assert_eq!(streams[0].stream_id, None);
@@ -1408,6 +1388,10 @@ mod tests {
         let snapshot = streams[0].stats.snapshot();
         assert_eq!(snapshot.reconnects, 2);
         assert_eq!(snapshot.video_frames, 1);
+        assert_eq!(
+            streams[0].timestamps.normalize(Duration::ZERO),
+            Duration::from_secs(2)
+        );
     }
 
     #[test]

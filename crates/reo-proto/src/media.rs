@@ -6,6 +6,7 @@
 //! All frames are 8-byte aligned within the payload.
 
 use crate::error::BcError;
+use std::time::Duration;
 
 /// Stream info V1 header magic (`"1001"` as LE u32).
 pub const MEDIA_MAGIC_INFO_V1: u32 = 0x31303031;
@@ -30,6 +31,14 @@ pub const MEDIA_MAGIC_ADPCM: u32 = 0x62773130;
 
 /// Offsets to try first when scanning for the next valid frame after corruption.
 const RECOVERY_OFFSETS: [usize; 3] = [528, 1056, 1584];
+const AAC_SAMPLE_RATES: [u32; 13] = [
+    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
+    7_350,
+];
+const DEFAULT_AAC_SAMPLE_RATE: u32 = 16_000;
+const AAC_SAMPLES_PER_RAW_BLOCK: u64 = 1_024;
+const NARROWBAND_AUDIO_SAMPLE_RATE: u32 = 8_000;
+const IMA_ADPCM_HEADER_LEN: usize = 4;
 
 /// Video codec identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -122,7 +131,7 @@ pub struct VideoFrameRef<'a> {
     pub codec: VideoCodec,
     /// Raw video bitstream data (Annex B or other format).
     pub data: &'a [u8],
-    /// Sub-second timestamp in microseconds.
+    /// Raw wrapping wire timestamp in microseconds.
     pub microseconds: u32,
 }
 
@@ -133,6 +142,8 @@ pub struct AudioFrameRef<'a> {
     pub codec: AudioCodec,
     /// Raw audio frame data.
     pub data: &'a [u8],
+    /// Amount of media time represented by this frame.
+    pub duration: Duration,
 }
 
 /// Parsed media frame. Payload data borrows the source buffer.
@@ -229,7 +240,7 @@ pub(crate) const fn parse_stream_metadata(data: &[u8]) -> Result<(StreamMetadata
 }
 
 /// Parse a video frame header.
-/// Returns (codec, data_len, microseconds, total_header_len, stream_handle_hint).
+/// Returns (codec, data_len, raw_timestamp_us, total_header_len, stream_handle_hint).
 pub(crate) fn parse_video_header(
     data: &[u8],
 ) -> Result<(VideoCodec, u32, u32, usize, u32), BcError> {
@@ -285,6 +296,48 @@ pub(crate) const fn parse_adpcm_header(data: &[u8]) -> Result<(usize, usize), Bc
         return Err(BcError::Protocol("invalid ADPCM frame marker"));
     }
     Ok((payload_len - 4, 12))
+}
+
+fn samples_to_duration(samples: u64, sample_rate: u32) -> Duration {
+    let sample_rate = u64::from(sample_rate);
+    let seconds = samples / sample_rate;
+    let nanos =
+        u32::try_from(u128::from(samples % sample_rate) * 1_000_000_000 / u128::from(sample_rate))
+            .expect("sub-second audio duration must fit in u32 nanoseconds");
+    Duration::new(seconds, nanos)
+}
+
+fn aac_duration(data: &[u8]) -> Duration {
+    let metadata = (data.len() >= 7 && data[0] == 0xFF && data[1] & 0xF0 == 0xF0).then(|| {
+        let frequency_index = usize::from((data[2] >> 2) & 0x0F);
+        AAC_SAMPLE_RATES.get(frequency_index).copied().map(|rate| {
+            let raw_blocks = u64::from((data[6] & 0x03) + 1);
+            (rate, raw_blocks)
+        })
+    });
+    let (sample_rate, raw_blocks) = metadata.flatten().unwrap_or((DEFAULT_AAC_SAMPLE_RATE, 1));
+    samples_to_duration(AAC_SAMPLES_PER_RAW_BLOCK * raw_blocks, sample_rate)
+}
+
+fn adpcm_duration(data: &[u8]) -> Duration {
+    let samples = data
+        .len()
+        .checked_sub(IMA_ADPCM_HEADER_LEN)
+        .map_or(0, |encoded_bytes| 1 + encoded_bytes as u64 * 2);
+    samples_to_duration(samples, NARROWBAND_AUDIO_SAMPLE_RATE)
+}
+
+pub(crate) fn audio_frame_duration(codec: AudioCodec, data: &[u8]) -> Duration {
+    match codec {
+        AudioCodec::Aac => aac_duration(data),
+        AudioCodec::Adpcm => adpcm_duration(data),
+        AudioCodec::G711Alaw | AudioCodec::G711Ulaw => {
+            samples_to_duration(data.len() as u64, NARROWBAND_AUDIO_SAMPLE_RATE)
+        }
+        AudioCodec::Pcm => {
+            samples_to_duration((data.len() / 2) as u64, NARROWBAND_AUDIO_SAMPLE_RATE)
+        }
+    }
 }
 
 /// Zero-allocation iterator over media frames in a binary payload.
@@ -364,6 +417,7 @@ impl<'a> MediaFrameIter<'a> {
                 Ok(Some(MediaFrame::Audio(AudioFrameRef {
                     codec: AudioCodec::Aac,
                     data: audio_data,
+                    duration: audio_frame_duration(AudioCodec::Aac, audio_data),
                 })))
             }
             MediaMagic::AdpcmAudio => {
@@ -377,6 +431,7 @@ impl<'a> MediaFrameIter<'a> {
                 Ok(Some(MediaFrame::Audio(AudioFrameRef {
                     codec: AudioCodec::Adpcm,
                     data: audio_data,
+                    duration: audio_frame_duration(AudioCodec::Adpcm, audio_data),
                 })))
             }
         }
@@ -696,13 +751,14 @@ mod tests {
 
     #[test]
     fn parse_aac_audio() {
-        let audio_data = vec![0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00];
+        let audio_data = vec![0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00, 0x01];
         let data = make_aac_frame_bytes(&audio_data);
         let mut iter = MediaFrameIter::new(&data);
         match iter.next().unwrap().unwrap() {
             MediaFrame::Audio(a) => {
                 assert_eq!(a.codec, AudioCodec::Aac);
                 assert_eq!(a.data, &audio_data);
+                assert_eq!(a.duration, Duration::new(0, 46_439_909));
             }
             other => panic!("expected Audio, got {other:?}"),
         }
@@ -732,9 +788,26 @@ mod tests {
             MediaFrame::Audio(a) => {
                 assert_eq!(a.codec, AudioCodec::Adpcm);
                 assert_eq!(a.data, &audio_data);
+                assert_eq!(a.duration, Duration::from_micros(1_125));
             }
             other => panic!("expected Audio, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn narrowband_pcm_durations_follow_encoded_sample_width() {
+        assert_eq!(
+            audio_frame_duration(AudioCodec::G711Alaw, &[0; 80]),
+            Duration::from_millis(10)
+        );
+        assert_eq!(
+            audio_frame_duration(AudioCodec::G711Ulaw, &[0; 80]),
+            Duration::from_millis(10)
+        );
+        assert_eq!(
+            audio_frame_duration(AudioCodec::Pcm, &[0; 160]),
+            Duration::from_millis(10)
+        );
     }
 
     #[test]

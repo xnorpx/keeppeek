@@ -23,6 +23,56 @@ const RTSP_PORT: u16 = 554;
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_CONCURRENT_PORT_PROBES: usize = 200;
 
+pub(crate) struct SessionTimestampNormalizer {
+    session_origin: Option<Duration>,
+    session_offset: Duration,
+    previous_timestamp: Option<Duration>,
+    previous_step: Duration,
+}
+
+impl SessionTimestampNormalizer {
+    pub(crate) const fn new() -> Self {
+        Self {
+            session_origin: None,
+            session_offset: Duration::ZERO,
+            previous_timestamp: None,
+            previous_step: Duration::ZERO,
+        }
+    }
+
+    pub(crate) const fn begin_session(&mut self) {
+        self.session_origin = None;
+    }
+
+    pub(crate) fn normalize(&mut self, timestamp: Duration) -> Duration {
+        let Some(session_origin) = self.session_origin else {
+            self.session_origin = Some(timestamp);
+            self.session_offset = self.previous_timestamp.map_or(Duration::ZERO, |previous| {
+                previous.saturating_add(self.previous_step.max(Duration::from_nanos(1)))
+            });
+            let normalized = self.session_offset;
+            if let Some(previous) = self.previous_timestamp {
+                self.previous_step = normalized
+                    .saturating_sub(previous)
+                    .max(Duration::from_nanos(1));
+            }
+            self.previous_timestamp = Some(normalized);
+            return normalized;
+        };
+
+        let normalized = self
+            .session_offset
+            .saturating_add(timestamp.saturating_sub(session_origin));
+        if let Some(previous) = self.previous_timestamp
+            && normalized > previous
+        {
+            self.previous_step = normalized - previous;
+        }
+        self.previous_timestamp = Some(normalized);
+        normalized
+    }
+}
+
 pub(crate) fn local_broadcasts() -> anyhow::Result<Vec<Ipv4Addr>> {
     Ok(network::local_networks()?
         .into_iter()
@@ -1155,6 +1205,31 @@ fn merge_reolink_profiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_timestamps_start_at_zero_and_join_reconnects() {
+        let mut timestamps = SessionTimestampNormalizer::new();
+
+        assert_eq!(
+            timestamps.normalize(Duration::from_secs(10)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            timestamps.normalize(Duration::from_secs(11)),
+            Duration::from_secs(1)
+        );
+
+        timestamps.begin_session();
+
+        assert_eq!(
+            timestamps.normalize(Duration::from_secs(42)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            timestamps.normalize(Duration::from_secs(43)),
+            Duration::from_secs(3)
+        );
+    }
 
     fn profile(name: &str, encoding: VideoEncoding, stream_uri: &str) -> MediaProfile {
         MediaProfile {

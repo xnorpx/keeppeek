@@ -596,7 +596,7 @@ mod tests {
     fn inter_frame() -> RecordingFrame {
         RecordingFrame {
             received_at: Instant::now(),
-            camera_dts_90k: None,
+            timestamp: None,
             frame: MediaFrame::Video(VideoFrame {
                 codec: VideoCodec::H264,
                 is_keyframe: false,

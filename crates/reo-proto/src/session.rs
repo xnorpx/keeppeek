@@ -187,13 +187,16 @@ pub enum Event<'buf> {
         is_keyframe: bool,
         codec: crate::media::VideoCodec,
         data: &'buf [u8],
-        microseconds: u32,
+        /// Zero-based timestamp with wire rollover already removed.
+        timestamp: Duration,
     },
     /// An audio frame was received.
     AudioFrame {
         stream_id: u32,
         codec: crate::media::AudioCodec,
         data: &'buf [u8],
+        /// Amount of media time represented by this frame.
+        duration: Duration,
     },
     /// JPEG snapshot data received.
     SnapshotData { data: &'buf [u8] },
@@ -251,6 +254,23 @@ struct VideoAccum {
     microseconds: u32,
     expected_data_len: usize,
     data: Vec<u8>,
+}
+
+#[derive(Default)]
+struct MicrosecondTimeline {
+    previous: Option<u32>,
+    elapsed: Duration,
+}
+
+impl MicrosecondTimeline {
+    fn advance(&mut self, timestamp: u32) -> Duration {
+        if let Some(previous) = self.previous.replace(timestamp) {
+            self.elapsed = self.elapsed.saturating_add(Duration::from_micros(u64::from(
+                timestamp.wrapping_sub(previous),
+            )));
+        }
+        self.elapsed
+    }
 }
 
 /// In-progress audio frame being assembled from multiple BC messages.
@@ -371,7 +391,7 @@ enum EventKind {
         channel: u8,
         is_keyframe: bool,
         codec: crate::media::VideoCodec,
-        microseconds: u32,
+        timestamp: Duration,
     },
     /// Audio frame -- body_start/len point to raw audio data in recv_buf.
     AudioFrame {
@@ -527,6 +547,7 @@ pub struct BcSession {
 
     // Media frame accumulation for chunked video data from camera
     video_accums: HashMap<u32, VideoAccum>,
+    video_timestamps: HashMap<u32, MicrosecondTimeline>,
     audio_accums: HashMap<u32, AudioAccum>,
     header_carry: Vec<u8>,
     /// Staging buffer for completed media and snapshot data (referenced by
@@ -584,6 +605,7 @@ impl BcSession {
             stream_id_by_channel_codec: HashMap::new(),
             last_stream_metadata: None,
             video_accums: HashMap::new(),
+            video_timestamps: HashMap::new(),
             audio_accums: HashMap::new(),
             header_carry: Vec::new(),
             media_out: Vec::new(),
@@ -720,7 +742,7 @@ impl BcSession {
                     channel,
                     is_keyframe,
                     codec,
-                    microseconds,
+                    timestamp,
                 } => {
                     let src = if ev.from_media {
                         &self.media_out
@@ -735,7 +757,7 @@ impl BcSession {
                         is_keyframe,
                         codec,
                         data: &buf[..ev.body_len],
-                        microseconds,
+                        timestamp,
                     }
                 }
                 EventKind::AudioFrame { stream_id, codec } => {
@@ -746,10 +768,12 @@ impl BcSession {
                     };
                     buf[..ev.body_len]
                         .copy_from_slice(&src[ev.body_start..ev.body_start + ev.body_len]);
+                    let data = &buf[..ev.body_len];
                     Event::AudioFrame {
                         stream_id,
                         codec,
-                        data: &buf[..ev.body_len],
+                        data,
+                        duration: crate::media::audio_frame_duration(codec, data),
                     }
                 }
                 EventKind::SnapshotData => {
@@ -1629,6 +1653,11 @@ impl BcSession {
             self.stats.pending_drops += 1;
             return;
         }
+        let timestamp = self
+            .video_timestamps
+            .entry(stream_id)
+            .or_default()
+            .advance(microseconds);
         let media_start = self.media_out.len();
         self.media_out
             .extend_from_slice(&self.recv_buf[data_start..data_start + data_len]);
@@ -1638,7 +1667,7 @@ impl BcSession {
                 channel,
                 is_keyframe,
                 codec,
-                microseconds,
+                timestamp,
             },
             media_start,
             data_len,
@@ -1917,6 +1946,11 @@ impl BcSession {
         if complete {
             let accum = self.video_accums.remove(&accum_key).unwrap();
             if !self.pending.is_full() {
+                let timestamp = self
+                    .video_timestamps
+                    .entry(accum.stream_id)
+                    .or_default()
+                    .advance(accum.microseconds);
                 let media_start = self.media_out.len();
                 self.media_out
                     .extend_from_slice(&accum.data[..accum.expected_data_len]);
@@ -1926,7 +1960,7 @@ impl BcSession {
                         channel: accum.channel,
                         is_keyframe: accum.is_keyframe,
                         codec: accum.codec,
-                        microseconds: accum.microseconds,
+                        timestamp,
                     },
                     media_start,
                     accum.expected_data_len,
@@ -2126,6 +2160,7 @@ impl BcSession {
         self.stream_id_by_channel_codec
             .retain(|_, id| *id != stream_id);
         self.stream_id_by_msg_num.retain(|_, id| *id != stream_id);
+        self.video_timestamps.remove(&stream_id);
         Ok(())
     }
 
@@ -3181,6 +3216,15 @@ fn parse_stream_ack(data: &[u8]) -> Option<(u8, u32, Option<crate::stream::Strea
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microsecond_timeline_starts_at_zero_and_unwraps_rollover() {
+        let mut timeline = MicrosecondTimeline::default();
+        let before_wrap = u32::MAX - 499_999;
+
+        assert_eq!(timeline.advance(before_wrap), Duration::ZERO);
+        assert_eq!(timeline.advance(500_000), Duration::from_secs(1));
+    }
 
     fn make_wire_message(msg_id: u32, body: &[u8]) -> Vec<u8> {
         let header = PacketHeader {
