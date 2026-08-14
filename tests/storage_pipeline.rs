@@ -31,7 +31,7 @@ fn to_recording_frame(ef: EncodedFrame) -> RecordingFrame {
     let avcc = annexb_to_avcc(&ef.data);
     RecordingFrame {
         received_at: Instant::now(),
-        camera_dts_90k: None,
+        timestamp: None,
         frame: MediaFrame::Video(VideoFrame {
             codec: VideoCodec::H264,
             is_keyframe: ef.is_keyframe,

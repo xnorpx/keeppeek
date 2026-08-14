@@ -1,12 +1,10 @@
 use crate::storage::frame::MediaFrame;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct RecordingFrame {
     pub received_at: Instant,
-    /// Monotonic decode timestamp from the camera in 90 kHz units.
-    /// When present, the MP4 writer uses this instead of `received_at`
-    /// for sample timing, avoiding jitter from bursty TCP delivery.
-    pub camera_dts_90k: Option<u64>,
+    /// Zero-based monotonic media timestamp from the camera protocol.
+    pub timestamp: Option<Duration>,
     pub frame: MediaFrame,
 }
 

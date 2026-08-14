@@ -226,13 +226,13 @@ fn test_binary_stream_produces_video_frame_event() {
             is_keyframe,
             codec,
             data,
-            microseconds,
+            timestamp,
             ..
         }) => {
             assert_eq!(channel, 0);
             assert!(is_keyframe);
             assert_eq!(codec, VideoCodec::H264);
-            assert_eq!(microseconds, 12345);
+            assert_eq!(timestamp, Duration::ZERO);
             assert!(!data.is_empty());
             assert_eq!(data, nal_data);
         }
@@ -283,10 +283,12 @@ fn test_binary_stream_with_interleaved_audio() {
             stream_id,
             codec,
             data,
+            duration,
         }) => {
             assert_eq!(stream_id, 0);
             assert_eq!(codec, AudioCodec::Aac);
             assert_eq!(data, audio_data);
+            assert_eq!(duration, Duration::from_millis(64));
         }
         other => panic!("expected AudioFrame, got {other:?}"),
     }
@@ -315,9 +317,15 @@ fn test_binary_stream_produces_adpcm_audio_without_frame_subheader() {
 
     let mut buf = [0u8; 4096];
     match session.poll_output(&mut buf).unwrap() {
-        Output::Event(Event::AudioFrame { codec, data, .. }) => {
+        Output::Event(Event::AudioFrame {
+            codec,
+            data,
+            duration,
+            ..
+        }) => {
             assert_eq!(codec, AudioCodec::Adpcm);
             assert_eq!(data, adpcm_block);
+            assert_eq!(duration, Duration::from_micros(625));
         }
         other => panic!("expected ADPCM AudioFrame, got {other:?}"),
     }
@@ -1237,11 +1245,11 @@ fn test_pframe_video_dispatch() {
     match session.poll_output(&mut buf).unwrap() {
         Output::Event(Event::VideoFrame {
             is_keyframe,
-            microseconds,
+            timestamp,
             ..
         }) => {
             assert!(!is_keyframe, "P-frames should not be keyframes");
-            assert_eq!(microseconds, 999);
+            assert_eq!(timestamp, Duration::ZERO);
         }
         other => panic!("expected VideoFrame (P-frame), got {other:?}"),
     }
@@ -1374,11 +1382,11 @@ fn test_multiple_video_frames_in_one_message() {
     match session.poll_output(&mut buf).unwrap() {
         Output::Event(Event::VideoFrame {
             is_keyframe,
-            microseconds,
+            timestamp,
             ..
         }) => {
             assert!(is_keyframe);
-            assert_eq!(microseconds, 0);
+            assert_eq!(timestamp, Duration::ZERO);
         }
         other => panic!("expected first VideoFrame, got {other:?}"),
     }
@@ -1387,11 +1395,11 @@ fn test_multiple_video_frames_in_one_message() {
     match session.poll_output(&mut buf).unwrap() {
         Output::Event(Event::VideoFrame {
             is_keyframe,
-            microseconds,
+            timestamp,
             ..
         }) => {
             assert!(!is_keyframe);
-            assert_eq!(microseconds, 33333);
+            assert_eq!(timestamp, Duration::from_micros(33_333));
         }
         other => panic!("expected second VideoFrame, got {other:?}"),
     }

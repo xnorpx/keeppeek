@@ -299,6 +299,7 @@ impl InorderParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     /// Checks dropping and logging Geovision's extra payload type 50 packets.
     /// On a GV-EBD4701 running V1.02_2021_04_08, these seem to appear after
@@ -410,6 +411,69 @@ mod tests {
                     pkt.0,
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn sequence_and_timestamp_rollovers_are_unwrapped_together() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser = InorderParser::new(Some(0xd25614e), None, UnknownRtcpSsrcPolicy::Default);
+        let stream_ctx = StreamContext::dummy();
+        let session_options = SessionOptions::default();
+
+        let (first, _) = crate::rtp::RawPacketBuilder {
+            sequence_number: u16::MAX,
+            timestamp: u32::MAX - 2_999,
+            payload_type: 96,
+            ssrc: 0xd25614e,
+            mark: true,
+        }
+        .build(*b"first")
+        .unwrap();
+        let Some(PacketItem::Rtp(first)) = parser
+            .rtp(
+                &session_options,
+                &stream_ctx,
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::dummy(),
+                &mut timeline,
+                0,
+                first.0,
+            )
+            .unwrap()
+        else {
+            panic!("first RTP packet was not emitted");
+        };
+        assert_eq!(first.timestamp().elapsed_duration(), Some(Duration::ZERO));
+
+        let (second, _) = crate::rtp::RawPacketBuilder {
+            sequence_number: 0,
+            timestamp: 0,
+            payload_type: 96,
+            ssrc: 0xd25614e,
+            mark: true,
+        }
+        .build(*b"second")
+        .unwrap();
+        let Some(PacketItem::Rtp(second)) = parser
+            .rtp(
+                &session_options,
+                &stream_ctx,
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::dummy(),
+                &mut timeline,
+                0,
+                second.0,
+            )
+            .unwrap()
+        else {
+            panic!("second RTP packet was not emitted");
+        };
+        assert_eq!(
+            second.timestamp().elapsed_duration(),
+            Some(Duration::new(0, 33_333_333))
         );
     }
 }

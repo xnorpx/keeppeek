@@ -1,5 +1,5 @@
 use crate::{
-    cameras::{AudioEncoding, VideoEncoding},
+    cameras::{AudioEncoding, SessionTimestampNormalizer, VideoEncoding},
     keeppeek::{AudioMeta, KeepPeekEvent, StreamKind, VideoMeta},
     shutdown::Shutdown,
     stats::{
@@ -496,9 +496,17 @@ impl RtspLoop {
         let mut stats = IngressStats::new();
         let mut previous = stats.snapshot();
         let mut last_report = Instant::now();
+        let mut video_timestamps = SessionTimestampNormalizer::new();
+        let mut audio_timestamps = SessionTimestampNormalizer::new();
 
         while !self.shutdown.is_cancelled() {
-            match self.run_stream(&mut stats, &mut previous, &mut last_report) {
+            match self.run_stream(
+                &mut stats,
+                &mut previous,
+                &mut last_report,
+                &mut video_timestamps,
+                &mut audio_timestamps,
+            ) {
                 Ok(()) => break,
                 Err(error) => {
                     stats.on_error();
@@ -526,6 +534,8 @@ impl RtspLoop {
         stats: &mut IngressStats,
         previous: &mut IngressSnapshot,
         last_report: &mut Instant,
+        video_timestamps: &mut SessionTimestampNormalizer,
+        audio_timestamps: &mut SessionTimestampNormalizer,
     ) -> anyhow::Result<()> {
         let mut url = Url::parse(&self.rtsp_url)?;
         url.set_username("").ok();
@@ -588,6 +598,8 @@ impl RtspLoop {
             }
         }
         driver.play()?;
+        video_timestamps.begin_session();
+        audio_timestamps.begin_session();
 
         let _ = self.tx.send(KeepPeekEvent::StreamConnected {
             camera_ip: self.camera_ip,
@@ -622,7 +634,7 @@ impl RtspLoop {
                     if !video_continuity.accepts(loss, is_keyframe) {
                         continue;
                     }
-                    let rtp_elapsed = frame.timestamp().elapsed();
+                    let timestamp = frame.timestamp().elapsed_duration();
                     let data = Bytes::from(frame.into_data());
                     stats.on_video_frame(is_keyframe, data.len());
                     self.report_if_due(stats, previous, last_report);
@@ -633,7 +645,8 @@ impl RtspLoop {
                     };
                     if let Some(codec) = frame_codec {
                         let received_at = Instant::now();
-                        let camera_dts_90k = u64::try_from(rtp_elapsed).ok();
+                        let timestamp =
+                            timestamp.map(|timestamp| video_timestamps.normalize(timestamp));
                         if let Some(live) = &self.live {
                             live.publish(
                                 Source {
@@ -643,7 +656,7 @@ impl RtspLoop {
                                 codec,
                                 is_keyframe,
                                 received_at,
-                                camera_dts_90k,
+                                timestamp,
                                 data.clone(),
                             );
                         }
@@ -660,7 +673,7 @@ impl RtspLoop {
                                 &camera_id,
                                 RecordingFrame {
                                     received_at,
-                                    camera_dts_90k,
+                                    timestamp,
                                     frame,
                                 },
                             );
@@ -669,9 +682,8 @@ impl RtspLoop {
                 }
                 CodecItem::AudioFrame(frame) => {
                     if let Some(audio_meta) = &self.audio_meta {
-                        let rtp_timestamp = frame.timestamp();
-                        let rtp_elapsed = rtp_timestamp.elapsed();
-                        let clock_rate = rtp_timestamp.clock_rate().get();
+                        let timestamp = frame.timestamp().elapsed_duration();
+                        let duration = frame.duration();
                         let data = frame.data().to_vec();
                         stats.on_audio_frame(data.len());
                         let frame_codec = match audio_meta.encoding {
@@ -686,18 +698,18 @@ impl RtspLoop {
                             let frame = MediaFrame::Audio(AudioFrame {
                                 codec,
                                 sample_rate,
+                                duration,
                                 data,
                             });
                             if let Some(storage) = &self.storage {
                                 let camera_id = format!("{}/{}", self.storage_label(), self.stream);
-                                let camera_dts_90k = u64::try_from(rtp_elapsed)
-                                    .ok()
-                                    .map(|elapsed| elapsed * 90_000 / u64::from(clock_rate));
+                                let timestamp = timestamp
+                                    .map(|timestamp| audio_timestamps.normalize(timestamp));
                                 storage.ingest(
                                     &camera_id,
                                     RecordingFrame {
                                         received_at: Instant::now(),
-                                        camera_dts_90k,
+                                        timestamp,
                                         frame,
                                     },
                                 );

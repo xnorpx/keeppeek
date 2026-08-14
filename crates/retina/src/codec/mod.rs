@@ -11,7 +11,10 @@
 
 use crate::{Error, error::ErrorInt, rtp::ReceivedPacket};
 use bytes::Bytes;
-use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
+use std::{
+    num::{NonZeroU8, NonZeroU16, NonZeroU32},
+    time::Duration,
+};
 
 /// Writes an `.mp4` (more properly, ISO/IEC 14496-12 BMFF) box.
 ///
@@ -582,6 +585,18 @@ impl AudioFrame {
         self.frame_length
     }
 
+    /// Returns the amount of media time represented by this frame.
+    pub fn duration(&self) -> Duration {
+        let samples = u64::from(self.frame_length.get());
+        let clock_rate = u64::from(self.timestamp.clock_rate().get());
+        let seconds = samples / clock_rate;
+        let nanos = u32::try_from(
+            u128::from(samples % clock_rate) * 1_000_000_000 / u128::from(clock_rate),
+        )
+        .expect("sub-second audio duration must fit in u32 nanoseconds");
+        Duration::new(seconds, nanos)
+    }
+
     /// Returns the number of lost RTP packets before this audio frame. See
     /// [crate::rtp::ReceivedPacket::loss].
     ///
@@ -608,6 +623,7 @@ impl std::fmt::Debug for AudioFrame {
             .field("loss", &self.loss)
             .field("timestamp", &self.timestamp)
             .field("frame_length", &self.frame_length)
+            .field("duration", &self.duration())
             .field("data", &crate::hex::LimitedHex::new(&self.data, 64))
             .finish()
     }
@@ -983,6 +999,21 @@ impl Depacketizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_frame_duration_uses_frame_length_and_clock_rate() {
+        let clock_rate = NonZeroU32::new(48_000).unwrap();
+        let frame = AudioFrame {
+            ctx: crate::PacketContext::dummy(),
+            stream_id: 0,
+            timestamp: crate::Timestamp::new(0, clock_rate, 0).unwrap(),
+            frame_length: NonZeroU32::new(960).unwrap(),
+            loss: 0,
+            data: Bytes::new(),
+        };
+
+        assert_eq!(frame.duration(), Duration::from_millis(20));
+    }
 
     // See with: cargo test -- --nocapture codec::tests::print_sizes
     #[test]
