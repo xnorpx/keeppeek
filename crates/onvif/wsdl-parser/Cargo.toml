@@ -15,9 +15,9 @@ workspace = true
 
 [dependencies]
 Inflector = "0.11"
-roxmltree = "0.14"
+roxmltree = "0.21"
 
 [dev-dependencies]
-syn = { version = "1", features = ["extra-traits", "full"] }
+syn = { version = "3", features = ["extra-traits", "full"] }
 text-diff = "0.4"
 xsd-parser = { path = "../xsd-parser" }

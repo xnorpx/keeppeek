@@ -66,7 +66,7 @@ anyhow = { version = "*" }
 base64 = { version = "*" }
 bytes = { version = "*" }
 clap = { version = "*", default-features = false, features = ["std", "derive", "help"] }
-crossbeam-channel = "0.5.15"
+crossbeam-channel = "0.5.16"
 ctrlc = { version = "*" }
 hdrhistogram = { version = "7.6.0", default-features = false }
 image = { version = "*", default-features = false, features = ["jpeg"] }
@@ -89,7 +89,7 @@ serde_json = { version = "*" }
 socket2 = { version = "0.6" }
 time = { version = "0.3", features = ["macros"] }
 sha1 = { version = "*" }
-str0m = { version = "0.22.0", default-features = false }
+str0m = { version = "0.23.0", default-features = false }
 tracing = { version = "*" }
 tracing-subscriber = { version = "*", features = ["env-filter"] }
 turso = { version = "=0.7.2", default-features = false }

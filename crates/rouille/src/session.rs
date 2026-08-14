@@ -33,8 +33,8 @@
 //! }
 //! ```
 
-use rand::Rng;
-use rand::distributions::Alphanumeric;
+use rand::RngExt;
+use rand::distr::Alphanumeric;
 use std::borrow::Cow;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -119,7 +119,7 @@ impl<'r> Session<'r> {
 /// that could need to be escaped.
 pub fn generate_session_id() -> String {
     // 5e+114 possibilities is reasonable.
-    rand::thread_rng()
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .map(char::from)
         .filter(|&c| c.is_ascii_lowercase() || c.is_ascii_uppercase() || c.is_ascii_digit())

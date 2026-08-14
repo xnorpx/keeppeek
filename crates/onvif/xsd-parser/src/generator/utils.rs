@@ -213,7 +213,6 @@ mod test {
             .unwrap()
             .root_element()
             .namespaces()
-            .iter()
             .next()
             .cloned()
             .unwrap(),

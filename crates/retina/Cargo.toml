@@ -26,20 +26,20 @@ workspace = true
 
 [dependencies]
 base64 = "0.23.1"
-bitstream-io = "2.6"
-bytes = "1.10"
+bitstream-io = "4.10"
+bytes = "1.12"
 derive_more = { version = "2", features = ["debug", "display", "error", "from"] }
 h264-reader = "0.8.0"
 hex = "0.4.3"
-http-auth = "0.1.2"
-jiff = "0.2.0"
-log = "0.4.8"
-memchr = "2.7.4"
+http-auth = "0.1.10"
+jiff = "0.2.35"
+log = "0.4.33"
+memchr = "2.8.3"
 mp4 = { path = "../mp4" }
-pretty-hex = "0.4.0"
-sdp-types = "0.1.4"
-smallvec = { version = "1.6.1", features = ["union"] }
-url = "2.2.1"
+pretty-hex = "0.4.2"
+sdp-types = "0.2.0"
+smallvec = { version = "1.15.2", features = ["union"] }
+url = "2.5.8"
 
 [dev-dependencies]
 mylog = { git = "https://github.com/scottlamb/mylog" }

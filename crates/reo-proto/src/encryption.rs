@@ -1,8 +1,5 @@
 use aes::Aes128;
-use cfb_mode::{
-    Decryptor as CfbDecryptor, Encryptor as CfbEncryptor,
-    cipher::{AsyncStreamCipher, KeyIvInit},
-};
+use cfb_mode::{Decryptor as CfbDecryptor, Encryptor as CfbEncryptor, cipher::KeyIvInit};
 use md5::{Digest, Md5};
 
 /// BCEncrypt XOR key (8 bytes, repeating).

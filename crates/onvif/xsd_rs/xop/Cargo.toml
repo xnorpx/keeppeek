@@ -9,6 +9,6 @@ workspace = true
 
 [dependencies]
 validate = { path = "../../validate" }
-xml-rs = "0.8"
+xml-rs = "0.8.29"
 yaserde = "0.12"
 yaserde_derive = "0.12"

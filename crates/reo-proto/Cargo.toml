@@ -9,14 +9,14 @@ authors = ["xnorpx <xnorpx@outlook.com>"]
 workspace = true
 
 [dependencies]
-md-5 = "0.10"
-aes = "0.8"
-cfb-mode = "0.8"
-cipher = "0.4"
+md-5 = "0.11"
+aes = "0.9"
+cfb-mode = "0.9"
+cipher = "0.5"
 crc32fast = "1"
 arrayvec = "0.7"
-xml-rs = "0.8"
+xml-rs = "1.0"
 tracing = "0.1"
 
 [dev-dependencies]
-hex-literal = "0.4"
+hex-literal = "1.1"

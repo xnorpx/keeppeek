@@ -9,7 +9,6 @@ use roxmltree::Node;
 pub fn parse_schema<'input>(schema: &Node<'_, 'input>) -> RsFile<'input> {
     let mut xsd_namespaces = schema
         .namespaces()
-        .iter()
         .filter(|namespace| namespace.uri() == "http://www.w3.org/2001/XMLSchema");
 
     RsFile {

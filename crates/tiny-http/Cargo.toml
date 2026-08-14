@@ -17,10 +17,10 @@ include = ["src", "Cargo.toml", "README.md", "LICENSE-APACHE", "LICENSE-MIT"]
 workspace = true
 
 [dependencies]
-ascii = "1.0"
+ascii = "1.1"
 chunked_transfer = "1"
-log = "0.4.4"
-httpdate = "1.0.2"
+log = "0.4.33"
+httpdate = "1.0.3"
 
 native-tls = "0.2"
 zeroize = "1"

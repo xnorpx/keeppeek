@@ -11,7 +11,7 @@ workspace = true
 b_2 = { path = "../../wsdl_rs/b_2" }
 common = { path = "../../xsd_rs/common" }
 validate = { path = "../../validate" }
-xml-rs = "0.8"
+xml-rs = "0.8.29"
 xsd-macro-utils = { path = "../../xsd-macro-utils" }
 xsd-types = { path = "../../xsd-types" }
 yaserde = "0.12"

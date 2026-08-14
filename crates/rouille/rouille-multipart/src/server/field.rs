@@ -534,32 +534,27 @@ quick_error! {
     enum ParseHeaderError {
         /// The `Content-Disposition` header was not found
         MissingContentDisposition(headers: String) {
-            display(x) -> ("{}:\n{}", x, headers)
-            description("\"Content-Disposition\" header not found in field headers")
+            display("\"Content-Disposition\" header not found in field headers:\n{}", headers)
         }
         InvalidContDisp(reason: &'static str, cause: String) {
-            display(x) -> ("{}: {}: {}", x, reason, cause)
-            description("invalid \"Content-Disposition\" header")
+            display("invalid \"Content-Disposition\" header: {}: {}", reason, cause)
         }
         /// The header was found but could not be parsed
         TokenizeError(err: HttparseError) {
-            description("an error occurred while parsing field headers")
-            display(x) -> ("{}: {}", x, err)
-            cause(err)
+            display("an error occurred while parsing field headers: {}", err)
+            source(err)
             from()
         }
         MimeError(cont_type: String) {
-            description("Failed to parse Content-Type")
-            display(this) -> ("{}: {}", this, cont_type)
+            display("Failed to parse Content-Type: {}", cont_type)
         }
         TooLarge {
-            description("field headers section ridiculously long or missing trailing CRLF-CRLF")
+            display("field headers section ridiculously long or missing trailing CRLF-CRLF")
         }
         /// IO error
         Io(err: io::Error) {
-            description("an io error occurred while parsing the headers")
-            display(x) -> ("{}: {}", x, err)
-            cause(err)
+            display("an io error occurred while parsing the headers: {}", err)
+            source(err)
             from()
         }
     }

@@ -47,7 +47,7 @@ impl<'a> Definitions<'a> {
     pub fn target_namespace(&self) -> Option<&'a Namespace<'_>> {
         self.node()
             .attribute(attribute::TARGET_NAMESPACE)
-            .and_then(|tn| self.node().namespaces().iter().find(|a| a.uri() == tn))
+            .and_then(|tn| self.node().namespaces().find(|a| a.uri() == tn))
     }
 
     pub const fn node(&self) -> &Node<'_, '_> {

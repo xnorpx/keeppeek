@@ -10,8 +10,8 @@ use crate::server::{FieldHeaders, MultipartField, ReadEntry};
 
 use mime::Mime;
 
-use rand::Rng;
-use rand::seq::SliceRandom;
+use rand::RngExt;
+use rand::seq::IndexedRandom;
 
 use std::collections::hash_map::{Entry, OccupiedEntry};
 use std::collections::{HashMap, HashSet};
@@ -28,7 +28,7 @@ const MAX_LEN: usize = 5;
 const MAX_DASHES: usize = 2;
 
 fn collect_rand<C: FromIterator<T>, T, F: FnMut() -> T>(mut r#gen: F) -> C {
-    (0..rand::thread_rng().gen_range(MIN_FIELDS..MAX_FIELDS))
+    (0..rand::rng().random_range(MIN_FIELDS..MAX_FIELDS))
         .map(|_| r#gen())
         .collect()
 }
@@ -317,18 +317,18 @@ mod extended {
 }
 
 fn gen_bool() -> bool {
-    rand::thread_rng().r#gen()
+    rand::random()
 }
 
 fn gen_string() -> String {
-    use rand::distributions::Alphanumeric;
+    use rand::distr::Alphanumeric;
 
-    let mut rng_1 = rand::thread_rng();
-    let mut rng_2 = rand::thread_rng();
+    let mut rng_1 = rand::rng();
+    let mut rng_2 = rand::rng();
 
-    let str_len_1 = rng_1.gen_range(MIN_LEN..=MAX_LEN);
-    let str_len_2 = rng_2.gen_range(MIN_LEN..=MAX_LEN);
-    let num_dashes = rng_1.gen_range(0..=MAX_DASHES);
+    let str_len_1 = rng_1.random_range(MIN_LEN..=MAX_LEN);
+    let str_len_2 = rng_2.random_range(MIN_LEN..=MAX_LEN);
+    let num_dashes = rng_1.random_range(0..=MAX_DASHES);
 
     rng_1
         .sample_iter(&Alphanumeric)
@@ -491,7 +491,7 @@ fn rand_mime() -> Mime {
         mime::TEXT_PLAIN,
         mime::IMAGE_PNG,
     ]
-    .choose(&mut rand::thread_rng())
+    .choose(&mut rand::rng())
     .unwrap()
     .clone()
 }

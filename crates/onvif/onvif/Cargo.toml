@@ -14,13 +14,13 @@ chrono = "0.4"
 digest_auth = "0.3"
 nonzero_ext = "0.3"
 schema = { path = "../schema", features = ["analytics", "devicemgmt", "event", "imaging", "media", "media2", "ptz", "recording", "replay", "schedule", "search",] }
-sha1 = "0.10"
+sha1 = "0.11"
 thiserror = "2.0"
 tracing = "0.1"
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
-xml-rs = "0.8"
+xml-rs = "0.8.29"
 xmltree = "0.12"
 xsd-types = { path = "../xsd-types" }
 yaserde = "0.12"
