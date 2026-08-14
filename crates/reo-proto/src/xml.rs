@@ -25,6 +25,19 @@ pub fn build_xml(
     builder.finish()
 }
 
+pub(crate) fn build_versioned_document(
+    buf: &mut [u8],
+    root: &str,
+    version: &str,
+    build: impl FnOnce(&mut XmlBuilder<'_>),
+) -> Result<usize, BcError> {
+    let mut builder = XmlBuilder::new(buf)?;
+    builder.start_versioned(root, version);
+    build(&mut builder);
+    builder.end();
+    builder.finish()
+}
+
 /// Helper for building XML elements inside a `<body>` document.
 pub struct XmlBuilder<'buf> {
     writer: EventWriter<Cursor<&'buf mut [u8]>>,

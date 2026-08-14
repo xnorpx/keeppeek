@@ -93,7 +93,7 @@ impl FakeCamera {
     fn handle_message(&mut self, header: PacketHeader, body: &[u8]) {
         match header.msg_id {
             COMMAND_LOGIN => self.handle_login(header, body),
-            COMMAND_PING => self.handle_ping(),
+            COMMAND_PING => self.handle_ping(header),
             COMMAND_STREAM if header.is_modern() => self.handle_stream_start(body),
             COMMAND_PREVIEW_STOP if header.is_modern() => self.handle_stream_stop(body),
             COMMAND_SNAP if header.is_modern() => self.handle_snapshot(body),
@@ -168,8 +168,13 @@ impl FakeCamera {
 
     // ── Ping → Pong ──────────────────────────────────────────────────
 
-    fn handle_ping(&mut self) {
-        self.send_message(COMMAND_PING, &[], make_status(BC_CLASS_MODERN_SHORT, 0));
+    fn handle_ping(&mut self, request: PacketHeader) {
+        self.send_message_with_offset(
+            COMMAND_PING,
+            &[],
+            make_status(BC_CLASS_MODERN_EXT, 200),
+            request.encryption_offset,
+        );
     }
 
     // ── Stream start ack ─────────────────────────────────────────────
@@ -198,13 +203,15 @@ impl FakeCamera {
     fn handle_talk_ability(&mut self, _body: &[u8]) {
         let xml = b"<body>\
             <TalkAbility version=\"1.1\">\
-                <audioStreamMode>0</audioStreamMode>\
-                <duplex>1</duplex>\
-                <audioConfig>\
+                <duplexList><duplex>fullDuplex</duplex></duplexList>\
+                <audioStreamModeList><audioStreamMode>speaker</audioStreamMode></audioStreamModeList>\
+                <audioConfigList><audioConfig>\
+                    <audioType>adpcm</audioType>\
                     <sampleRate>8000</sampleRate>\
                     <samplePrecision>16</samplePrecision>\
                     <lengthPerEncoder>320</lengthPerEncoder>\
-                </audioConfig>\
+                    <soundTrack>mono</soundTrack>\
+                </audioConfig></audioConfigList>\
             </TalkAbility>\
         </body>";
         self.send_modern_xml(COMMAND_TALK_CAPABILITIES, xml);
@@ -264,12 +271,22 @@ impl FakeCamera {
     // ── Wire message builders ────────────────────────────────────────
 
     fn send_message(&mut self, msg_id: u32, body: &[u8], status_class: u32) {
+        self.send_message_with_offset(msg_id, body, status_class, body.len() as u32);
+    }
+
+    fn send_message_with_offset(
+        &mut self,
+        msg_id: u32,
+        body: &[u8],
+        status_class: u32,
+        encryption_offset: u32,
+    ) {
         let has_ext =
             (status_class >> 16) == BC_CLASS_MODERN_EXT as u32 || (status_class >> 16) == 0;
         let header = PacketHeader {
             msg_id,
             body_len: body.len() as u32,
-            encryption_offset: body.len() as u32,
+            encryption_offset,
             status_class,
             extension: if has_ext { Some(0) } else { None },
         };
@@ -672,22 +689,79 @@ fn fake_camera_talk_capabilities() {
     let (mut client, mut camera) = login_helper(now);
 
     client
-        .handle_input(Input::Command(Command::QueryTalkCapabilities {
+        .handle_input(Input::Command(Command::OpenTalkback { channel: 0 }))
+        .unwrap();
+    pump(&mut client, &mut camera, now);
+
+    client
+        .handle_input(Input::Command(Command::Talk(TalkCommand::QueryAbility {
             channel: 0,
-        }))
+        })))
         .unwrap();
     pump(&mut client, &mut camera, now);
 
     let mut buf = [0u8; 4096];
-    match client.poll_output(&mut buf).unwrap() {
-        Output::Event(Event::TalkCapabilities(ability)) => {
-            assert_eq!(ability.duplex_mode, 1);
-            assert_eq!(ability.sample_rate, 8000);
-            assert_eq!(ability.sample_precision, 16);
-            assert_eq!(ability.length_per_encoder, 320);
+    let ability = loop {
+        match client.poll_output(&mut buf).unwrap() {
+            Output::Event(Event::Talk(TalkEvent::Ability(ability))) => break ability,
+            Output::Event(_) => {}
+            other => panic!("expected talk ability, got {other:?}"),
         }
-        other => panic!("expected TalkCapabilities, got {other:?}"),
-    }
+    };
+    assert_eq!(ability.duplex_modes[0].as_str(), "fullDuplex");
+    assert_eq!(ability.audio_stream_modes[0].as_str(), "speaker");
+    assert_eq!(ability.audio_profiles[0].sample_rate, 8000);
+    assert_eq!(ability.audio_profiles[0].sample_precision, 16);
+    assert_eq!(ability.audio_profiles[0].length_per_encoder, 320);
+}
+
+#[test]
+fn talkback_encrypts_only_its_extension() {
+    let now = Instant::now();
+    let mut client = BcSession::default_client(now);
+    let mut camera = FakeCamera::new();
+    camera.encryption = EncryptionMode::BcEncrypt;
+    do_login(&mut client, &mut camera, now);
+
+    let mut output = [0_u8; 4096];
+    assert!(matches!(
+        client.poll_output(&mut output).unwrap(),
+        Output::Event(Event::LoggedIn(_))
+    ));
+
+    client
+        .handle_input(Input::Command(Command::OpenTalkback { channel: 0 }))
+        .unwrap();
+    assert!(matches!(
+        client.poll_output(&mut output).unwrap(),
+        Output::TcpSend { .. }
+    ));
+
+    client
+        .handle_input(Input::Command(Command::Talk(TalkCommand::SendAdpcm {
+            channel: 0,
+            sequence: 9,
+            data: vec![0, 0, 0, 0, 0],
+        })))
+        .unwrap();
+    let wire = match client.poll_output(&mut output).unwrap() {
+        Output::TcpSend { data } => data.to_vec(),
+        other => panic!("expected talkback TcpSend, got {other:?}"),
+    };
+
+    let (header, header_len) = PacketHeader::parse(&wire).unwrap();
+    let extension_len = header.extension.unwrap() as usize;
+    let mut extension = wire[header_len..header_len + extension_len].to_vec();
+    assert!(!extension.starts_with(b"<Extension"));
+    reo_proto::encryption::bc_xor(&mut extension, 0);
+    assert!(extension.starts_with(b"<Extension"));
+
+    let body = &wire[header_len + extension_len..];
+    assert_eq!(
+        u32::from_le_bytes(body[..4].try_into().unwrap()),
+        MEDIA_MAGIC_ADPCM
+    );
+    assert_eq!(u16::from_le_bytes(body[10..12].try_into().unwrap()), 9);
 }
 
 // ── Test: Keepalive ping/pong via FakeCamera ─────────────────────────

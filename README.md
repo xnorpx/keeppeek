@@ -52,6 +52,35 @@ Camera entries accept `backend = "auto" | "retina" | "reo-proto"` and
 for Reolink cameras and Retina for other cameras. Retina supports both transports; reo-proto
 supports both TCP and direct BCUDP transport.
 
+## Battery Cameras
+
+For a Reolink battery camera, configure a stable `uid`, select `backend = "reo-proto"`, and set
+`transport = "udp"`. KeepPeek can connect directly while the camera is awake. To wake a sleeping
+camera locally, enable the optional service below and redirect `p2p.reolink.com` plus
+`p2p*.reolink.com` to the configured `bind` address in the LAN DNS resolver used by the cameras.
+
+```toml
+[battery_wake]
+enabled = true
+bind = "192.168.1.2"
+middleman_port = 9999
+register_port = 58200
+heartbeat_secs = 20
+stale_after_secs = 80
+
+[cameras.driveway]
+ip = "192.168.1.90"
+username = "operator"
+password = "secret"
+uid = "BATTERYCAMERA0001"
+backend = "reo-proto"
+transport = "udp"
+```
+
+The service only accepts registration from configured UIDs. It is disabled by default and needs
+UDP access from cameras to both configured ports. Reboot a camera after changing DNS because
+firmware caches P2P host resolution.
+
 Set `http_port` when a camera exposes its direct HTTP API on a non-default port. KeepPeek uses
 that port for camera metadata, motion-detection control, and the LAN-only link to the camera's
 built-in UI.

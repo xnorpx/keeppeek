@@ -4,9 +4,10 @@
 //! RF alarm, PIR, AI config/alarm, audio task, and unsolicited alarm events.
 
 use crate::{error::BcError, header::PacketHeader, magic::*, xml};
-use arrayvec::ArrayString;
+use arrayvec::{ArrayString, ArrayVec};
 
-const TYPE_CAP: usize = 32;
+const ALARM_EVENT_CAP: usize = 16;
+const EVENT_VALUE_CAP: usize = 64;
 
 /// Alarm command (client → camera).
 #[derive(Debug, Clone, Copy)]
@@ -41,7 +42,7 @@ pub enum AlertEvent {
     /// Ack for StartMotionAlarm.
     MotionAlarmStarted,
     /// Unsolicited alarm event push from camera (ID 33).
-    AlarmEventList(AlarmEventData),
+    AlarmEventList(Box<AlarmEventList>),
     /// Motion detection config response.
     MotionDetect(MotionDetectConfig),
     /// Ack for SetMotionDetect.
@@ -108,12 +109,42 @@ pub struct AiAlarmConfig {
     pub package: bool,
 }
 
-/// Alarm event data from unsolicited push (ID 33).
-#[derive(Debug, Clone)]
+/// Alarm events from one unsolicited push (ID 33).
+#[derive(Debug, Clone, Default)]
+pub struct AlarmEventList {
+    /// Events represented in camera payload order.
+    pub events: ArrayVec<AlarmEventData, ALARM_EVENT_CAP>,
+}
+
+/// One camera alarm event from an unsolicited push (ID 33).
+#[derive(Debug, Clone, Default)]
 pub struct AlarmEventData {
     pub channel: u8,
-    pub alarm_type: ArrayString<TYPE_CAP>,
-    pub status: bool,
+    /// Camera-reported alarm category in legacy payloads.
+    pub alarm_type: ArrayString<EVENT_VALUE_CAP>,
+    /// Camera-reported motion status, typically `MD` or `none`.
+    pub status: ArrayString<EVENT_VALUE_CAP>,
+    /// Camera-reported AI types, typically `people`, `vehicle`, or `none`.
+    pub ai_types: ArrayString<EVENT_VALUE_CAP>,
+    pub recording: Option<bool>,
+    pub timestamp: Option<u64>,
+}
+
+impl AlarmEventData {
+    pub fn is_active(&self) -> bool {
+        has_active_alarm_value(self.ai_types.as_str())
+            || (!self.status.is_empty() && has_active_alarm_value(self.status.as_str()))
+            || (self.status.is_empty() && has_active_alarm_value(self.alarm_type.as_str()))
+    }
+}
+
+fn has_active_alarm_value(value: &str) -> bool {
+    value.split(',').map(str::trim).any(|value| {
+        !value.is_empty()
+            && !value.eq_ignore_ascii_case("none")
+            && value != "0"
+            && !value.eq_ignore_ascii_case("false")
+    })
 }
 
 /// Audio task configuration.
@@ -275,24 +306,43 @@ pub fn parse_response(kind: AlarmResponseKind, body: &[u8]) -> Result<AlertEvent
     match kind {
         AlarmResponseKind::MotionAlarmStarted => Ok(AlertEvent::MotionAlarmStarted),
         AlarmResponseKind::AlarmEventList => {
-            let mut data = AlarmEventData {
-                channel: 0,
-                alarm_type: ArrayString::new(),
-                status: false,
-            };
-            xml::parse_xml(body, |name, text| match name {
-                "channelId" => {
-                    if let Ok(v) = text.parse::<u8>() {
-                        data.channel = v;
+            let mut events = AlarmEventList::default();
+            let mut current = None;
+            let mut flat_event = AlarmEventData::default();
+            let mut flat_event_seen = false;
+            let mut too_many_events = false;
+
+            xml::visit_xml(body, |event| match event {
+                xml::XmlVisit::Start("AlarmEvent") => {
+                    current = Some(AlarmEventData::default());
+                }
+                xml::XmlVisit::Text { name, text } => {
+                    if let Some(alarm) = current.as_mut() {
+                        update_alarm_event(alarm, name, text);
+                    } else if update_alarm_event(&mut flat_event, name, text) {
+                        flat_event_seen = true;
                     }
                 }
-                "alarmType" | "type" => {
-                    let _ = ArrayString::try_from(text).map(|s| data.alarm_type = s);
+                xml::XmlVisit::End("AlarmEvent") => {
+                    if let Some(alarm) = current.take()
+                        && events.events.try_push(alarm).is_err()
+                    {
+                        too_many_events = true;
+                    }
                 }
-                "status" => data.status = text == "1" || text.eq_ignore_ascii_case("true"),
                 _ => {}
             })?;
-            Ok(AlertEvent::AlarmEventList(data))
+
+            if too_many_events {
+                return Err(BcError::Protocol("alarm event list exceeds capacity"));
+            }
+            if events.events.is_empty() && flat_event_seen {
+                events
+                    .events
+                    .try_push(flat_event)
+                    .map_err(|_| BcError::Protocol("alarm event list exceeds capacity"))?;
+            }
+            Ok(AlertEvent::AlarmEventList(Box::new(events)))
         }
         AlarmResponseKind::MotionDetectRead => {
             let mut cfg = MotionDetectConfig {
@@ -454,6 +504,49 @@ pub fn parse_response(kind: AlarmResponseKind, body: &[u8]) -> Result<AlertEvent
     }
 }
 
+fn update_alarm_event(event: &mut AlarmEventData, name: &str, text: &str) -> bool {
+    let text = text.trim();
+    match name {
+        "channelId" => {
+            if let Ok(channel) = text.parse::<u8>() {
+                event.channel = channel;
+            }
+            true
+        }
+        "alarmType" | "type" => {
+            if let Ok(alarm_type) = ArrayString::<EVENT_VALUE_CAP>::try_from(text) {
+                event.alarm_type = alarm_type;
+            }
+            true
+        }
+        "status" => {
+            if let Ok(status) = ArrayString::<EVENT_VALUE_CAP>::try_from(text) {
+                event.status = status;
+            }
+            true
+        }
+        "AItype" | "aiType" => {
+            if let Ok(ai_types) = ArrayString::<EVENT_VALUE_CAP>::try_from(text) {
+                event.ai_types = ai_types;
+            }
+            true
+        }
+        "recording" => {
+            event.recording = match text {
+                "0" | "false" | "False" => Some(false),
+                "1" | "true" | "True" => Some(true),
+                _ => None,
+            };
+            true
+        }
+        "timeStamp" | "timestamp" => {
+            event.timestamp = text.parse::<u64>().ok();
+            true
+        }
+        _ => false,
+    }
+}
+
 const fn make_header(msg_id: u32, body_len: usize) -> PacketHeader {
     PacketHeader {
         msg_id,
@@ -600,17 +693,21 @@ mod tests {
     fn parse_alarm_event_list() {
         let xml = b"<body>\
             <AlarmEventList version=\"1.1\">\
-                <channelId>0</channelId>\
-                <alarmType>motion</alarmType>\
-                <status>1</status>\
+                <AlarmEvent version=\"1.1\">\
+                    <channelId>0</channelId>\
+                    <status>MD</status>\
+                    <AItype>people,vehicle</AItype>\
+                </AlarmEvent>\
             </AlarmEventList>\
         </body>";
         let event = parse_response(AlarmResponseKind::AlarmEventList, xml).unwrap();
         match event {
-            AlertEvent::AlarmEventList(data) => {
-                assert_eq!(data.channel, 0);
-                assert_eq!(data.alarm_type.as_str(), "motion");
-                assert!(data.status);
+            AlertEvent::AlarmEventList(events) => {
+                assert_eq!(events.events.len(), 1);
+                assert_eq!(events.events[0].channel, 0);
+                assert_eq!(events.events[0].status.as_str(), "MD");
+                assert_eq!(events.events[0].ai_types.as_str(), "people,vehicle");
+                assert!(events.events[0].is_active());
             }
             _ => panic!("wrong event"),
         }
