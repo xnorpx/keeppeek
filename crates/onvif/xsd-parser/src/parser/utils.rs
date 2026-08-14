@@ -9,7 +9,7 @@ use std::str;
 
 pub fn target_namespace<'a, 'input>(node: &Node<'a, 'input>) -> Option<&'a Namespace<'input>> {
     node.attribute(attribute::TARGET_NAMESPACE)
-        .and_then(|tn| node.namespaces().iter().find(|a| a.uri() == tn))
+        .and_then(|tn| node.namespaces().find(|a| a.uri() == tn))
 }
 
 pub fn find_child<'a, 'input>(node: &Node<'a, 'input>, tag_name: &str) -> Option<Node<'a, 'input>> {

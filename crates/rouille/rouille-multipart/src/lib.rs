@@ -46,7 +46,7 @@ extern crate env_logger;
 #[cfg(any(feature = "mock", test))]
 pub mod mock;
 
-use rand::Rng;
+use rand::RngExt;
 
 /// Chain a series of results together, with or without previous results.
 ///
@@ -92,8 +92,8 @@ pub mod server;
 mod local_test;
 
 fn random_alphanumeric(len: usize) -> String {
-    rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
         .take(len)
         .map(|c| c as char)
         .collect()

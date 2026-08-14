@@ -33,7 +33,7 @@ impl fmt::Display for Decimal {
 mod tests {
     use super::*;
     use crate::utils::xml_eq::assert_xml_eq;
-    use num_bigint::ToBigInt;
+    use bigdecimal::num_bigint::ToBigInt;
     use yaserde_derive::{YaDeserialize, YaSerialize};
 
     #[derive(Default, Clone, PartialEq, Eq, Debug, YaSerialize, YaDeserialize)]
