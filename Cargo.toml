@@ -1,25 +1,25 @@
 [workspace]
 members = [
-	".",
-	"crates/chunked-transfer",
-	"crates/mp4",
-	"crates/onvif/onvif",
-	"crates/onvif/schema",
-	"crates/onvif/transport",
-	"crates/onvif/validate",
-	"crates/onvif/wsdl-parser",
-	"crates/onvif/wsdl_rs/*",
-	"crates/onvif/xsd-macro-utils",
-	"crates/onvif/xsd-parser",
-	"crates/onvif/xsd-types",
-	"crates/onvif/xsd_rs/*",
-	"crates/reo-proto",
-	"crates/retina",
-	"crates/rouille",
-	"crates/rouille/rouille-multipart",
-	"crates/test-camera",
-	"crates/test-frame",
-	"crates/tiny-http",
+  ".",
+  "crates/chunked-transfer",
+  "crates/mp4",
+  "crates/onvif/onvif",
+  "crates/onvif/schema",
+  "crates/onvif/transport",
+  "crates/onvif/validate",
+  "crates/onvif/wsdl-parser",
+  "crates/onvif/wsdl_rs/*",
+  "crates/onvif/xsd-macro-utils",
+  "crates/onvif/xsd-parser",
+  "crates/onvif/xsd-types",
+  "crates/onvif/xsd_rs/*",
+  "crates/reo-proto",
+  "crates/retina",
+  "crates/rouille",
+  "crates/rouille/rouille-multipart",
+  "crates/test-camera",
+  "crates/test-frame",
+  "crates/tiny-http",
 ]
 
 [patch.crates-io]
@@ -65,7 +65,11 @@ path = "src/bin/audit_camera_motion.rs"
 anyhow = { version = "*" }
 base64 = { version = "*" }
 bytes = { version = "*" }
-clap = { version = "*", default-features = false, features = ["std", "derive", "help"] }
+clap = { version = "*", default-features = false, features = [
+  "std",
+  "derive",
+  "help",
+] }
 crossbeam-channel = "0.5.16"
 ctrlc = { version = "*" }
 hdrhistogram = { version = "7.6.0", default-features = false }

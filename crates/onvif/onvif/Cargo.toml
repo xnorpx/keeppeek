@@ -13,7 +13,19 @@ base64 = "0.23"
 chrono = "0.4"
 digest_auth = "0.3"
 nonzero_ext = "0.3"
-schema = { path = "../schema", features = ["analytics", "devicemgmt", "event", "imaging", "media", "media2", "ptz", "recording", "replay", "schedule", "search",] }
+schema = { path = "../schema", features = [
+  "analytics",
+  "devicemgmt",
+  "event",
+  "imaging",
+  "media",
+  "media2",
+  "ptz",
+  "recording",
+  "replay",
+  "schedule",
+  "search",
+] }
 sha1 = "0.11"
 thiserror = "2.0"
 tracing = "0.1"
