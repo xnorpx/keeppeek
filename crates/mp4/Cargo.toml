@@ -26,5 +26,10 @@ workspace = true
 byteorder = "1.5"
 bytes = "1.12.1"
 num-rational = { version = "0.4.2", default-features = false }
-serde = { version = "1.0", default-features = false, features = ["std", "derive"], optional = true }
-serde_json = { version = "1.0", default-features = false, features = ["std"], optional = true }
+serde = { version = "1.0", default-features = false, features = [
+  "std",
+  "derive",
+], optional = true }
+serde_json = { version = "1.0", default-features = false, features = [
+  "std",
+], optional = true }

@@ -17,19 +17,25 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all -- --check
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: taplo@0.10.0
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Check TOML formatting
+        run: taplo fmt --check --diff
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
@@ -46,7 +52,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
@@ -60,7 +66,7 @@ jobs:
           cargo test --all 2>&1 | tee rust-test-results.log
       - name: Upload Rust test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rust-test-log-${{ matrix.os }}
           path: rust-test-results.log
@@ -78,7 +84,7 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: oven-sh/setup-bun@v2
@@ -98,7 +104,7 @@ jobs:
         run: ../check-ui.sh
       - name: Upload UI test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-test-reports-${{ matrix.os }}
           path: |
@@ -112,7 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
@@ -192,7 +198,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-reports
           path: |
@@ -217,13 +223,13 @@ jobs:
       - name: Download coverage reports
         if: always()
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: coverage-reports
           path: quality-reports/coverage
 
       - name: Write quality report and update pull request
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           COVERAGE_DIRECTORY: quality-reports/coverage
         with:
