@@ -84,7 +84,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
-      - run: bun install --frozen-lockfile --registry=https://registry.npmjs.org/
+      - run: bun install --registry=https://registry.npmjs.org/
       - if: runner.os == 'Linux'
         run: bunx playwright install --with-deps chromium
       - if: runner.os != 'Linux'
@@ -124,14 +124,14 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
-        run: bun install --frozen-lockfile --registry=https://registry.npmjs.org/
+        run: bun install --registry=https://registry.npmjs.org/
       - name: Install Chromium for Vitest browser tests
         working-directory: ui
         run: bunx playwright install --with-deps chromium
       - name: Install Rust coverage tooling
         id: install-rust-coverage
         continue-on-error: true
-        run: cargo install cargo-llvm-cov --locked
+        run: cargo install cargo-llvm-cov
       - name: Generate Rust coverage
         id: rust-coverage
         if: steps.install-rust-coverage.outcome == 'success'
