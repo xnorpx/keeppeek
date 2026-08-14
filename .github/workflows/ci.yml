@@ -217,7 +217,7 @@ jobs:
       - name: Download coverage reports
         if: always()
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: coverage-reports
           path: quality-reports/coverage
