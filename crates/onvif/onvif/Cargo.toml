@@ -9,7 +9,7 @@ license = "MIT"
 workspace = true
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 chrono = "0.4"
 digest_auth = "0.3"
 nonzero_ext = "0.3"
