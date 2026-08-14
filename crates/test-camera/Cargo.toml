@@ -9,7 +9,11 @@ workspace = true
 
 [dependencies]
 anyhow = { version = "*" }
-clap = { version = "4", default-features = false, features = ["std", "derive", "help"] }
+clap = { version = "4", default-features = false, features = [
+  "std",
+  "derive",
+  "help",
+] }
 ctrlc = { version = "*" }
 mp4 = { path = "../mp4" }
 reo-proto = { path = "../reo-proto" }

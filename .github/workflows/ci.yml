@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  fmt:
-    name: Format
+  rust-quality:
+    name: Rust Quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,21 +22,17 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
         with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+          tool: taplo@0.10.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all --all-targets -- -D warnings
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Check TOML formatting
+        run: taplo fmt --check --diff
+      - name: Run Clippy
+        run: cargo clippy --all --all-targets -- -D warnings
 
   build-and-test:
     name: Build & Test (${{ matrix.os }})
@@ -207,7 +203,7 @@ jobs:
   quality-report:
     name: Quality Report
     if: always() && github.event_name == 'pull_request'
-    needs: [fmt, clippy, build-and-test, ui, coverage]
+    needs: [rust-quality, build-and-test, ui, coverage]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -234,8 +230,7 @@ jobs:
             const marker = '<!-- keeppeek-quality-report -->';
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const checkNames = [
-              'Format',
-              'Clippy',
+              'Rust Quality',
               'Build & Test (ubuntu-latest)',
               'Build & Test (macos-latest)',
               'Build & Test (windows-latest)',
