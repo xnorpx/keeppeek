@@ -1,0 +1,180 @@
+[workspace]
+members = [
+	".",
+	"crates/chunked-transfer",
+	"crates/mp4",
+	"crates/onvif/onvif",
+	"crates/onvif/schema",
+	"crates/onvif/transport",
+	"crates/onvif/validate",
+	"crates/onvif/wsdl-parser",
+	"crates/onvif/wsdl_rs/*",
+	"crates/onvif/xsd-macro-utils",
+	"crates/onvif/xsd-parser",
+	"crates/onvif/xsd-types",
+	"crates/onvif/xsd_rs/*",
+	"crates/reo-proto",
+	"crates/retina",
+	"crates/rouille",
+	"crates/rouille/rouille-multipart",
+	"crates/test-camera",
+	"crates/test-frame",
+	"crates/tiny-http",
+]
+
+[patch.crates-io]
+chunked_transfer = { path = "crates/chunked-transfer" }
+tiny_http = { path = "crates/tiny-http" }
+
+[package]
+name = "keeppeek"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["xnorpx <xnorpx@outlook.com>"]
+
+[[bin]]
+name = "keeppeek"
+path = "src/bin/keeppeek.rs"
+
+[[bin]]
+name = "keeppeek-client"
+path = "src/bin/keeppeek_client.rs"
+
+[[bin]]
+name = "discover-cameras"
+path = "src/bin/discover_cameras.rs"
+
+[[bin]]
+name = "camera-stream-test"
+path = "src/bin/camera_stream_test.rs"
+
+[[bin]]
+name = "validate-recordings"
+path = "src/bin/validate_recordings.rs"
+
+[[bin]]
+name = "configure-cameras"
+path = "src/bin/configure_cameras.rs"
+
+[[bin]]
+name = "audit-camera-motion"
+path = "src/bin/audit_camera_motion.rs"
+
+[dependencies]
+anyhow = { version = "*" }
+base64 = { version = "*" }
+bytes = { version = "*" }
+clap = { version = "*", default-features = false, features = ["std", "derive", "help"] }
+crossbeam-channel = "0.5.15"
+ctrlc = { version = "*" }
+hdrhistogram = { version = "7.6.0", default-features = false }
+image = { version = "*", default-features = false, features = ["jpeg"] }
+mimalloc = { version = "*" }
+mp4 = { path = "crates/mp4" }
+mqtt-protocol-core = { version = "*" }
+ipnet = "2.12.1"
+network-interface = "2.0.5"
+polling = "3.11.0"
+pollster = "1.0.1"
+rand = { version = "*" }
+toml = { version = "*" }
+onvif = { path = "crates/onvif/onvif" }
+rouille = { path = "crates/rouille" }
+schema = { path = "crates/onvif/schema", features = ["devicemgmt", "media"] }
+reo-proto = { path = "crates/reo-proto" }
+retina = { path = "crates/retina" }
+serde = { version = "*", features = ["derive"] }
+serde_json = { version = "*" }
+socket2 = { version = "0.6" }
+time = { version = "0.3", features = ["macros"] }
+sha1 = { version = "*" }
+str0m = { version = "0.22.0", default-features = false }
+tracing = { version = "*" }
+tracing-subscriber = { version = "*", features = ["env-filter"] }
+turso = { version = "=0.7.2", default-features = false }
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+url = { version = "*" }
+sysinfo = "0.39.6"
+quick-xml = { version = "0.41.0", features = ["serialize"] }
+
+[target.'cfg(windows)'.dependencies]
+str0m-wincrypto = { version = "0.8.0" }
+windows = { version = "0.62.2", features = ["Win32_Media"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+str0m-apple-crypto = { version = "0.6.0" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+str0m-openssl = { version = "0.6.0" }
+
+[dev-dependencies]
+test-frame = { path = "crates/test-frame" }
+
+[lints]
+workspace = true
+
+[workspace.lints.rust]
+redundant_imports = "deny"
+redundant_lifetimes = "deny"
+trivial_numeric_casts = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_import_braces = "deny"
+unused_lifetimes = "deny"
+unused_macro_rules = "deny"
+
+[workspace.lints.clippy]
+as_ptr_cast_mut = "deny"
+branches_sharing_code = "deny"
+clear_with_drain = "deny"
+collection_is_never_read = "deny"
+debug_assert_with_mut_call = "deny"
+derive_partial_eq_without_eq = "deny"
+equatable_if_let = "deny"
+fallible_impl_from = "deny"
+iter_on_empty_collections = "deny"
+iter_on_single_items = "deny"
+iter_with_drain = "deny"
+large_stack_frames = "deny"
+missing_const_for_fn = "deny"
+mutex_integer = "deny"
+needless_collect = "deny"
+needless_pass_by_ref_mut = "deny"
+nonstandard_macro_braces = "deny"
+option_if_let_else = "deny"
+or_fun_call = "deny"
+path_buf_push_overwrite = "deny"
+read_zero_byte_vec = "deny"
+redundant_clone = "deny"
+redundant_pub_crate = "deny"
+semicolon_if_nothing_returned = "deny"
+set_contains_or_insert = "deny"
+significant_drop_in_scrutinee = "deny"
+suboptimal_flops = "deny"
+suspicious_operation_groupings = "deny"
+trailing_empty_array = "deny"
+uninlined_format_args = "deny"
+use_self = "deny"
+
+[profile.dev]
+# https://doc.rust-lang.org/cargo/reference/profiles.html#dev
+# Line-tables-only reduces debug info size and speeds up linking.
+debug = "line-tables-only"
+# Split debuginfo to reduce link times on Windows.
+split-debuginfo = "unpacked"
+
+[profile.bench]
+debug = true
+
+[profile.release]
+# https://doc.rust-lang.org/cargo/reference/profiles.html#release
+codegen-units = 1
+overflow-checks = true
+panic = 'abort'
+# Production artifacts omit debug data and symbol tables.
+debug = false
+strip = "symbols"
+
+[profile.release-lto]
+inherits = 'release'
+lto = 'fat'

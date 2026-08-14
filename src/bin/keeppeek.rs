@@ -1,0 +1,184 @@
+use keeppeek::{
+    api::{CameraId, CameraLifecycle, CameraStatus},
+    config,
+    keeppeek::KeepPeekLoop,
+    logging::initialize_global_logging,
+    runtime::{Router, RouterMessage, WorkerEvent},
+    server::{ServerState, run_server},
+    shutdown::{Restart, Shutdown, restart_current_process},
+    stats::HealthRegistry,
+    storage::{EventStore, RecordingCatalog, StorageConfig, StorageEngine},
+    webrtc::WebRtc,
+};
+use tracing::info;
+#[cfg(windows)]
+use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(windows)]
+struct WindowsTimerResolution(u32);
+
+#[cfg(windows)]
+impl WindowsTimerResolution {
+    fn request(period_ms: u32) -> Option<Self> {
+        // SAFETY: timeBeginPeriod accepts any u32 period and has no pointer or lifetime requirements.
+        let result = unsafe { timeBeginPeriod(period_ms) };
+        if result == 0 {
+            Some(Self(period_ms))
+        } else {
+            tracing::warn!(%period_ms, %result, "unable to set Windows timer resolution");
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsTimerResolution {
+    fn drop(&mut self) {
+        // SAFETY: this exactly balances the successful timeBeginPeriod call made by request.
+        unsafe {
+            timeEndPeriod(self.0);
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let (cfg, config_path) = config::load()?;
+    let logging = initialize_global_logging(&config_path)?;
+
+    #[cfg(windows)]
+    let _timer_resolution = WindowsTimerResolution::request(1);
+
+    info!("Starting KeepPeek - press Ctrl+C to stop");
+
+    let camera_configs = config::load_cameras(&config_path)?;
+    tracing::info!(
+        "loaded {} camera(s) from {}",
+        camera_configs.values().map(|v| v.len()).sum::<usize>(),
+        config_path.display(),
+    );
+
+    let cameras = keeppeek::cameras::configured_cameras(&camera_configs);
+    tracing::info!("initialized {} camera(s) from configuration", cameras.len());
+
+    for cam in cameras.values() {
+        tracing::info!(
+            name = cam.config.name.as_deref().unwrap_or("?"),
+            ip = %cam.config.ip,
+            backend = ?cam.config.backend,
+            transport = ?cam.config.transport,
+            main_endpoint = cam.config.main_rtsp_url.is_some(),
+            sub_endpoint = cam.config.sub_rtsp_url.is_some(),
+            "configured camera",
+        );
+    }
+
+    let shutdown = Shutdown::new();
+    let restart = Restart::default();
+    let signal_shutdown = shutdown.clone();
+    ctrlc::set_handler(move || {
+        tracing::info!("shutting down");
+        signal_shutdown.cancel();
+    })
+    .map_err(|error| anyhow::anyhow!("unable to install shutdown signal handler: {error}"))?;
+
+    let storage_config = StorageConfig::from_toml(&cfg.storage);
+    let storage_engine = StorageEngine::start(storage_config.clone());
+    let recording_catalog = RecordingCatalog::open(&storage_config.recording_catalog_path)?;
+    let event_store = EventStore::new(
+        recording_catalog.handle(),
+        &storage_config.event_thumbnail_path,
+        storage_config.event_thumbnail_max_bytes,
+    )?;
+    let recording_demand = storage_engine.demand();
+    let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
+    let health_registry = HealthRegistry::new();
+    let server_state = ServerState::new(
+        &cfg,
+        &camera_configs,
+        &cameras,
+        &storage_config,
+        recording_demand,
+        webrtc.clone(),
+    )
+    .with_camera_config_path(config_path)
+    .with_logging(logging)
+    .with_restart_control(shutdown.clone(), restart.clone())
+    .with_event_store(event_store.clone())
+    .with_health_registry(health_registry.clone())
+    .with_recording_catalog(recording_catalog.handle());
+
+    let (mut router, router_tx) = Router::new()?;
+    for camera in cameras.values() {
+        let id = camera
+            .config
+            .name
+            .clone()
+            .unwrap_or_else(|| camera.config.ip.to_string());
+        router_tx
+            .send(RouterMessage::WorkerEvent(WorkerEvent::StatusChanged(
+                CameraStatus {
+                    id: CameraId::new(id),
+                    lifecycle: CameraLifecycle::Starting,
+                    last_error: None,
+                },
+            )))
+            .map_err(|error| anyhow::anyhow!("unable to register camera with router: {error:?}"))?;
+    }
+
+    let mut keeppeek = KeepPeekLoop::new(shutdown.clone(), Some(storage_engine.handle()));
+    keeppeek.set_live(webrtc.live());
+    keeppeek.set_event_store(event_store);
+    keeppeek.set_health_registry(health_registry);
+    keeppeek.set_status_sender(router_tx.clone());
+
+    keeppeek.add_cameras(&cameras)?;
+    let server_state = server_state.with_camera_runtime(keeppeek.control());
+
+    let keeppeek_handle = std::thread::Builder::new()
+        .name("keeppeek".to_string())
+        .spawn(move || keeppeek.run())
+        .expect("failed to spawn KeepPeek worker");
+
+    let server_shutdown = shutdown.clone();
+    let server_handle = std::thread::Builder::new()
+        .name("http-server".to_owned())
+        .spawn(move || {
+            let result = run_server(server_state, server_shutdown.clone(), router_tx);
+            if result.is_err() {
+                server_shutdown.cancel();
+            }
+            result
+        })
+        .expect("failed to spawn HTTP server");
+
+    while !shutdown.is_cancelled() && !router.is_shutting_down() {
+        router.wait_and_drain(Some(std::time::Duration::from_millis(100)))?;
+    }
+    shutdown.cancel();
+    webrtc.shutdown();
+
+    match server_handle.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "server stopped with error"),
+        Err(_) => tracing::warn!("HTTP server panicked"),
+    }
+
+    if keeppeek_handle.join().is_err() {
+        tracing::warn!("KeepPeek worker panicked");
+    }
+
+    tracing::info!("flushing and finalizing all recordings...");
+    storage_engine.shutdown();
+    recording_catalog.shutdown();
+    tracing::info!("all recordings saved");
+
+    if restart.is_requested() {
+        tracing::info!("restarting to apply camera configuration");
+        restart_current_process()?;
+    }
+
+    Ok(())
+}

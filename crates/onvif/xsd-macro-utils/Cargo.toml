@@ -1,0 +1,22 @@
+[package]
+name = "xsd-macro-utils"
+version = "0.1.0"
+authors = [
+    "Chris Bruce <chris@lumeo.com>",
+    "leonid.krutovsky <leonid.krutovsky@quantumsoft.ru>",
+    "DmitrySamoylov <dmitry.samoylov@quantumsoft.ru>",
+    "victor-soloviev <victor.soloviev@quantumsoft.ru>",
+]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = "1"
+
+[lib]
+proc-macro = true

@@ -1,0 +1,5 @@
+[registry]
+default = "crates-io"
+
+[registries.crates-io]
+protocol = "sparse"

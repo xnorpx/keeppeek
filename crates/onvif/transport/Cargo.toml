@@ -1,0 +1,12 @@
+[package]
+name = "transport"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2.0"
+yaserde = "0.12"

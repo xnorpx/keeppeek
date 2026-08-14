@@ -1,0 +1,348 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all --all-targets -- -D warnings
+
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all
+      - name: Run Rust tests
+        id: rust-tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --all 2>&1 | tee rust-test-results.log
+      - name: Upload Rust test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-log-${{ matrix.os }}
+          path: rust-test-results.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  ui:
+    name: UI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - run: bun install --frozen-lockfile --registry=https://registry.npmjs.org/
+      - if: runner.os == 'Linux'
+        run: bunx playwright install --with-deps chromium
+      - if: runner.os != 'Linux'
+        run: bunx playwright install chromium
+      - if: runner.os == 'Windows'
+        id: ui-check-windows
+        shell: cmd
+        run: ..\check-ui.bat
+      - if: runner.os != 'Windows'
+        id: ui-check-unix
+        run: ../check-ui.sh
+      - name: Upload UI test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-reports-${{ matrix.os }}
+          path: |
+            ui/test-results
+            ui/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+  coverage:
+    name: Coverage (Rust + UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --frozen-lockfile --registry=https://registry.npmjs.org/
+      - name: Install Chromium for Vitest browser tests
+        working-directory: ui
+        run: bunx playwright install --with-deps chromium
+      - name: Install Rust coverage tooling
+        id: install-rust-coverage
+        continue-on-error: true
+        run: cargo install cargo-llvm-cov --locked
+      - name: Generate Rust coverage
+        id: rust-coverage
+        if: steps.install-rust-coverage.outcome == 'success'
+        continue-on-error: true
+        run: |
+          mkdir -p target/ci-coverage/rust
+          cargo llvm-cov --workspace --all-targets --lcov --output-path target/ci-coverage/rust/lcov.info
+          cargo llvm-cov report --json --output-path target/ci-coverage/rust/coverage.json
+          cargo llvm-cov report --html --output-dir target/ci-coverage/rust
+      - name: Install Vitest coverage provider
+        id: install-ui-coverage
+        if: always()
+        working-directory: ui
+        continue-on-error: true
+        run: bun add --dev --exact --no-save @vitest/coverage-v8@4.1.10 --registry=https://registry.npmjs.org/
+      - name: Generate Svelte and TypeScript coverage
+        id: ui-coverage
+        if: always() && steps.install-ui-coverage.outcome == 'success'
+        working-directory: ui
+        continue-on-error: true
+        run: bun run test:unit:coverage
+      - name: Write coverage summary
+        if: always()
+        shell: bash
+        env:
+          RUST_COVERAGE_OUTCOME: ${{ steps.rust-coverage.outcome }}
+          UI_COVERAGE_OUTCOME: ${{ steps.ui-coverage.outcome }}
+        run: |
+          {
+            echo '## Coverage'
+            echo
+            echo '| Runtime | Lines | Functions | Branches |'
+            echo '| --- | ---: | ---: | ---: |'
+            if [[ -f target/ci-coverage/rust/coverage.json ]]; then
+              jq -r '
+                def percentage: if . == null then "n/a" else "\(.)%" end;
+                .data[0].totals as $total |
+                "| Rust | \($total.lines.percent | percentage) | \($total.functions.percent | percentage) | \($total.branches.percent | percentage) |"
+              ' target/ci-coverage/rust/coverage.json
+            else
+              echo '| Rust | n/a | n/a | n/a |'
+            fi
+            if [[ -f ui/coverage/coverage-summary.json ]]; then
+              jq -r '
+                def percentage: if . == null then "n/a" else "\(.)%" end;
+                .total as $total |
+                "| Svelte / TypeScript | \($total.lines.pct | percentage) | \($total.functions.pct | percentage) | \($total.branches.pct | percentage) |"
+              ' ui/coverage/coverage-summary.json
+            else
+              echo '| Svelte / TypeScript | n/a | n/a | n/a |'
+            fi
+            echo
+            echo '### Coverage commands'
+            echo "- Rust: \`${RUST_COVERAGE_OUTCOME:-not-run}\`"
+            echo "- Vitest: \`${UI_COVERAGE_OUTCOME:-not-run}\`"
+            echo
+            echo "Download the \`coverage-reports\` artifact for LCOV, JSON, and HTML reports."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            target/ci-coverage/rust
+            ui/coverage
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Fail when coverage generation fails
+        if: always() && (steps.install-rust-coverage.outcome != 'success' || steps.rust-coverage.outcome != 'success' || steps.install-ui-coverage.outcome != 'success' || steps.ui-coverage.outcome != 'success')
+        run: exit 1
+
+  quality-report:
+    name: Quality Report
+    if: always() && github.event_name == 'pull_request'
+    needs: [fmt, clippy, build-and-test, ui, coverage]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download coverage reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+          path: quality-reports/coverage
+
+      - name: Write quality report and update pull request
+        uses: actions/github-script@v7
+        env:
+          COVERAGE_DIRECTORY: quality-reports/coverage
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const marker = '<!-- keeppeek-quality-report -->';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const checkNames = [
+              'Format',
+              'Clippy',
+              'Build & Test (ubuntu-latest)',
+              'Build & Test (macos-latest)',
+              'Build & Test (windows-latest)',
+              'UI (ubuntu-latest)',
+              'UI (macos-latest)',
+              'UI (windows-latest)',
+              'Coverage (Rust + UI)'
+            ];
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+              per_page: 100
+            });
+            const jobsByName = new Map(jobs.map((job) => [job.name, job]));
+            const statusIcon = {
+              success: '✅',
+              failure: '❌',
+              cancelled: '⚪',
+              skipped: '⚪'
+            };
+            const formatStatus = (job) => {
+              const status = job?.conclusion ?? job?.status ?? 'not run';
+              return `${statusIcon[status] ?? '⚠️'} ${status}`;
+            };
+            const findFile = (directory, fileName) => {
+              if (!fs.existsSync(directory)) return undefined;
+              for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                const entryPath = path.join(directory, entry.name);
+                if (entry.isFile() && entry.name === fileName) return entryPath;
+                if (entry.isDirectory()) {
+                  const result = findFile(entryPath, fileName);
+                  if (result) return result;
+                }
+              }
+              return undefined;
+            };
+            const readJson = (fileName) => {
+              const report = findFile(path.join(process.env.GITHUB_WORKSPACE, process.env.COVERAGE_DIRECTORY), fileName);
+              if (!report) return undefined;
+              try {
+                return JSON.parse(fs.readFileSync(report, 'utf8'));
+              } catch (error) {
+                core.warning(`Unable to parse ${fileName}: ${error.message}`);
+                return undefined;
+              }
+            };
+            const metric = (totals, key) => {
+              const value = totals?.[key]?.percent ?? totals?.[key]?.pct;
+              return typeof value === 'number' ? `${value.toFixed(1)}%` : 'n/a';
+            };
+
+            const rustTotals = readJson('coverage.json')?.data?.[0]?.totals;
+            const uiTotals = readJson('coverage-summary.json')?.total;
+            const checkRows = checkNames
+              .map((name) => `| ${name} | ${formatStatus(jobsByName.get(name))} |`)
+              .join('\n');
+            const report = [
+              '## Quality Report',
+              '',
+              '### Checks',
+              '',
+              '| Check | Result |',
+              '| --- | --- |',
+              checkRows,
+              '',
+              '### Coverage',
+              '',
+              '| Runtime | Lines | Functions | Branches |',
+              '| --- | ---: | ---: | ---: |',
+              `| Rust | ${metric(rustTotals, 'lines')} | ${metric(rustTotals, 'functions')} | ${metric(rustTotals, 'branches')} |`,
+              `| Svelte / TypeScript | ${metric(uiTotals, 'lines')} | ${metric(uiTotals, 'functions')} | ${metric(uiTotals, 'branches')} |`,
+              '',
+              `[Open workflow run and artifacts](${runUrl})`
+            ].join('\n');
+
+            await core.summary.addRaw(report).write();
+
+            const pullRequest = context.payload.pull_request;
+            if (!pullRequest || pullRequest.head.repo?.full_name !== context.repo.owner + '/' + context.repo.repo) {
+              core.info('Skipping pull request comment for an external contribution.');
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequest.number,
+              per_page: 100
+            });
+            const existingComment = comments.find(
+              (comment) => comment.user?.login === 'github-actions[bot]' && comment.body.includes(marker)
+            );
+            const body = `${marker}\n${report}`;
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullRequest.number,
+                body
+              });
+            }

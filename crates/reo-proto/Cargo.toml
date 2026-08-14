@@ -1,0 +1,22 @@
+[package]
+name = "reo-proto"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["xnorpx <xnorpx@outlook.com>"]
+
+[lints]
+workspace = true
+
+[dependencies]
+md-5 = "0.10"
+aes = "0.8"
+cfb-mode = "0.8"
+cipher = "0.4"
+crc32fast = "1"
+arrayvec = "0.7"
+xml-rs = "0.8"
+tracing = "0.1"
+
+[dev-dependencies]
+hex-literal = "0.4"

@@ -1,0 +1,28 @@
+[package]
+name = "test-camera"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { version = "*" }
+clap = { version = "4", default-features = false, features = ["std", "derive", "help"] }
+ctrlc = { version = "*" }
+mp4 = { path = "../mp4" }
+reo-proto = { path = "../reo-proto" }
+retina = { path = "../retina" }
+rouille = { path = "../rouille" }
+serde_json = { version = "*" }
+tracing = { version = "*" }
+tracing-subscriber = { version = "*", features = ["env-filter"] }
+
+[dev-dependencies]
+onvif = { path = "../onvif/onvif" }
+schema = { path = "../onvif/schema", features = ["devicemgmt", "media"] }
+tempfile = { version = "*" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Media"] }
