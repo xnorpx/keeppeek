@@ -223,7 +223,7 @@ jobs:
           path: quality-reports/coverage
 
       - name: Write quality report and update pull request
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           COVERAGE_DIRECTORY: quality-reports/coverage
         with:
