@@ -32,7 +32,7 @@ quick-error = { version = "1.2", optional = true }
 # Optional Integrations
 
 [dev-dependencies]
-env_logger = "0.5"
+env_logger = "0.11"
 
 [features]
 client = []
