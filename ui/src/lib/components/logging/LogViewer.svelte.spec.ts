@@ -22,7 +22,7 @@ function entry(
 
 describe('LogViewer', () => {
 	it('filters entries by level, target, and message text', async () => {
-		render(LogViewer, {
+		await render(LogViewer, {
 			props: {
 				entries: [
 					entry(1, 'info', 'keeppeek::storage', 'recording started'),
@@ -48,7 +48,7 @@ describe('LogViewer', () => {
 	it('holds incoming entries while paused and flushes them on resume', async () => {
 		const onclear = vi.fn();
 		const ondownload = vi.fn();
-		const view = render(LogViewer, {
+		const view = await render(LogViewer, {
 			props: {
 				entries: [entry(1, 'info', 'keeppeek::test', 'first')],
 				onclear,
@@ -73,7 +73,7 @@ describe('LogViewer', () => {
 
 	it('clears the visible view through its callback', async () => {
 		const onclear = vi.fn();
-		render(LogViewer, {
+		await render(LogViewer, {
 			props: {
 				entries: [entry(1, 'error', 'browser.error', 'failed')],
 				onclear,

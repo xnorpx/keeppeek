@@ -18,7 +18,7 @@ describe('VerticalTimeline', () => {
 	it('seeks one minute forward from the start of the selected day', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const onSeek = vi.fn();
-		render(VerticalTimeline, {
+		await render(VerticalTimeline, {
 			props: {
 				segments: [],
 				selectedUrl: null,
@@ -35,7 +35,7 @@ describe('VerticalTimeline', () => {
 		expect(onSeek).toHaveBeenCalledWith(dayStartMs + 60_000);
 	});
 
-	it('leaves a visible gap between adjacent one-minute recordings', () => {
+	it('leaves a visible gap between adjacent one-minute recordings', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const segments = [0, 1].map((index): RecordingSegment => ({
 			stream: 'main',
@@ -47,7 +47,7 @@ describe('VerticalTimeline', () => {
 			end_time_ms: dayStartMs + (61 + index) * 60_000,
 			duration_ms: 60_000
 		}));
-		const { container } = render(VerticalTimeline, {
+		const { container } = await render(VerticalTimeline, {
 			props: {
 				segments,
 				selectedUrl: null,
@@ -70,7 +70,7 @@ describe('VerticalTimeline', () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const eventStartMs = dayStartMs + 60 * 60_000;
 		const onSeek = vi.fn();
-		render(VerticalTimeline, {
+		await render(VerticalTimeline, {
 			props: {
 				segments: [],
 				events: [
@@ -99,10 +99,10 @@ describe('VerticalTimeline', () => {
 		expect(onSeek).toHaveBeenCalledWith(eventStartMs);
 	});
 
-	it('seeks once when the playhead is dragged vertically', () => {
+	it('seeks once when the playhead is dragged vertically', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const onSeek = vi.fn();
-		render(VerticalTimeline, {
+		await render(VerticalTimeline, {
 			props: {
 				segments: [],
 				selectedUrl: null,
