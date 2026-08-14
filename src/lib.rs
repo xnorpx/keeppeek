@@ -1,4 +1,5 @@
 pub mod api;
+pub mod battery_wake;
 pub mod cameras;
 pub mod client;
 pub mod config;

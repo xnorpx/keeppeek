@@ -1,4 +1,5 @@
 use crate::{
+    battery_wake::BatteryWakeHandle,
     cameras::{AudioEncoding, BAICHUAN_PORT, CameraTransport, VideoEncoding, local_broadcasts},
     keeppeek::{KeepPeekEvent, StreamKind, VideoMeta},
     shutdown::Shutdown,
@@ -16,7 +17,7 @@ use bytes::Bytes;
 use reo_proto::{
     BcUdpConfig, BcUdpConnection, BcUdpDiscovery, BcUdpDiscoveryConfig, BcUdpDiscoveryOutput,
     BcUdpOutput, LoginParams,
-    alarm::{AlarmCommand, AlertEvent},
+    alarm::{AlarmCommand, AlarmEventData, AlertEvent},
     auth::EncryptionMode,
     media::{AudioCodec as BcAudioCodec, StreamMetadata, VideoCodec as BcVideoCodec},
     session::{BcSession, BcSessionConfig, Command, Event, Input, Output, Role},
@@ -105,16 +106,33 @@ enum UdpCommand {
 }
 
 impl UdpBaichuanTransport {
-    fn connect(camera_ip: IpAddr, uid: &str) -> anyhow::Result<Self> {
+    fn connect(
+        camera_ip: IpAddr,
+        uid: &str,
+        battery_wake: Option<&BatteryWakeHandle>,
+    ) -> anyhow::Result<Self> {
         let socket = UdpSocket::bind(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0))?;
         socket.set_broadcast(true)?;
         socket2::SockRef::from(&socket).set_recv_buffer_size(UDP_RECEIVE_BUFFER_SIZE)?;
         let local_port = socket.local_addr()?.port();
         let now = Instant::now();
+        let client_id = rand::random();
+        let transmission_id = rand::random();
         let config = BcUdpDiscoveryConfig {
-            transmission_id: rand::random::<u8>() as u32,
-            ..BcUdpDiscoveryConfig::new(uid, rand::random(), local_port)
+            transmission_id,
+            ..BcUdpDiscoveryConfig::new(uid, client_id, local_port)
         };
+        if let Some(battery_wake) = battery_wake {
+            match battery_wake.request_wake(&socket, camera_ip, uid, client_id, transmission_id) {
+                Ok(true) => tracing::debug!(ip = %camera_ip, "battery camera wake accepted"),
+                Ok(false) => {
+                    tracing::debug!(ip = %camera_ip, "battery camera wake unavailable; continuing direct discovery");
+                }
+                Err(error) => {
+                    tracing::warn!(ip = %camera_ip, %error, "battery camera wake failed; continuing direct discovery");
+                }
+            }
+        }
         let mut discovery = BcUdpDiscovery::new(config, now)?;
         let discovery_deadline = now + UDP_DISCOVERY_TIMEOUT;
         let mut destinations = vec![
@@ -470,6 +488,7 @@ pub(crate) struct ReolinkLoop {
     pub health: HealthRegistry,
     pub tx: SyncSender<KeepPeekEvent>,
     pub shutdown: Shutdown,
+    pub battery_wake: Option<BatteryWakeHandle>,
 }
 
 impl ReolinkLoop {
@@ -481,6 +500,7 @@ impl ReolinkLoop {
             match self.run_session(&mut streams, &mut active_motion) {
                 Ok(()) => break,
                 Err(error) => {
+                    end_active_motion_events(&self.tx, &mut active_motion, unix_time_ms());
                     tracing::warn!(
                         ip = %self.camera_ip,
                         error = %error,
@@ -495,13 +515,7 @@ impl ReolinkLoop {
             }
         }
 
-        let ended_at_ms = unix_time_ms();
-        for event_id in active_motion.into_values() {
-            let _ = self.tx.send(KeepPeekEvent::TimelineEventEnded {
-                id: event_id,
-                end_time_ms: ended_at_ms,
-            });
-        }
+        end_active_motion_events(&self.tx, &mut active_motion, unix_time_ms());
     }
 
     fn enabled_streams(&self) -> [Option<StreamKind>; 2] {
@@ -554,12 +568,14 @@ impl ReolinkLoop {
                 self.camera_uid
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("BCUDP requires the camera UID"))?,
+                self.battery_wake.as_ref(),
             )?),
         };
 
         let now = Instant::now();
         let config = BcSessionConfig {
             role: Role::Client,
+            keepalive_channel: self.channel,
             // Reconnect the transport on media silence instead of relogging in-band.
             relogin_interval: Duration::from_secs(86400),
             stream_watchdog_interval: MEDIA_IDLE_TIMEOUT,
@@ -595,7 +611,8 @@ impl ReolinkLoop {
         let mut active_ids: Vec<u32> = Vec::new();
         let mut last_report = Instant::now();
         let mut audio_codec: Option<String> = None;
-        let mut pending_snapshots = VecDeque::new();
+        let mut pending_snapshots = VecDeque::<Vec<String>>::new();
+        let mut snapshot_in_flight = false;
 
         loop {
             if self.shutdown.is_cancelled() {
@@ -675,14 +692,6 @@ impl ReolinkLoop {
                                 },
                             )))?;
 
-                            if self.enable_main || self.enable_sub {
-                                session.handle_input(Input::Command(
-                                    Command::QueryTalkCapabilities {
-                                        channel: self.channel,
-                                    },
-                                ))?;
-                            }
-
                             if let Err(error) = session.handle_input(Input::Command(
                                 Command::Alarm(AlarmCommand::StartMotionAlarm {
                                     channel: self.channel,
@@ -690,17 +699,6 @@ impl ReolinkLoop {
                             )) {
                                 tracing::warn!(ip = %self.camera_ip, %error, "camera motion events are unavailable");
                             }
-                        }
-                        Event::TalkCapabilities(ability) => {
-                            tracing::info!(
-                                ip = %self.camera_ip,
-                                ?ability,
-                                "talk ability received, sending talk config",
-                            );
-                            session.handle_input(Input::Command(Command::TalkConfig {
-                                channel: self.channel,
-                                ability,
-                            }))?;
                         }
                         Event::StreamSubscribed {
                             stream_id,
@@ -965,62 +963,139 @@ impl ReolinkLoop {
                                 }
                             }
                         }
-                        Event::TalkConfigured => {
-                            tracing::info!(ip = %self.camera_ip, "talk configured (audio channel active)");
-                        }
                         Event::Alarm(AlertEvent::MotionAlarmStarted) => {
                             tracing::debug!(ip = %self.camera_ip, "camera motion event subscription active");
                         }
-                        Event::Alarm(AlertEvent::AlarmEventList(data)) => {
-                            if data.channel != self.channel {
-                                continue;
-                            }
-                            let kind = normalize_alarm_kind(data.alarm_type.as_str());
-                            if data.status {
-                                if active_motion.contains_key(&kind) {
+                        Event::Alarm(AlertEvent::AlarmEventList(events)) => {
+                            let mut started_event_ids = Vec::new();
+                            let mut received_alarm = false;
+                            let mut received_active_alarm = false;
+
+                            for data in events.events {
+                                if data.channel != self.channel {
                                     continue;
                                 }
-                                let event_id = random_event_id();
-                                active_motion.insert(kind.clone(), event_id.clone());
-                                let event = TimelineEvent {
-                                    id: event_id.clone(),
-                                    camera_id: self.camera_ip.to_string(),
-                                    stream: None,
-                                    source: EventSource::Camera,
-                                    kind,
-                                    start_time_ms: unix_time_ms(),
-                                    end_time_ms: None,
-                                    confidence: None,
-                                    bbox: None,
-                                    zone: None,
-                                    thumbnail_filename: None,
-                                };
-                                let _ = self.tx.send(KeepPeekEvent::TimelineEventStarted { event });
-                                match session.handle_input(Input::Command(Command::Snapshot(
-                                    SnapshotRequest {
-                                        channel: self.channel,
-                                    },
-                                ))) {
-                                    Ok(()) => pending_snapshots.push_back(event_id),
-                                    Err(error) => {
-                                        tracing::warn!(ip = %self.camera_ip, %error, "unable to request event snapshot");
+                                received_alarm = true;
+                                for kind in alarm_event_kinds(&data) {
+                                    received_active_alarm = true;
+                                    if active_motion.contains_key(&kind) {
+                                        continue;
                                     }
+                                    let event_id = random_event_id();
+                                    active_motion.insert(kind.clone(), event_id.clone());
+                                    let event = TimelineEvent {
+                                        id: event_id.clone(),
+                                        camera_id: self.camera_ip.to_string(),
+                                        stream: None,
+                                        source: EventSource::Camera,
+                                        kind,
+                                        start_time_ms: unix_time_ms(),
+                                        end_time_ms: None,
+                                        confidence: None,
+                                        bbox: None,
+                                        zone: None,
+                                        thumbnail_filename: None,
+                                    };
+                                    let _ =
+                                        self.tx.send(KeepPeekEvent::TimelineEventStarted { event });
+                                    started_event_ids.push(event_id);
                                 }
-                            } else if let Some(event_id) = active_motion.remove(&kind) {
-                                let _ = self.tx.send(KeepPeekEvent::TimelineEventEnded {
-                                    id: event_id,
-                                    end_time_ms: unix_time_ms(),
-                                });
+                            }
+
+                            if received_alarm && !received_active_alarm {
+                                let ended_at_ms = unix_time_ms();
+                                for event_id in active_motion.drain().map(|(_, event_id)| event_id)
+                                {
+                                    let _ = self.tx.send(KeepPeekEvent::TimelineEventEnded {
+                                        id: event_id,
+                                        end_time_ms: ended_at_ms,
+                                    });
+                                }
+                            }
+
+                            if !started_event_ids.is_empty() {
+                                pending_snapshots.push_back(started_event_ids);
+                                if let Err(error) = request_next_snapshot(
+                                    &mut session,
+                                    self.channel,
+                                    &pending_snapshots,
+                                    &mut snapshot_in_flight,
+                                ) {
+                                    let _ = pending_snapshots.pop_front();
+                                    tracing::warn!(ip = %self.camera_ip, %error, "unable to request event snapshot");
+                                }
                             }
                         }
                         Event::SnapshotData { data } => {
-                            if let Some(event_id) = pending_snapshots.pop_front() {
-                                let _ = self.tx.send(KeepPeekEvent::TimelineEventThumbnail {
-                                    camera_id: self.camera_ip.to_string(),
-                                    event_id,
-                                    jpeg: data.to_vec(),
-                                });
+                            snapshot_in_flight = false;
+                            if let Some(event_ids) = pending_snapshots.pop_front() {
+                                for event_id in event_ids {
+                                    let _ = self.tx.send(KeepPeekEvent::TimelineEventThumbnail {
+                                        camera_id: self.camera_ip.to_string(),
+                                        event_id,
+                                        jpeg: data.to_vec(),
+                                    });
+                                }
                             }
+                            if let Err(error) = request_next_snapshot(
+                                &mut session,
+                                self.channel,
+                                &pending_snapshots,
+                                &mut snapshot_in_flight,
+                            ) {
+                                let _ = pending_snapshots.pop_front();
+                                tracing::warn!(ip = %self.camera_ip, %error, "unable to request event snapshot");
+                            }
+                        }
+                        Event::SnapshotFailed { status } => {
+                            snapshot_in_flight = false;
+                            let event_count =
+                                pending_snapshots.pop_front().map_or(0, |ids| ids.len());
+                            tracing::warn!(
+                                ip = %self.camera_ip,
+                                status,
+                                event_count,
+                                "camera rejected event snapshot",
+                            );
+                            if let Err(error) = request_next_snapshot(
+                                &mut session,
+                                self.channel,
+                                &pending_snapshots,
+                                &mut snapshot_in_flight,
+                            ) {
+                                let _ = pending_snapshots.pop_front();
+                                tracing::warn!(ip = %self.camera_ip, %error, "unable to request event snapshot");
+                            }
+                        }
+                        Event::CommandFailed {
+                            msg_id,
+                            msg_num,
+                            status,
+                        } if msg_id == reo_proto::COMMAND_STREAM => {
+                            anyhow::bail!(
+                                "camera rejected stream request {msg_num} with status {status}"
+                            );
+                        }
+                        Event::CommandFailed {
+                            msg_id,
+                            msg_num,
+                            status,
+                        } if msg_id == reo_proto::COMMAND_START_MOTION_ALARM => {
+                            tracing::warn!(
+                                ip = %self.camera_ip,
+                                msg_num,
+                                status,
+                                "camera rejected motion event subscription",
+                            );
+                        }
+                        Event::CommandFailed {
+                            msg_id,
+                            msg_num,
+                            status,
+                        } if msg_id == reo_proto::COMMAND_PING => {
+                            anyhow::bail!(
+                                "camera rejected keepalive request {msg_num} with status {status}"
+                            );
                         }
                         Event::SessionTimeout => {
                             anyhow::bail!(
@@ -1098,11 +1173,72 @@ impl ReolinkLoop {
 fn normalize_alarm_kind(kind: &str) -> String {
     let normalized = kind.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "" | "md" | "motion" => "motion".to_owned(),
+        "" | "1" | "true" | "md" | "motion" => "motion".to_owned(),
         "people" | "person" => "person".to_owned(),
         "dog_cat" | "dogcat" | "animal" => "animal".to_owned(),
         other => other.to_owned(),
     }
+}
+
+fn alarm_event_kinds(data: &AlarmEventData) -> Vec<String> {
+    if !data.is_active() {
+        return Vec::new();
+    }
+    let legacy_alarm_type = if data.status.is_empty() {
+        data.alarm_type.as_str()
+    } else {
+        ""
+    };
+    let mut kinds = Vec::with_capacity(3);
+    for value in [
+        data.status.as_str(),
+        legacy_alarm_type,
+        data.ai_types.as_str(),
+    ] {
+        for kind in value.split(',').map(str::trim) {
+            if kind.is_empty()
+                || kind.eq_ignore_ascii_case("none")
+                || kind == "0"
+                || kind.eq_ignore_ascii_case("false")
+            {
+                continue;
+            }
+            let kind = normalize_alarm_kind(kind);
+            if !kinds.contains(&kind) {
+                kinds.push(kind);
+            }
+        }
+    }
+    kinds
+}
+
+fn end_active_motion_events(
+    tx: &SyncSender<KeepPeekEvent>,
+    active_motion: &mut HashMap<String, String>,
+    end_time_ms: i64,
+) {
+    for event_id in active_motion.drain().map(|(_, event_id)| event_id) {
+        let _ = tx.send(KeepPeekEvent::TimelineEventEnded {
+            id: event_id,
+            end_time_ms,
+        });
+    }
+}
+
+fn request_next_snapshot(
+    session: &mut BcSession,
+    channel: u8,
+    pending_snapshots: &VecDeque<Vec<String>>,
+    snapshot_in_flight: &mut bool,
+) -> Result<(), reo_proto::BcError> {
+    if *snapshot_in_flight || pending_snapshots.is_empty() {
+        return Ok(());
+    }
+    session.handle_input(Input::Command(Command::Snapshot(SnapshotRequest {
+        channel,
+    })))?;
+    *snapshot_in_flight = true;
+    Ok(())
 }
 
 fn random_event_id() -> String {
@@ -1147,6 +1283,98 @@ mod tests {
         assert_eq!(normalize_alarm_kind("people"), "person");
         assert_eq!(normalize_alarm_kind("dog_cat"), "animal");
         assert_eq!(normalize_alarm_kind("vehicle"), "vehicle");
+    }
+
+    #[test]
+    fn alarm_event_kinds_include_motion_and_ai_types() {
+        let alarm = AlarmEventData {
+            status: "MD".try_into().unwrap(),
+            ai_types: "people,vehicle".try_into().unwrap(),
+            ..AlarmEventData::default()
+        };
+
+        assert_eq!(
+            alarm_event_kinds(&alarm),
+            vec!["motion", "person", "vehicle"]
+        );
+    }
+
+    #[test]
+    fn inactive_alarm_event_has_no_timeline_kinds() {
+        let alarm = AlarmEventData {
+            status: "none".try_into().unwrap(),
+            ai_types: "none".try_into().unwrap(),
+            ..AlarmEventData::default()
+        };
+
+        assert!(alarm_event_kinds(&alarm).is_empty());
+    }
+
+    #[test]
+    fn inactive_legacy_alarm_does_not_reopen_its_alarm_type() {
+        let alarm = AlarmEventData {
+            alarm_type: "motion".try_into().unwrap(),
+            status: "0".try_into().unwrap(),
+            ..AlarmEventData::default()
+        };
+
+        assert!(alarm_event_kinds(&alarm).is_empty());
+    }
+
+    #[test]
+    fn reconnect_ends_all_active_camera_events() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        let mut active_motion = HashMap::from([
+            ("motion".to_owned(), "event-motion".to_owned()),
+            ("person".to_owned(), "event-person".to_owned()),
+        ]);
+
+        end_active_motion_events(&tx, &mut active_motion, 123);
+
+        assert!(active_motion.is_empty());
+        let mut ended_ids = [
+            match rx.recv().unwrap() {
+                KeepPeekEvent::TimelineEventEnded { id, end_time_ms } => {
+                    assert_eq!(end_time_ms, 123);
+                    id
+                }
+                _ => panic!("expected TimelineEventEnded"),
+            },
+            match rx.recv().unwrap() {
+                KeepPeekEvent::TimelineEventEnded { id, end_time_ms } => {
+                    assert_eq!(end_time_ms, 123);
+                    id
+                }
+                _ => panic!("expected TimelineEventEnded"),
+            },
+        ];
+        ended_ids.sort();
+        assert_eq!(ended_ids, ["event-motion", "event-person"]);
+    }
+
+    #[test]
+    fn snapshot_requests_are_serialized() {
+        let now = Instant::now();
+        let mut session = BcSession::default_client(now);
+        session.set_state(reo_proto::SessionState::Connected);
+        let pending_snapshots =
+            VecDeque::from([vec!["event-one".to_owned()], vec!["event-two".to_owned()]]);
+        let mut snapshot_in_flight = false;
+
+        request_next_snapshot(&mut session, 0, &pending_snapshots, &mut snapshot_in_flight)
+            .unwrap();
+        request_next_snapshot(&mut session, 0, &pending_snapshots, &mut snapshot_in_flight)
+            .unwrap();
+
+        let mut output = [0u8; 4096];
+        let mut request_count = 0;
+        while let Output::TcpSend { data } = session.poll_output(&mut output).unwrap() {
+            let (header, _) = reo_proto::PacketHeader::parse(data).unwrap();
+            if header.msg_id == reo_proto::COMMAND_SNAP {
+                request_count += 1;
+            }
+        }
+        assert_eq!(request_count, 1);
     }
 
     #[test]

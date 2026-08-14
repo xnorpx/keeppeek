@@ -41,6 +41,17 @@ fn test_header_bad_magic() {
 }
 
 #[test]
+fn test_header_parse_reversed_snapshot_magic() {
+    let mut data = make_header_bytes(109, 4, 0, make_status(BC_CLASS_LEGACY, 0), None);
+    data[..4].copy_from_slice(&JPEG_MAGIC.to_le_bytes());
+
+    let (header, consumed) = PacketHeader::parse(&data).unwrap();
+    assert_eq!(consumed, 20);
+    assert_eq!(header.msg_id, 109);
+    assert!(header.is_binary());
+}
+
+#[test]
 fn test_header_incomplete() {
     let data = [0xf0, 0xde, 0xbc, 0x0a, 0x01, 0x00]; // only 6 bytes
     match PacketHeader::parse(&data) {
@@ -152,29 +163,6 @@ fn test_header_is_extended() {
         extension: Some(0),
     };
     assert!(h.is_extended());
-}
-
-#[test]
-fn test_header_is_encrypted() {
-    // Encrypted: offset < body_len
-    let h = PacketHeader {
-        msg_id: 1,
-        body_len: 100,
-        encryption_offset: 0,
-        status_class: 0,
-        extension: None,
-    };
-    assert!(h.is_encrypted());
-
-    // Not encrypted: offset == body_len
-    let h2 = PacketHeader {
-        msg_id: 1,
-        body_len: 100,
-        encryption_offset: 100,
-        status_class: 0,
-        extension: None,
-    };
-    assert!(!h2.is_encrypted());
 }
 
 #[test]

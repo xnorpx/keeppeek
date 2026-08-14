@@ -56,6 +56,31 @@ pub enum Protocol {
     ReoProto,
 }
 
+/// P2P endpoints used by a sleeping battery-camera test double.
+#[derive(Debug, Clone, Copy)]
+pub struct BatteryWakeEndpoint {
+    middleman: SocketAddr,
+    register: SocketAddr,
+}
+
+impl BatteryWakeEndpoint {
+    /// Creates endpoints that emulate the local Reolink P2P service.
+    pub const fn new(middleman: SocketAddr, register: SocketAddr) -> Self {
+        Self {
+            middleman,
+            register,
+        }
+    }
+
+    pub(crate) const fn middleman(self) -> SocketAddr {
+        self.middleman
+    }
+
+    pub(crate) const fn register(self) -> SocketAddr {
+        self.register
+    }
+}
+
 /// Selects the transport rendered into the camera configuration entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
@@ -97,6 +122,7 @@ pub struct TestCameraBuilder {
     password: String,
     uid: String,
     transport: Transport,
+    battery_wake: Option<BatteryWakeEndpoint>,
 }
 
 impl TestCameraBuilder {
@@ -108,6 +134,15 @@ impl TestCameraBuilder {
     /// Creates a builder for a Reolink Baichuan test camera.
     pub fn reo_proto(main_source: impl AsRef<Path>, sub_source: impl AsRef<Path>) -> Self {
         Self::new(Protocol::ReoProto, main_source, sub_source)
+    }
+
+    /// Creates a sleeping Reolink battery camera that wakes through local P2P endpoints.
+    pub fn battery_reo_proto(
+        main_source: impl AsRef<Path>,
+        sub_source: impl AsRef<Path>,
+        battery_wake: BatteryWakeEndpoint,
+    ) -> Self {
+        Self::reo_proto(main_source, sub_source).battery_wake(battery_wake)
     }
 
     fn new(
@@ -124,6 +159,7 @@ impl TestCameraBuilder {
             password: "test".to_owned(),
             uid: "TESTCAMERA0001".to_owned(),
             transport: Transport::Tcp,
+            battery_wake: None,
         }
     }
 
@@ -152,6 +188,12 @@ impl TestCameraBuilder {
         self
     }
 
+    /// Makes this Reo-proto camera start asleep and wait for a P2P wake packet.
+    pub const fn battery_wake(mut self, battery_wake: BatteryWakeEndpoint) -> Self {
+        self.battery_wake = Some(battery_wake);
+        self
+    }
+
     /// Starts the configured camera and its accompanying ONVIF façade.
     ///
     /// # Errors
@@ -167,6 +209,10 @@ impl TestCameraBuilder {
         })?;
         let sub = VideoSource::from_mp4(&self.sub_source)
             .with_context(|| format!("unable to load sub source {}", self.sub_source.display()))?;
+
+        if self.battery_wake.is_some() && self.protocol != Protocol::ReoProto {
+            bail!("battery wake simulation requires the Reo-proto camera protocol");
+        }
 
         let (ip, main_stream_url, sub_stream_url, transport) = match self.protocol {
             Protocol::Rtsp => {
@@ -196,6 +242,8 @@ impl TestCameraBuilder {
                     self.password.clone(),
                     main.clone(),
                     sub.clone(),
+                    self.battery_wake,
+                    self.uid.clone(),
                 )?;
                 (
                     self.bind_ip,
@@ -214,9 +262,13 @@ impl TestCameraBuilder {
             SocketAddr::new(IpAddr::V4(ip), 0),
             onvif::CameraDescription {
                 manufacturer: manufacturer.to_owned(),
-                model: match self.protocol {
-                    Protocol::Rtsp => "RTSP Test Camera".to_owned(),
-                    Protocol::ReoProto => "RLC-Test".to_owned(),
+                model: if self.battery_wake.is_some() {
+                    "Argus-Test".to_owned()
+                } else {
+                    match self.protocol {
+                        Protocol::Rtsp => "RTSP Test Camera".to_owned(),
+                        Protocol::ReoProto => "RLC-Test".to_owned(),
+                    }
                 },
                 main: onvif::ProfileDescription::from_source(
                     "main",
@@ -262,6 +314,7 @@ impl TestCameraBuilder {
             password: self.password,
             uid: self.uid,
             transport: self.transport,
+            battery: self.battery_wake.is_some(),
             main_stream_url,
             sub_stream_url,
         };
@@ -312,6 +365,7 @@ pub struct ConnectionInfo {
     password: String,
     uid: String,
     transport: Transport,
+    battery: bool,
     main_stream_url: String,
     sub_stream_url: String,
 }
@@ -330,6 +384,11 @@ impl ConnectionInfo {
     /// Returns the fake Reolink HTTP API port when this is a Reo-proto camera.
     pub const fn http_port(&self) -> Option<u16> {
         self.http_port
+    }
+
+    /// Returns whether this camera begins asleep and requires a P2P wake packet.
+    pub const fn is_battery(&self) -> bool {
+        self.battery
     }
 
     /// Returns the main-profile RTSP URI advertised through ONVIF.
@@ -371,15 +430,16 @@ mod tests {
     use ::onvif::soap::client::{AuthType, ClientBuilder, Credentials};
     use reo_proto::{
         BcSession, BcUdpConfig, BcUdpDiscovery, BcUdpDiscoveryConfig, BcUdpDiscoveryOutput,
-        BcUdpOutput, Command, EncryptionMode, Event, Input, LoginParams, Output,
-        StreamSubscription, StreamType,
+        BcUdpOutput, BcUdpPacket, Command, EncryptionMode, Event, Input, LoginParams, Output,
+        StreamSubscription, StreamType, UdpDiscovery,
     };
     use rouille::url::Url;
     use schema::{devicemgmt, media as onvif_media, onvif as onvif_xsd};
     use std::{
         io::{Read, Write},
         net::{Shutdown, TcpStream, UdpSocket},
-        sync::{Mutex, OnceLock},
+        sync::{Mutex, OnceLock, mpsc},
+        thread,
         time::{Duration, Instant},
     };
     use tempfile::NamedTempFile;
@@ -387,6 +447,133 @@ mod tests {
     const H264_SPS: &[u8] = &[0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40];
     const H264_PPS: &[u8] = &[0x68, 0xce, 0x3c, 0x80];
     static REO_PORT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct BatteryWakeMock {
+        endpoint: BatteryWakeEndpoint,
+        registered: mpsc::Receiver<SocketAddr>,
+        wake: mpsc::Sender<()>,
+        stop: mpsc::Sender<()>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    impl BatteryWakeMock {
+        fn start() -> Self {
+            let middleman = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let register = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            middleman.set_nonblocking(true).unwrap();
+            register.set_nonblocking(true).unwrap();
+            let endpoint = BatteryWakeEndpoint::new(
+                middleman.local_addr().unwrap(),
+                register.local_addr().unwrap(),
+            );
+            let (registered_tx, registered) = mpsc::sync_channel(1);
+            let (wake, wake_rx) = mpsc::channel();
+            let (stop, stop_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                let mut camera = None;
+                let mut buffer = [0u8; 4 * 1024];
+                loop {
+                    if matches!(
+                        stop_rx.try_recv(),
+                        Ok(()) | Err(mpsc::TryRecvError::Disconnected)
+                    ) {
+                        return;
+                    }
+                    match middleman.recv_from(&mut buffer) {
+                        Ok((read, source)) => {
+                            let BcUdpPacket::Discovery(request) =
+                                BcUdpPacket::decode(&buffer[..read]).unwrap()
+                            else {
+                                continue;
+                            };
+                            if request.xml.windows(5).any(|part| part == b"D2M_Q") {
+                                let response = p2p_packet(
+                                    request.transmission_id,
+                                    "<P2P><M2D_Q_R><token>7</token><ac>11</ac></M2D_Q_R></P2P>",
+                                );
+                                middleman.send_to(&response, source).unwrap();
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(error) => panic!("battery wake middleman failed: {error}"),
+                    }
+                    match register.recv_from(&mut buffer) {
+                        Ok((read, source)) => {
+                            let BcUdpPacket::Discovery(request) =
+                                BcUdpPacket::decode(&buffer[..read]).unwrap()
+                            else {
+                                continue;
+                            };
+                            if request.xml.windows(5).any(|part| part == b"D2R_R") {
+                                let response = p2p_packet(
+                                    request.transmission_id,
+                                    "<P2P><R2D_R_R><rsp>-4</rsp><ac>11</ac></R2D_R_R></P2P>",
+                                );
+                                register.send_to(&response, source).unwrap();
+                            }
+                            if request.xml.windows(6).any(|part| part == b"D2R_HB") {
+                                camera = Some(source);
+                                let _ = registered_tx.try_send(source);
+                                let response = p2p_packet(
+                                    request.transmission_id,
+                                    "<P2P><R2D_HB_R><rsp>0</rsp></R2D_HB_R></P2P>",
+                                );
+                                register.send_to(&response, source).unwrap();
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(error) => panic!("battery wake register failed: {error}"),
+                    }
+                    if matches!(wake_rx.try_recv(), Ok(()))
+                        && let Some(camera) = camera
+                    {
+                        let wake = p2p_packet(3, "<P2P><R2D_C><sid>1</sid></R2D_C></P2P>");
+                        register.send_to(&wake, camera).unwrap();
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+            Self {
+                endpoint,
+                registered,
+                wake,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        const fn endpoint(&self) -> BatteryWakeEndpoint {
+            self.endpoint
+        }
+
+        fn wait_for_registration(&self) -> SocketAddr {
+            self.registered
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+        }
+
+        fn wake(&self) {
+            self.wake.send(()).unwrap();
+        }
+    }
+
+    impl Drop for BatteryWakeMock {
+        fn drop(&mut self) {
+            let _ = self.stop.send(());
+            if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+        }
+    }
+
+    fn p2p_packet(transmission_id: u32, xml: &str) -> Vec<u8> {
+        BcUdpPacket::Discovery(UdpDiscovery {
+            transmission_id,
+            xml: xml.as_bytes().to_vec(),
+        })
+        .encode()
+        .unwrap()
+    }
 
     #[test]
     fn detects_h265_mp4_sources() {
@@ -756,6 +943,79 @@ mod tests {
             assert!(saw_main, "main UDP stream never delivered a video frame");
             assert!(saw_sub, "sub UDP stream never delivered a video frame");
         }
+    }
+
+    #[test]
+    fn battery_reo_camera_requires_p2p_wake_before_bcudp_discovery() {
+        let _lock = reo_port_lock();
+        let fixture = write_fixture(Codec::H264);
+        let wake = BatteryWakeMock::start();
+        let camera =
+            TestCameraBuilder::battery_reo_proto(fixture.path(), fixture.path(), wake.endpoint())
+                .transport(Transport::Udp)
+                .start()
+                .unwrap();
+        assert!(camera.connection().is_battery());
+
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let local_port = socket.local_addr().unwrap().port();
+        let now = Instant::now();
+        let mut discovery = BcUdpDiscovery::new(
+            BcUdpDiscoveryConfig {
+                transmission_id: 17,
+                ..BcUdpDiscoveryConfig::new("TESTCAMERA0001", 91, local_port)
+            },
+            now,
+        )
+        .unwrap();
+        let BcUdpDiscoveryOutput::Datagram(request) = discovery.poll_output(now) else {
+            panic!("expected initial BCUDP discovery request");
+        };
+        let camera_address = SocketAddr::new(IpAddr::V4(camera.connection().ip()), 2018);
+        socket.send_to(&request, camera_address).unwrap();
+        let mut datagram = [0u8; 65_535];
+        assert!(matches!(
+            socket.recv_from(&mut datagram),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                )
+        ));
+
+        let registered = wake.wait_for_registration();
+        assert_eq!(registered.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        wake.wake();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut connected = None;
+        while Instant::now() < deadline {
+            socket.send_to(&request, camera_address).unwrap();
+            match socket.recv_from(&mut datagram) {
+                Ok((read, source)) => {
+                    discovery.handle_datagram(&datagram[..read]).unwrap();
+                    if let BcUdpDiscoveryOutput::Connected(connection) =
+                        discovery.poll_output(Instant::now())
+                    {
+                        connected = Some((connection, source));
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => panic!("battery BCUDP client failed: {error}"),
+            }
+        }
+        assert!(
+            connected.is_some(),
+            "battery camera did not wake for BCUDP discovery"
+        );
     }
 
     fn reo_port_lock() -> std::sync::MutexGuard<'static, ()> {

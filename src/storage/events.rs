@@ -1,12 +1,12 @@
 use crate::storage::{RecordingCatalogHandle, metadata::TimelineEvent};
 use image::{DynamicImage, ImageFormat, codecs::jpeg::JpegEncoder};
+use reo_proto::MAX_SNAPSHOT_BYTES;
 use std::{
     fs,
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
-const MAX_SNAPSHOT_BYTES: usize = 12 * 1024 * 1024;
 const THUMBNAIL_WIDTH: u32 = 384;
 const THUMBNAIL_HEIGHT: u32 = 216;
 const JPEG_QUALITY: u8 = 82;
@@ -215,6 +215,27 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+
+        drop(store);
+        catalog.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_accepts_snapshots_below_the_protocol_limit() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-event-snapshot-limit-{}",
+            rand::random::<u64>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let store = EventStore::new(catalog.handle(), &root.join("thumbnails"), 0).unwrap();
+
+        let jpeg = vec![0; MAX_SNAPSHOT_BYTES - 1];
+        let error = store
+            .save_thumbnail("front-door", "event-1", &jpeg)
+            .unwrap_err();
+        assert_eq!(error.to_string(), "event was not found");
 
         drop(store);
         catalog.shutdown();

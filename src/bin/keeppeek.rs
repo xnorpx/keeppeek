@@ -1,5 +1,6 @@
 use keeppeek::{
     api::{CameraId, CameraLifecycle, CameraStatus},
+    battery_wake::BatteryWakeService,
     config,
     keeppeek::KeepPeekLoop,
     logging::initialize_global_logging,
@@ -84,6 +85,27 @@ fn main() -> anyhow::Result<()> {
     })
     .map_err(|error| anyhow::anyhow!("unable to install shutdown signal handler: {error}"))?;
 
+    let battery_wake = if cfg.battery_wake.enabled {
+        let camera_uids = cameras.values().filter_map(|camera| {
+            camera
+                .config
+                .uid
+                .as_ref()
+                .or(camera.device.p2p_uid.as_ref())
+                .cloned()
+        });
+        let service =
+            BatteryWakeService::start(cfg.battery_wake.clone(), camera_uids, shutdown.clone())?;
+        tracing::info!(
+            middleman_port = cfg.battery_wake.middleman_port,
+            register_port = cfg.battery_wake.register_port,
+            "battery camera wake service started",
+        );
+        Some(service)
+    } else {
+        None
+    };
+
     let storage_config = StorageConfig::from_toml(&cfg.storage);
     let storage_engine = StorageEngine::start(storage_config.clone());
     let recording_catalog = RecordingCatalog::open(&storage_config.recording_catalog_path)?;
@@ -133,6 +155,9 @@ fn main() -> anyhow::Result<()> {
     keeppeek.set_event_store(event_store);
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
+    if let Some(battery_wake) = &battery_wake {
+        keeppeek.set_battery_wake(battery_wake.handle());
+    }
 
     keeppeek.add_cameras(&cameras)?;
     let server_state = server_state.with_camera_runtime(keeppeek.control());
@@ -168,6 +193,10 @@ fn main() -> anyhow::Result<()> {
 
     if keeppeek_handle.join().is_err() {
         tracing::warn!("KeepPeek worker panicked");
+    }
+
+    if let Some(battery_wake) = battery_wake {
+        battery_wake.join();
     }
 
     tracing::info!("flushing and finalizing all recordings...");

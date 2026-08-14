@@ -4,8 +4,19 @@ pub const BC_MAGIC: u32 = 0x0ABC_DEF0;
 /// Baichuan magic as raw bytes (little-endian).
 pub const BC_MAGIC_BYTES: [u8; 4] = [0xf0, 0xde, 0xbc, 0x0a];
 
-/// Reversed-endian variant seen in JPEG snapshot payloads.
+/// Reversed-endian variant seen in JPEG snapshot reply headers.
 pub const JPEG_MAGIC: u32 = 0x0FED_CBA0;
+
+/// Reversed-endian Baichuan magic as raw bytes.
+pub const JPEG_MAGIC_BYTES: [u8; 4] = [0xa0, 0xcb, 0xed, 0x0f];
+
+pub(crate) const fn is_header_magic(magic: u32) -> bool {
+    magic == BC_MAGIC || magic == JPEG_MAGIC
+}
+
+pub(crate) fn has_header_magic(data: &[u8]) -> bool {
+    data.starts_with(&BC_MAGIC_BYTES) || data.starts_with(&JPEG_MAGIC_BYTES)
+}
 
 /// Standard header length (20 bytes).
 pub const HEADER_LEN_SHORT: usize = 20;

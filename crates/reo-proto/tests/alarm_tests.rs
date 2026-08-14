@@ -96,9 +96,18 @@ fn test_alarm_event_list_unsolicited() {
 
     let xml = b"<body>\
         <AlarmEventList version=\"1.1\">\
-            <channelId>0</channelId>\
-            <alarmType>motion</alarmType>\
-            <status>1</status>\
+            <AlarmEvent version=\"1.1\">\
+                <channelId>0</channelId>\
+                <status>MD</status>\
+                <AItype>people</AItype>\
+                <recording>1</recording>\
+                <timeStamp>123</timeStamp>\
+            </AlarmEvent>\
+            <AlarmEvent version=\"1.1\">\
+                <channelId>1</channelId>\
+                <status>none</status>\
+                <AItype>none</AItype>\
+            </AlarmEvent>\
         </AlarmEventList>\
     </body>";
 
@@ -112,12 +121,52 @@ fn test_alarm_event_list_unsolicited() {
 
     let mut buf = [0u8; 4096];
     match session.poll_output(&mut buf).unwrap() {
-        Output::Event(Event::Alarm(AlertEvent::AlarmEventList(data))) => {
-            assert_eq!(data.channel, 0);
-            assert_eq!(data.alarm_type.as_str(), "motion");
-            assert!(data.status);
+        Output::Event(Event::Alarm(AlertEvent::AlarmEventList(events))) => {
+            assert_eq!(events.events.len(), 2);
+            assert_eq!(events.events[0].channel, 0);
+            assert_eq!(events.events[0].status.as_str(), "MD");
+            assert_eq!(events.events[0].ai_types.as_str(), "people");
+            assert_eq!(events.events[0].recording, Some(true));
+            assert_eq!(events.events[0].timestamp, Some(123));
+            assert!(events.events[0].is_active());
+            assert_eq!(events.events[1].channel, 1);
+            assert!(!events.events[1].is_active());
         }
         other => panic!("expected Alarm(AlarmEventList), got {other:?}"),
+    }
+}
+
+#[test]
+fn test_alarm_event_list_accepts_legacy_flat_payload() {
+    let now = Instant::now();
+    let mut session = BcSession::default_client(now);
+    session.set_state(SessionState::Connected);
+
+    let xml = b"<body>\
+        <AlarmEventList version=\"1.1\">\
+            <channelId>0</channelId>\
+            <alarmType>motion</alarmType>\
+            <status>1</status>\
+        </AlarmEventList>\
+    </body>";
+    let wire = make_wire_message(
+        COMMAND_ALARM_EVENT_LIST,
+        xml,
+        make_status(BC_CLASS_MODERN_EXT, 0),
+        Some(0),
+    );
+    session.handle_input(Input::TcpData(now, &wire)).unwrap();
+
+    let mut buf = [0u8; 4096];
+    match session.poll_output(&mut buf).unwrap() {
+        Output::Event(Event::Alarm(AlertEvent::AlarmEventList(events))) => {
+            assert_eq!(events.events.len(), 1);
+            assert_eq!(events.events[0].channel, 0);
+            assert_eq!(events.events[0].alarm_type.as_str(), "motion");
+            assert_eq!(events.events[0].status.as_str(), "1");
+            assert!(events.events[0].is_active());
+        }
+        other => panic!("expected AlarmEventList, got {other:?}"),
     }
 }
 

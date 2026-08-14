@@ -25,6 +25,26 @@ fn test_framing_single_complete_message() {
 }
 
 #[test]
+fn test_framing_reversed_snapshot_header() {
+    let mut rb = ReadBuffer::new();
+    let body = b"jpeg";
+    let mut header_bytes = make_header_bytes(
+        109,
+        body.len() as u32,
+        0,
+        make_status(BC_CLASS_LEGACY, 0),
+        None,
+    );
+    header_bytes[..4].copy_from_slice(&JPEG_MAGIC.to_le_bytes());
+    header_bytes.extend_from_slice(body);
+
+    rb.extend(&header_bytes);
+    let message = rb.try_parse_message().unwrap().unwrap();
+    assert_eq!(message.header.msg_id, 109);
+    assert_eq!(message.body, body);
+}
+
+#[test]
 fn test_framing_partial_header() {
     let mut rb = ReadBuffer::new();
     let header_bytes = make_header_bytes(1, 4, 4, make_status(BC_CLASS_LEGACY, 0), None);

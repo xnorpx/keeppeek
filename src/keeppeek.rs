@@ -1,5 +1,6 @@
 use crate::{
     api::{CameraId, CameraLifecycle, CameraStatus},
+    battery_wake::BatteryWakeHandle,
     cameras::{AudioEncoding, Camera, CameraBackend, CameraTransport, VideoEncoding},
     reolink::ReolinkLoop,
     rtsp::{RtspLoop, RtspTransport},
@@ -224,6 +225,7 @@ pub struct KeepPeekLoop {
     health: HealthRegistry,
     status_tx: Option<FacadeSender<RouterMessage>>,
     stream_statuses: HashMap<IpAddr, CameraStreamStatus>,
+    battery_wake: Option<BatteryWakeHandle>,
 }
 
 impl KeepPeekLoop {
@@ -243,6 +245,7 @@ impl KeepPeekLoop {
             health: HealthRegistry::new(),
             status_tx: None,
             stream_statuses: HashMap::new(),
+            battery_wake: None,
         }
     }
 
@@ -266,6 +269,10 @@ impl KeepPeekLoop {
 
     pub fn set_status_sender(&mut self, status_tx: FacadeSender<RouterMessage>) {
         self.status_tx = Some(status_tx);
+    }
+
+    pub const fn set_battery_wake(&mut self, battery_wake: BatteryWakeHandle) {
+        self.battery_wake = Some(battery_wake);
     }
 
     fn expect_stream(&mut self, camera_ip: IpAddr, camera_name: Option<&str>, stream: StreamKind) {
@@ -561,6 +568,7 @@ impl KeepPeekLoop {
             health: self.health.clone(),
             tx: self.tx.clone(),
             shutdown: self.shutdown.clone(),
+            battery_wake: self.battery_wake.clone(),
         };
         self.handles.push(
             std::thread::Builder::new()

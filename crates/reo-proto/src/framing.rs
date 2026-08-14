@@ -44,7 +44,7 @@ impl ReadBuffer {
         }
 
         // Scan for magic if the first bytes don't match.
-        if self.buf[..4] != BC_MAGIC_BYTES {
+        if !has_header_magic(&self.buf) {
             if let Some(offset) = self.scan_for_magic() {
                 // Discard bytes before the magic.
                 self.buf.drain(..offset);
@@ -85,7 +85,7 @@ impl ReadBuffer {
     /// Scan the buffer for the BC magic bytes. Returns the offset if found.
     fn scan_for_magic(&self) -> Option<usize> {
         // Start from index 1 since index 0 was already checked.
-        (1..self.buf.len().saturating_sub(3)).find(|&i| self.buf[i..i + 4] == BC_MAGIC_BYTES)
+        (1..self.buf.len().saturating_sub(3)).find(|&i| has_header_magic(&self.buf[i..]))
     }
 }
 

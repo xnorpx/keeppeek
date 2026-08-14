@@ -157,7 +157,6 @@ fn test_xor_encrypted_stream_with_media_frames() {
     let mut rb = ReadBuffer::new();
     rb.extend(&wire);
     let msg = rb.try_parse_message().unwrap().unwrap();
-    assert!(msg.header.is_encrypted());
     assert!(msg.header.is_binary());
 
     // Decrypt

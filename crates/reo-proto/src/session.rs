@@ -18,6 +18,8 @@ use std::{
 };
 
 const MAX_PENDING: usize = 128;
+const MAX_PENDING_COMMANDS: usize = 128;
+const MAX_MISSED_PINGS: u8 = 5;
 
 /// Media frames are padded to this alignment on the wire.
 const MEDIA_FRAME_ALIGNMENT: usize = 8;
@@ -52,6 +54,7 @@ pub struct BcSessionConfig {
     pub role: Role,
     pub tcp_recv_buf_size: usize,
     pub tcp_send_buf_size: usize,
+    pub keepalive_channel: u8,
     pub keepalive_interval: Duration,
     pub stream_watchdog_interval: Duration,
     pub relogin_interval: Duration,
@@ -63,6 +66,7 @@ impl BcSessionConfig {
             role: Role::Client,
             tcp_recv_buf_size: crate::TCP_RECV_BUF_SIZE,
             tcp_send_buf_size: crate::TCP_SEND_BUF_SIZE,
+            keepalive_channel: 0,
             keepalive_interval: Duration::from_secs(10),
             stream_watchdog_interval: Duration::from_secs(30),
             relogin_interval: Duration::from_secs(300),
@@ -74,6 +78,7 @@ impl BcSessionConfig {
             role: Role::Camera,
             tcp_recv_buf_size: crate::TCP_RECV_BUF_SIZE,
             tcp_send_buf_size: crate::TCP_SEND_BUF_SIZE,
+            keepalive_channel: 0,
             keepalive_interval: Duration::from_secs(10),
             stream_watchdog_interval: Duration::from_secs(30),
             relogin_interval: Duration::from_secs(300),
@@ -123,15 +128,12 @@ pub enum Command {
     StopStream(crate::stream::StreamStop),
     /// Request a JPEG snapshot.
     Snapshot(crate::stream::SnapshotRequest),
-    /// Query talk ability from the camera.
-    QueryTalkCapabilities { channel: u8 },
-    /// Configure talk parameters before sending audio.
-    TalkConfig {
-        channel: u8,
-        ability: crate::stream::TalkCapabilities,
-    },
-    /// Send raw audio data to the camera (talk/intercom).
-    SendTalkData(Vec<u8>),
+    /// Open an external stream for talkback control and audio packets.
+    OpenTalkback { channel: u8 },
+    /// Reset talkback and close its external stream.
+    CloseTalkback { channel: u8 },
+    /// Send a talkback protocol command over an external stream.
+    Talk(crate::talk::TalkCommand),
     /// Device / system query or config command.
     Device(crate::device::DeviceCommand),
     /// Video / encoding query or config command.
@@ -155,6 +157,18 @@ pub enum Event<'buf> {
     SessionTimeout,
     /// Received a ping response (keepalive acknowledged).
     Pong,
+    /// A tracked command completed successfully.
+    CommandCompleted {
+        msg_id: u32,
+        msg_num: u16,
+        status: u16,
+    },
+    /// A tracked command was rejected by the camera.
+    CommandFailed {
+        msg_id: u32,
+        msg_num: u16,
+        status: u16,
+    },
     /// Received a message with no specific handler.
     UnhandledMessage { msg_id: u32, body: &'buf [u8] },
     /// Login handshake completed successfully.
@@ -183,10 +197,10 @@ pub enum Event<'buf> {
     },
     /// JPEG snapshot data received.
     SnapshotData { data: &'buf [u8] },
-    /// Talk ability response from camera.
-    TalkCapabilities(crate::stream::TalkCapabilities),
-    /// Talk config acknowledged by camera.
-    TalkConfigured,
+    /// Snapshot transfer was rejected by the camera.
+    SnapshotFailed { status: u16 },
+    /// Talkback protocol event.
+    Talk(crate::talk::TalkEvent),
     /// Stream started acknowledgement.
     StreamStarted,
     /// Stream was subscribed and assigned a local stream id.
@@ -248,6 +262,53 @@ struct AudioAccum {
     data: Vec<u8>,
 }
 
+struct SnapshotAccum {
+    expected_data_len: usize,
+    data: Vec<u8>,
+}
+
+const fn response_status_is_success(status: u16) -> bool {
+    matches!(status, 0 | 200 | 201 | 300)
+}
+
+fn parse_snapshot_size(metadata: &[u8]) -> Result<usize, BcError> {
+    let size = crate::xml::extract_u32(metadata, "pictureSize")?
+        .ok_or(BcError::Protocol("snapshot metadata missing pictureSize"))? as usize;
+    if size == 0 || size > crate::MAX_SNAPSHOT_BYTES {
+        return Err(BcError::Protocol(
+            "snapshot size is outside accepted bounds",
+        ));
+    }
+    Ok(size)
+}
+
+fn snapshot_extension_is_binary(extension: &[u8]) -> Result<bool, BcError> {
+    if extension.is_empty() {
+        return Ok(false);
+    }
+    let mut binary = false;
+    crate::xml::parse_xml(extension, |name, text| {
+        if matches!(name, "binaryData" | "binary") {
+            binary = text.trim() == "1" || text.trim().eq_ignore_ascii_case("true");
+        }
+    })?;
+    Ok(binary)
+}
+
+fn payload_range(
+    header: PacketHeader,
+    body_start: usize,
+    body_len: usize,
+) -> Result<(usize, usize), BcError> {
+    let payload_offset = header.extension.unwrap_or(0) as usize;
+    if payload_offset > body_len {
+        return Err(BcError::InvalidHeader(
+            "payload offset exceeds message body length",
+        ));
+    }
+    Ok((body_start + payload_offset, body_len - payload_offset))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct StreamSubscriptionEntry {
     channel: u8,
@@ -282,6 +343,16 @@ impl PendingEvent {
 enum EventKind {
     SessionTimeout,
     Pong,
+    CommandCompleted {
+        msg_id: u32,
+        msg_num: u16,
+        status: u16,
+    },
+    CommandFailed {
+        msg_id: u32,
+        msg_num: u16,
+        status: u16,
+    },
     Unhandled {
         msg_id: u32,
     },
@@ -309,9 +380,11 @@ enum EventKind {
     },
     /// JPEG snapshot data.
     SnapshotData,
-    /// Talk ability parsed from XML response.
-    TalkCapabilitiesResponse(crate::stream::TalkCapabilities),
-    TalkConfigured,
+    SnapshotFailed {
+        status: u16,
+    },
+    /// Talkback domain response (lazy-parsed at poll_output time).
+    TalkResponse(crate::talk::TalkResponseKind),
     /// Stream started ack (response to start request).
     StreamStarted,
     /// Stream subscribed and assigned a local id.
@@ -344,6 +417,13 @@ enum EventKind {
     FileData,
     /// Binary thumbnail data.
     ThumbnailData,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingCommandKind {
+    Generic,
+    Ping,
+    Snapshot,
 }
 
 /// Diagnostic counters for tracking frame delivery and losses.
@@ -417,11 +497,15 @@ pub struct BcSession {
     last_send: Instant,
     last_login: Option<Instant>,
     keepalive_interval: Duration,
+    keepalive_channel: u8,
     stream_watchdog_interval: Duration,
     relogin_interval: Duration,
     active_streams: u8,
     next_stream_id: u32,
     next_msg_num: u16,
+    pending_commands: HashMap<(u32, u16), PendingCommandKind>,
+    pending_ping: Option<u16>,
+    missed_pings: u8,
     stream_ids_by_key: HashMap<u16, u32>,
     stream_subs_by_id: HashMap<u32, StreamSubscriptionEntry>,
     pending_subscribe_ids: VecDeque<u32>,
@@ -445,9 +529,11 @@ pub struct BcSession {
     video_accums: HashMap<u32, VideoAccum>,
     audio_accums: HashMap<u32, AudioAccum>,
     header_carry: Vec<u8>,
-    /// Staging buffer for completed media frame data (referenced by PendingEvents
-    /// that have from_media=true). Cleared when all pending events are drained.
+    /// Staging buffer for completed media and snapshot data (referenced by
+    /// PendingEvents that have from_media=true). Cleared when all pending events are drained.
     media_out: Vec<u8>,
+    snapshot_accum: Option<SnapshotAccum>,
+    snapshot_in_flight: bool,
 
     // Diagnostic counters
     stats: SessionStats,
@@ -480,11 +566,15 @@ impl BcSession {
             last_send: now,
             last_login: None,
             keepalive_interval: config.keepalive_interval,
+            keepalive_channel: config.keepalive_channel,
             stream_watchdog_interval: config.stream_watchdog_interval,
             relogin_interval: config.relogin_interval,
             active_streams: 0,
             next_stream_id: 1,
             next_msg_num: 1,
+            pending_commands: HashMap::new(),
+            pending_ping: None,
+            missed_pings: 0,
             stream_ids_by_key: HashMap::new(),
             stream_subs_by_id: HashMap::new(),
             pending_subscribe_ids: VecDeque::new(),
@@ -497,6 +587,8 @@ impl BcSession {
             audio_accums: HashMap::new(),
             header_carry: Vec::new(),
             media_out: Vec::new(),
+            snapshot_accum: None,
+            snapshot_in_flight: false,
             stats: SessionStats::default(),
         }
     }
@@ -583,6 +675,24 @@ impl BcSession {
             let output_event = match ev.kind {
                 EventKind::SessionTimeout => Event::SessionTimeout,
                 EventKind::Pong => Event::Pong,
+                EventKind::CommandCompleted {
+                    msg_id,
+                    msg_num,
+                    status,
+                } => Event::CommandCompleted {
+                    msg_id,
+                    msg_num,
+                    status,
+                },
+                EventKind::CommandFailed {
+                    msg_id,
+                    msg_num,
+                    status,
+                } => Event::CommandFailed {
+                    msg_id,
+                    msg_num,
+                    status,
+                },
                 EventKind::Unhandled { msg_id } => {
                     if ev.body_len > 0 {
                         buf[..ev.body_len].copy_from_slice(
@@ -643,15 +753,22 @@ impl BcSession {
                     }
                 }
                 EventKind::SnapshotData => {
-                    buf[..ev.body_len].copy_from_slice(
-                        &self.recv_buf[ev.body_start..ev.body_start + ev.body_len],
-                    );
+                    let src = if ev.from_media {
+                        &self.media_out
+                    } else {
+                        &*self.recv_buf
+                    };
+                    buf[..ev.body_len]
+                        .copy_from_slice(&src[ev.body_start..ev.body_start + ev.body_len]);
                     Event::SnapshotData {
                         data: &buf[..ev.body_len],
                     }
                 }
-                EventKind::TalkCapabilitiesResponse(ability) => Event::TalkCapabilities(ability),
-                EventKind::TalkConfigured => Event::TalkConfigured,
+                EventKind::SnapshotFailed { status } => Event::SnapshotFailed { status },
+                EventKind::TalkResponse(kind) => {
+                    let body = &self.recv_buf[ev.body_start..ev.body_start + ev.body_len];
+                    Event::Talk(crate::talk::parse_response(kind, body)?)
+                }
                 EventKind::StreamStarted => Event::StreamStarted,
                 EventKind::StreamSubscribed {
                     stream_id,
@@ -765,11 +882,9 @@ impl BcSession {
             Command::UnsubscribeStream { stream_id } => self.unsubscribe_stream(stream_id),
             Command::StopStream(stop) => self.send_stream_stop(stop),
             Command::Snapshot(req) => self.send_snapshot(req),
-            Command::QueryTalkCapabilities { channel } => {
-                self.send_talk_capabilities_query(channel)
-            }
-            Command::TalkConfig { channel, ability } => self.send_talk_config(channel, &ability),
-            Command::SendTalkData(data) => self.send_talk_data(&data),
+            Command::OpenTalkback { channel } => self.open_talkback(channel),
+            Command::CloseTalkback { channel } => self.close_talkback(channel),
+            Command::Talk(command) => self.send_talk_command(&command),
             Command::Device(dc) => self.send_device_command(&dc),
             Command::Video(vc) => self.send_video_command(&vc),
             Command::Network(nc) => self.send_network_command(&nc),
@@ -790,7 +905,7 @@ impl BcSession {
             let data = &self.recv_buf[self.recv_start..self.recv_end];
 
             // Check for magic
-            if data[..4] != BC_MAGIC_BYTES {
+            if !has_header_magic(data) {
                 if let Some(offset) = scan_for_magic(data) {
                     self.stats.resync_skipped_bytes += offset as u64;
                     self.recv_start += offset;
@@ -834,6 +949,8 @@ impl BcSession {
         if self.pending.is_full() {
             return Err(BcError::Protocol("pending event queue full"));
         }
+        let (payload_start, payload_len) = payload_range(header, body_start, body_len)?;
+        let pending_command = self.take_pending_command(header);
 
         // Check if the body starts with a media frame magic BEFORE decryption.
         // Binary media frames are sent unencrypted even when the session uses
@@ -856,6 +973,7 @@ impl BcSession {
         let full_aes = matches!(self.encryption, EncryptionMode::FullAes);
         let skip_decrypt = header.msg_id == crate::COMMAND_LOGIN
             || (is_media_body && !full_aes)
+            || (header.msg_id == crate::COMMAND_SNAP && header.is_binary() && !full_aes)
             || (header.msg_id == crate::COMMAND_STREAM
                 && !(self.video_accums.is_empty()
                     && self.audio_accums.is_empty()
@@ -863,13 +981,48 @@ impl BcSession {
                 && !full_aes);
         if body_len > 0 && !skip_decrypt {
             let channel_id = (header.encryption_offset & 0xFF) as u8;
-            self.decrypt_body(body_start, body_len, channel_id, header.extension);
+            if header.msg_id == crate::COMMAND_SNAP
+                && !header.is_binary()
+                && !full_aes
+                && self.snapshot_accum.is_some()
+                && header.extension.unwrap_or(0) == 0
+            {
+            } else if header.msg_id == crate::COMMAND_SNAP
+                && !header.is_binary()
+                && !full_aes
+                && let Some(offset) = header.extension
+                && offset > 0
+                && offset < body_len as u32
+            {
+                self.decrypt_body(body_start, offset as usize, channel_id, None);
+            } else {
+                self.decrypt_body(body_start, body_len, channel_id, header.extension);
+            }
+        }
+
+        if header.msg_id != crate::COMMAND_LOGIN
+            && !response_status_is_success(header.response_code())
+        {
+            if header.msg_id == crate::COMMAND_SNAP {
+                self.fail_snapshot(header.response_code());
+            } else {
+                self.push_command_failure(header, pending_command);
+            }
+            return Ok(());
+        }
+
+        if header.msg_id == crate::COMMAND_PING
+            && matches!(pending_command, Some(PendingCommandKind::Ping))
+        {
+            self.pending_ping = None;
+            self.missed_pings = 0;
+            self.pending.push(PendingEvent::new(EventKind::Pong, 0, 0));
+            return Ok(());
         }
 
         match header.msg_id {
-            crate::COMMAND_PING => {
-                self.pending
-                    .push(PendingEvent::new(EventKind::Pong, body_start, body_len));
+            crate::COMMAND_UDP_KEEP_ALIVE if header.is_modern() => {
+                self.reply_udp_keepalive(header)?;
             }
             crate::COMMAND_LOGIN => {
                 if let Some(kind) = self.dispatch_login(header, body_start, body_len)? {
@@ -890,12 +1043,8 @@ impl BcSession {
                     body_len,
                 ));
             }
-            crate::COMMAND_SNAP if header.is_binary() => {
-                self.pending.push(PendingEvent::new(
-                    EventKind::SnapshotData,
-                    body_start,
-                    body_len,
-                ));
+            crate::COMMAND_SNAP => {
+                self.dispatch_snapshot(header, body_start, body_len)?;
             }
             crate::COMMAND_FILE_READ | crate::COMMAND_COVER_FILE_READ if header.is_binary() => {
                 self.pending
@@ -912,65 +1061,55 @@ impl BcSession {
                     body_len,
                 ));
             }
-            crate::COMMAND_TALK_CAPABILITIES if header.is_modern() && body_len > 0 => {
-                let body = &self.recv_buf[body_start..body_start + body_len];
-                let ability = crate::stream::parse_talk_capabilities(body)?;
-                self.pending.push(PendingEvent::new(
-                    EventKind::TalkCapabilitiesResponse(ability),
-                    body_start,
-                    body_len,
-                ));
-            }
-            crate::COMMAND_TALK_CONFIG if header.is_modern() => {
-                self.pending.push(PendingEvent::new(
-                    EventKind::TalkConfigured,
-                    body_start,
-                    body_len,
-                ));
-            }
             msg_id if header.is_modern() => {
                 // Try domain classifiers before falling through to Unhandled
-                if let Some(dk) = crate::device::classify_response(msg_id) {
+                if let Some(talk) = crate::talk::classify_response(msg_id) {
+                    self.pending.push(PendingEvent::new(
+                        EventKind::TalkResponse(talk),
+                        payload_start,
+                        payload_len,
+                    ));
+                } else if let Some(dk) = crate::device::classify_response(msg_id) {
                     self.pending.push(PendingEvent::new(
                         EventKind::DeviceResponse(dk),
-                        body_start,
-                        body_len,
+                        payload_start,
+                        payload_len,
                     ));
                 } else if let Some(vk) = crate::video_cfg::classify_response(msg_id) {
                     self.pending.push(PendingEvent::new(
                         EventKind::VideoResponse(vk),
-                        body_start,
-                        body_len,
+                        payload_start,
+                        payload_len,
                     ));
                 } else if let Some(nk) = crate::network_cfg::classify_response(msg_id) {
                     self.pending.push(PendingEvent::new(
                         EventKind::NetworkResponse(nk),
-                        body_start,
-                        body_len,
+                        payload_start,
+                        payload_len,
                     ));
                 } else if let Some(pk) = crate::ptz::classify_response(msg_id) {
                     self.pending.push(PendingEvent::new(
                         EventKind::PtzResponse(pk),
-                        body_start,
-                        body_len,
+                        payload_start,
+                        payload_len,
                     ));
                 } else if let Some(ak) = crate::alarm::classify_response(msg_id) {
                     self.pending.push(PendingEvent::new(
                         EventKind::AlarmResponse(ak),
-                        body_start,
-                        body_len,
+                        payload_start,
+                        payload_len,
                     ));
                 } else if let Some(rk) = crate::recording::classify_response(msg_id) {
                     self.pending.push(PendingEvent::new(
                         EventKind::RecordingResponse(rk),
-                        body_start,
-                        body_len,
+                        payload_start,
+                        payload_len,
                     ));
                 } else if let Some(nk) = crate::notification::classify_response(msg_id) {
                     self.pending.push(PendingEvent::new(
                         EventKind::NotificationResponse(nk),
-                        body_start,
-                        body_len,
+                        payload_start,
+                        payload_len,
                     ));
                 } else {
                     self.pending.push(PendingEvent::new(
@@ -991,7 +1130,155 @@ impl BcSession {
             }
         }
 
+        if matches!(pending_command, Some(PendingCommandKind::Generic)) && !self.pending.is_full() {
+            self.pending.push(PendingEvent::new(
+                EventKind::CommandCompleted {
+                    msg_id: header.msg_id,
+                    msg_num: header.message_number(),
+                    status: header.response_code(),
+                },
+                0,
+                0,
+            ));
+        }
+
         Ok(())
+    }
+
+    fn dispatch_snapshot(
+        &mut self,
+        header: PacketHeader,
+        body_start: usize,
+        body_len: usize,
+    ) -> Result<(), BcError> {
+        if header.is_binary() {
+            if body_len > crate::MAX_SNAPSHOT_BYTES {
+                return Err(BcError::Protocol("snapshot payload exceeds maximum size"));
+            }
+            self.clear_pending_snapshot();
+            self.snapshot_in_flight = false;
+            self.snapshot_accum = None;
+            self.pending.push(PendingEvent::new(
+                EventKind::SnapshotData,
+                body_start,
+                body_len,
+            ));
+            return Ok(());
+        }
+
+        if body_len == 0 && self.snapshot_in_flight && matches!(header.response_code(), 0 | 200) {
+            return Ok(());
+        }
+
+        let payload_offset = header.extension.unwrap_or(0) as usize;
+        if payload_offset > body_len {
+            return Err(BcError::Protocol(
+                "snapshot payload offset exceeds body length",
+            ));
+        }
+
+        let extension_end = body_start + payload_offset;
+        let payload_start = extension_end;
+        let payload_len = body_len - payload_offset;
+        let extension = &self.recv_buf[body_start..extension_end];
+        let payload = &self.recv_buf[payload_start..payload_start + payload_len];
+
+        if snapshot_extension_is_binary(extension)? {
+            if !self.snapshot_in_flight {
+                return Err(BcError::Protocol("snapshot data arrived without a request"));
+            }
+            let complete = self.append_snapshot_payload(payload_start, payload_len)?;
+            return self.finish_snapshot_if_ready(header.response_code(), complete);
+        }
+
+        if !extension.is_empty() && extension.starts_with(b"<") {
+            let expected_data_len = parse_snapshot_size(extension)?;
+            self.start_snapshot(expected_data_len);
+            let complete = self.append_snapshot_payload(payload_start, payload_len)?;
+            self.finish_snapshot_if_ready(header.response_code(), complete)?;
+        } else if payload.starts_with(b"<") {
+            let expected_data_len = parse_snapshot_size(payload)?;
+            self.start_snapshot(expected_data_len);
+        } else {
+            let complete = self.append_snapshot_payload(payload_start, payload_len)?;
+            self.finish_snapshot_if_ready(header.response_code(), complete)?;
+        }
+
+        Ok(())
+    }
+
+    fn start_snapshot(&mut self, expected_data_len: usize) {
+        self.snapshot_accum = Some(SnapshotAccum {
+            expected_data_len,
+            data: Vec::with_capacity(expected_data_len),
+        });
+    }
+
+    fn append_snapshot_payload(
+        &mut self,
+        payload_start: usize,
+        payload_len: usize,
+    ) -> Result<bool, BcError> {
+        let complete = {
+            let payload = &self.recv_buf[payload_start..payload_start + payload_len];
+            let snapshot = self
+                .snapshot_accum
+                .as_mut()
+                .ok_or(BcError::Protocol("snapshot data arrived without metadata"))?;
+            let received_len = snapshot
+                .data
+                .len()
+                .checked_add(payload.len())
+                .ok_or(BcError::Protocol("snapshot payload length overflow"))?;
+            if received_len > snapshot.expected_data_len {
+                return Err(BcError::Protocol("snapshot payload exceeds metadata size"));
+            }
+            snapshot.data.extend_from_slice(payload);
+            received_len == snapshot.expected_data_len
+        };
+        Ok(complete)
+    }
+
+    fn finish_snapshot_if_ready(&mut self, status: u16, complete: bool) -> Result<(), BcError> {
+        if status == 200 || (status == 0 && !complete) {
+            return Ok(());
+        }
+        if !complete {
+            return Err(BcError::Protocol(
+                "snapshot ended before its advertised byte count",
+            ));
+        }
+        let snapshot = self
+            .snapshot_accum
+            .take()
+            .expect("snapshot accumulator exists after successful append");
+        let media_start = self.media_out.len();
+        let data_len = snapshot.data.len();
+        self.media_out.extend_from_slice(&snapshot.data);
+        self.pending.push(PendingEvent::media(
+            EventKind::SnapshotData,
+            media_start,
+            data_len,
+        ));
+        self.snapshot_in_flight = false;
+        self.clear_pending_snapshot();
+        Ok(())
+    }
+
+    fn fail_snapshot(&mut self, status: u16) {
+        self.clear_pending_snapshot();
+        self.snapshot_in_flight = false;
+        self.snapshot_accum = None;
+        self.pending.push(PendingEvent::new(
+            EventKind::SnapshotFailed { status },
+            0,
+            0,
+        ));
+    }
+
+    fn clear_pending_snapshot(&mut self) {
+        self.pending_commands
+            .retain(|_, kind| *kind != PendingCommandKind::Snapshot);
     }
 
     /// Route a COMMAND_STREAM message body: detect media frames, XML acks,
@@ -1664,14 +1951,22 @@ impl BcSession {
     }
 
     fn send_ping(&mut self) -> Result<(), BcError> {
+        if self.role != Role::Client {
+            return Err(BcError::WrongRole);
+        }
+        if self.pending_ping.is_some() {
+            return Ok(());
+        }
         let header = PacketHeader {
             msg_id: crate::COMMAND_PING,
             body_len: 0,
-            encryption_offset: 0,
+            encryption_offset: u32::from(self.keepalive_channel),
             status_class: make_status(BC_CLASS_MODERN_EXT, 0),
             extension: Some(0),
         };
-        self.queue_send(&header, &[])
+        let msg_num = self.queue_correlated_send(header, &[], PendingCommandKind::Ping)?;
+        self.pending_ping = Some(msg_num);
+        Ok(())
     }
 
     fn start_login(&mut self, params: LoginParams) -> Result<(), BcError> {
@@ -1715,6 +2010,11 @@ impl BcSession {
         };
         self.queue_send(&header, &[])?;
         self.state = SessionState::Disconnected;
+        self.pending_commands.clear();
+        self.pending_ping = None;
+        self.missed_pings = 0;
+        self.snapshot_in_flight = false;
+        self.snapshot_accum = None;
         self.encryption = EncryptionMode::None;
         self.aes_key = None;
         self.nonce = ArrayString::new();
@@ -1843,42 +2143,135 @@ impl BcSession {
         if self.role != Role::Client {
             return Err(BcError::WrongRole);
         }
+        if self.snapshot_in_flight {
+            return Err(BcError::Protocol("snapshot request is already in flight"));
+        }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let xml_len = crate::stream::build_snapshot_request(&req, &mut xml_buf)?;
         let header = crate::stream::snapshot_request_header(xml_len);
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Snapshot)?;
+        self.snapshot_in_flight = true;
+        Ok(())
     }
 
-    fn send_talk_capabilities_query(&mut self, channel: u8) -> Result<(), BcError> {
+    fn open_talkback(&mut self, channel: u8) -> Result<(), BcError> {
         if self.role != Role::Client {
             return Err(BcError::WrongRole);
         }
-        let mut xml_buf = [0u8; crate::MAX_XML_BODY];
-        let xml_len = crate::stream::build_talk_capabilities_query(channel, &mut xml_buf)?;
-        let header = crate::stream::talk_capabilities_query_header(xml_len);
-        self.queue_send(&header, &xml_buf[..xml_len])
+        let key = stream_key(channel, crate::stream::StreamType::Extern);
+        if self.stream_ids_by_key.contains_key(&key) {
+            return Err(BcError::Protocol(
+                "talkback external stream is already open",
+            ));
+        }
+        self.subscribe_stream(crate::stream::StreamSubscription {
+            channel,
+            stream_type: crate::stream::StreamType::Extern,
+            expected_width: 0,
+            expected_height: 0,
+        })
     }
 
-    fn send_talk_config(
-        &mut self,
-        channel: u8,
-        ability: &crate::stream::TalkCapabilities,
-    ) -> Result<(), BcError> {
+    fn close_talkback(&mut self, channel: u8) -> Result<(), BcError> {
         if self.role != Role::Client {
             return Err(BcError::WrongRole);
         }
-        let mut xml_buf = [0u8; crate::MAX_XML_BODY];
-        let xml_len = crate::stream::build_talk_config(channel, ability, &mut xml_buf)?;
-        let header = crate::stream::talk_config_header(xml_len);
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.send_talk_command(&crate::talk::TalkCommand::Reset { channel })?;
+        let stream_id = self
+            .stream_ids_by_key
+            .get(&stream_key(channel, crate::stream::StreamType::Extern))
+            .copied()
+            .ok_or(BcError::Protocol("talkback external stream is not open"))?;
+        self.unsubscribe_stream(stream_id)
     }
 
-    fn send_talk_data(&mut self, data: &[u8]) -> Result<(), BcError> {
+    fn send_talk_command(&mut self, command: &crate::talk::TalkCommand) -> Result<(), BcError> {
         if self.role != Role::Client {
             return Err(BcError::WrongRole);
         }
-        let header = crate::stream::talk_data_header(data.len());
-        self.queue_send(&header, data)
+        let channel = command.channel();
+        if !self
+            .stream_ids_by_key
+            .contains_key(&stream_key(channel, crate::stream::StreamType::Extern))
+        {
+            return Err(BcError::Protocol("talkback requires an external stream"));
+        }
+
+        let mut extension = [0_u8; crate::MAX_XML_BODY];
+        match command {
+            crate::talk::TalkCommand::QueryAbility { .. } => {
+                let extension_len = crate::talk::build_extension(channel, false, &mut extension)?;
+                let header = crate::talk::command_header(
+                    crate::COMMAND_TALK_CAPABILITIES,
+                    channel,
+                    extension_len,
+                    0,
+                )?;
+                self.queue_correlated_send_parts(
+                    header,
+                    &extension[..extension_len],
+                    &[],
+                    false,
+                    PendingCommandKind::Generic,
+                )
+                .map(|_| ())
+            }
+            crate::talk::TalkCommand::Configure(config) => {
+                let extension_len = crate::talk::build_extension(channel, false, &mut extension)?;
+                let mut body = [0_u8; crate::MAX_XML_BODY];
+                let body_len = crate::talk::build_config(config, &mut body)?;
+                let header = crate::talk::command_header(
+                    crate::COMMAND_TALK_CONFIG,
+                    channel,
+                    extension_len,
+                    body_len,
+                )?;
+                self.queue_correlated_send_parts(
+                    header,
+                    &extension[..extension_len],
+                    &body[..body_len],
+                    false,
+                    PendingCommandKind::Generic,
+                )
+                .map(|_| ())
+            }
+            crate::talk::TalkCommand::SendAdpcm { sequence, data, .. } => {
+                let extension_len = crate::talk::build_extension(channel, true, &mut extension)?;
+                let body_capacity = crate::talk::adpcm_packet_capacity(data.len())?;
+                let mut body = vec![0_u8; body_capacity];
+                let body_len = crate::talk::build_adpcm_packet(data, *sequence, &mut body)?;
+                let header = crate::talk::command_header(
+                    crate::COMMAND_TALK,
+                    channel,
+                    extension_len,
+                    body_len,
+                )?
+                .with_message_number(self.allocate_msg_num());
+                self.queue_send_parts(
+                    &header,
+                    &extension[..extension_len],
+                    &body[..body_len],
+                    true,
+                )
+            }
+            crate::talk::TalkCommand::Reset { .. } => {
+                let extension_len = crate::talk::build_extension(channel, false, &mut extension)?;
+                let header = crate::talk::command_header(
+                    crate::COMMAND_TALK_RESET,
+                    channel,
+                    extension_len,
+                    0,
+                )?;
+                self.queue_correlated_send_parts(
+                    header,
+                    &extension[..extension_len],
+                    &[],
+                    false,
+                    PendingCommandKind::Generic,
+                )
+                .map(|_| ())
+            }
+        }
     }
 
     fn send_device_command(&mut self, cmd: &crate::device::DeviceCommand) -> Result<(), BcError> {
@@ -1887,7 +2280,8 @@ impl BcSession {
         }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let (header, xml_len) = crate::device::build_request(cmd, &mut xml_buf)?;
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Generic)
+            .map(|_| ())
     }
 
     fn send_video_command(&mut self, cmd: &crate::video_cfg::VideoCommand) -> Result<(), BcError> {
@@ -1896,7 +2290,8 @@ impl BcSession {
         }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let (header, xml_len) = crate::video_cfg::build_request(cmd, &mut xml_buf)?;
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Generic)
+            .map(|_| ())
     }
 
     fn send_network_command(
@@ -1908,7 +2303,8 @@ impl BcSession {
         }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let (header, xml_len) = crate::network_cfg::build_request(cmd, &mut xml_buf)?;
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Generic)
+            .map(|_| ())
     }
 
     fn send_ptz_command(&mut self, cmd: &crate::ptz::PtzCommand) -> Result<(), BcError> {
@@ -1917,7 +2313,8 @@ impl BcSession {
         }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let (header, xml_len) = crate::ptz::build_request(cmd, &mut xml_buf)?;
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Generic)
+            .map(|_| ())
     }
 
     fn send_alarm_command(&mut self, cmd: &crate::alarm::AlarmCommand) -> Result<(), BcError> {
@@ -1926,7 +2323,8 @@ impl BcSession {
         }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let (header, xml_len) = crate::alarm::build_request(cmd, &mut xml_buf)?;
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Generic)
+            .map(|_| ())
     }
 
     fn send_recording_command(
@@ -1938,7 +2336,8 @@ impl BcSession {
         }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let (header, xml_len) = crate::recording::build_request(cmd, &mut xml_buf)?;
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Generic)
+            .map(|_| ())
     }
 
     fn send_notification_command(
@@ -1950,7 +2349,8 @@ impl BcSession {
         }
         let mut xml_buf = [0u8; crate::MAX_XML_BODY];
         let (header, xml_len) = crate::notification::build_request(cmd, &mut xml_buf)?;
-        self.queue_send(&header, &xml_buf[..xml_len])
+        self.queue_correlated_send(header, &xml_buf[..xml_len], PendingCommandKind::Generic)
+            .map(|_| ())
     }
 
     fn dispatch_login(
@@ -2342,9 +2742,102 @@ impl BcSession {
     }
 
     fn queue_send(&mut self, header: &PacketHeader, body: &[u8]) -> Result<(), BcError> {
+        let body_start = self.reserve_send(header, body.len())?;
+        if !body.is_empty() {
+            self.send_buf[body_start..body_start + body.len()].copy_from_slice(body);
+
+            // Encrypt body for non-login messages using negotiated encryption.
+            // Login messages handle their own encryption in dispatch_login.
+            if header.msg_id != crate::COMMAND_LOGIN {
+                let channel_id = (header.encryption_offset & 0xFF) as u8;
+                self.encrypt_body(body_start, body.len(), channel_id, header.extension);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn queue_correlated_send(
+        &mut self,
+        header: PacketHeader,
+        body: &[u8],
+        kind: PendingCommandKind,
+    ) -> Result<u16, BcError> {
+        if self.pending_commands.len() >= MAX_PENDING_COMMANDS {
+            return Err(BcError::Protocol("pending command table full"));
+        }
+        let msg_num = self.allocate_msg_num();
+        let header = header.with_message_number(msg_num);
+        self.pending_commands.insert((header.msg_id, msg_num), kind);
+        if let Err(error) = self.queue_send(&header, body) {
+            self.pending_commands.remove(&(header.msg_id, msg_num));
+            return Err(error);
+        }
+        Ok(msg_num)
+    }
+
+    fn queue_correlated_send_parts(
+        &mut self,
+        header: PacketHeader,
+        extension: &[u8],
+        body: &[u8],
+        binary_body: bool,
+        kind: PendingCommandKind,
+    ) -> Result<u16, BcError> {
+        if self.pending_commands.len() >= MAX_PENDING_COMMANDS {
+            return Err(BcError::Protocol("pending command table full"));
+        }
+        let msg_num = self.allocate_msg_num();
+        let header = header.with_message_number(msg_num);
+        self.pending_commands.insert((header.msg_id, msg_num), kind);
+        if let Err(error) = self.queue_send_parts(&header, extension, body, binary_body) {
+            self.pending_commands.remove(&(header.msg_id, msg_num));
+            return Err(error);
+        }
+        Ok(msg_num)
+    }
+
+    fn queue_send_parts(
+        &mut self,
+        header: &PacketHeader,
+        extension: &[u8],
+        body: &[u8],
+        binary_body: bool,
+    ) -> Result<(), BcError> {
+        let body_len = extension
+            .len()
+            .checked_add(body.len())
+            .ok_or(BcError::Protocol("outgoing message length overflow"))?;
+        if header.body_len
+            != u32::try_from(body_len)
+                .map_err(|_| BcError::Protocol("outgoing message exceeds protocol limit"))?
+        {
+            return Err(BcError::InvalidHeader("body length does not match header"));
+        }
+        let body_start = self.reserve_send(header, body_len)?;
+        let payload_start = body_start + extension.len();
+        self.send_buf[body_start..payload_start].copy_from_slice(extension);
+        self.send_buf[payload_start..payload_start + body.len()].copy_from_slice(body);
+
+        if header.msg_id != crate::COMMAND_LOGIN {
+            let channel_id = (header.encryption_offset & 0xFF) as u8;
+            if !extension.is_empty() {
+                self.encrypt_body(body_start, extension.len(), channel_id, None);
+            }
+            if !binary_body && !body.is_empty() {
+                self.encrypt_body(payload_start, body.len(), channel_id, None);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn reserve_send(&mut self, header: &PacketHeader, body_len: usize) -> Result<usize, BcError> {
         let mut hdr_buf = [0u8; HEADER_LEN_EXTENDED];
         let hdr_len = header.serialize(&mut hdr_buf);
-        let total = hdr_len + body.len();
+        let total = hdr_len
+            .checked_add(body_len)
+            .ok_or(BcError::Protocol("outgoing message length overflow"))?;
 
         // Try to compact send buffer
         if self.send_end + total > self.send_buf.len() && self.send_start > 0 {
@@ -2363,21 +2856,9 @@ impl BcSession {
 
         self.send_buf[self.send_end..self.send_end + hdr_len].copy_from_slice(&hdr_buf[..hdr_len]);
         self.send_end += hdr_len;
-
-        if !body.is_empty() {
-            self.send_buf[self.send_end..self.send_end + body.len()].copy_from_slice(body);
-
-            // Encrypt body for non-login messages using negotiated encryption.
-            // Login messages handle their own encryption in dispatch_login.
-            if header.msg_id != crate::COMMAND_LOGIN {
-                let channel_id = (header.encryption_offset & 0xFF) as u8;
-                self.encrypt_body(self.send_end, body.len(), channel_id, header.extension);
-            }
-
-            self.send_end += body.len();
-        }
-
-        Ok(())
+        let body_start = self.send_end;
+        self.send_end += body_len;
+        Ok(body_start)
     }
 
     /// Decrypt an incoming body region in recv_buf using the negotiated encryption.
@@ -2486,6 +2967,43 @@ impl BcSession {
         }
     }
 
+    fn take_pending_command(&mut self, header: PacketHeader) -> Option<PendingCommandKind> {
+        let msg_num = header.message_number();
+        (msg_num != 0)
+            .then(|| self.pending_commands.remove(&(header.msg_id, msg_num)))
+            .flatten()
+    }
+
+    fn push_command_failure(
+        &mut self,
+        header: PacketHeader,
+        pending_command: Option<PendingCommandKind>,
+    ) {
+        if matches!(pending_command, Some(PendingCommandKind::Ping)) {
+            self.pending_ping = None;
+        }
+        self.pending.push(PendingEvent::new(
+            EventKind::CommandFailed {
+                msg_id: header.msg_id,
+                msg_num: header.message_number(),
+                status: header.response_code(),
+            },
+            0,
+            0,
+        ));
+    }
+
+    fn reply_udp_keepalive(&mut self, request: PacketHeader) -> Result<(), BcError> {
+        let header = PacketHeader {
+            msg_id: crate::COMMAND_UDP_KEEP_ALIVE,
+            body_len: 0,
+            encryption_offset: request.encryption_offset,
+            status_class: make_status(request.bc_class(), 0),
+            extension: request.is_extended().then_some(0),
+        };
+        self.queue_send(&header, &[])
+    }
+
     const fn is_connected(&self) -> bool {
         matches!(
             self.state,
@@ -2495,6 +3013,16 @@ impl BcSession {
 
     fn check_keepalive(&mut self, now: Instant) -> Result<(), BcError> {
         if self.is_connected() && now.duration_since(self.last_send) >= self.keepalive_interval {
+            if let Some(msg_num) = self.pending_ping.take() {
+                self.pending_commands
+                    .remove(&(crate::COMMAND_PING, msg_num));
+                self.missed_pings = self.missed_pings.saturating_add(1);
+                if self.missed_pings >= MAX_MISSED_PINGS && !self.pending.is_full() {
+                    self.pending
+                        .push(PendingEvent::new(EventKind::SessionTimeout, 0, 0));
+                    return Ok(());
+                }
+            }
             self.send_ping()?;
             self.last_send = now;
         }
@@ -2602,7 +3130,7 @@ fn find_media_magic(data: &[u8]) -> Option<usize> {
 /// Scan for the Baichuan magic bytes in a data slice.
 /// Returns the offset of the first occurrence after position 0, or None.
 fn scan_for_magic(data: &[u8]) -> Option<usize> {
-    (1..data.len().saturating_sub(3)).find(|&i| data[i..i + 4] == BC_MAGIC_BYTES)
+    (1..data.len().saturating_sub(3)).find(|&i| has_header_magic(&data[i..]))
 }
 
 const fn stream_key(channel: u8, stream_type: crate::stream::StreamType) -> u16 {
@@ -3242,9 +3770,24 @@ mod tests {
     fn ping_response_produces_pong_event() {
         let now = Instant::now();
         let mut s = BcSession::default_client(now);
-        let wire = make_wire_message(crate::COMMAND_PING, &[]);
+        s.handle_input(Input::Command(Command::Ping)).unwrap();
+        let mut sent = [0u8; 256];
+        let request = match s.poll_output(&mut sent).unwrap() {
+            Output::TcpSend { data } => PacketHeader::parse(data).unwrap().0,
+            other => panic!("expected ping TcpSend, got {other:?}"),
+        };
+        let response = PacketHeader {
+            msg_id: crate::COMMAND_PING,
+            body_len: 0,
+            encryption_offset: request.encryption_offset,
+            status_class: make_status(BC_CLASS_MODERN_EXT, 200),
+            extension: Some(0),
+        };
+        let mut header_buf = [0u8; HEADER_LEN_EXTENDED];
+        let wire = response.serialize(&mut header_buf);
 
-        s.handle_input(Input::TcpData(now, &wire)).unwrap();
+        s.handle_input(Input::TcpData(now, &header_buf[..wire]))
+            .unwrap();
 
         let mut buf = [0u8; 256];
         match s.poll_output(&mut buf).unwrap() {
@@ -3549,7 +4092,7 @@ mod tests {
         s.handle_input(Input::Command(Command::Ping)).unwrap();
 
         let mut buf = [0u8; 256];
-        // Both pings should come out (possibly in one TcpSend)
+        // A second ping is suppressed until the first receives a reply.
         let mut total_send_bytes = 0;
         loop {
             match s.poll_output(&mut buf).unwrap() {
@@ -3558,8 +4101,7 @@ mod tests {
                 _ => {}
             }
         }
-        // Each ping is a 24-byte extended header with no body, so 2 pings = 48 bytes
-        assert_eq!(total_send_bytes, 2 * HEADER_LEN_EXTENDED);
+        assert_eq!(total_send_bytes, HEADER_LEN_EXTENDED);
     }
 
     #[test]

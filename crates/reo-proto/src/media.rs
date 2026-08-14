@@ -22,6 +22,9 @@ pub const MEDIA_MAGIC_PFRAME_BASE: u32 = 0x63643130;
 /// AAC audio frame magic (`"05wb"` as LE u32).
 pub const MEDIA_MAGIC_AAC: u32 = 0x62773530;
 
+/// Alternate AAC audio frame magic (`"15wb"` as LE u32).
+pub const MEDIA_MAGIC_AAC_V2: u32 = 0x62773531;
+
 /// ADPCM audio frame magic (`"01wb"` as LE u32).
 pub const MEDIA_MAGIC_ADPCM: u32 = 0x62773130;
 
@@ -73,7 +76,7 @@ impl MediaMagic {
         match magic {
             MEDIA_MAGIC_INFO_V1 => Some(Self::InfoV1),
             MEDIA_MAGIC_INFO_V2 => Some(Self::InfoV2),
-            MEDIA_MAGIC_AAC => Some(Self::AacAudio),
+            MEDIA_MAGIC_AAC | MEDIA_MAGIC_AAC_V2 => Some(Self::AacAudio),
             MEDIA_MAGIC_ADPCM => Some(Self::AdpcmAudio),
             m if (MEDIA_MAGIC_IFRAME_BASE..=MEDIA_MAGIC_IFRAME_BASE + 9).contains(&m) => {
                 Some(Self::IFrame((m - MEDIA_MAGIC_IFRAME_BASE) as u8))
@@ -266,14 +269,22 @@ pub(crate) const fn parse_aac_header(data: &[u8]) -> Result<(usize, usize), BcEr
     Ok((data_len, 8))
 }
 
-/// Parse an ADPCM audio frame header. Returns (data_len, header_len).
+/// Parse an ADPCM audio frame header. Returns (block_len, header_len).
 pub(crate) const fn parse_adpcm_header(data: &[u8]) -> Result<(usize, usize), BcError> {
     // magic(4) + size1(2) + size2(2) + magic_data(2) + half_block(2) = 12
     if data.len() < 12 {
         return Err(BcError::Incomplete);
     }
-    let data_len = read_u16_le(data, 4) as usize;
-    Ok((data_len, 12))
+    let payload_len = read_u16_le(data, 4) as usize;
+    if payload_len < 4 {
+        return Err(BcError::Protocol(
+            "ADPCM payload is shorter than its subheader",
+        ));
+    }
+    if read_u16_le(data, 8) != 0x0100 {
+        return Err(BcError::Protocol("invalid ADPCM frame marker"));
+    }
+    Ok((payload_len - 4, 12))
 }
 
 /// Zero-allocation iterator over media frames in a binary payload.
@@ -484,9 +495,10 @@ mod tests {
 
     fn make_adpcm_frame_bytes(data: &[u8]) -> Vec<u8> {
         let mut buf = Vec::new();
+        let payload_len = data.len() + 4;
         buf.extend_from_slice(&MEDIA_MAGIC_ADPCM.to_le_bytes());
-        buf.extend_from_slice(&(data.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&(payload_len as u16).to_le_bytes());
+        buf.extend_from_slice(&(payload_len as u16).to_le_bytes());
         buf.extend_from_slice(&0x0100u16.to_le_bytes()); // magic_data
         buf.extend_from_slice(&((data.len() / 2) as u16).to_le_bytes());
         buf.extend_from_slice(data);
@@ -526,6 +538,14 @@ mod tests {
     fn magic_aac() {
         assert_eq!(
             MediaMagic::from_u32(MEDIA_MAGIC_AAC),
+            Some(MediaMagic::AacAudio)
+        );
+    }
+
+    #[test]
+    fn magic_aac_v2() {
+        assert_eq!(
+            MediaMagic::from_u32(MEDIA_MAGIC_AAC_V2),
             Some(MediaMagic::AacAudio)
         );
     }
@@ -689,6 +709,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_aac_v2_audio() {
+        let audio_data = vec![0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00];
+        let mut data = make_aac_frame_bytes(&audio_data);
+        data[..4].copy_from_slice(&MEDIA_MAGIC_AAC_V2.to_le_bytes());
+        let mut iter = MediaFrameIter::new(&data);
+        match iter.next().unwrap().unwrap() {
+            MediaFrame::Audio(audio) => {
+                assert_eq!(audio.codec, AudioCodec::Aac);
+                assert_eq!(audio.data, audio_data);
+            }
+            other => panic!("expected Audio, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_adpcm_audio() {
         let audio_data = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
         let data = make_adpcm_frame_bytes(&audio_data);
@@ -700,6 +735,17 @@ mod tests {
             }
             other => panic!("expected Audio, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reject_adpcm_audio_with_an_invalid_marker() {
+        let mut data = make_adpcm_frame_bytes(&[0x01, 0x02, 0x03, 0x04]);
+        data[8..10].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        let mut iter = MediaFrameIter::new(&data);
+        assert!(matches!(
+            iter.next(),
+            Some(Err(BcError::Protocol("invalid ADPCM frame marker")))
+        ));
     }
 
     #[test]
