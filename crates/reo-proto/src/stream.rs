@@ -1,7 +1,6 @@
-//! Streaming & two-way audio command builders and types.
+//! Streaming and snapshot command builders and types.
 //!
-//! Provides XML body construction for stream start/stop, snapshot requests,
-//! talk ability queries, talk configuration, and talk audio framing.
+//! Provides XML body construction for stream start/stop and snapshot requests.
 
 use crate::{error::BcError, header::PacketHeader, magic::*, xml};
 
@@ -69,21 +68,6 @@ pub struct SnapshotRequest {
     pub channel: u8,
 }
 
-/// Talk ability info parsed from camera response.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TalkCapabilities {
-    /// Number of audio channels (typically 1).
-    pub audio_stream_mode: u32,
-    /// 0 = half duplex, 1 = full duplex.
-    pub duplex_mode: u32,
-    /// Audio sample rate in Hz.
-    pub sample_rate: u32,
-    /// Audio bit depth (e.g. 8, 16).
-    pub sample_precision: u32,
-    /// Audio packet length in bytes.
-    pub length_per_encoder: u32,
-}
-
 /// Build a stream start request XML body (msg_id 3).
 ///
 /// ```xml
@@ -130,6 +114,10 @@ pub fn build_stream_stop(stop: &StreamStop, buf: &mut [u8]) -> Result<usize, BcE
 /// <body>
 ///   <Snap version="1.1">
 ///     <channelId>0</channelId>
+///     <logicChannel>0</logicChannel>
+///     <time>0</time>
+///     <fullFrame>0</fullFrame>
+///     <streamType>main</streamType>
 ///   </Snap>
 /// </body>
 /// ```
@@ -137,86 +125,12 @@ pub fn build_snapshot_request(req: &SnapshotRequest, buf: &mut [u8]) -> Result<u
     xml::build_xml(buf, |b| {
         b.start_versioned("Snap", "1.1");
         b.u8_element("channelId", req.channel);
+        b.u8_element("logicChannel", req.channel);
+        b.u32_element("time", 0);
+        b.u32_element("fullFrame", 0);
+        b.text_element("streamType", "main");
         b.end();
     })
-}
-
-/// Build a talk capabilities query XML body (command 10).
-///
-/// ```xml
-/// <body>
-///   <TalkAbility version="1.1">
-///     <channelId>0</channelId>
-///   </TalkAbility>
-/// </body>
-/// ```
-pub fn build_talk_capabilities_query(channel: u8, buf: &mut [u8]) -> Result<usize, BcError> {
-    xml::build_xml(buf, |b| {
-        b.start_versioned("TalkAbility", "1.1");
-        b.u8_element("channelId", channel);
-        b.end();
-    })
-}
-
-/// Build a talk config XML body (msg_id 201).
-///
-/// ```xml
-/// <body>
-///   <TalkConfig version="1.1">
-///     <channelId>0</channelId>
-///     <duplex>0</duplex>
-///     <audioStreamMode>0</audioStreamMode>
-///     <audioConfig>
-///       <sampleRate>8000</sampleRate>
-///       <samplePrecision>16</samplePrecision>
-///       <lengthPerEncoder>320</lengthPerEncoder>
-///     </audioConfig>
-///   </TalkConfig>
-/// </body>
-/// ```
-pub fn build_talk_config(
-    channel: u8,
-    ability: &TalkCapabilities,
-    buf: &mut [u8],
-) -> Result<usize, BcError> {
-    xml::build_xml(buf, |b| {
-        b.start_versioned("TalkConfig", "1.1");
-        b.u8_element("channelId", channel);
-        b.u32_element("duplex", ability.duplex_mode);
-        b.u32_element("audioStreamMode", ability.audio_stream_mode);
-        b.start("audioConfig");
-        b.u32_element("sampleRate", ability.sample_rate);
-        b.u32_element("samplePrecision", ability.sample_precision);
-        b.u32_element("lengthPerEncoder", ability.length_per_encoder);
-        b.end(); // audioConfig
-        b.end(); // TalkConfig
-    })
-}
-
-/// Parse a talk capabilities response XML body.
-pub fn parse_talk_capabilities(data: &[u8]) -> Result<TalkCapabilities, BcError> {
-    let mut ability = TalkCapabilities {
-        audio_stream_mode: 0,
-        duplex_mode: 0,
-        sample_rate: 8000,
-        sample_precision: 16,
-        length_per_encoder: 320,
-    };
-
-    xml::parse_xml(data, |name, text| {
-        if let Ok(v) = text.parse::<u32>() {
-            match name {
-                "audioStreamMode" => ability.audio_stream_mode = v,
-                "duplex" => ability.duplex_mode = v,
-                "sampleRate" => ability.sample_rate = v,
-                "samplePrecision" => ability.sample_precision = v,
-                "lengthPerEncoder" => ability.length_per_encoder = v,
-                _ => {}
-            }
-        }
-    })?;
-
-    Ok(ability)
 }
 
 /// Build the header for a stream start request (modern XML, extended).
@@ -265,39 +179,6 @@ pub const fn snapshot_request_header(body_len: usize) -> PacketHeader {
         encryption_offset: 0,
         status_class: make_status(BC_CLASS_MODERN_EXT, 0),
         extension: Some(0),
-    }
-}
-
-/// Build the header for a talk capabilities query (modern XML, extended).
-pub const fn talk_capabilities_query_header(body_len: usize) -> PacketHeader {
-    PacketHeader {
-        msg_id: crate::COMMAND_TALK_CAPABILITIES,
-        body_len: body_len as u32,
-        encryption_offset: 0,
-        status_class: make_status(BC_CLASS_MODERN_EXT, 0),
-        extension: Some(0),
-    }
-}
-
-/// Build the header for a talk config request (modern XML, extended).
-pub const fn talk_config_header(body_len: usize) -> PacketHeader {
-    PacketHeader {
-        msg_id: crate::COMMAND_TALK_CONFIG,
-        body_len: body_len as u32,
-        encryption_offset: 0,
-        status_class: make_status(BC_CLASS_MODERN_EXT, 0),
-        extension: Some(0),
-    }
-}
-
-/// Build the header for a talk data packet (binary, legacy class).
-pub const fn talk_data_header(body_len: usize) -> PacketHeader {
-    PacketHeader {
-        msg_id: crate::COMMAND_TALK,
-        body_len: body_len as u32,
-        encryption_offset: 0,
-        status_class: make_status(BC_CLASS_LEGACY, 0),
-        extension: None,
     }
 }
 
@@ -370,67 +251,9 @@ mod tests {
         assert!(xml_str.contains("<Snap"));
         assert!(xml_str.contains("version=\"1.1\""));
         assert!(xml_str.contains("<channelId>0</channelId>"));
-    }
-
-    #[test]
-    fn build_talk_ability_request_xml() {
-        let mut buf = [0u8; 512];
-        let len = build_talk_capabilities_query(0, &mut buf).unwrap();
-        let xml_str = std::str::from_utf8(&buf[..len]).unwrap();
-        assert!(xml_str.contains("<TalkAbility"));
-        assert!(xml_str.contains("version=\"1.1\""));
-        assert!(xml_str.contains("<channelId>0</channelId>"));
-    }
-
-    #[test]
-    fn build_talk_config_xml() {
-        let ability = TalkCapabilities {
-            audio_stream_mode: 0,
-            duplex_mode: 1,
-            sample_rate: 8000,
-            sample_precision: 16,
-            length_per_encoder: 320,
-        };
-        let mut buf = [0u8; 1024];
-        let len = build_talk_config(0, &ability, &mut buf).unwrap();
-        let xml_str = std::str::from_utf8(&buf[..len]).unwrap();
-        assert!(xml_str.contains("<TalkConfig"));
-        assert!(xml_str.contains("version=\"1.1\""));
-        assert!(xml_str.contains("<duplex>1</duplex>"));
-        assert!(xml_str.contains("<sampleRate>8000</sampleRate>"));
-        assert!(xml_str.contains("<samplePrecision>16</samplePrecision>"));
-        assert!(xml_str.contains("<lengthPerEncoder>320</lengthPerEncoder>"));
-    }
-
-    #[test]
-    fn parse_talk_ability_xml() {
-        let xml = b"<body>\
-            <TalkAbility version=\"1.1\">\
-                <audioStreamMode>0</audioStreamMode>\
-                <duplex>1</duplex>\
-                <audioConfig>\
-                    <sampleRate>16000</sampleRate>\
-                    <samplePrecision>16</samplePrecision>\
-                    <lengthPerEncoder>640</lengthPerEncoder>\
-                </audioConfig>\
-            </TalkAbility>\
-        </body>";
-        let ability = parse_talk_capabilities(xml).unwrap();
-        assert_eq!(ability.audio_stream_mode, 0);
-        assert_eq!(ability.duplex_mode, 1);
-        assert_eq!(ability.sample_rate, 16000);
-        assert_eq!(ability.sample_precision, 16);
-        assert_eq!(ability.length_per_encoder, 640);
-    }
-
-    #[test]
-    fn parse_talk_ability_defaults() {
-        // Minimal XML with no recognized fields
-        let xml = b"<body><TalkAbility version=\"1.1\"></TalkAbility></body>";
-        let ability = parse_talk_capabilities(xml).unwrap();
-        assert_eq!(ability.sample_rate, 8000);
-        assert_eq!(ability.sample_precision, 16);
-        assert_eq!(ability.length_per_encoder, 320);
+        assert!(xml_str.contains("<logicChannel>0</logicChannel>"));
+        assert!(xml_str.contains("<fullFrame>0</fullFrame>"));
+        assert!(xml_str.contains("<streamType>main</streamType>"));
     }
 
     #[test]
@@ -457,13 +280,5 @@ mod tests {
         let hdr = snapshot_request_header(60);
         assert_eq!(hdr.msg_id, crate::COMMAND_SNAP);
         assert_eq!(hdr.body_len, 60);
-    }
-
-    #[test]
-    fn talk_data_header_is_binary() {
-        let hdr = talk_data_header(1024);
-        assert_eq!(hdr.msg_id, crate::COMMAND_TALK);
-        assert!(hdr.is_binary());
-        assert!(!hdr.is_extended()); // LEGACY class has no extension
     }
 }

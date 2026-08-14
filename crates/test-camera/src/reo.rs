@@ -1,4 +1,7 @@
-use crate::media::{EncodedFrame, VideoSource};
+use crate::{
+    BatteryWakeEndpoint,
+    media::{EncodedFrame, VideoSource},
+};
 use anyhow::{Context, anyhow};
 use reo_proto::{
     CameraIdentity, PacketHeader,
@@ -16,7 +19,11 @@ use std::{
     collections::{HashMap, VecDeque},
     io::{self, Read, Write},
     net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -28,11 +35,14 @@ const UDP_PRIMARY_PORT: u16 = 2018;
 const UDP_SECONDARY_PORT: u16 = 2015;
 const UDP_CAMERA_ID: i32 = 42;
 const UDP_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const BATTERY_WAKE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const BATTERY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
 pub struct ReoServer {
-    stop: Sender<()>,
+    stop: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
     _udp: ReoUdpServer,
+    _battery_wake: Option<BatteryWakeClient>,
 }
 
 impl ReoServer {
@@ -42,32 +52,47 @@ impl ReoServer {
         password: String,
         main: VideoSource,
         sub: VideoSource,
+        battery_wake: Option<BatteryWakeEndpoint>,
+        uid: String,
     ) -> anyhow::Result<Self> {
+        let awake = Arc::new(AtomicBool::new(battery_wake.is_none()));
         let udp = ReoUdpServer::start(
             address.ip(),
             username.clone(),
             password.clone(),
             main.clone(),
             sub.clone(),
+            awake.clone(),
         )?;
-        let listener = TcpListener::bind(address)
-            .with_context(|| format!("unable to bind Baichuan listener on {address}"))?;
-        listener.set_nonblocking(true)?;
-        let (stop, stopped) = mpsc::channel();
-        let worker = thread::Builder::new()
-            .name("test-camera-reo".to_owned())
-            .spawn(move || serve(listener, stopped, username, password, main, sub))?;
+        let battery_client = battery_wake
+            .map(|endpoint| BatteryWakeClient::start(address.ip(), uid, endpoint, awake))
+            .transpose()?;
+        let (stop, worker) = if battery_client.is_some() {
+            (None, None)
+        } else {
+            let listener = TcpListener::bind(address)
+                .with_context(|| format!("unable to bind Baichuan listener on {address}"))?;
+            listener.set_nonblocking(true)?;
+            let (stop, stopped) = mpsc::channel();
+            let worker = thread::Builder::new()
+                .name("test-camera-reo".to_owned())
+                .spawn(move || serve(listener, stopped, username, password, main, sub))?;
+            (Some(stop), Some(worker))
+        };
         Ok(Self {
             stop,
-            worker: Some(worker),
+            worker,
             _udp: udp,
+            _battery_wake: battery_client,
         })
     }
 }
 
 impl Drop for ReoServer {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -86,6 +111,7 @@ impl ReoUdpServer {
         password: String,
         main: VideoSource,
         sub: VideoSource,
+        awake: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
         let primary =
             UdpSocket::bind(SocketAddr::new(bind_ip, UDP_PRIMARY_PORT)).with_context(|| {
@@ -101,7 +127,15 @@ impl ReoUdpServer {
         let worker = thread::Builder::new()
             .name("test-camera-reo-udp".to_owned())
             .spawn(move || {
-                serve_udp([primary, secondary], stopped, username, password, main, sub);
+                serve_udp(
+                    [primary, secondary],
+                    stopped,
+                    username,
+                    password,
+                    main,
+                    sub,
+                    awake,
+                );
             })?;
         Ok(Self {
             stop,
@@ -133,6 +167,7 @@ fn serve_udp(
     password: String,
     main: VideoSource,
     sub: VideoSource,
+    awake: Arc<AtomicBool>,
 ) {
     let mut sessions = HashMap::new();
     let mut datagram = [0_u8; 65_535];
@@ -153,6 +188,7 @@ fn serve_udp(
                             &password,
                             &main,
                             &sub,
+                            &awake,
                             &mut sessions,
                         ) {
                             tracing::debug!(%error, %peer, "invalid test Baichuan UDP datagram");
@@ -187,11 +223,13 @@ fn handle_udp_datagram(
     password: &str,
     main: &VideoSource,
     sub: &VideoSource,
+    awake: &AtomicBool,
     sessions: &mut HashMap<(usize, SocketAddr), UdpSession>,
 ) -> anyhow::Result<()> {
     match BcUdpPacket::decode(datagram)? {
         BcUdpPacket::Discovery(discovery)
-            if discovery.xml.windows(5).any(|part| part == b"C2D_C") =>
+            if awake.load(Ordering::Acquire)
+                && discovery.xml.windows(5).any(|part| part == b"C2D_C") =>
         {
             let client_id = xml_i32(&discovery.xml, "cid")
                 .ok_or_else(|| anyhow!("Baichuan UDP discovery has no client id"))?;
@@ -225,6 +263,147 @@ fn handle_udp_datagram(
     Ok(())
 }
 
+struct BatteryWakeClient {
+    stop: Sender<()>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl BatteryWakeClient {
+    fn start(
+        bind_ip: IpAddr,
+        uid: String,
+        endpoint: BatteryWakeEndpoint,
+        awake: Arc<AtomicBool>,
+    ) -> anyhow::Result<Self> {
+        let (stop, stopped) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("test-camera-battery-wake".to_owned())
+            .spawn(move || serve_battery_wake(bind_ip, uid, endpoint, awake, stopped))?;
+        Ok(Self {
+            stop,
+            worker: Some(worker),
+        })
+    }
+}
+
+impl Drop for BatteryWakeClient {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn serve_battery_wake(
+    bind_ip: IpAddr,
+    uid: String,
+    endpoint: BatteryWakeEndpoint,
+    awake: Arc<AtomicBool>,
+    stop: Receiver<()>,
+) {
+    let socket = match UdpSocket::bind(SocketAddr::new(bind_ip, 0)) {
+        Ok(socket) => socket,
+        Err(error) => {
+            tracing::warn!(%error, "test battery camera failed to bind P2P socket");
+            return;
+        }
+    };
+    if let Err(error) = socket.set_read_timeout(Some(READ_POLL_INTERVAL)) {
+        tracing::warn!(%error, "test battery camera failed to configure P2P socket");
+        return;
+    }
+
+    let mut token = None;
+    let mut next_query = Instant::now();
+    let mut next_heartbeat = Instant::now();
+    let mut datagram = [0u8; 4 * 1024];
+    loop {
+        if stopped(&stop) {
+            return;
+        }
+        let now = Instant::now();
+        if token.is_none() && now >= next_query {
+            if let Err(error) = send_p2p_xml(
+                &socket,
+                endpoint.middleman(),
+                1,
+                format!("<P2P><D2M_Q><uid>{uid}</uid></D2M_Q></P2P>"),
+            ) {
+                tracing::debug!(%error, "test battery camera middleman query failed");
+            }
+            next_query = now + BATTERY_WAKE_RETRY_INTERVAL;
+        }
+        if let Some(token) = token
+            && now >= next_heartbeat
+        {
+            if let Err(error) = send_p2p_xml(
+                &socket,
+                endpoint.register(),
+                2,
+                format!(
+                    "<P2P><D2R_HB><uid>{uid}</uid><token>{token}</token><needrsp>1</needrsp></D2R_HB></P2P>"
+                ),
+            ) {
+                tracing::debug!(%error, "test battery camera heartbeat failed");
+            }
+            next_heartbeat = now + BATTERY_HEARTBEAT_INTERVAL;
+        }
+
+        match socket.recv_from(&mut datagram) {
+            Ok((read, _)) => match BcUdpPacket::decode(&datagram[..read]) {
+                Ok(BcUdpPacket::Discovery(discovery)) => {
+                    if discovery.xml.windows(7).any(|part| part == b"M2D_Q_R") {
+                        let Some(next_token) = xml_u64(&discovery.xml, "token") else {
+                            continue;
+                        };
+                        token = Some(next_token);
+                        if let Err(error) = send_p2p_xml(
+                            &socket,
+                            endpoint.register(),
+                            discovery.transmission_id,
+                            format!(
+                                "<P2P><D2R_R><uid>{uid}</uid><token>{next_token}</token></D2R_R></P2P>"
+                            ),
+                        ) {
+                            tracing::debug!(%error, "test battery camera registration failed");
+                        }
+                        next_heartbeat = Instant::now();
+                    } else if discovery.xml.windows(5).any(|part| part == b"R2D_C") {
+                        awake.store(true, Ordering::Release);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::debug!(%error, "invalid test battery P2P datagram"),
+            },
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) => {}
+            Err(error) => {
+                tracing::warn!(%error, "test battery camera P2P receive failed");
+                return;
+            }
+        }
+    }
+}
+
+fn send_p2p_xml(
+    socket: &UdpSocket,
+    destination: SocketAddr,
+    transmission_id: u32,
+    xml: String,
+) -> anyhow::Result<()> {
+    let packet = BcUdpPacket::Discovery(UdpDiscovery {
+        transmission_id,
+        xml: xml.into_bytes(),
+    })
+    .encode()?;
+    socket.send_to(&packet, destination)?;
+    Ok(())
+}
+
 fn service_udp_session(
     session: &mut UdpSession,
     socket: &UdpSocket,
@@ -254,12 +433,22 @@ fn queue_udp_camera_outbox(session: &mut UdpSession) -> anyhow::Result<()> {
 }
 
 fn xml_i32(xml: &[u8], name: &str) -> Option<i32> {
-    let text = std::str::from_utf8(xml).ok()?;
-    let open = format!("<{name}>");
-    let close = format!("</{name}>");
-    let start = text.find(&open)? + open.len();
-    let end = text[start..].find(&close)? + start;
-    text[start..end].parse().ok()
+    xml_text(xml, name)?.parse().ok()
+}
+
+fn xml_u64(xml: &[u8], name: &str) -> Option<u64> {
+    xml_text(xml, name)?.parse().ok()
+}
+
+fn xml_text(xml: &[u8], name: &str) -> Option<String> {
+    let mut value = None;
+    reo_proto::xml::parse_xml(xml, |element, text| {
+        if element == name {
+            value = Some(text.to_owned());
+        }
+    })
+    .ok()?;
+    value
 }
 
 fn connect_reply_xml(client_id: i32, camera_id: i32) -> Vec<u8> {
@@ -392,8 +581,8 @@ impl BaichuanCamera {
             COMMAND_PING => self.queue_packet(
                 COMMAND_PING,
                 &[],
-                make_status(BC_CLASS_MODERN_EXT, 0),
-                0,
+                make_status(BC_CLASS_MODERN_EXT, 200),
+                header.encryption_offset,
                 Some(0),
             ),
             COMMAND_STREAM if header.is_modern() && self.authenticated => {

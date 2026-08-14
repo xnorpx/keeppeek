@@ -18,6 +18,28 @@ pub struct PacketHeader {
 }
 
 impl PacketHeader {
+    /// Camera channel encoded in bytes 12 through 13.
+    pub const fn channel_id(&self) -> u8 {
+        self.encryption_offset as u8
+    }
+
+    /// Stream selector encoded in bytes 13 through 14.
+    pub const fn stream_type_id(&self) -> u8 {
+        (self.encryption_offset >> 8) as u8
+    }
+
+    /// Request handle encoded in bytes 14 through 16.
+    pub const fn message_number(&self) -> u16 {
+        (self.encryption_offset >> 16) as u16
+    }
+
+    /// Return this header with a request handle encoded in bytes 14 through 16.
+    pub const fn with_message_number(mut self, message_number: u16) -> Self {
+        self.encryption_offset =
+            (self.encryption_offset & 0x0000_FFFF) | ((message_number as u32) << 16);
+        self
+    }
+
     /// Total header length in bytes (20 or 24).
     pub const fn header_len(&self) -> usize {
         if self.extension.is_some() {
@@ -55,11 +77,6 @@ impl PacketHeader {
         matches!(self.bc_class(), BC_CLASS_MODERN_EXT | 0x0000)
     }
 
-    /// Whether the body (or part of it) is encrypted.
-    pub const fn is_encrypted(&self) -> bool {
-        self.encryption_offset < self.body_len
-    }
-
     /// Parse a header from a byte slice.
     ///
     /// Returns the parsed header and the number of bytes consumed.
@@ -71,7 +88,7 @@ impl PacketHeader {
         }
 
         let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        if magic != BC_MAGIC {
+        if !is_header_magic(magic) {
             return Err(BcError::BadMagic([data[0], data[1], data[2], data[3]]));
         }
 

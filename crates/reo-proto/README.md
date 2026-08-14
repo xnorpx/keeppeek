@@ -39,13 +39,14 @@ multi-byte integers are **little-endian**.
 | 0 | 4 | Magic | `f0 de bc 0a` (0x0ABCDEF0 LE) |
 | 4 | 4 | Message ID | Command identifier (see Message IDs) |
 | 8 | 4 | Body Length | Size of payload in bytes |
-| 12 | 4 | Encryption Offset | Byte offset where encryption begins within the body. If equal to body length, body is unencrypted. |
+| 12 | 4 | Channel / Stream / Message Number | Channel ID (byte 12), stream type (byte 13), and request handle (bytes 14-15). |
 | 16 | 4 | Status / Class | Response status code, or message class flags |
 | 20 | 4 | Extension (optional) | Present in modern messages. The nodelink-js implementation reads this as `payloadOffset` and uses it to separate extension XML from binary payload within the body. |
 
-The magic bytes `f0 de bc 0a` identify every Baichuan packet. Receivers scan
-for this sequence to find packet boundaries. A reversed-endian variant
-`a0 cb ed 0f` (0x0FEDCBA0) has been observed in JPEG snapshot payloads.
+The magic bytes `f0 de bc 0a` identify Baichuan packets. Receivers scan for this
+sequence to find packet boundaries. A reversed-endian variant `a0 cb ed 0f`
+(0x0FEDCBA0) has been observed in JPEG snapshot reply headers and must also be
+accepted while reading packets.
 
 ### Status / Class Field
 

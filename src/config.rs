@@ -2,7 +2,7 @@ use crate::cameras::CameraConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +19,77 @@ pub struct Config {
 
     #[serde(default)]
     pub storage: StorageToml,
+
+    #[serde(default)]
+    pub battery_wake: BatteryWakeConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BatteryWakeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default)]
+    pub bind: Option<Ipv4Addr>,
+
+    #[serde(default = "default_battery_wake_middleman_port")]
+    pub middleman_port: u16,
+
+    #[serde(default = "default_battery_wake_register_port")]
+    pub register_port: u16,
+
+    #[serde(default = "default_battery_wake_heartbeat_secs")]
+    pub heartbeat_secs: u64,
+
+    #[serde(default = "default_battery_wake_stale_after_secs")]
+    pub stale_after_secs: u64,
+}
+
+impl BatteryWakeConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.middleman_port == 0 || self.register_port == 0 {
+            anyhow::bail!("battery wake ports must be non-zero");
+        }
+        if self.middleman_port == self.register_port {
+            anyhow::bail!("battery wake middleman and register ports must differ");
+        }
+        if self.heartbeat_secs == 0 {
+            anyhow::bail!("battery wake heartbeat interval must be non-zero");
+        }
+        if self.stale_after_secs < self.heartbeat_secs {
+            anyhow::bail!("battery wake stale timeout must cover one heartbeat interval");
+        }
+        Ok(())
+    }
+}
+
+impl Default for BatteryWakeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: None,
+            middleman_port: default_battery_wake_middleman_port(),
+            register_port: default_battery_wake_register_port(),
+            heartbeat_secs: default_battery_wake_heartbeat_secs(),
+            stale_after_secs: default_battery_wake_stale_after_secs(),
+        }
+    }
+}
+
+const fn default_battery_wake_middleman_port() -> u16 {
+    9_999
+}
+
+const fn default_battery_wake_register_port() -> u16 {
+    58_200
+}
+
+const fn default_battery_wake_heartbeat_secs() -> u64 {
+    20
+}
+
+const fn default_battery_wake_stale_after_secs() -> u64 {
+    80
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -313,6 +384,7 @@ impl Default for Config {
             host: default_host(),
             port: default_port(),
             storage: StorageToml::default(),
+            battery_wake: BatteryWakeConfig::default(),
         }
     }
 }
@@ -571,7 +643,7 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
 
     let mut result: HashMap<String, Vec<CameraConfig>> = HashMap::new();
 
-    const RESERVED_SECTIONS: &[&str] = &["storage", STORAGE_MIGRATION_SECTION];
+    const RESERVED_SECTIONS: &[&str] = &["storage", "battery_wake", STORAGE_MIGRATION_SECTION];
 
     for (namespace, ns_value) in root_table {
         if RESERVED_SECTIONS.contains(&namespace.as_str()) {
@@ -925,6 +997,44 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn battery_wake_config_is_not_treated_as_camera_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-battery-wake-config-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [battery_wake]
+                enabled = true
+                bind = "192.0.2.1"
+                middleman_port = 9999
+                register_port = 58200
+                heartbeat_secs = 20
+                stale_after_secs = 80
+
+                [cameras.battery]
+                ip = "192.0.2.10"
+                username = "operator"
+                password = "secret"
+                uid = "BATTERYCAMERA0001"
+                backend = "reo-proto"
+                transport = "udp"
+            "#,
+        )
+        .unwrap();
+
+        let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        config.battery_wake.validate().unwrap();
+        let cameras = load_cameras(&path).unwrap();
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras["cameras"].len(), 1);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     use crate::cameras::{CameraBackend, CameraTransport};
 
     #[cfg(unix)]
@@ -1045,6 +1155,7 @@ mod tests {
                 write_buffer_bytes: 16_384,
                 long_term_max_gb: 24,
             },
+            battery_wake: BatteryWakeConfig::default(),
         };
 
         let updated = update_settings(&path, &settings).unwrap();
@@ -1274,6 +1385,7 @@ mod tests {
                 long_term_path: Some(next.to_string_lossy().into_owned()),
                 ..StorageToml::default()
             },
+            battery_wake: BatteryWakeConfig::default(),
         };
         let migration = StorageMigration::between(&current, &next, &current, &next)
             .unwrap()

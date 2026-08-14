@@ -45,7 +45,8 @@ fn test_message_ids_are_distinct() {
         COMMAND_AI_CFG_READ,
         COMMAND_AI_ALARM_READ,
         COMMAND_AI_ALARM_WRITE,
-        COMMAND_PING,
+        COMMAND_LINK_TYPE,
+        COMMAND_UDP_KEEP_ALIVE,
     ];
     for i in 0..ids.len() {
         for j in (i + 1)..ids.len() {

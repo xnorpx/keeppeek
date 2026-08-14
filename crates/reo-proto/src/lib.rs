@@ -13,6 +13,7 @@ pub mod ptz;
 pub mod recording;
 pub mod session;
 pub mod stream;
+pub mod talk;
 pub mod udp;
 pub mod video_cfg;
 pub mod xml;
@@ -34,8 +35,9 @@ pub use recording::{RecordingCommand, RecordingEvent};
 pub use session::{
     BcSession, BcSessionConfig, Command, Event, Input, Output, Role, SessionState, SessionStats,
 };
-pub use stream::{
-    SnapshotRequest, StreamRequest, StreamStop, StreamSubscription, StreamType, TalkCapabilities,
+pub use stream::{SnapshotRequest, StreamRequest, StreamStop, StreamSubscription, StreamType};
+pub use talk::{
+    ImaAdpcmEncoder, TalkAbility, TalkAudioProfile, TalkCommand, TalkConfig, TalkEvent,
 };
 pub use udp::{
     BcUdpConfig, BcUdpConnection, BcUdpDiscovery, BcUdpDiscoveryConfig, BcUdpDiscoveryOutput,
@@ -54,6 +56,13 @@ pub const MAX_XML_BODY: usize = 8 * 1024;
 
 /// Maximum single media frame size (256 KiB).
 pub const MAX_MEDIA_FRAME: usize = 256 * 1024;
+
+/// Maximum JPEG snapshot size accepted from a camera (16 MiB).
+///
+/// High-resolution battery cameras can produce JPEG snapshots above the
+/// previous 12 MiB limit. This bound admits those images while preventing a
+/// malformed camera reply from retaining unbounded memory.
+pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Capacity for username strings.
 pub const USERNAME_CAP: usize = 32;
@@ -99,6 +108,9 @@ pub const COMMAND_FILE_CLOSE: u32 = 7;
 
 /// Talk ability query.
 pub const COMMAND_TALK_CAPABILITIES: u32 = 10;
+
+/// Reset talkback state.
+pub const COMMAND_TALK_RESET: u32 = 11;
 
 /// PTZ control.
 pub const COMMAND_PTZ: u32 = 18;
@@ -187,6 +199,9 @@ pub const COMMAND_RECORD_SCHEDULE_WRITE: u32 = 82;
 /// Link type query (ethernet/wifi).
 pub const COMMAND_LINK_TYPE: u32 = 93;
 
+/// TCP keepalive uses the link type command with an empty payload.
+pub const COMMAND_PING: u32 = COMMAND_LINK_TYPE;
+
 /// System general (time, timezone, language).
 pub const COMMAND_SYSTEM_SETTINGS: u32 = 104;
 
@@ -261,6 +276,9 @@ pub const COMMAND_PUSH_TASK_READ: u32 = 219;
 
 /// Audio task read.
 pub const COMMAND_AUDIO_TASK_READ: u32 = 232;
+
+/// Camera-initiated Baichuan UDP keepalive.
+pub const COMMAND_UDP_KEEP_ALIVE: u32 = 234;
 
 /// Battery list query.
 pub const COMMAND_BATTERY_LIST: u32 = 252;
@@ -342,9 +360,6 @@ pub const COMMAND_COVER_THUMBNAIL_V2: u32 = 462;
 
 /// Siren control.
 pub const COMMAND_SIREN_CONTROL: u32 = 547;
-
-/// Keepalive / ping.
-pub const COMMAND_PING: u32 = 95;
 
 /// Auto-tracking coordinate push event.
 pub const COMMAND_COORDINATE_INFO: u32 = 723;

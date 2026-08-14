@@ -43,7 +43,6 @@ fn test_full_message_roundtrip_xor_encrypted() {
     assert_eq!(msg.header.msg_id, 3);
     assert!(msg.header.is_modern());
     assert!(msg.header.is_extended());
-    assert!(msg.header.is_encrypted());
 
     // 6. Decrypt the body
     let mut decrypted = msg.body;
@@ -127,11 +126,10 @@ fn test_full_message_roundtrip_unencrypted() {
 
     let body = &xml_buf[..xml_len];
 
-    // Header: encryption_offset == body_len means no encryption
     let header = PacketHeader {
         msg_id: 1,
         body_len: body.len() as u32,
-        encryption_offset: body.len() as u32,
+        encryption_offset: 0,
         status_class: make_status(BC_CLASS_LEGACY, 0),
         extension: None,
     };
@@ -147,7 +145,6 @@ fn test_full_message_roundtrip_unencrypted() {
     let msg = rb.try_parse_message().unwrap().unwrap();
 
     assert_eq!(msg.header.msg_id, 1);
-    assert!(!msg.header.is_encrypted());
 
     // Body is plaintext XML, parse directly
     let mut status = ArrayString::<32>::new();
