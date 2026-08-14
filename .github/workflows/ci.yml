@@ -60,7 +60,7 @@ jobs:
           cargo test --all 2>&1 | tee rust-test-results.log
       - name: Upload Rust test log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rust-test-log-${{ matrix.os }}
           path: rust-test-results.log
@@ -98,7 +98,7 @@ jobs:
         run: ../check-ui.sh
       - name: Upload UI test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-test-reports-${{ matrix.os }}
           path: |
@@ -192,7 +192,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-reports
           path: |
