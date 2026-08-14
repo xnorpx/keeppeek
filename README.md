@@ -2,10 +2,10 @@
 
 ## UI development
 
-The Svelte 5 UI uses Bun 1.3.14 on Windows, Linux, and macOS. Public package sources are enforced by `.npmrc`, `ui/bunfig.toml`, `.cargo/config.toml`, and a lockfile audit in the UI quality command.
+The Svelte 5 UI uses Bun 1.3.14 on Windows, Linux, and macOS. Public package sources are enforced by `.npmrc`, `ui/bunfig.toml`, and `.cargo/config.toml`.
 
 ```sh
-bun install --cwd ui --frozen-lockfile --registry=https://registry.npmjs.org/
+bun install --cwd ui --registry=https://registry.npmjs.org/
 bun run --cwd ui quality
 bun run --cwd ui test:e2e
 ```
