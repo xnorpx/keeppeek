@@ -105,6 +105,7 @@ impl Router {
     }
 
     pub fn wait_and_drain(&mut self, timeout: Option<Duration>) -> std::io::Result<usize> {
+        self.events.clear();
         self.poller.wait(&mut self.events, timeout)?;
         Ok(self.drain_pending())
     }
@@ -205,6 +206,20 @@ mod tests {
                 CameraLifecycle::Connected
             )))
         );
+    }
+
+    #[test]
+    fn repeated_waits_reuse_the_event_buffer() {
+        let (mut router, sender) = Router::new().unwrap();
+
+        for _ in 0..2_048 {
+            sender
+                .send(RouterMessage::WorkerEvent(WorkerEvent::StatusChanged(
+                    status("garage", CameraLifecycle::Connected),
+                )))
+                .unwrap();
+            assert_eq!(router.wait_and_drain(Some(Duration::ZERO)).unwrap(), 1);
+        }
     }
 
     #[test]

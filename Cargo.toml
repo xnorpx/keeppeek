@@ -74,6 +74,7 @@ crossbeam-channel = "0.5.16"
 ctrlc = { version = "*" }
 hdrhistogram = { version = "7.6.0", default-features = false }
 image = { version = "*", default-features = false, features = ["jpeg"] }
+include_dir = "0.7.4"
 mimalloc = { version = "*" }
 mp4 = { path = "crates/mp4" }
 mqtt-protocol-core = { version = "*" }
