@@ -1,0 +1,158 @@
+# KeepPeek API
+
+This directory defines the initial public HTTP API used by viewer clients and services.
+
+- `openapi.yaml` is the source of truth for this HTTP contract.
+- Scenario walkthroughs live in [docs/](../docs/).
+
+The in-band WebRTC data-channel contract is defined by [webrtc.proto](webrtc.proto) and
+[webrtc.md](webrtc.md). The SDP data-channel topology required to establish a session is defined
+in [sdp-offer.md](sdp-offer.md).
+
+## Status
+
+This API is a pre-1.0 draft. It is not locked and may change freely, including incompatible
+changes to endpoints, messages, fields, enum values, channel IDs, and SDP rules. The stable
+compatibility guarantees begin with the 1.0 release.
+
+## Scenarios
+
+- [Viewer application](../docs/viewer.md) shows connection setup, live subscriptions, indexed stored-media
+  search and scrubbing, MID assignments, quality preferences, limited connection health, and
+  optional HTTP server logs and metrics.
+- [Event forwarder](../docs/event-forwarder.md) shows a data-only service that proxies structured events,
+  text, motion snapshots, and multi-JPEG stories to MQTT or another durable sink with backfill
+  and deduplication.
+- [Computer vision service](../docs/computer-vision.md) shows multi-stream decode and inference, durable
+  event-plus-image publication, event storage, and commit-only fanout through KeepPeek's event
+  router.
+- [Transcoding service](../docs/transcoding.md) shows multi-stream decode and re-encoding, discoverable
+  derived variants, lineage and loop prevention, publisher control, and viewer selection of
+  alternate codecs or quality levels.
+- [Shared state store](../docs/state-store.md) shows durable revisioned desired state, watches, leases,
+  and media orchestration intent without confusing coordination with live media truth.
+- [Group clients](../docs/groups.md) shows server-defined groups that bundle static camera streams and
+  optionally host live participants, with group discovery, optional passwords, individual
+  participant subscriptions, full-duplex audio with client-side push to talk, and per-medium
+  recording policy.
+- [Home Assistant card](../docs/home-assistant.md) shows a direct browser-to-KeepPeek Lovelace card with
+  one configured token, direct live media/events/timeline review, and no Home Assistant proxy.
+
+## HTTP API
+
+The initial API has five operations:
+
+1. `POST /create` sends a gzip-compressed SDP offer and returns a gzip-compressed SDP answer
+   with a session ID.
+2. `POST /delete` closes the session identified by the session ID in its JSON body.
+3. `POST /telemetry` uploads diagnostic client logs and metrics out-of-band without multiplexing them onto WebRTC.
+4. `GET /logs` reads server logs through Server-Sent Events.
+5. `GET /metrics` exposes Prometheus text metrics.
+
+## Access key
+
+KeepPeek uses one operator GUID as the HTTP Bearer secret. The value is a 128-bit integer.
+On the wire and in `config.toml` it is the usual hyphenated UUID string. The integer `0` is
+reserved: it means unset, and tests may use `access_key = 0` / `AccessKey(0)` without minting a
+real secret.
+
+There is no localhost or loopback bypass. A process that can open the port is not treated as
+trusted. The first-party UI may later receive the same key in an HttpOnly SameSite cookie when
+KeepPeek serves the origin; remote clients, Home Assistant, and Prometheus always send Bearer.
+
+### How the key is chosen
+
+Resolution order at process start:
+
+1. `keeppeek --access-key <guid>` when the value is not `0`
+2. `access_key` in the loaded `config.toml` when the value is not `0`
+3. Otherwise generate a random non-zero master GUID, persist it as `access_key` in that config
+   file, and print the hyphenated form once to stdout
+
+A later start with neither a CLI key nor a config key must not mint a new secret. The persisted
+master key is reused until an operator replaces it.
+
+```toml
+host = "0.0.0.0"
+port = 8081
+access_key = "550e8400-e29b-41d4-a716-446655440000"
+```
+
+```text
+keeppeek --access-key 550e8400-e29b-41d4-a716-446655440000
+keeppeek --config /path/to/config.toml
+```
+
+`--access-key` overrides the file for that process. If the override is a real key, KeepPeek
+writes it back to `access_key` so a restart without the flag still authenticates. Settings
+updates that do not set a key must leave the stored value alone. The settings HTTP JSON must
+never include the raw key.
+
+No HTTP endpoint creates, rotates, or lists keys in this draft. Rotation is rewriting
+`access_key` or passing a new `--access-key`. Debug logs must not print the GUID.
+
+Until per-key scopes exist, every configured GUID has the same rights to `/create`, `/delete`,
+`/logs`, and `/metrics`. A Home Assistant card token is therefore also a metrics and log
+credential.
+
+Every request sends its configured key in the Authorization header:
+
+```http
+Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
+```
+
+There are no users, roles, scopes, or per-client resource counters in this API.
+
+## Session lifecycle
+
+To create a session, encode an `offer` object with `type: "offer"` and its SDP string as the
+UTF-8 JSON `CreateRequest` body. Gzip the complete body, then send it to `POST /create`:
+
+```http
+Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
+Content-Type: application/json
+Content-Encoding: gzip
+```
+
+KeepPeek rejects a request with a missing or different content encoding with `415` and the
+reason `offer_not_gzip_encoded`. Invalid gzip, JSON, or SDP uses `400`; an SDP offer that
+violates the required topology uses `422`. Each offer-validation error includes a nonempty
+human-readable `error` string that explains the specific rejected input, a machine-readable
+`reason`, and, when relevant, the invalid `mid`.
+
+If KeepPeek cannot accept a decoded offer after topology checks, it returns `400` with
+`reason: "sdp_offer_rejected"`. `error` is a nonempty human-readable explanation of that
+rejection. It may include text from the SDP stack and is not a stable machine contract.
+
+The full [SDP offer contract](sdp-offer.md) defines the required SCTP transport, the three
+pre-negotiated data channels, the client's initial-only RTP `StreamId` allocation, opaque MIDs, ICE Lite
+offer/answer, and simulcast rules. There is no SDP renegotiation or trickle ICE. The client
+always offers and KeepPeek always answers. The offerer does not need ICE candidates; the
+answer supplies ICE Lite host candidates. The offer chooses every RTP send and receive `StreamId`
+the session will have, up to 256 RTP media sections. Each MID is the exact opaque string assigned
+by the browser or native offerer; KeepPeek never assigns meaning to its value. A successful `201`
+response is gzip-compressed JSON with `Content-Encoding: gzip`. After decompression it contains
+the opaque `session_id` to retain for cleanup and an `answer` object with `type: "answer"` and its
+SDP string.
+
+Delete the session with `POST /delete` and a JSON body containing that `session_id` when
+the viewer or service is finished. KeepPeek records the key used to create each session and
+accepts deletion only from that same key. An unknown session or a session created by a different
+key returns `404`.
+
+## Log stream
+
+`GET /logs` returns `text/event-stream`. Each `log` event has a JSON log entry in its
+`data` field and uses that entry's sequence number as its SSE `id`. The stream requires the
+same Authorization header as the session endpoints.
+
+## Metrics
+
+`GET /metrics` returns Prometheus text exposition metrics. Prometheus sends the same
+`Authorization: Bearer <GUID>` header used by the other endpoints. Any configured GUID may
+scrape metrics.
+
+Camera and server health numbers belong here, not on `ServerCapabilities`: process CPU and
+RSS, host memory and load, recording-disk bytes, per-camera online/degraded gauges, ingress
+fps and bitrate, reconnects, drops, and WebRTC session counts. `ServerCapabilities.cameras`
+carries identity and `ptz.supported`; it is not a metrics feed.

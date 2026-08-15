@@ -375,7 +375,7 @@ fn default_host() -> String {
 }
 
 const fn default_port() -> u16 {
-    3000
+    8081
 }
 
 impl Default for Config {
@@ -1125,7 +1125,7 @@ mod tests {
             &path,
             br#"
                 host = "0.0.0.0"
-                port = 3000
+                port = 8081
                 unrelated_setting = "preserved"
 
                 [storage]
@@ -1379,7 +1379,7 @@ mod tests {
         .unwrap();
         let settings = Config {
             host: "0.0.0.0".to_owned(),
-            port: 3000,
+            port: 8081,
             storage: StorageToml {
                 medium_term_path: Some(next.to_string_lossy().into_owned()),
                 long_term_path: Some(next.to_string_lossy().into_owned()),

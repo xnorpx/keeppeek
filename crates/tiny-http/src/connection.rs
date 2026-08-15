@@ -1,11 +1,10 @@
 //! Abstractions of Tcp and Unix socket types
 
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 #[cfg(unix)]
 use std::os::unix::net as unix_net;
-use std::{
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    path::PathBuf,
-};
+#[cfg(unix)]
+use std::path::PathBuf;
 
 /// Unified listener. Either a [`TcpListener`] or [`std::os::unix::net::UnixListener`]
 pub enum Listener {
@@ -168,7 +167,7 @@ impl ListenAddr {
         }
     }
     #[cfg(not(unix))]
-    pub fn to_unix(self) -> Option<SocketAddr> {
+    pub const fn to_unix(self) -> Option<SocketAddr> {
         None
     }
 }

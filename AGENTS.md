@@ -14,8 +14,8 @@ Treat every applicable Svelte `M-*` guideline as a repository requirement. Prefe
 
 After any change under `ui/`, run the canonical UI validation script from the repository root before considering the work complete:
 
-- macOS or Linux: `./check-ui.sh`
-- Windows: `.\check-ui.bat`
+- macOS or Linux: `./check.sh`
+- Windows: `.\check.bat`
 
 CI uses these same entry points. Individual UI commands may be used while diagnosing failures, but the full platform script must pass before completion.
 

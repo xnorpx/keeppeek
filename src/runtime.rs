@@ -135,7 +135,7 @@ impl Router {
         }
     }
 
-    fn query(&self, query: RouterQuery) -> Result<RouterResponse, RouterError> {
+    pub fn query(&self, query: RouterQuery) -> Result<RouterResponse, RouterError> {
         match query {
             RouterQuery::ListCameras => {
                 let mut cameras = self.cameras.values().cloned().collect::<Vec<_>>();
