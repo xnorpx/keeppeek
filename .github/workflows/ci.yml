@@ -42,6 +42,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - working-directory: ui
+        run: bun install --registry=https://registry.npmjs.org/
       - run: cargo clippy --all --all-targets -- -D warnings
 
   build-and-test:
@@ -57,6 +62,11 @@ jobs:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - working-directory: ui
+        run: bun install --registry=https://registry.npmjs.org/
       - run: cargo build --all
       - name: Run Rust tests
         id: rust-tests

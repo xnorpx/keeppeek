@@ -24,6 +24,7 @@ use crate::{
         LiveTrackId, Source, WebRtc,
     },
 };
+use include_dir::{Dir, File as EmbeddedFile, include_dir};
 use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -47,6 +48,8 @@ const DEFAULT_LOG_STREAM_TAIL: usize = 200;
 const MAX_LOG_STREAM_TAIL: usize = 1_000;
 const MEBIBYTE_BYTES: u64 = 1_048_576;
 const GIBIBYTE_BYTES: u64 = 1_073_741_824;
+
+static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
 
 #[derive(Deserialize)]
 struct AdaptiveLiveOffer {
@@ -2523,15 +2526,30 @@ fn serve_ui(request: &Request) -> Response {
     if request.method() != "GET" {
         return service_error(404, "not found");
     }
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/build");
-    let response = rouille::match_assets(request, &root);
-    if response.is_success() {
-        return response;
-    }
-    File::open(root.join("index.html")).map_or_else(
-        |_| service_error(404, "not found"),
-        |file| Response::from_file("text/html; charset=utf-8", file).with_no_cache(),
-    )
+
+    let path = request.url();
+    UI_ASSETS
+        .get_file(path.trim_start_matches('/'))
+        .map_or_else(
+            || {
+                embedded_ui_file(
+                    UI_ASSETS
+                        .get_file("index.html")
+                        .expect("the compiled UI must include index.html"),
+                )
+                .with_no_cache()
+            },
+            |file| embedded_ui_file(file).with_public_cache(3_600),
+        )
+}
+
+fn embedded_ui_file(file: &EmbeddedFile<'_>) -> Response {
+    let content_type = file
+        .path()
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map_or("application/octet-stream", rouille::extension_to_mime);
+    Response::from_data(content_type, file.contents())
 }
 
 fn query_router(
@@ -2588,6 +2606,26 @@ mod tests {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).unwrap();
         data
+    }
+
+    #[test]
+    fn embedded_ui_serves_root_and_client_routes() {
+        let root = serve_ui(&Request::fake_http("GET", "/", Vec::new(), Vec::new()));
+        assert_eq!(root.status_code, 200);
+        assert!(root.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("Content-Type") && value.starts_with("text/html")
+        }));
+        let root_body = response_data(root);
+        assert!(!root_body.is_empty());
+
+        let route = serve_ui(&Request::fake_http(
+            "GET",
+            "/camera?camera=front-door",
+            Vec::new(),
+            Vec::new(),
+        ));
+        assert_eq!(route.status_code, 200);
+        assert_eq!(response_data(route), root_body);
     }
 
     fn logging_test_state(

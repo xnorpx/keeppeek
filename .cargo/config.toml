@@ -3,3 +3,6 @@ default = "crates-io"
 
 [registries.crates-io]
 protocol = "sparse"
+
+[env]
+OPENSSL_NO_VENDOR = "1"
