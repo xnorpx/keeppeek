@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 const backendURL = 'http://127.0.0.1:4317';
 const baseURL = 'http://127.0.0.1:4174';
 const isCI = Boolean(process.env.CI);
+const browserChannel = process.platform === 'win32' ? 'msedge' : undefined;
 const environment = Object.fromEntries(
 	Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
 );
@@ -27,6 +28,7 @@ export default defineConfig({
 	},
 	use: {
 		baseURL,
+		channel: browserChannel,
 		headless: true,
 		trace: 'on-first-retry'
 	},
