@@ -260,6 +260,7 @@ const healthSnapshot = {
 	]
 };
 
+/* eslint-disable-next-line @typescript-eslint/no-unused-vars */
 async function installMockPeerConnection(page: Page) {
 	await page.addInitScript(() => {
 		class MockPeerConnection {
@@ -355,7 +356,7 @@ async function installMockPeerConnection(page: Page) {
 			}
 
 			
-            createDataChannel(label: string, options?: RTCDataChannelInit): RTCDataChannel {
+            createDataChannel(label: string): RTCDataChannel {
                 return {
                     label,
                     readyState: 'open',

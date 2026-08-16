@@ -1,16 +1,14 @@
+import { createSession, deleteSession } from './api';
+
+import { create, toBinary } from '@bufbuild/protobuf';
 import {
-	closeBrowserLiveSession,
-	closeBrowserLiveSessionOnPageHide,
-	createBrowserLiveSession,
-	getBrowserLiveSessionStatus,
-	setBrowserTrackQuality
-} from './api';
-import type {
-	BrowserLiveSessionStatus,
-	BrowserLiveTrackOffer,
-	BrowserLiveTrackStatus,
-	LiveQuality
-} from './types';
+	RequestSchema,
+	SubscribeMediaSchema,
+	MediaKind,
+	DeliveryTransport,
+	VideoQuality
+} from './proto/webrtc_pb.js';
+import type { LiveQuality } from './types';
 
 export type LivePeerPlan = {
 	cameraId: string;
@@ -31,7 +29,7 @@ export type LivePeerTrack = {
 export class LivePeer {
 	connectionState = $state<RTCPeerConnectionState>('new');
 	iceConnectionState = $state<RTCIceConnectionState>('new');
-	sessionId = $state<number | null>(null);
+	sessionId = $state<string | null>(null);
 	estimatedBitrateBps = $state<number | null>(null);
 	error = $state<string | null>(null);
 	tracks = $state.raw<Record<string, LivePeerTrack>>({});
@@ -87,24 +85,7 @@ export class LivePeer {
 	closeOnPageHide(): void {
 		const sessionId = this.releaseLocalResources();
 		if (sessionId === null) return;
-		closeBrowserLiveSessionOnPageHide(sessionId);
-	}
-
-	async refreshStatus(): Promise<void> {
-		const sessionId = this.sessionId;
-		if (sessionId === null) return;
-		try {
-			const status = await getBrowserLiveSessionStatus(sessionId);
-			if (this.sessionId === sessionId) this.applyStatus(status);
-		} catch (error) {
-			if (this.sessionId === sessionId) {
-				if (error instanceof Error && error.message.startsWith('404 ')) {
-					void this.close();
-					return;
-				}
-				console.debug('Unable to refresh shared live session status', error);
-			}
-		}
+		navigator.sendBeacon('/delete', JSON.stringify({ session_id: sessionId }));
 	}
 
 	markPlaying(cameraId: string): void {
@@ -149,6 +130,8 @@ export class LivePeer {
 		this.#cameraByMid = {};
 		this.#cameraByTrack = {};
 
+		const controlChannel = peer.createDataChannel('control-channel', { negotiated: true, id: 0 });
+
 		const localTracks = plans.map((plan, index) => {
 			const trackId = `camera-${index}`;
 			const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
@@ -156,6 +139,7 @@ export class LivePeer {
 			this.#cameraByTrack[trackId] = plan.cameraId;
 			return { ...plan, trackId, transceiver };
 		});
+
 		this.tracks = Object.fromEntries(
 			localTracks.map((track) => [
 				track.cameraId,
@@ -185,11 +169,7 @@ export class LivePeer {
 		peer.onconnectionstatechange = () => {
 			if (peer !== this.#peer) return;
 			this.connectionState = peer.connectionState;
-			if (
-				peer.connectionState === 'failed' ||
-				peer.connectionState === 'disconnected' ||
-				peer.connectionState === 'closed'
-			) {
+			if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) {
 				this.markAllUnavailable();
 				void this.close();
 			}
@@ -207,34 +187,57 @@ export class LivePeer {
 			const offer = await peer.createOffer();
 			await peer.setLocalDescription(offer);
 			await waitForIceGathering(peer);
+
 			if (peer !== this.#peer || !peer.localDescription) return;
-			const offers: BrowserLiveTrackOffer[] = localTracks.map((track) => {
+
+			for (const track of localTracks) {
 				const mid = track.transceiver.mid;
 				if (mid === null) throw new Error(`No SDP MID assigned for ${track.cameraId}`);
 				this.#cameraByMid[mid] = track.cameraId;
-				return {
-					track_id: track.trackId,
-					camera_id: track.cameraId,
-					mid,
-					quality: track.quality
-				};
-			});
-			const session = await createBrowserLiveSession(offers, peer.localDescription);
+			}
+
+			const session = await createSession(peer.localDescription);
 			if (peer !== this.#peer) {
-				await closeBrowserLiveSession(session.session_id);
+				await deleteSession(session.session_id);
 				return;
 			}
+
 			this.sessionId = session.session_id;
-			this.applyStatus(session);
-			this.startStatusPolling();
-			await peer.setRemoteDescription(session.answer);
+			await peer.setRemoteDescription(session.answer as RTCSessionDescriptionInit);
+
+			await new Promise<void>((resolve, reject) => {
+				if (controlChannel.readyState === 'open') return resolve();
+				controlChannel.onopen = () => resolve();
+				controlChannel.onerror = (e) => reject(e);
+			});
+
+			for (const track of localTracks) {
+				const req = create(RequestSchema, {
+					requestId: BigInt(Date.now()),
+					command: {
+						case: 'subscribeMedia',
+						value: create(SubscribeMediaSchema, {
+							subscriptionId: track.transceiver.mid!, // streamId is Mid
+							sourceSessionId: track.cameraId,
+							kind: MediaKind.VIDEO,
+							requestedDeliveryTransport: DeliveryTransport.RTP,
+							videoQuality:
+								track.quality === 'auto' || track.quality === 'high'
+									? VideoQuality.HIGH
+									: VideoQuality.LOW,
+							variantId: ''
+						})
+					}
+				});
+				controlChannel.send(toBinary(RequestSchema, req));
+			}
 		} catch (error) {
 			if (peer === this.#peer) {
 				const sessionId = this.releaseLocalResources();
 				this.error = error instanceof Error ? error.message : 'Unable to start shared live view';
 				if (sessionId !== null) {
 					try {
-						await closeBrowserLiveSession(sessionId);
+						await deleteSession(sessionId);
 					} catch (closeError) {
 						console.debug('Unable to close failed shared live session', closeError);
 					}
@@ -243,28 +246,11 @@ export class LivePeer {
 			throw error;
 		}
 	}
-
 	private async setQuality(cameraId: string, quality: LiveQuality): Promise<void> {
-		const track = this.track(cameraId);
-		const sessionId = this.sessionId;
-		if (!track || sessionId === null || track.requestedQuality === quality) return;
-		const status = await setBrowserTrackQuality(sessionId, track.trackId, quality);
-		if (sessionId === this.sessionId) this.applyTrackStatus(status);
-	}
-
-	private applyStatus(status: BrowserLiveSessionStatus): void {
-		this.estimatedBitrateBps = status.estimated_bitrate_bps;
-		for (const track of status.tracks) this.applyTrackStatus(track);
-	}
-
-	private applyTrackStatus(status: BrowserLiveTrackStatus): void {
-		const cameraId = this.#cameraByTrack[status.track_id];
-		if (!cameraId) return;
-		this.replaceTrack(cameraId, {
-			requestedQuality: status.requested_quality,
-			activeStream: status.active_stream,
-			estimatedBitrateBps: status.estimated_bitrate_bps
-		});
+		const track = this.tracks[cameraId];
+		if (!track) return;
+		this.replaceTrack(cameraId, { requestedQuality: quality });
+		// Optionally transmit protobuf SubscribeMedia update here
 	}
 
 	private replaceTrack(cameraId: string, update: Partial<LivePeerTrack>): void {
@@ -273,24 +259,19 @@ export class LivePeer {
 		this.tracks = { ...this.tracks, [cameraId]: { ...current, ...update } };
 	}
 
-	private startStatusPolling(): void {
-		if (this.#statusTimer !== null) window.clearInterval(this.#statusTimer);
-		this.#statusTimer = window.setInterval(() => void this.refreshStatus(), 2_000);
-	}
-
 	private async closeNow(): Promise<void> {
 		const sessionId = this.releaseLocalResources();
 		if (sessionId === null) return;
 		try {
-			await closeBrowserLiveSession(sessionId);
+			await deleteSession(sessionId);
 		} catch (error) {
 			console.debug('Unable to close shared live session', error);
 		}
 	}
 
-	private releaseLocalResources(): number | null {
+	private releaseLocalResources(): string | null {
 		const peer = this.#peer;
-		const sessionId = this.sessionId;
+		const sessionId = this.sessionId as string | null;
 		this.#peer = null;
 		this.#topologyKey = '';
 		this.#cameraByMid = {};
@@ -314,8 +295,8 @@ export class LivePeer {
 		peer?.close();
 		this.tracks = {};
 		this.connectionState = peer ? 'closed' : 'new';
-		this.iceConnectionState = peer ? 'closed' : 'new';
-		return sessionId;
+		this.iceConnectionState = 'closed';
+		return sessionId as string | null;
 	}
 
 	private detach(cameraId: string): void {

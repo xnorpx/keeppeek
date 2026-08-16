@@ -16,7 +16,3 @@ test('renders the KeepPeek dashboard without configured cameras', async ({ page 
 	await expect(page.getByText('0 cameras', { exact: true })).toBeVisible();
 	await expect(page.getByText('No cameras configured.')).toBeVisible();
 });
-
-
-
-

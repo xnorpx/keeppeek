@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-	import { useLivePeer } from '$lib/live-peer-context';
+	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { LiveQuality } from '$lib/types';
 	import InfoIcon from '@lucide/svelte/icons/info';
 

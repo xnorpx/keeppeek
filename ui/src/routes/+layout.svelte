@@ -12,7 +12,7 @@
 	import SunIcon from '@lucide/svelte/icons/sun';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { setLivePeer } from '$lib/live-peer-context';
+	import { setLivePeer } from '$lib/stream-peer-context';
 	import { initializeBrowserLogging } from '$lib/browser-logs';
 
 	initializeBrowserLogging();

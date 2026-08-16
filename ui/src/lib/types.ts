@@ -221,27 +221,6 @@ export interface LiveSessionResponse extends LiveSessionStatus {
 	answer: RTCSessionDescriptionInit;
 }
 
-export interface BrowserLiveTrackOffer {
-	track_id: string;
-	camera_id: string;
-	mid: string;
-	quality: LiveQuality;
-}
-
-export interface BrowserLiveTrackStatus extends LiveSessionStatus {
-	track_id: string;
-}
-
-export interface BrowserLiveSessionStatus {
-	estimated_bitrate_bps: number | null;
-	tracks: BrowserLiveTrackStatus[];
-}
-
-export interface BrowserLiveSessionResponse extends BrowserLiveSessionStatus {
-	session_id: number;
-	answer: RTCSessionDescriptionInit;
-}
-
 export interface ServerHealthResponse {
 	status: 'healthy' | 'degraded';
 	generated_at_ms: number;
@@ -541,4 +520,124 @@ export interface LoggingSettings {
 	filter_error: string | null;
 	version: string;
 	buffer: LogBufferStats;
+}
+
+export interface CreateRequest {
+	offer: SdpOffer;
+}
+
+export interface CreateResponse {
+	session_id: string;
+	answer: SdpAnswer;
+}
+
+export interface DeleteRequest {
+	session_id: string;
+}
+
+export interface SdpOffer {
+	type: string;
+	sdp: string;
+}
+
+export interface SdpAnswer {
+	type: string;
+	sdp: string;
+}
+
+export interface Status {
+	code: number;
+	message: string;
+}
+
+export interface CreateRequest {
+	offer: SdpOffer;
+}
+export interface CreateResponse {
+	session_id: string;
+	answer: SdpAnswer;
+}
+export interface DeleteRequest {
+	session_id: string;
+}
+export interface SdpOffer {
+	type: string;
+	sdp: string;
+}
+export interface SdpAnswer {
+	type: string;
+	sdp: string;
+}
+export interface Status {
+	code: number;
+	message: string;
+}
+
+export interface CreateRequest {
+	offer: SdpOffer;
+}
+export interface CreateResponse {
+	session_id: string;
+	answer: SdpAnswer;
+}
+export interface DeleteRequest {
+	session_id: string;
+}
+export interface SdpOffer {
+	type: string;
+	sdp: string;
+}
+export interface SdpAnswer {
+	type: string;
+	sdp: string;
+}
+export interface Status {
+	code: number;
+	message: string;
+}
+
+export interface CreateRequest {
+	offer: SdpOffer;
+}
+export interface CreateResponse {
+	session_id: string;
+	answer: SdpAnswer;
+}
+export interface DeleteRequest {
+	session_id: string;
+}
+export interface SdpOffer {
+	type: string;
+	sdp: string;
+}
+export interface SdpAnswer {
+	type: string;
+	sdp: string;
+}
+export interface Status {
+	code: number;
+	message: string;
+}
+
+export interface CreateRequest {
+	offer: SdpOffer;
+}
+export interface CreateResponse {
+	session_id: string;
+	answer: SdpAnswer;
+}
+export interface DeleteRequest {
+	session_id: string;
+}
+export interface SdpOffer {
+	type: string;
+	sdp: string;
+}
+export interface SdpAnswer {
+	type: string;
+	sdp: string;
+}
+export interface Status {
+	code: number;
+	message: string;
 }

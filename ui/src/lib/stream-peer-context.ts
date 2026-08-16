@@ -1,7 +1,7 @@
 import { getContext, setContext } from 'svelte';
-import { LivePeer } from './live-peer.svelte';
+import { LivePeer } from './stream-peer.svelte';
 
-const LIVE_PEER_CONTEXT = Symbol('keeppeek.live-peer');
+const LIVE_PEER_CONTEXT = Symbol('keeppeek.stream-peer');
 
 export function setLivePeer(): LivePeer {
 	return setContext(LIVE_PEER_CONTEXT, new LivePeer());

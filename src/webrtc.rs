@@ -55,14 +55,14 @@ const MAX_MID_BYTES: usize = 16;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum LiveQuality {
+pub(crate) enum StreamQuality {
     #[default]
     Auto,
     High,
     Low,
 }
 
-impl LiveQuality {
+impl StreamQuality {
     const fn as_u8(self) -> u8 {
         match self {
             Self::Auto => 0,
@@ -80,7 +80,7 @@ impl LiveQuality {
     }
 }
 
-impl std::fmt::Display for LiveQuality {
+impl std::fmt::Display for StreamQuality {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Auto => formatter.write_str("auto"),
@@ -133,10 +133,9 @@ pub(crate) struct Session {
     pub(crate) answer: SdpAnswer,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) struct SessionStatus {
-    pub(crate) requested_quality: LiveQuality,
+    pub(crate) requested_quality: StreamQuality,
     pub(crate) active_stream: StreamKind,
     pub(crate) estimated_bitrate_bps: Option<u64>,
 }
@@ -144,7 +143,7 @@ pub(crate) struct SessionStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct TrackStatus {
     pub(crate) track_id: TrackId,
-    pub(crate) requested_quality: LiveQuality,
+    pub(crate) requested_quality: StreamQuality,
     pub(crate) active_stream: StreamKind,
     pub(crate) estimated_bitrate_bps: Option<u64>,
 }
@@ -162,7 +161,7 @@ pub(crate) struct TrackPlan {
     pub(crate) camera_ip: IpAddr,
     pub(crate) has_sub_stream: bool,
     pub(crate) recording_label: String,
-    pub(crate) quality: LiveQuality,
+    pub(crate) quality: StreamQuality,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,21 +171,21 @@ pub struct Source {
 }
 
 #[derive(Debug, Clone)]
-struct LiveFrame {
+struct MediaFrame {
     codec: VideoCodec,
     is_keyframe: bool,
     received_at: Instant,
     timestamp: Option<Duration>,
-    data: Arc<LiveFrameData>,
+    data: Arc<MediaFrameData>,
 }
 
 #[derive(Debug)]
-struct LiveFrameData {
+struct MediaFrameData {
     avcc: Bytes,
     annexb: OnceLock<Arc<[u8]>>,
 }
 
-impl LiveFrameData {
+impl MediaFrameData {
     const fn new(avcc: Bytes) -> Self {
         Self {
             avcc,
@@ -206,7 +205,7 @@ enum SessionCommand {
     Frame {
         sequence: u64,
         source: Source,
-        frame: LiveFrame,
+        frame: MediaFrame,
     },
 }
 
@@ -280,7 +279,7 @@ struct SessionSender {
     tx: Sender<SessionCommand>,
     queue_stats: Arc<SessionQueueStats>,
     queue_high_water: Arc<AtomicUsize>,
-    latest_keyframe: Arc<Mutex<Option<LiveFrame>>>,
+    latest_keyframe: Arc<Mutex<Option<MediaFrame>>>,
     poller: Arc<Poller>,
     shutdown: Arc<AtomicBool>,
 }
@@ -299,7 +298,7 @@ struct SessionControl {
 }
 
 impl SessionControl {
-    const fn new(quality: LiveQuality, active_stream: StreamKind, poller: Arc<Poller>) -> Self {
+    const fn new(quality: StreamQuality, active_stream: StreamKind, poller: Arc<Poller>) -> Self {
         Self {
             requested_quality: AtomicU8::new(quality.as_u8()),
             active_stream: AtomicU8::new(stream_as_u8(active_stream)),
@@ -311,7 +310,9 @@ impl SessionControl {
     fn status(&self) -> SessionStatus {
         let estimated_bitrate_bps = self.estimated_bitrate_bps.load(Ordering::Acquire);
         SessionStatus {
-            requested_quality: LiveQuality::from_u8(self.requested_quality.load(Ordering::Acquire)),
+            requested_quality: StreamQuality::from_u8(
+                self.requested_quality.load(Ordering::Acquire),
+            ),
             active_stream: stream_from_u8(self.active_stream.load(Ordering::Acquire)),
             estimated_bitrate_bps: (estimated_bitrate_bps > 0).then_some(estimated_bitrate_bps),
         }
@@ -379,18 +380,14 @@ impl MultiTrackControl {
         }
     }
 
-    fn set_quality(
-        &self,
-        track_id: &TrackId,
-        quality: LiveQuality,
-    ) -> Option<TrackStatus> {
+    fn set_quality(&self, track_id: &TrackId, quality: StreamQuality) -> Option<TrackStatus> {
         let control = self.tracks.get(track_id)?;
-        if quality != LiveQuality::Low {
+        if quality != StreamQuality::Low {
             for (other_track_id, other_control) in &self.tracks {
                 if other_track_id != track_id {
                     other_control
                         .requested_quality
-                        .store(LiveQuality::Low.as_u8(), Ordering::Release);
+                        .store(StreamQuality::Low.as_u8(), Ordering::Release);
                 }
             }
         }
@@ -450,7 +447,7 @@ impl SessionSender {
         &self,
         sequence: u64,
         source: Source,
-        frame: LiveFrame,
+        frame: MediaFrame,
     ) -> Result<(), TrySendError<SessionCommand>> {
         if frame.is_keyframe {
             *self
@@ -497,7 +494,7 @@ impl SessionSender {
 
 struct SourceState {
     subscribers: Vec<SessionSender>,
-    keyframe: Option<LiveFrame>,
+    keyframe: Option<MediaFrame>,
     next_sequence: u64,
     bitrate: SourceBitrate,
 }
@@ -674,7 +671,7 @@ enum SessionPlan {
     Adaptive {
         camera_ip: IpAddr,
         has_sub_stream: bool,
-        quality: LiveQuality,
+        quality: StreamQuality,
         recording_label: String,
     },
 }
@@ -759,8 +756,8 @@ impl SourceSubscription {
         recording_label: String,
     ) -> Self {
         let active_source = match control.status().requested_quality {
-            LiveQuality::High => high_source,
-            LiveQuality::Auto | LiveQuality::Low => low_source.unwrap_or(high_source),
+            StreamQuality::High => high_source,
+            StreamQuality::Auto | StreamQuality::Low => low_source.unwrap_or(high_source),
         };
         control
             .active_stream
@@ -824,16 +821,16 @@ impl SourceSubscription {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = keyframe;
     }
 
-    fn requested_quality(&self) -> Option<LiveQuality> {
-        self.control
-            .as_ref()
-            .map(|control| LiveQuality::from_u8(control.requested_quality.load(Ordering::Acquire)))
+    fn requested_quality(&self) -> Option<StreamQuality> {
+        self.control.as_ref().map(|control| {
+            StreamQuality::from_u8(control.requested_quality.load(Ordering::Acquire))
+        })
     }
 
-    fn desired_bitrate(&self, quality: LiveQuality) -> Bitrate {
+    fn desired_bitrate(&self, quality: StreamQuality) -> Bitrate {
         let source = match quality {
-            LiveQuality::Auto | LiveQuality::High => self.high_source,
-            LiveQuality::Low => self.low_source.unwrap_or(self.high_source),
+            StreamQuality::Auto | StreamQuality::High => self.high_source,
+            StreamQuality::Low => self.low_source.unwrap_or(self.high_source),
         };
         let (average_bps, max_frame_bytes) = self.source_delivery_requirements(source);
         desired_egress_bitrate(average_bps, max_frame_bytes)
@@ -898,11 +895,11 @@ impl SourceSubscription {
         let Some(control) = &self.control else {
             return;
         };
-        let requested = LiveQuality::from_u8(control.requested_quality.load(Ordering::Acquire));
+        let requested = StreamQuality::from_u8(control.requested_quality.load(Ordering::Acquire));
         let target = match requested {
-            LiveQuality::Low => self.low_source.unwrap_or(self.high_source),
-            LiveQuality::High => self.high_source,
-            LiveQuality::Auto => self.automatic_source(now),
+            StreamQuality::Low => self.low_source.unwrap_or(self.high_source),
+            StreamQuality::High => self.high_source,
+            StreamQuality::Auto => self.automatic_source(now),
         };
         if target == self.active_source || !self.codec_is_negotiated(rtc, video_mid, target) {
             self.cancel_pending_switch();
@@ -1173,11 +1170,11 @@ impl TrackRuntime {
 }
 
 #[derive(Clone, Default)]
-pub struct LiveHandle {
+pub struct Publisher {
     inner: Arc<Inner>,
 }
 
-impl LiveHandle {
+impl Publisher {
     pub fn publish(
         &self,
         source: Source,
@@ -1202,12 +1199,12 @@ impl LiveHandle {
             return;
         }
 
-        let frame = LiveFrame {
+        let frame = MediaFrame {
             codec,
             is_keyframe,
             received_at,
             timestamp,
-            data: Arc::new(LiveFrameData::new(avcc)),
+            data: Arc::new(MediaFrameData::new(avcc)),
         };
         if is_keyframe {
             state.keyframe = Some(frame.clone());
@@ -1233,7 +1230,7 @@ impl LiveHandle {
 
 #[derive(Clone, Default)]
 pub struct WebRtc {
-    live: LiveHandle,
+    live: Publisher,
     recording_demand: Option<RecordingDemand>,
 }
 
@@ -1242,13 +1239,13 @@ impl WebRtc {
         Self::default()
     }
 
-    pub fn live(&self) -> LiveHandle {
+    pub fn live(&self) -> Publisher {
         self.live.clone()
     }
 
     pub fn with_recording_demand(recording_demand: RecordingDemand) -> Self {
         Self {
-            live: LiveHandle::default(),
+            live: Publisher::default(),
             recording_demand: Some(recording_demand),
         }
     }
@@ -1289,7 +1286,7 @@ impl WebRtc {
         camera_ip: IpAddr,
         has_sub_stream: bool,
         recording_label: &str,
-        quality: LiveQuality,
+        quality: StreamQuality,
         offer: SdpOffer,
     ) -> anyhow::Result<Session> {
         self.accept_offer_inner(
@@ -1441,7 +1438,7 @@ impl WebRtc {
         &self,
         session_id: SessionId,
         track_id: &TrackId,
-        quality: LiveQuality,
+        quality: StreamQuality,
     ) -> Option<TrackStatus> {
         reap_finished_threads(&self.live.inner);
         self.live
@@ -1478,7 +1475,7 @@ impl WebRtc {
     pub(crate) fn set_quality(
         &self,
         session_id: SessionId,
-        quality: LiveQuality,
+        quality: StreamQuality,
     ) -> Option<SessionStatus> {
         reap_finished_threads(&self.live.inner);
         let control = self
@@ -1619,9 +1616,9 @@ impl WebRtc {
             for control in sessions.values() {
                 let status = control.status();
                 match status.requested_quality {
-                    LiveQuality::Auto => requested_auto += 1,
-                    LiveQuality::High => requested_high += 1,
-                    LiveQuality::Low => requested_low += 1,
+                    StreamQuality::Auto => requested_auto += 1,
+                    StreamQuality::High => requested_high += 1,
+                    StreamQuality::Low => requested_low += 1,
                 }
                 if let Some(estimate) = status.estimated_bitrate_bps {
                     estimates.push(estimate);
@@ -1648,9 +1645,9 @@ impl WebRtc {
                 multi_tracks += status.tracks.len();
                 for track in status.tracks {
                     match track.requested_quality {
-                        LiveQuality::Auto => requested_auto += 1,
-                        LiveQuality::High => requested_high += 1,
-                        LiveQuality::Low => requested_low += 1,
+                        StreamQuality::Auto => requested_auto += 1,
+                        StreamQuality::High => requested_high += 1,
+                        StreamQuality::Low => requested_low += 1,
                     }
                 }
                 if let Some(estimate) = status.estimated_bitrate_bps {
@@ -1670,7 +1667,8 @@ impl WebRtc {
             adaptive_sessions,
             multi_track_sessions,
             multi_tracks,
-            fixed_sessions: active_sessions.saturating_sub(adaptive_sessions + multi_track_sessions),
+            fixed_sessions: active_sessions
+                .saturating_sub(adaptive_sessions + multi_track_sessions),
             active_main,
             active_sub,
             requested_auto,
@@ -1700,11 +1698,7 @@ impl WebRtc {
         }
     }
 
-    fn accept_offer_inner(
-        &self,
-        plan: SessionPlan,
-        offer: SdpOffer,
-    ) -> anyhow::Result<Session> {
+    fn accept_offer_inner(&self, plan: SessionPlan, offer: SdpOffer) -> anyhow::Result<Session> {
         reap_finished_threads(&self.live.inner);
         let SessionIo {
             rtc,
@@ -1750,8 +1744,8 @@ impl WebRtc {
                     stream: StreamKind::Sub,
                 });
                 let initial_stream = match quality {
-                    LiveQuality::High => StreamKind::Main,
-                    LiveQuality::Auto | LiveQuality::Low => {
+                    StreamQuality::High => StreamKind::Main,
+                    StreamQuality::Auto | StreamQuality::Low => {
                         low_source.map_or(StreamKind::Main, |source| source.stream)
                     }
                 };
@@ -1918,10 +1912,10 @@ fn next_session_id(inner: &Inner) -> SessionId {
     )
 }
 
-fn initial_stream(quality: LiveQuality, low_source: Option<Source>) -> StreamKind {
+fn initial_stream(quality: StreamQuality, low_source: Option<Source>) -> StreamKind {
     match quality {
-        LiveQuality::High => StreamKind::Main,
-        LiveQuality::Auto | LiveQuality::Low => {
+        StreamQuality::High => StreamKind::Main,
+        StreamQuality::Auto | StreamQuality::Low => {
             low_source.map_or(StreamKind::Main, |source| source.stream)
         }
     }
@@ -1950,7 +1944,7 @@ fn validate_multi_tracks(plans: &[TrackPlan]) -> anyhow::Result<()> {
         if !mids.insert(plan.mid.as_str()) {
             anyhow::bail!("browser offer contains duplicate SDP MID '{}'", plan.mid);
         }
-        if plan.quality != LiveQuality::Low {
+        if plan.quality != StreamQuality::Low {
             promoted_tracks += 1;
         }
     }
@@ -2113,7 +2107,8 @@ fn drive_multi_track_session(
                         write_frame(rtc, Some(track.mid), &keyframe, &mut track.media_clock)?;
                     if wrote_frame {
                         track.keyframe_gate.mark_written(FrameOrigin::Cached);
-                        next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
+                        next_timeout =
+                            drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
                     }
                 }
             }
@@ -2215,7 +2210,8 @@ fn drive_multi_track_session(
                             contents: (&udp_buffer[..length]).try_into()?,
                         };
                         rtc.handle_input(Input::Receive(Instant::now(), receive))?;
-                        next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
+                        next_timeout =
+                            drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => break,
                     Err(error) => return Err(error.into()),
@@ -2239,10 +2235,12 @@ fn desired_bitrate(tracks: &[TrackRuntime]) -> Bitrate {
         let quality = track
             .subscription
             .requested_quality()
-            .unwrap_or(LiveQuality::Low);
+            .unwrap_or(StreamQuality::Low);
         let bitrate = match quality {
-            LiveQuality::Low => track.subscription.low_delivery_bitrate(),
-            LiveQuality::Auto | LiveQuality::High => track.subscription.desired_bitrate(quality),
+            StreamQuality::Low => track.subscription.low_delivery_bitrate(),
+            StreamQuality::Auto | StreamQuality::High => {
+                track.subscription.desired_bitrate(quality)
+            }
         };
         total.saturating_add(bitrate.as_u64())
     });
@@ -2255,19 +2253,14 @@ fn update_track_estimates(tracks: &mut [TrackRuntime], aggregate_bps: u64) {
     });
     for track in tracks {
         let own_low_bps = track.subscription.low_delivery_bitrate().as_u64();
-        let available_bps =
-            available_bitrate(aggregate_bps, background_reserve_bps, own_low_bps);
+        let available_bps = available_bitrate(aggregate_bps, background_reserve_bps, own_low_bps);
         track
             .subscription
             .update_estimate(Bitrate::bps(available_bps));
     }
 }
 
-const fn available_bitrate(
-    aggregate_bps: u64,
-    total_low_bps: u64,
-    own_low_bps: u64,
-) -> u64 {
+const fn available_bitrate(aggregate_bps: u64, total_low_bps: u64, own_low_bps: u64) -> u64 {
     aggregate_bps.saturating_sub(total_low_bps.saturating_sub(own_low_bps))
 }
 
@@ -2578,7 +2571,7 @@ impl MediaClock {
             .map_or(0, |last| last.saturating_add(DEFAULT_FRAME_TICKS));
     }
 
-    fn media_time(&mut self, frame: &LiveFrame) -> u64 {
+    fn media_time(&mut self, frame: &MediaFrame) -> u64 {
         let base_received_at = *self.first_received_at.get_or_insert(frame.received_at);
         let fallback = self
             .source_base_media_time
@@ -2606,7 +2599,7 @@ impl MediaClock {
 fn write_frame(
     rtc: &mut Rtc,
     video_mid: Option<Mid>,
-    frame: &LiveFrame,
+    frame: &MediaFrame,
     media_clock: &mut MediaClock,
 ) -> anyhow::Result<bool> {
     let Some(mid) = video_mid else {
@@ -2645,7 +2638,7 @@ fn write_frame(
 mod tests {
     use super::*;
 
-    fn live_frame(is_keyframe: bool) -> LiveFrame {
+    fn live_frame(is_keyframe: bool) -> MediaFrame {
         live_frame_at(is_keyframe, Instant::now(), 4)
     }
 
@@ -2656,13 +2649,13 @@ mod tests {
         }
     }
 
-    fn live_frame_at(is_keyframe: bool, received_at: Instant, bytes: usize) -> LiveFrame {
-        LiveFrame {
+    fn live_frame_at(is_keyframe: bool, received_at: Instant, bytes: usize) -> MediaFrame {
+        MediaFrame {
             codec: VideoCodec::H264,
             is_keyframe,
             received_at,
             timestamp: None,
-            data: Arc::new(LiveFrameData::new(Bytes::from(vec![0; bytes]))),
+            data: Arc::new(MediaFrameData::new(Bytes::from(vec![0; bytes]))),
         }
     }
 
@@ -2827,11 +2820,12 @@ mod tests {
         let (multi_track_sender, _multi_track_rx) = sender(2, Some(track_id.clone()));
         let (fixed_sender, _fixed_rx) = sender(3, None);
         let adaptive = SourceSubscription::fixed(inner.clone(), adaptive_sender, main_source, None);
-        let browser = SourceSubscription::fixed(inner.clone(), multi_track_sender, sub_source, None);
+        let browser =
+            SourceSubscription::fixed(inner.clone(), multi_track_sender, sub_source, None);
         let fixed = SourceSubscription::fixed(inner.clone(), fixed_sender, main_source, None);
 
         let adaptive_control = Arc::new(SessionControl::new(
-            LiveQuality::Auto,
+            StreamQuality::Auto,
             StreamKind::Main,
             Arc::new(Poller::new().unwrap()),
         ));
@@ -2844,7 +2838,7 @@ mod tests {
             .unwrap()
             .insert(SessionId(1), adaptive_control);
         let multi_track = Arc::new(SessionControl::new(
-            LiveQuality::Low,
+            StreamQuality::Low,
             StreamKind::Sub,
             Arc::new(Poller::new().unwrap()),
         ));
@@ -3016,7 +3010,7 @@ mod tests {
             ..high_source
         };
         let control = Arc::new(SessionControl::new(
-            LiveQuality::High,
+            StreamQuality::High,
             StreamKind::Main,
             poller,
         ));
@@ -3109,7 +3103,7 @@ mod tests {
             .bitrate
             .estimate_bps = Some(4_000_000);
         let control = Arc::new(SessionControl::new(
-            LiveQuality::Auto,
+            StreamQuality::Auto,
             StreamKind::Sub,
             poller,
         ));
@@ -3185,7 +3179,7 @@ mod tests {
                 camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 has_sub_stream: true,
                 recording_label: "kitchen".to_owned(),
-                quality: LiveQuality::Low,
+                quality: StreamQuality::Low,
             },
             TrackPlan {
                 track_id: garden.clone(),
@@ -3193,7 +3187,7 @@ mod tests {
                 camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 has_sub_stream: true,
                 recording_label: "garden".to_owned(),
-                quality: LiveQuality::Low,
+                quality: StreamQuality::Low,
             },
         ];
 
@@ -3269,7 +3263,7 @@ mod tests {
                 camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 has_sub_stream: true,
                 recording_label: "kitchen".to_owned(),
-                quality: LiveQuality::Low,
+                quality: StreamQuality::Low,
             },
             TrackPlan {
                 track_id: garden.clone(),
@@ -3277,7 +3271,7 @@ mod tests {
                 camera_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
                 has_sub_stream: true,
                 recording_label: "garden".to_owned(),
-                quality: LiveQuality::Low,
+                quality: StreamQuality::Low,
             },
         ];
         let webrtc = WebRtc::new();
@@ -3332,7 +3326,7 @@ mod tests {
             camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             has_sub_stream: true,
             recording_label: "camera".to_owned(),
-            quality: LiveQuality::Low,
+            quality: StreamQuality::Low,
         }];
         let webrtc = WebRtc::new();
 
@@ -3385,12 +3379,12 @@ mod tests {
         let kitchen = TrackId::parse("kitchen".to_owned()).unwrap();
         let garden = TrackId::parse("garden".to_owned()).unwrap();
         let kitchen_control = Arc::new(SessionControl::new(
-            LiveQuality::Low,
+            StreamQuality::Low,
             StreamKind::Sub,
             poller.clone(),
         ));
         let garden_control = Arc::new(SessionControl::new(
-            LiveQuality::Auto,
+            StreamQuality::Auto,
             StreamKind::Sub,
             poller.clone(),
         ));
@@ -3405,11 +3399,11 @@ mod tests {
             completion: SessionCompletion::default(),
         };
 
-        let status = control.set_quality(&kitchen, LiveQuality::High).unwrap();
-        assert_eq!(status.requested_quality, LiveQuality::High);
+        let status = control.set_quality(&kitchen, StreamQuality::High).unwrap();
+        assert_eq!(status.requested_quality, StreamQuality::High);
         assert_eq!(
-            LiveQuality::from_u8(garden_control.requested_quality.load(Ordering::Acquire)),
-            LiveQuality::Low
+            StreamQuality::from_u8(garden_control.requested_quality.load(Ordering::Acquire)),
+            StreamQuality::Low
         );
     }
 }
