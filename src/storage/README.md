@@ -78,10 +78,10 @@ expects.
 └──────────────────┴────────────────────────────┘
 ```
 
-| Source     | Native format               | Conversion            |
-|------------|-----------------------------|-----------------------|
-| retina     | AVCC (length-prefixed)      | None needed           |
-| reo-proto  | Annex B (start codes)       | `nal::annexb_to_avcc` |
+| Source    | Native format          | Conversion            |
+| --------- | ---------------------- | --------------------- |
+| retina    | AVCC (length-prefixed) | None needed           |
+| reo-proto | Annex B (start codes)  | `nal::annexb_to_avcc` |
 
 ## Three Tiers
 
@@ -191,17 +191,17 @@ canonical path before opening the file.
 
 ## Module Map
 
-| File            | Type               | Role                                       |
-|-----------------|--------------------|---------------------------------------------|
-| `catalog.rs`    | `RecordingCatalog` | Turso-backed recording and fragment metadata |
-| `demand.rs`     | `RecordingDemand`  | Per-stream viewer guards and review leases  |
-| `frame.rs`      | `MediaFrame`       | Unified codec-agnostic frame types          |
-| `segment.rs`    | `RecordingFrame`   | Timestamped wrapper around `MediaFrame`     |
-| `short_term.rs` | `ShortTermBuffer`  | In-memory ring buffer with time eviction    |
-| `medium_term.rs`| `MediumTermWriter` | Fragmented MP4 muxer (H.264/H.265 + AAC)    |
-| `long_term.rs`  | `LongTermStore`    | Finalized file management and purging       |
-| `engine.rs`     | `StorageEngine`    | Per-camera pipeline orchestrator            |
-| `events.rs`     | `EventStore`       | Event lifecycle and secure thumbnail storage |
-| `layout.rs`     | (functions)        | Path generation for the on-disk hierarchy   |
-| `nal.rs`        | (functions)        | Annex B ↔ AVCC conversion, SPS/PPS extract  |
-| `metadata.rs`   | `CameraMetadata`   | Per-camera metadata types (zones, events)   |
+| File             | Type               | Role                                         |
+| ---------------- | ------------------ | -------------------------------------------- |
+| `catalog.rs`     | `RecordingCatalog` | Turso-backed recording and fragment metadata |
+| `demand.rs`      | `RecordingDemand`  | Per-stream viewer guards and review leases   |
+| `frame.rs`       | `MediaFrame`       | Unified codec-agnostic frame types           |
+| `segment.rs`     | `RecordingFrame`   | Timestamped wrapper around `MediaFrame`      |
+| `short_term.rs`  | `ShortTermBuffer`  | In-memory ring buffer with time eviction     |
+| `medium_term.rs` | `MediumTermWriter` | Fragmented MP4 muxer (H.264/H.265 + AAC)     |
+| `long_term.rs`   | `LongTermStore`    | Finalized file management and purging        |
+| `engine.rs`      | `StorageEngine`    | Per-camera pipeline orchestrator             |
+| `events.rs`      | `EventStore`       | Event lifecycle and secure thumbnail storage |
+| `layout.rs`      | (functions)        | Path generation for the on-disk hierarchy    |
+| `nal.rs`         | (functions)        | Annex B ↔ AVCC conversion, SPS/PPS extract   |
+| `metadata.rs`    | `CameraMetadata`   | Per-camera metadata types (zones, events)    |

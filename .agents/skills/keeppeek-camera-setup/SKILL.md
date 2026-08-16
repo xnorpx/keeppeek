@@ -199,7 +199,7 @@ Repeat `--verified` for each proven camera. The merger preserves the existing se
 1. Start KeepPeek with the merged config.
 2. Verify `/api/cameras` lists every configured camera without exposing secrets.
 3. Open a fresh Peek page and verify every configured camera reaches decoded dimensions and the
-  `live` state. Do not accept a tile that remains `Connecting` merely because its offer succeeded.
+   `live` state. Do not accept a tile that remains `Connecting` merely because its offer succeeded.
 4. Let at least one segment finalize, then verify Keep lists timeline coverage and decodes Main/Sub as configured.
 5. Confirm logs have no authentication loops, persistent reconnects, MP4 finalization errors, or retention failures.
 6. Keep the backend running only when the user wants to inspect the result.

@@ -1,0 +1,375 @@
+openapi: 3.1.1
+info:
+  title: KeepPeek API
+  description: >-
+    Create WebRTC sessions from gzip-compressed SDP offers, delete sessions, and
+    read server logs through SSE and Prometheus metrics through HTTP.
+  version: unversioned
+servers:
+  - url: http://{host}:{port}
+    variables:
+      host:
+        default: localhost
+      port:
+        default: '8081'
+security:
+  - LocalApiKey: []
+paths:
+  /create:
+    post:
+      operationId: create
+      summary: Create a WebRTC session
+      description: >-
+        The complete JSON request body must use the gzip content encoding. A
+        successful 201 response gzip-compresses the complete JSON create body,
+        including the SDP answer, and sets Content-Encoding to gzip. See
+        sdp-offer.md for the required SDP topology. The offer is the session's
+        only RTP StreamId allocation; MIDs are opaque strings assigned by the
+        offerer. This API does not renegotiate SDP. KeepPeek runs ICE Lite,
+        always answers the client offer, and does not use trickle ICE. The
+        offer need not contain ICE candidates.
+      parameters:
+        - $ref: '#/components/parameters/GzipContentEncoding'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRequest'
+      responses:
+        '201':
+          description: The session was created.
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: '#/components/headers/AccessControlAllowOrigin'
+            Content-Encoding:
+              $ref: '#/components/headers/GzipContentEncoding'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          $ref: '#/components/responses/OfferNotGzipEncoded'
+        '422':
+          $ref: '#/components/responses/OfferRejected'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: createOptions
+      summary: CORS preflight for session create
+      description: >-
+        Required for browser clients that send Authorization and
+        Content-Encoding. Allowed origins are configured server-side.
+      security: []
+      responses:
+        '204':
+          description: Preflight accepted for a configured origin.
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: '#/components/headers/AccessControlAllowOrigin'
+            Access-Control-Allow-Methods:
+              $ref: '#/components/headers/AccessControlAllowMethods'
+            Access-Control-Allow-Headers:
+              $ref: '#/components/headers/AccessControlAllowHeaders'
+        '403':
+          $ref: '#/components/responses/CorsOriginRejected'
+  /delete:
+    post:
+      operationId: delete
+      summary: Delete a WebRTC session
+      description: Only the access key that created the session can delete it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteRequest'
+      responses:
+        '204':
+          description: The session was deleted.
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: '#/components/headers/AccessControlAllowOrigin'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/SessionNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    options:
+      operationId: deleteOptions
+      summary: CORS preflight for session delete
+      description: >-
+        Required for browser clients that send Authorization. Allowed origins
+        are configured server-side.
+      security: []
+      responses:
+        '204':
+          description: Preflight accepted for a configured origin.
+          headers:
+            Access-Control-Allow-Origin:
+              $ref: '#/components/headers/AccessControlAllowOrigin'
+            Access-Control-Allow-Methods:
+              $ref: '#/components/headers/AccessControlAllowMethods'
+            Access-Control-Allow-Headers:
+              $ref: '#/components/headers/AccessControlAllowHeaders'
+        '403':
+          $ref: '#/components/responses/CorsOriginRejected'
+
+  /logs:
+    get:
+      operationId: logs
+      summary: Read server logs as Server-Sent Events
+      description: Each log event contains one JSON LogEntry payload.
+      responses:
+        '200':
+          description: A stream of server log events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                log:
+                  value: |
+                    id: 42
+                    event: log
+                    data: {"sequence":42,"timestamp_ms":0,"level":"info","target":"keeppeek","message":"ready","fields":{}}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Read Prometheus metrics
+      description: >-
+        Returns Prometheus text exposition metrics, including camera and server
+        health counters. Identity and PTZ support stay on the WebRTC
+        ServerCapabilities snapshot. Any configured local API key may scrape
+        this endpoint; no separate metrics credential exists.
+      responses:
+        '200':
+          description: Prometheus text exposition metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+components:
+  parameters:
+    GzipContentEncoding:
+      name: Content-Encoding
+      in: header
+      required: true
+      description: >-
+        Must be gzip. The complete UTF-8 JSON create request body is
+        gzip-compressed.
+      schema:
+        type: string
+        const: gzip
+  headers:
+    AccessControlAllowOrigin:
+      description: Exact configured request Origin. Never `*`.
+      schema:
+        type: string
+        minLength: 1
+    AccessControlAllowMethods:
+      description: Session bootstrap allows POST and OPTIONS.
+      schema:
+        type: string
+        const: 'POST, OPTIONS'
+    AccessControlAllowHeaders:
+      description: Headers sent by the browser card preflight.
+      schema:
+        type: string
+        const: 'Authorization, Content-Type, Content-Encoding'
+    GzipContentEncoding:
+      description: >-
+        A successful create response gzip-compresses the complete UTF-8 JSON
+        body, including answer.sdp.
+      required: true
+      schema:
+        type: string
+        const: gzip
+  securitySchemes:
+    LocalApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: UUID
+      description: >-
+        A locally configured random UUID or GUID access key. Every configured
+        key has identical access to every endpoint, including /logs and
+        /metrics.
+  responses:
+    BadRequest:
+      description: Bad Request. The request could not be accepted, or validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+    OfferNotGzipEncoded:
+      description: The request did not use gzip encoding.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+    OfferRejected:
+      description: The SDP offer validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+    Unauthorized:
+      description: The request has no valid local API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+    SessionNotFound:
+      description: The session does not exist or was created by another API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+    CorsOriginRejected:
+      description: The request Origin is not in the configured allowed-origin list.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+    Unavailable:
+      description: KeepPeek cannot currently serve the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Status'
+  schemas:
+    CreateRequest:
+      type: object
+      additionalProperties: false
+      description: >-
+        The UTF-8 JSON representation of this object is the gzip-compressed HTTP
+        request body.
+      required:
+        - offer
+      properties:
+        offer:
+          $ref: '#/components/schemas/SdpOffer'
+    CreateResponse:
+      type: object
+      additionalProperties: false
+      description: >-
+        The UTF-8 JSON representation of this object is the gzip-compressed HTTP
+        201 response body.
+      required:
+        - session_id
+        - answer
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+          description: Opaque identifier used by its creator with /delete.
+        answer:
+          $ref: '#/components/schemas/SdpAnswer'
+    DeleteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+    SdpOffer:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - sdp
+      properties:
+        type:
+          type: string
+          const: offer
+        sdp:
+          type: string
+          minLength: 1
+          description: >-
+            SDP offer validated according to sdp-offer.md. ICE candidates are
+            not required.
+    SdpAnswer:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - sdp
+      properties:
+        type:
+          type: string
+          const: answer
+        sdp:
+          type: string
+          minLength: 1
+    LogEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - sequence
+        - timestamp_ms
+        - level
+        - target
+        - message
+        - fields
+      properties:
+        sequence:
+          type: integer
+          format: uint64
+        timestamp_ms:
+          type: integer
+          format: uint64
+        level:
+          type: string
+          enum:
+            - trace
+            - debug
+            - info
+            - warn
+            - error
+        target:
+          type: string
+        message:
+          type: string
+        fields:
+          type: object
+          additionalProperties: true
+        file:
+          type: string
+        line:
+          type: integer
+          minimum: 0
+    Status:
+      type: object
+      additionalProperties: false
+      description: Defines a logical error model that is surfaced through HTTP responses.
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            additionalProperties: true

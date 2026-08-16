@@ -34,14 +34,14 @@ multi-byte integers are **little-endian**.
 
 ### Header (20 bytes, or 24 bytes with extension)
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 | Magic | `f0 de bc 0a` (0x0ABCDEF0 LE) |
-| 4 | 4 | Message ID | Command identifier (see Message IDs) |
-| 8 | 4 | Body Length | Size of payload in bytes |
-| 12 | 4 | Channel / Stream / Message Number | Channel ID (byte 12), stream type (byte 13), and request handle (bytes 14-15). |
-| 16 | 4 | Status / Class | Response status code, or message class flags |
-| 20 | 4 | Extension (optional) | Present in modern messages. The nodelink-js implementation reads this as `payloadOffset` and uses it to separate extension XML from binary payload within the body. |
+| Offset | Size | Field                             | Description                                                                                                                                                         |
+| ------ | ---- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0      | 4    | Magic                             | `f0 de bc 0a` (0x0ABCDEF0 LE)                                                                                                                                       |
+| 4      | 4    | Message ID                        | Command identifier (see Message IDs)                                                                                                                                |
+| 8      | 4    | Body Length                       | Size of payload in bytes                                                                                                                                            |
+| 12     | 4    | Channel / Stream / Message Number | Channel ID (byte 12), stream type (byte 13), and request handle (bytes 14-15).                                                                                      |
+| 16     | 4    | Status / Class                    | Response status code, or message class flags                                                                                                                        |
+| 20     | 4    | Extension (optional)              | Present in modern messages. The nodelink-js implementation reads this as `payloadOffset` and uses it to separate extension XML from binary payload within the body. |
 
 The magic bytes `f0 de bc 0a` identify Baichuan packets. Receivers scan for this
 sequence to find packet boundaries. A reversed-endian variant `a0 cb ed 0f`
@@ -59,6 +59,7 @@ This 4-byte field serves double duty:
   - Bit 4 (`0x10`): message contains a 24-byte header (extension field present)
 
 Common observed values:
+
 - `0x0000` -- legacy message, XML body, 20-byte header
 - `0x0001` -- binary payload (e.g. media stream data)
 - `0x6414` -- modern message, 24-byte header
@@ -102,6 +103,7 @@ Uses AES-128-CFB to encrypt XML configuration payloads. Media streams remain
 unencrypted.
 
 Key derivation:
+
 1. Compute `MD5("{nonce}-{password}")` where `{nonce}` is the server-provided
    nonce from the login handshake and `{password}` is the plaintext password.
 2. Convert the MD5 digest to uppercase hexadecimal.
@@ -156,10 +158,10 @@ Authentication is a multi-step handshake over message ID 1 (Login).
 The client sends a legacy-format login with message ID 1. The body is a
 fixed-size binary struct:
 
-| Offset | Size | Field |
-|--------|------|-------|
-| 0 | 32 | Username (null-padded ASCII) |
-| 32 | 32 | Password (null-padded ASCII) |
+| Offset | Size | Field                        |
+| ------ | ---- | ---------------------------- |
+| 0      | 32   | Username (null-padded ASCII) |
+| 32     | 32   | Password (null-padded ASCII) |
 
 The password may be sent as an MD5 hash depending on the camera firmware.
 Older cameras expect plaintext; newer cameras expect the hash.
@@ -199,6 +201,7 @@ The client sends a modern login (message ID 1, class `0x12`) with an XML body:
 ```
 
 The password hash is computed as:
+
 1. `MD5("{nonce}-{password}")` -- concatenate nonce, dash, plaintext password.
 2. Convert to uppercase hexadecimal.
 3. Take the first **31** characters (not 32).
@@ -244,148 +247,148 @@ context (client-sent vs camera-sent).
 
 ### Device & System
 
-| ID | Name | Description |
-|----|------|-------------|
-| 1 | Login | Authentication handshake (legacy and modern) |
-| 2 | Logout | End session |
-| 23 | Reboot | Restart the camera |
-| 58 | AbilitySupport | Query supported features and user permissions |
-| 59 | UserList | Manage user accounts |
-| 67 | ConfigFileInfo | Firmware upgrade file transfer |
-| 78 | VideoInput (push) | Camera-pushed video input status |
-| 80 | VersionInfo | Query firmware version and device identifiers |
-| 104 | SystemGeneral | Query system time, timezone, language |
-| 151 | AbilityInfo | Detailed capability matrix |
-| 199 | Support | Extensive device capability flags |
-| 287 | TimeCfg | Synchronize system clock |
-| 464 | NetworkInfo (push) | Camera-pushed network status |
-| 623 | SleepStatus (push) | Battery camera sleep/wake events |
+| ID  | Name               | Description                                   |
+| --- | ------------------ | --------------------------------------------- |
+| 1   | Login              | Authentication handshake (legacy and modern)  |
+| 2   | Logout             | End session                                   |
+| 23  | Reboot             | Restart the camera                            |
+| 58  | AbilitySupport     | Query supported features and user permissions |
+| 59  | UserList           | Manage user accounts                          |
+| 67  | ConfigFileInfo     | Firmware upgrade file transfer                |
+| 78  | VideoInput (push)  | Camera-pushed video input status              |
+| 80  | VersionInfo        | Query firmware version and device identifiers |
+| 104 | SystemGeneral      | Query system time, timezone, language         |
+| 151 | AbilityInfo        | Detailed capability matrix                    |
+| 199 | Support            | Extensive device capability flags             |
+| 287 | TimeCfg            | Synchronize system clock                      |
+| 464 | NetworkInfo (push) | Camera-pushed network status                  |
+| 623 | SleepStatus (push) | Battery camera sleep/wake events              |
 
 ### Video & Streaming
 
-| ID | Name | Description |
-|----|------|-------------|
-| 3 | Stream | Request/receive video stream (binary payload) |
-| 4 | PreviewStop | Stop stream transmission |
-| 25 | VideoInput Write | Set brightness, contrast, saturation, hue |
-| 26 | VideoInput Read | Query video input settings |
-| 56 | Compression Read | Query encoding parameters (resolution, bitrate) |
-| 57 | Compression Write | Modify encoding settings |
-| 78 | VideoInput | Query basic video settings |
-| 109 | Snap | Request a snapshot capture |
-| 132 | VideoInput Advanced | Query ISP and exposure settings |
-| 146 | StreamInfoList | Query available stream types |
+| ID  | Name                | Description                                     |
+| --- | ------------------- | ----------------------------------------------- |
+| 3   | Stream              | Request/receive video stream (binary payload)   |
+| 4   | PreviewStop         | Stop stream transmission                        |
+| 25  | VideoInput Write    | Set brightness, contrast, saturation, hue       |
+| 26  | VideoInput Read     | Query video input settings                      |
+| 56  | Compression Read    | Query encoding parameters (resolution, bitrate) |
+| 57  | Compression Write   | Modify encoding settings                        |
+| 78  | VideoInput          | Query basic video settings                      |
+| 109 | Snap                | Request a snapshot capture                      |
+| 132 | VideoInput Advanced | Query ISP and exposure settings                 |
+| 146 | StreamInfoList      | Query available stream types                    |
 
 ### Audio
 
-| ID | Name | Description |
-|----|------|-------------|
-| 10 | TalkAbility | Query audio duplex and codec capabilities |
-| 11 | TalkAbility (alt) | Alternative talk ability query |
-| 201 | TalkConfig | Configure two-way audio parameters |
-| 202 | Talk | Transmit audio data to camera speaker |
-| 263 | AudioCfg | Configure audio output volume and settings |
-| 264 | AudioPlayInfo | Play siren or alarm sound |
-| 547 | SirenControl | Direct siren on/off control |
+| ID  | Name              | Description                                |
+| --- | ----------------- | ------------------------------------------ |
+| 10  | TalkAbility       | Query audio duplex and codec capabilities  |
+| 11  | TalkAbility (alt) | Alternative talk ability query             |
+| 201 | TalkConfig        | Configure two-way audio parameters         |
+| 202 | Talk              | Transmit audio data to camera speaker      |
+| 263 | AudioCfg          | Configure audio output volume and settings |
+| 264 | AudioPlayInfo     | Play siren or alarm sound                  |
+| 547 | SirenControl      | Direct siren on/off control                |
 
 Supported audio codecs: PCM (8000 Hz, 16-bit), G.711 A-law, G.711 u-law, AAC,
 and ADPCM.
 
 ### PTZ
 
-| ID | Name | Description |
-|----|------|-------------|
-| 18 | PtzControl | Pan/tilt/zoom movement commands |
-| 19 | PtzPreset | Manage PTZ preset positions |
-| 190 | PtzPreset Read | Query saved PTZ positions |
-| 294 | PtzZoomFocus Read | Query zoom and focus position |
-| 295 | StartZoomFocus | Move to absolute zoom/focus position |
-| 433 | PtzGuard | PTZ guard/patrol configuration |
+| ID  | Name              | Description                          |
+| --- | ----------------- | ------------------------------------ |
+| 18  | PtzControl        | Pan/tilt/zoom movement commands      |
+| 19  | PtzPreset         | Manage PTZ preset positions          |
+| 190 | PtzPreset Read    | Query saved PTZ positions            |
+| 294 | PtzZoomFocus Read | Query zoom and focus position        |
+| 295 | StartZoomFocus    | Move to absolute zoom/focus position |
+| 433 | PtzGuard          | PTZ guard/patrol configuration       |
 
 PTZ movement commands: `Left`, `Right`, `Up`, `Down`, `ZoomIn`, `ZoomOut`,
 `FocusNear`, `FocusFar`. Speed range 1-64 (default 32). Preset IDs range 1-64.
 
 ### Detection & Alarms
 
-| ID | Name | Description |
-|----|------|-------------|
-| 31 | StartMotionAlarm | Enable motion detection event reporting |
-| 33 | AlarmEventList | Motion detection event notifications |
-| 46 | MotionDetect Read | Query motion detection configuration |
-| 47 | MotionDetect Write | Set motion detection sensitivity/zones |
-| 133 | RfAlarm | Query RF alarm sensor configuration |
-| 204 | RfAlarmCfg Write | Configure RF sensor sensitivity |
-| 212 | PirInfo Read | Query PIR (passive infrared) sensor config |
-| 213 | PirInfo Write | Configure PIR sensor sensitivity |
-| 232 | AudioTask Read | Query audio alarm schedule |
-| 299 | AiCfg Read | Query AI detection/smart tracking settings |
-| 342 | AiAlarm Read | Query AI alarm configuration |
-| 343 | AiAlarm Write | Configure AI detection types (person, vehicle, pet, face, package) |
-| 723 | CoordinateInfo | Auto-tracking coordinate data (camera-pushed) |
+| ID  | Name               | Description                                                        |
+| --- | ------------------ | ------------------------------------------------------------------ |
+| 31  | StartMotionAlarm   | Enable motion detection event reporting                            |
+| 33  | AlarmEventList     | Motion detection event notifications                               |
+| 46  | MotionDetect Read  | Query motion detection configuration                               |
+| 47  | MotionDetect Write | Set motion detection sensitivity/zones                             |
+| 133 | RfAlarm            | Query RF alarm sensor configuration                                |
+| 204 | RfAlarmCfg Write   | Configure RF sensor sensitivity                                    |
+| 212 | PirInfo Read       | Query PIR (passive infrared) sensor config                         |
+| 213 | PirInfo Write      | Configure PIR sensor sensitivity                                   |
+| 232 | AudioTask Read     | Query audio alarm schedule                                         |
+| 299 | AiCfg Read         | Query AI detection/smart tracking settings                         |
+| 342 | AiAlarm Read       | Query AI alarm configuration                                       |
+| 343 | AiAlarm Write      | Configure AI detection types (person, vehicle, pet, face, package) |
+| 723 | CoordinateInfo     | Auto-tracking coordinate data (camera-pushed)                      |
 
 AI detection supports five classification types: `people`, `vehicle`,
 `dog_cat`, `face`, and `package`.
 
 ### Network & Connectivity
 
-| ID | Name | Description |
-|----|------|-------------|
-| 76 | Ip Read | Query network configuration |
-| 77 | Ip Write | Modify network settings |
-| 93 | LinkType | Network connectivity query |
-| 115 | WifiSignal | Query wireless signal strength |
-| 116 | Wifi | List available wireless networks |
-| 255 | Net3g4gInfo | Cellular connectivity info |
-| 268 | CloudBindInfo | Cloud service binding status |
-| 282 | CloudLoginKey | Cloud authentication settings |
+| ID  | Name          | Description                      |
+| --- | ------------- | -------------------------------- |
+| 76  | Ip Read       | Query network configuration      |
+| 77  | Ip Write      | Modify network settings          |
+| 93  | LinkType      | Network connectivity query       |
+| 115 | WifiSignal    | Query wireless signal strength   |
+| 116 | Wifi          | List available wireless networks |
+| 255 | Net3g4gInfo   | Cellular connectivity info       |
+| 268 | CloudBindInfo | Cloud service binding status     |
+| 282 | CloudLoginKey | Cloud authentication settings    |
 
 ### Recording & Storage
 
-| ID | Name | Description |
-|----|------|-------------|
-| 5 | FileOpen | Open a recording file for download |
-| 6 | FileRead | Read recording file data (binary) |
-| 7 | FileClose | Close an open recording file |
-| 54 | RecordCfg Read | Query recording parameters |
-| 55 | RecordCfg Write | Modify recording settings |
-| 81 | Record Schedule Read | Query recording schedule |
-| 82 | Record Schedule Write | Modify recording schedule |
-| 102 | HDDInfoList | Query storage device information |
-| 138 | CoverPreview | Request recording cover thumbnail |
-| 272 | RecordingSearch | Search recordings by date/time |
-| 273 | RecordingSearchMonth | Search recordings by month |
-| 274 | RecordingCalendar | Query which days have recordings |
-| 298 | RecordThumbnail | Request recording thumbnail image |
-| 458-462 | Cover/Thumb variants | Additional cover/thumbnail requests |
+| ID      | Name                  | Description                         |
+| ------- | --------------------- | ----------------------------------- |
+| 5       | FileOpen              | Open a recording file for download  |
+| 6       | FileRead              | Read recording file data (binary)   |
+| 7       | FileClose             | Close an open recording file        |
+| 54      | RecordCfg Read        | Query recording parameters          |
+| 55      | RecordCfg Write       | Modify recording settings           |
+| 81      | Record Schedule Read  | Query recording schedule            |
+| 82      | Record Schedule Write | Modify recording schedule           |
+| 102     | HDDInfoList           | Query storage device information    |
+| 138     | CoverPreview          | Request recording cover thumbnail   |
+| 272     | RecordingSearch       | Search recordings by date/time      |
+| 273     | RecordingSearchMonth  | Search recordings by month          |
+| 274     | RecordingCalendar     | Query which days have recordings    |
+| 298     | RecordThumbnail       | Request recording thumbnail image   |
+| 458-462 | Cover/Thumb variants  | Additional cover/thumbnail requests |
 
 ### Notifications & Display
 
-| ID | Name | Description |
-|----|------|-------------|
-| 42 | Email Read | Query email configuration |
-| 43 | Email Write | Configure SMTP/email |
-| 44 | OsdChannelName Read | Query on-screen display settings |
-| 45 | OsdChannelName Write | Modify OSD text |
-| 52 | Shelter Read | Query privacy mask configuration |
-| 53 | Shelter Write | Configure privacy mask regions |
-| 124 | PushInfo | Register push notification tokens |
-| 141 | Email Test | Validate email settings |
-| 208 | LedState Read | Query indicator light status |
-| 209 | LedState Write | Control indicator light |
-| 216 | EmailTask Write | Enable/disable motion email alerts |
-| 217 | EmailTask Read | Query email alert schedule |
-| 219 | PushTask Read | Query push notification schedule |
+| ID  | Name                 | Description                        |
+| --- | -------------------- | ---------------------------------- |
+| 42  | Email Read           | Query email configuration          |
+| 43  | Email Write          | Configure SMTP/email               |
+| 44  | OsdChannelName Read  | Query on-screen display settings   |
+| 45  | OsdChannelName Write | Modify OSD text                    |
+| 52  | Shelter Read         | Query privacy mask configuration   |
+| 53  | Shelter Write        | Configure privacy mask regions     |
+| 124 | PushInfo             | Register push notification tokens  |
+| 141 | Email Test           | Validate email settings            |
+| 208 | LedState Read        | Query indicator light status       |
+| 209 | LedState Write       | Control indicator light            |
+| 216 | EmailTask Write      | Enable/disable motion email alerts |
+| 217 | EmailTask Read       | Query email alert schedule         |
+| 219 | PushTask Read        | Query push notification schedule   |
 
 ### Lighting & Battery
 
-| ID | Name | Description |
-|----|------|-------------|
-| 252 | BatteryList | Battery status, charge level, voltage |
-| 253 | BatteryInfo | Detailed battery information |
-| 288 | FloodlightManual Write | Control floodlight on/off |
-| 290 | FloodlightTask Write | Configure floodlight schedule |
-| 291 | FloodlightStatusList Read | Query floodlight state |
-| 438 | FloodlightTask Read | Query floodlight configuration |
+| ID  | Name                      | Description                           |
+| --- | ------------------------- | ------------------------------------- |
+| 252 | BatteryList               | Battery status, charge level, voltage |
+| 253 | BatteryInfo               | Detailed battery information          |
+| 288 | FloodlightManual Write    | Control floodlight on/off             |
+| 290 | FloodlightTask Write      | Configure floodlight schedule         |
+| 291 | FloodlightStatusList Read | Query floodlight state                |
+| 438 | FloodlightTask Read       | Query floodlight configuration        |
 
 ---
 
@@ -435,14 +438,14 @@ frames. Each frame has its own header identified by a magic number.
 
 ### Frame Types
 
-| Magic (LE) | Type | Description |
-|------------|------|-------------|
-| `0x31303031` | InfoV1 | Stream metadata: resolution, FPS, timestamps |
-| `0x32303031` | InfoV2 | Stream metadata v2 (same structure as InfoV1) |
-| `0x63643030`-`0x63643039` | I-Frame | Keyframe (per-channel: last digit = channel) |
-| `0x63643130`-`0x63643139` | P-Frame | Inter-frame (per-channel: last digit = channel) |
-| `0x62773530` | AAC Audio | Audio frame encoded as AAC |
-| `0x62773130` | ADPCM Audio | Audio frame encoded as ADPCM |
+| Magic (LE)                | Type        | Description                                     |
+| ------------------------- | ----------- | ----------------------------------------------- |
+| `0x31303031`              | InfoV1      | Stream metadata: resolution, FPS, timestamps    |
+| `0x32303031`              | InfoV2      | Stream metadata v2 (same structure as InfoV1)   |
+| `0x63643030`-`0x63643039` | I-Frame     | Keyframe (per-channel: last digit = channel)    |
+| `0x63643130`-`0x63643139` | P-Frame     | Inter-frame (per-channel: last digit = channel) |
+| `0x62773530`              | AAC Audio   | Audio frame encoded as AAC                      |
+| `0x62773130`              | ADPCM Audio | Audio frame encoded as ADPCM                    |
 
 The I-frame and P-frame magic values encode channel number in the last digit.
 Channel 0 uses `0x63643030`/`0x63643130`, channel 1 uses `0x63643031`/
@@ -454,25 +457,25 @@ Before video frames begin, the camera sends a stream info packet describing
 the media parameters. This appears at the start of each stream and after
 configuration changes.
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 | Magic | `0x31303031` (InfoV1) or `0x32303031` (InfoV2) |
-| 4 | 4 | Header Size | Total header size in bytes |
-| 8 | 4 | Video Width | Horizontal resolution (e.g. 2304) |
-| 12 | 4 | Video Height | Vertical resolution (e.g. 1296) |
-| 17 | 1 | FPS | Configured frame rate |
-| 18 | 1 | Start Year | Recording start time (year offset) |
-| 19 | 1 | Start Month | |
-| 20 | 1 | Start Day | |
-| 21 | 1 | Start Hour | |
-| 22 | 1 | Start Minute | |
-| 23 | 1 | Start Second | |
-| 24 | 1 | End Year | Recording end time (year offset) |
-| 25 | 1 | End Month | |
-| 26 | 1 | End Day | |
-| 27 | 1 | End Hour | |
-| 28 | 1 | End Minute | |
-| 29 | 1 | End Second | |
+| Offset | Size | Field        | Description                                    |
+| ------ | ---- | ------------ | ---------------------------------------------- |
+| 0      | 4    | Magic        | `0x31303031` (InfoV1) or `0x32303031` (InfoV2) |
+| 4      | 4    | Header Size  | Total header size in bytes                     |
+| 8      | 4    | Video Width  | Horizontal resolution (e.g. 2304)              |
+| 12     | 4    | Video Height | Vertical resolution (e.g. 1296)                |
+| 17     | 1    | FPS          | Configured frame rate                          |
+| 18     | 1    | Start Year   | Recording start time (year offset)             |
+| 19     | 1    | Start Month  |                                                |
+| 20     | 1    | Start Day    |                                                |
+| 21     | 1    | Start Hour   |                                                |
+| 22     | 1    | Start Minute |                                                |
+| 23     | 1    | Start Second |                                                |
+| 24     | 1    | End Year     | Recording end time (year offset)               |
+| 25     | 1    | End Month    |                                                |
+| 26     | 1    | End Day      |                                                |
+| 27     | 1    | End Hour     |                                                |
+| 28     | 1    | End Minute   |                                                |
+| 29     | 1    | End Second   |                                                |
 
 The start/end timestamps are primarily relevant for recording playback. For
 live streams, these may be zero or reflect the current time.
@@ -481,16 +484,16 @@ live streams, these may be zero or reflect the current time.
 
 Video frames (both I-frame and P-frame) share this header structure:
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 | Magic | Frame type identifier |
-| 4 | 4 | Video Type | ASCII codec identifier: `"H264"` or `"H265"` |
-| 8 | 4 | Data Length | Size of the frame payload in bytes |
-| 12 | 4 | Additional Header Size | Size of extra header data (0 if none) |
-| 16 | 4 | Microseconds | Sub-second timestamp component |
-| 20 | 4 | Unknown | Observed as zeros or small values |
-| 24 | var | Additional Header | Optional extra data (size from offset 12) |
-| 24+AH | var | Data | Raw video bitstream (Annex B H.264 or H.265) |
+| Offset | Size | Field                  | Description                                  |
+| ------ | ---- | ---------------------- | -------------------------------------------- |
+| 0      | 4    | Magic                  | Frame type identifier                        |
+| 4      | 4    | Video Type             | ASCII codec identifier: `"H264"` or `"H265"` |
+| 8      | 4    | Data Length            | Size of the frame payload in bytes           |
+| 12     | 4    | Additional Header Size | Size of extra header data (0 if none)        |
+| 16     | 4    | Microseconds           | Sub-second timestamp component               |
+| 20     | 4    | Unknown                | Observed as zeros or small values            |
+| 24     | var  | Additional Header      | Optional extra data (size from offset 12)    |
+| 24+AH  | var  | Data                   | Raw video bitstream (Annex B H.264 or H.265) |
 
 After the data payload, frames are **8-byte aligned** -- padding bytes are
 appended so the next frame starts at a multiple of 8 bytes from the frame
@@ -508,23 +511,23 @@ P-frames, it is just the slice data.
 
 **AAC:**
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 | Magic | `0x62773530` |
-| 4 | 2 | Data Length | Size of audio payload (u16 LE) |
-| 6 | 2 | Data Length (verify) | Duplicate of data length for validation |
-| 8 | var | Data | Raw AAC frame (no ADTS header) |
+| Offset | Size | Field                | Description                             |
+| ------ | ---- | -------------------- | --------------------------------------- |
+| 0      | 4    | Magic                | `0x62773530`                            |
+| 4      | 2    | Data Length          | Size of audio payload (u16 LE)          |
+| 6      | 2    | Data Length (verify) | Duplicate of data length for validation |
+| 8      | var  | Data                 | Raw AAC frame (no ADTS header)          |
 
 **ADPCM:**
 
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0 | 4 | Magic | `0x62773130` |
-| 4 | 2 | Size field 1 | |
-| 6 | 2 | Size field 2 | |
-| 8 | 2 | Magic data | Always `0x0100` |
-| 10 | 2 | Half-block size | |
-| 12 | var | Data | DVI/IMA ADPCM samples |
+| Offset | Size | Field           | Description           |
+| ------ | ---- | --------------- | --------------------- |
+| 0      | 4    | Magic           | `0x62773130`          |
+| 4      | 2    | Size field 1    |                       |
+| 6      | 2    | Size field 2    |                       |
+| 8      | 2    | Magic data      | Always `0x0100`       |
+| 10     | 2    | Half-block size |                       |
+| 12     | var  | Data            | DVI/IMA ADPCM samples |
 
 ### Key Properties
 
@@ -579,18 +582,18 @@ arriving while `framesDecoded` stops advancing.
 
 `SessionStats` exposes counters for each way media can be dropped:
 
-| Counter | Meaning |
-|---------|---------|
-| `video_accum_started` / `video_accum_completed` | Chunked frames begun and finished; a growing gap means frames never complete |
-| `video_accum_abandoned` | A new frame header arrived while the previous frame was still accumulating |
+| Counter                                         | Meaning                                                                                                         |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `video_accum_started` / `video_accum_completed` | Chunked frames begun and finished; a growing gap means frames never complete                                    |
+| `video_accum_abandoned`                         | A new frame header arrived while the previous frame was still accumulating                                      |
 | `audio_accum_started` / `audio_accum_completed` | Chunked audio frames begun and finished; a gap means an audio tail was lost and the next message will not parse |
-| `split_headers` | Frame headers that straddled a message boundary and were carried over |
-| `pending_drops` | The event queue was full when a frame was ready |
-| `resync_skipped_bytes` | Bytes discarded while resynchronising to a BC header |
-| `stream_bodies_unrecognized` | `COMMAND_STREAM` bodies matching no frame, accumulator, or XML |
-| `trailing_bytes_unrecognized` | Bytes after a frame that did not begin another frame |
-| `continuation_ambiguous` | Continuation data that matched no single accumulator |
-| `padded_media_bodies` | Frames found behind the previous frame's alignment padding |
+| `split_headers`                                 | Frame headers that straddled a message boundary and were carried over                                           |
+| `pending_drops`                                 | The event queue was full when a frame was ready                                                                 |
+| `resync_skipped_bytes`                          | Bytes discarded while resynchronising to a BC header                                                            |
+| `stream_bodies_unrecognized`                    | `COMMAND_STREAM` bodies matching no frame, accumulator, or XML                                                  |
+| `trailing_bytes_unrecognized`                   | Bytes after a frame that did not begin another frame                                                            |
+| `continuation_ambiguous`                        | Continuation data that matched no single accumulator                                                            |
+| `padded_media_bodies`                           | Frames found behind the previous frame's alignment padding                                                      |
 
 Any non-zero value in the last five counters means media bytes were dropped.
 
@@ -685,6 +688,7 @@ full-duplex is available.
 2. Send audio frames via message ID 202 (Talk) as binary payloads
 
 Audio format requirements:
+
 - Sample rate: 8000 Hz
 - Bit depth: 16-bit
 - Channels: mono
@@ -738,11 +742,11 @@ framing on top of Baichuan messages to handle packet loss and reordering.
 
 UDP uses three packet types, each with its own magic:
 
-| Magic | Type | Purpose |
-|-------|------|---------|
+| Magic         | Type      | Purpose                                  |
+| ------------- | --------- | ---------------------------------------- |
 | `3a cf 87 2a` | Discovery | Connection setup, encrypted XML payloads |
-| `20 cf 87 2a` | Ack | Acknowledge received data packets |
-| `10 cf 87 2a` | Data | Carries Baichuan message fragments |
+| `20 cf 87 2a` | Ack       | Acknowledge received data packets        |
+| `10 cf 87 2a` | Data      | Carries Baichuan message fragments       |
 
 ### UDP Discovery
 
@@ -759,13 +763,13 @@ and supports additional message types for relay connections:
 
 **Discovery Header (20 bytes):**
 
-| Offset | Size | Field |
-|--------|------|-------|
-| 0 | 4 | Magic (`3a cf 87 2a`) |
-| 4 | 4 | Payload size |
-| 8 | 4 | Unknown (always `01 00 00 00`) |
-| 12 | 4 | Transmission ID (increments per round-trip, also used for encryption) |
-| 16 | 4 | CRC32 checksum of encrypted payload |
+| Offset | Size | Field                                                                 |
+| ------ | ---- | --------------------------------------------------------------------- |
+| 0      | 4    | Magic (`3a cf 87 2a`)                                                 |
+| 4      | 4    | Payload size                                                          |
+| 8      | 4    | Unknown (always `01 00 00 00`)                                        |
+| 12     | 4    | Transmission ID (increments per round-trip, also used for encryption) |
+| 16     | 4    | CRC32 checksum of encrypted payload                                   |
 
 The XML payloads are encrypted with a XOR cipher distinct from BCEncrypt.
 The key is derived from an 8-element 32-bit array:
@@ -799,13 +803,13 @@ Data packets carry fragments of Baichuan messages.
 
 **Data Header (20 bytes):**
 
-| Offset | Size | Field |
-|--------|------|-------|
-| 0 | 4 | Magic (`10 cf 87 2a`) |
-| 4 | 4 | Connection ID (signed i32) |
-| 8 | 4 | Reserved (always `00 00 00 00`) |
-| 12 | 4 | Packet ID (monotonically increasing) |
-| 16 | 4 | Payload size |
+| Offset | Size | Field                                |
+| ------ | ---- | ------------------------------------ |
+| 0      | 4    | Magic (`10 cf 87 2a`)                |
+| 4      | 4    | Connection ID (signed i32)           |
+| 8      | 4    | Reserved (always `00 00 00 00`)      |
+| 12     | 4    | Packet ID (monotonically increasing) |
+| 16     | 4    | Payload size                         |
 
 The payload is a standard Baichuan message (or fragment thereof). Since UDP
 packets have a size limit (negotiated MTU, typically 1350 bytes), a single
@@ -818,15 +822,15 @@ ack within 1000ms, it resends the data packet.
 
 **Ack Header (28 bytes):**
 
-| Offset | Size | Field |
-|--------|------|-------|
-| 0 | 4 | Magic (`20 cf 87 2a`) |
-| 4 | 4 | Connection ID (signed i32) |
-| 8 | 4 | Reserved (always `00 00 00 00`) |
-| 12 | 4 | Group ID |
-| 16 | 4 | Last received packet ID |
-| 20 | 4 | Latency (possibly RTT measurement) |
-| 24 | 4 | Payload size |
+| Offset | Size | Field                              |
+| ------ | ---- | ---------------------------------- |
+| 0      | 4    | Magic (`20 cf 87 2a`)              |
+| 4      | 4    | Connection ID (signed i32)         |
+| 8      | 4    | Reserved (always `00 00 00 00`)    |
+| 12     | 4    | Group ID                           |
+| 16     | 4    | Last received packet ID            |
+| 20     | 4    | Latency (possibly RTT measurement) |
+| 24     | 4    | Payload size                       |
 
 The ack payload is a bitmap/truth table. Byte 0 corresponds to
 `last_packet_id + 1`, byte 1 to `last_packet_id + 2`, and so on. A value of

@@ -30,6 +30,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check TOML formatting
         run: taplo fmt --check --diff
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Check Markdown formatting
+        run: bunx prettier --check "**/*.md"
 
   clippy:
     name: Clippy
@@ -108,10 +113,10 @@ jobs:
       - if: runner.os == 'Windows'
         id: ui-check-windows
         shell: cmd
-        run: ..\check-ui.bat
+        run: ..\check.bat
       - if: runner.os != 'Windows'
         id: ui-check-unix
-        run: ../check-ui.sh
+        run: ../check.sh
       - name: Upload UI test reports
         if: always()
         uses: actions/upload-artifact@v7

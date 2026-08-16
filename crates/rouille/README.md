@@ -24,9 +24,10 @@ good resources to get you started.
 ## License
 
 Licensed under either of
- * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-at your option.
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+  at your option.
 
 ### Contribution
 
@@ -58,13 +59,13 @@ following results:
 - The hello-world example of rouille yields ~22k requests/sec.
 - A hello world in nodejs (with `http.createServer`) yields ~14k requests/sec.
 - The hello-world example of [tokio-minihttp](https://github.com/tokio-rs/tokio-minihttp) (which is
-  supposedly the fastest HTTP server that currently exists) yields ~77k requests/sec. 
+  supposedly the fastest HTTP server that currently exists) yields ~77k requests/sec.
 - The hello example of [hyper](https://github.com/hyperium/hyper) (which uses async I/O with mio
   as well) yields ~53k requests/sec.
 - A hello world in Go yields ~51k requests/sec.
 - The default installation of nginx yields ~39k requests/sec.
 
-While not the fastest, rouille has *reasonable* performances. Amongst all these examples, rouille
+While not the fastest, rouille has _reasonable_ performances. Amongst all these examples, rouille
 is the only one to use synchronous I/O.
 
 ### Are there plugins for features such as database connection, templating, etc.
@@ -78,16 +79,16 @@ opinion it is generally better not to use plugins.
 Instead of doing this: (pseudo-code)
 
 ```js
-server.add_middleware(function() {
-    // middleware 1
+server.add_middleware(function () {
+  // middleware 1
 });
 
-server.add_middleware(function() {
-    // middleware 2
+server.add_middleware(function () {
+  // middleware 2
 });
 
-server.add_middleware(function() {
-    // middleware 3
+server.add_middleware(function () {
+  // middleware 3
 });
 ```
 

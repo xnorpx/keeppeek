@@ -186,11 +186,11 @@ Use DOM event properties and callback props.
 After changing anything under `ui/`, run the narrowest relevant checks and finish from the repository root with the platform script:
 
 ```sh
-./check-ui.sh
+./check.sh
 ```
 
 ```bat
-.\check-ui.bat
+.\check.bat
 ```
 
 - The full platform script must pass before the work is considered complete. CI uses the same entry points.

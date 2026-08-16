@@ -1,10 +1,12 @@
 # mp4
+
 > MP4 Reader and Writer in Rust 🦀
 
 `mp4` is a Rust library to read and write ISO-MP4 files. This package contains MPEG-4 specifications defined in parts:
-* [ISO/IEC 14496-12](https://en.wikipedia.org/wiki/ISO/IEC_base_media_file_format) - ISO Base Media File Format (QuickTime, MPEG-4, etc)
-* [ISO/IEC 14496-14](https://en.wikipedia.org/wiki/MPEG-4_Part_14) - MP4 file format
-* ISO/IEC 14496-17 - Streaming text format
+
+- [ISO/IEC 14496-12](https://en.wikipedia.org/wiki/ISO/IEC_base_media_file_format) - ISO Base Media File Format (QuickTime, MPEG-4, etc)
+- [ISO/IEC 14496-14](https://en.wikipedia.org/wiki/MPEG-4_Part_14) - MP4 file format
+- ISO/IEC 14496-17 - Streaming text format
 
 The crate provides both the progressive `Mp4Writer` and `FragmentedMp4Writer`. The fragmented
 writer emits a flushed `ftyp`/`moov` initialization range followed by caller-controlled
@@ -18,6 +20,7 @@ https://crates.io/crates/mp4
 [![Rust](https://github.com/alfg/mp4-rust/workflows/Rust/badge.svg)](https://github.com/alfg/mp4-rust/actions)
 
 #### Example
+
 ```rust
 use std::fs::File;
 use std::io::{BufReader};
@@ -60,55 +63,68 @@ fn main() -> Result<()> {
 ```
 
 #### Install
+
 ```
 cargo add mp4
 ```
+
 or add to your `Cargo.toml`:
+
 ```toml
 mp4 = "0.14.0"
 ```
 
 #### Documentation
-* https://docs.rs/mp4/
+
+- https://docs.rs/mp4/
 
 ## Development
 
 #### Requirements
-* [Rust](https://www.rust-lang.org/)
+
+- [Rust](https://www.rust-lang.org/)
 
 #### Build
+
 ```
 cargo build
 ```
 
 #### Lint and Format
+
 ```
 cargo clippy --fix
 cargo fmt --all
 ```
 
 #### Run Examples
-* `mp4info`
+
+- `mp4info`
+
 ```
 cargo run --example mp4info <movie.mp4>
 ```
 
-* `mp4dump`
+- `mp4dump`
+
 ```
 cargo run --example mp4dump <movie.mp4>
 ```
 
 #### Run Tests
+
 ```
 cargo test
 ```
 
 With print statement output.
+
 ```
 cargo test -- --nocapture
 ```
 
 #### Run Cargo fmt
+
 Run fmt to catch formatting errors.
 
 ```
@@ -117,6 +133,7 @@ cargo fmt --all -- --check
 ```
 
 #### Run Clippy
+
 Run Clippy tests to catch common lints and mistakes.
 
 ```
@@ -125,6 +142,7 @@ cargo clippy --no-deps -- -D warnings
 ```
 
 #### Run Benchmark Tests
+
 ```
 cargo bench
 ```
@@ -132,6 +150,7 @@ cargo bench
 View HTML report at `target/criterion/report/index.html`
 
 #### Generate Docs
+
 ```
 cargo docs
 ```
@@ -139,14 +158,17 @@ cargo docs
 View at `target/doc/mp4/index.html`
 
 ## Web Assembly
+
 See the [mp4-inspector](https://github.com/alfg/mp4-inspector) project as a reference for using this library in Javascript via Web Assembly.
 
 ## Related Projects
-* https://github.com/mozilla/mp4parse-rust
-* https://github.com/pcwalton/rust-media
-* https://github.com/alfg/mp4
+
+- https://github.com/mozilla/mp4parse-rust
+- https://github.com/pcwalton/rust-media
+- https://github.com/alfg/mp4
 
 ## License
+
 MIT
 
 [docs]: https://docs.rs/mp4

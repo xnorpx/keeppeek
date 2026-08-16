@@ -1,0 +1,1306 @@
+syntax = "proto3";
+
+package keeppeek.webrtc.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/any.proto";
+
+// Next 7 lines deliberately violate AIP-136 (Custom RPC Envelope).
+// This is required because this protocol operates over raw WebRTC DataChannels 
+// instead of HTTP/2 headers framing, thus necessitating application-level 
+// framing for multiplexing.
+message ControlEnvelope {
+  oneof message {
+    Request request = 1;
+    Response response = 2;
+    Notification notification = 3;
+  }
+}
+
+message Request {
+  uint64 request_id = 1;
+  oneof command {
+    SubscribeMedia subscribe_media = 2;
+    SubscribeEvents subscribe_events = 3;
+    SubscribeData subscribe_data = 4;
+    Unsubscribe unsubscribe = 5;
+    PublishEvent publish_event = 6;
+    PublicationCommand publication_command = 7;
+    StoredMediaCommand stored_media_command = 8;
+    EventPublicationCommand event_publication_command = 9;
+     
+    GroupCommand group_command = 11;
+    StateStoreCommand state_store_command = 12;
+    CameraControlCommand camera_control_command = 13;
+    PublicationReport publication_report = 14;
+  }
+}
+
+message Response {
+  uint64 request_id = 1;
+  oneof result {
+    Ok ok = 2;
+    Error error = 3;
+  }
+}
+
+message Notification {
+  oneof event {
+    ServerCapabilities initial_capabilities = 1;
+    ConnectionUpdate connection_update = 2;
+    Event live_event = 3;
+    MediaDataConfiguration media_data_configuration = 4;
+    PublicationState publication_state = 5;
+    StoredMediaState stored_media_state = 6;
+    EventPublicationState event_publication_state = 7;
+    GroupState group_state = 8;
+    StateStoreWatchUpdate state_store_watch_update = 9;
+
+    PublicationControl publication_control = 15;
+    CameraUpdated camera_updated = 11;
+    SourceSessionAdded source_session_added = 12;
+    SourceSessionRemoved source_session_removed = 13;
+    GroupMemberChanged group_member_changed = 14;
+  }
+}
+
+message CameraUpdated {
+  string source_id = 1;
+  CameraInfo camera = 2;
+}
+
+message SourceSessionAdded {
+  string source_session_id = 1;
+  SourceSession session = 2;
+}
+
+message SourceSessionRemoved {
+  string source_session_id = 1;
+}
+
+message GroupMemberChanged {
+  string group_id = 1;
+  repeated GroupMember members = 2;
+}
+
+message ServerCapabilities {
+  uint64 revision = 1;
+  // Configured cameras, including offline ones. Identity and device
+  // capability only; numeric health is on GET /metrics.
+  repeated CameraInfo cameras = 2;
+  // Complete source-session state visible to this connection.
+  repeated SourceSession source_sessions = 3;
+  repeated StoredMediaSourceCapability stored_media_sources = 4;
+  // The source session owned by this WebRTC connection. It is present in this
+  // connection's snapshot even before the session has active media.
+  string self_source_session_id = 5;
+}
+
+message CameraInfo {
+  string source_id = 1;
+  string display_name = 2;
+  optional string manufacturer = 3;
+  optional string model = 4;
+  optional string firmware_version = 5;
+  optional string serial_number = 6;
+  optional string hardware_id = 7;
+  optional string ip = 8;
+  optional string hostname = 9;
+  optional string mac_address = 10;
+  optional string web_url = 11;
+  optional uint32 http_port = 12;
+  optional uint32 https_port = 13;
+  optional uint32 rtsp_port = 14;
+  optional uint32 onvif_port = 15;
+  bool is_reolink = 16;
+  CameraDeviceCapabilities device_capabilities = 17;
+  PtzCapability ptz = 18;
+}
+
+message CameraDeviceCapabilities {
+  bool audio = 1;
+  bool events = 2;
+  bool recording = 3;
+  bool analytics = 4;
+  bool imaging = 5;
+  bool two_way_audio = 6;
+}
+
+message PtzCapability {
+  // Authority for whether CameraControlCommand.ptz is accepted.
+  bool supported = 5;
+  bool continuous = 1;
+  bool relative = 2;
+  bool presets = 3;
+  bool zoom = 4;
+}
+
+message CameraControlCommand {
+  oneof action {
+    PtzCommand ptz = 1;
+  }
+}
+
+message PtzCommand {
+  // Stable camera identity. Not source_session_id.
+  string source_id = 1;
+  oneof action {
+    PtzContinuous continuous = 2;
+    PtzStop stop = 3;
+    PtzRelative relative = 4;
+    PtzPresetList list_presets = 5;
+    PtzPresetGoto goto_preset = 6;
+    PtzPresetSave save_preset = 7;
+    PtzPresetDelete delete_preset = 8;
+  }
+}
+
+message PtzContinuous {
+  // Each axis is -1.0 through 1.0. Zero means that axis is idle.
+  float pan = 1;
+  float tilt = 2;
+  float zoom = 3;
+}
+
+message PtzStop {}
+
+message PtzRelative {
+  float pan = 1;
+  float tilt = 2;
+  float zoom = 3;
+}
+
+message PtzPresetList {}
+
+message PtzPresetGoto {
+  uint32 preset_id = 1;
+}
+
+message PtzPresetSave {
+  uint32 preset_id = 1;
+  string name = 2;
+}
+
+message PtzPresetDelete {
+  uint32 preset_id = 1;
+}
+
+message PtzResult {
+  string source_id = 1;
+  repeated PtzPreset presets = 2;
+}
+
+message PtzPreset {
+  uint32 preset_id = 1;
+  string name = 2;
+}
+
+message SourceSession {
+  string source_session_id = 1;
+  // Stable identity across source-session replacement. Empty for an
+  // intentionally ephemeral source.
+  string source_id = 2;
+  string display_name = 3;
+  // Message presence means this session currently exposes that media kind.
+  MediaStreamCapability audio = 4;
+  MediaStreamCapability video = 5;
+  // Data payload types are unique within this source session.
+  repeated DataPayloadCapability data_payloads = 6;
+  repeated EventType event_types = 7;
+  // At most one capability per MediaKind.
+  repeated MediaPublicationCapability publication_capabilities = 8;
+}
+
+message MediaStreamCapability {
+  repeated MediaVariantCapability variants = 1;
+}
+
+message MediaVariantCapability {
+  string variant_id = 1;
+  CodecDescriptor codec = 2;
+  MediaDataFormat format = 3;
+  repeated DeliveryTransport delivery_transports = 4;
+  uint64 nominal_bitrate_bps = 5;
+  uint32 quality_rank = 6;
+  MediaVariantOrigin origin = 7;
+  repeated MediaLineageInput lineage = 8;
+}
+
+message MediaLineageInput {
+  string source_session_id = 1;
+  MediaKind kind = 2;
+  string variant_id = 3;
+}
+
+enum MediaVariantOrigin {
+  MEDIA_VARIANT_ORIGIN_UNSPECIFIED = 0;
+  MEDIA_VARIANT_ORIGIN_NATIVE = 1;
+  MEDIA_VARIANT_ORIGIN_PUBLISHED = 2;
+  MEDIA_VARIANT_ORIGIN_TRANSCODED = 3;
+  MEDIA_VARIANT_ORIGIN_GROUP = 4;
+}
+
+message MediaPublicationCapability {
+  MediaKind kind = 1;
+  repeated PublicationTransport transports = 2;
+  repeated CodecDescriptor codecs = 3;
+  uint32 max_active_variants = 4;
+  uint32 max_width = 5;
+  uint32 max_height = 6;
+  uint32 max_sample_rate_hz = 7;
+  uint32 max_channel_count = 8;
+  uint64 max_nominal_bitrate_bps = 9;
+  PublicationRecordingPolicy recording_policy = 10;
+}
+
+enum PublicationRecordingPolicy {
+  PUBLICATION_RECORDING_POLICY_UNSPECIFIED = 0;
+  PUBLICATION_RECORDING_POLICY_PROHIBITED = 1;
+  PUBLICATION_RECORDING_POLICY_OPTIONAL = 2;
+  PUBLICATION_RECORDING_POLICY_REQUIRED = 3;
+}
+
+// A named, persistent collection of static streams that may also host live
+// participants. Groups are server-defined and are not created over this API.
+message GroupCapability {
+  string group_id = 1;
+  string display_name = 2;
+  uint64 revision = 3;
+  // Static source streams the group presents. Addressed by stable source_id
+  // because a dynamic source_session_id would dangle across a reconnect.
+  repeated GroupMember members = 4;
+  // Absent in a view-only group that nobody can join.
+  GroupLiveCapability live = 5;
+}
+
+message GroupMember {
+  string source_id = 1;
+  MediaKind kind = 2;
+}
+
+message GroupLiveCapability {
+  MediaVariantCapability audio_profile = 1;
+  // Absent in an audio-only group.
+  MediaVariantCapability video_profile = 2;
+  repeated PublicationTransport publication_transports = 3;
+  repeated DeliveryTransport subscription_transports = 4;
+  uint32 max_participants = 5;
+  PublicationRecordingPolicy audio_recording_policy = 6;
+  PublicationRecordingPolicy video_recording_policy = 7;
+  // Zero means the server default.
+  google.protobuf.Duration participant_timeout = 8;
+  // JoinGroup must carry the group password, which is never returned.
+  bool password_required = 9;
+}
+
+enum DeliveryTransport {
+  DELIVERY_TRANSPORT_UNSPECIFIED = 0;
+  DELIVERY_TRANSPORT_RTP = 1;
+  DELIVERY_TRANSPORT_RELIABLE_DATA = 2;
+  DELIVERY_TRANSPORT_UNRELIABLE_DATA = 3;
+}
+
+message CodecDescriptor {
+  string name = 1;
+  map<string, string> parameters = 2;
+}
+
+message DataPayloadCapability {
+  string payload_type = 1;
+  string content_type = 2;
+  string description = 3;
+}
+
+message StoredMediaSourceCapability {
+  string source_id = 1;
+  string display_name = 2;
+  repeated StoredMediaStreamCapability streams = 3;
+  repeated DataPayloadCapability data_payloads = 4;
+}
+
+message StoredMediaStreamCapability {
+  string stream_id = 1;
+  string content_type = 2;
+  repeated DataChannelKind delivery_channels = 3;
+}
+
+message EventType {
+  string event_type = 1;
+  google.protobuf.Struct metadata = 2;
+  repeated EventAttachmentCapability attachments = 3;
+}
+
+message EventAttachmentCapability {
+  string attachment_type = 1;
+  string content_type = 2;
+  repeated DataChannelKind delivery_channels = 3;
+  // Zero means the source advertises no fixed maximum.
+  uint32 maximum_count = 4;
+  uint32 minimum_count = 5;
+}
+
+message SubscribeMedia {
+  string subscription_id = 1;
+  string source_session_id = 2;
+  MediaKind kind = 3;
+  DeliveryTransport requested_delivery_transport = 4;
+  VideoQuality video_quality = 5;
+  string variant_id = 6;
+}
+
+message SubscribeData {
+  string subscription_id = 1;
+  string source_session_id = 2;
+  repeated DataPayloadRoute data_payload_routes = 3;
+}
+
+message SubscribeEvents {
+  string subscription_id = 1;
+  repeated string source_ids = 2;
+  repeated string event_types = 3;
+  repeated EventAttachmentRoute attachment_routes = 4;
+  repeated MediaKind media_kinds = 5;
+}
+
+enum VideoQuality {
+  VIDEO_QUALITY_AUTO = 0;
+  VIDEO_QUALITY_HIGH = 1;
+  VIDEO_QUALITY_LOW = 2;
+}
+
+message Unsubscribe {
+  repeated string subscription_ids = 1;
+}
+
+message SubscriptionResult {
+  string subscription_id = 1;
+
+  oneof delivery {
+    RtpDelivery rtp = 2;
+    DataSubscriptionDelivery data = 3;
+    MediaDataDelivery media_data = 4;
+    EventSubscriptionDelivery events = 5;
+  }
+
+  string selected_variant_id = 6;
+  repeated MediaLineageInput selected_lineage = 7;
+}
+
+message SubscriptionError {
+  string subscription_id = 1;
+  SubscriptionErrorCode code = 2;
+}
+
+enum SubscriptionErrorCode {
+  SUBSCRIPTION_ERROR_CODE_UNSPECIFIED = 0;
+  SUBSCRIPTION_ERROR_CODE_SOURCE_NOT_FOUND = 1;
+  SUBSCRIPTION_ERROR_CODE_MEDIA_NOT_FOUND = 2;
+  SUBSCRIPTION_ERROR_CODE_DELIVERY_TRANSPORT_UNAVAILABLE = 3;
+  SUBSCRIPTION_ERROR_CODE_RTP_MID_UNAVAILABLE = 4;
+  SUBSCRIPTION_ERROR_CODE_DATA_PAYLOAD_UNAVAILABLE = 5;
+  SUBSCRIPTION_ERROR_CODE_VIDEO_QUALITY_UNAVAILABLE = 6;
+  SUBSCRIPTION_ERROR_CODE_CONNECTION_LIMITED = 7;
+  SUBSCRIPTION_ERROR_CODE_EVENT_TYPE_UNAVAILABLE = 8;
+  SUBSCRIPTION_ERROR_CODE_EVENT_ATTACHMENT_UNAVAILABLE = 9;
+  SUBSCRIPTION_ERROR_CODE_VARIANT_NOT_FOUND = 10;
+  SUBSCRIPTION_ERROR_CODE_VARIANT_INCOMPATIBLE = 11;
+}
+
+message ConnectionUpdate {
+  ConnectionState state = 1;
+  uint64 available_bitrate_bps = 2;
+  bool subscription_update_required = 3;
+}
+
+enum ConnectionState {
+  CONNECTION_STATE_UNSPECIFIED = 0;
+  CONNECTION_STATE_HEALTHY = 1;
+  CONNECTION_STATE_LIMITED_CONNECTIVITY = 2;
+}
+
+message RtpDelivery {
+  // Session-local StreamId serialized as the exact opaque a=mid value from
+  // the client's accepted SDP offer.
+  string mid = 1;
+}
+
+message DataPayloadRoute {
+  string payload_type = 1;
+  DataChannelKind channel = 2;
+}
+
+message EventAttachmentRoute {
+  string attachment_type = 1;
+  string content_type = 2;
+  DataChannelKind channel = 3;
+}
+
+message DataSubscriptionDelivery {
+  repeated DataPayloadRoute routes = 1;
+}
+
+message EventSubscriptionDelivery {
+  repeated EventAttachmentRoute attachment_routes = 1;
+  google.protobuf.Timestamp backfill_end_time = 2;
+}
+
+message MediaDataDelivery {
+  string stream_binding_id = 1;
+  DataChannelKind channel = 2;
+  CodecDescriptor codec = 3;
+  MediaDataFormat format = 4;
+  uint64 configuration_revision = 5;
+}
+
+message MediaDataConfiguration {
+  string stream_binding_id = 1;
+  CodecDescriptor codec = 2;
+  MediaDataFormat format = 3;
+  uint64 configuration_revision = 4;
+}
+
+message MediaDataFormat {
+  oneof format {
+    AudioDataFormat audio = 1;
+    VideoDataFormat video = 2;
+  }
+}
+
+message AudioDataFormat {
+  uint32 sample_rate_hz = 1;
+  uint32 channel_count = 2;
+  bytes decoder_config = 3;
+}
+
+message VideoDataFormat {
+  uint32 width = 1;
+  uint32 height = 2;
+  bytes decoder_config = 3;
+}
+
+enum DataChannelKind {
+  DATA_CHANNEL_KIND_UNSPECIFIED = 0;
+  DATA_CHANNEL_KIND_RELIABLE_DATA = 1;
+  DATA_CHANNEL_KIND_UNRELIABLE_DATA = 2;
+}
+
+message StoredMediaCommand {
+  oneof action {
+    OpenStoredMedia open = 1;
+    SeekStoredMedia seek = 2;
+    SetStoredMediaPlayback set_playback = 3;
+    CloseStoredMedia close = 4;
+    QueryStoredMediaTimeline query_timeline = 5;
+    CancelStoredMediaTimelineQuery cancel_timeline_query = 6;
+  }
+}
+
+message OpenStoredMedia {
+  string stored_media_id = 1;
+  string source_id = 2;
+  string stream_id = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  optional google.protobuf.Timestamp end_time = 5;
+  StoredMediaMode mode = 6;
+  bool playing = 7;
+  double playback_rate = 8;
+  DataChannelKind media_channel = 9;
+  repeated DataPayloadRoute data_payload_routes = 10;
+  google.protobuf.Duration max_buffer_duration = 11;
+}
+
+message SeekStoredMedia {
+  string stored_media_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+message SetStoredMediaPlayback {
+  string stored_media_id = 1;
+  optional bool playing = 2;
+  optional double playback_rate = 3;
+  optional StoredMediaMode mode = 4;
+}
+
+message CloseStoredMedia {
+  string stored_media_id = 1;
+}
+
+enum StoredMediaMode {
+  STORED_MEDIA_MODE_UNSPECIFIED = 0;
+  STORED_MEDIA_MODE_PLAYBACK = 1;
+  STORED_MEDIA_MODE_SCRUB = 2;
+}
+
+message StoredMediaState {
+  string stored_media_id = 1;
+  StoredMediaStatus status = 2;
+  uint64 generation = 3;
+  google.protobuf.Timestamp requested_time = 4;
+  optional google.protobuf.Timestamp fragment_time = 5;
+  optional google.protobuf.Timestamp end_time = 6;
+  StoredMediaMode mode = 7;
+  bool playing = 8;
+  double playback_rate = 9;
+  StoredMediaDelivery delivery = 10;
+}
+
+enum StoredMediaStatus {
+  STORED_MEDIA_STATUS_UNSPECIFIED = 0;
+  STORED_MEDIA_STATUS_ACTIVE = 1;
+  STORED_MEDIA_STATUS_ENDED = 2;
+}
+
+message StoredMediaDelivery {
+  DataChannelKind media_channel = 1;
+  string content_type = 2;
+  repeated DataPayloadRoute data_payload_routes = 3;
+  google.protobuf.Duration max_buffer_duration = 4;
+}
+
+message QueryStoredMediaTimeline {
+  string query_id = 1;
+  // Empty selects every advertised stored-media source.
+  repeated string source_ids = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
+  repeated string payload_types = 5;
+  google.protobuf.Duration availability_bucket = 6;
+  DataChannelKind channel = 7;
+  // Presence requests events; omission requests none.
+  StoredMediaEventQuery events = 8;
+}
+
+message StoredMediaEventQuery {
+  // Empty selects every event type.
+  repeated string event_types = 1;
+  // Requests attachment bytes such as event JPEGs, not only descriptors.
+  bool include_attachments = 2;
+}
+
+message CancelStoredMediaTimelineQuery {
+  string query_id = 1;
+}
+
+message StoredMediaQueryDelivery {
+  string query_id = 1;
+  DataChannelKind channel = 2;
+}
+
+message StoredMediaPlaybackError {
+  string stored_media_id = 1;
+  StoredMediaPlaybackErrorCode code = 2;
+}
+
+enum StoredMediaPlaybackErrorCode {
+  STORED_MEDIA_PLAYBACK_ERROR_CODE_UNSPECIFIED = 0;
+  STORED_MEDIA_PLAYBACK_ERROR_CODE_SOURCE_NOT_FOUND = 1;
+  STORED_MEDIA_PLAYBACK_ERROR_CODE_STREAM_NOT_FOUND = 2;
+  STORED_MEDIA_PLAYBACK_ERROR_CODE_TIMESTAMP_UNAVAILABLE = 3;
+  STORED_MEDIA_PLAYBACK_ERROR_CODE_DELIVERY_CHANNEL_UNAVAILABLE = 4;
+  STORED_MEDIA_PLAYBACK_ERROR_CODE_DATA_PAYLOAD_UNAVAILABLE = 5;
+  STORED_MEDIA_PLAYBACK_ERROR_CODE_STATE_INVALID = 6;
+}
+
+message StoredMediaQueryError {
+  string query_id = 1;
+  StoredMediaQueryErrorCode code = 2;
+}
+
+enum StoredMediaQueryErrorCode {
+  STORED_MEDIA_QUERY_ERROR_CODE_UNSPECIFIED = 0;
+  STORED_MEDIA_QUERY_ERROR_CODE_SOURCE_NOT_FOUND = 1;
+  STORED_MEDIA_QUERY_ERROR_CODE_DELIVERY_CHANNEL_UNAVAILABLE = 2;
+  STORED_MEDIA_QUERY_ERROR_CODE_DATA_PAYLOAD_UNAVAILABLE = 3;
+  STORED_MEDIA_QUERY_ERROR_CODE_INVALID = 4;
+}
+
+message Event {
+  string event_id = 1;
+  uint64 revision = 2;
+  string source_id = 3;
+  optional MediaKind media_kind = 4;
+  EventOrigin origin = 5;
+  string event_type = 6;
+  google.protobuf.Timestamp start_time = 7;
+  // Absence represents a point event at start_time for range matching.
+  optional google.protobuf.Timestamp end_time = 8;
+  optional double confidence = 9;
+  EventBoundingBox bounding_box = 10;
+  optional string zone = 11;
+  optional string text = 12;
+  google.protobuf.Struct payload = 13;
+  repeated EventAttachmentDescriptor attachments = 14;
+  // Live source session. Required when publishing; set on live delivery.
+  optional string source_session_id = 15;
+  // Live delivery only: the event subscription that selected this event.
+  optional string subscription_id = 16;
+}
+
+message EventAttachmentDescriptor {
+  string attachment_id = 1;
+  string attachment_type = 2;
+  string content_type = 3;
+  optional uint64 byte_len = 4;
+  // Zero-based display order within the event.
+  uint32 ordinal = 5;
+  optional google.protobuf.Timestamp timestamp = 6;
+  optional string text = 7;
+}
+
+message PublishEvent {
+  Event event = 1;
+}
+
+message GroupCommand {
+  oneof action {
+    ListGroups list = 1;
+    JoinGroup join = 2;
+    LeaveGroup leave = 3;
+  }
+}
+
+message ListGroups {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message GroupList {
+  repeated GroupSummary groups = 1;
+  string next_page_token = 2;
+}
+
+message GroupSummary {
+  GroupCapability capability = 1;
+  uint32 participant_count = 2;
+}
+
+message JoinGroup {
+  string group_id = 1;
+  // Required when the group's live capability sets password_required.
+  optional string password = 2;
+}
+
+message LeaveGroup {
+  string group_id = 1;
+}
+
+message GroupState {
+  string group_id = 1;
+  uint64 revision = 2;
+  GroupMembershipStatus membership_status = 3;
+  string self_participant_id = 4;
+  repeated GroupParticipant participants = 5;
+}
+
+enum GroupMembershipStatus {
+  GROUP_MEMBERSHIP_STATUS_UNSPECIFIED = 0;
+  GROUP_MEMBERSHIP_STATUS_JOINED = 1;
+  GROUP_MEMBERSHIP_STATUS_LEFT = 2;
+  GROUP_MEMBERSHIP_STATUS_EXPIRED = 3;
+}
+
+message GroupParticipant {
+  string participant_id = 1;
+  string display_name = 2;
+  string source_session_id = 3;
+  string audio_variant_id = 4;
+  // Empty in an audio-only group.
+  string video_variant_id = 5;
+  // True while KeepPeek accepts and routes that medium for this participant.
+  bool audio_active = 6;
+  bool video_active = 7;
+  // Stable stored-media identity for this participant's virtual source.
+  string source_id = 8;
+}
+
+message StateStoreCommand {
+  oneof action {
+    GetState get = 1;
+    PutState put = 2;
+    DeleteState delete = 3;
+    WatchState watch = 4;
+    UnwatchState unwatch = 5;
+  }
+}
+
+message GetState {
+  string namespace = 1;
+  string key = 2;
+}
+
+message PutState {
+  string namespace = 1;
+  string key = 2;
+  string schema = 3;
+  google.protobuf.Struct value = 4;
+  optional uint64 expected_revision = 5;
+  optional google.protobuf.Duration ttl = 6;
+}
+
+message DeleteState {
+  string namespace = 1;
+  string key = 2;
+  optional uint64 expected_revision = 3;
+}
+
+message WatchState {
+  string watch_id = 1;
+  string namespace = 2;
+  string key_prefix = 3;
+}
+
+message UnwatchState {
+  string watch_id = 1;
+}
+
+message StateEntry {
+  string namespace = 1;
+  string key = 2;
+  string schema = 3;
+  google.protobuf.Struct value = 4;
+  uint64 revision = 5;
+  google.protobuf.Timestamp updated_at = 6;
+  optional google.protobuf.Timestamp expires_at = 7;
+  string owner_id = 8;
+}
+
+message StateStoreResult {
+  oneof result {
+    StateEntry entry = 1;
+    StateDeleteResult deleted = 2;
+    StateWatchSnapshot watch = 3;
+    StateUnwatchResult unwatched = 4;
+  }
+}
+
+message StateDeleteResult {
+  string namespace = 1;
+  string key = 2;
+  uint64 revision = 3;
+}
+
+message StateWatchSnapshot {
+  string watch_id = 1;
+  string namespace = 2;
+  string key_prefix = 3;
+  uint64 snapshot_revision = 4;
+  repeated StateEntry entries = 5;
+}
+
+message StateUnwatchResult {
+  string watch_id = 1;
+}
+
+message StateStoreWatchUpdate {
+  string watch_id = 1;
+  string namespace = 2;
+  string key = 3;
+  uint64 revision = 4;
+  StateStoreUpdateKind kind = 5;
+  StateEntry entry = 6;
+}
+
+enum StateStoreUpdateKind {
+  STATE_STORE_UPDATE_KIND_UNSPECIFIED = 0;
+  STATE_STORE_UPDATE_KIND_PUT = 1;
+  STATE_STORE_UPDATE_KIND_DELETE = 2;
+  STATE_STORE_UPDATE_KIND_EXPIRE = 3;
+}
+
+message EventPublicationCommand {
+  oneof action {
+    StartEventPublication start = 1;
+    CommitEventPublication commit = 2;
+    AbortEventPublication abort = 3;
+  }
+}
+
+message StartEventPublication {
+  string publication_id = 1;
+  Event event = 2;
+  DataChannelKind attachment_channel = 3;
+}
+
+message CommitEventPublication {
+  string publication_id = 1;
+  // Zero requests the server default, capped by the publication expiration.
+  google.protobuf.Duration wait_timeout = 2;
+}
+
+message AbortEventPublication {
+  string publication_id = 1;
+}
+
+message EventPublicationState {
+  string publication_id = 1;
+  EventPublicationStatus status = 2;
+  string event_id = 3;
+  uint64 revision = 4;
+  DataChannelKind attachment_channel = 5;
+  uint64 max_attachment_bytes = 6;
+  uint64 max_event_attachment_bytes = 7;
+  google.protobuf.Timestamp expires_at = 8;
+}
+
+enum EventPublicationStatus {
+  EVENT_PUBLICATION_STATUS_UNSPECIFIED = 0;
+  EVENT_PUBLICATION_STATUS_ACCEPTING_ATTACHMENTS = 1;
+  EVENT_PUBLICATION_STATUS_COMMITTED = 2;
+  EVENT_PUBLICATION_STATUS_ABORTED = 3;
+  EVENT_PUBLICATION_STATUS_EXPIRED = 4;
+}
+
+message PublicationCommand {
+  oneof action {
+    StartPublication start = 1;
+    StopPublication stop = 2;
+  }
+}
+
+message StartPublication {
+  string publication_id = 1;
+  string source_session_id = 2;
+  MediaKind kind = 3;
+  PublicationTransport transport = 4;
+  CodecDescriptor codec = 5;
+  repeated SimulcastLayer simulcast_layers = 6;
+  MediaDataFormat format = 7;
+  string variant_id = 8;
+  repeated string input_subscription_ids = 9;
+  uint64 nominal_bitrate_bps = 10;
+  uint32 quality_rank = 11;
+  PublicationPurpose purpose = 12;
+  PublicationControlCapabilities control_capabilities = 13;
+  // Must be INHERIT, DISABLED, or REQUIRED.
+  PublicationRecordingMode recording_mode = 14;
+  // Required for RTP transports and empty for data-channel transports. This
+  // is the session-local StreamId serialized as the exact opaque MID from the
+  // client's accepted SDP offer.
+  string rtp_mid = 15;
+}
+
+enum PublicationRecordingMode {
+  PUBLICATION_RECORDING_MODE_UNSPECIFIED = 0;
+  PUBLICATION_RECORDING_MODE_INHERIT = 1;
+  PUBLICATION_RECORDING_MODE_DISABLED = 2;
+  PUBLICATION_RECORDING_MODE_REQUIRED = 3;
+}
+
+message StopPublication {
+  string publication_id = 1;
+}
+
+enum MediaKind {
+  MEDIA_KIND_UNSPECIFIED = 0;
+  MEDIA_KIND_AUDIO = 1;
+  MEDIA_KIND_VIDEO = 2;
+}
+
+enum PublicationTransport {
+  PUBLICATION_TRANSPORT_UNSPECIFIED = 0;
+  PUBLICATION_TRANSPORT_RTP_AUDIO = 1;
+  PUBLICATION_TRANSPORT_RTP_VIDEO = 2;
+  PUBLICATION_TRANSPORT_RELIABLE_DATA = 3;
+  PUBLICATION_TRANSPORT_UNRELIABLE_DATA = 4;
+}
+
+enum PublicationPurpose {
+  PUBLICATION_PURPOSE_UNSPECIFIED = 0;
+  PUBLICATION_PURPOSE_SOURCE = 1;
+  PUBLICATION_PURPOSE_TRANSCODED = 2;
+  PUBLICATION_PURPOSE_GROUP = 3;
+}
+
+message PublicationControlCapabilities {
+  bool accepts_pause = 1;
+  bool accepts_target_bitrate = 2;
+  bool accepts_key_frame_requests = 3;
+}
+
+message SimulcastLayer {
+  string rid = 1;
+}
+
+message PublicationState {
+  string publication_id = 1;
+  PublicationStatus status = 2;
+
+  oneof delivery {
+    RtpDelivery rtp = 3;
+    MediaDataDelivery media_data = 4;
+  }
+
+  string variant_id = 5;
+  uint64 control_revision = 6;
+  PublicationRecordingState recording = 7;
+}
+
+message PublicationRecordingState {
+  PublicationRecordingMode requested_mode = 1;
+  PublicationRecordingStatus status = 2;
+  optional string detail = 3;
+}
+
+enum PublicationRecordingStatus {
+  PUBLICATION_RECORDING_STATUS_UNSPECIFIED = 0;
+  PUBLICATION_RECORDING_STATUS_PENDING = 1;
+  PUBLICATION_RECORDING_STATUS_RECORDING = 2;
+  PUBLICATION_RECORDING_STATUS_NOT_RECORDING = 3;
+  PUBLICATION_RECORDING_STATUS_FAILED = 4;
+}
+
+enum PublicationStatus {
+  PUBLICATION_STATUS_UNSPECIFIED = 0;
+  PUBLICATION_STATUS_ACTIVE = 1;
+  PUBLICATION_STATUS_STOPPED = 2;
+  PUBLICATION_STATUS_STARTING = 3;
+  PUBLICATION_STATUS_FAILED = 4;
+}
+
+message PublicationControl {
+  string publication_id = 1;
+  uint64 revision = 2;
+  optional bool active = 3;
+  optional uint64 target_bitrate_bps = 4;
+  optional uint64 key_frame_request_id = 5;
+  PublicationControlReason reason = 6;
+}
+
+enum PublicationControlReason {
+  PUBLICATION_CONTROL_REASON_UNSPECIFIED = 0;
+  PUBLICATION_CONTROL_REASON_SUBSCRIBER_DEMAND = 1;
+  PUBLICATION_CONTROL_REASON_CONGESTION = 2;
+  PUBLICATION_CONTROL_REASON_RECOVERY = 3;
+  PUBLICATION_CONTROL_REASON_ADMINISTRATIVE = 4;
+}
+
+message PublicationReport {
+  string publication_id = 1;
+  uint64 applied_control_revision = 2;
+  PublicationHealth health = 3;
+  uint64 actual_bitrate_bps = 4;
+  google.protobuf.Duration queue_delay = 5;
+  optional string detail = 6;
+}
+
+enum PublicationHealth {
+  PUBLICATION_HEALTH_UNSPECIFIED = 0;
+  PUBLICATION_HEALTH_HEALTHY = 1;
+  PUBLICATION_HEALTH_DEGRADED = 2;
+  PUBLICATION_HEALTH_FAILED = 3;
+}
+
+message Ok {
+  oneof result {
+    SubscriptionResult subscription_result = 1;
+    StoredMediaQueryDelivery stored_media_query_delivery = 2;
+    GroupList group_list = 3;
+    PtzResult ptz_result = 4;
+    PublicationState publication_state = 5;
+    StoredMediaState stored_media_state = 6;
+    EventPublicationState event_publication_state = 7;
+    GroupState group_state = 8;
+    StateStoreResult state_store_result = 9;
+  }
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+  repeated google.protobuf.Any details = 3;
+}
+
+message CameraControlError {
+  string source_id = 1;
+  CameraControlErrorCode code = 2;
+}
+
+enum CameraControlErrorCode {
+  CAMERA_CONTROL_ERROR_CODE_UNSPECIFIED = 0;
+  CAMERA_CONTROL_ERROR_CODE_SOURCE_NOT_FOUND = 1;
+  CAMERA_CONTROL_ERROR_CODE_PTZ_UNSUPPORTED = 2;
+  CAMERA_CONTROL_ERROR_CODE_PRESET_NOT_FOUND = 3;
+  CAMERA_CONTROL_ERROR_CODE_UNAVAILABLE = 4;
+  CAMERA_CONTROL_ERROR_CODE_INVALID = 5;
+}
+
+message GroupError {
+  string group_id = 1;
+  GroupErrorCode code = 2;
+}
+
+enum GroupErrorCode {
+  GROUP_ERROR_CODE_UNSPECIFIED = 0;
+  GROUP_ERROR_CODE_NOT_FOUND = 1;
+  GROUP_ERROR_CODE_FULL = 2;
+  GROUP_ERROR_CODE_NOT_JOINED = 3;
+  GROUP_ERROR_CODE_PUBLICATION_INVALID = 4;
+  GROUP_ERROR_CODE_PROFILE_MISMATCH = 5;
+  GROUP_ERROR_CODE_PASSWORD_REQUIRED = 6;
+  GROUP_ERROR_CODE_PASSWORD_INVALID = 7;
+  // Join requested on a view-only group with no live capability.
+  GROUP_ERROR_CODE_NOT_LIVE = 8;
+}
+
+message StateStoreError {
+  string namespace = 1;
+  string key = 2;
+  StateStoreErrorCode code = 3;
+  optional uint64 current_revision = 4;
+}
+
+enum StateStoreErrorCode {
+  STATE_STORE_ERROR_CODE_UNSPECIFIED = 0;
+  STATE_STORE_ERROR_CODE_NOT_FOUND = 1;
+  STATE_STORE_ERROR_CODE_NOT_AUTHORIZED = 2;
+  STATE_STORE_ERROR_CODE_CONFLICT = 3;
+  STATE_STORE_ERROR_CODE_NAMESPACE_INVALID = 4;
+  STATE_STORE_ERROR_CODE_KEY_INVALID = 5;
+  STATE_STORE_ERROR_CODE_SCHEMA_INVALID = 6;
+  STATE_STORE_ERROR_CODE_VALUE_TOO_LARGE = 7;
+  STATE_STORE_ERROR_CODE_TTL_INVALID = 8;
+  STATE_STORE_ERROR_CODE_WATCH_NOT_FOUND = 9;
+  STATE_STORE_ERROR_CODE_WATCH_LIMIT_EXCEEDED = 10;
+  STATE_STORE_ERROR_CODE_SNAPSHOT_TOO_LARGE = 11;
+}
+
+message EventPublicationError {
+  string publication_id = 1;
+  string event_id = 2;
+  EventPublicationErrorCode code = 3;
+  optional uint64 current_revision = 4;
+}
+
+enum EventPublicationErrorCode {
+  EVENT_PUBLICATION_ERROR_CODE_UNSPECIFIED = 0;
+  EVENT_PUBLICATION_ERROR_CODE_SOURCE_NOT_FOUND = 1;
+  EVENT_PUBLICATION_ERROR_CODE_EVENT_INVALID = 2;
+  EVENT_PUBLICATION_ERROR_CODE_REVISION_CONFLICT = 3;
+  EVENT_PUBLICATION_ERROR_CODE_ATTACHMENT_INVALID = 4;
+  EVENT_PUBLICATION_ERROR_CODE_ATTACHMENTS_INCOMPLETE = 5;
+  EVENT_PUBLICATION_ERROR_CODE_SIZE_LIMIT_EXCEEDED = 6;
+  EVENT_PUBLICATION_ERROR_CODE_EXPIRED = 7;
+  EVENT_PUBLICATION_ERROR_CODE_STATE_INVALID = 8;
+  EVENT_PUBLICATION_ERROR_CODE_STORAGE_UNAVAILABLE = 9;
+  EVENT_PUBLICATION_ERROR_CODE_ATTACHMENT_COUNT_MISMATCH = 10;
+}
+
+message PublicationError {
+  string publication_id = 1;
+  PublicationErrorCode code = 2;
+}
+
+enum PublicationErrorCode {
+  PUBLICATION_ERROR_CODE_UNSPECIFIED = 0;
+  PUBLICATION_ERROR_CODE_SOURCE_NOT_FOUND = 1;
+  PUBLICATION_ERROR_CODE_TRANSPORT_UNAVAILABLE = 2;
+  PUBLICATION_ERROR_CODE_CODEC_UNAVAILABLE = 3;
+  PUBLICATION_ERROR_CODE_FORMAT_INVALID = 4;
+  PUBLICATION_ERROR_CODE_SIMULCAST_INVALID = 5;
+  PUBLICATION_ERROR_CODE_CONNECTION_LIMITED = 6;
+  PUBLICATION_ERROR_CODE_STREAM_NOT_FOUND = 7;
+  PUBLICATION_ERROR_CODE_VARIANT_CONFLICT = 8;
+  PUBLICATION_ERROR_CODE_LINEAGE_INVALID = 9;
+  PUBLICATION_ERROR_CODE_CONTROL_UNSUPPORTED = 10;
+  PUBLICATION_ERROR_CODE_TIMELINE_CONFLICT = 11;
+  PUBLICATION_ERROR_CODE_RECORDING_POLICY_REJECTED = 12;
+  PUBLICATION_ERROR_CODE_RECORDING_UNAVAILABLE = 13;
+  PUBLICATION_ERROR_CODE_RECORDING_MODE_INVALID = 14;
+  PUBLICATION_ERROR_CODE_RTP_MID_NOT_FOUND = 15;
+  PUBLICATION_ERROR_CODE_RTP_MID_INCOMPATIBLE = 16;
+  PUBLICATION_ERROR_CODE_RTP_MID_UNAVAILABLE = 17;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_REQUEST = 1;
+  ERROR_CODE_UNSUPPORTED_REQUEST = 2;
+  ERROR_CODE_NOT_FOUND = 3;
+  ERROR_CODE_REJECTED = 4;
+  ERROR_CODE_UNAVAILABLE = 5;
+  ERROR_CODE_TIMEOUT = 6;
+  ERROR_CODE_INTERNAL = 7;
+}
+
+
+message Message {
+  oneof message {
+    AudioMessage audio = 1;
+    VideoMessage video = 2;
+    DataMessage data = 3;
+    StoredMediaMessage stored_media = 4;
+    StoredMediaQueryMessage stored_media_query = 5;
+    EventMessage event = 6;
+  }
+}
+
+message AudioMessage {
+  oneof message {
+    AudioDataFrame frame = 1;
+  }
+}
+
+message VideoMessage {
+  oneof message {
+    VideoDataFrame frame = 1;
+  }
+}
+
+message DataMessage {
+  oneof message {
+    DataPayloadFrame payload = 1;
+  }
+}
+
+message EventMessage {
+  oneof message {
+    EventAttachmentChunk attachment = 1;
+  }
+}
+
+message DataPayloadFrame {
+  string subscription_id = 1;
+  string source_session_id = 2;
+  string payload_type = 3;
+  uint64 sequence = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  bytes payload = 6;
+}
+
+message EventAttachmentChunk {
+  oneof context {
+    // Live fanout to one event subscription.
+    string subscription_id = 1;
+    // Client publication staging before commit.
+    string publication_id = 2;
+    // Stored timeline query result.
+    string query_id = 3;
+  }
+
+  string event_id = 4;
+  uint64 revision = 5;
+  string attachment_id = 6;
+  string attachment_type = 7;
+  string content_type = 8;
+  uint32 ordinal = 9;
+  optional google.protobuf.Timestamp timestamp = 10;
+  uint64 sequence = 11;
+  uint32 chunk_index = 12;
+  uint32 chunk_count = 13;
+  bytes payload = 14;
+}
+
+message AudioDataFrame {
+  string stream_binding_id = 1;
+  uint64 frame_id = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  uint32 fragment_index = 4;
+  uint32 fragment_count = 5;
+  bytes payload = 6;
+  google.protobuf.Duration duration = 7;
+  uint64 configuration_revision = 8;
+}
+
+message VideoDataFrame {
+  string stream_binding_id = 1;
+  uint64 frame_id = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  uint32 fragment_index = 4;
+  uint32 fragment_count = 5;
+  bool key_frame = 6;
+  bytes payload = 7;
+  optional google.protobuf.Timestamp decode_time = 8;
+  uint64 configuration_revision = 9;
+}
+
+message StoredMediaMessage {
+  oneof message {
+    StoredMediaInitialization initialization = 1;
+    StoredMediaFragment fragment = 2;
+    StoredMediaTimedData timed_data = 3;
+  }
+}
+
+message StoredMediaInitialization {
+  string stored_media_id = 1;
+  uint64 generation = 2;
+  uint64 initialization_id = 3;
+  string content_type = 4;
+  uint32 chunk_index = 5;
+  uint32 chunk_count = 6;
+  bytes payload = 7;
+}
+
+message StoredMediaFragment {
+  string stored_media_id = 1;
+  uint64 generation = 2;
+  uint64 initialization_id = 3;
+  uint64 sequence = 4;
+  google.protobuf.Timestamp start_time = 5;
+  google.protobuf.Duration duration = 6;
+  uint32 chunk_index = 7;
+  uint32 chunk_count = 8;
+  bytes payload = 9;
+}
+
+message StoredMediaTimedData {
+  string stored_media_id = 1;
+  uint64 generation = 2;
+  string payload_type = 3;
+  uint64 sequence = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  optional google.protobuf.Duration duration = 6;
+  bytes payload = 7;
+}
+
+message StoredMediaQueryMessage {
+  oneof message {
+    StoredMediaQueryPage page = 1;
+    StoredMediaQueryEnd end = 2;
+  }
+}
+
+message StoredMediaQueryPage {
+  string query_id = 1;
+  uint64 sequence = 2;
+  repeated StoredMediaRange availability = 3;
+  repeated StoredMediaQueryData data = 4;
+  repeated Event events = 5;
+}
+
+message StoredMediaRange {
+  string source_id = 1;
+  string stream_id = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
+}
+
+message StoredMediaQueryData {
+  string source_id = 1;
+  optional string stream_id = 2;
+  string payload_type = 3;
+  google.protobuf.Timestamp timestamp = 4;
+  optional google.protobuf.Duration duration = 5;
+  bytes payload = 6;
+}
+
+enum EventOrigin {
+  EVENT_ORIGIN_UNSPECIFIED = 0;
+  EVENT_ORIGIN_CAMERA = 1;
+  EVENT_ORIGIN_KEEPPEEK = 2;
+}
+
+message EventBoundingBox {
+  float x = 1;
+  float y = 2;
+  float width = 3;
+  float height = 4;
+}
+
+message StoredMediaQueryEnd {
+  string query_id = 1;
+  uint64 page_count = 2;
+  uint64 attachment_count = 3;
+}

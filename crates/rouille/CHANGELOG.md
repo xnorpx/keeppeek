@@ -1,16 +1,18 @@
 # Changelog
 
 ## Version 3.6.2
+
 - Expose `new_ssl` for native TLS support from `tiny-http`.
 - Switch to `sha1-smol` for a smaller footprint, more stable hash library.
 - Remove dependency on `num_cpus` using `std::thread::available_parallelism` instead.
 
 ## Version 3.6.1
 
-Reverts [Added a number of default features](https://github.com/tomaka/rouille/pull/254) as it breaks any downstreams 
+Reverts [Added a number of default features](https://github.com/tomaka/rouille/pull/254) as it breaks any downstreams
 who were specifying `default-features = false`.
 
 ## Version 3.6.0
+
 - Added native TLS support via `tiny-http`; `Server::new_ssl` is always available in this fork.
 - [Added a number of default features](https://github.com/tomaka/rouille/pull/254) to allow users to reduce
   their dependency graph where they don't need all the functionality Rouille provides. `logging`, `assets`,
@@ -21,6 +23,7 @@ who were specifying `default-features = false`.
   version of `tiny-http` also enables Unix socket listeners, which will be exposed in a future release of Rouille.
 
 ## Version 3.5.0
+
 - Replaced our use of the `brotli2` crate with the alternative pure Rust implementation
   [`brotli`](https://github.com/dropbox/rust-brotli). This removes Rouille's vulnerability to
   [RUSTSEC-2021-0131](https://rustsec.org/advisories/RUSTSEC-2021-0131.html), which existed due to `brotli-sys`
@@ -29,6 +32,7 @@ who were specifying `default-features = false`.
   is making it more and more difficult to support compiler versions more than about 6 months old.
 
 ## Version 3.4.0
+
 - Resolved a number of cleanup & refactoring TODOs
 - Correctly identify non-lowercase content types as text (e.g. `text/JSON`
   would be incorrectly identified as non-text).
@@ -38,10 +42,12 @@ who were specifying `default-features = false`.
   vulnerable version of `chrono`).
 
 ## Version 3.3.1
+
 - Use `.strip_prefix` in place of `.starts_with` where appropriate, this stops a Clippy lint from
   leaking out of our `router!` macro and into downstream code.
 
 ## Version 3.3.0
+
 - Bumped minimum supported Rust version to 1.48
 - Added module-level documentation for `rouille::content_encoding`
 - Updated `time` dependency to `0.3` and `postgres` to `0.19` to fix a compile failure due to a yanked version of

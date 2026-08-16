@@ -1,6 +1,6 @@
 # Multipart [![Build Status](https://travis-ci.org/abonander/multipart.svg?branch=master)](https://travis-ci.org/abonander/multipart) [![On Crates.io](https://img.shields.io/crates/v/multipart.svg)](https://crates.io/crates/multipart)
 
-Client- and server-side abstractions for HTTP file uploads (POST requests with  `Content-Type: multipart/form-data`).
+Client- and server-side abstractions for HTTP file uploads (POST requests with `Content-Type: multipart/form-data`).
 
 Provides backend-agnostic synchronous APIs that HTTP clients and servers can adapt.
 
@@ -39,8 +39,8 @@ when possible.
 
 Licensed under either of
 
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
 
