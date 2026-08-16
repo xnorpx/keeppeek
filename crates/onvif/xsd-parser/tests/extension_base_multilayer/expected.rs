@@ -1,5 +1,6 @@
 #[derive(Default, Clone, PartialEq, Debug, YaSerialize, YaDeserialize)]
 #[yaserde(prefix = "tns", namespaces = { "tns" = "http://example.com" })]
+#[allow(dead_code)]
 pub struct BarType {
     #[yaserde(prefix = "tns", rename = "aa")]
     pub aa: i32,

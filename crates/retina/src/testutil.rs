@@ -28,7 +28,7 @@ pub const NONASCII_HEX_CONFIG: HexConfig = HexConfig {
     display_offset: 0,
 };
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Debug)]
 pub struct InvalidAvccFrame<'i> {
     reason: &'static str,

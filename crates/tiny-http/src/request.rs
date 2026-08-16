@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn must_be_send() {
-        #![allow(dead_code)]
+        #![expect(dead_code)]
         fn f<T: Send>(_: &T) {}
         fn bar(rq: &Request) {
             f(rq);

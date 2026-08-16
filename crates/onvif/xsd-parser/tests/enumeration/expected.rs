@@ -19,6 +19,7 @@ impl Validate for FooType {}
 
 
 #[derive(Default, Clone, PartialEq, Debug, UtilsTupleIo, UtilsDefaultSerde)]
+#[allow(dead_code)]
 pub struct FooType2(pub String);
 
 impl Validate for FooType2 {}

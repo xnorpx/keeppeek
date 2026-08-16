@@ -70,7 +70,7 @@ struct ChannelConfig {
 
     /// A human-friendly name for the channel configuration.
     // The name is used in tests and in the Debug output. Suppress dead code warning.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     name: &'static str,
 }
 

@@ -3296,4 +3296,4 @@ should be free to do so.
 
 ---
 
-- **Dead code handling**: Never use file-wide `#![allow(dead_code)]` directives at the root of a file. If unused variants, functions, or scaffolding exist intentionally during development or API specification, specifically target those lines or blocks using `#[expect(dead_code)]`.
+- **Dead code handling**: Never use file-wide `#![allow(dead_code)]` directives at the root of a file. Don't use `allow(dead_code)` unless you absolutely "have to"; always prefer `expect(dead_code)` so that the compiler forces you to remove the attribute once the code actually becomes used. If unused variants, functions, or scaffolding exist intentionally during development or API specification, specifically target those lines or blocks using `#[expect(dead_code)]`.
