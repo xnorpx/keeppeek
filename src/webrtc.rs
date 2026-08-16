@@ -47,7 +47,7 @@ const DOWNGRADE_HOLD: Duration = Duration::from_secs(1);
 /// Bounds an HTTP close request while the poller wakes and the session thread releases resources.
 const SESSION_CLOSE_WAIT: Duration = Duration::from_secs(1);
 /// Limits one browser session so a malformed offer cannot monopolize the session thread.
-const MAX_BROWSER_TRACKS: usize = 32;
+const MAX_TRACKS: usize = 32;
 /// Limits client-generated track identifiers kept in server session state.
 const MAX_TRACK_ID_BYTES: usize = 64;
 /// Matches str0m's fixed-width SDP media identifier capacity.
@@ -92,15 +92,15 @@ impl std::fmt::Display for LiveQuality {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
-pub(crate) struct LiveSessionId(u64);
+pub(crate) struct SessionId(u64);
 
-impl LiveSessionId {
+impl SessionId {
     pub(crate) const fn from_u64(value: u64) -> Self {
         Self(value)
     }
 }
 
-impl std::fmt::Display for LiveSessionId {
+impl std::fmt::Display for SessionId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(formatter)
     }
@@ -108,9 +108,9 @@ impl std::fmt::Display for LiveSessionId {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
-pub(crate) struct LiveTrackId(String);
+pub(crate) struct TrackId(String);
 
-impl LiveTrackId {
+impl TrackId {
     pub(crate) fn parse(value: String) -> anyhow::Result<Self> {
         if value.is_empty()
             || value.len() > MAX_TRACK_ID_BYTES
@@ -122,46 +122,42 @@ impl LiveTrackId {
     }
 }
 
-impl std::fmt::Display for LiveTrackId {
+impl std::fmt::Display for TrackId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-pub(crate) struct LiveSession {
-    pub(crate) id: LiveSessionId,
+pub(crate) struct Session {
+    pub(crate) id: SessionId,
     pub(crate) answer: SdpAnswer,
 }
 
-pub(crate) struct BrowserSession {
-    pub(crate) id: LiveSessionId,
-    pub(crate) answer: SdpAnswer,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct LiveSessionStatus {
+pub(crate) struct SessionStatus {
     pub(crate) requested_quality: LiveQuality,
     pub(crate) active_stream: StreamKind,
     pub(crate) estimated_bitrate_bps: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct BrowserTrackStatus {
-    pub(crate) track_id: LiveTrackId,
+pub(crate) struct TrackStatus {
+    pub(crate) track_id: TrackId,
     pub(crate) requested_quality: LiveQuality,
     pub(crate) active_stream: StreamKind,
     pub(crate) estimated_bitrate_bps: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct BrowserSessionStatus {
+pub(crate) struct MultiTrackSessionStatus {
     pub(crate) estimated_bitrate_bps: Option<u64>,
-    pub(crate) tracks: Vec<BrowserTrackStatus>,
+    pub(crate) tracks: Vec<TrackStatus>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct BrowserTrackPlan {
-    pub(crate) track_id: LiveTrackId,
+pub(crate) struct TrackPlan {
+    pub(crate) track_id: TrackId,
     pub(crate) mid: String,
     pub(crate) camera_ip: IpAddr,
     pub(crate) has_sub_stream: bool,
@@ -279,8 +275,8 @@ struct SessionQueueStats {
 
 #[derive(Clone)]
 struct SessionSender {
-    id: LiveSessionId,
-    track_id: Option<LiveTrackId>,
+    id: SessionId,
+    track_id: Option<TrackId>,
     tx: Sender<SessionCommand>,
     queue_stats: Arc<SessionQueueStats>,
     queue_high_water: Arc<AtomicUsize>,
@@ -312,9 +308,9 @@ impl SessionControl {
         }
     }
 
-    fn status(&self) -> LiveSessionStatus {
+    fn status(&self) -> SessionStatus {
         let estimated_bitrate_bps = self.estimated_bitrate_bps.load(Ordering::Acquire);
-        LiveSessionStatus {
+        SessionStatus {
             requested_quality: LiveQuality::from_u8(self.requested_quality.load(Ordering::Acquire)),
             active_stream: stream_from_u8(self.active_stream.load(Ordering::Acquire)),
             estimated_bitrate_bps: (estimated_bitrate_bps > 0).then_some(estimated_bitrate_bps),
@@ -322,8 +318,8 @@ impl SessionControl {
     }
 }
 
-struct BrowserControl {
-    tracks: BTreeMap<LiveTrackId, Arc<SessionControl>>,
+struct MultiTrackControl {
+    tracks: BTreeMap<TrackId, Arc<SessionControl>>,
     estimated_bitrate_bps: AtomicU64,
     poller: Arc<Poller>,
     shutdown: Arc<AtomicBool>,
@@ -361,15 +357,15 @@ impl SessionCompletion {
     }
 }
 
-impl BrowserControl {
-    fn status(&self) -> BrowserSessionStatus {
+impl MultiTrackControl {
+    fn status(&self) -> MultiTrackSessionStatus {
         let estimated_bitrate_bps = self.estimated_bitrate_bps.load(Ordering::Acquire);
         let tracks = self
             .tracks
             .iter()
             .map(|(track_id, control)| {
                 let status = control.status();
-                BrowserTrackStatus {
+                TrackStatus {
                     track_id: track_id.clone(),
                     requested_quality: status.requested_quality,
                     active_stream: status.active_stream,
@@ -377,7 +373,7 @@ impl BrowserControl {
                 }
             })
             .collect();
-        BrowserSessionStatus {
+        MultiTrackSessionStatus {
             estimated_bitrate_bps: (estimated_bitrate_bps > 0).then_some(estimated_bitrate_bps),
             tracks,
         }
@@ -385,9 +381,9 @@ impl BrowserControl {
 
     fn set_quality(
         &self,
-        track_id: &LiveTrackId,
+        track_id: &TrackId,
         quality: LiveQuality,
-    ) -> Option<BrowserTrackStatus> {
+    ) -> Option<TrackStatus> {
         let control = self.tracks.get(track_id)?;
         if quality != LiveQuality::Low {
             for (other_track_id, other_control) in &self.tracks {
@@ -405,7 +401,7 @@ impl BrowserControl {
             tracing::debug!(%track_id, %error, "unable to wake shared WebRTC session for quality change");
         }
         let status = control.status();
-        Some(BrowserTrackStatus {
+        Some(TrackStatus {
             track_id: track_id.clone(),
             requested_quality: status.requested_quality,
             active_stream: status.active_stream,
@@ -553,8 +549,8 @@ impl SourceBitrate {
 #[derive(Default)]
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
-    sessions: Mutex<HashMap<LiveSessionId, Arc<SessionControl>>>,
-    browser_sessions: Mutex<HashMap<LiveSessionId, Arc<BrowserControl>>>,
+    sessions: Mutex<HashMap<SessionId, Arc<SessionControl>>>,
+    multi_track_sessions: Mutex<HashMap<SessionId, Arc<MultiTrackControl>>>,
     threads: Mutex<Vec<SessionThread>>,
     next_session_id: AtomicU64,
     published_frames: AtomicU64,
@@ -568,7 +564,7 @@ struct Inner {
 }
 
 struct SessionThread {
-    session_id: LiveSessionId,
+    session_id: SessionId,
     handle: JoinHandle<()>,
 }
 
@@ -597,7 +593,7 @@ fn reap_finished_threads(inner: &Inner) {
     }
 }
 
-fn join_session_thread(inner: &Inner, session_id: LiveSessionId) {
+fn join_session_thread(inner: &Inner, session_id: SessionId) {
     let thread = {
         let mut threads = inner
             .threads
@@ -619,8 +615,8 @@ fn join_session_thread(inner: &Inner, session_id: LiveSessionId) {
 pub(crate) struct WebRtcHealth {
     pub active_sessions: usize,
     pub adaptive_sessions: usize,
-    pub browser_sessions: usize,
-    pub browser_tracks: usize,
+    pub multi_track_sessions: usize,
+    pub multi_tracks: usize,
     pub fixed_sessions: usize,
     pub active_main: usize,
     pub active_sub: usize,
@@ -648,8 +644,8 @@ pub(crate) struct WebRtcHealth {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct WebRtcSessionQueueHealth {
-    pub session_id: LiveSessionId,
-    pub track_id: Option<LiveTrackId>,
+    pub session_id: SessionId,
+    pub track_id: Option<TrackId>,
     pub camera_ip: IpAddr,
     pub stream: StreamKind,
     pub depth: usize,
@@ -1093,17 +1089,17 @@ impl Drop for SourceSubscription {
     }
 }
 
-struct BrowserTrackDeps {
+struct TrackDeps {
     inner: Arc<Inner>,
-    session_id: LiveSessionId,
+    session_id: SessionId,
     control: Arc<SessionControl>,
     poller: Arc<Poller>,
     shutdown: Arc<AtomicBool>,
     recording_demand: Option<RecordingDemand>,
 }
 
-struct BrowserTrackRuntime {
-    track_id: LiveTrackId,
+struct TrackRuntime {
+    track_id: TrackId,
     mid: Mid,
     rx: Receiver<SessionCommand>,
     subscription: SourceSubscription,
@@ -1115,9 +1111,9 @@ struct BrowserTrackRuntime {
     keyframe_prepared: bool,
 }
 
-impl BrowserTrackRuntime {
-    fn new(plan: BrowserTrackPlan, mid: Mid, deps: BrowserTrackDeps) -> Self {
-        let BrowserTrackDeps {
+impl TrackRuntime {
+    fn new(plan: TrackPlan, mid: Mid, deps: TrackDeps) -> Self {
+        let TrackDeps {
             inner,
             session_id,
             control,
@@ -1295,7 +1291,7 @@ impl WebRtc {
         recording_label: &str,
         quality: LiveQuality,
         offer: SdpOffer,
-    ) -> anyhow::Result<LiveSession> {
+    ) -> anyhow::Result<Session> {
         self.accept_offer_inner(
             SessionPlan::Adaptive {
                 camera_ip,
@@ -1307,13 +1303,13 @@ impl WebRtc {
         )
     }
 
-    pub(crate) fn accept_browser_offer(
+    pub(crate) fn accept_multi_track_offer(
         &self,
-        plans: Vec<BrowserTrackPlan>,
+        plans: Vec<TrackPlan>,
         offer: SdpOffer,
-    ) -> anyhow::Result<BrowserSession> {
+    ) -> anyhow::Result<Session> {
         reap_finished_threads(&self.live.inner);
-        validate_browser_tracks(&plans)?;
+        validate_multi_tracks(&plans)?;
         let SessionIo {
             rtc,
             socket,
@@ -1339,14 +1335,14 @@ impl WebRtc {
                 "browser track IDs were validated as unique"
             );
         }
-        let control = Arc::new(BrowserControl {
+        let control = Arc::new(MultiTrackControl {
             tracks: controls,
             estimated_bitrate_bps: AtomicU64::new(0),
             poller: poller.clone(),
             shutdown: shutdown.clone(),
             completion: SessionCompletion::default(),
         });
-        let mids = bind_browser_mids(&plans);
+        let mids = bind_mids(&plans);
         let mut tracks = Vec::with_capacity(plans.len());
         for plan in plans {
             let mid = *mids
@@ -1357,10 +1353,10 @@ impl WebRtc {
                 .get(&plan.track_id)
                 .expect("validated browser track must have a control")
                 .clone();
-            tracks.push(BrowserTrackRuntime::new(
+            tracks.push(TrackRuntime::new(
                 plan,
                 mid,
-                BrowserTrackDeps {
+                TrackDeps {
                     inner: self.live.inner.clone(),
                     session_id,
                     control: track_control,
@@ -1373,7 +1369,7 @@ impl WebRtc {
 
         self.live
             .inner
-            .browser_sessions
+            .multi_track_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(session_id, control.clone());
@@ -1382,7 +1378,7 @@ impl WebRtc {
         let thread = match std::thread::Builder::new()
             .name(format!("webrtc-browser-{session_id}"))
             .spawn(move || {
-                if let Err(error) = run_browser_session(
+                if let Err(error) = run_multi_track_session(
                     rtc,
                     socket,
                     poller,
@@ -1393,7 +1389,7 @@ impl WebRtc {
                     tracing::debug!(%error, "shared WebRTC session stopped with error");
                 }
                 thread_inner
-                    .browser_sessions
+                    .multi_track_sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&session_id);
@@ -1404,7 +1400,7 @@ impl WebRtc {
                 control.finish();
                 self.live
                     .inner
-                    .browser_sessions
+                    .multi_track_sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&session_id);
@@ -1421,48 +1417,48 @@ impl WebRtc {
                 handle: thread,
             });
 
-        Ok(BrowserSession {
+        Ok(Session {
             id: session_id,
             answer,
         })
     }
 
-    pub(crate) fn browser_session_status(
+    pub(crate) fn multi_track_session_status(
         &self,
-        session_id: LiveSessionId,
-    ) -> Option<BrowserSessionStatus> {
+        session_id: SessionId,
+    ) -> Option<MultiTrackSessionStatus> {
         reap_finished_threads(&self.live.inner);
         self.live
             .inner
-            .browser_sessions
+            .multi_track_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session_id)
             .map(|control| control.status())
     }
 
-    pub(crate) fn set_browser_track_quality(
+    pub(crate) fn set_multi_track_quality(
         &self,
-        session_id: LiveSessionId,
-        track_id: &LiveTrackId,
+        session_id: SessionId,
+        track_id: &TrackId,
         quality: LiveQuality,
-    ) -> Option<BrowserTrackStatus> {
+    ) -> Option<TrackStatus> {
         reap_finished_threads(&self.live.inner);
         self.live
             .inner
-            .browser_sessions
+            .multi_track_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session_id)
             .and_then(|control| control.set_quality(track_id, quality))
     }
 
-    pub(crate) fn close_browser_session(&self, session_id: LiveSessionId) -> bool {
+    pub(crate) fn close_multi_track_session(&self, session_id: SessionId) -> bool {
         reap_finished_threads(&self.live.inner);
         let control = self
             .live
             .inner
-            .browser_sessions
+            .multi_track_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
@@ -1481,9 +1477,9 @@ impl WebRtc {
 
     pub(crate) fn set_quality(
         &self,
-        session_id: LiveSessionId,
+        session_id: SessionId,
         quality: LiveQuality,
-    ) -> Option<LiveSessionStatus> {
+    ) -> Option<SessionStatus> {
         reap_finished_threads(&self.live.inner);
         let control = self
             .live
@@ -1502,7 +1498,7 @@ impl WebRtc {
         Some(control.status())
     }
 
-    pub(crate) fn session_status(&self, session_id: LiveSessionId) -> Option<LiveSessionStatus> {
+    pub(crate) fn session_status(&self, session_id: SessionId) -> Option<SessionStatus> {
         reap_finished_threads(&self.live.inner);
         self.live
             .inner
@@ -1639,17 +1635,17 @@ impl WebRtc {
                 estimates,
             )
         };
-        let (browser_sessions, browser_tracks) = {
+        let (multi_track_sessions, multi_tracks) = {
             let sessions = self
                 .live
                 .inner
-                .browser_sessions
+                .multi_track_sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut browser_tracks = 0;
+            let mut multi_tracks = 0;
             for control in sessions.values() {
                 let status = control.status();
-                browser_tracks += status.tracks.len();
+                multi_tracks += status.tracks.len();
                 for track in status.tracks {
                     match track.requested_quality {
                         LiveQuality::Auto => requested_auto += 1,
@@ -1661,7 +1657,7 @@ impl WebRtc {
                     estimates.push(estimate);
                 }
             }
-            (sessions.len(), browser_tracks)
+            (sessions.len(), multi_tracks)
         };
         let estimated_bitrate_min_bps = estimates.iter().copied().min();
         let estimated_bitrate_max_bps = estimates.iter().copied().max();
@@ -1672,9 +1668,9 @@ impl WebRtc {
         WebRtcHealth {
             active_sessions,
             adaptive_sessions,
-            browser_sessions,
-            browser_tracks,
-            fixed_sessions: active_sessions.saturating_sub(adaptive_sessions + browser_sessions),
+            multi_track_sessions,
+            multi_tracks,
+            fixed_sessions: active_sessions.saturating_sub(adaptive_sessions + multi_track_sessions),
             active_main,
             active_sub,
             requested_auto,
@@ -1708,7 +1704,7 @@ impl WebRtc {
         &self,
         plan: SessionPlan,
         offer: SdpOffer,
-    ) -> anyhow::Result<LiveSession> {
+    ) -> anyhow::Result<Session> {
         reap_finished_threads(&self.live.inner);
         let SessionIo {
             rtc,
@@ -1823,7 +1819,7 @@ impl WebRtc {
                 handle: thread,
             });
 
-        Ok(LiveSession {
+        Ok(Session {
             id: session_id,
             answer,
         })
@@ -1833,7 +1829,7 @@ impl WebRtc {
         let browser_controls = self
             .live
             .inner
-            .browser_sessions
+            .multi_track_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
@@ -1876,7 +1872,7 @@ impl WebRtc {
         }
         self.live
             .inner
-            .browser_sessions
+            .multi_track_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
@@ -1913,9 +1909,9 @@ fn accept_session(offer: SdpOffer) -> anyhow::Result<SessionIo> {
     })
 }
 
-fn next_session_id(inner: &Inner) -> LiveSessionId {
+fn next_session_id(inner: &Inner) -> SessionId {
     let sequence = inner.next_session_id.fetch_add(1, Ordering::Relaxed);
-    LiveSessionId(
+    SessionId(
         sequence
             .checked_add(1)
             .expect("WebRTC session ID sequence overflowed"),
@@ -1931,9 +1927,9 @@ fn initial_stream(quality: LiveQuality, low_source: Option<Source>) -> StreamKin
     }
 }
 
-fn validate_browser_tracks(plans: &[BrowserTrackPlan]) -> anyhow::Result<()> {
-    if plans.is_empty() || plans.len() > MAX_BROWSER_TRACKS {
-        anyhow::bail!("browser offer must contain 1 to {MAX_BROWSER_TRACKS} video tracks");
+fn validate_multi_tracks(plans: &[TrackPlan]) -> anyhow::Result<()> {
+    if plans.is_empty() || plans.len() > MAX_TRACKS {
+        anyhow::bail!("browser offer must contain 1 to {MAX_TRACKS} video tracks");
     }
     let mut track_ids = HashSet::with_capacity(plans.len());
     let mut mids = HashSet::with_capacity(plans.len());
@@ -1964,7 +1960,7 @@ fn validate_browser_tracks(plans: &[BrowserTrackPlan]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn bind_browser_mids(plans: &[BrowserTrackPlan]) -> BTreeMap<LiveTrackId, Mid> {
+fn bind_mids(plans: &[TrackPlan]) -> BTreeMap<TrackId, Mid> {
     plans
         .iter()
         .map(|plan| (plan.track_id.clone(), Mid::from(plan.mid.as_str())))
@@ -2034,16 +2030,16 @@ fn run_session(
     result.and_then(|()| delete_result.map_err(Into::into))
 }
 
-fn run_browser_session(
+fn run_multi_track_session(
     mut rtc: Rtc,
     socket: UdpSocket,
     poller: Arc<Poller>,
-    mut tracks: Vec<BrowserTrackRuntime>,
-    control: Arc<BrowserControl>,
+    mut tracks: Vec<TrackRuntime>,
+    control: Arc<MultiTrackControl>,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let result =
-        drive_browser_session(&mut rtc, &socket, &poller, &mut tracks, &control, &shutdown);
+        drive_multi_track_session(&mut rtc, &socket, &poller, &mut tracks, &control, &shutdown);
     for track in tracks {
         let queue_stats = track.subscription.sender.queue_stats.clone();
         let inner = track.subscription.inner.clone();
@@ -2059,12 +2055,12 @@ fn run_browser_session(
     result.and_then(|()| delete_result.map_err(Into::into))
 }
 
-fn drive_browser_session(
+fn drive_multi_track_session(
     rtc: &mut Rtc,
     socket: &UdpSocket,
     poller: &Poller,
-    tracks: &mut [BrowserTrackRuntime],
-    control: &BrowserControl,
+    tracks: &mut [TrackRuntime],
+    control: &MultiTrackControl,
     shutdown: &AtomicBool,
 ) -> anyhow::Result<()> {
     let mut events = Events::new();
@@ -2073,7 +2069,7 @@ fn drive_browser_session(
     let mut next_desired_bitrate_refresh = Instant::now();
     let mut peer_destinations = HashMap::new();
     let mut connected = false;
-    let mut next_timeout = drain_browser_outputs(rtc, socket, &mut connected, control)?;
+    let mut next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
 
     loop {
         if shutdown.load(Ordering::Acquire) {
@@ -2081,14 +2077,14 @@ fn drive_browser_session(
         }
         let now = Instant::now();
         if now >= next_desired_bitrate_refresh {
-            let desired_bitrate = browser_desired_bitrate(tracks);
+            let desired_bitrate = desired_bitrate(tracks);
             if Some(desired_bitrate) != configured_desired_bitrate {
                 rtc.bwe().set_desired_bitrate(desired_bitrate);
                 configured_desired_bitrate = Some(desired_bitrate);
             }
             next_desired_bitrate_refresh = now + DESIRED_BITRATE_REFRESH;
         }
-        update_browser_track_estimates(
+        update_track_estimates(
             tracks,
             control.estimated_bitrate_bps.load(Ordering::Acquire),
         );
@@ -2117,7 +2113,7 @@ fn drive_browser_session(
                         write_frame(rtc, Some(track.mid), &keyframe, &mut track.media_clock)?;
                     if wrote_frame {
                         track.keyframe_gate.mark_written(FrameOrigin::Cached);
-                        next_timeout = drain_browser_outputs(rtc, socket, &mut connected, control)?;
+                        next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
                     }
                 }
             }
@@ -2171,7 +2167,7 @@ fn drive_browser_session(
                     track.keyframe_gate.mark_written(FrameOrigin::Live);
                     track.recovering_queue_gap = false;
                     track.subscription.record_written_frame();
-                    next_timeout = drain_browser_outputs(rtc, socket, &mut connected, control)?;
+                    next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
                 } else if connected && track.recovering_queue_gap && !frame_allowed {
                     track.subscription.record_discarded_frames(1);
                     track
@@ -2219,7 +2215,7 @@ fn drive_browser_session(
                             contents: (&udp_buffer[..length]).try_into()?,
                         };
                         rtc.handle_input(Input::Receive(Instant::now(), receive))?;
-                        next_timeout = drain_browser_outputs(rtc, socket, &mut connected, control)?;
+                        next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => break,
                     Err(error) => return Err(error.into()),
@@ -2231,14 +2227,14 @@ fn drive_browser_session(
         let now = Instant::now();
         if next_timeout <= now {
             rtc.handle_input(Input::Timeout(now))?;
-            next_timeout = drain_browser_outputs(rtc, socket, &mut connected, control)?;
+            next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
         }
     }
 
     Ok(())
 }
 
-fn browser_desired_bitrate(tracks: &[BrowserTrackRuntime]) -> Bitrate {
+fn desired_bitrate(tracks: &[TrackRuntime]) -> Bitrate {
     let desired_bps = tracks.iter().fold(0u64, |total, track| {
         let quality = track
             .subscription
@@ -2253,21 +2249,21 @@ fn browser_desired_bitrate(tracks: &[BrowserTrackRuntime]) -> Bitrate {
     Bitrate::bps(desired_bps.min(MAX_DESIRED_BITRATE.as_u64()))
 }
 
-fn update_browser_track_estimates(tracks: &mut [BrowserTrackRuntime], aggregate_bps: u64) {
+fn update_track_estimates(tracks: &mut [TrackRuntime], aggregate_bps: u64) {
     let background_reserve_bps = tracks.iter().fold(0u64, |total, track| {
         total.saturating_add(track.subscription.low_delivery_bitrate().as_u64())
     });
     for track in tracks {
         let own_low_bps = track.subscription.low_delivery_bitrate().as_u64();
         let available_bps =
-            browser_available_bitrate(aggregate_bps, background_reserve_bps, own_low_bps);
+            available_bitrate(aggregate_bps, background_reserve_bps, own_low_bps);
         track
             .subscription
             .update_estimate(Bitrate::bps(available_bps));
     }
 }
 
-const fn browser_available_bitrate(
+const fn available_bitrate(
     aggregate_bps: u64,
     total_low_bps: u64,
     own_low_bps: u64,
@@ -2521,11 +2517,11 @@ fn drain_outputs(
     }
 }
 
-fn drain_browser_outputs(
+fn drain_multi_track_outputs(
     rtc: &mut Rtc,
     socket: &UdpSocket,
     connected: &mut bool,
-    control: &BrowserControl,
+    control: &MultiTrackControl,
 ) -> anyhow::Result<Instant> {
     loop {
         match rtc.poll_output()? {
@@ -2694,7 +2690,7 @@ mod tests {
         let focused_low_bps = 500_000;
 
         assert_eq!(
-            browser_available_bitrate(aggregate_bps, total_low_bps, focused_low_bps),
+            available_bitrate(aggregate_bps, total_low_bps, focused_low_bps),
             16_500_000
         );
     }
@@ -2754,7 +2750,7 @@ mod tests {
         let (tx, rx) = bounded(1);
         let latest_keyframe = Arc::new(Mutex::new(None));
         let sender = SessionSender {
-            id: LiveSessionId(1),
+            id: SessionId(1),
             track_id: None,
             tx,
             queue_stats: Arc::new(SessionQueueStats::default()),
@@ -2809,13 +2805,13 @@ mod tests {
             stream: StreamKind::Sub,
             ..main_source
         };
-        let track_id = LiveTrackId::parse("camera-0".to_owned()).unwrap();
+        let track_id = TrackId::parse("camera-0".to_owned()).unwrap();
         let queue_high_water = inner.queue_high_water.clone();
         let sender = |id, track_id| {
             let (tx, rx) = bounded(1);
             (
                 SessionSender {
-                    id: LiveSessionId(id),
+                    id: SessionId(id),
                     track_id,
                     tx,
                     queue_stats: Arc::new(SessionQueueStats::default()),
@@ -2828,10 +2824,10 @@ mod tests {
             )
         };
         let (adaptive_sender, _adaptive_rx) = sender(1, None);
-        let (browser_sender, _browser_rx) = sender(2, Some(track_id.clone()));
+        let (multi_track_sender, _multi_track_rx) = sender(2, Some(track_id.clone()));
         let (fixed_sender, _fixed_rx) = sender(3, None);
         let adaptive = SourceSubscription::fixed(inner.clone(), adaptive_sender, main_source, None);
-        let browser = SourceSubscription::fixed(inner.clone(), browser_sender, sub_source, None);
+        let browser = SourceSubscription::fixed(inner.clone(), multi_track_sender, sub_source, None);
         let fixed = SourceSubscription::fixed(inner.clone(), fixed_sender, main_source, None);
 
         let adaptive_control = Arc::new(SessionControl::new(
@@ -2846,27 +2842,27 @@ mod tests {
             .sessions
             .lock()
             .unwrap()
-            .insert(LiveSessionId(1), adaptive_control);
-        let browser_track = Arc::new(SessionControl::new(
+            .insert(SessionId(1), adaptive_control);
+        let multi_track = Arc::new(SessionControl::new(
             LiveQuality::Low,
             StreamKind::Sub,
             Arc::new(Poller::new().unwrap()),
         ));
-        browser_track
+        multi_track
             .estimated_bitrate_bps
             .store(1_500_000, Ordering::Release);
-        let browser_control = Arc::new(BrowserControl {
-            tracks: BTreeMap::from([(track_id, browser_track)]),
+        let browser_control = Arc::new(MultiTrackControl {
+            tracks: BTreeMap::from([(track_id, multi_track)]),
             estimated_bitrate_bps: AtomicU64::new(9_000_000),
             poller: Arc::new(Poller::new().unwrap()),
             shutdown: Arc::new(AtomicBool::new(false)),
             completion: SessionCompletion::default(),
         });
         inner
-            .browser_sessions
+            .multi_track_sessions
             .lock()
             .unwrap()
-            .insert(LiveSessionId(2), browser_control);
+            .insert(SessionId(2), browser_control);
         {
             let mut sources = inner.sources.lock().unwrap();
             sources.get_mut(&main_source).unwrap().bitrate.estimate_bps = Some(8_000_000);
@@ -2913,8 +2909,8 @@ mod tests {
 
         assert_eq!(health.active_sessions, 3);
         assert_eq!(health.adaptive_sessions, 1);
-        assert_eq!(health.browser_sessions, 1);
-        assert_eq!(health.browser_tracks, 1);
+        assert_eq!(health.multi_track_sessions, 1);
+        assert_eq!(health.multi_tracks, 1);
         assert_eq!(health.fixed_sessions, 1);
         assert_eq!(health.active_main, 2);
         assert_eq!(health.active_sub, 1);
@@ -3002,7 +2998,7 @@ mod tests {
         let (tx, _rx) = bounded(1);
         let poller = Arc::new(Poller::new().unwrap());
         let sender = SessionSender {
-            id: LiveSessionId(1),
+            id: SessionId(1),
             track_id: None,
             tx,
             queue_stats: Arc::new(SessionQueueStats::default()),
@@ -3087,7 +3083,7 @@ mod tests {
         let (tx, _rx) = bounded(1);
         let poller = Arc::new(Poller::new().unwrap());
         let sender = SessionSender {
-            id: LiveSessionId(1),
+            id: SessionId(1),
             track_id: None,
             tx,
             queue_stats: Arc::new(SessionQueueStats::default()),
@@ -3180,10 +3176,10 @@ mod tests {
         );
         let (_offer, _) = changes.apply().unwrap();
 
-        let kitchen = LiveTrackId::parse("kitchen".to_owned()).unwrap();
-        let garden = LiveTrackId::parse("garden".to_owned()).unwrap();
+        let kitchen = TrackId::parse("kitchen".to_owned()).unwrap();
+        let garden = TrackId::parse("garden".to_owned()).unwrap();
         let plans = vec![
-            BrowserTrackPlan {
+            TrackPlan {
                 track_id: kitchen.clone(),
                 mid: first_mid.to_string(),
                 camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -3191,7 +3187,7 @@ mod tests {
                 recording_label: "kitchen".to_owned(),
                 quality: LiveQuality::Low,
             },
-            BrowserTrackPlan {
+            TrackPlan {
                 track_id: garden.clone(),
                 mid: second_mid.to_string(),
                 camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -3201,20 +3197,20 @@ mod tests {
             },
         ];
 
-        let bindings = bind_browser_mids(&plans);
+        let bindings = bind_mids(&plans);
         assert_eq!(bindings.get(&kitchen), Some(&first_mid));
         assert_eq!(bindings.get(&garden), Some(&second_mid));
     }
 
     #[test]
-    fn browser_track_drop_keeps_sibling_subscription_active() {
+    fn multi_track_drop_keeps_sibling_subscription_active() {
         let inner = Arc::new(Inner::default());
         let poller = Arc::new(Poller::new().unwrap());
         let source = test_source();
-        let first_id = LiveTrackId::parse("first".to_owned()).unwrap();
-        let second_id = LiveTrackId::parse("second".to_owned()).unwrap();
+        let first_id = TrackId::parse("first".to_owned()).unwrap();
+        let second_id = TrackId::parse("second".to_owned()).unwrap();
         let first = SessionSender {
-            id: LiveSessionId(1),
+            id: SessionId(1),
             track_id: Some(first_id),
             tx: bounded(1).0,
             queue_stats: Arc::new(SessionQueueStats::default()),
@@ -3224,7 +3220,7 @@ mod tests {
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         let second = SessionSender {
-            id: LiveSessionId(1),
+            id: SessionId(1),
             track_id: Some(second_id),
             tx: bounded(1).0,
             queue_stats: Arc::new(SessionQueueStats::default()),
@@ -3264,10 +3260,10 @@ mod tests {
             None,
         );
         let (offer, _) = changes.apply().unwrap();
-        let kitchen = LiveTrackId::parse("kitchen".to_owned()).unwrap();
-        let garden = LiveTrackId::parse("garden".to_owned()).unwrap();
+        let kitchen = TrackId::parse("kitchen".to_owned()).unwrap();
+        let garden = TrackId::parse("garden".to_owned()).unwrap();
         let plans = vec![
-            BrowserTrackPlan {
+            TrackPlan {
                 track_id: kitchen.clone(),
                 mid: kitchen_mid.to_string(),
                 camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -3275,7 +3271,7 @@ mod tests {
                 recording_label: "kitchen".to_owned(),
                 quality: LiveQuality::Low,
             },
-            BrowserTrackPlan {
+            TrackPlan {
                 track_id: garden.clone(),
                 mid: garden_mid.to_string(),
                 camera_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
@@ -3286,13 +3282,13 @@ mod tests {
         ];
         let webrtc = WebRtc::new();
 
-        let session = webrtc.accept_browser_offer(plans, offer).unwrap();
-        let status = webrtc.browser_session_status(session.id).unwrap();
+        let session = webrtc.accept_multi_track_offer(plans, offer).unwrap();
+        let status = webrtc.multi_track_session_status(session.id).unwrap();
         assert_eq!(status.tracks.len(), 2);
         assert_eq!(status.tracks[0].track_id, garden);
         assert_eq!(status.tracks[1].track_id, kitchen);
-        assert!(webrtc.close_browser_session(session.id));
-        assert!(webrtc.browser_session_status(session.id).is_none());
+        assert!(webrtc.close_multi_track_session(session.id));
+        assert!(webrtc.multi_track_session_status(session.id).is_none());
         assert!(
             webrtc
                 .live
@@ -3329,8 +3325,8 @@ mod tests {
             None,
         );
         let (offer, _) = changes.apply().unwrap();
-        let track_id = LiveTrackId::parse("camera".to_owned()).unwrap();
-        let plans = vec![BrowserTrackPlan {
+        let track_id = TrackId::parse("camera".to_owned()).unwrap();
+        let plans = vec![TrackPlan {
             track_id,
             mid: mid.to_string(),
             camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -3340,8 +3336,8 @@ mod tests {
         }];
         let webrtc = WebRtc::new();
 
-        let session = webrtc.accept_browser_offer(plans, offer).unwrap();
-        assert!(webrtc.browser_session_status(session.id).is_some());
+        let session = webrtc.accept_multi_track_offer(plans, offer).unwrap();
+        assert!(webrtc.multi_track_session_status(session.id).is_some());
         assert_eq!(
             webrtc
                 .live
@@ -3361,7 +3357,7 @@ mod tests {
             shutdown_started.elapsed()
         );
 
-        assert!(webrtc.browser_session_status(session.id).is_none());
+        assert!(webrtc.multi_track_session_status(session.id).is_none());
         assert!(
             webrtc
                 .live
@@ -3386,8 +3382,8 @@ mod tests {
     #[test]
     fn browser_quality_promotion_demotes_sibling_tracks() {
         let poller = Arc::new(Poller::new().unwrap());
-        let kitchen = LiveTrackId::parse("kitchen".to_owned()).unwrap();
-        let garden = LiveTrackId::parse("garden".to_owned()).unwrap();
+        let kitchen = TrackId::parse("kitchen".to_owned()).unwrap();
+        let garden = TrackId::parse("garden".to_owned()).unwrap();
         let kitchen_control = Arc::new(SessionControl::new(
             LiveQuality::Low,
             StreamKind::Sub,
@@ -3398,7 +3394,7 @@ mod tests {
             StreamKind::Sub,
             poller.clone(),
         ));
-        let control = BrowserControl {
+        let control = MultiTrackControl {
             tracks: BTreeMap::from([
                 (kitchen.clone(), kitchen_control),
                 (garden, garden_control.clone()),
