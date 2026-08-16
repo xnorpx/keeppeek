@@ -143,7 +143,7 @@ const healthSnapshot = {
 		queue_recovery_drops: 13,
 		session_queues: [
 			{
-				session_id: "42",
+				session_id: '42',
 				track_id: 'camera-0',
 				camera_ip: '192.168.137.199',
 				stream: 'sub',
@@ -355,19 +355,18 @@ async function installMockPeerConnection(page: Page) {
 				} as unknown as RTCTrackEvent);
 			}
 
-			
-            createDataChannel(label: string): RTCDataChannel {
-                return {
-                    label,
-                    readyState: 'open',
-                    onopen: null,
-                    onerror: null,
-                    onmessage: null,
-                    onclose: null,
-                    close: () => {},
-                    send: () => {}
-                } as unknown as RTCDataChannel;
-            }
+			createDataChannel(label: string): RTCDataChannel {
+				return {
+					label,
+					readyState: 'open',
+					onopen: null,
+					onerror: null,
+					onmessage: null,
+					onclose: null,
+					close: () => {},
+					send: () => {}
+				} as unknown as RTCDataChannel;
+			}
 
 			close() {}
 		}
@@ -580,5 +579,3 @@ test('shows comprehensive server health and camera outages', async ({ page }) =>
 	await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
 	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
 });
-
-
