@@ -2,8 +2,8 @@
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import type { CameraListItem, Health, LiveQuality, ServerHealthResponse } from '$lib/types';
-	import { getHealth, getCameras, getServerHealth } from '$lib/api';
+	import type { CameraListItem, Health, LiveQuality } from '$lib/types';
+	import { getHealth, getCameras } from '$lib/api';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import LiveVideo from '$lib/components/LiveVideo.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -18,7 +18,6 @@
 
 	let health = $state.raw<Health | null>(null);
 	let cameras = $state.raw<CameraListItem[]>([]);
-	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
 	let error: string | null = $state(null);
 	let loading = $state(true);
 	let focusedCameraId: string | null = $state(null);
@@ -32,13 +31,7 @@
 	let filmstripCameras = $derived(
 		focusedCameraId === null ? [] : cameras.filter((camera) => camera.id !== focusedCameraId)
 	);
-	let liveCameraIds = $derived(
-		new Set(
-			(serverHealth?.cameras ?? [])
-				.filter((camera) => camera.state === 'online' || camera.state === 'degraded')
-				.map((camera) => camera.id)
-		)
-	);
+	let liveCameraIds = $derived(new Set(cameras.map((camera) => camera.id)));
 	let livePlans = $derived(
 		cameras
 			.filter((camera) => liveCameraIds.has(camera.id))
@@ -80,14 +73,9 @@
 
 	async function loadDashboard() {
 		try {
-			const [nextHealth, nextCameras, nextServerHealth] = await Promise.all([
-				getHealth(),
-				getCameras(),
-				getServerHealth()
-			]);
+			const [nextHealth, nextCameras] = await Promise.all([getHealth(), getCameras()]);
 			health = nextHealth;
 			cameras = nextCameras;
-			serverHealth = nextServerHealth;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load dashboard';
 		} finally {

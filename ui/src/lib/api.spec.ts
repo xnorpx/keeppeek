@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	closeBrowserLiveSession,
+	createBrowserLiveSession,
 	createLiveAnswer,
 	createLiveSession,
 	discoverSettingsCameras,
@@ -16,6 +18,7 @@ import {
 	renewRecordingActivity,
 	restartSettingsServer,
 	removeSettingsCamera,
+	setBrowserLiveTrackQuality,
 	setCameraManufacturer,
 	setLiveQuality,
 	setCameraMotionDetection,
@@ -276,5 +279,38 @@ describe('KeepPeek API client', () => {
 			body: JSON.stringify({ quality: 'high' })
 		});
 		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/live/42');
+	});
+
+	it('creates and controls shared browser live sessions', async () => {
+		const response = {
+			session_id: 42,
+			answer: { type: 'answer', sdp: 'v=0' }
+		};
+		const fetchMock = vi.fn(async () => jsonResponse(response));
+		vi.stubGlobal('fetch', fetchMock);
+		const offer = { type: 'offer', sdp: 'v=0' } satisfies RTCSessionDescriptionInit;
+		const tracks = [
+			{ camera_id: 'front gate', track_id: 'camera-0', mid: '0', quality: 'low' }
+		] as const;
+
+		await expect(createBrowserLiveSession([...tracks], offer)).resolves.toEqual(response);
+		await setBrowserLiveTrackQuality(42, 'camera-0', 'high');
+		await closeBrowserLiveSession(42);
+
+		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/live/browser/offer', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ tracks, offer })
+		});
+		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/live/browser/42/tracks/camera-0/quality', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ quality: 'high' })
+		});
+		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/live/browser/42/close', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({})
+		});
 	});
 });

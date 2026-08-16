@@ -149,20 +149,26 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 	await expect(visiblePreviews.last()).toHaveAttribute('preload', 'metadata');
 	await expect(mainVideo).toHaveAttribute('src', '/deck-main.mp4');
 	await mainVideo.evaluate(async (node) => {
-		node.currentTime = 120;
-		await node.play();
-		node.dispatchEvent(new Event('play'));
-		node.dispatchEvent(new Event('timeupdate'));
+		const video = node as HTMLVideoElement;
+		video.currentTime = 120;
+		await video.play();
+		video.dispatchEvent(new Event('play'));
+		video.dispatchEvent(new Event('timeupdate'));
 	});
 	await expect
-		.poll(() => visiblePreviews.evaluateAll((videos) => videos.map((video) => video.currentTime)))
+		.poll(() =>
+			visiblePreviews.evaluateAll((videos) =>
+				videos.map((video) => (video as HTMLVideoElement).currentTime)
+			)
+		)
 		.toEqual([120, 120]);
 	await expect(visiblePreviews.first()).toHaveAttribute('data-play-requested', 'true');
 	await expect(visiblePreviews.last()).toHaveAttribute('data-play-requested', 'true');
 
 	await mainVideo.evaluate((node) => {
-		node.pause();
-		node.dispatchEvent(new Event('pause'));
+		const video = node as HTMLVideoElement;
+		video.pause();
+		video.dispatchEvent(new Event('pause'));
 	});
 	await expect(visiblePreviews.first()).toHaveAttribute('data-pause-requested', 'true');
 	await expect(visiblePreviews.last()).toHaveAttribute('data-pause-requested', 'true');

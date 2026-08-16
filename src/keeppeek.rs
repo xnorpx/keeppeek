@@ -672,7 +672,11 @@ impl KeepPeekLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cameras::{CameraCapabilities, CameraConfig, CameraPorts, DeviceInfo};
+    use crate::cameras::{CameraCapabilities, CameraConfig, CameraPorts, DeviceInfo, MediaProfile};
+    use std::{
+        net::{Ipv4Addr, TcpListener},
+        time::Instant,
+    };
 
     #[test]
     fn automatic_backend_uses_reo_proto_for_reolink() {
@@ -751,6 +755,86 @@ mod tests {
         let connected = status.connected(StreamKind::Sub);
         assert_eq!(connected.lifecycle, CameraLifecycle::Connected);
         assert_eq!(connected.last_error, None);
+    }
+
+    #[test]
+    fn rtsp_profile_workers_begin_connecting_in_parallel() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let shutdown = Shutdown::new();
+        let mut loop_ = KeepPeekLoop::new(shutdown.clone(), None);
+        let camera = Camera {
+            config: CameraConfig {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                name: Some("parallel-rtsp".to_owned()),
+                display_name: None,
+                manufacturer: None,
+                username: "operator".to_owned(),
+                password: "secret".to_owned(),
+                onvif_port: None,
+                http_port: None,
+                main_rtsp_url: Some(format!("rtsp://{address}/main")),
+                sub_rtsp_url: Some(format!("rtsp://{address}/sub")),
+                uid: None,
+                backend: CameraBackend::Retina,
+                transport: CameraTransport::Tcp,
+            },
+            device: DeviceInfo::default(),
+            reported_manufacturer: None,
+            hostname: None,
+            mac_address: None,
+            ports: CameraPorts {
+                rtsp: Some(address.port()),
+                ..CameraPorts::default()
+            },
+            capabilities: CameraCapabilities::default(),
+            profiles: vec![
+                MediaProfile {
+                    token: "main".to_owned(),
+                    name: "Main".to_owned(),
+                    stream_uri: None,
+                    snapshot_uri: None,
+                    video: None,
+                    audio: None,
+                },
+                MediaProfile {
+                    token: "sub".to_owned(),
+                    name: "Sub".to_owned(),
+                    stream_uri: None,
+                    snapshot_uri: None,
+                    video: None,
+                    audio: None,
+                },
+            ],
+            is_reolink: false,
+            ptz: None,
+            imaging: None,
+        };
+
+        loop_.add_camera(&camera, true, true).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut connections = Vec::new();
+        while connections.len() < 2 && Instant::now() < deadline {
+            match listener.accept() {
+                Ok((stream, _)) => connections.push(stream),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("RTSP listener failed: {error}"),
+            }
+        }
+
+        let worker_count = connections.len();
+        drop(connections);
+        shutdown.cancel();
+        loop_.run();
+
+        assert_eq!(
+            worker_count, 2,
+            "main and sub workers must connect concurrently"
+        );
     }
 
     #[test]

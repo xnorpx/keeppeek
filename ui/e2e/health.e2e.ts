@@ -348,11 +348,14 @@ async function installMockPeerConnection(page: Page) {
 			}
 
 			async setRemoteDescription(): Promise<void> {
-				this.ontrack?.({
-					receiver: this.receiver,
-					streams: [new MediaStream()],
-					transceiver: this.transceivers[0]
-				} as unknown as RTCTrackEvent);
+				this.ontrack?.call(
+					this as unknown as RTCPeerConnection,
+					{
+						receiver: this.receiver,
+						streams: [new MediaStream()],
+						transceiver: this.transceivers[0]
+					} as unknown as RTCTrackEvent
+				);
 			}
 
 			createDataChannel(label: string): RTCDataChannel {

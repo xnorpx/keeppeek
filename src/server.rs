@@ -3137,7 +3137,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_camera_remains_visible_when_discovery_fails() {
+    fn configured_camera_is_visible_while_camera_lifecycle_is_starting() {
         let config = Config::default();
         let storage = StorageConfig::default();
         let camera = CameraConfig {
@@ -3166,11 +3166,41 @@ mod tests {
             WebRtc::new(),
         );
 
-        let cameras = state.camera_entries();
-        assert_eq!(cameras.len(), 1);
-        assert_eq!(cameras[0].info.name.as_deref(), Some("North Courtyard"));
-        assert_eq!(cameras[0].info.profiles.len(), 2);
-        assert_eq!(state.config.camera_count, 1);
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        router_tx
+            .send(RouterMessage::WorkerEvent(
+                crate::runtime::WorkerEvent::StatusChanged(crate::api::CameraStatus {
+                    id: CameraId::new("north"),
+                    lifecycle: crate::api::CameraLifecycle::Starting,
+                    last_error: None,
+                }),
+            ))
+            .unwrap();
+        assert_eq!(router.wait_and_drain(Some(Duration::ZERO)).unwrap(), 1);
+
+        let cameras = handle_request(
+            &Request::fake_http("GET", "/api/cameras", Vec::new(), Vec::new()),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(cameras.status_code, 200);
+        let cameras: serde_json::Value = serde_json::from_slice(&response_data(cameras)).unwrap();
+        assert_eq!(cameras[0]["name"], "North Courtyard");
+        assert_eq!(cameras[0]["profiles"].as_array().map(Vec::len), Some(2));
+
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let health = handle_request(
+            &Request::fake_http("GET", "/api/health", Vec::new(), Vec::new()),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(health.status_code, 200);
+        let health: serde_json::Value = serde_json::from_slice(&response_data(health)).unwrap();
+        assert_eq!(health["cameras"][0]["state"], "starting");
+        assert_eq!(health["cameras"][0]["lifecycle"], "starting");
+        assert_eq!(router_thread.join().unwrap(), 1);
     }
 
     #[test]

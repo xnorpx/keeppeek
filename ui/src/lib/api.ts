@@ -7,6 +7,8 @@ import type {
 	CameraSettingsUpdate,
 	CameraSettingsUpdateResponse,
 	CameraStatsResponse,
+	BrowserLiveSessionResponse,
+	BrowserLiveTrackOffer,
 	DiscoveredCameraSettings,
 	Health,
 	LiveQuality,
@@ -64,8 +66,17 @@ async function del(path: string): Promise<void> {
 	}
 }
 
-async function postEmpty(path: string): Promise<void> {
-	const res = await fetch(path, { method: 'POST' });
+async function postEmpty(path: string, body?: unknown): Promise<void> {
+	const res = await fetch(
+		path,
+		body === undefined
+			? { method: 'POST' }
+			: {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(body)
+				}
+	);
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 }
 
@@ -193,6 +204,28 @@ export function createLiveSession(
 	offer: RTCSessionDescriptionInit
 ): Promise<LiveSessionResponse> {
 	return post(`/api/cameras/${encodeURIComponent(cameraId)}/live/offer`, { quality, offer });
+}
+
+export function createBrowserLiveSession(
+	tracks: BrowserLiveTrackOffer[],
+	offer: RTCSessionDescriptionInit
+): Promise<BrowserLiveSessionResponse> {
+	return post('/api/live/browser/offer', { tracks, offer });
+}
+
+export function setBrowserLiveTrackQuality(
+	sessionId: number,
+	trackId: string,
+	quality: LiveQuality
+): Promise<void> {
+	return postEmpty(
+		`/api/live/browser/${encodeURIComponent(sessionId)}/tracks/${encodeURIComponent(trackId)}/quality`,
+		{ quality }
+	);
+}
+
+export function closeBrowserLiveSession(sessionId: number): Promise<void> {
+	return postEmpty(`/api/live/browser/${encodeURIComponent(sessionId)}/close`, {});
 }
 
 export function setLiveQuality(
