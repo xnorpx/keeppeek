@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Provides thread-based WebRTC delivery for encoded camera frames.
 
 use crate::{

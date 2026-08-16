@@ -171,3 +171,50 @@ pub struct SanitizedConfig {
     pub camera_count: usize,
     pub recording_estimate: RecordingCapacityEstimate,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CreateRequest {
+    pub offer: SdpOffer,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CreateResponse {
+    pub session_id: String,
+    pub answer: SdpAnswer,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeleteRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SdpOffer {
+    #[serde(rename = "type")]
+    pub sdp_type: String,
+    pub sdp: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SdpAnswer {
+    #[serde(rename = "type")]
+    pub sdp_type: String,
+    pub sdp: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LogEntry {
+    pub sequence: u64,
+    pub timestamp_ms: u64,
+    pub level: String,
+    pub target: String,
+    pub message: String,
+    pub fields: serde_json::Value,
+    pub file: Option<String>,
+    pub line: Option<u64>,
+}
+
+pub mod proto {
+    #![allow(clippy::all, clippy::pedantic, clippy::nursery, warnings)]
+    include!(concat!(env!("OUT_DIR"), "/keeppeek.webrtc.v1.rs"));
+}

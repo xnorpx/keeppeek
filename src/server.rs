@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::{
     api::{
         ApiError, AudioProfileSummary, CameraId, CameraInfo, Health, MotionDetection,
