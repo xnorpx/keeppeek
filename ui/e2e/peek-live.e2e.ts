@@ -1,8 +1,13 @@
 import { expect, test } from '@playwright/test';
 
 const streams = [{ cameraId: '127.0.0.1', width: 640, height: 360 }] as const;
+const skipsH264DecodeOnWindowsCi = process.platform === 'win32' && Boolean(process.env.CI);
 
 test('Peek decodes frames from configured fake cameras', async ({ page }) => {
+	test.skip(
+		skipsH264DecodeOnWindowsCi,
+		'Windows CI browsers do not expose decoded H.264 frames for this WebRTC stream.'
+	);
 	const browserErrors: string[] = [];
 	page.on('console', (message) => {
 		if (message.type() === 'error') browserErrors.push(message.text());
