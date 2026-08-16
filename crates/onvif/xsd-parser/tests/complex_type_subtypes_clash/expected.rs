@@ -19,7 +19,6 @@ pub mod foo_type {
 
 #[derive(Default, Clone, PartialEq, Debug, YaSerialize, YaDeserialize)]
 #[yaserde(prefix = "tns", namespaces = { "tns" = "http://example.com" })]
-#[allow(dead_code)]
 pub struct BarType {
     #[yaserde(prefix = "tns", rename = "Extension")]
     pub extension: bar_type::ExtensionType,
@@ -32,7 +31,6 @@ pub mod bar_type {
 
     #[derive(Default, Clone, PartialEq, Debug, YaSerialize, YaDeserialize)]
     #[yaserde(prefix = "tns", namespaces = { "tns" = "http://example.com" })]
-#[allow(dead_code)]
     pub struct ExtensionType {}
 
     impl Validate for ExtensionType {}
