@@ -3295,3 +3295,5 @@ should be free to do so.
 > better off without them.
 
 ---
+
+- **Dead code handling**: Never use file-wide `#![allow(dead_code)]` directives at the root of a file. If unused variants, functions, or scaffolding exist intentionally during development or API specification, specifically target those lines or blocks using `#[expect(dead_code)]`.
