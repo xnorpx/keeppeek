@@ -7,6 +7,11 @@ if ! command -v bun >/dev/null 2>&1; then
         exit 1
 fi
 
+if ! command -v cargo-machete >/dev/null 2>&1; then
+        printf '%s\n' 'cargo-machete is required: cargo install cargo-machete' >&2
+        exit 1
+fi
+
 repo_dir=$(
         unset CDPATH
         cd -- "$(dirname -- "$0")"
@@ -22,6 +27,9 @@ cargo test --all
 
 echo "Running Rust Clippy..."
 cargo clippy --all --all-targets -- -D warnings
+
+echo "Checking for unused Rust dependencies..."
+cargo machete
 
 echo "Formatting checks..."
 cargo fmt --all -- --check

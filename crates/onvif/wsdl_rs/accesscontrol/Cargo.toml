@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[package.metadata.cargo-machete]
+ignored = ["xml-rs", "xsd-types", "yaserde"]
+
 [lints]
 workspace = true
 
@@ -12,7 +15,6 @@ transport = { path = "../../transport" }
 types = { path = "../../xsd_rs/types" }
 validate = { path = "../../validate" }
 xml-rs = "0.8.29"
-xsd-macro-utils = { path = "../../xsd-macro-utils" }
 xsd-types = { path = "../../xsd-types" }
 yaserde = "0.12"
 yaserde_derive = "0.12"

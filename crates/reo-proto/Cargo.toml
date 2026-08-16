@@ -5,6 +5,9 @@ edition = "2024"
 license = "AGPL-3.0-only"
 authors = ["xnorpx <xnorpx@outlook.com>"]
 
+[package.metadata.cargo-machete]
+ignored = ["md-5", "xml-rs"]
+
 [lints]
 workspace = true
 

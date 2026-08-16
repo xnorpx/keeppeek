@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[package.metadata.cargo-machete]
+ignored = ["yaserde"]
+
 [lints]
 workspace = true
 
@@ -11,8 +14,6 @@ workspace = true
 b_2 = { path = "../../wsdl_rs/b_2" }
 common = { path = "../../xsd_rs/common" }
 validate = { path = "../../validate" }
-xml-rs = "0.8.29"
-xsd-macro-utils = { path = "../../xsd-macro-utils" }
 xsd-types = { path = "../../xsd-types" }
 yaserde = "0.12"
 yaserde_derive = "0.12"
