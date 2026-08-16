@@ -611,6 +611,17 @@ mod tests {
                 "{file_name} must begin with a keyframe"
             );
         }
+
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("cc-4k-640x360-h264.mp4");
+        let source = VideoSource::from_mp4(&fixture_path).unwrap();
+        assert!(
+            source.frames.first().is_some_and(|frame| frame
+                .data
+                .starts_with(&[0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f])),
+            "low H.264 fixture must begin with a constrained-baseline level 3.1 SPS"
+        );
     }
 
     #[test]
