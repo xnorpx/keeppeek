@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import type { CameraListItem, ServerHealthResponse } from '$lib/types';
 	import { getCameras, getServerHealth } from '$lib/api';
-	import { useLivePeer } from '$lib/live-peer-context';
+	import { useLivePeer } from '$lib/stream-peer-context';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';

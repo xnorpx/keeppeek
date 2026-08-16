@@ -2,6 +2,7 @@ use super::utils;
 
 #[test]
 fn deserialization_works() {
+    // allow(dead_code) is required because this test module compiles against dynamically generated xsd structures, so expectations can't strictly enforce dead_code bounds.
     #[allow(dead_code)]
     mod expected {
         use std::str::FromStr;

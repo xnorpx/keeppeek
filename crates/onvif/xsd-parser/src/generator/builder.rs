@@ -15,7 +15,6 @@ pub struct GeneratorBuilder<'input> {
     generator: Generator<'input>,
 }
 
-#[allow(dead_code)]
 impl<'input> GeneratorBuilder<'input> {
     pub fn with_base_gen(mut self, base: Box<dyn BaseGenerator>) -> Self {
         self.generator.base = Some(base);

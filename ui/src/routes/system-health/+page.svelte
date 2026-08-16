@@ -3,8 +3,8 @@
 	import { untrack } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { getServerHealth } from '$lib/api';
-	import { useLivePeer } from '$lib/live-peer-context';
-	import type { LivePeerTrack } from '$lib/live-peer.svelte';
+	import { useLivePeer } from '$lib/stream-peer-context';
+	import type { LivePeerTrack } from '$lib/stream-peer.svelte';
 	import type {
 		CameraHealth,
 		DiskHealth,
@@ -84,7 +84,9 @@
 	let clientTracks = $derived(Object.values(livePeer.tracks));
 	let clientQueues = $derived(
 		health && livePeer.sessionId !== null
-			? health.webrtc.session_queues.filter((queue) => queue.session_id === livePeer.sessionId)
+			? health.webrtc.session_queues.filter(
+					(queue) => queue.session_id.toString() === livePeer.sessionId
+				)
 			: []
 	);
 	let clientMainTracks = $derived(
@@ -138,7 +140,7 @@
 		}
 	}
 
-	async function refreshClientReceiverHealth(expectedSessionId: number) {
+	async function refreshClientReceiverHealth(expectedSessionId: string) {
 		if (clientStatsRefreshInFlight) return;
 		clientStatsRefreshInFlight = true;
 		try {

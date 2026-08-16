@@ -13,7 +13,7 @@ impl<R: Read> FusedReader<R> {
         Self { inner: Some(inner) }
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub fn into_inner(self) -> Option<R> {
         self.inner
     }

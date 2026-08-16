@@ -446,7 +446,7 @@ impl PtzOp {
 
 #[derive(Deserialize)]
 struct ApiRsp {
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     cmd: Option<String>,
     code: Option<i32>,
     value: Option<Value>,
@@ -463,7 +463,7 @@ struct RspError {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct RspDevInfo {
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     name: Option<String>,
     model: Option<String>,
     #[serde(alias = "firmVer")]
@@ -471,9 +471,9 @@ struct RspDevInfo {
     serial: Option<String>,
     #[serde(alias = "hardVer")]
     hard_ver: Option<String>,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     channel_num: Option<u32>,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     audio_num: Option<u32>,
 }
 
@@ -514,7 +514,7 @@ struct RspStreamEnc {
 #[serde(rename_all = "camelCase")]
 struct RspEnc {
     audio: Option<u32>,
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     channel: Option<u32>,
     main_stream: Option<RspStreamEnc>,
     sub_stream: Option<RspStreamEnc>,

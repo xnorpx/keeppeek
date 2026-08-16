@@ -504,6 +504,7 @@ macro_rules! post_input {
         use $crate::input::multipart;
 
         #[derive(Debug)]
+        // We use allow(dead_code) here rather than expect(dead_code) because this struct is generated via macro, and its fields might legitimately go unused depending on how the macro caller interacts with the parsed payload.
         #[allow(dead_code)]
         struct PostInput {
             $(

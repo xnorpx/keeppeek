@@ -9,7 +9,7 @@ use crate::{
     storage::{
         AudioCodec, AudioFrame, MediaFrame, RecordingFrame, StorageHandle, VideoCodec, VideoFrame,
     },
-    webrtc::{LiveHandle, Source},
+    webrtc::{Publisher, Source},
 };
 use bytes::Bytes;
 use retina::{
@@ -478,7 +478,7 @@ pub struct RtspLoop {
     pub video_meta: VideoMeta,
     pub audio_meta: Option<AudioMeta>,
     pub storage: Option<StorageHandle>,
-    pub live: Option<LiveHandle>,
+    pub live: Option<Publisher>,
     pub health: HealthRegistry,
     pub tx: SyncSender<KeepPeekEvent>,
     pub shutdown: Shutdown,

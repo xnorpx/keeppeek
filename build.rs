@@ -22,6 +22,13 @@ fn main() -> io::Result<()> {
     let manifest_dir = PathBuf::from(
         env::var_os("CARGO_MANIFEST_DIR").expect("Cargo must set CARGO_MANIFEST_DIR"),
     );
+
+    println!("cargo:rerun-if-changed=api/webrtc.proto");
+    unsafe {
+        std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap());
+    }
+    prost_build::compile_protos(&["api/webrtc.proto"], &["api/"])?;
+
     for input in UI_INPUTS {
         emit_rerun_if_changed(&manifest_dir.join(input))?;
     }

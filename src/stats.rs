@@ -209,7 +209,7 @@ impl IngressStats {
         self.reconnects = self.reconnects.wrapping_add(1);
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub const fn on_drop(&mut self) {
         self.dropped_frames = self.dropped_frames.wrapping_add(1);
     }

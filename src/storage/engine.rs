@@ -201,7 +201,6 @@ struct WriterWorker {
     config: StorageConfig,
     demand: RecordingDemand,
     pipelines: HashMap<String, CameraPipeline>,
-    #[allow(dead_code)]
     long_term: LongTermStore,
 }
 

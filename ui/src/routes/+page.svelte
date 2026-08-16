@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import type { CameraListItem, Health, LiveQuality, ServerHealthResponse } from '$lib/types';
 	import { getHealth, getCameras, getServerHealth } from '$lib/api';
-	import { useLivePeer } from '$lib/live-peer-context';
+	import { useLivePeer } from '$lib/stream-peer-context';
 	import LiveVideo from '$lib/components/LiveVideo.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import CameraIcon from '@lucide/svelte/icons/camera';

@@ -11,3 +11,7 @@ bun.lockb
 # Generated component primitives
 /src/lib/components/ui/
 /src/lib/hooks/
+
+# Generated protobuf
+/src/lib/proto/
+

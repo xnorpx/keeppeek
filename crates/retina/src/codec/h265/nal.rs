@@ -265,6 +265,8 @@ impl From<BitReaderError> for Error {
 
 // T.REC H.265 section 7.3.2.2
 #[derive(Debug)]
+// The parsed H.265 parameters frequently contain specification data unused in basic stream rendering setups.
+// We use allow(dead_code) rather than expect(dead_code) to retain backwards compatibility for dependent software decoding paths.
 #[allow(dead_code)]
 pub struct Sps {
     sps_max_sub_layers_minus1: u8,

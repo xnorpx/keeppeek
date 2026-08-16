@@ -1,14 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-	closeBrowserLiveSession,
-	closeBrowserLiveSessionOnPageHide,
-	createBrowserLiveSession,
 	createLiveAnswer,
 	createLiveSession,
 	discoverSettingsCameras,
 	getCameraStats,
 	getHealthAt,
-	getBrowserLiveSessionStatus,
 	getCameraDetails,
 	getLiveSessionStatus,
 	getLoggingSettings,
@@ -23,7 +19,6 @@ import {
 	setCameraManufacturer,
 	setLiveQuality,
 	setCameraMotionDetection,
-	setBrowserTrackQuality,
 	updateSettingsCamera,
 	updateSettingsConfig,
 	updateLoggingFilter
@@ -281,60 +276,5 @@ describe('KeepPeek API client', () => {
 			body: JSON.stringify({ quality: 'high' })
 		});
 		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/live/42');
-	});
-
-	it('creates, controls, observes, and closes shared browser sessions', async () => {
-		const response = {
-			session_id: 24,
-			answer: { type: 'answer', sdp: 'v=0' },
-			estimated_bitrate_bps: 4_000_000,
-			tracks: [
-				{
-					track_id: 'camera-0',
-					requested_quality: 'low',
-					active_stream: 'sub',
-					estimated_bitrate_bps: 4_000_000
-				}
-			]
-		};
-		const fetchMock = vi.fn(async () => jsonResponse(response));
-		vi.stubGlobal('fetch', fetchMock);
-		const offer = { type: 'offer', sdp: 'v=0' } satisfies RTCSessionDescriptionInit;
-		const tracks = [
-			{ track_id: 'camera-0', camera_id: 'front gate', mid: '0', quality: 'low' as const }
-		];
-
-		await expect(createBrowserLiveSession(tracks, offer)).resolves.toEqual(response);
-		await setBrowserTrackQuality(24, 'camera-0', 'high');
-		await getBrowserLiveSessionStatus(24);
-		await closeBrowserLiveSession(24);
-
-		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/live/browser/offer', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ tracks, offer })
-		});
-		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/live/browser/24/tracks/camera-0/quality', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ quality: 'high' })
-		});
-		expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/live/browser/24');
-		expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/live/browser/24/close', {
-			method: 'POST',
-			keepalive: true
-		});
-	});
-
-	it('uses a beacon to close shared browser sessions during pagehide', () => {
-		const sendBeacon = vi.fn(() => true);
-		const fetchMock = vi.fn();
-		vi.stubGlobal('navigator', { sendBeacon });
-		vi.stubGlobal('fetch', fetchMock);
-
-		closeBrowserLiveSessionOnPageHide(24);
-
-		expect(sendBeacon).toHaveBeenCalledWith('/api/live/browser/24/close', expect.any(Blob));
-		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });

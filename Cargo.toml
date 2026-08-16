@@ -102,6 +102,9 @@ ureq = { version = "3", default-features = false, features = ["native-tls"] }
 url = { version = "*" }
 sysinfo = "0.39.6"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
+prost = "0.14"
+prost-types = "0.14"
+flate2 = "1.1.9"
 
 [target.'cfg(windows)'.dependencies]
 str0m-wincrypto = { version = "0.8.0" }
@@ -183,3 +186,7 @@ strip = "symbols"
 [profile.release-lto]
 inherits = 'release'
 lto = 'fat'
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3.2.0"

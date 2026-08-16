@@ -20,8 +20,8 @@ use crate::{
     stats::{HealthRegistry, REPORT_INTERVAL},
     storage::{EventStore, RecordingCatalogHandle, RecordingDemand, StorageConfig},
     webrtc::{
-        BrowserSessionStatus, BrowserTrackPlan, LiveQuality, LiveSessionId, LiveSessionStatus,
-        LiveTrackId, Source, WebRtc,
+        MultiTrackSessionStatus, SessionId, SessionStatus, Source, StreamQuality, TrackId,
+        TrackPlan, WebRtc,
     },
 };
 use include_dir::{Dir, File as EmbeddedFile, include_dir};
@@ -52,30 +52,30 @@ const GIBIBYTE_BYTES: u64 = 1_073_741_824;
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
 
 #[derive(Deserialize)]
-struct AdaptiveLiveOffer {
+struct AdaptiveStreamOffer {
     offer: str0m::change::SdpOffer,
     #[serde(default)]
-    quality: LiveQuality,
+    quality: StreamQuality,
 }
 
 #[derive(Deserialize)]
-struct BrowserLiveOffer {
+struct MultiTrackOffer {
     offer: str0m::change::SdpOffer,
-    tracks: Vec<BrowserLiveTrackOffer>,
+    tracks: Vec<TrackOffer>,
 }
 
 #[derive(Deserialize)]
-struct BrowserLiveTrackOffer {
+struct TrackOffer {
     track_id: String,
     camera_id: String,
     mid: String,
     #[serde(default)]
-    quality: LiveQuality,
+    quality: StreamQuality,
 }
 
 #[derive(Deserialize)]
-struct LiveQualityUpdate {
-    quality: LiveQuality,
+struct StreamQualityUpdate {
+    quality: StreamQuality,
 }
 
 #[derive(Deserialize)]
@@ -188,19 +188,19 @@ struct RestartResponse {
 }
 
 #[derive(Serialize)]
-struct AdaptiveLiveAnswer {
-    session_id: LiveSessionId,
+struct AdaptiveStreamAnswer {
+    session_id: SessionId,
     answer: str0m::change::SdpAnswer,
     #[serde(flatten)]
-    status: LiveSessionStatus,
+    status: SessionStatus,
 }
 
 #[derive(Serialize)]
-struct BrowserLiveAnswer {
-    session_id: LiveSessionId,
+struct MultiTrackAnswer {
+    session_id: SessionId,
     answer: str0m::change::SdpAnswer,
     #[serde(flatten)]
-    status: BrowserSessionStatus,
+    status: MultiTrackSessionStatus,
 }
 
 #[derive(Clone)]
@@ -769,25 +769,25 @@ fn handle_request(
             recording_file(request, state, &camera_id, &stream, &date, &hour, &filename)
         },
         (POST) (/api/live/browser/offer) => {
-            browser_webrtc_offer(request, state)
+            multi_track_webrtc_offer(request, state)
         },
         (GET) (/api/live/browser/{session_id: u64}) => {
-            browser_live_session_status(state, LiveSessionId::from_u64(session_id))
+            multi_track_session_status_endpoint(state, SessionId::from_u64(session_id))
         },
         (POST) (/api/live/browser/{session_id: u64}/tracks/{track_id: String}/quality) => {
-            update_browser_track_quality(request, state, LiveSessionId::from_u64(session_id), &track_id)
+            update_multi_track_quality(request, state, SessionId::from_u64(session_id), &track_id)
         },
         (POST) (/api/live/browser/{session_id: u64}/close) => {
-            close_browser_live_session(state, LiveSessionId::from_u64(session_id))
+            close_multi_track_session_endpoint(state, SessionId::from_u64(session_id))
         },
         (POST) (/api/cameras/{camera_id: String}/live/offer) => {
             adaptive_webrtc_offer(request, state, &camera_id)
         },
         (GET) (/api/live/{session_id: u64}) => {
-            live_session_status(state, LiveSessionId::from_u64(session_id))
+            session_status_endpoint(state, SessionId::from_u64(session_id))
         },
         (POST) (/api/live/{session_id: u64}/quality) => {
-            update_live_quality(request, state, LiveSessionId::from_u64(session_id))
+            update_live_quality(request, state, SessionId::from_u64(session_id))
         },
         (POST) (/api/cameras/{camera_id: String}/live/{stream: String}/offer) => {
             webrtc_offer(request, state, &camera_id, &stream)
@@ -2012,11 +2012,11 @@ fn recording_activity(state: &ServerState, camera_id: &str, stream: &str) -> Res
     Response::empty_204()
 }
 
-fn browser_webrtc_offer(request: &Request, state: &ServerState) -> Response {
+fn multi_track_webrtc_offer(request: &Request, state: &ServerState) -> Response {
     let Some(body) = request.data() else {
         return service_error(400, "missing browser SDP offer");
     };
-    let request: BrowserLiveOffer = match serde_json::from_reader(body) {
+    let request: MultiTrackOffer = match serde_json::from_reader(body) {
         Ok(request) => request,
         Err(error) => return service_error(400, &format!("invalid browser SDP offer: {error}")),
     };
@@ -2029,7 +2029,7 @@ fn browser_webrtc_offer(request: &Request, state: &ServerState) -> Response {
         let Some(camera) = state.camera(&track.camera_id) else {
             return service_error(404, "camera not found");
         };
-        let track_id = match LiveTrackId::parse(track.track_id) {
+        let track_id = match TrackId::parse(track.track_id) {
             Ok(track_id) => track_id,
             Err(error) => return service_error(400, &error.to_string()),
         };
@@ -2042,7 +2042,7 @@ fn browser_webrtc_offer(request: &Request, state: &ServerState) -> Response {
             .profiles
             .iter()
             .any(|profile| profile.stream == "sub");
-        plans.push(BrowserTrackPlan {
+        plans.push(TrackPlan {
             track_id,
             mid: track.mid,
             camera_ip,
@@ -2052,40 +2052,43 @@ fn browser_webrtc_offer(request: &Request, state: &ServerState) -> Response {
         });
     }
 
-    let session = match state.webrtc.accept_browser_offer(plans, request.offer) {
+    let session = match state.webrtc.accept_multi_track_offer(plans, request.offer) {
         Ok(session) => session,
         Err(error) => {
             tracing::warn!(%error, "unable to create shared browser WebRTC session");
             return service_error(400, &format!("unable to accept SDP offer: {error}"));
         }
     };
-    let Some(status) = state.webrtc.browser_session_status(session.id) else {
+    let Some(status) = state.webrtc.multi_track_session_status(session.id) else {
         return service_error(503, "shared WebRTC session ended during setup");
     };
-    Response::json(&BrowserLiveAnswer {
+    Response::json(&MultiTrackAnswer {
         session_id: session.id,
         answer: session.answer,
         status,
     })
 }
 
-fn browser_live_session_status(state: &ServerState, session_id: LiveSessionId) -> Response {
-    state.webrtc.browser_session_status(session_id).map_or_else(
-        || service_error(404, "shared WebRTC session not found"),
-        |status| Response::json(&status),
-    )
+fn multi_track_session_status_endpoint(state: &ServerState, session_id: SessionId) -> Response {
+    state
+        .webrtc
+        .multi_track_session_status(session_id)
+        .map_or_else(
+            || service_error(404, "shared WebRTC session not found"),
+            |status| Response::json(&status),
+        )
 }
 
-fn update_browser_track_quality(
+fn update_multi_track_quality(
     request: &Request,
     state: &ServerState,
-    session_id: LiveSessionId,
+    session_id: SessionId,
     track_id: &str,
 ) -> Response {
     let Some(body) = request.data() else {
         return service_error(400, "missing shared track quality update");
     };
-    let update: LiveQualityUpdate = match serde_json::from_reader(body) {
+    let update: StreamQualityUpdate = match serde_json::from_reader(body) {
         Ok(update) => update,
         Err(error) => {
             return service_error(
@@ -2094,21 +2097,21 @@ fn update_browser_track_quality(
             );
         }
     };
-    let track_id = match LiveTrackId::parse(track_id.to_owned()) {
+    let track_id = match TrackId::parse(track_id.to_owned()) {
         Ok(track_id) => track_id,
         Err(error) => return service_error(400, &error.to_string()),
     };
     state
         .webrtc
-        .set_browser_track_quality(session_id, &track_id, update.quality)
+        .set_multi_track_quality(session_id, &track_id, update.quality)
         .map_or_else(
             || service_error(404, "shared WebRTC track not found"),
             |status| Response::json(&status),
         )
 }
 
-fn close_browser_live_session(state: &ServerState, session_id: LiveSessionId) -> Response {
-    state.webrtc.close_browser_session(session_id);
+fn close_multi_track_session_endpoint(state: &ServerState, session_id: SessionId) -> Response {
+    state.webrtc.close_multi_track_session(session_id);
     Response::empty_204()
 }
 
@@ -2119,7 +2122,7 @@ fn adaptive_webrtc_offer(request: &Request, state: &ServerState, camera_id: &str
     let Some(body) = request.data() else {
         return service_error(400, "missing adaptive SDP offer");
     };
-    let request: AdaptiveLiveOffer = match serde_json::from_reader(body) {
+    let request: AdaptiveStreamOffer = match serde_json::from_reader(body) {
         Ok(request) => request,
         Err(error) => return service_error(400, &format!("invalid adaptive SDP offer: {error}")),
     };
@@ -2149,29 +2152,25 @@ fn adaptive_webrtc_offer(request: &Request, state: &ServerState, camera_id: &str
     let Some(status) = state.webrtc.session_status(session.id) else {
         return service_error(503, "WebRTC session ended during setup");
     };
-    Response::json(&AdaptiveLiveAnswer {
+    Response::json(&AdaptiveStreamAnswer {
         session_id: session.id,
         answer: session.answer,
         status,
     })
 }
 
-fn live_session_status(state: &ServerState, session_id: LiveSessionId) -> Response {
+fn session_status_endpoint(state: &ServerState, session_id: SessionId) -> Response {
     state.webrtc.session_status(session_id).map_or_else(
         || service_error(404, "live session not found"),
         |status| Response::json(&status),
     )
 }
 
-fn update_live_quality(
-    request: &Request,
-    state: &ServerState,
-    session_id: LiveSessionId,
-) -> Response {
+fn update_live_quality(request: &Request, state: &ServerState, session_id: SessionId) -> Response {
     let Some(body) = request.data() else {
         return service_error(400, "missing quality update");
     };
-    let update: LiveQualityUpdate = match serde_json::from_reader(body) {
+    let update: StreamQualityUpdate = match serde_json::from_reader(body) {
         Ok(update) => update,
         Err(error) => return service_error(400, &format!("invalid quality update: {error}")),
     };

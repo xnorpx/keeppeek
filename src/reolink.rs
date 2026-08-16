@@ -14,7 +14,7 @@ use crate::{
         AudioCodec, AudioFrame, MediaFrame, RecordingFrame, StorageHandle, VideoCodec, VideoFrame,
         nal,
     },
-    webrtc::{LiveHandle, Source},
+    webrtc::{Publisher, Source},
 };
 use bytes::Bytes;
 use reo_proto::{
@@ -457,7 +457,7 @@ pub(crate) struct ReolinkLoop {
     pub sub_expected_height: u32,
     pub sub_expected_fps: f64,
     pub storage: Option<StorageHandle>,
-    pub live: Option<LiveHandle>,
+    pub live: Option<Publisher>,
     pub health: HealthRegistry,
     pub tx: SyncSender<KeepPeekEvent>,
     pub shutdown: Shutdown,

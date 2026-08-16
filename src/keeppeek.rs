@@ -8,7 +8,7 @@ use crate::{
     shutdown::Shutdown,
     stats::HealthRegistry,
     storage::{EventStore, StorageHandle, metadata::TimelineEvent},
-    webrtc::LiveHandle,
+    webrtc::Publisher,
 };
 use serde::Serialize;
 use std::{
@@ -221,7 +221,7 @@ pub struct KeepPeekLoop {
     handles: Vec<JoinHandle<()>>,
     storage: Option<StorageHandle>,
     events: Option<EventStore>,
-    live: Option<LiveHandle>,
+    live: Option<Publisher>,
     health: HealthRegistry,
     status_tx: Option<FacadeSender<RouterMessage>>,
     stream_statuses: HashMap<IpAddr, CameraStreamStatus>,
@@ -255,7 +255,7 @@ impl KeepPeekLoop {
         }
     }
 
-    pub fn set_live(&mut self, live: LiveHandle) {
+    pub fn set_live(&mut self, live: Publisher) {
         self.live = Some(live);
     }
 

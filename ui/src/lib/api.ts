@@ -1,8 +1,6 @@
 import type {
-	BrowserLiveSessionResponse,
-	BrowserLiveSessionStatus,
-	BrowserLiveTrackOffer,
-	BrowserLiveTrackStatus,
+	CreateRequest,
+	CreateResponse,
 	CameraDetailsResponse,
 	CameraListItem,
 	CameraSettings,
@@ -197,42 +195,6 @@ export function createLiveSession(
 	return post(`/api/cameras/${encodeURIComponent(cameraId)}/live/offer`, { quality, offer });
 }
 
-export function createBrowserLiveSession(
-	tracks: BrowserLiveTrackOffer[],
-	offer: RTCSessionDescriptionInit
-): Promise<BrowserLiveSessionResponse> {
-	return post('/api/live/browser/offer', { tracks, offer });
-}
-
-export function getBrowserLiveSessionStatus(sessionId: number): Promise<BrowserLiveSessionStatus> {
-	return get(`/api/live/browser/${sessionId}`);
-}
-
-export function setBrowserTrackQuality(
-	sessionId: number,
-	trackId: string,
-	quality: LiveQuality
-): Promise<BrowserLiveTrackStatus> {
-	return post(`/api/live/browser/${sessionId}/tracks/${encodeURIComponent(trackId)}/quality`, {
-		quality
-	});
-}
-
-export function closeBrowserLiveSession(sessionId: number): Promise<void> {
-	return fetch(`/api/live/browser/${sessionId}/close`, {
-		method: 'POST',
-		keepalive: true
-	}).then((response) => {
-		if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-	});
-}
-
-export function closeBrowserLiveSessionOnPageHide(sessionId: number): void {
-	const path = `/api/live/browser/${sessionId}/close`;
-	if (navigator.sendBeacon(path, new Blob())) return;
-	void fetch(path, { method: 'POST', keepalive: true }).catch(() => {});
-}
-
 export function setLiveQuality(
 	sessionId: number,
 	quality: LiveQuality
@@ -242,4 +204,43 @@ export function setLiveQuality(
 
 export function getLiveSessionStatus(sessionId: number): Promise<LiveSessionStatus> {
 	return get(`/api/live/${sessionId}`);
+}
+
+export async function createSession(offer: RTCSessionDescriptionInit): Promise<CreateResponse> {
+	const request: CreateRequest = { offer: { type: offer.type as string, sdp: offer.sdp! } };
+	const requestString = JSON.stringify(request);
+
+	let body: ArrayBuffer | Uint8Array;
+	if (typeof CompressionStream !== 'undefined') {
+		const stream = new Blob([requestString])
+			.stream()
+			.pipeThrough(
+				new /* eslint-disable-next-line @typescript-eslint/no-explicit-any */ (
+					window as any
+				).CompressionStream('gzip')
+			);
+		body = await new Response(stream).arrayBuffer();
+	} else {
+		throw new Error('CompressionStream not supported in this environment');
+	}
+
+	const res = await fetch('/create', {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'Content-Encoding': 'gzip'
+		},
+		body
+	});
+
+	if (!res.ok) {
+		const message = await res.text();
+		throw new Error(`${res.status} ${message || res.statusText}`);
+	}
+
+	return res.json();
+}
+
+export function deleteSession(sessionId: string): Promise<void> {
+	return post('/delete', { session_id: sessionId });
 }
