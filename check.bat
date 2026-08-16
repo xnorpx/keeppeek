@@ -9,12 +9,21 @@ if errorlevel 1 (
         exit /b 1
 )
 
+where cargo-machete >nul 2>&1
+if errorlevel 1 (
+        echo cargo-machete is required: cargo install cargo-machete 1>&2
+        exit /b 1
+)
+
 echo Building and Testing Rust...
 cargo build --all || exit /b 1
 cargo test --all || exit /b 1
 
 echo Running Rust Clippy...
 cargo clippy --all --all-targets -- -D warnings || exit /b 1
+
+echo Checking for unused Rust dependencies...
+cargo machete || exit /b 1
 
 echo Formatting checks...
 cargo fmt --all -- --check || exit /b 1

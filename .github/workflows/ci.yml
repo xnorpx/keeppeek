@@ -54,6 +54,19 @@ jobs:
         run: bun install --registry=https://registry.npmjs.org/
       - run: cargo clippy --all --all-targets -- -D warnings
 
+  machete:
+    name: Unused Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete@0.9.2
+      - run: cargo machete
+
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -105,6 +118,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete@0.9.2
       - run: bun install --registry=https://registry.npmjs.org/
       - if: runner.os == 'Linux'
         run: bunx playwright install --with-deps chromium
@@ -228,7 +244,7 @@ jobs:
   quality-report:
     name: Quality Report
     if: always() && github.event_name == 'pull_request'
-    needs: [fmt, clippy, build-and-test, ui, coverage]
+    needs: [fmt, clippy, machete, build-and-test, ui, coverage]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -257,6 +273,7 @@ jobs:
             const checkNames = [
               'Format',
               'Clippy',
+              'Unused Dependencies',
               'Build & Test (ubuntu-latest)',
               'Build & Test (macos-latest)',
               'Build & Test (windows-latest)',

@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[package.metadata.cargo-machete]
+ignored = ["xml-rs", "yaserde"]
+
 [lints]
 workspace = true
 
 [dependencies]
-common = { path = "../../xsd_rs/common" }
 devicemgmt = { path = "../../wsdl_rs/devicemgmt" }
 onvif = { package = "onvif-xsd", path = "../../xsd_rs/onvif_xsd" }
 transport = { path = "../../transport" }

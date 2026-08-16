@@ -5,6 +5,9 @@ authors = ["Chris Bruce <chris@lumeo.com>"]
 edition = "2024"
 license = "MIT"
 
+[package.metadata.cargo-machete]
+ignored = ["xml-rs"]
+
 [lints]
 workspace = true
 
