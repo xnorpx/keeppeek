@@ -32,8 +32,8 @@ test('Peek decodes frames from configured fake cameras', async ({ page }) => {
 				async () =>
 					video.evaluate((element) => {
 						const videoElement = element as HTMLVideoElement;
-						const canvas = element.parentElement?.querySelector('canvas');
-						if (canvas?.width && canvas.height) {
+						const canvas = element.parentElement?.querySelector<HTMLCanvasElement>('canvas');
+						if (canvas && getComputedStyle(canvas).display !== 'none') {
 							return `canvas:${canvas.width}x${canvas.height}`;
 						}
 						const frames = videoElement.getVideoPlaybackQuality().totalVideoFrames;
