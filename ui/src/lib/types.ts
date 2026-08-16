@@ -221,6 +221,18 @@ export interface LiveSessionResponse extends LiveSessionStatus {
 	answer: RTCSessionDescriptionInit;
 }
 
+export interface BrowserLiveTrackOffer {
+	track_id: string;
+	camera_id: string;
+	mid: string;
+	quality: LiveQuality;
+}
+
+export interface BrowserLiveSessionResponse {
+	session_id: number;
+	answer: RTCSessionDescriptionInit;
+}
+
 export interface ServerHealthResponse {
 	status: 'healthy' | 'degraded';
 	generated_at_ms: number;

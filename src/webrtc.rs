@@ -182,6 +182,7 @@ struct MediaFrame {
 struct MediaFrameData {
     avcc: Bytes,
     annexb: OnceLock<Arc<[u8]>>,
+    h264_profile_level_id: OnceLock<Option<u32>>,
 }
 
 impl MediaFrameData {
@@ -189,6 +190,7 @@ impl MediaFrameData {
         Self {
             avcc,
             annexb: OnceLock::new(),
+            h264_profile_level_id: OnceLock::new(),
         }
     }
 
@@ -197,6 +199,66 @@ impl MediaFrameData {
             .get_or_init(|| Arc::from(nal::avcc_to_annexb(&self.avcc)))
             .clone()
     }
+
+    fn h264_profile_level_id(&self) -> Option<u32> {
+        *self.h264_profile_level_id.get_or_init(|| {
+            let (sps, _) = nal::extract_h264_sps_pps(&self.avcc);
+            let sps = sps?;
+            let [_, profile_idc, profile_iop, level_idc, ..] = sps.as_slice() else {
+                return None;
+            };
+            Some(u32::from_be_bytes([
+                0,
+                *profile_idc,
+                *profile_iop,
+                *level_idc,
+            ]))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum H264Profile {
+    ConstrainedBaseline,
+    Baseline,
+    Main,
+    Extended,
+    High,
+    ConstrainedHigh,
+    High10,
+    High422,
+    High444Predictive,
+    High10Intra,
+    High422Intra,
+    High444Intra,
+    Cavlc444Intra,
+}
+
+const fn h264_profile(profile_level_id: u32) -> Option<H264Profile> {
+    let [_, profile_idc, profile_iop, _] = profile_level_id.to_be_bytes();
+    match (profile_idc, profile_iop) {
+        (0x42, profile_iop) if profile_iop & 0x4f == 0x40 => Some(H264Profile::ConstrainedBaseline),
+        (0x4d, profile_iop) if profile_iop & 0x8f == 0x80 => Some(H264Profile::ConstrainedBaseline),
+        (0x58, profile_iop) if profile_iop & 0xcf == 0xc0 => Some(H264Profile::ConstrainedBaseline),
+        (0x42, profile_iop) if profile_iop & 0x4f == 0 => Some(H264Profile::Baseline),
+        (0x58, profile_iop) if profile_iop & 0xcf == 0x80 => Some(H264Profile::Baseline),
+        (0x4d, profile_iop) if profile_iop & 0xaf == 0 => Some(H264Profile::Main),
+        (0x58, profile_iop) if profile_iop & 0xcf == 0 => Some(H264Profile::Extended),
+        (0x64, 0) => Some(H264Profile::High),
+        (0x64, 0x0c) => Some(H264Profile::ConstrainedHigh),
+        (0x6e, 0) => Some(H264Profile::High10),
+        (0x7a, 0) => Some(H264Profile::High422),
+        (0xf4, 0) => Some(H264Profile::High444Predictive),
+        (0x6e, 0x10) => Some(H264Profile::High10Intra),
+        (0x7a, 0x10) => Some(H264Profile::High422Intra),
+        (0xf4, 0x10) => Some(H264Profile::High444Intra),
+        (0x2c, 0x10) => Some(H264Profile::Cavlc444Intra),
+        _ => None,
+    }
+}
+
+fn h264_profiles_match(source: u32, payload: u32) -> bool {
+    h264_profile(source).is_some_and(|source_profile| h264_profile(payload) == Some(source_profile))
 }
 
 #[derive(Debug)]
@@ -2559,12 +2621,14 @@ struct MediaClock {
     first_received_at: Option<Instant>,
     source_base_media_time: u64,
     last_media_time: Option<u64>,
+    h264_profile_level_id: Option<u32>,
 }
 
 impl MediaClock {
     fn reset_source(&mut self) {
         self.first_timestamp = None;
         self.first_received_at = None;
+        self.h264_profile_level_id = None;
         self.source_base_media_time = self
             .last_media_time
             .map_or(0, |last| last.saturating_add(DEFAULT_FRAME_TICKS));
@@ -2608,10 +2672,36 @@ fn write_frame(
         VideoCodec::H264 => Codec::H264,
         VideoCodec::H265 => Codec::H265,
     };
+    if matches!(frame.codec, VideoCodec::H264)
+        && frame.is_keyframe
+        && let Some(profile_level_id) = frame.data.h264_profile_level_id()
+    {
+        media_clock.h264_profile_level_id = Some(profile_level_id);
+    }
+    let h264_profile_level_id = media_clock.h264_profile_level_id;
     let Some(payload_type) = rtc.writer(mid).and_then(|writer| {
         writer
             .payload_params()
-            .find(|params| params.spec().codec == codec)
+            .find(|params| {
+                if params.spec().codec != codec {
+                    return false;
+                }
+                if codec != Codec::H264 {
+                    return true;
+                }
+                if params.spec().format.packetization_mode != Some(1) {
+                    return false;
+                }
+                h264_profile_level_id.is_none_or(|source_profile_level_id| {
+                    params
+                        .spec()
+                        .format
+                        .profile_level_id
+                        .is_some_and(|payload_profile_level_id| {
+                            h264_profiles_match(source_profile_level_id, payload_profile_level_id)
+                        })
+                })
+            })
             .map(|params| params.pt())
     }) else {
         return Ok(false);
@@ -2656,6 +2746,19 @@ mod tests {
             timestamp: None,
             data: Arc::new(MediaFrameData::new(Bytes::from(vec![0; bytes]))),
         }
+    }
+
+    #[test]
+    fn h264_profile_is_read_from_sps() {
+        let frame = MediaFrameData::new(Bytes::from_static(&[0, 0, 0, 4, 0x67, 0x42, 0xc0, 0x1f]));
+
+        assert_eq!(frame.h264_profile_level_id(), Some(0x42c01f));
+    }
+
+    #[test]
+    fn constrained_baseline_matches_a_constrained_payload() {
+        assert!(h264_profiles_match(0x42c01f, 0x42e01f));
+        assert!(!h264_profiles_match(0x42c01f, 0x42001f));
     }
 
     #[test]

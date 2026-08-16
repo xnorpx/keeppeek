@@ -411,11 +411,13 @@ impl ConnectionInfo {
         let uid = matches!(self.protocol, Protocol::ReoProto)
             .then(|| format!("uid = \"{}\"\n", self.uid));
         format!(
-            "[test-camera.\"{name}\"]\nip = \"{}\"\nusername = \"{}\"\npassword = \"{}\"\nonvif_port = {}\n{http_port}backend = \"{}\"\ntransport = \"{}\"\n{}",
+            "[test-camera.\"{name}\"]\nip = \"{}\"\nusername = \"{}\"\npassword = \"{}\"\nonvif_port = {}\n{http_port}main_rtsp_url = \"{}\"\nsub_rtsp_url = \"{}\"\nbackend = \"{}\"\ntransport = \"{}\"\n{}",
             self.ip,
             self.username,
             self.password,
             self.onvif_port,
+            self.main_stream_url,
+            self.sub_stream_url,
             self.protocol.config_backend(),
             self.transport.config_name(),
             uid.unwrap_or_default(),
@@ -587,6 +589,76 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_mp4_fixtures_cover_the_codec_and_resolution_matrix() {
+        for (file_name, expected_codec, expected_width, expected_height) in [
+            ("cc-4k-640x360-h264.mp4", Codec::H264, 640, 360),
+            ("cc-4k-640x360-h265.mp4", Codec::H265, 640, 360),
+            ("cc-4k-3840x2160-h264.mp4", Codec::H264, 3840, 2160),
+            ("cc-4k-3840x2160-h265.mp4", Codec::H265, 3840, 2160),
+        ] {
+            let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata")
+                .join(file_name);
+            let source = VideoSource::from_mp4(&fixture_path).unwrap();
+
+            assert_eq!(source.codec, expected_codec, "{file_name}");
+            assert_eq!(source.width, expected_width, "{file_name}");
+            assert_eq!(source.height, expected_height, "{file_name}");
+            assert_eq!(source.fps, 15, "{file_name}");
+            assert_eq!(source.frames.len(), 15, "{file_name}");
+            assert!(
+                source.frames.first().is_some_and(|frame| frame.is_keyframe),
+                "{file_name} must begin with a keyframe"
+            );
+        }
+
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("cc-4k-640x360-h264.mp4");
+        let source = VideoSource::from_mp4(&fixture_path).unwrap();
+        assert!(
+            source.frames.first().is_some_and(|frame| frame
+                .data
+                .starts_with(&[0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f])),
+            "low H.264 fixture must begin with a constrained-baseline level 3.1 SPS"
+        );
+    }
+
+    #[test]
+    fn checked_in_mp4_fixtures_stream_through_both_backends() {
+        let _lock = reo_port_lock();
+        for (file_name, expected_codec) in [
+            ("cc-4k-640x360-h264.mp4", reo_proto::VideoCodec::H264),
+            ("cc-4k-640x360-h265.mp4", reo_proto::VideoCodec::H265),
+            ("cc-4k-3840x2160-h264.mp4", reo_proto::VideoCodec::H264),
+            ("cc-4k-3840x2160-h265.mp4", reo_proto::VideoCodec::H265),
+        ] {
+            let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata")
+                .join(file_name);
+
+            {
+                let camera = TestCameraBuilder::rtsp(&fixture_path, &fixture_path)
+                    .start()
+                    .unwrap();
+                assert!(
+                    rtsp_profile_yields_rtp(camera.connection().main_stream_url(), Transport::Tcp),
+                    "{file_name} Retina main stream did not deliver RTP"
+                );
+                assert!(
+                    rtsp_profile_yields_rtp(camera.connection().sub_stream_url(), Transport::Tcp),
+                    "{file_name} Retina sub stream did not deliver RTP"
+                );
+            }
+
+            let camera = TestCameraBuilder::reo_proto(&fixture_path, &fixture_path)
+                .start()
+                .unwrap();
+            assert_reo_camera_delivers_main_and_sub_frames(&camera, expected_codec);
+        }
+    }
+
+    #[test]
     fn rtsp_camera_advertises_main_and_sub_profiles_through_onvif() {
         let fixture = write_fixture(Codec::H264);
         let camera = TestCameraBuilder::rtsp(fixture.path(), fixture.path())
@@ -615,6 +687,14 @@ mod tests {
                 .toml_entry("rtsp")
                 .contains(&format!("http_port = {http_port}"))
         );
+        assert!(connection.toml_entry("rtsp").contains(&format!(
+            "main_rtsp_url = \"{}\"",
+            connection.main_stream_url()
+        )));
+        assert!(connection.toml_entry("rtsp").contains(&format!(
+            "sub_rtsp_url = \"{}\"",
+            connection.sub_stream_url()
+        )));
 
         let response =
             camera_web_ui_request(SocketAddr::new(IpAddr::V4(connection.ip()), http_port));
@@ -725,58 +805,7 @@ mod tests {
             let config = camera.connection().toml_entry("reo");
             assert!(config.contains("backend = \"reo-proto\""));
             assert!(config.contains("transport = \"tcp\""));
-            let address = SocketAddr::new(IpAddr::V4(camera.connection().ip()), BAICHUAN_PORT);
-            let mut stream = TcpStream::connect(address).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_millis(100)))
-                .unwrap();
-
-            let mut client = BcSession::default_client(Instant::now());
-            client
-                .handle_input(Input::Command(Command::Login(LoginParams::new(
-                    "test",
-                    "test",
-                    EncryptionMode::BcEncrypt,
-                ))))
-                .unwrap();
-
-            let deadline = Instant::now() + Duration::from_secs(2);
-            let mut main_stream_id = None;
-            let mut sub_stream_id = None;
-            let mut saw_main = false;
-            let mut saw_sub = false;
-            let mut output = vec![0_u8; reo_proto::MAX_MEDIA_FRAME];
-            let mut input = [0_u8; 64 * 1024];
-
-            while Instant::now() < deadline && !(saw_main && saw_sub) {
-                drain_client(
-                    &mut client,
-                    &mut stream,
-                    &mut output,
-                    &mut main_stream_id,
-                    &mut sub_stream_id,
-                    &mut saw_main,
-                    &mut saw_sub,
-                    expected_codec,
-                );
-                match stream.read(&mut input) {
-                    Ok(read) => client
-                        .handle_input(Input::TcpData(Instant::now(), &input[..read]))
-                        .unwrap(),
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                        ) =>
-                    {
-                        client.handle_input(Input::Timeout(Instant::now())).unwrap();
-                    }
-                    Err(error) => panic!("Baichuan test connection failed: {error}"),
-                }
-            }
-
-            assert!(saw_main, "main stream never delivered a video frame");
-            assert!(saw_sub, "sub stream never delivered a video frame");
+            assert_reo_camera_delivers_main_and_sub_frames(&camera, expected_codec);
         }
     }
 
@@ -1025,6 +1054,64 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn assert_reo_camera_delivers_main_and_sub_frames(
+        camera: &TestCamera,
+        expected_codec: reo_proto::VideoCodec,
+    ) {
+        let address = SocketAddr::new(IpAddr::V4(camera.connection().ip()), BAICHUAN_PORT);
+        let mut stream = TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+
+        let mut client = BcSession::default_client(Instant::now());
+        client
+            .handle_input(Input::Command(Command::Login(LoginParams::new(
+                "test",
+                "test",
+                EncryptionMode::BcEncrypt,
+            ))))
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut main_stream_id = None;
+        let mut sub_stream_id = None;
+        let mut saw_main = false;
+        let mut saw_sub = false;
+        let mut output = vec![0_u8; reo_proto::MAX_MEDIA_FRAME];
+        let mut input = [0_u8; 64 * 1024];
+
+        while Instant::now() < deadline && !(saw_main && saw_sub) {
+            drain_client(
+                &mut client,
+                &mut stream,
+                &mut output,
+                &mut main_stream_id,
+                &mut sub_stream_id,
+                &mut saw_main,
+                &mut saw_sub,
+                expected_codec,
+            );
+            match stream.read(&mut input) {
+                Ok(read) => client
+                    .handle_input(Input::TcpData(Instant::now(), &input[..read]))
+                    .unwrap(),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    client.handle_input(Input::Timeout(Instant::now())).unwrap();
+                }
+                Err(error) => panic!("Baichuan test connection failed: {error}"),
+            }
+        }
+
+        assert!(saw_main, "main stream never delivered a video frame");
+        assert!(saw_sub, "sub stream never delivered a video frame");
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn drain_client(
         client: &mut BcSession,
@@ -1071,9 +1158,13 @@ mod tests {
                     StreamType::Extern => {}
                 },
                 Output::Event(Event::VideoFrame {
-                    stream_id, codec, ..
+                    stream_id,
+                    codec,
+                    data,
+                    ..
                 }) => {
                     assert_eq!(codec, expected_codec);
+                    assert!(!data.is_empty(), "camera delivered an empty video frame");
                     if Some(stream_id) == *main_stream_id {
                         *saw_main = true;
                     }

@@ -167,28 +167,8 @@ fn main() -> anyhow::Result<()> {
         .spawn(move || keeppeek.run())
         .expect("failed to spawn KeepPeek worker");
 
-    tracing::info!("waiting for cameras to initialize...");
-    let mut all_ready = cameras.is_empty();
-    let init_deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
-    while !all_ready && !shutdown.is_cancelled() && !router.is_shutting_down() {
-        if std::time::Instant::now() > init_deadline {
-            tracing::warn!("camera initialization deadline exceeded, starting HTTP server anyway");
-            break;
-        }
-
-        router.wait_and_drain(Some(std::time::Duration::from_millis(100)))?;
-
-        if let Ok(keeppeek::runtime::RouterResponse::Cameras(states)) =
-            router.query(keeppeek::runtime::RouterQuery::ListCameras)
-        {
-            all_ready = !states
-                .iter()
-                .any(|state| matches!(state.lifecycle, CameraLifecycle::Starting));
-        }
-    }
-    if all_ready {
-        tracing::info!("cameras initialized, starting HTTP server");
-    }
+    router.wait_and_drain(Some(std::time::Duration::ZERO))?;
+    tracing::info!("camera workers launched, starting HTTP server");
 
     let server_shutdown = shutdown.clone();
     let server_handle = std::thread::Builder::new()

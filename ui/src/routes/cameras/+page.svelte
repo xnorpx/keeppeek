@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { CameraListItem, ServerHealthResponse } from '$lib/types';
-	import { getCameras, getServerHealth } from '$lib/api';
+	import type { CameraListItem } from '$lib/types';
+	import { getCameras } from '$lib/api';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
@@ -9,17 +9,10 @@
 	import LiveVideo from '$lib/components/LiveVideo.svelte';
 
 	let cameras: CameraListItem[] = $state([]);
-	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
 	let error: string | null = $state(null);
 	let loading = $state(true);
 	const livePeer = useLivePeer();
-	let liveCameraIds = $derived(
-		new Set(
-			(serverHealth?.cameras ?? [])
-				.filter((camera) => camera.state === 'online' || camera.state === 'degraded')
-				.map((camera) => camera.id)
-		)
-	);
+	let liveCameraIds = $derived(new Set(cameras.map((camera) => camera.id)));
 	let livePlans = $derived(
 		cameras
 			.filter((camera) => liveCameraIds.has(camera.id))
@@ -38,9 +31,7 @@
 
 	async function loadCameras() {
 		try {
-			const [nextCameras, nextServerHealth] = await Promise.all([getCameras(), getServerHealth()]);
-			cameras = nextCameras;
-			serverHealth = nextServerHealth;
+			cameras = await getCameras();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load cameras';
 		} finally {

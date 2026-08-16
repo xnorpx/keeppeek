@@ -1,13 +1,8 @@
-import { createSession, deleteSession } from './api';
-
-import { create, toBinary } from '@bufbuild/protobuf';
 import {
-	RequestSchema,
-	SubscribeMediaSchema,
-	MediaKind,
-	DeliveryTransport,
-	VideoQuality
-} from './proto/webrtc_pb.js';
+	closeBrowserLiveSession,
+	createBrowserLiveSession,
+	setBrowserLiveTrackQuality
+} from './api';
 import type { LiveQuality } from './types';
 
 export type LivePeerPlan = {
@@ -29,18 +24,16 @@ export type LivePeerTrack = {
 export class LivePeer {
 	connectionState = $state<RTCPeerConnectionState>('new');
 	iceConnectionState = $state<RTCIceConnectionState>('new');
-	sessionId = $state<string | null>(null);
+	sessionId = $state<number | null>(null);
 	estimatedBitrateBps = $state<number | null>(null);
 	error = $state<string | null>(null);
 	tracks = $state.raw<Record<string, LivePeerTrack>>({});
 
 	#peer: RTCPeerConnection | null = null;
 	#cameraByMid: Record<string, string> = {};
-	#cameraByTrack: Record<string, string> = {};
 	#viewers: string[] = [];
 	#topologyKey = '';
 	#operation: Promise<void> = Promise.resolve();
-	#statusTimer: number | null = null;
 	#closeScheduled = false;
 	#holds = 0;
 
@@ -85,7 +78,7 @@ export class LivePeer {
 	closeOnPageHide(): void {
 		const sessionId = this.releaseLocalResources();
 		if (sessionId === null) return;
-		navigator.sendBeacon('/delete', JSON.stringify({ session_id: sessionId }));
+		navigator.sendBeacon(`/api/live/browser/${sessionId}/close`, '');
 	}
 
 	markPlaying(cameraId: string): void {
@@ -128,15 +121,11 @@ export class LivePeer {
 		this.iceConnectionState = peer.iceConnectionState;
 		this.error = null;
 		this.#cameraByMid = {};
-		this.#cameraByTrack = {};
-
-		const controlChannel = peer.createDataChannel('control-channel', { negotiated: true, id: 0 });
 
 		const localTracks = plans.map((plan, index) => {
 			const trackId = `camera-${index}`;
 			const transceiver = peer.addTransceiver('video', { direction: 'recvonly' });
 			preferH265(transceiver);
-			this.#cameraByTrack[trackId] = plan.cameraId;
 			return { ...plan, trackId, transceiver };
 		});
 
@@ -190,54 +179,33 @@ export class LivePeer {
 
 			if (peer !== this.#peer || !peer.localDescription) return;
 
-			for (const track of localTracks) {
+			const tracks = localTracks.map((track) => {
 				const mid = track.transceiver.mid;
 				if (mid === null) throw new Error(`No SDP MID assigned for ${track.cameraId}`);
 				this.#cameraByMid[mid] = track.cameraId;
-			}
+				return {
+					camera_id: track.cameraId,
+					track_id: track.trackId,
+					mid,
+					quality: track.quality
+				};
+			});
 
-			const session = await createSession(peer.localDescription);
+			const session = await createBrowserLiveSession(tracks, peer.localDescription);
 			if (peer !== this.#peer) {
-				await deleteSession(session.session_id);
+				await closeBrowserLiveSession(session.session_id);
 				return;
 			}
 
 			this.sessionId = session.session_id;
 			await peer.setRemoteDescription(session.answer as RTCSessionDescriptionInit);
-
-			await new Promise<void>((resolve, reject) => {
-				if (controlChannel.readyState === 'open') return resolve();
-				controlChannel.onopen = () => resolve();
-				controlChannel.onerror = (e) => reject(e);
-			});
-
-			for (const track of localTracks) {
-				const req = create(RequestSchema, {
-					requestId: BigInt(Date.now()),
-					command: {
-						case: 'subscribeMedia',
-						value: create(SubscribeMediaSchema, {
-							subscriptionId: track.transceiver.mid!, // streamId is Mid
-							sourceSessionId: track.cameraId,
-							kind: MediaKind.VIDEO,
-							requestedDeliveryTransport: DeliveryTransport.RTP,
-							videoQuality:
-								track.quality === 'auto' || track.quality === 'high'
-									? VideoQuality.HIGH
-									: VideoQuality.LOW,
-							variantId: ''
-						})
-					}
-				});
-				controlChannel.send(toBinary(RequestSchema, req));
-			}
 		} catch (error) {
 			if (peer === this.#peer) {
 				const sessionId = this.releaseLocalResources();
 				this.error = error instanceof Error ? error.message : 'Unable to start shared live view';
 				if (sessionId !== null) {
 					try {
-						await deleteSession(sessionId);
+						await closeBrowserLiveSession(sessionId);
 					} catch (closeError) {
 						console.debug('Unable to close failed shared live session', closeError);
 					}
@@ -249,8 +217,11 @@ export class LivePeer {
 	private async setQuality(cameraId: string, quality: LiveQuality): Promise<void> {
 		const track = this.tracks[cameraId];
 		if (!track) return;
+		const sessionId = this.sessionId;
+		if (sessionId === null) return;
+		await setBrowserLiveTrackQuality(sessionId, track.trackId, quality);
+		if (sessionId !== this.sessionId) return;
 		this.replaceTrack(cameraId, { requestedQuality: quality });
-		// Optionally transmit protobuf SubscribeMedia update here
 	}
 
 	private replaceTrack(cameraId: string, update: Partial<LivePeerTrack>): void {
@@ -263,25 +234,20 @@ export class LivePeer {
 		const sessionId = this.releaseLocalResources();
 		if (sessionId === null) return;
 		try {
-			await deleteSession(sessionId);
+			await closeBrowserLiveSession(sessionId);
 		} catch (error) {
 			console.debug('Unable to close shared live session', error);
 		}
 	}
 
-	private releaseLocalResources(): string | null {
+	private releaseLocalResources(): number | null {
 		const peer = this.#peer;
-		const sessionId = this.sessionId as string | null;
+		const sessionId = this.sessionId;
 		this.#peer = null;
 		this.#topologyKey = '';
 		this.#cameraByMid = {};
-		this.#cameraByTrack = {};
 		this.sessionId = null;
 		this.estimatedBitrateBps = null;
-		if (this.#statusTimer !== null) {
-			window.clearInterval(this.#statusTimer);
-			this.#statusTimer = null;
-		}
 		for (const stream of Object.values(this.tracks).flatMap((track) =>
 			track.stream ? [track.stream] : []
 		)) {
@@ -296,7 +262,7 @@ export class LivePeer {
 		this.tracks = {};
 		this.connectionState = peer ? 'closed' : 'new';
 		this.iceConnectionState = 'closed';
-		return sessionId as string | null;
+		return sessionId;
 	}
 
 	private detach(cameraId: string): void {
@@ -346,5 +312,6 @@ function waitForIceGathering(peer: RTCPeerConnection): Promise<void> {
 			}
 		};
 		peer.addEventListener('icegatheringstatechange', changed);
+		changed();
 	});
 }
