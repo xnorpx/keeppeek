@@ -103,13 +103,24 @@ if [ -z "$service_home" ] || [ ! -d "$service_home" ]; then
 fi
 
 plist=/Library/LaunchDaemons/com.keeppeek.plist
+temporary_plist=$(mktemp "${plist}.XXXXXX")
+trap 'rm -f "$temporary_plist"' 0
+
+install -o root -g wheel -m 644 "$plist_template" "$temporary_plist"
+plutil -replace UserName -string "$service_user" "$temporary_plist"
+plutil -replace EnvironmentVariables.HOME -string "$service_home" "$temporary_plist"
+plutil -lint "$temporary_plist" >/dev/null
+
 install -d -o root -g wheel -m 755 /usr/local/bin
 launchctl bootout system/com.keeppeek >/dev/null 2>&1 || :
+attempt=0
+while launchctl print system/com.keeppeek >/dev/null 2>&1; do
+	attempt=$((attempt + 1))
+	[ "$attempt" -lt 10 ] || fail "existing KeepPeek service did not stop"
+	sleep 1
+done
 install -o root -g wheel -m 755 "$binary" /usr/local/bin/keeppeek
-install -o root -g wheel -m 644 "$plist_template" "$plist"
-plutil -replace UserName -string "$service_user" "$plist"
-plutil -replace EnvironmentVariables.HOME -string "$service_home" "$plist"
-plutil -lint "$plist" >/dev/null
+mv -f "$temporary_plist" "$plist"
 launchctl bootstrap system "$plist"
 launchctl enable system/com.keeppeek
 launchctl kickstart -k system/com.keeppeek
