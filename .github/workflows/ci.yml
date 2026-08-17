@@ -73,7 +73,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -109,6 +109,24 @@ jobs:
               & sc.exe delete $serviceName
             }
           }
+      - name: Verify macOS installer
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          install_directory="$(mktemp -d)"
+          cleanup() {
+            sudo launchctl bootout system/com.keeppeek >/dev/null 2>&1 || true
+            sudo rm -f /Library/LaunchDaemons/com.keeppeek.plist /usr/local/bin/keeppeek
+            rm -rf "$install_directory"
+          }
+          trap cleanup EXIT
+          cp target/debug/keeppeek "$install_directory/keeppeek"
+          cp installer/macos/install-macos.sh installer/macos/com.keeppeek.plist "$install_directory/"
+          chmod +x "$install_directory/install-macos.sh"
+          "$install_directory/install-macos.sh" --prefix "$install_directory/bin"
+          test -x "$install_directory/bin/keeppeek"
+          sudo "$install_directory/install-macos.sh" --service --user "$(id -un)"
+          sudo launchctl print system/com.keeppeek
       - name: Run Rust tests
         id: rust-tests
         shell: bash
@@ -130,7 +148,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-14, windows-latest]
     defaults:
       run:
         working-directory: ui
@@ -299,11 +317,11 @@ jobs:
               'Unused Dependencies',
               'Build & Test (ubuntu-latest)',
               'Build & Test (ubuntu-24.04-arm)',
-              'Build & Test (macos-latest)',
+              'Build & Test (macos-14)',
               'Build & Test (windows-latest)',
               'Build & Test (windows-11-arm)',
               'UI (ubuntu-latest)',
-              'UI (macos-latest)',
+              'UI (macos-14)',
               'UI (windows-latest)',
               'Coverage (Rust + UI)'
             ];

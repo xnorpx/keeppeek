@@ -57,7 +57,7 @@ jobs:
             platform: windows-aarch64
             extension: zip
             binary_extension: .exe
-          - os: macos-latest
+          - os: macos-14
             platform: macos-aarch64
             extension: tar.gz
             binary_extension: ""
@@ -80,6 +80,9 @@ jobs:
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --registry=https://registry.npmjs.org/
+      - name: Verify macOS architecture
+        if: matrix.platform == 'macos-aarch64'
+        run: test "$(uname -m)" = arm64
       - name: Build release binary
         run: cargo build --release --bin keeppeek
       - name: Package release
@@ -94,6 +97,11 @@ jobs:
           archive="keeppeek-${VERSION}-${PLATFORM}"
           mkdir "$archive"
           cp "target/release/keeppeek${BINARY_EXTENSION}" "$archive/"
+          if [[ "$PLATFORM" == macos-aarch64 ]]; then
+            cp installer/macos/install-macos.sh "$archive/"
+            cp installer/macos/com.keeppeek.plist "$archive/"
+            chmod +x "$archive/install-macos.sh"
+          fi
           if [[ "$EXTENSION" == zip ]]; then
             7z a "$archive.zip" "$archive"
           else
