@@ -99,8 +99,8 @@ Function .onInit
     Abort
   ${EndIf}
 !else
-  ${IfNot} ${IsNativeAMD64}
-    MessageBox MB_ICONSTOP "KeepPeek requires 64-bit Windows on x64."
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "KeepPeek requires 64-bit Windows."
     Abort
   ${EndIf}
 !endif

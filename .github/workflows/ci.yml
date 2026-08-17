@@ -90,6 +90,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: choco install nsis --no-progress --yes
+      - name: Build Windows installer binaries
+        if: runner.os == 'Windows'
+        run: cargo build --bin keeppeek --bin keeppeek-service
       - name: Verify Windows installer
         if: runner.os == 'Windows'
         shell: pwsh
