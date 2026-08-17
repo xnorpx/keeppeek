@@ -9,18 +9,6 @@
 		powerEfficientDecoder?: boolean;
 	};
 
-	type TrackFrame = CanvasImageSource & {
-		displayWidth: number;
-		displayHeight: number;
-		close: () => void;
-	};
-
-	type TrackProcessor = {
-		readable: ReadableStream<TrackFrame>;
-	};
-
-	type TrackProcessorConstructor = new (options: { track: MediaStreamTrack }) => TrackProcessor;
-
 	type StatsSample = {
 		ssrc: number;
 		timestamp: number;
@@ -99,8 +87,6 @@
 	const livePeer = useLivePeer();
 	let track = $derived(livePeer.track(cameraId));
 	let video = $state<HTMLVideoElement | null>(null);
-	let canvas = $state<HTMLCanvasElement | null>(null);
-	let canvasReady = $state(false);
 	let negotiatedCodec = $state<string | null>(null);
 	let diagnosticsOpen = $state(false);
 	let diagnostics = $state.raw<VideoDiagnostics>(EMPTY_DIAGNOSTICS);
@@ -127,11 +113,9 @@
 	let resolution = $derived(
 		diagnostics.width && diagnostics.height
 			? `${diagnostics.width} × ${diagnostics.height}`
-			: canvas?.width && canvas.height
-				? `${canvas.width} × ${canvas.height}`
-				: video?.videoWidth && video.videoHeight
-					? `${video.videoWidth} × ${video.videoHeight}`
-					: '—'
+			: video?.videoWidth && video.videoHeight
+				? `${video.videoWidth} × ${video.videoHeight}`
+				: '—'
 	);
 	let packetLoss = $derived(
 		diagnostics.packetLossPercent === null
@@ -144,7 +128,10 @@
 	$effect(() => {
 		if (!video) return;
 		const stream = track?.stream ?? null;
-		video.srcObject = stream;
+		if (video.srcObject !== stream) {
+			video.srcObject = stream;
+			video.load();
+		}
 		if (stream) {
 			video.autoplay = true;
 			video.muted = true;
@@ -154,65 +141,11 @@
 	});
 
 	$effect(() => {
-		const canvasElement = canvas;
-		const source = receiver?.track;
-		const processorConstructor = (
-			globalThis as typeof globalThis & {
-				MediaStreamTrackProcessor?: TrackProcessorConstructor;
-			}
-		).MediaStreamTrackProcessor;
-		if (!canvasElement || !source || !processorConstructor) {
-			canvasReady = false;
-			return;
-		}
-		const canvasContext = canvasElement.getContext('2d');
-		if (!canvasContext) {
-			canvasReady = false;
-			return;
-		}
-		const targetCanvas = canvasElement as HTMLCanvasElement;
-		const targetContext = canvasContext as CanvasRenderingContext2D;
-		const processor = new processorConstructor({ track: source });
-		const reader = processor.readable.getReader();
-		let active = true;
-		async function drawFrames() {
-			try {
-				while (active) {
-					const { done, value: frame } = await reader.read();
-					if (done || !frame) break;
-					if (!active) {
-						frame.close();
-						break;
-					}
-					if (
-						targetCanvas.width !== frame.displayWidth ||
-						targetCanvas.height !== frame.displayHeight
-					) {
-						targetCanvas.width = frame.displayWidth;
-						targetCanvas.height = frame.displayHeight;
-					}
-					targetContext.drawImage(frame, 0, 0, targetCanvas.width, targetCanvas.height);
-					frame.close();
-					presentedFrames += 1;
-					canvasReady = true;
-				}
-			} catch (error) {
-				if (active) console.debug(`Unable to render ${cameraId} live track`, error);
-			}
-		}
-		void drawFrames();
-		return () => {
-			active = false;
-			void reader.cancel().catch(() => {});
-		};
-	});
-
-	$effect(() => {
 		const element = video;
 		if (!element || typeof element.requestVideoFrameCallback !== 'function') return;
 		let active = true;
-		let handle = element.requestVideoFrameCallback(function onFrame() {
-			presentedFrames += 1;
+		let handle = element.requestVideoFrameCallback(function onFrame(_now, metadata) {
+			presentedFrames = metadata.presentedFrames;
 			if (active) handle = element.requestVideoFrameCallback(onFrame);
 		});
 		return () => {
@@ -411,8 +344,6 @@
 	data-decoder="browser"
 	data-codec={negotiatedCodec}
 >
-	<canvas bind:this={canvas} class="h-full w-full object-contain {canvasReady ? '' : 'hidden'}"
-	></canvas>
 	<video
 		bind:this={video}
 		autoplay
@@ -421,7 +352,7 @@
 		onplaying={handlePlaying}
 		onresize={() => void refreshReceiverStats(false)}
 		onerror={() => livePeer.markUnavailable(cameraId)}
-		class="h-full w-full object-contain {canvasReady ? 'hidden' : ''}"
+		class="h-full w-full object-contain"
 	></video>
 	<Popover.Root bind:open={diagnosticsOpen}>
 		<Popover.Trigger
