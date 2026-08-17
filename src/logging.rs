@@ -14,6 +14,8 @@ use tracing_subscriber::{
 };
 
 use crate::config;
+#[cfg(windows)]
+use crate::config::ServiceLogDestination;
 
 mod hub;
 mod layer;
@@ -59,17 +61,74 @@ pub fn initialize_global_logging(config_path: &Path) -> anyhow::Result<LoggingSe
         .with(LogCaptureLayer::new(hub.clone()))
         .try_init()?;
 
-    let service = LoggingService::new(
+    Ok(logging_service(
         hub,
         filter_file,
         reload_handle,
         initial_filter.directive,
         initial_filter.error,
-    );
+    ))
+}
+
+#[cfg(windows)]
+pub fn initialize_service_logging(
+    config_path: &Path,
+    destination: ServiceLogDestination,
+) -> anyhow::Result<LoggingService> {
+    let filter_file = LogFilterFile::beside_config(config_path);
+    let initial_filter = resolve_initial_filter(&filter_file, std::env::var("RUST_LOG").ok());
+    let env_filter = EnvFilter::try_new(&initial_filter.directive)?;
+    let (filter_layer, reload_handle) = reload::Layer::new(env_filter);
+    let hub = LogHub::default();
+
+    match destination {
+        ServiceLogDestination::EventLog => {
+            let event_log = tracing_layer_win_eventlog::EventLogLayer::new("KeepPeekService")?;
+            Registry::default()
+                .with(filter_layer)
+                .with(event_log)
+                .with(LogCaptureLayer::new(hub.clone()))
+                .try_init()?;
+        }
+        ServiceLogDestination::File => {
+            let log_directory = config::ensure_config_dir()?;
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_directory.join("keeppeek-service.log"))?;
+            Registry::default()
+                .with(filter_layer)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(false)
+                        .with_writer(std::sync::Mutex::new(log_file)),
+                )
+                .with(LogCaptureLayer::new(hub.clone()))
+                .try_init()?;
+        }
+    }
+
+    Ok(logging_service(
+        hub,
+        filter_file,
+        reload_handle,
+        initial_filter.directive,
+        initial_filter.error,
+    ))
+}
+
+fn logging_service(
+    hub: LogHub,
+    filter_file: LogFilterFile,
+    reload_handle: Handle<EnvFilter, Registry>,
+    directive: String,
+    error: Option<String>,
+) -> LoggingService {
+    let service = LoggingService::new(hub, filter_file, reload_handle, directive, error);
     if let Some(error) = service.filter_error() {
         tracing::warn!(%error, "using fallback log filter");
     }
-    Ok(service)
+    service
 }
 
 impl LoggingService {
