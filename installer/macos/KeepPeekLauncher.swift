@@ -81,13 +81,15 @@ func installService() throws {
 	let domain = "gui/\(getuid())"
 	let service = "\(domain)/\(label)"
 	_ = try runLaunchctl(["bootout", service], allowFailure: true)
+	var stopped = false
 	for _ in 0..<10 {
 		if try !runLaunchctl(["print", service], allowFailure: true) {
+			stopped = true
 			break
 		}
 		Thread.sleep(forTimeInterval: 1)
 	}
-	if try runLaunchctl(["print", service], allowFailure: true) {
+	if !stopped {
 		throw InstallError.launchctlFailed("stop")
 	}
 	try runLaunchctl(["bootstrap", domain, plistURL.path])
@@ -104,7 +106,11 @@ func showResult(title: String, message: String) {
 	#if os(macOS)
 	let application = NSApplication.shared
 	application.setActivationPolicy(.regular)
-	application.activate(ignoringOtherApps: true)
+	if #available(macOS 14.0, *) {
+		application.activate()
+	} else {
+		application.activate(ignoringOtherApps: true)
+	}
 	let alert = NSAlert()
 	alert.messageText = title
 	alert.informativeText = message
