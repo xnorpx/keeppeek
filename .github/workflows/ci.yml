@@ -123,8 +123,7 @@ jobs:
           sudo rm -rf "$app"
           sudo mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           sudo cp installer/macos/Info.plist "$app/Contents/Info.plist"
-          sudo cp installer/macos/KeepPeekLauncher.swift /tmp/KeepPeekLauncher.swift
-          sudo swiftc /tmp/KeepPeekLauncher.swift -o "$app/Contents/MacOS/KeepPeek"
+          sudo swiftc installer/macos/KeepPeekLauncher.swift -o "$app/Contents/MacOS/KeepPeek"
           sudo cp target/debug/keeppeek "$app/Contents/Resources/keeppeek"
           sudo chmod 755 "$app/Contents/MacOS/KeepPeek" "$app/Contents/Resources/keeppeek"
           plutil -lint "$app/Contents/Info.plist"

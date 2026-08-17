@@ -55,7 +55,9 @@ func installService() throws {
 	let homeURL = fileManager.homeDirectoryForCurrentUser
 	let libraryURL = homeURL.appending(path: "Library", directoryHint: .isDirectory)
 	let launchAgentsURL = libraryURL.appending(path: "LaunchAgents", directoryHint: .isDirectory)
-	let logsURL = libraryURL.appending(path: "Logs", directoryHint: .isDirectory)
+	let logsURL = libraryURL
+		.appending(path: "Logs", directoryHint: .isDirectory)
+		.appending(path: "KeepPeek", directoryHint: .isDirectory)
 	try fileManager.createDirectory(at: launchAgentsURL, withIntermediateDirectories: true)
 	try fileManager.createDirectory(at: logsURL, withIntermediateDirectories: true)
 
