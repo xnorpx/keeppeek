@@ -48,3 +48,10 @@ three of these GitHub Actions secrets:
 - `MACOS_SIGNING_IDENTITY`: The certificate's codesigning identity.
 
 When present, the workflow signs the application before creating the DMG.
+
+To submit the signed DMG for notarization and staple the resulting ticket, also
+configure these secrets:
+
+- `MACOS_NOTARIZATION_APPLE_ID`: Apple ID used for notarization.
+- `MACOS_NOTARIZATION_PASSWORD`: App-specific password for that Apple ID.
+- `MACOS_NOTARIZATION_TEAM_ID`: Apple Developer team identifier.

@@ -123,6 +123,9 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           EXTENSION: ${{ matrix.extension }}
           BINARY_EXTENSION: ${{ matrix.binary_extension }}
+          MACOS_NOTARIZATION_APPLE_ID: ${{ secrets.MACOS_NOTARIZATION_APPLE_ID }}
+          MACOS_NOTARIZATION_PASSWORD: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
+          MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
         run: |
           archive="keeppeek-${VERSION}-${PLATFORM}"
           if [[ "$PLATFORM" == macos-aarch64 ]]; then
@@ -155,6 +158,19 @@ jobs:
             if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
               codesign --force --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$asset"
               codesign --verify --strict --verbose=2 "$asset"
+            fi
+            if [[ -n "${MACOS_NOTARIZATION_APPLE_ID:-}" ]]; then
+              if [[ -z "${MACOS_SIGNING_IDENTITY:-}" || -z "$MACOS_NOTARIZATION_PASSWORD" || -z "$MACOS_NOTARIZATION_TEAM_ID" ]]; then
+                echo "macOS notarization requires signing, Apple ID, password, and team ID secrets" >&2
+                exit 1
+              fi
+              xcrun notarytool submit "$asset" \
+                --apple-id "$MACOS_NOTARIZATION_APPLE_ID" \
+                --password "$MACOS_NOTARIZATION_PASSWORD" \
+                --team-id "$MACOS_NOTARIZATION_TEAM_ID" \
+                --wait
+              xcrun stapler staple "$asset"
+              xcrun stapler validate "$asset"
             fi
           else
             mkdir "$archive"

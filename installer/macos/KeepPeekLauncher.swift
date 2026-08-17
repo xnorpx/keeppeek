@@ -30,7 +30,8 @@ let fileManager = FileManager.default
 let appURL = Bundle.main.bundleURL.resolvingSymlinksInPath()
 let applicationsURL = URL(fileURLWithPath: "/Applications", isDirectory: true).resolvingSymlinksInPath()
 
-func runLaunchctl(_ arguments: [String], allowFailure: Bool = false) throws {
+@discardableResult
+func runLaunchctl(_ arguments: [String], allowFailure: Bool = false) throws -> Bool {
 	let process = Process()
 	process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
 	process.arguments = arguments
@@ -40,6 +41,7 @@ func runLaunchctl(_ arguments: [String], allowFailure: Bool = false) throws {
 	if !allowFailure && process.terminationStatus != 0 {
 		throw InstallError.launchctlFailed(arguments.first ?? "run")
 	}
+	return process.terminationStatus == 0
 }
 
 func installService() throws {
@@ -77,10 +79,20 @@ func installService() throws {
 	try plistData.write(to: plistURL, options: .atomic)
 
 	let domain = "gui/\(getuid())"
-	try runLaunchctl(["bootout", "\(domain)/\(label)"], allowFailure: true)
+	let service = "\(domain)/\(label)"
+	_ = try runLaunchctl(["bootout", service], allowFailure: true)
+	for _ in 0..<10 {
+		if try !runLaunchctl(["print", service], allowFailure: true) {
+			break
+		}
+		Thread.sleep(forTimeInterval: 1)
+	}
+	if try runLaunchctl(["print", service], allowFailure: true) {
+		throw InstallError.launchctlFailed("stop")
+	}
 	try runLaunchctl(["bootstrap", domain, plistURL.path])
-	try runLaunchctl(["enable", "\(domain)/\(label)"])
-	try runLaunchctl(["kickstart", "-k", "\(domain)/\(label)"])
+	try runLaunchctl(["enable", service])
+	try runLaunchctl(["kickstart", "-k", service])
 }
 
 func showResult(title: String, message: String) {

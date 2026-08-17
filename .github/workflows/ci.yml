@@ -126,6 +126,7 @@ jobs:
           sudo swiftc installer/macos/KeepPeekLauncher.swift -o "$app/Contents/MacOS/KeepPeek"
           sudo cp target/debug/keeppeek "$app/Contents/Resources/keeppeek"
           sudo chmod 755 "$app/Contents/MacOS/KeepPeek" "$app/Contents/Resources/keeppeek"
+          sudo chown -R "$(id -un):$(id -gn)" "$app"
           plutil -lint "$app/Contents/Info.plist"
           KEEPPEEK_NO_UI=1 "$app/Contents/MacOS/KeepPeek"
           launchctl print "gui/$(id -u)/com.keeppeek"
