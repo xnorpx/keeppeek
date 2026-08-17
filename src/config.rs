@@ -22,6 +22,23 @@ pub struct Config {
 
     #[serde(default)]
     pub battery_wake: BatteryWakeConfig,
+
+    #[serde(default)]
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceLogDestination {
+    EventLog,
+    #[default]
+    File,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub service: ServiceLogDestination,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -385,6 +402,7 @@ impl Default for Config {
             port: default_port(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -643,7 +661,12 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
 
     let mut result: HashMap<String, Vec<CameraConfig>> = HashMap::new();
 
-    const RESERVED_SECTIONS: &[&str] = &["storage", "battery_wake", STORAGE_MIGRATION_SECTION];
+    const RESERVED_SECTIONS: &[&str] = &[
+        "storage",
+        "battery_wake",
+        "logging",
+        STORAGE_MIGRATION_SECTION,
+    ];
 
     for (namespace, ns_value) in root_table {
         if RESERVED_SECTIONS.contains(&namespace.as_str()) {
@@ -1035,6 +1058,36 @@ mod tests {
 
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn service_logging_config_is_not_treated_as_camera_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-service-logging-config-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [logging]
+                service = "event_log"
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                username = "operator"
+                password = "secret"
+            "#,
+        )
+        .unwrap();
+
+        let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config.logging.service, ServiceLogDestination::EventLog);
+        let cameras = load_cameras(&path).unwrap();
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras["cameras"].len(), 1);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     use crate::cameras::{CameraBackend, CameraTransport};
 
     #[cfg(unix)]
@@ -1156,6 +1209,7 @@ mod tests {
                 long_term_max_gb: 24,
             },
             battery_wake: BatteryWakeConfig::default(),
+            logging: LoggingConfig::default(),
         };
 
         let updated = update_settings(&path, &settings).unwrap();
@@ -1386,6 +1440,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: BatteryWakeConfig::default(),
+            logging: LoggingConfig::default(),
         };
         let migration = StorageMigration::between(&current, &next, &current, &next)
             .unwrap()

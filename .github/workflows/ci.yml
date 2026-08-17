@@ -86,6 +86,29 @@ jobs:
       - working-directory: ui
         run: bun install --registry=https://registry.npmjs.org/
       - run: cargo build --all
+      - name: Verify Windows service installation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $serviceName = 'KeepPeekService'
+          $binaryPath = (Resolve-Path 'target/debug/keeppeek-service.exe').Path
+          $installed = $false
+          try {
+            & sc.exe create $serviceName binPath= "`"$binaryPath`"" start= demand
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to install $serviceName"
+            }
+            $installed = $true
+
+            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            if ($null -eq $service -or -not $service.PathName.Contains($binaryPath)) {
+              throw "$serviceName was not installed with the expected binary path"
+            }
+          } finally {
+            if ($installed) {
+              & sc.exe delete $serviceName
+            }
+          }
       - name: Run Rust tests
         id: rust-tests
         shell: bash

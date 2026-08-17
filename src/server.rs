@@ -1470,6 +1470,7 @@ fn update_runtime_settings(request: &Request, state: &ServerState) -> Response {
             long_term_max_gb: update.storage.long_term_max_gb,
         },
         battery_wake: Default::default(),
+        logging: Default::default(),
     };
     let next_storage_config = StorageConfig::from_toml(&settings.storage);
     let migration = if update.move_existing_recordings {
@@ -3111,6 +3112,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: Default::default(),
+            logging: Default::default(),
         };
         let storage = StorageConfig::from_toml(&config.storage);
         let state = ServerState::new(
@@ -3717,6 +3719,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: Default::default(),
+            logging: Default::default(),
         };
         crate::config::write_private_file(
             &config_path,
@@ -3831,6 +3834,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: Default::default(),
+            logging: Default::default(),
         };
         crate::config::write_private_file(
             &config_path,

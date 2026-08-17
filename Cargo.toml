@@ -109,7 +109,9 @@ prost-types = "0.14"
 
 [target.'cfg(windows)'.dependencies]
 str0m-wincrypto = { version = "0.8.0" }
+tracing-layer-win-eventlog = { version = "1.0.1", default-features = false }
 windows = { version = "0.62.2", features = ["Win32_Media"] }
+windows-service = { version = "0.8.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 str0m-apple-crypto = { version = "0.6.0" }
