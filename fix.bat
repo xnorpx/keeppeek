@@ -9,12 +9,16 @@ if errorlevel 1 (
         exit /b 1
 )
 
-echo Formatting all files...
-cargo fmt --all
-call bunx @taplo/cli fmt
-call bunx prettier --write "**/*.md"
+echo Formatting Rust files...
+cargo fmt --all || exit /b 1
+
+echo Formatting TOML files...
+call bunx @taplo/cli fmt || exit /b 1
+
+echo Formatting Markdown files...
+call bunx prettier --write "**/*.md" || exit /b 1
 
 cd /d "%~dp0ui" || exit /b 1
 echo Formatting UI files...
-call bun run lint:fix
-call bun run format
+call bun run lint:fix || exit /b 1
+call bun run format || exit /b 1
