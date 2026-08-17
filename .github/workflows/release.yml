@@ -47,7 +47,7 @@ jobs:
             platform: windows-aarch64
             extension: zip
             binary_extension: .exe
-          - os: macos-14
+          - os: macos-latest
             platform: macos-aarch64
             extension: tar.gz
             binary_extension: ""
