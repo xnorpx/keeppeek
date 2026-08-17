@@ -19,6 +19,10 @@ performance are core design goals: KeepPeek keeps camera media local without req
 relay and handles it efficiently on local hardware. Transcoding, object detection, analytics, and
 other services can consume or publish media.
 
+## Documentation
+
+Read the [KeepPeek Book](https://xnorpx.github.io/keeppeek/).
+
 ## Ecosystem
 
 The Media Gateway API is implemented over WebRTC and is flexible enough to support a variety of

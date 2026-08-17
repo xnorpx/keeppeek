@@ -1,0 +1,33 @@
+name: Deploy mdBook to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v7
+      - name: Install mdBook
+        run: |
+          curl -L https://github.com/rust-lang/mdBook/releases/download/v0.4.43/mdbook-v0.4.43-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          chmod +x mdbook
+          mv mdbook /usr/local/bin/
+      - name: Build the book
+        run: mdbook build book
+      - name: Copy .nojekyll to book output
+        run: cp .nojekyll book/book/
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@373f7f263a76c20808c831209c920827a82a2847 # v3.9.3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./book/book
