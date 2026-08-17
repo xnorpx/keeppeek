@@ -2,6 +2,8 @@
 
 `keeppeek-service.exe` runs KeepPeek through the Windows Service Control Manager. Its service name is `KeepPeekService`, so another Windows service or an orchestration tool can start and stop it through the standard SCM APIs.
 
+The Windows installer includes both `keeppeek.exe` and `keeppeek-service.exe`. Select **Run KeepPeek as a Windows service** during installation to register and start the service; the installer stops, removes, and recreates an existing service during upgrades. Its uninstaller stops and removes the service.
+
 Install it from an elevated prompt:
 
 ```powershell
