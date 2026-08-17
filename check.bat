@@ -15,9 +15,16 @@ if errorlevel 1 (
         exit /b 1
 )
 
+where cargo-nextest >nul 2>&1
+if errorlevel 1 (
+        echo cargo-nextest is required: cargo install cargo-nextest 1>&2
+        exit /b 1
+)
+
 echo Building and Testing Rust...
 cargo build --all || exit /b 1
-cargo test --all || exit /b 1
+cargo nextest run --all || exit /b 1
+cargo test --doc --all || exit /b 1
 
 echo Running Rust Clippy...
 cargo clippy --all --all-targets -- -D warnings || exit /b 1
