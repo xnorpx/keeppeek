@@ -155,10 +155,6 @@ jobs:
             asset="$archive.$EXTENSION"
             hdiutil create -volname KeepPeek -srcfolder "$staging_directory" -ov -format UDZO "$asset"
             rm -rf "$staging_directory"
-            if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
-              codesign --force --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$asset"
-              codesign --verify --strict --verbose=2 "$asset"
-            fi
             if [[ -n "${MACOS_NOTARIZATION_APPLE_ID:-}" ]]; then
               if [[ -z "${MACOS_SIGNING_IDENTITY:-}" || -z "$MACOS_NOTARIZATION_PASSWORD" || -z "$MACOS_NOTARIZATION_TEAM_ID" ]]; then
                 echo "macOS notarization requires signing, Apple ID, password, and team ID secrets" >&2
