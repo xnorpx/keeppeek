@@ -12,6 +12,11 @@ if ! command -v cargo-machete >/dev/null 2>&1; then
         exit 1
 fi
 
+if ! command -v cargo-nextest >/dev/null 2>&1; then
+        printf '%s\n' 'cargo-nextest is required: cargo install cargo-nextest' >&2
+        exit 1
+fi
+
 repo_dir=$(
         unset CDPATH
         cd -- "$(dirname -- "$0")"
@@ -23,7 +28,8 @@ cd "$repo_dir"
 
 echo "Building and Testing Rust..."
 cargo build --all
-cargo test --all
+cargo nextest run --all
+cargo test --doc --all
 
 echo "Running Rust Clippy..."
 cargo clippy --all --all-targets -- -D warnings

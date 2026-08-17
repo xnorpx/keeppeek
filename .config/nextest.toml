@@ -1,0 +1,6 @@
+[test-groups]
+test-camera = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "package(test-camera)"
+test-group = "test-camera"

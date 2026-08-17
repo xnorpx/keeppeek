@@ -40,4 +40,5 @@ node_modules/
 *.toml
 !Cargo.toml
 !.cargo/config.toml
+!.config/nextest.toml
 !ui/bunfig.toml
