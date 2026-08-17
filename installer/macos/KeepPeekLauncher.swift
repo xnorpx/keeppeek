@@ -44,6 +44,10 @@ func runLaunchctl(_ arguments: [String], allowFailure: Bool = false) throws -> B
 	return process.terminationStatus == 0
 }
 
+func isServiceRunning(_ service: String) throws -> Bool {
+	try runLaunchctl(["print", service], allowFailure: true)
+}
+
 func installService() throws {
 	guard appURL.deletingLastPathComponent() == applicationsURL else {
 		throw InstallError.applicationNotInstalled
@@ -83,11 +87,12 @@ func installService() throws {
 	_ = try runLaunchctl(["bootout", service], allowFailure: true)
 	var stopped = false
 	for _ in 0..<10 {
-		if try !runLaunchctl(["print", service], allowFailure: true) {
+		if try isServiceRunning(service) {
+			Thread.sleep(forTimeInterval: 1)
+		} else {
 			stopped = true
 			break
 		}
-		Thread.sleep(forTimeInterval: 1)
 	}
 	if !stopped {
 		throw InstallError.launchctlFailed("stop")
