@@ -93,10 +93,17 @@ Section "Uninstall"
 SectionEnd
 
 Function .onInit
-  ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "KeepPeek requires 64-bit Windows."
+!if "${ARCH}" == "aarch64"
+  ${IfNot} ${IsNativeARM64}
+    MessageBox MB_ICONSTOP "KeepPeek requires Windows on ARM."
     Abort
   ${EndIf}
+!else
+  ${IfNot} ${IsNativeAMD64}
+    MessageBox MB_ICONSTOP "KeepPeek requires 64-bit Windows on x64."
+    Abort
+  ${EndIf}
+!endif
 
   SetRegView 64
   ${GetOptions} $CMDLINE "/SERVICE" $0
