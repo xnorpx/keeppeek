@@ -1,3 +1,5 @@
+> **Status:** KeepPeek is currently a proof of concept (POC) and is not yet production-ready.
+
 <hr>
 
 <div align="center">
