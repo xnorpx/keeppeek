@@ -11,6 +11,7 @@
 		"node": true
 	},
 	"rules": {
+		"no-labels": ["error", { "allowLoop": true, "allowSwitch": true }],
 		"no-restricted-imports": [
 			"error",
 			{
