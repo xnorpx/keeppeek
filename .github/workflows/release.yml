@@ -146,9 +146,14 @@ jobs:
             iconutil --convert icns "$app/Contents/Resources/KeepPeek.iconset" --output "$app/Contents/Resources/KeepPeek.icns"
             rm -rf "$app/Contents/Resources/KeepPeek.iconset"
             if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
-              codesign --force --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$app/Contents/Resources/keeppeek"
-              codesign --force --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$app/Contents/MacOS/KeepPeek"
-              codesign --force --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$app"
+              codesign --force --options runtime --timestamp \
+                --keychain "$MACOS_SIGNING_KEYCHAIN" --sign "$MACOS_SIGNING_IDENTITY" \
+                "$app/Contents/Resources/keeppeek"
+              codesign --force --options runtime --timestamp \
+                --keychain "$MACOS_SIGNING_KEYCHAIN" --sign "$MACOS_SIGNING_IDENTITY" \
+                "$app/Contents/MacOS/KeepPeek"
+              codesign --force --options runtime --timestamp \
+                --keychain "$MACOS_SIGNING_KEYCHAIN" --sign "$MACOS_SIGNING_IDENTITY" "$app"
               codesign --verify --deep --strict --verbose=2 "$app"
             fi
             ln -s /Applications "$staging_directory/Applications"
