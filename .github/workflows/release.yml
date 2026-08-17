@@ -1,3 +1,13 @@
+# How to make a release
+# - Update version in Cargo.toml:
+#   version = "X.Y.Z"
+# - Merge the PR to master.
+# - Create a tag with the version number:
+#   git tag X.Y.Z
+# - Push the tag to GitHub:
+#   git push origin X.Y.Z
+# - Go to the releases page, edit the draft release, and publish it.
+
 name: Release
 
 on:
