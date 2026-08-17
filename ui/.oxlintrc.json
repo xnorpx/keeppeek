@@ -1,0 +1,32 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "unicorn", "oxc"],
+	"categories": {
+		"correctness": "error"
+	},
+	"ignorePatterns": ["src/lib/components/ui/**", "src/lib/hooks/**", "src/lib/proto/**"],
+	"env": {
+		"builtin": true,
+		"browser": true,
+		"node": true
+	},
+	"rules": {
+		"no-labels": ["error", { "allowLoop": true, "allowSwitch": true }],
+		"no-restricted-imports": [
+			"error",
+			{
+				"paths": [
+					{
+						"name": "svelte",
+						"importNames": ["createEventDispatcher"],
+						"message": "Use typed callback props in Svelte 5 components."
+					},
+					{
+						"name": "$app/stores",
+						"message": "Use $app/state in SvelteKit 2."
+					}
+				]
+			}
+		]
+	}
+}
