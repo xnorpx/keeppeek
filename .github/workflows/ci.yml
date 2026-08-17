@@ -73,7 +73,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest, windows-11-arm]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -148,7 +148,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-latest, macos-15, windows-latest]
     defaults:
       run:
         working-directory: ui
