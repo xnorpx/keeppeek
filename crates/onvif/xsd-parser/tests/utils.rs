@@ -26,7 +26,12 @@ pub fn ast_test(input_xsd: &str, expected_rs: &str) {
     println!("=== actual:\n{actual}");
     println!("=== diff:\n");
 
-    text_diff::print_diff(expected, &actual, "\n");
+    println!(
+        "{}",
+        similar::TextDiff::from_lines(expected, &actual)
+            .unified_diff()
+            .header("expected", "actual")
+    );
 
     assert_ast_eq(expected, &actual);
 }
