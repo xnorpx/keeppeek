@@ -2,6 +2,8 @@
 
 @import 'tw-animate-css';
 
+@import './styles/style.css';
+
 @custom-variant dark (&:is(.dark *));
 
 :root {
@@ -13,7 +15,7 @@
 	--card-foreground: oklch(0.19 0.01 250);
 	--popover: oklch(0.995 0.002 250);
 	--popover-foreground: oklch(0.19 0.01 250);
-	--primary: oklch(0.47 0.2 260);
+	--primary: var(--keeppeek-rust);
 	--primary-foreground: oklch(0.985 0 0);
 	--secondary: oklch(0.925 0.008 250);
 	--secondary-foreground: oklch(0.23 0.012 250);
@@ -24,20 +26,20 @@
 	--destructive: oklch(0.577 0.245 27.325);
 	--border: oklch(0.875 0.009 250);
 	--input: oklch(0.875 0.009 250);
-	--ring: oklch(0.58 0.17 255);
+	--ring: var(--keeppeek-rust-bright);
 	--chart-1: oklch(0.58 0.2 255);
 	--chart-2: oklch(0.66 0.17 155);
-	--chart-3: oklch(0.64 0.2 35);
+	--chart-3: var(--keeppeek-rust-bright);
 	--chart-4: oklch(0.78 0.17 85);
 	--chart-5: oklch(0.53 0.11 300);
-	--sidebar: oklch(0.16 0.008 160);
-	--sidebar-foreground: oklch(0.94 0.004 160);
-	--sidebar-primary: oklch(0.58 0.2 255);
-	--sidebar-primary-foreground: oklch(0.985 0 0);
-	--sidebar-accent: oklch(0.24 0.01 160);
-	--sidebar-accent-foreground: oklch(0.98 0 0);
+	--sidebar: var(--keeppeek-iron);
+	--sidebar-foreground: var(--keeppeek-paper);
+	--sidebar-primary: var(--keeppeek-rust-bright);
+	--sidebar-primary-foreground: var(--keeppeek-paper);
+	--sidebar-accent: var(--keeppeek-oxidized);
+	--sidebar-accent-foreground: var(--keeppeek-paper);
 	--sidebar-border: oklch(1 0 0 / 9%);
-	--sidebar-ring: oklch(0.66 0.14 255);
+	--sidebar-ring: var(--keeppeek-rust-bright);
 	--surface-grid-line: oklch(0.25 0.01 250 / 0.025);
 }
 
@@ -49,8 +51,8 @@
 	--card-foreground: oklch(0.94 0.004 160);
 	--popover: oklch(0.16 0.008 160);
 	--popover-foreground: oklch(0.94 0.004 160);
-	--primary: oklch(0.67 0.16 245);
-	--primary-foreground: oklch(0.985 0 0);
+	--primary: var(--keeppeek-rust-light);
+	--primary-foreground: var(--keeppeek-iron);
 	--secondary: oklch(0.21 0.008 160);
 	--secondary-foreground: oklch(0.94 0.004 160);
 	--muted: oklch(0.19 0.007 160);
@@ -60,10 +62,10 @@
 	--destructive: oklch(0.64 0.21 25);
 	--border: oklch(1 0 0 / 11%);
 	--input: oklch(1 0 0 / 14%);
-	--ring: oklch(0.68 0.14 245);
+	--ring: var(--keeppeek-rust-light);
 	--chart-1: oklch(0.68 0.17 245);
 	--chart-2: oklch(0.7 0.15 155);
-	--chart-3: oklch(0.7 0.18 35);
+	--chart-3: var(--keeppeek-rust-light);
 	--chart-4: oklch(0.78 0.15 85);
 	--chart-5: oklch(0.67 0.11 300);
 	--surface-grid-line: oklch(1 0 0 / 0.025);
@@ -97,6 +99,12 @@
 	--color-chart-3: var(--chart-3);
 	--color-chart-4: var(--chart-4);
 	--color-chart-5: var(--chart-5);
+	--color-keeppeek-rust: var(--keeppeek-rust);
+	--color-keeppeek-rust-bright: var(--keeppeek-rust-bright);
+	--color-keeppeek-rust-light: var(--keeppeek-rust-light);
+	--color-keeppeek-iron: var(--keeppeek-iron);
+	--color-keeppeek-oxidized: var(--keeppeek-oxidized);
+	--color-keeppeek-paper: var(--keeppeek-paper);
 	--color-sidebar: var(--sidebar);
 	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar-primary: var(--sidebar-primary);
