@@ -1,0 +1,6 @@
+[book]
+authors = ["Marcus Asteborg"]
+language = "en"
+multilingual = false
+src = "src"
+title = "The KeepPeek Book"
