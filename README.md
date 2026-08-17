@@ -37,6 +37,32 @@ that interoperate with the Media Gateway may be open or closed source.
 KeepPeek is developed with AI assistance through an iterative, human-directed process of
 implementation, validation, review, and refinement.
 
+## Docker
+
+The image supports both `linux/amd64` and `linux/arm64` when built with Docker Buildx. It runs
+the `keeppeek` application directly.
+
+KeepPeek stores its configuration, recordings, recording catalog, thumbnails, and logging settings
+under `/config/keeppeek` in the container. Mount `/config` from the host to persist them. The first
+start creates the configuration there:
+
+```sh
+mkdir -p keeppeek-data
+docker run --rm --name keeppeek -p 8081:8081 \
+  -v "$(pwd)/keeppeek-data:/config" \
+  ghcr.io/xnorpx/keeppeek:latest
+```
+
+The container runs as UID `65532`; ensure the host directory is writable by that user. On Linux,
+run `sudo chown 65532:65532 keeppeek-data` if necessary.
+
+Publish a multi-architecture image with:
+
+```sh
+docker buildx build --platform linux/amd64,linux/arm64 \
+  --tag ghcr.io/xnorpx/keeppeek:latest --push .
+```
+
 ## License
 
 Copyright (C) 2026 Marcus Asteborg.
