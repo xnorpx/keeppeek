@@ -112,17 +112,31 @@ plutil -replace EnvironmentVariables.HOME -string "$service_home" "$temporary_pl
 plutil -lint "$temporary_plist" >/dev/null
 
 install -d -o root -g wheel -m 755 /usr/local/bin
-launchctl bootout system/com.keeppeek >/dev/null 2>&1 || :
-attempt=0
-while launchctl print system/com.keeppeek >/dev/null 2>&1; do
-	attempt=$((attempt + 1))
-	[ "$attempt" -lt 10 ] || fail "existing KeepPeek service did not stop"
-	sleep 1
-done
+if launchctl print system/com.keeppeek >/dev/null 2>&1; then
+	launchctl bootout system/com.keeppeek
+	attempt=0
+	while launchctl print system/com.keeppeek >/dev/null 2>&1; do
+		attempt=$((attempt + 1))
+		[ "$attempt" -lt 10 ] || fail "existing KeepPeek service did not stop"
+		sleep 1
+	done
+fi
 install -o root -g wheel -m 755 "$binary" /usr/local/bin/keeppeek
 mv -f "$temporary_plist" "$plist"
-launchctl bootstrap system "$plist"
-launchctl enable system/com.keeppeek
-launchctl kickstart -k system/com.keeppeek
+
+if ! launchctl bootstrap system "$plist"; then
+	rm -f "$plist"
+	fail "unable to bootstrap KeepPeek service"
+fi
+if ! launchctl enable system/com.keeppeek; then
+	launchctl bootout system/com.keeppeek >/dev/null 2>&1 || :
+	rm -f "$plist"
+	fail "unable to enable KeepPeek service"
+fi
+if ! launchctl kickstart -k system/com.keeppeek; then
+	launchctl bootout system/com.keeppeek >/dev/null 2>&1 || :
+	rm -f "$plist"
+	fail "unable to start KeepPeek service"
+fi
 
 printf '%s\n' "installed and started KeepPeek service for $service_user"
