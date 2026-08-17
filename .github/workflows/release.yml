@@ -98,9 +98,10 @@ jobs:
           ARCH: ${{ matrix.installer_arch }}
           VERSION: ${{ needs.create-release.outputs.version }}
         run: |
+          build_dir="$(cygpath -w target/release)"
           "C:/Program Files (x86)/NSIS/makensis.exe" \
             "/DARCH=$ARCH" \
-            "/DBUILD_DIR=target/release" \
+            "/DBUILD_DIR=$build_dir" \
             "/DOUT_DIR=." \
             "/DVERSION=$VERSION" \
             "/DVERSION_RESOURCE=$VERSION.0" \

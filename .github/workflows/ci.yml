@@ -98,11 +98,12 @@ jobs:
         shell: pwsh
         run: |
           $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
           $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
           New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
           & 'C:\Program Files (x86)\NSIS\makensis.exe' `
             "/DARCH=$architecture" `
-            '/DBUILD_DIR=target\debug' `
+            "/DBUILD_DIR=$buildDirectory" `
             "/DOUT_DIR=$outputDirectory" `
             '/DVERSION=0.0.0' `
             '/DVERSION_RESOURCE=0.0.0.0' `
