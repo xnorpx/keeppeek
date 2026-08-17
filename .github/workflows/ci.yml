@@ -109,24 +109,27 @@ jobs:
               & sc.exe delete $serviceName
             }
           }
-      - name: Verify macOS installer
+      - name: Verify macOS app service installation
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          install_directory="$(mktemp -d)"
+          app=/Applications/KeepPeek.app
           cleanup() {
-            sudo launchctl bootout system/com.keeppeek >/dev/null 2>&1 || true
-            sudo rm -f /Library/LaunchDaemons/com.keeppeek.plist /usr/local/bin/keeppeek
-            rm -rf "$install_directory"
+            launchctl bootout "gui/$(id -u)/com.keeppeek" >/dev/null 2>&1 || true
+            rm -f "$HOME/Library/LaunchAgents/com.keeppeek.plist"
+            sudo rm -rf "$app"
           }
           trap cleanup EXIT
-          cp target/debug/keeppeek "$install_directory/keeppeek"
-          cp installer/macos/install-macos.sh installer/macos/com.keeppeek.plist "$install_directory/"
-          chmod +x "$install_directory/install-macos.sh"
-          "$install_directory/install-macos.sh" --prefix "$install_directory/bin"
-          test -x "$install_directory/bin/keeppeek"
-          sudo "$install_directory/install-macos.sh" --service --user "$(id -un)"
-          sudo launchctl print system/com.keeppeek
+          sudo rm -rf "$app"
+          sudo mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          sudo cp installer/macos/Info.plist "$app/Contents/Info.plist"
+          sudo cp installer/macos/KeepPeekLauncher.swift /tmp/KeepPeekLauncher.swift
+          sudo swiftc /tmp/KeepPeekLauncher.swift -o "$app/Contents/MacOS/KeepPeek"
+          sudo cp target/debug/keeppeek "$app/Contents/Resources/keeppeek"
+          sudo chmod 755 "$app/Contents/MacOS/KeepPeek" "$app/Contents/Resources/keeppeek"
+          plutil -lint "$app/Contents/Info.plist"
+          KEEPPEEK_NO_UI=1 "$app/Contents/MacOS/KeepPeek"
+          launchctl print "gui/$(id -u)/com.keeppeek"
       - name: Run Rust tests
         id: rust-tests
         shell: bash

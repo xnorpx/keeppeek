@@ -2,65 +2,49 @@
 
 KeepPeek releases for macOS support Apple Silicon (`arm64`) only.
 
-Download the `keeppeek-<version>-macos-aarch64.tar.gz` release asset and its
-matching `.sha256` file. Verify the checksum, extract the archive, and change
-to the extracted directory:
+Download the `keeppeek-<version>-macos-aarch64.dmg` release asset and its
+matching `.sha256` file. Verify its checksum:
 
 ```sh
-shasum -a 256 -c keeppeek-<version>-macos-aarch64.tar.gz.sha256
-tar xzf keeppeek-<version>-macos-aarch64.tar.gz
-cd keeppeek-<version>-macos-aarch64
+shasum -a 256 -c keeppeek-<version>-macos-aarch64.dmg.sha256
 ```
 
-## Manual operation
-
-Install the executable for the current user:
-
-```sh
-./install-macos.sh
-```
-
-It is installed at `~/.local/bin/keeppeek`. Add that directory to your `PATH`
-if necessary, then start KeepPeek in a terminal:
-
-```sh
-keeppeek
-```
-
-KeepPeek stops cleanly when the terminal receives Ctrl+C. Its configuration
-and default recordings are stored in
-`~/Library/Application Support/keeppeek`.
-
-To use a different installation directory, pass `--prefix`:
-
-```sh
-./install-macos.sh --prefix /path/to/bin
-```
+Open the disk image and drag `KeepPeek.app` to `Applications`. Open KeepPeek
+from `Applications` once to install and start its service.
 
 ## Service operation
 
-The installer can instead install a system `launchd` service that runs
-KeepPeek as a local user. It starts at boot and is restarted if KeepPeek exits
-unsuccessfully. Run it from an administrator account:
+KeepPeek installs a per-user `launchd` service. It starts automatically after
+you log in and restarts after an unsuccessful exit. It uses the configuration
+and recordings under `~/Library/Application Support/keeppeek`.
+
+To check the service and follow its logs, run:
 
 ```sh
-sudo ./install-macos.sh --service --user "$(id -un)"
+launchctl print gui/"$(id -u)"/com.keeppeek
+tail -f ~/Library/Logs/KeepPeek/keeppeek.log ~/Library/Logs/KeepPeek/keeppeek-error.log
 ```
 
-The service executable is `/usr/local/bin/keeppeek`, its launchd label is
-`com.keeppeek`, and it uses the selected user's KeepPeek configuration. Check
-its status and logs with:
+To stop and remove the service and application:
 
 ```sh
-sudo launchctl print system/com.keeppeek
-sudo tail -f /var/log/keeppeek.log /var/log/keeppeek-error.log
+launchctl bootout gui/"$(id -u)"/com.keeppeek
+rm -f ~/Library/LaunchAgents/com.keeppeek.plist
+rm -rf /Applications/KeepPeek.app
 ```
 
-To stop and remove the service:
+Dragging a newer `KeepPeek.app` to `Applications` replaces the existing
+application. Open it once afterward to restart the service using the updated
+version.
 
-```sh
-sudo launchctl bootout system/com.keeppeek
-sudo rm -f /Library/LaunchDaemons/com.keeppeek.plist /usr/local/bin/keeppeek
-```
+## Release signing
 
-Run the service installation command again to upgrade an existing service.
+macOS DMGs are unsigned unless the release workflow is configured with all
+three of these GitHub Actions secrets:
+
+- `MACOS_SIGNING_CERTIFICATE_BASE64`: Base64-encoded Developer ID Application
+  PKCS#12 certificate.
+- `MACOS_SIGNING_CERTIFICATE_PASSWORD`: Password for that certificate.
+- `MACOS_SIGNING_IDENTITY`: The certificate's codesigning identity.
+
+When present, the workflow signs the application before creating the DMG.
