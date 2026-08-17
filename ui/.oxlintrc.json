@@ -9,5 +9,23 @@
 		"builtin": true,
 		"browser": true,
 		"node": true
+	},
+	"rules": {
+		"no-restricted-imports": [
+			"error",
+			{
+				"paths": [
+					{
+						"name": "svelte",
+						"importNames": ["createEventDispatcher"],
+						"message": "Use typed callback props in Svelte 5 components."
+					},
+					{
+						"name": "$app/stores",
+						"message": "Use $app/state in SvelteKit 2."
+					}
+				]
+			}
+		]
 	}
 }
