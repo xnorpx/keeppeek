@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test';
 const streams = [{ cameraId: '127.0.0.1', width: 640, height: 360 }] as const;
 const skipsH264DecodeOnWindowsCi = process.platform === 'win32' && Boolean(process.env.CI);
 
-test('Peek decodes frames from configured fake cameras', async ({ page }) => {
+test('Peek presents native WebRTC frames without a canvas fallback', async ({ page }) => {
 	test.skip(
 		skipsH264DecodeOnWindowsCi,
 		'Windows CI browsers do not expose decoded H.264 frames for this WebRTC stream.'
@@ -31,26 +31,20 @@ test('Peek decodes frames from configured fake cameras', async ({ page }) => {
 	for (const stream of streams) {
 		const liveView = page.locator(`[data-camera-id="${stream.cameraId}"]`);
 		await expect(liveView).toHaveAttribute('data-status', 'live', { timeout: 30_000 });
+		await expect(liveView.locator('canvas')).toHaveCount(0);
 		const video = liveView.locator('video');
+		await expect(video).toBeVisible();
 		await expect
 			.poll(
 				async () =>
 					video.evaluate((element) => {
 						const videoElement = element as HTMLVideoElement;
-						const canvas = element.parentElement?.querySelector<HTMLCanvasElement>('canvas');
-						if (canvas && getComputedStyle(canvas).display !== 'none') {
-							return `canvas:${canvas.width}x${canvas.height}`;
-						}
 						const frames = videoElement.getVideoPlaybackQuality().totalVideoFrames;
 						return `video:${videoElement.videoWidth}x${videoElement.videoHeight}:${frames}`;
 					}),
 				{ timeout: 30_000 }
 			)
-			.toMatch(
-				new RegExp(
-					`^(canvas:${stream.width}x${stream.height}|video:${stream.width}x${stream.height}:[1-9]\\d*)$`
-				)
-			);
+			.toMatch(new RegExp(`^video:${stream.width}x${stream.height}:[1-9]\\d*$`));
 	}
 	expect(browserErrors).toEqual([]);
 });
