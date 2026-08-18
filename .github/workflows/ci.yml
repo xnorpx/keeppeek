@@ -116,8 +116,8 @@ jobs:
           $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
           $serviceName = 'KeepPeekService'
           try {
-            & $installer /S /SERVICE "/D=$installDirectory"
-            if ($LASTEXITCODE -ne 0) {
+            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
               throw 'Unable to install KeepPeek'
             }
 
@@ -132,8 +132,8 @@ jobs:
               throw "$serviceName was not installed with the expected binary path"
             }
 
-            & $installer /S /SERVICE "/D=$installDirectory"
-            if ($LASTEXITCODE -ne 0) {
+            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
               throw 'Unable to reinstall KeepPeek'
             }
           } finally {
