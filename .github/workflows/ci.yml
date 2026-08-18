@@ -170,6 +170,27 @@ jobs:
               & sc.exe delete $serviceName
             }
           }
+      - name: Verify macOS app service installation
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          app=/Applications/KeepPeek.app
+          cleanup() {
+            launchctl bootout "gui/$(id -u)/com.keeppeek" >/dev/null 2>&1 || true
+            rm -f "$HOME/Library/LaunchAgents/com.keeppeek.plist"
+            sudo rm -rf "$app"
+          }
+          trap cleanup EXIT
+          sudo rm -rf "$app"
+          sudo mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          sudo cp installer/macos/Info.plist "$app/Contents/Info.plist"
+          sudo swiftc installer/macos/KeepPeekLauncher.swift -o "$app/Contents/MacOS/KeepPeek"
+          sudo cp target/debug/keeppeek "$app/Contents/Resources/keeppeek"
+          sudo chmod 755 "$app/Contents/MacOS/KeepPeek" "$app/Contents/Resources/keeppeek"
+          sudo chown -R "$(id -un):$(id -gn)" "$app"
+          plutil -lint "$app/Contents/Info.plist"
+          KEEPPEEK_NO_UI=1 "$app/Contents/MacOS/KeepPeek"
+          launchctl print "gui/$(id -u)/com.keeppeek"
       - name: Run Rust tests
         id: rust-tests
         shell: bash
