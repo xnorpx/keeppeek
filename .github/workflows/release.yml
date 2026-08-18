@@ -21,6 +21,10 @@ permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   create-release:
     name: Create Release
@@ -42,6 +46,10 @@ jobs:
             version="$GITHUB_REF_NAME"
           fi
           package_version="$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)"
+          if [[ -z "$package_version" ]]; then
+            echo "Unable to determine the package version" >&2
+            exit 1
+          fi
           {
             echo "version=$version"
             echo "version_resource=$package_version.0"
