@@ -197,9 +197,9 @@ jobs:
             cp target/release/keeppeek "$app/Contents/Resources/keeppeek"
             chmod 755 "$app/Contents/MacOS/KeepPeek" "$app/Contents/Resources/keeppeek"
             for size in 16 32 128 256 512; do
-              sips --resampleHeightWidth "$size" "$size" assets/readme_logo.jpeg --out "$app/Contents/Resources/KeepPeek.iconset/icon_${size}x${size}.png"
+              sips --resampleHeightWidth "$size" "$size" --setProperty format png assets/readme_logo.jpeg --out "$app/Contents/Resources/KeepPeek.iconset/icon_${size}x${size}.png"
               doubled_size=$((size * 2))
-              sips --resampleHeightWidth "$doubled_size" "$doubled_size" assets/readme_logo.jpeg --out "$app/Contents/Resources/KeepPeek.iconset/icon_${size}x${size}@2x.png"
+              sips --resampleHeightWidth "$doubled_size" "$doubled_size" --setProperty format png assets/readme_logo.jpeg --out "$app/Contents/Resources/KeepPeek.iconset/icon_${size}x${size}@2x.png"
             done
             iconutil --convert icns "$app/Contents/Resources/KeepPeek.iconset" --output "$app/Contents/Resources/KeepPeek.icns"
             rm -rf "$app/Contents/Resources/KeepPeek.iconset"
