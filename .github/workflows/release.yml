@@ -12,6 +12,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
 
@@ -19,20 +21,41 @@ permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
 jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      version_resource: ${{ steps.version.outputs.version_resource }}
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
       - id: version
         name: Read release version
-        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == branch ]]; then
+            version=master
+          else
+            version="$GITHUB_REF_NAME"
+          fi
+          package_version="$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)"
+          if [[ -z "$package_version" ]]; then
+            echo "Unable to determine the package version" >&2
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "version_resource=$package_version.0"
+          } >> "$GITHUB_OUTPUT"
       - name: Check release version
+        if: github.ref_type == 'tag'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: grep -Fx "version = \"$VERSION\"" Cargo.toml
@@ -40,7 +63,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: gh release create "$VERSION" --draft --verify-tag --title "$VERSION"
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == branch ]]; then
+            gh release delete "$VERSION" --yes || true
+            git tag --force "$VERSION" "$GITHUB_SHA"
+            git push --force origin "refs/tags/$VERSION"
+            gh release create "$VERSION" --prerelease --verify-tag --title "$VERSION"
+          else
+            gh release create "$VERSION" --draft --verify-tag --title "$VERSION"
+          fi
 
   build:
     name: Build (${{ matrix.platform }})
@@ -101,6 +132,7 @@ jobs:
         env:
           ARCH: ${{ matrix.installer_arch }}
           VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
         run: |
           build_dir="$(cygpath -w target/release)"
           "C:/Program Files (x86)/NSIS/makensis.exe" \
@@ -108,7 +140,7 @@ jobs:
             "/DBUILD_DIR=$build_dir" \
             "/DOUT_DIR=." \
             "/DVERSION=$VERSION" \
-            "/DVERSION_RESOURCE=$VERSION.0" \
+            "/DVERSION_RESOURCE=$VERSION_RESOURCE" \
             installer/keeppeek.nsi
       - name: Configure macOS code signing
         if: matrix.platform == 'macos-aarch64'
@@ -236,6 +268,7 @@ jobs:
 
   container:
     name: Publish container image
+    if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
     needs: create-release
     runs-on: ubuntu-latest
     permissions:
@@ -252,12 +285,26 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image-tags
+        name: Set container image tags
+        shell: bash
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+              echo "ghcr.io/$GITHUB_REPOSITORY:$VERSION"
+              echo "ghcr.io/$GITHUB_REPOSITORY:latest"
+            else
+              echo "ghcr.io/$GITHUB_REPOSITORY:master-${GITHUB_SHA::7}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ needs.create-release.outputs.version }}
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ steps.image-tags.outputs.tags }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
