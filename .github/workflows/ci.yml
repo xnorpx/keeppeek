@@ -138,7 +138,10 @@ jobs:
             }
           } finally {
             if (Test-Path (Join-Path $installDirectory 'uninstall.exe')) {
-              & (Join-Path $installDirectory 'uninstall.exe') /S
+              $process = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+              if ($process.ExitCode -ne 0) {
+                throw 'Unable to uninstall KeepPeek'
+              }
             } else {
               & sc.exe delete $serviceName
             }
