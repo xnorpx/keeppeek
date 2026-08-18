@@ -135,13 +135,15 @@ jobs:
           VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
         run: |
           build_dir="$(cygpath -w target/release)"
-          "C:/Program Files (x86)/NSIS/makensis.exe" \
-            "/DARCH=$ARCH" \
-            "/DBUILD_DIR=$build_dir" \
-            "/DOUT_DIR=." \
-            "/DVERSION=$VERSION" \
-            "/DVERSION_RESOURCE=$VERSION_RESOURCE" \
+          makensis_args=(
+            "/DARCH=$ARCH"
+            "/DBUILD_DIR=$build_dir"
+            "/DOUT_DIR=."
+            "/DVERSION=$VERSION"
+            "/DVERSION_RESOURCE=$VERSION_RESOURCE"
             installer/keeppeek.nsi
+          )
+          "C:/Program Files (x86)/NSIS/makensis.exe" "${makensis_args[@]}"
       - name: Configure macOS code signing
         if: matrix.platform == 'macos-aarch64'
         shell: bash
