@@ -293,7 +293,7 @@ jobs:
           {
             echo "tags<<EOF"
             echo "ghcr.io/$GITHUB_REPOSITORY:$VERSION"
-            if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
               echo "ghcr.io/$GITHUB_REPOSITORY:latest"
             fi
             echo "EOF"
