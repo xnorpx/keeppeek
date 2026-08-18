@@ -268,7 +268,7 @@ jobs:
 
   container:
     name: Publish container image
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
     needs: create-release
     runs-on: ubuntu-latest
     permissions:
@@ -293,9 +293,11 @@ jobs:
         run: |
           {
             echo "tags<<EOF"
-            echo "ghcr.io/$GITHUB_REPOSITORY:$VERSION"
             if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+              echo "ghcr.io/$GITHUB_REPOSITORY:$VERSION"
               echo "ghcr.io/$GITHUB_REPOSITORY:latest"
+            else
+              echo "ghcr.io/$GITHUB_REPOSITORY:master-${GITHUB_SHA::7}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
