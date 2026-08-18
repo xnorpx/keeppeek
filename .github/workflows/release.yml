@@ -136,10 +136,11 @@ jobs:
           VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
         run: |
           build_dir="$(cygpath -aw target/release)"
+          out_dir="$(cygpath -aw .)"
           makensis_args=(
             "/DARCH=$ARCH"
             "/DBUILD_DIR=$build_dir"
-            "/DOUT_DIR=."
+            "/DOUT_DIR=$out_dir"
             "/DVERSION=$VERSION"
             "/DVERSION_RESOURCE=$VERSION_RESOURCE"
             installer/keeppeek.nsi
