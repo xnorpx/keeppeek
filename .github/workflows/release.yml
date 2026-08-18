@@ -52,10 +52,12 @@ jobs:
         include:
           - os: windows-latest
             platform: windows-x86_64
+            installer_arch: x86_64
             extension: zip
             binary_extension: .exe
           - os: windows-11-arm
             platform: windows-aarch64
+            installer_arch: aarch64
             extension: zip
             binary_extension: .exe
           - os: macos-latest
@@ -86,6 +88,28 @@ jobs:
         run: test "$(uname -m)" = arm64
       - name: Build release binary
         run: cargo build --release --bin keeppeek
+      - name: Build release service binary
+        if: runner.os == 'Windows'
+        run: cargo build --release --bin keeppeek-service
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install nsis --no-progress --yes
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          ARCH: ${{ matrix.installer_arch }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          build_dir="$(cygpath -w target/release)"
+          "C:/Program Files (x86)/NSIS/makensis.exe" \
+            "/DARCH=$ARCH" \
+            "/DBUILD_DIR=$build_dir" \
+            "/DOUT_DIR=." \
+            "/DVERSION=$VERSION" \
+            "/DVERSION_RESOURCE=$VERSION.0" \
+            installer/keeppeek.nsi
       - name: Configure macOS code signing
         if: matrix.platform == 'macos-aarch64'
         shell: bash
@@ -129,6 +153,7 @@ jobs:
           MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
         run: |
           archive="keeppeek-${VERSION}-${PLATFORM}"
+          assets=""
           if [[ "$PLATFORM" == macos-aarch64 ]]; then
             staging_directory="$(mktemp -d)"
             app="$staging_directory/KeepPeek.app"
@@ -177,6 +202,15 @@ jobs:
           else
             mkdir "$archive"
             cp "target/release/keeppeek${BINARY_EXTENSION}" "$archive/"
+            if [[ "$BINARY_EXTENSION" == ".exe" ]]; then
+              cp target/release/keeppeek-service.exe "$archive/"
+              standalone="keeppeek-${VERSION}-${PLATFORM}.exe"
+              cp target/release/keeppeek.exe "$standalone"
+              python -c 'import hashlib, pathlib; path = pathlib.Path("'"$standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$standalone.sha256"
+              installer="keeppeek-${VERSION}-${PLATFORM}-installer.exe"
+              python -c 'import hashlib, pathlib; path = pathlib.Path("'"$installer"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$installer.sha256"
+              assets="$standalone $standalone.sha256 $installer $installer.sha256"
+            fi
             if [[ "$EXTENSION" == zip ]]; then
               7z a "$archive.zip" "$archive"
             else
@@ -185,13 +219,13 @@ jobs:
             asset="$archive.$EXTENSION"
           fi
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$asset.sha256"
-          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "assets=$asset $asset.sha256 $assets" >> "$GITHUB_OUTPUT"
       - name: Upload release archive
         env:
-          ASSET: ${{ steps.package.outputs.asset }}
+          ASSETS: ${{ steps.package.outputs.assets }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.create-release.outputs.version }}
-        run: gh release upload "$VERSION" "$ASSET" "$ASSET.sha256"
+        run: gh release upload "$VERSION" $ASSETS
       - name: Remove macOS signing keychain
         if: always() && matrix.platform == 'macos-aarch64'
         shell: bash

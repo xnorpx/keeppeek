@@ -86,6 +86,67 @@ jobs:
       - working-directory: ui
         run: bun install --registry=https://registry.npmjs.org/
       - run: cargo build --all
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install nsis --no-progress --yes
+      - name: Build Windows installer binaries
+        if: runner.os == 'Windows'
+        run: cargo build --bin keeppeek --bin keeppeek-service
+      - name: Verify Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
+          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+            "/DARCH=$architecture" `
+            "/DBUILD_DIR=$buildDirectory" `
+            "/DOUT_DIR=$outputDirectory" `
+            '/DVERSION=0.0.0' `
+            '/DVERSION_RESOURCE=0.0.0.0' `
+            installer/keeppeek.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to build the KeepPeek installer'
+          }
+
+          $installer = Join-Path $outputDirectory "keeppeek-0.0.0-windows-$architecture-installer.exe"
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
+          $serviceName = 'KeepPeekService'
+          try {
+            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
+              throw 'Unable to install KeepPeek'
+            }
+
+            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe') {
+              if (-not (Test-Path (Join-Path $installDirectory $binary))) {
+                throw "$binary was not installed"
+              }
+            }
+
+            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            if ($null -eq $service -or -not $service.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
+              throw "$serviceName was not installed with the expected binary path"
+            }
+
+            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
+              throw 'Unable to reinstall KeepPeek'
+            }
+          } finally {
+            if (Test-Path (Join-Path $installDirectory 'uninstall.exe')) {
+              $process = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+              if ($process.ExitCode -ne 0) {
+                throw 'Unable to uninstall KeepPeek'
+              }
+            } else {
+              & sc.exe delete $serviceName
+            }
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $outputDirectory
+          }
       - name: Verify Windows service installation
         if: runner.os == 'Windows'
         shell: pwsh
