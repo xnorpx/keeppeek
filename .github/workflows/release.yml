@@ -256,10 +256,6 @@ jobs:
           fi
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$asset.sha256"
           package_assets=("$asset" "$asset.sha256" "${assets[@]}")
-          if (( ${#package_assets[@]} == 0 )); then
-            echo "No release assets were produced for $PLATFORM" >&2
-            exit 1
-          fi
           for package_asset in "${package_assets[@]}"; do
             if [[ ! -f "$package_asset" ]]; then
               echo "Expected release asset was not created: $package_asset" >&2
