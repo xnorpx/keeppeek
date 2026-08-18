@@ -189,7 +189,7 @@ jobs:
           MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.MACOS_NOTARIZATION_TEAM_ID }}
         run: |
           archive="keeppeek-${VERSION}-${PLATFORM}"
-          assets=""
+          assets=()
           if [[ "$PLATFORM" == macos-aarch64 ]]; then
             staging_directory="$(mktemp -d)"
             app="$staging_directory/KeepPeek.app"
@@ -245,7 +245,7 @@ jobs:
               python -c 'import hashlib, pathlib; path = pathlib.Path("'"$standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$standalone.sha256"
               installer="keeppeek-${VERSION}-${PLATFORM}-installer.exe"
               python -c 'import hashlib, pathlib; path = pathlib.Path("'"$installer"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$installer.sha256"
-              assets="$standalone $standalone.sha256 $installer $installer.sha256"
+              assets=("$standalone" "$standalone.sha256" "$installer" "$installer.sha256")
             fi
             if [[ "$EXTENSION" == zip ]]; then
               7z a "$archive.zip" "$archive"
@@ -255,13 +255,36 @@ jobs:
             asset="$archive.$EXTENSION"
           fi
           python -c 'import hashlib, pathlib; path = pathlib.Path("'"$asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$asset.sha256"
-          echo "assets=$asset $asset.sha256 $assets" >> "$GITHUB_OUTPUT"
+          package_assets=("$asset" "$asset.sha256" "${assets[@]}")
+          if (( ${#package_assets[@]} == 0 )); then
+            echo "No release assets were produced for $PLATFORM" >&2
+            exit 1
+          fi
+          for package_asset in "${package_assets[@]}"; do
+            if [[ ! -f "$package_asset" ]]; then
+              echo "Expected release asset was not created: $package_asset" >&2
+              exit 1
+            fi
+          done
+          echo "Packaged release assets:"
+          printf '  %s\n' "${package_assets[@]}"
+          {
+            echo "assets<<EOF"
+            printf '%s\n' "${package_assets[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Upload release archive
+        if: steps.package.outputs.assets != ''
+        shell: bash
         env:
           ASSETS: ${{ steps.package.outputs.assets }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.create-release.outputs.version }}
-        run: gh release upload "$VERSION" $ASSETS
+        run: |
+          while IFS= read -r asset; do
+            [[ -n "$asset" ]] || continue
+            gh release upload "$VERSION" "$asset"
+          done <<< "$ASSETS"
       - name: Remove macOS signing keychain
         if: always() && matrix.platform == 'macos-aarch64'
         shell: bash
