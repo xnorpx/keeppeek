@@ -135,7 +135,7 @@ jobs:
           VERSION: ${{ needs.create-release.outputs.version }}
           VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
         run: |
-          build_dir="$(cygpath -w target/release)"
+          build_dir="$(cygpath -aw target/release)"
           makensis_args=(
             "/DARCH=$ARCH"
             "/DBUILD_DIR=$build_dir"
