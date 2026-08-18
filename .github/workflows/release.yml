@@ -131,6 +131,7 @@ jobs:
         shell: bash
         env:
           ARCH: ${{ matrix.installer_arch }}
+          MSYS2_ARG_CONV_EXCL: "*"
           VERSION: ${{ needs.create-release.outputs.version }}
           VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
         run: |
