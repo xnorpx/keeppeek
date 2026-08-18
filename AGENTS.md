@@ -22,7 +22,8 @@ CI uses these same entry points. Individual UI commands may be used while diagno
 ## Package Registries
 
 - Use Bun as the only package manager and script runner under `ui/`; do not create npm, pnpm, or Yarn lockfiles.
-- Resolve JavaScript packages only from the public npm registry configured in `.npmrc` and `ui/bunfig.toml`.
+- Resolve external JavaScript packages only from the public npm registry configured in `.npmrc` and `ui/bunfig.toml`.
+- Local JavaScript packages whose source lives in this repository may be consumed through Bun workspace or file dependencies. They must not rely on a private registry or proxy for their external dependencies.
 - Resolve Rust packages only from public crates.io using the repository `.cargo/config.toml`.
 - Do not replace either public registry with a private mirror or proxy.
 

@@ -40,9 +40,9 @@ cargo machete
 echo "Formatting checks..."
 cargo fmt --all -- --check
 bunx @taplo/cli fmt --check
-bunx prettier --check "**/*.md"
 
 cd "$repo_dir/ui"
+bunx prettier --check "../**/*.md"
 echo "Running UI Quality checks..."
 bun run quality
 cargo build --manifest-path "$repo_dir/Cargo.toml" --bin keeppeek

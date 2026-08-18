@@ -79,10 +79,17 @@
 		cameraId: string;
 		stream: 'main' | 'sub';
 		quality?: LiveQuality;
+		diagnostics?: boolean;
 		class?: string;
 	};
 
-	let { cameraId, stream, quality, class: className = '' }: Props = $props();
+	let {
+		cameraId,
+		stream,
+		quality,
+		diagnostics: diagnosticsEnabled = true,
+		class: className = ''
+	}: Props = $props();
 
 	const livePeer = useLivePeer();
 	let track = $derived(livePeer.track(cameraId));
@@ -141,6 +148,7 @@
 	});
 
 	$effect(() => {
+		if (!diagnosticsEnabled) return;
 		const element = video;
 		if (!element || typeof element.requestVideoFrameCallback !== 'function') return;
 		let active = true;
@@ -155,6 +163,7 @@
 	});
 
 	$effect(() => {
+		if (!diagnosticsEnabled) return;
 		const onVisibility = () => {
 			if (document.visibilityState === 'visible') renderDropsNeedRebaseline = true;
 		};
@@ -163,7 +172,7 @@
 	});
 
 	$effect(() => {
-		if (!diagnosticsOpen) {
+		if (!diagnosticsEnabled || !diagnosticsOpen) {
 			previousStatsSample = null;
 			return;
 		}
@@ -176,7 +185,7 @@
 
 	async function handlePlaying() {
 		livePeer.markPlaying(cameraId);
-		void refreshReceiverStats(false);
+		if (diagnosticsEnabled) void refreshReceiverStats(false);
 	}
 
 	async function refreshReceiverStats(measureRate: boolean) {
@@ -350,124 +359,124 @@
 		playsinline
 		muted
 		onplaying={handlePlaying}
-		onresize={() => void refreshReceiverStats(false)}
+		onresize={() => diagnosticsEnabled && void refreshReceiverStats(false)}
 		onerror={() => livePeer.markUnavailable(cameraId)}
 		class="h-full w-full object-contain"
 	></video>
-	<Popover.Root bind:open={diagnosticsOpen}>
-		<Popover.Trigger
-			class="absolute top-2 right-2 z-30 grid size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {diagnosticsOpen
-				? 'bg-black/90 text-white ring-1 ring-white/35'
-				: ''}"
-			aria-label="WebRTC stream diagnostics"
-		>
-			<InfoIcon class="size-3.5" />
-		</Popover.Trigger>
-		<Popover.Portal>
-			<Popover.Content
-				role="dialog"
-				side="left"
-				align="start"
-				sideOffset={6}
-				collisionPadding={8}
-				class="max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-white/15 bg-zinc-950/97 p-3 text-left text-[11px] text-white shadow-2xl backdrop-blur-md"
+	{#if diagnosticsEnabled}
+		<Popover.Root bind:open={diagnosticsOpen}>
+			<Popover.Trigger
+				class="absolute top-2 right-2 z-30 grid size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {diagnosticsOpen
+					? 'bg-black/90 text-white ring-1 ring-white/35'
+					: ''}"
 				aria-label="WebRTC stream diagnostics"
-				trapFocus={false}
-				onEscapeKeydown={handleDiagnosticsEscape}
 			>
-				<div data-web-rtc-diagnostics={cameraId}>
-					<div class="mb-2 flex items-center justify-between gap-3 border-b border-white/10 pb-2">
-						<div class="flex items-center gap-2">
-							<span
-								class="size-1.5 rounded-full {status === 'live'
-									? 'bg-emerald-400'
-									: 'bg-amber-400'}"
-							></span>
-							<span class="font-semibold text-white">WebRTC</span>
+				<InfoIcon class="size-3.5" />
+			</Popover.Trigger>
+			<Popover.Portal>
+				<Popover.Content
+					role="dialog"
+					side="left"
+					align="start"
+					sideOffset={6}
+					collisionPadding={8}
+					class="max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-white/15 bg-zinc-950/97 p-3 text-left text-[11px] text-white shadow-2xl backdrop-blur-md"
+					aria-label="WebRTC stream diagnostics"
+					trapFocus={false}
+					onEscapeKeydown={handleDiagnosticsEscape}
+				>
+					<div data-web-rtc-diagnostics={cameraId}>
+						<div class="mb-2 flex items-center justify-between gap-3 border-b border-white/10 pb-2">
+							<div class="flex items-center gap-2">
+								<span
+									class="size-1.5 rounded-full {status === 'live'
+										? 'bg-emerald-400'
+										: 'bg-amber-400'}"
+								></span>
+								<span class="font-semibold text-white">WebRTC</span>
+							</div>
+							<span class="font-mono text-[10px] text-white/45">#{sessionId ?? '—'}</span>
 						</div>
-						<span class="font-mono text-[10px] text-white/45">#{sessionId ?? '—'}</span>
+
+						<dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1.5">
+							<dt class="text-white/45">Quality</dt>
+							<dd class="text-right font-medium capitalize">{requestedQuality} · {activeStream}</dd>
+							<dt class="text-white/45">Codec</dt>
+							<dd class="font-mono uppercase">{negotiatedCodec?.replace('video/', '') ?? '—'}</dd>
+							<dt class="text-white/45">Resolution</dt>
+							<dd class="font-mono">{resolution}</dd>
+							<dt class="text-white/45">Stream FPS</dt>
+							<dd class="font-mono">
+								{formatFramesPerSecond(diagnostics.streamFramesPerSecond)}
+							</dd>
+							<dt class="text-white/45">Decoded FPS</dt>
+							<dd class="font-mono">{formatFramesPerSecond(diagnostics.framesPerSecond)}</dd>
+							<dt class="text-white/45">Receive bitrate</dt>
+							<dd class="font-mono" data-web-rtc-metric="receive-bitrate">
+								{formatBitrate(diagnostics.receiveBitrateBps)}
+							</dd>
+							<dt class="text-white/45">Server capacity</dt>
+							<dd class="font-mono">{formatBitrate(estimatedBitrateBps)}</dd>
+
+							<div class="col-span-2 my-1 border-t border-white/10"></div>
+
+							<dt class="text-white/45">Packets received</dt>
+							<dd class="font-mono">{compactNumber.format(diagnostics.packetsReceived)}</dd>
+							<dt class="text-white/45">Packets lost</dt>
+							<dd class="font-mono {diagnostics.packetsLost > 0 ? 'text-amber-300' : ''}">
+								{packetLoss}
+							</dd>
+							<dt class="text-white/45">Jitter</dt>
+							<dd class="font-mono">{formatMilliseconds(diagnostics.jitterMs)}</dd>
+							<dt class="text-white/45">Jitter buffer</dt>
+							<dd class="font-mono">{formatMilliseconds(diagnostics.jitterBufferMs)}</dd>
+							<dt class="text-white/45">Round trip</dt>
+							<dd class="font-mono">{formatMilliseconds(diagnostics.roundTripTimeMs)}</dd>
+							<dt class="text-white/45">Feedback</dt>
+							<dd class="font-mono">{diagnostics.pliCount} PLI · {diagnostics.nackCount} NACK</dd>
+
+							<div class="col-span-2 my-1 border-t border-white/10"></div>
+
+							<dt class="text-white/45">Frames decoded</dt>
+							<dd class="font-mono">{compactNumber.format(diagnostics.framesDecoded)}</dd>
+							<dt class="text-white/45">Presented</dt>
+							<dd class="font-mono">
+								{diagnostics.presentedFramesPerSecond === null
+									? '—'
+									: `${diagnostics.presentedFramesPerSecond.toFixed(1)} fps`}
+							</dd>
+							<dt class="text-white/45">Keyframes decoded</dt>
+							<dd class="font-mono">{compactNumber.format(diagnostics.keyFramesDecoded)}</dd>
+							<dt class="text-white/45">RTC drops</dt>
+							<dd class="font-mono {diagnostics.rtcFramesDropped > 0 ? 'text-amber-300' : ''}">
+								{compactNumber.format(diagnostics.rtcFramesDropped)}
+							</dd>
+							<dt class="text-white/45">Render drops</dt>
+							<dd class="font-mono {diagnostics.renderFramesDropped > 0 ? 'text-amber-300' : ''}">
+								{compactNumber.format(diagnostics.renderFramesDropped)}
+							</dd>
+							<dt class="text-white/45">Decode time</dt>
+							<dd class="font-mono">{formatMilliseconds(diagnostics.averageDecodeTimeMs)}</dd>
+							<dt class="text-white/45">Freezes</dt>
+							<dd class="font-mono">
+								{diagnostics.freezeCount} · {diagnostics.totalFreezeDurationSeconds.toFixed(1)} s
+							</dd>
+							<dt class="text-white/45">Decoder</dt>
+							<dd
+								class="max-w-40 truncate text-right"
+								title={diagnostics.decoderImplementation ?? ''}
+							>
+								{diagnostics.decoderImplementation ??
+									'Browser'}{diagnostics.powerEfficientDecoder === true ? ' · HW' : ''}
+							</dd>
+							<dt class="text-white/45">Connection</dt>
+							<dd class="font-mono">{connectionState} · {iceConnectionState}</dd>
+						</dl>
 					</div>
-
-					<dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1.5">
-						<dt class="text-white/45">Quality</dt>
-						<dd class="text-right font-medium capitalize">{requestedQuality} · {activeStream}</dd>
-						<dt class="text-white/45">Codec</dt>
-						<dd class="font-mono uppercase">{negotiatedCodec?.replace('video/', '') ?? '—'}</dd>
-						<dt class="text-white/45">Resolution</dt>
-						<dd class="font-mono">{resolution}</dd>
-						<dt class="text-white/45">Stream FPS</dt>
-						<dd class="font-mono">
-							{formatFramesPerSecond(diagnostics.streamFramesPerSecond)}
-						</dd>
-						<dt class="text-white/45">Decoded FPS</dt>
-						<dd class="font-mono">{formatFramesPerSecond(diagnostics.framesPerSecond)}</dd>
-						<dt class="text-white/45">Receive bitrate</dt>
-						<dd class="font-mono" data-web-rtc-metric="receive-bitrate">
-							{formatBitrate(diagnostics.receiveBitrateBps)}
-						</dd>
-						<dt class="text-white/45">Server capacity</dt>
-						<dd class="font-mono">{formatBitrate(estimatedBitrateBps)}</dd>
-
-						<div class="col-span-2 my-1 border-t border-white/10"></div>
-
-						<dt class="text-white/45">Packets received</dt>
-						<dd class="font-mono">{compactNumber.format(diagnostics.packetsReceived)}</dd>
-						<dt class="text-white/45">Packets lost</dt>
-						<dd class="font-mono {diagnostics.packetsLost > 0 ? 'text-amber-300' : ''}">
-							{packetLoss}
-						</dd>
-						<dt class="text-white/45">Jitter</dt>
-						<dd class="font-mono">{formatMilliseconds(diagnostics.jitterMs)}</dd>
-						<dt class="text-white/45">Jitter buffer</dt>
-						<dd class="font-mono">{formatMilliseconds(diagnostics.jitterBufferMs)}</dd>
-						<dt class="text-white/45">Round trip</dt>
-						<dd class="font-mono">{formatMilliseconds(diagnostics.roundTripTimeMs)}</dd>
-						<dt class="text-white/45">Feedback</dt>
-						<dd class="font-mono">{diagnostics.pliCount} PLI · {diagnostics.nackCount} NACK</dd>
-
-						<div class="col-span-2 my-1 border-t border-white/10"></div>
-
-						<dt class="text-white/45">Frames decoded</dt>
-						<dd class="font-mono">{compactNumber.format(diagnostics.framesDecoded)}</dd>
-						<dt class="text-white/45">Presented</dt>
-						<dd class="font-mono">
-							{diagnostics.presentedFramesPerSecond === null
-								? '—'
-								: `${diagnostics.presentedFramesPerSecond.toFixed(1)} fps`}
-						</dd>
-						<dt class="text-white/45">Keyframes decoded</dt>
-						<dd class="font-mono">{compactNumber.format(diagnostics.keyFramesDecoded)}</dd>
-						<dt class="text-white/45">RTC drops</dt>
-						<dd class="font-mono {diagnostics.rtcFramesDropped > 0 ? 'text-amber-300' : ''}">
-							{compactNumber.format(diagnostics.rtcFramesDropped)}
-						</dd>
-						<dt class="text-white/45">Render drops</dt>
-						<dd class="font-mono {diagnostics.renderFramesDropped > 0 ? 'text-amber-300' : ''}">
-							{compactNumber.format(diagnostics.renderFramesDropped)}
-						</dd>
-						<dt class="text-white/45">Decode time</dt>
-						<dd class="font-mono">{formatMilliseconds(diagnostics.averageDecodeTimeMs)}</dd>
-						<dt class="text-white/45">Freezes</dt>
-						<dd class="font-mono">
-							{diagnostics.freezeCount} · {diagnostics.totalFreezeDurationSeconds.toFixed(1)} s
-						</dd>
-						<dt class="text-white/45">Decoder</dt>
-						<dd
-							class="max-w-40 truncate text-right"
-							title={diagnostics.decoderImplementation ?? ''}
-						>
-							{diagnostics.decoderImplementation ?? 'Browser'}{diagnostics.powerEfficientDecoder ===
-							true
-								? ' · HW'
-								: ''}
-						</dd>
-						<dt class="text-white/45">Connection</dt>
-						<dd class="font-mono">{connectionState} · {iceConnectionState}</dd>
-					</dl>
-				</div>
-			</Popover.Content>
-		</Popover.Portal>
-	</Popover.Root>
+				</Popover.Content>
+			</Popover.Portal>
+		</Popover.Root>
+	{/if}
 	{#if status === 'unavailable'}
 		<div class="absolute inset-0 grid place-items-center bg-black/70">
 			<span class="text-xs font-medium text-white/70">Live view unavailable</span>
