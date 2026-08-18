@@ -276,12 +276,24 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - id: image-tags
+        name: Set container image tags
+        shell: bash
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "ghcr.io/$GITHUB_REPOSITORY:$VERSION"
+            if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+              echo "ghcr.io/$GITHUB_REPOSITORY:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ needs.create-release.outputs.version }}
-            ${{ github.ref_type == 'tag' && format('ghcr.io/{0}:latest', github.repository) || '' }}
+          tags: ${{ steps.image-tags.outputs.tags }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
