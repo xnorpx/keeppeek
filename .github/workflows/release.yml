@@ -11,23 +11,35 @@
 name: Release
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   push:
-    branches:
-      - main
     tags:
       - "[0-9]+.[0-9]+.[0-9]+"
+
+env:
+  RELEASE_REF_NAME: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
+  RELEASE_REF_TYPE: ${{ github.event_name == 'workflow_run' && 'branch' || github.ref_type }}
+  RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
 permissions:
   contents: write
   packages: write
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+  group: release-${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_run' }}
 
 jobs:
   create-release:
     name: Create Release
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -35,15 +47,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_SHA }}
           submodules: recursive
       - id: version
         name: Read release version
         shell: bash
         run: |
-          if [[ "$GITHUB_REF_TYPE" == branch ]]; then
+          if [[ "$RELEASE_REF_TYPE" == branch ]]; then
             version=master
           else
-            version="$GITHUB_REF_NAME"
+            version="$RELEASE_REF_NAME"
           fi
           package_version="$(sed -n '/^\[package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)"
           if [[ -z "$package_version" ]]; then
@@ -55,7 +68,7 @@ jobs:
             echo "version_resource=$package_version.0"
           } >> "$GITHUB_OUTPUT"
       - name: Check release version
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: grep -Fx "version = \"$VERSION\"" Cargo.toml
@@ -64,9 +77,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if [[ "$GITHUB_REF_TYPE" == branch ]]; then
+          if [[ "$RELEASE_REF_TYPE" == branch ]]; then
             gh release delete "$VERSION" --yes || true
-            git tag --force "$VERSION" "$GITHUB_SHA"
+            git tag --force "$VERSION" "$RELEASE_SHA"
             git push --force origin "refs/tags/$VERSION"
             gh release create "$VERSION" --prerelease --verify-tag --title "$VERSION"
           else
@@ -77,6 +90,10 @@ jobs:
     name: Build (${{ matrix.platform }})
     needs: create-release
     runs-on: ${{ matrix.os }}
+    environment: Production
+    permissions:
+      contents: write
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_SHA }}
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
@@ -122,6 +140,39 @@ jobs:
       - name: Build release service binary
         if: runner.os == 'Windows'
         run: cargo build --release --bin keeppeek-service
+      - name: Sign in to Azure
+        if: runner.os == 'Windows'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign Windows binaries
+        if: runner.os == 'Windows'
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\target\release\keeppeek.exe
+            ${{ github.workspace }}\target\release\keeppeek-service.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows binary signatures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe') {
+            $signature = Get-AuthenticodeSignature $path
+            if ($signature.Status -ne 'Valid') {
+              throw "$path has invalid signature status: $($signature.Status)"
+            }
+            if ($null -eq $signature.TimeStamperCertificate) {
+              throw "$path does not have an RFC 3161 timestamp"
+            }
+          }
       - name: Install NSIS
         if: runner.os == 'Windows'
         shell: bash
@@ -146,6 +197,30 @@ jobs:
             installer/keeppeek.nsi
           )
           "C:/Program Files (x86)/NSIS/makensis.exe" "${makensis_args[@]}"
+      - name: Sign Windows installer
+        if: runner.os == 'Windows'
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows installer signature
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          INSTALLER: keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
+        run: |
+          $signature = Get-AuthenticodeSignature $env:INSTALLER
+          if ($signature.Status -ne 'Valid') {
+            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
+          }
+          if ($null -eq $signature.TimeStamperCertificate) {
+            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
+          }
       - name: Configure macOS code signing
         if: matrix.platform == 'macos-aarch64'
         shell: bash
@@ -291,7 +366,6 @@ jobs:
 
   container:
     name: Publish container image
-    if: github.ref_type == 'tag' || github.ref == 'refs/heads/main'
     needs: create-release
     runs-on: ubuntu-latest
     permissions:
@@ -300,6 +374,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_SHA }}
           submodules: recursive
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -316,11 +391,11 @@ jobs:
         run: |
           {
             echo "tags<<EOF"
-            if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            if [[ "$RELEASE_REF_TYPE" == "tag" ]]; then
               echo "ghcr.io/$GITHUB_REPOSITORY:$VERSION"
               echo "ghcr.io/$GITHUB_REPOSITORY:latest"
             else
-              echo "ghcr.io/$GITHUB_REPOSITORY:master-${GITHUB_SHA::7}"
+              echo "ghcr.io/$GITHUB_REPOSITORY:master-${RELEASE_SHA::7}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"

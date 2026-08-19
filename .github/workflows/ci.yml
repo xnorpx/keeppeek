@@ -346,6 +346,14 @@ jobs:
         if: always() && (steps.install-rust-coverage.outcome != 'success' || steps.rust-coverage.outcome != 'success' || steps.install-ui-coverage.outcome != 'success' || steps.ui-coverage.outcome != 'success')
         run: exit 1
 
+  main-release-gate:
+    name: Main Release Gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [fmt, clippy, machete, build-and-test, ui, coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Main is ready for signed release builds.'
+
   quality-report:
     name: Quality Report
     if: always() && github.event_name == 'pull_request'
