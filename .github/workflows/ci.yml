@@ -51,7 +51,7 @@ jobs:
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - run: cargo clippy --all --all-targets -- -D warnings
 
   machete:
@@ -70,9 +70,6 @@ jobs:
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      id-token: write
     strategy:
       fail-fast: true
       matrix:
@@ -86,65 +83,23 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
-      - working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install and verify Rolldown Linux ARM64 binding
+        if: matrix.os == 'ubuntu-24.04-arm'
+        working-directory: ui
+        shell: bash
+        run: |
+          binding='@rolldown/binding-linux-arm64-gnu'
+          binding_version="$(bun -e "const packageJson = await Bun.file('node_modules/rolldown/package.json').json(); console.log(packageJson.optionalDependencies['$binding'])")"
+          if [[ -z "$binding_version" || "$binding_version" == undefined ]]; then
+            echo "Unable to determine $binding version" >&2
+            exit 1
+          fi
+          bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
+          bun -e "await import('rolldown')"
       - run: cargo build --all
-      - name: Check Windows signing configuration
-        if: runner.os == 'Windows' && github.event_name == 'push'
-        id: windows-signing
-        shell: pwsh
-        env:
-          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-          ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          $values = @(
-            $env:ARTIFACT_SIGNING_ENDPOINT,
-            $env:ARTIFACT_SIGNING_ACCOUNT,
-            $env:ARTIFACT_SIGNING_PROFILE,
-            $env:AZURE_CLIENT_ID,
-            $env:AZURE_TENANT_ID,
-            $env:AZURE_SUBSCRIPTION_ID
-          )
-          $enabled = ($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -eq $values.Count
-          "enabled=$($enabled.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-      - name: Sign in to Azure
-        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Sign Windows binaries
-        id: sign-windows-binaries
-        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true'
-        uses: Azure/artifact-signing-action@v2.0.0
-        with:
-          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          files: |
-            ${{ github.workspace }}\target\debug\keeppeek.exe
-            ${{ github.workspace }}\target\debug\keeppeek-service.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-      - name: Verify Windows binary signatures
-        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.sign-windows-binaries.outcome == 'success'
-        shell: pwsh
-        run: |
-          foreach ($path in 'target/debug/keeppeek.exe', 'target/debug/keeppeek-service.exe') {
-            $signature = Get-AuthenticodeSignature $path
-            if ($signature.Status -ne 'Valid') {
-              throw "$path has invalid signature status: $($signature.Status)"
-            }
-            if ($null -eq $signature.TimestamperCertificate) {
-              throw "$path does not have an RFC 3161 timestamp"
-            }
-          }
       - name: Install NSIS
         if: runner.os == 'Windows'
         shell: bash
@@ -177,31 +132,6 @@ jobs:
           "output_directory=$outputDirectory" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           if (-not (Test-Path $installer)) {
             throw "Installer was not created at $installer"
-          }
-      - name: Sign Windows installer
-        id: sign-windows-installer
-        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.windows-installer.outcome == 'success'
-        uses: Azure/artifact-signing-action@v2.0.0
-        with:
-          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ steps.windows-installer.outputs.installer }}
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-      - name: Verify Windows installer signature
-        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.sign-windows-installer.outcome == 'success'
-        shell: pwsh
-        env:
-          INSTALLER: ${{ steps.windows-installer.outputs.installer }}
-        run: |
-          $signature = Get-AuthenticodeSignature $env:INSTALLER
-          if ($signature.Status -ne 'Valid') {
-            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
-          }
-          if ($null -eq $signature.TimestamperCertificate) {
-            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
           }
       - name: Verify Windows installer
         if: runner.os == 'Windows' && steps.windows-installer.outcome == 'success'
@@ -304,6 +234,110 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  windows-signing:
+    name: Windows Signing
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    environment: artifact-signing
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Build Windows binaries
+        run: cargo build --bin keeppeek --bin keeppeek-service
+      - name: Sign in to Azure
+        uses: azure/login@v3
+        env:
+          AZURE_LOGIN_PRE_CLEANUP: true
+          AZURE_LOGIN_POST_CLEANUP: true
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign Windows binaries
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\target\debug\keeppeek.exe
+            ${{ github.workspace }}\target\debug\keeppeek-service.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows binary signatures
+        shell: pwsh
+        run: |
+          foreach ($path in 'target/debug/keeppeek.exe', 'target/debug/keeppeek-service.exe') {
+            $signature = Get-AuthenticodeSignature $path
+            if ($signature.Status -ne 'Valid') {
+              throw "$path has invalid signature status: $($signature.Status)"
+            }
+            if ($null -eq $signature.TimestamperCertificate) {
+              throw "$path does not have an RFC 3161 timestamp"
+            }
+          }
+      - name: Install NSIS
+        shell: bash
+        run: choco install nsis --no-progress --yes
+      - name: Build Windows installer
+        id: windows-installer
+        shell: pwsh
+        run: |
+          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
+          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+            '/DARCH=x86_64' `
+            "/DBUILD_DIR=$buildDirectory" `
+            "/DOUT_DIR=$outputDirectory" `
+            '/DVERSION=0.0.0' `
+            '/DVERSION_RESOURCE=0.0.0.0' `
+            installer/keeppeek.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to build the KeepPeek installer'
+          }
+
+          $installer = Join-Path $outputDirectory 'keeppeek-0.0.0-windows-x86_64-installer.exe'
+          "installer=$installer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if (-not (Test-Path $installer)) {
+            throw "Installer was not created at $installer"
+          }
+      - name: Sign Windows installer
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ steps.windows-installer.outputs.installer }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows installer signature
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.windows-installer.outputs.installer }}
+        run: |
+          $signature = Get-AuthenticodeSignature $env:INSTALLER
+          if ($signature.Status -ne 'Valid') {
+            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
+          }
+          if ($null -eq $signature.TimestamperCertificate) {
+            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
+          }
+
   ui:
     name: UI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -324,7 +358,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-machete@0.9.2,cargo-nextest@0.9.143
-      - run: bun install --registry=https://registry.npmjs.org/
+      - run: bun install --no-save --registry=https://registry.npmjs.org/
       - if: runner.os == 'Linux'
         run: bunx playwright install --with-deps chromium
       - if: runner.os != 'Linux'
@@ -364,7 +398,7 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Install Chromium for Vitest browser tests
         working-directory: ui
         run: bunx playwright install --with-deps chromium
