@@ -112,7 +112,9 @@ jobs:
           $enabled = ($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -eq $values.Count
           "enabled=$($enabled.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
       - name: Sign in to Azure
+        id: azure-login
         if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true'
+        continue-on-error: true
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -120,7 +122,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Sign Windows binaries
         id: sign-windows-binaries
-        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true'
+        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.azure-login.outcome == 'success'
         uses: Azure/artifact-signing-action@v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
@@ -180,7 +182,7 @@ jobs:
           }
       - name: Sign Windows installer
         id: sign-windows-installer
-        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.windows-installer.outcome == 'success'
+        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.azure-login.outcome == 'success' && steps.windows-installer.outcome == 'success'
         uses: Azure/artifact-signing-action@v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
