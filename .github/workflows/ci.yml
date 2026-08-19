@@ -86,29 +86,38 @@ jobs:
       - working-directory: ui
         run: bun install --registry=https://registry.npmjs.org/
       - run: cargo build --all
+      - name: Check Windows signing configuration
+        if: runner.os == 'Windows'
+        id: windows-signing
+        shell: pwsh
+        env:
+          ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          $values = @(
+            $env:ARTIFACT_SIGNING_ENDPOINT,
+            $env:ARTIFACT_SIGNING_ACCOUNT,
+            $env:ARTIFACT_SIGNING_PROFILE,
+            $env:AZURE_CLIENT_ID,
+            $env:AZURE_TENANT_ID,
+            $env:AZURE_SUBSCRIPTION_ID
+          )
+          $enabled = ($values | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -eq $values.Count
+          "enabled=$($enabled.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
       - name: Sign in to Azure
-        if: >-
-          runner.os == 'Windows' &&
-          vars.ARTIFACT_SIGNING_ENDPOINT != '' &&
-          vars.ARTIFACT_SIGNING_ACCOUNT != '' &&
-          vars.ARTIFACT_SIGNING_PROFILE != '' &&
-          vars.AZURE_CLIENT_ID != '' &&
-          vars.AZURE_TENANT_ID != '' &&
-          vars.AZURE_SUBSCRIPTION_ID != ''
+        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Sign Windows binaries
-        if: >-
-          runner.os == 'Windows' &&
-          vars.ARTIFACT_SIGNING_ENDPOINT != '' &&
-          vars.ARTIFACT_SIGNING_ACCOUNT != '' &&
-          vars.ARTIFACT_SIGNING_PROFILE != '' &&
-          vars.AZURE_CLIENT_ID != '' &&
-          vars.AZURE_TENANT_ID != '' &&
-          vars.AZURE_SUBSCRIPTION_ID != ''
+        id: sign-windows-binaries
+        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true'
         uses: Azure/artifact-signing-action@v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
@@ -121,14 +130,7 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
       - name: Verify Windows binary signatures
-        if: >-
-          runner.os == 'Windows' &&
-          vars.ARTIFACT_SIGNING_ENDPOINT != '' &&
-          vars.ARTIFACT_SIGNING_ACCOUNT != '' &&
-          vars.ARTIFACT_SIGNING_PROFILE != '' &&
-          vars.AZURE_CLIENT_ID != '' &&
-          vars.AZURE_TENANT_ID != '' &&
-          vars.AZURE_SUBSCRIPTION_ID != ''
+        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.sign-windows-binaries.outcome == 'success'
         shell: pwsh
         run: |
           foreach ($path in 'target/debug/keeppeek.exe', 'target/debug/keeppeek-service.exe') {
@@ -136,7 +138,7 @@ jobs:
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
             }
-            if ($null -eq $signature.TimeStamperCertificate) {
+            if ($null -eq $signature.TimestamperCertificate) {
               throw "$path does not have an RFC 3161 timestamp"
             }
           }
@@ -169,18 +171,13 @@ jobs:
 
           $installer = Join-Path $outputDirectory "keeppeek-0.0.0-windows-$architecture-installer.exe"
           "installer=$installer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "output_directory=$outputDirectory" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           if (-not (Test-Path $installer)) {
             throw "Installer was not created at $installer"
           }
       - name: Sign Windows installer
-        if: >-
-          runner.os == 'Windows' &&
-          vars.ARTIFACT_SIGNING_ENDPOINT != '' &&
-          vars.ARTIFACT_SIGNING_ACCOUNT != '' &&
-          vars.ARTIFACT_SIGNING_PROFILE != '' &&
-          vars.AZURE_CLIENT_ID != '' &&
-          vars.AZURE_TENANT_ID != '' &&
-          vars.AZURE_SUBSCRIPTION_ID != ''
+        id: sign-windows-installer
+        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.windows-installer.outcome == 'success'
         uses: Azure/artifact-signing-action@v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
@@ -191,14 +188,7 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
       - name: Verify Windows installer signature
-        if: >-
-          runner.os == 'Windows' &&
-          vars.ARTIFACT_SIGNING_ENDPOINT != '' &&
-          vars.ARTIFACT_SIGNING_ACCOUNT != '' &&
-          vars.ARTIFACT_SIGNING_PROFILE != '' &&
-          vars.AZURE_CLIENT_ID != '' &&
-          vars.AZURE_TENANT_ID != '' &&
-          vars.AZURE_SUBSCRIPTION_ID != ''
+        if: runner.os == 'Windows' && steps.windows-signing.outputs.enabled == 'true' && steps.sign-windows-installer.outcome == 'success'
         shell: pwsh
         env:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
@@ -207,16 +197,16 @@ jobs:
           if ($signature.Status -ne 'Valid') {
             throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
           }
-          if ($null -eq $signature.TimeStamperCertificate) {
+          if ($null -eq $signature.TimestamperCertificate) {
             throw "$env:INSTALLER does not have an RFC 3161 timestamp"
           }
       - name: Verify Windows installer
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.windows-installer.outcome == 'success'
         shell: pwsh
         env:
           INSTALLER: ${{ steps.windows-installer.outputs.installer }}
+          OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
         run: |
-          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
           $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
           $serviceName = 'KeepPeekService'
           $installer = $env:INSTALLER
@@ -250,7 +240,7 @@ jobs:
             } else {
               & sc.exe delete $serviceName
             }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, (Split-Path $installer)
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
           }
       - name: Verify Windows service installation
         if: runner.os == 'Windows'

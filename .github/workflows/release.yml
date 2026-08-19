@@ -169,7 +169,7 @@ jobs:
             if ($signature.Status -ne 'Valid') {
               throw "$path has invalid signature status: $($signature.Status)"
             }
-            if ($null -eq $signature.TimeStamperCertificate) {
+            if ($null -eq $signature.TimestamperCertificate) {
               throw "$path does not have an RFC 3161 timestamp"
             }
           }
@@ -218,7 +218,7 @@ jobs:
           if ($signature.Status -ne 'Valid') {
             throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
           }
-          if ($null -eq $signature.TimeStamperCertificate) {
+          if ($null -eq $signature.TimestamperCertificate) {
             throw "$env:INSTALLER does not have an RFC 3161 timestamp"
           }
       - name: Configure macOS code signing
