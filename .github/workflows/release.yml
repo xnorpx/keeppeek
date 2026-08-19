@@ -92,7 +92,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -139,87 +138,16 @@ jobs:
       - name: Build release service binary
         if: runner.os == 'Windows'
         run: cargo build --release --bin keeppeek-service
-      - name: Sign in to Azure
+      - name: Upload unsigned Windows binaries
         if: runner.os == 'Windows'
-        uses: azure/login@v2
+        uses: actions/upload-artifact@v7
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Sign Windows binaries
-        if: runner.os == 'Windows'
-        uses: Azure/artifact-signing-action@v2.0.0
-        with:
-          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          files: |
-            ${{ github.workspace }}\target\release\keeppeek.exe
-            ${{ github.workspace }}\target\release\keeppeek-service.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-      - name: Verify Windows binary signatures
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe') {
-            $signature = Get-AuthenticodeSignature $path
-            if ($signature.Status -ne 'Valid') {
-              throw "$path has invalid signature status: $($signature.Status)"
-            }
-            if ($null -eq $signature.TimestamperCertificate) {
-              throw "$path does not have an RFC 3161 timestamp"
-            }
-          }
-      - name: Install NSIS
-        if: runner.os == 'Windows'
-        shell: bash
-        run: choco install nsis --no-progress --yes
-      - name: Build Windows installer
-        if: runner.os == 'Windows'
-        shell: bash
-        env:
-          ARCH: ${{ matrix.installer_arch }}
-          MSYS2_ARG_CONV_EXCL: "*"
-          VERSION: ${{ needs.create-release.outputs.version }}
-          VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
-        run: |
-          build_dir="$(cygpath -aw target/release)"
-          out_dir="$(cygpath -aw .)"
-          makensis_args=(
-            "/DARCH=$ARCH"
-            "/DBUILD_DIR=$build_dir"
-            "/DOUT_DIR=$out_dir"
-            "/DVERSION=$VERSION"
-            "/DVERSION_RESOURCE=$VERSION_RESOURCE"
-            installer/keeppeek.nsi
-          )
-          "C:/Program Files (x86)/NSIS/makensis.exe" "${makensis_args[@]}"
-      - name: Sign Windows installer
-        if: runner.os == 'Windows'
-        uses: Azure/artifact-signing-action@v2.0.0
-        with:
-          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-      - name: Verify Windows installer signature
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          INSTALLER: keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
-        run: |
-          $signature = Get-AuthenticodeSignature $env:INSTALLER
-          if ($signature.Status -ne 'Valid') {
-            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
-          }
-          if ($null -eq $signature.TimestamperCertificate) {
-            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
-          }
+          name: unsigned-${{ matrix.platform }}
+          path: |
+            target/release/keeppeek.exe
+            target/release/keeppeek-service.exe
+          if-no-files-found: error
+          retention-days: 1
       - name: Configure macOS code signing
         if: matrix.platform == 'macos-aarch64'
         shell: bash
@@ -251,6 +179,7 @@ jobs:
             echo "MACOS_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY"
           } >> "$GITHUB_ENV"
       - name: Package release
+        if: runner.os != 'Windows'
         id: package
         shell: bash
         env:
@@ -362,6 +291,159 @@ jobs:
           if [[ -n "${MACOS_SIGNING_KEYCHAIN:-}" ]]; then
             security delete-keychain "$MACOS_SIGNING_KEYCHAIN"
           fi
+
+  windows-signing:
+    name: Sign & Package (${{ matrix.platform }})
+    needs: [create-release, build]
+    runs-on: windows-latest
+    environment: artifact-signing
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x86_64
+            installer_arch: x86_64
+          - platform: windows-aarch64
+            installer_arch: aarch64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          submodules: recursive
+      - name: Download unsigned Windows binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: unsigned-${{ matrix.platform }}
+          path: target/release
+      - name: Sign in to Azure
+        uses: azure/login@v3
+        env:
+          AZURE_LOGIN_PRE_CLEANUP: true
+          AZURE_LOGIN_POST_CLEANUP: true
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign Windows binaries
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\target\release\keeppeek.exe
+            ${{ github.workspace }}\target\release\keeppeek-service.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows binary signatures
+        shell: pwsh
+        run: |
+          foreach ($path in 'target/release/keeppeek.exe', 'target/release/keeppeek-service.exe') {
+            $signature = Get-AuthenticodeSignature $path
+            if ($signature.Status -ne 'Valid') {
+              throw "$path has invalid signature status: $($signature.Status)"
+            }
+            if ($null -eq $signature.TimestamperCertificate) {
+              throw "$path does not have an RFC 3161 timestamp"
+            }
+          }
+      - name: Install NSIS
+        shell: bash
+        run: choco install nsis --no-progress --yes
+      - name: Build Windows installer
+        shell: bash
+        env:
+          ARCH: ${{ matrix.installer_arch }}
+          MSYS2_ARG_CONV_EXCL: "*"
+          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION_RESOURCE: ${{ needs.create-release.outputs.version_resource }}
+        run: |
+          build_dir="$(cygpath -aw target/release)"
+          out_dir="$(cygpath -aw .)"
+          makensis_args=(
+            "/DARCH=$ARCH"
+            "/DBUILD_DIR=$build_dir"
+            "/DOUT_DIR=$out_dir"
+            "/DVERSION=$VERSION"
+            "/DVERSION_RESOURCE=$VERSION_RESOURCE"
+            installer/keeppeek.nsi
+          )
+          "C:/Program Files (x86)/NSIS/makensis.exe" "${makensis_args[@]}"
+      - name: Sign Windows installer
+        uses: Azure/artifact-signing-action@v2.0.0
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify Windows installer signature
+        shell: pwsh
+        env:
+          INSTALLER: keeppeek-${{ needs.create-release.outputs.version }}-${{ matrix.platform }}-installer.exe
+        run: |
+          $signature = Get-AuthenticodeSignature $env:INSTALLER
+          if ($signature.Status -ne 'Valid') {
+            throw "$env:INSTALLER has invalid signature status: $($signature.Status)"
+          }
+          if ($null -eq $signature.TimestamperCertificate) {
+            throw "$env:INSTALLER does not have an RFC 3161 timestamp"
+          }
+      - name: Package Windows release
+        id: package
+        shell: bash
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          archive="keeppeek-${VERSION}-${PLATFORM}"
+          mkdir "$archive"
+          cp target/release/keeppeek.exe target/release/keeppeek-service.exe "$archive/"
+
+          standalone="keeppeek-${VERSION}-${PLATFORM}.exe"
+          cp target/release/keeppeek.exe "$standalone"
+          python -c 'import hashlib, pathlib; path = pathlib.Path("'"$standalone"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$standalone.sha256"
+
+          installer="keeppeek-${VERSION}-${PLATFORM}-installer.exe"
+          python -c 'import hashlib, pathlib; path = pathlib.Path("'"$installer"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$installer.sha256"
+
+          asset="$archive.zip"
+          7z a "$asset" "$archive"
+          python -c 'import hashlib, pathlib; path = pathlib.Path("'"$asset"'"); print(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")' > "$asset.sha256"
+
+          package_assets=("$asset" "$asset.sha256" "$standalone" "$standalone.sha256" "$installer" "$installer.sha256")
+          for package_asset in "${package_assets[@]}"; do
+            if [[ ! -f "$package_asset" ]]; then
+              echo "Expected release asset was not created: $package_asset" >&2
+              exit 1
+            fi
+          done
+          echo "Packaged release assets:"
+          printf '  %s\n' "${package_assets[@]}"
+          {
+            echo "assets<<EOF"
+            printf '%s\n' "${package_assets[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload Windows release assets
+        shell: bash
+        env:
+          ASSETS: ${{ steps.package.outputs.assets }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          while IFS= read -r asset; do
+            [[ -n "$asset" ]] || continue
+            gh release upload "$VERSION" "$asset"
+          done <<< "$ASSETS"
 
   container:
     name: Publish container image
