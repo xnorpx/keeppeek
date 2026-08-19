@@ -61,5 +61,8 @@
 	},
 	"dependencies": {
 		"@bufbuild/protobuf": "^2.2.3"
+	},
+	"overrides": {
+		"rolldown": "1.2.4"
 	}
 }
