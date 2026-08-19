@@ -70,7 +70,6 @@ jobs:
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    environment: Production
     permissions:
       contents: read
       id-token: write
@@ -91,7 +90,7 @@ jobs:
         run: bun install --registry=https://registry.npmjs.org/
       - run: cargo build --all
       - name: Check Windows signing configuration
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name == 'push'
         id: windows-signing
         shell: pwsh
         env:
