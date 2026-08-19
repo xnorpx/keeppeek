@@ -98,34 +98,24 @@ jobs:
         include:
           - os: windows-latest
             platform: windows-x86_64
-            bun_os: win32
-            bun_cpu: x64
             installer_arch: x86_64
             extension: zip
             binary_extension: .exe
           - os: windows-11-arm
             platform: windows-aarch64
-            bun_os: win32
-            bun_cpu: arm64
             installer_arch: aarch64
             extension: zip
             binary_extension: .exe
           - os: macos-latest
             platform: macos-aarch64
-            bun_os: darwin
-            bun_cpu: arm64
             extension: dmg
             binary_extension: ""
           - os: ubuntu-latest
             platform: linux-x86_64
-            bun_os: linux
-            bun_cpu: x64
             extension: tar.gz
             binary_extension: ""
           - os: ubuntu-24.04-arm
             platform: linux-aarch64
-            bun_os: linux
-            bun_cpu: arm64
             extension: tar.gz
             binary_extension: ""
     steps:
@@ -139,10 +129,20 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
-        run: bun install --no-save --os=${{ matrix.bun_os }} --cpu=${{ matrix.bun_cpu }} --registry=https://registry.npmjs.org/
-      - name: Verify UI bundler
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install and verify Rolldown Linux ARM64 binding
+        if: matrix.platform == 'linux-aarch64'
         working-directory: ui
-        run: bun -e "await import('rolldown')"
+        shell: bash
+        run: |
+          binding='@rolldown/binding-linux-arm64-gnu'
+          binding_version="$(bun -e "const packageJson = await Bun.file('node_modules/rolldown/package.json').json(); console.log(packageJson.optionalDependencies['$binding'])")"
+          if [[ -z "$binding_version" || "$binding_version" == undefined ]]; then
+            echo "Unable to determine $binding version" >&2
+            exit 1
+          fi
+          bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
+          bun -e "await import('rolldown')"
       - name: Verify macOS architecture
         if: matrix.platform == 'macos-aarch64'
         run: test "$(uname -m)" = arm64

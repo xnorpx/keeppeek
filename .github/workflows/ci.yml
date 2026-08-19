@@ -51,7 +51,7 @@ jobs:
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
-        run: bun install --no-save --os=linux --cpu=x64 --registry=https://registry.npmjs.org/
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - run: cargo clippy --all --all-targets -- -D warnings
 
   machete:
@@ -73,22 +73,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        include:
-          - os: ubuntu-latest
-            bun_os: linux
-            bun_cpu: x64
-          - os: ubuntu-24.04-arm
-            bun_os: linux
-            bun_cpu: arm64
-          - os: macos-latest
-            bun_os: darwin
-            bun_cpu: arm64
-          - os: windows-latest
-            bun_os: win32
-            bun_cpu: x64
-          - os: windows-11-arm
-            bun_os: win32
-            bun_cpu: arm64
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -100,10 +85,20 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
-        run: bun install --no-save --os=${{ matrix.bun_os }} --cpu=${{ matrix.bun_cpu }} --registry=https://registry.npmjs.org/
-      - name: Verify UI bundler
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install and verify Rolldown Linux ARM64 binding
+        if: matrix.os == 'ubuntu-24.04-arm'
         working-directory: ui
-        run: bun -e "await import('rolldown')"
+        shell: bash
+        run: |
+          binding='@rolldown/binding-linux-arm64-gnu'
+          binding_version="$(bun -e "const packageJson = await Bun.file('node_modules/rolldown/package.json').json(); console.log(packageJson.optionalDependencies['$binding'])")"
+          if [[ -z "$binding_version" || "$binding_version" == undefined ]]; then
+            echo "Unable to determine $binding version" >&2
+            exit 1
+          fi
+          bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
+          bun -e "await import('rolldown')"
       - run: cargo build --all
       - name: Install NSIS
         if: runner.os == 'Windows'
@@ -258,7 +253,7 @@ jobs:
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
-        run: bun install --no-save --os=win32 --cpu=x64 --registry=https://registry.npmjs.org/
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Build Windows binaries
         run: cargo build --bin keeppeek --bin keeppeek-service
       - name: Sign in to Azure
@@ -403,7 +398,7 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
-        run: bun install --no-save --os=linux --cpu=x64 --registry=https://registry.npmjs.org/
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Install Chromium for Vitest browser tests
         working-directory: ui
         run: bunx playwright install --with-deps chromium
