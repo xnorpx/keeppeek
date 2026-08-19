@@ -51,7 +51,7 @@ jobs:
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+        run: bun install --no-save --os=linux --cpu=x64 --registry=https://registry.npmjs.org/
       - run: cargo clippy --all --all-targets -- -D warnings
 
   machete:
@@ -73,7 +73,22 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
+        include:
+          - os: ubuntu-latest
+            bun_os: linux
+            bun_cpu: x64
+          - os: ubuntu-24.04-arm
+            bun_os: linux
+            bun_cpu: arm64
+          - os: macos-latest
+            bun_os: darwin
+            bun_cpu: arm64
+          - os: windows-latest
+            bun_os: win32
+            bun_cpu: x64
+          - os: windows-11-arm
+            bun_os: win32
+            bun_cpu: arm64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -83,8 +98,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
-      - working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --os=${{ matrix.bun_os }} --cpu=${{ matrix.bun_cpu }} --registry=https://registry.npmjs.org/
+      - name: Verify UI bundler
+        working-directory: ui
+        run: bun -e "await import('rolldown')"
       - run: cargo build --all
       - name: Install NSIS
         if: runner.os == 'Windows'
@@ -239,7 +258,7 @@ jobs:
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+        run: bun install --no-save --os=win32 --cpu=x64 --registry=https://registry.npmjs.org/
       - name: Build Windows binaries
         run: cargo build --bin keeppeek --bin keeppeek-service
       - name: Sign in to Azure
@@ -344,7 +363,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-machete@0.9.2,cargo-nextest@0.9.143
-      - run: bun install --registry=https://registry.npmjs.org/
+      - run: bun install --no-save --registry=https://registry.npmjs.org/
       - if: runner.os == 'Linux'
         run: bunx playwright install --with-deps chromium
       - if: runner.os != 'Linux'
@@ -384,7 +403,7 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+        run: bun install --no-save --os=linux --cpu=x64 --registry=https://registry.npmjs.org/
       - name: Install Chromium for Vitest browser tests
         working-directory: ui
         run: bunx playwright install --with-deps chromium

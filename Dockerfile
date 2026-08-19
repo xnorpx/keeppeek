@@ -14,7 +14,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN bun install --cwd ui --registry=https://registry.npmjs.org/ \
+RUN bun install --no-save --cwd ui --registry=https://registry.npmjs.org/ \
     && cargo build --release --bin keeppeek
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:adcd20c7b4c988b73cbfbddb26d2eee574571e6d7c9ffea29b3821e0690efb77
