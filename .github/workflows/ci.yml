@@ -70,6 +70,9 @@ jobs:
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: true
       matrix:
