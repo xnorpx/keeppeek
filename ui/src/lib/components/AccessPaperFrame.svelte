@@ -196,13 +196,14 @@
 					<p class="font-mono text-2xs leading-[14px] tracking-[0.14em] text-activity">
 						DOCUMENTED MODEL · NOT RUNTIME EVIDENCE
 					</p>
-					<h3 class="text-xl leading-6 font-semibold">Local open. Remote key designed.</h3>
+					<h3 class="text-xl leading-6 font-semibold">Loopback open. Remote key active.</h3>
 				</div>
 				<div
 					class="flex w-[430px] shrink-0 flex-col gap-2.5 pt-[18px] text-[13px] leading-[21px] text-text-muted"
 				>
 					<p>
-						Local Administrator bypass and remote Bearer access are documented design boundaries.
+						Loopback Administrator bypass and remote Bearer access are implemented HTTP bootstrap
+						boundaries.
 					</p>
 					<p>No identity handler currently proves either role or a signed-in person in this UI.</p>
 				</div>

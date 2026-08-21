@@ -27,12 +27,12 @@ describe('access evidence', () => {
 		).toBe(true);
 	});
 
-	it('marks the documented shared-key model as unimplemented', () => {
+	it('describes the implemented loopback and shared-key HTTP boundary', () => {
 		expect(accessEvidence().documentedPreIdentityModel).toEqual({
-			local: 'administrator-without-sign-in',
+			loopback: 'administrator-without-sign-in',
 			remote: 'shared-bearer-key',
 			keyScope: 'all-documented-endpoints',
-			implementedInCurrentServer: false
+			implementedInCurrentServer: true
 		});
 	});
 });

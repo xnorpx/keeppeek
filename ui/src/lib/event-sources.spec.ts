@@ -34,12 +34,13 @@ describe('event-source evidence', () => {
 		).toBeNull();
 	});
 
-	it('separates REST event evidence from protocol-only fields', () => {
-		const fields = eventSourceEvidence(null).restFields;
+	it('identifies fields exposed by the stored-media WebRTC model', () => {
+		const fields = eventSourceEvidence(null).storedMediaFields;
 
-		expect(fields.available).toContain('source');
-		expect(fields.available).toContain('thumbnail_url');
-		expect(fields.unavailable).toEqual([
+		expect(fields.transport).toBe('webrtc');
+		expect(fields.exposed).toContain('source');
+		expect(fields.exposed).toContain('thumbnail_url');
+		expect(fields.notExposed).toEqual([
 			'source_id',
 			'revision',
 			'text',

@@ -55,11 +55,11 @@ On the wire and in `config.toml` it is the usual hyphenated UUID string. The int
 reserved: it means unset, and tests may use `access_key = 0` / `AccessKey(0)` without minting a
 real secret.
 
-Local requests skip the key. A local request is one whose peer is loopback, link-local, or a
-private LAN address and that did not arrive through a reverse proxy. Those requests are
-Administrator. Remote requests, Home Assistant, Prometheus, and any forwarded client must send
-Bearer. The first-party UI may later receive the same key in an HttpOnly SameSite cookie when
-KeepPeek serves the origin for a remote browser.
+Direct same-host loopback requests skip the key and act as Administrator. Every non-loopback
+peer, including private LAN and link-local clients, must send Bearer. Requests carrying reverse
+proxy headers also require Bearer even when the immediate peer is loopback. The first-party UI
+may later receive the same key in an HttpOnly SameSite cookie when KeepPeek serves the origin for
+a remote browser.
 
 ### How the key is chosen
 

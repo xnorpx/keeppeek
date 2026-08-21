@@ -27,6 +27,10 @@ enum RetinaTransportChoice {
     Udp,
 }
 
+fn default_output_path() -> PathBuf {
+    config::config_dir().join("camera-setup").join("streams")
+}
+
 impl From<BackendChoice> for CameraBackend {
     fn from(value: BackendChoice) -> Self {
         match value {
@@ -78,7 +82,7 @@ pub struct Cli {
     duration: u64,
 
     /// Directory for recorded MP4 files.
-    #[arg(long, default_value = "keeppeek-camera-test-output")]
+    #[arg(long, default_value_os_t = default_output_path())]
     output: PathBuf,
 }
 
@@ -213,12 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn private_config_is_the_default() {
+    fn private_paths_are_the_default() {
         let cli = TestCli::try_parse_from(["keeppeek-camera", "--camera", "front"])
             .unwrap()
             .command;
 
         assert_eq!(cli.config, config::config_path());
+        assert_eq!(cli.output, default_output_path());
     }
 
     fn camera(name: &str, ip: [u8; 4]) -> CameraConfig {

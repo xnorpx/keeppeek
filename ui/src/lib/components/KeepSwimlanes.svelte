@@ -98,23 +98,33 @@
 		signal: AbortSignal,
 		version: number
 	): Promise<void> {
-		const loaded = await Promise.all(
-			cameraList.map(async (camera): Promise<LaneData> => {
-				const recordings = await controlClient
-					.getRecordings(camera.id, selectedDate)
-					.catch((cause) => {
-						if (signal.aborted) throw cause;
-						return { segments: [] as RecordingSegment[] };
-					});
-				const events = await controlClient
-					.getRecordingEvents(camera.id, selectedDate)
-					.catch((cause) => {
-						if (signal.aborted) throw cause;
-						return { events: [] as RecordingEvent[] };
-					});
-				return { camera, segments: recordings.segments, events: events.events };
-			})
+		const [recordings, loadedEvents] = await Promise.all([
+			controlClient.getRecordingsForDate(
+				cameraList.map((camera) => camera.id),
+				selectedDate,
+				signal
+			),
+			Promise.all(
+				cameraList.map(async (camera) => {
+					const events = await controlClient
+						.getRecordingEvents(camera.id, selectedDate, signal)
+						.catch((cause) => {
+							if (signal.aborted) throw cause;
+							return { events: [] as RecordingEvent[] };
+						});
+					return [camera.id, events.events] as const;
+				})
+			)
+		]);
+		const segmentsByCamera = new Map(
+			recordings.map((response) => [response.camera_id, response.segments] as const)
 		);
+		const eventsByCamera = new Map(loadedEvents);
+		const loaded = cameraList.map<LaneData>((camera) => ({
+			camera,
+			segments: segmentsByCamera.get(camera.id) ?? [],
+			events: eventsByCamera.get(camera.id) ?? []
+		}));
 		if (!signal.aborted && version === requestVersion) laneData = loaded;
 	}
 

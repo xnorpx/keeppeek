@@ -53,11 +53,10 @@
 				<div class="flex max-w-3xl gap-3">
 					<CircleAlertIcon class="mt-0.5 size-4 shrink-0 text-activity" />
 					<div>
-						<p class="text-sm font-semibold">No runtime identity or authorization evidence</p>
+						<p class="text-sm font-semibold">No runtime identity or role evidence</p>
 						<p class="mt-1 text-xs leading-5 text-text-muted">
-							The API design documents local Administrator bypass and one shared remote Bearer key,
-							but the current Rust server has no access-key or identity handler. Neither model is
-							presented as active enforcement here.
+							The Rust server enforces loopback Administrator bypass and one shared Bearer key for
+							HTTP bootstrap. WebRTC identity, people, and role evidence remain unavailable.
 						</p>
 					</div>
 				</div>
@@ -177,12 +176,12 @@
 
 		<footer class="grid gap-3 border-t border-hairline bg-raised/40 px-5 py-4 sm:grid-cols-3">
 			<div>
-				<p class="font-mono text-2xs tracking-caps text-text-faint">DOCUMENTED LOCAL MODEL</p>
-				<p class="mt-1 text-xs text-text-muted">Administrator without sign-in · not implemented</p>
+				<p class="font-mono text-2xs tracking-caps text-text-faint">IMPLEMENTED LOOPBACK MODEL</p>
+				<p class="mt-1 text-xs text-text-muted">Administrator without sign-in</p>
 			</div>
 			<div>
-				<p class="font-mono text-2xs tracking-caps text-text-faint">DOCUMENTED REMOTE MODEL</p>
-				<p class="mt-1 text-xs text-text-muted">One shared Bearer key · not implemented</p>
+				<p class="font-mono text-2xs tracking-caps text-text-faint">IMPLEMENTED REMOTE MODEL</p>
+				<p class="mt-1 text-xs text-text-muted">One shared Bearer key</p>
 			</div>
 			<div>
 				<p class="font-mono text-2xs tracking-caps text-text-faint">AUDIT TRAIL</p>

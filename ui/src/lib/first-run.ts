@@ -1,4 +1,5 @@
 import type { DiskHealth } from '$lib/types';
+import { mostSpecificDiskForPath } from '$lib/storage-retention';
 
 export type StorageWriteProbe = {
 	writable: boolean;
@@ -20,7 +21,7 @@ export function firstRunStorageEvidence(
 	disks: readonly DiskHealth[],
 	writeProbe: StorageWriteProbe | null
 ): FirstRunStorageEvidence {
-	const disk = disks.find((candidate) => candidate.stores_recordings) ?? null;
+	const disk = mostSpecificDiskForPath(path, disks);
 	const writeStatus =
 		writeProbe === null ? 'unavailable' : writeProbe.writable ? 'verified' : 'failed';
 

@@ -31,6 +31,17 @@ const health = {
 	system: {
 		disks: [
 			{
+				name: 'system',
+				kind: 'ssd',
+				file_system: 'apfs',
+				mount_point: '/',
+				total_bytes: 8_000_000_000_000,
+				available_bytes: 2_000_000_000_000,
+				used_bytes: 6_000_000_000_000,
+				removable: false,
+				stores_recordings: true
+			},
+			{
 				name: 'recordings',
 				kind: 'ssd',
 				file_system: 'apfs',
@@ -87,6 +98,21 @@ describe('storage retention evidence', () => {
 			path: '/recordings/archive',
 			limitBytes: 2_199_023_255_552
 		});
+	});
+
+	it('treats an explicit zero runtime archive limit as unlimited', () => {
+		const unlimitedConfig = {
+			...config,
+			storage: { ...config.storage, long_term_max_gb: 0 }
+		};
+		const unlimitedHealth = {
+			...health,
+			storage: { ...health.storage, long_term_max_bytes: 0 }
+		};
+		const evidence = storageRetentionEvidence(unlimitedConfig, unlimitedHealth);
+
+		expect(evidence.longTermCapBytes).toBeNull();
+		expect(evidence.archive.limitBytes).toBeNull();
 	});
 
 	it('does not synthesize disk, history, or override evidence without health', () => {

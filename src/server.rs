@@ -3793,7 +3793,7 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ApiPrincipal {
-    LocalAdministrator,
+    LoopbackAdministrator,
     AccessKey(AccessKeyFingerprint),
 }
 
@@ -4257,8 +4257,8 @@ fn with_api_cors(response: Response, origin: Option<String>) -> Response {
 }
 
 fn api_principal(request: &Request, state: &ServerState) -> Result<ApiPrincipal, Response> {
-    if is_trusted_local_request(request) {
-        return Ok(ApiPrincipal::LocalAdministrator);
+    if is_trusted_loopback_request(request) {
+        return Ok(ApiPrincipal::LoopbackAdministrator);
     }
     let Some(authorization) = request.header("Authorization") else {
         return Err(api_status(401, "Bearer access key is required"));
@@ -4282,7 +4282,7 @@ fn api_principal(request: &Request, state: &ServerState) -> Result<ApiPrincipal,
     Ok(ApiPrincipal::AccessKey(candidate.fingerprint()))
 }
 
-fn is_trusted_local_request(request: &Request) -> bool {
+fn is_trusted_loopback_request(request: &Request) -> bool {
     const FORWARDED_HEADERS: [&str; 5] = [
         "Forwarded",
         "X-Forwarded-For",
@@ -4296,22 +4296,17 @@ fn is_trusted_local_request(request: &Request) -> bool {
     {
         return false;
     }
-    is_local_network_address(request.remote_addr().ip())
+    is_loopback_address(request.remote_addr().ip())
 }
 
-const fn is_local_network_address(address: IpAddr) -> bool {
+const fn is_loopback_address(address: IpAddr) -> bool {
     match address {
-        IpAddr::V4(address) => {
-            address.is_loopback() || address.is_link_local() || address.is_private()
-        }
+        IpAddr::V4(address) => address.is_loopback(),
         IpAddr::V6(address) => {
             if let Some(address) = address.to_ipv4_mapped() {
-                return address.is_loopback() || address.is_link_local() || address.is_private();
+                return address.is_loopback();
             }
-            let octets = address.octets();
             address.is_loopback()
-                || (octets[0] & 0xfe) == 0xfc
-                || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
         }
     }
 }
@@ -5984,6 +5979,18 @@ mod tests {
             &state,
         );
         assert_eq!(forwarded_local.status_code, 401);
+
+        for local_network in [
+            SocketAddr::from(([192, 168, 1, 50], 42_000)),
+            SocketAddr::from(([169, 254, 1, 50], 42_000)),
+        ] {
+            let response = handle_request(
+                &Request::fake_http_from(local_network, "GET", "/logs", Vec::new(), Vec::new()),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(response.status_code, 401);
+        }
     }
 
     #[test]

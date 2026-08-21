@@ -6,6 +6,7 @@ import {
 	CameraConfigurationCommandSchema,
 	CameraBackend as ProtoCameraBackend,
 	CameraTransport as ProtoCameraTransport,
+	CancelStoredMediaTimelineQuerySchema,
 	ControlEnvelopeSchema,
 	CloseStoredMediaSchema,
 	DataChannelKind,
@@ -213,15 +214,46 @@ export class ControlClient {
 		return { camera_id: cameraId, date: selectedDate, dates, segments };
 	}
 
-	async getRecordingEvents(cameraId: string, date: string): Promise<RecordingEventsResponse> {
-		const startMs = Date.parse(`${date}T00:00:00Z`);
-		if (!Number.isFinite(startMs)) throw new Error('Recording date is invalid.');
+	async getRecordingsForDate(
+		cameraIds: readonly string[],
+		date: string,
+		signal?: AbortSignal
+	): Promise<RecordingsResponse[]> {
+		const sourceIds = [...new Set(cameraIds)];
+		if (sourceIds.length === 0) return [];
+		const { startMs, endMs } = recordingDayWindow(date);
+		const timeline = await this.queryStoredTimeline({
+			sourceIds,
+			startMs,
+			endMs,
+			includeEvents: false,
+			includeAttachments: false,
+			signal
+		});
+		return sourceIds.map((cameraId) => {
+			const segments = timelineSegments(cameraId, date, timeline.ranges);
+			return {
+				camera_id: cameraId,
+				date,
+				dates: segments.length > 0 ? [date] : [],
+				segments
+			};
+		});
+	}
+
+	async getRecordingEvents(
+		cameraId: string,
+		date: string,
+		signal?: AbortSignal
+	): Promise<RecordingEventsResponse> {
+		const { startMs, endMs } = recordingDayWindow(date);
 		const timeline = await this.queryStoredTimeline({
 			sourceIds: [cameraId],
 			startMs,
-			endMs: startMs + 86_400_000,
+			endMs,
 			includeEvents: true,
-			includeAttachments: true
+			includeAttachments: true,
+			signal
 		});
 		return { camera_id: cameraId, date, events: timeline.events };
 	}
@@ -736,7 +768,9 @@ export class ControlClient {
 		endMs: number;
 		includeEvents: boolean;
 		includeAttachments: boolean;
+		signal?: AbortSignal;
 	}): Promise<StoredTimelineResult> {
+		if (options.signal?.aborted) throw timelineAbortError();
 		const queryId = `timeline-${this.#nextStoredId++}`;
 		const completed = new Promise<StoredTimelineResult>((resolve, reject) => {
 			const timeout = setTimeout(() => {
@@ -753,6 +787,19 @@ export class ControlClient {
 				timeout
 			});
 		});
+		let awaitingDelivery = false;
+		let aborted = false;
+		const abort = () => {
+			aborted = true;
+			const pending = this.#timelinePending.get(queryId);
+			if (pending) {
+				clearTimeout(pending.timeout);
+				this.#timelinePending.delete(queryId);
+				if (awaitingDelivery) pending.reject(timelineAbortError());
+			}
+			void this.cancelStoredTimelineQuery(queryId).catch(() => undefined);
+		};
+		options.signal?.addEventListener('abort', abort, { once: true });
 		try {
 			const command = create(StoredMediaCommandSchema, {
 				action: {
@@ -781,13 +828,28 @@ export class ControlClient {
 			) {
 				throw new Error('Server returned an unexpected stored timeline response.');
 			}
+			if (aborted) throw timelineAbortError();
+			awaitingDelivery = true;
+			if (options.signal?.aborted) abort();
 			return await completed;
 		} catch (error) {
 			const pending = this.#timelinePending.get(queryId);
 			if (pending) clearTimeout(pending.timeout);
 			this.#timelinePending.delete(queryId);
 			throw error;
+		} finally {
+			options.signal?.removeEventListener('abort', abort);
 		}
+	}
+
+	private async cancelStoredTimelineQuery(queryId: string): Promise<void> {
+		const command = create(StoredMediaCommandSchema, {
+			action: {
+				case: 'cancelTimelineQuery',
+				value: create(CancelStoredMediaTimelineQuerySchema, { queryId })
+			}
+		});
+		await this.request({ case: 'storedMediaCommand', value: command });
 	}
 
 	private async refillStoredMedia(
@@ -1557,6 +1619,18 @@ function timelineDates(ranges: StoredTimelineRange[]): string[] {
 		}
 	}
 	return [...dates].toSorted().toReversed();
+}
+
+function recordingDayWindow(date: string): { startMs: number; endMs: number } {
+	const startMs = Date.parse(`${date}T00:00:00Z`);
+	if (!Number.isFinite(startMs) || new Date(startMs).toISOString().slice(0, 10) !== date) {
+		throw new Error('Recording date is invalid.');
+	}
+	return { startMs, endMs: startMs + 86_400_000 };
+}
+
+function timelineAbortError(): DOMException {
+	return new DOMException('Stored timeline query was cancelled.', 'AbortError');
 }
 
 function timelineSegments(

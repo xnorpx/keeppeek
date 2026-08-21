@@ -14,7 +14,7 @@
 		<div class="min-w-0">
 			<h2 class="text-sm leading-4 font-semibold">Identity runtime unavailable</h2>
 			<p class="mt-1 text-xs leading-[18px] text-text-muted">
-				Local and remote authorization are documented targets, not active server evidence.
+				Loopback and shared-key HTTP access are active; identities and roles remain unavailable.
 			</p>
 		</div>
 	</div>

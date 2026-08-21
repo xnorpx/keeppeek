@@ -10,22 +10,20 @@
 	};
 
 	let { action, capability, supported = false }: Props = $props();
-	const state = new CapabilityState();
-
-	$effect(() => {
-		state.updateAdvertised(supported ? [capability] : []);
-	});
 </script>
 
 <main class="grid min-h-[240px] place-items-center bg-background p-8 text-foreground">
-	<CapabilityGate {action} {capability} {state}>
-		{#snippet children()}
-			<button
-				type="button"
-				class="h-8 rounded-sm bg-primary px-3 text-xs font-semibold text-primary-foreground"
-			>
-				{action}
-			</button>
-		{/snippet}
-	</CapabilityGate>
+	{#key `${capability}:${supported}`}
+		{@const state = new CapabilityState(supported ? [capability] : [])}
+		<CapabilityGate {action} {capability} {state}>
+			{#snippet children()}
+				<button
+					type="button"
+					class="h-8 rounded-sm bg-primary px-3 text-xs font-semibold text-primary-foreground"
+				>
+					{action}
+				</button>
+			{/snippet}
+		</CapabilityGate>
+	{/key}
 </main>

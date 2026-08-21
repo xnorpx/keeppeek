@@ -14,6 +14,13 @@ const recordingDisk: DiskHealth = {
 	stores_recordings: true
 };
 
+const rootDisk: DiskHealth = {
+	...recordingDisk,
+	name: 'system',
+	mount_point: '/',
+	stores_recordings: true
+};
+
 describe('first-run storage evidence', () => {
 	it('does not treat matching disk capacity as write-permission proof', () => {
 		expect(firstRunStorageEvidence('/mnt/keeppeek', [recordingDisk], null)).toEqual({
@@ -36,6 +43,27 @@ describe('first-run storage evidence', () => {
 
 		expect(evidence.writeStatus).toBe('verified');
 		expect(evidence.canStartRecorder).toBe(true);
+	});
+
+	it('uses the most-specific volume containing the candidate path', () => {
+		const candidateDisk = {
+			...recordingDisk,
+			name: 'candidate',
+			mount_point: '/mnt/onboarding',
+			available_bytes: 6_500_000_000_000,
+			stores_recordings: false
+		};
+		const evidence = firstRunStorageEvidence(
+			'/mnt/onboarding/keeppeek',
+			[rootDisk, recordingDisk, candidateDisk],
+			null
+		);
+
+		expect(evidence).toMatchObject({
+			diskName: 'candidate',
+			mountPoint: '/mnt/onboarding',
+			availableBytes: 6_500_000_000_000
+		});
 	});
 
 	it('preserves a failed probe as an explicit blocker', () => {

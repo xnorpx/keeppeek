@@ -2,6 +2,35 @@ import type { DiskHealth, SanitizedConfig, ServerHealthResponse } from '$lib/typ
 
 const GIBIBYTE_BYTES = 1_073_741_824;
 
+function normalizedPath(path: string): string {
+	const normalized = path.trim().replaceAll('\\', '/');
+	const withoutTrailingSlash = normalized.replace(/\/+$/, '');
+	const result = withoutTrailingSlash || '/';
+	return /^[A-Z]:($|\/)/i.test(result) ? result.toLowerCase() : result;
+}
+
+function pathIsWithinMount(path: string, mountPoint: string): boolean {
+	const target = normalizedPath(path);
+	const mount = normalizedPath(mountPoint);
+	if (mount === '/') return target.startsWith('/');
+	return target === mount || target.startsWith(`${mount}/`);
+}
+
+export function mostSpecificDiskForPath(
+	path: string,
+	disks: readonly DiskHealth[]
+): DiskHealth | null {
+	return (
+		disks
+			.filter((disk) => pathIsWithinMount(path, disk.mount_point))
+			.toSorted(
+				(left, right) =>
+					normalizedPath(right.mount_point).length - normalizedPath(left.mount_point).length
+			)
+			.at(0) ?? null
+	);
+}
+
 export type StorageRetentionEvidence = {
 	recordingDisk: DiskHealth | null;
 	indexedFragmentBytes: number | null;
@@ -36,15 +65,25 @@ export function storageRetentionEvidence(
 ): StorageRetentionEvidence {
 	const configuredCapBytes =
 		config.storage.long_term_max_gb === 0 ? null : config.storage.long_term_max_gb * GIBIBYTE_BYTES;
+	const runtimeCapBytes = health?.storage.long_term_max_bytes;
+	const effectiveCapBytes =
+		runtimeCapBytes === undefined || runtimeCapBytes === null
+			? configuredCapBytes
+			: runtimeCapBytes === 0
+				? null
+				: runtimeCapBytes;
 
 	return {
-		recordingDisk: health?.system.disks.find((disk) => disk.stores_recordings) ?? null,
+		recordingDisk: mostSpecificDiskForPath(
+			config.storage.long_term_path,
+			health?.system.disks ?? []
+		),
 		indexedFragmentBytes: health?.storage.catalog?.fragment_bytes ?? null,
 		catalogBytes: health?.storage.catalog_bytes ?? null,
 		eventThumbnailCount: health?.storage.catalog?.event_thumbnails ?? null,
 		projectedRetentionDays: config.recording_estimate.estimated_retention_days,
 		oldestFootageAtMs: null,
-		longTermCapBytes: health?.storage.long_term_max_bytes ?? configuredCapBytes,
+		longTermCapBytes: effectiveCapBytes,
 		fillBehavior: 'prune-oldest',
 		diskWarningThresholdPercent: 10,
 		shortTerm: {
@@ -59,7 +98,7 @@ export function storageRetentionEvidence(
 		},
 		archive: {
 			path: config.storage.long_term_path,
-			limitBytes: health?.storage.long_term_max_bytes ?? configuredCapBytes
+			limitBytes: effectiveCapBytes
 		},
 		perCameraOverrides: null,
 		additionalLocations: null

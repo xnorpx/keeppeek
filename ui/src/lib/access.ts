@@ -18,10 +18,10 @@ export type AccessEvidence = {
 	targetRoles: readonly ['Administrator', 'User'];
 	permissions: readonly AccessPermission[];
 	documentedPreIdentityModel: {
-		local: 'administrator-without-sign-in';
+		loopback: 'administrator-without-sign-in';
 		remote: 'shared-bearer-key';
 		keyScope: 'all-documented-endpoints';
-		implementedInCurrentServer: false;
+		implementedInCurrentServer: true;
 	};
 };
 
@@ -65,10 +65,10 @@ export function accessEvidence(): AccessEvidence {
 		targetRoles: ['Administrator', 'User'],
 		permissions,
 		documentedPreIdentityModel: {
-			local: 'administrator-without-sign-in',
+			loopback: 'administrator-without-sign-in',
 			remote: 'shared-bearer-key',
 			keyScope: 'all-documented-endpoints',
-			implementedInCurrentServer: false
+			implementedInCurrentServer: true
 		}
 	};
 }

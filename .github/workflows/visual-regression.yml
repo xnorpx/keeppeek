@@ -46,6 +46,7 @@ jobs:
           name: keeppeek-visual-regression
           path: |
             ui/visual-harness/storybook-static
+            ui/visual-harness/bun.lock
             ui/visual-harness/.loki/reference
             ui/visual-harness/.loki/current
             ui/visual-harness/.loki/difference

@@ -1,6 +1,5 @@
 import { fileURLToPath, URL } from 'node:url';
 import type { StorybookConfig } from '@storybook/svelte-vite';
-import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { mergeConfig } from 'vite';
 
@@ -14,6 +13,8 @@ const config: StorybookConfig = {
 		options: {}
 	},
 	async viteFinal(existingConfig) {
+		const { svelte } = await import('@sveltejs/vite-plugin-svelte');
+
 		return mergeConfig(existingConfig, {
 			plugins: [tailwindcss(), svelte()],
 			resolve: {

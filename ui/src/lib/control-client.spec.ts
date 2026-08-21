@@ -1,5 +1,5 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
-import { durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
+import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	CameraManufacturerResultSchema,
@@ -14,6 +14,7 @@ import {
 	CameraTransport as ProtoCameraTransport,
 	CodecDescriptorSchema,
 	ControlEnvelopeSchema,
+	DataChannelKind,
 	DiscoveredCameraSchema,
 	DiskHealthSnapshotSchema,
 	ExportDownloadResultSchema,
@@ -56,8 +57,14 @@ import {
 	StoredMediaDeliverySchema,
 	StoredMediaFragmentSchema,
 	StoredMediaInitializationSchema,
+	StoredMediaQueryDeliverySchema,
+	StoredMediaQueryEndSchema,
+	StoredMediaQueryMessageSchema,
+	StoredMediaQueryPageSchema,
+	StoredMediaRangeSchema,
 	StoredMediaStateSchema,
 	StoredMediaStatus,
+	type QueryStoredMediaTimeline,
 	VideoDataFormatSchema,
 	WebRtcHealthSnapshotSchema
 } from './proto/webrtc_pb';
@@ -85,6 +92,8 @@ class FakeDataChannel {
 	) {}
 	activeFilter = 'info';
 	ptzActions: string[] = [];
+	storedTimelineQueries: QueryStoredMediaTimeline[] = [];
+	cancelledTimelineQueryIds: string[] = [];
 
 	send(data: ArrayBuffer | ArrayBufferView): void {
 		if (this.label !== 'control-channel') return;
@@ -95,6 +104,105 @@ class FakeDataChannel {
 		const request = fromBinary(ControlEnvelopeSchema, bytes);
 		if (request.message.case !== 'request') throw new Error('expected request');
 		const command = request.message.value.command;
+		if (command.case === 'storedMediaCommand') {
+			const action = command.value.action;
+			if (action.case === 'queryTimeline') {
+				this.storedTimelineQueries.push(action.value);
+				const delivery = create(StoredMediaQueryDeliverySchema, {
+					queryId: action.value.queryId,
+					channel: DataChannelKind.RELIABLE_DATA
+				});
+				const response = create(ControlEnvelopeSchema, {
+					message: {
+						case: 'response',
+						value: create(ResponseSchema, {
+							requestId: request.message.value.requestId,
+							result: {
+								case: 'ok',
+								value: create(OkSchema, {
+									result: { case: 'storedMediaQueryDelivery', value: delivery }
+								})
+							}
+						})
+					}
+				});
+				queueMicrotask(() =>
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
+				);
+				if (!action.value.sourceIds.includes('slow')) {
+					const reliable = FakePeerConnection.latest?.channels.find(
+						(channel) => channel.label === 'reliable-data'
+					);
+					const rangeStart = timestampFromDate(new Date('2026-08-20T01:00:00Z'));
+					const rangeEnd = timestampFromDate(new Date('2026-08-20T01:01:00Z'));
+					const page = create(MessageSchema, {
+						message: {
+							case: 'storedMediaQuery',
+							value: create(StoredMediaQueryMessageSchema, {
+								message: {
+									case: 'page',
+									value: create(StoredMediaQueryPageSchema, {
+										queryId: action.value.queryId,
+										sequence: 0n,
+										availability: action.value.sourceIds.map((sourceId) =>
+											create(StoredMediaRangeSchema, {
+												sourceId,
+												streamId: 'main',
+												startTime: rangeStart,
+												endTime: rangeEnd
+											})
+										)
+									})
+								}
+							})
+						}
+					});
+					const end = create(MessageSchema, {
+						message: {
+							case: 'storedMediaQuery',
+							value: create(StoredMediaQueryMessageSchema, {
+								message: {
+									case: 'end',
+									value: create(StoredMediaQueryEndSchema, {
+										queryId: action.value.queryId,
+										pageCount: 1n,
+										attachmentCount: 0n
+									})
+								}
+							})
+						}
+					});
+					queueMicrotask(() =>
+						reliable?.onmessage?.({ data: toBinary(MessageSchema, page).buffer } as MessageEvent)
+					);
+					queueMicrotask(() =>
+						reliable?.onmessage?.({ data: toBinary(MessageSchema, end).buffer } as MessageEvent)
+					);
+				}
+				return;
+			}
+			if (action.case === 'cancelTimelineQuery') {
+				this.cancelledTimelineQueryIds.push(action.value.queryId);
+				const response = create(ControlEnvelopeSchema, {
+					message: {
+						case: 'response',
+						value: create(ResponseSchema, {
+							requestId: request.message.value.requestId,
+							result: { case: 'ok', value: create(OkSchema) }
+						})
+					}
+				});
+				queueMicrotask(() =>
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
+				);
+				return;
+			}
+			throw new Error('unexpected stored media action');
+		}
 		const result =
 			command.case === 'exportCommand'
 				? (() => {
@@ -875,6 +983,38 @@ describe('ControlClient', () => {
 
 		await client.close();
 		expect(api.deleteSession).toHaveBeenCalledWith('session-42');
+	});
+
+	it('batches one UTC day across cameras and cancels an abandoned timeline query', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-timeline',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+
+		const recordings = await client.getRecordingsForDate(['front-door', 'garage'], '2026-08-20');
+		const control = FakePeerConnection.latest?.channels.find(
+			(channel) => channel.label === 'control-channel'
+		);
+		expect(control?.storedTimelineQueries).toHaveLength(1);
+		const query = control!.storedTimelineQueries[0]!;
+		expect(query.sourceIds).toEqual(['front-door', 'garage']);
+		expect(timestampDate(query.startTime!).toISOString()).toBe('2026-08-20T00:00:00.000Z');
+		expect(timestampDate(query.endTime!).toISOString()).toBe('2026-08-21T00:00:00.000Z');
+		expect(recordings.map((response) => response.segments.length)).toEqual([1, 1]);
+
+		const controller = new AbortController();
+		const abandoned = client.getRecordingsForDate(['slow'], '2026-08-20', controller.signal);
+		await vi.waitFor(() => expect(control?.storedTimelineQueries).toHaveLength(2));
+		controller.abort();
+		await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+		await vi.waitFor(() =>
+			expect(control?.cancelledTimelineQueryIds).toEqual([
+				control?.storedTimelineQueries[1]?.queryId
+			])
+		);
 	});
 
 	it('refills at half-buffer and ends only after the terminal generation is appended', async () => {

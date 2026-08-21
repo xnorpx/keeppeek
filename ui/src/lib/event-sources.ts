@@ -14,13 +14,14 @@ export type EventSourceEvidence = {
 	permissions: null;
 	typeMappings: null;
 	publicationRuntime: 'unavailable';
-	restFields: {
-		available: readonly string[];
-		unavailable: readonly string[];
+	storedMediaFields: {
+		transport: 'webrtc';
+		exposed: readonly string[];
+		notExposed: readonly string[];
 	};
 };
 
-const availableRestFields = Object.freeze([
+const exposedStoredMediaFields = Object.freeze([
 	'id',
 	'camera_id',
 	'date',
@@ -34,7 +35,7 @@ const availableRestFields = Object.freeze([
 	'thumbnail_url'
 ]);
 
-const unavailableRestFields = Object.freeze([
+const unexposedStoredMediaFields = Object.freeze([
 	'source_id',
 	'revision',
 	'text',
@@ -60,9 +61,10 @@ export function eventSourceEvidence(health: ServerHealthResponse | null): EventS
 		permissions: null,
 		typeMappings: null,
 		publicationRuntime: 'unavailable',
-		restFields: {
-			available: availableRestFields,
-			unavailable: unavailableRestFields
+		storedMediaFields: {
+			transport: 'webrtc',
+			exposed: exposedStoredMediaFields,
+			notExposed: unexposedStoredMediaFields
 		}
 	};
 }

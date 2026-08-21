@@ -139,22 +139,25 @@
 		<div class="grid lg:grid-cols-[1.15fr_0.85fr]">
 			<div class="space-y-3 border-b border-hairline p-5 lg:border-r lg:border-b-0">
 				<div>
-					<h3 class="text-base font-semibold">What stored REST events carry</h3>
+					<h3 class="text-base font-semibold">What stored WebRTC events carry</h3>
 					<p class="mt-1 text-xs leading-5 text-text-muted">
-						These fields are returned by the current per-camera, per-day event endpoint.
+						These normalized fields are exposed by the current per-camera, per-day stored-media
+						query over WebRTC.
 					</p>
 				</div>
 				<div class="flex flex-wrap gap-2">
-					{#each evidence.restFields.available as field (field)}
+					{#each evidence.storedMediaFields.exposed as field (field)}
 						<code class="rounded-xs border border-hairline bg-raised px-2 py-1 text-2xs"
 							>{field}</code
 						>
 					{/each}
 				</div>
 				<div class="border-t border-hairline pt-3">
-					<p class="font-mono text-2xs tracking-caps text-text-faint">NOT RETURNED BY REST</p>
+					<p class="font-mono text-2xs tracking-caps text-text-faint">
+						NOT EXPOSED IN THE UI MODEL
+					</p>
 					<div class="mt-2 flex flex-wrap gap-2">
-						{#each evidence.restFields.unavailable as field (field)}
+						{#each evidence.storedMediaFields.notExposed as field (field)}
 							<code
 								class="rounded-xs border border-hairline bg-background px-2 py-1 text-2xs text-text-faint"
 								>{field}</code

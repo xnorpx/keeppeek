@@ -66,8 +66,8 @@
 				? 'h-12 w-[600px] text-[15px] leading-[23px]'
 				: 'max-w-2xl text-sm leading-6'}"
 		>
-			Nothing has left this machine. On the LAN you are already administrator. The remote key is
-			optional; storage and time are not.
+			Nothing has left this machine. This host is administrator over loopback. Other devices need
+			the configured remote key; storage and time are not optional.
 		</p>
 		{#if health}
 			<span
@@ -202,8 +202,8 @@
 					class="w-full justify-start {paperFrame ? 'h-[38px] shrink-0' : ''}"
 				/>
 				<p class="text-xs text-text-faint {paperFrame ? 'h-9 leading-[18px]' : 'leading-5'}">
-					Skip this on the LAN. No identity fields are shown because there is no server command that
-					could save them.
+					Other LAN devices require the configured Bearer key. This setup screen does not collect or
+					render secret key material.
 				</p>
 			</div>
 		</li>
@@ -215,7 +215,7 @@
 			: 'px-5 py-4 md:px-6'}"
 	>
 		<span class="font-mono text-2xs tracking-caps text-text-faint">
-			{paperFrame ? 'AGPL-3.0 · LOCAL OPEN · REMOTE KEY · NO CLOUD' : 'LOCAL OPEN · NO CLOUD'}
+			{paperFrame ? 'AGPL-3.0 · LOOPBACK OPEN · REMOTE KEY · NO CLOUD' : 'LOOPBACK OPEN · NO CLOUD'}
 		</span>
 		<button
 			type="button"

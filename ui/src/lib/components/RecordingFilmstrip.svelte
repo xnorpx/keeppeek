@@ -84,17 +84,18 @@
 		signal: AbortSignal,
 		version: number
 	) {
-		const results = await Promise.all(
-			cameraList.map(async (camera): Promise<CameraRecordings> => {
-				try {
-					const response = await controlClient.getRecordings(camera.id, selectedDate);
-					return { camera, segments: response.segments };
-				} catch (cause) {
-					if (signal.aborted) throw cause;
-					return { camera, segments: [] };
-				}
-			})
+		const responses = await controlClient.getRecordingsForDate(
+			cameraList.map((camera) => camera.id),
+			selectedDate,
+			signal
 		);
+		const segmentsByCamera = new Map(
+			responses.map((response) => [response.camera_id, response.segments] as const)
+		);
+		const results = cameraList.map<CameraRecordings>((camera) => ({
+			camera,
+			segments: segmentsByCamera.get(camera.id) ?? []
+		}));
 		if (!signal.aborted && version === requestVersion) recordings = results;
 	}
 

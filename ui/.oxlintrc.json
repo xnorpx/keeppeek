@@ -5,8 +5,6 @@
 		"correctness": "error"
 	},
 	"ignorePatterns": [
-		".github/agents/impeccable-*.agent.md",
-		".github/skills/impeccable/**",
 		".impeccable/**",
 		"src/lib/components/ui/**",
 		"src/lib/hooks/**",

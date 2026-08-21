@@ -204,12 +204,12 @@
 						<header class="flex h-[89px] shrink-0 flex-col gap-1">
 							<h2 class="text-lg leading-[22px] font-semibold">What stored events carry</h2>
 							<p class="text-[13px] leading-[21px] text-text-muted">
-								Fields below are labeled from current stored-event responses, not from Paper-only
-								publisher payloads.
+								Fields below are exposed by current stored-media WebRTC responses, not by an HTTP
+								event endpoint or Paper-only publisher payloads.
 							</p>
 						</header>
 						<div class="flex flex-col">
-							{#each evidence.restFields.available.slice(0, 9) as field (field)}
+							{#each evidence.storedMediaFields.exposed.slice(0, 9) as field (field)}
 								<div
 									class="flex h-[30px] shrink-0 items-center justify-between border-b border-hairline"
 								>
@@ -220,7 +220,7 @@
 							{/each}
 						</div>
 						<p class="text-xs-plus leading-[18px] text-text-faint">
-							Not returned: {evidence.restFields.unavailable.join(', ')}
+							Not exposed in the UI model: {evidence.storedMediaFields.notExposed.join(', ')}
 						</p>
 					</article>
 				</section>
