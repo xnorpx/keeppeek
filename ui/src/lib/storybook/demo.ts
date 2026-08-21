@@ -17,13 +17,20 @@ export type DemoCaption = {
 	text: string;
 };
 
-export type DemoNarration = {
+export type DemoNarrationCue = {
+	atMs: number;
 	text: string;
+	pauseAfterMs?: number;
+};
+
+export type DemoNarration = {
 	voice: string;
 	instructions?: string;
-	startAtMs?: number;
 	speed?: number;
+	cues: readonly DemoNarrationCue[];
 };
+
+export type DemoNarrationSpeech = Omit<DemoNarration, 'cues'> & { text: string };
 
 export type DemoAction =
 	| {
@@ -138,27 +145,39 @@ export function validateStoryScenarioMetadata(
 	requirePositiveInteger(issues, 'demo.viewport.width', demo.viewport.width);
 	requirePositiveInteger(issues, 'demo.viewport.height', demo.viewport.height);
 	if (demo.narration !== undefined) {
-		requireText(issues, 'demo.narration.text', demo.narration.text);
 		requireText(issues, 'demo.narration.voice', demo.narration.voice);
 		if (demo.narration.instructions !== undefined) {
 			requireText(issues, 'demo.narration.instructions', demo.narration.instructions);
-		}
-		if (
-			demo.narration.startAtMs !== undefined &&
-			(!Number.isInteger(demo.narration.startAtMs) ||
-				demo.narration.startAtMs < 0 ||
-				demo.narration.startAtMs >= demo.durationMs)
-		) {
-			issues.push({
-				path: 'demo.narration.startAtMs',
-				message: 'must occur within the demo duration'
-			});
 		}
 		if (
 			demo.narration.speed !== undefined &&
 			(demo.narration.speed < 0.25 || demo.narration.speed > 4)
 		) {
 			issues.push({ path: 'demo.narration.speed', message: 'must be between 0.25 and 4' });
+		}
+		if (demo.narration.cues.length === 0) {
+			issues.push({ path: 'demo.narration.cues', message: 'must contain at least one cue' });
+		}
+		let previousCueAtMs = -1;
+		for (const [index, cue] of demo.narration.cues.entries()) {
+			const path = `demo.narration.cues[${index}]`;
+			requireText(issues, `${path}.text`, cue.text);
+			if (!Number.isInteger(cue.atMs) || cue.atMs < 0 || cue.atMs >= demo.durationMs) {
+				issues.push({ path: `${path}.atMs`, message: 'must occur within the demo duration' });
+			}
+			if (index === 0 && cue.atMs !== 0) {
+				issues.push({ path: `${path}.atMs`, message: 'must start at source time zero' });
+			}
+			if (cue.atMs <= previousCueAtMs) {
+				issues.push({ path: `${path}.atMs`, message: 'must be later than the previous cue' });
+			}
+			if (
+				cue.pauseAfterMs !== undefined &&
+				(!Number.isInteger(cue.pauseAfterMs) || cue.pauseAfterMs < 0)
+			) {
+				issues.push({ path: `${path}.pauseAfterMs`, message: 'must be a non-negative integer' });
+			}
+			previousCueAtMs = cue.atMs;
 		}
 	}
 

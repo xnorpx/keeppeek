@@ -18,10 +18,12 @@ const validScenario: StoryScenarioMetadata = {
 		title: 'Review what just happened',
 		purpose: 'Show the live-to-recorded transition without disturbing other cameras.',
 		narration: {
-			text: 'Drag backward on one camera to review the last two minutes.',
 			voice: 'coral',
 			instructions: 'Speak clearly in a calm product-demo tone.',
-			startAtMs: 500
+			cues: [
+				{ atMs: 0, text: 'First, choose one live camera.' },
+				{ atMs: 2_500, text: 'Then drag backward to review the last two minutes.' }
+			]
 		},
 		durationMs: 9_000,
 		viewport: { width: 1_440, height: 860 },
@@ -87,22 +89,32 @@ describe('Storybook demo metadata', () => {
 			demo: {
 				...validScenario.demo!,
 				narration: {
-					text: '',
 					voice: '',
 					instructions: '',
-					startAtMs: 9_000,
-					speed: 4.1
+					speed: 4.1,
+					cues: [
+						{ atMs: 500, text: '' },
+						{ atMs: 500, text: 'Duplicate', pauseAfterMs: -1 }
+					]
 				}
 			}
 		});
 
 		expect(issues).toEqual(
 			expect.arrayContaining([
-				{ path: 'demo.narration.text', message: 'must not be empty' },
 				{ path: 'demo.narration.voice', message: 'must not be empty' },
 				{ path: 'demo.narration.instructions', message: 'must not be empty' },
-				{ path: 'demo.narration.startAtMs', message: 'must occur within the demo duration' },
-				{ path: 'demo.narration.speed', message: 'must be between 0.25 and 4' }
+				{ path: 'demo.narration.speed', message: 'must be between 0.25 and 4' },
+				{ path: 'demo.narration.cues[0].atMs', message: 'must start at source time zero' },
+				{ path: 'demo.narration.cues[0].text', message: 'must not be empty' },
+				{
+					path: 'demo.narration.cues[1].atMs',
+					message: 'must be later than the previous cue'
+				},
+				{
+					path: 'demo.narration.cues[1].pauseAfterMs',
+					message: 'must be a non-negative integer'
+				}
 			])
 		);
 	});

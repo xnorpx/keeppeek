@@ -13,6 +13,9 @@ on:
       - .github/workflows/generate-demo-videos.yml
       - ui/package.json
       - ui/scripts/render-story-demos.ts
+      - ui/scripts/render-narrated-demos.ts
+      - ui/scripts/synthesize-demo-narration.ts
+      - ui/scripts/mux-demo-video.ts
       - ui/scripts/check-demo-scenarios.ts
       - ui/scripts/prepare-demo-publish.ts
       - ui/src/lib/storybook/demo.ts
@@ -25,6 +28,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: generate-demo-videos-${{ github.ref }}
@@ -39,6 +43,8 @@ jobs:
         working-directory: ui
     env:
       DEMO_BASE_URL: ${{ inputs.base_url || vars.AZURE_DEMO_BASE_URL }}
+      AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+      AZURE_OPENAI_TTS_DEPLOYMENT: ${{ vars.AZURE_OPENAI_TTS_DEPLOYMENT }}
     steps:
       - uses: actions/checkout@v7
 
@@ -64,11 +70,32 @@ jobs:
           bun run demo:check
           bun run test:unit -- \
             src/lib/storybook/demo.spec.ts \
+            src/lib/server/storybook/azure-openai-tts.spec.ts \
+            src/lib/server/storybook/demo-narration.spec.ts \
             src/lib/server/storybook/demo-video.spec.ts \
             src/lib/server/storybook/video-publish.spec.ts
 
       - name: Record story demos
         run: bun run demo:render
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Generate audio-paced narration
+        run: |
+          test -n "$AZURE_OPENAI_ENDPOINT"
+          test -n "$AZURE_OPENAI_TTS_DEPLOYMENT"
+          test "$AZURE_OPENAI_TTS_DEPLOYMENT" = "keeppeek-demo-tts-gpt-4o-mini-tts"
+          AZURE_OPENAI_AUTH_TOKEN="$(az account get-access-token \
+            --resource https://cognitiveservices.azure.com \
+            --query accessToken \
+            --output tsv)"
+          export AZURE_OPENAI_AUTH_TOKEN
+          bun run demo:narrate:all
 
       - name: Prepare hosted manifest
         run: |
@@ -82,13 +109,57 @@ jobs:
         run: |
           test -f test-results/demo-videos/manifest.json
           test "$(find test-results/demo-videos/assets -maxdepth 1 -name '*.mp4' | wc -l)" -gt 0
+          expected_wavs=$(jq -s '[.[].cues | length] | add' \
+            test-results/demo-videos/narration/*/manifest.json)
+          actual_wavs=$(find test-results/demo-videos/narration -name '*.wav' | wc -l)
+          test "$actual_wavs" -eq "$expected_wavs"
           test "$(find test-results/demo-videos -name '*.webm' | wc -l)" -eq 0
+          test "$(find test-results/demo-videos -name '*.stream' | wc -l)" -eq 0
+          while IFS= read -r narration_manifest; do
+            jq -e '.schemaVersion == 1 and (.cues | length > 0)' "$narration_manifest" >/dev/null
+            narration_dir=$(dirname "$narration_manifest")
+            while IFS=$'\t' read -r file_name expected_bytes expected_sha; do
+              wav="$narration_dir/$file_name"
+              test -f "$wav"
+              test "$(stat --format='%s' "$wav")" -eq "$expected_bytes"
+              test "$(sha256sum "$wav" | cut -d ' ' -f 1)" = "$expected_sha"
+              ffprobe -v error \
+                -show_entries stream=codec_name,codec_type,sample_rate,channels \
+                -of json "$wav" |
+                jq -e '.streams | length == 1 and
+                  .[0].codec_name == "pcm_s16le" and
+                  .[0].codec_type == "audio" and
+                  .[0].sample_rate == "24000" and
+                  .[0].channels == 1' >/dev/null
+            done < <(jq -r '.cues[] | [.fileName, (.bytes | tostring), .sha256] | @tsv' \
+              "$narration_manifest")
+          done < <(find test-results/demo-videos/narration -name manifest.json -print)
+          test "$(find test-results/demo-videos/silent -maxdepth 1 -name '*.mp4' | wc -l)" \
+            -eq "$(find test-results/demo-videos/assets -maxdepth 1 -name '*.mp4' | wc -l)"
           while IFS= read -r video; do
             ffprobe -v error \
               -show_entries stream=codec_name,codec_type,pix_fmt \
               -of json "$video" |
-              jq -e '.streams | length == 1 and .[0].codec_name == "h264" and .[0].codec_type == "video" and .[0].pix_fmt == "yuv420p"' >/dev/null
+              jq -e '.streams | length == 1 and
+                .[0].codec_name == "h264" and
+                .[0].codec_type == "video" and
+                .[0].pix_fmt == "yuv420p"' >/dev/null
+          done < <(find test-results/demo-videos/silent -maxdepth 1 -name '*.mp4' -print)
+          while IFS= read -r video; do
+            ffprobe -v error \
+              -show_entries stream=codec_name,codec_type,pix_fmt \
+              -of json "$video" |
+              jq -e '.streams as $streams |
+                ($streams | length) == 2 and
+                any($streams[]; .codec_name == "h264" and .codec_type == "video" and .pix_fmt == "yuv420p") and
+                any($streams[]; .codec_name == "aac" and .codec_type == "audio")' >/dev/null
           done < <(find test-results/demo-videos/assets -maxdepth 1 -name '*.mp4' -print)
+          while IFS= read -r metadata; do
+            jq -e '.recording.audioCodec == "aac" and
+              .recording.streamCount == 2 and
+              (.recording.narration.cues | length > 0) and
+              any(.recording.narration.cues[]; .freezeDurationMs > 0)' "$metadata" >/dev/null
+          done < <(find test-results/demo-videos/assets -maxdepth 1 -name '*.json' -print)
           jq -e '.schemaVersion == 1 and (.videos | length > 0)' \
             test-results/demo-videos/manifest.json >/dev/null
 
@@ -103,4 +174,5 @@ jobs:
       - name: Publish summary
         run: |
           count=$(jq '.videos | length' test-results/demo-videos/manifest.json)
-          echo "Generated $count deterministic story demo video(s)." >> "$GITHUB_STEP_SUMMARY"
+          cues=$(find test-results/demo-videos/narration -name '*.wav' | wc -l)
+          echo "Generated $count audio-paced story demo video(s) from $cues Azure OpenAI WAV cue(s)." >> "$GITHUB_STEP_SUMMARY"

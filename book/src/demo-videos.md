@@ -1,7 +1,8 @@
 # Demo videos
 
-These deterministic H.264 recordings exercise KeepPeek's production controls and are regenerated
-from the canonical Paper scenarios. Captions are available from each player.
+These audio-paced H.264/AAC recordings exercise KeepPeek's production controls and are regenerated
+from the canonical Paper scenarios. Azure OpenAI narration controls each visual phase, and captions
+are available from every player.
 
 ## Review what just happened
 

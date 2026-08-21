@@ -33,11 +33,18 @@ Create a `demo-videos` GitHub environment with these variables:
 
 Add these environment variables:
 
-- `AZURE_STORAGE_ACCOUNT`
 - `AZURE_STORAGE_ACCOUNT` — `keeppeekdemos`
 - `AZURE_DEMO_CONTAINER` — `demo-videos`
 - `AZURE_DEMO_PREFIX` — `demos`
 - `AZURE_DEMO_BASE_URL` — `https://keeppeekdemos.blob.core.windows.net/demo-videos/demos`
+- `AZURE_OPENAI_ENDPOINT` — the dedicated Azure OpenAI account endpoint
+- `AZURE_OPENAI_TTS_DEPLOYMENT` — `keeppeek-demo-tts-gpt-4o-mini-tts`
+
+The narration account is `keeppeek-openai` in East US 2. It deploys GA
+`gpt-4o-mini-tts` version `2025-12-15` on the consumption-based `GlobalStandard` SKU at capacity
+
+1. The deployment has no fixed charge; current pricing meters text input and generated audio
+   tokens. Local API-key authentication is disabled.
 
 ## Recording Stories
 
@@ -77,13 +84,20 @@ stream. The JSON records story/Paper IDs, action timeline, fixture SHA-256, comm
 pre-roll, viewport, duration, codec, and stream count. Local and CI generation require Chromium,
 ffmpeg, and ffprobe.
 
-Narration remains an optional manual derivative. When a story declares Azure OpenAI narration,
-`demo:narrate` and `demo:mux` create an H.264/AAC version that is intentionally outside the default
-H.264-only artifact policy. Browser action timing never depends on variable narration duration.
+Every published demo uses ordered Azure OpenAI narration cues. `demo:narrate` writes one numbered
+WAV per cue plus a manifest containing its source timestamp, measured duration, size, and SHA-256.
+`demo:mux` verifies those files before producing the H.264/AAC video and narration-timed WebVTT.
+
+Narration controls pacing by partitioning the silent source at cue timestamps. Each visual phase
+plays at normal speed. When its WAV plus authored pause is longer than the phase, ffmpeg freezes the
+phase's final frame until speech catches up; the next phase never starts early. Short speech does not
+speed up the visual phase. The artifact retains silent sources, individual WAV files, and measured
+freeze durations for auditability, while only final narrated media is published to Blob Storage.
 
 Use a dedicated app registration whose federated subject is the `demo-videos` GitHub environment.
 Grant that identity **Storage Blob Data Contributor** on only the `keeppeekdemos` account. The
-workflow uses GitHub OIDC; no storage account key is stored in GitHub.
+same identity receives **Cognitive Services OpenAI User** on only the narration account. The
+workflow uses GitHub OIDC; no storage account key or Azure OpenAI key is stored in GitHub.
 
 Disable **Blob versioning** and **soft delete for blobs** on this dedicated demo container or storage
 account. Otherwise Azure can retain historical blob versions even though the public URL always
