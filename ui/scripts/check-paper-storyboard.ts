@@ -129,7 +129,6 @@ type TokenContract = {
 		package: string;
 		version: string;
 		weights: number[];
-		integrity: string;
 	}>;
 	constraints: string[];
 };
@@ -262,15 +261,16 @@ if (
 const packageManifest = await readJson<{ devDependencies: Record<string, string> }>(
 	resolve('package.json')
 );
-const bunLock = await readFile(resolve('bun.lock'), 'utf8');
 const appCss = await readFile(resolve('src/app.css'), 'utf8');
 for (const font of tokenContract.fonts) {
+	const installedManifest = await readJson<{ version: string }>(
+		resolve('node_modules', font.package, 'package.json')
+	);
 	if (
 		packageManifest.devDependencies[font.package] !== font.version ||
-		!bunLock.includes(`"${font.package}@${font.version}"`) ||
-		!bunLock.includes(font.integrity)
+		installedManifest.version !== font.version
 	) {
-		throw new Error(`Board 02 font package or integrity drifted: ${font.family}`);
+		throw new Error(`Board 02 font package version drifted: ${font.family}`);
 	}
 	for (const weight of font.weights) {
 		if (!appCss.includes(`@import '${font.package}/latin-${weight}.css';`)) {

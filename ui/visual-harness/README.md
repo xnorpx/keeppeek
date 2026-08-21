@@ -7,7 +7,7 @@ Svelte components from `ui/src`; the harness does not fork application component
 From this directory:
 
 ```sh
-bun install --registry=https://registry.npmjs.org/
+bun install --no-save --registry=https://registry.npmjs.org/
 bun run storybook:build
 bun run loki:test:ci
 ```

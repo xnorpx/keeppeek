@@ -84,7 +84,7 @@ jobs:
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
-        run: bun install --registry=https://registry.npmjs.org/
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - run: cargo test --doc --all
 
   build-and-test:

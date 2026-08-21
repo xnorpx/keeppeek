@@ -45,6 +45,24 @@ for (const [path, expected] of requiredSettings) {
 	}
 }
 
+const packageRoots = [repositoryRoot, uiRoot, resolve(uiRoot, 'visual-harness')];
+const lockfileNames = [
+	'bun.lock',
+	'bun.lockb',
+	'package-lock.json',
+	'npm-shrinkwrap.json',
+	'pnpm-lock.yaml',
+	'yarn.lock'
+];
+for (const packageRoot of packageRoots) {
+	for (const lockfileName of lockfileNames) {
+		const lockfilePath = resolve(packageRoot, lockfileName);
+		if (existsSync(lockfilePath)) {
+			throw new Error(`JavaScript lockfiles are not used in this repository: ${lockfilePath}`);
+		}
+	}
+}
+
 const runtimeBunVersion = (process.versions as Record<string, string | undefined>).bun;
 if (!runtimeBunVersion || !versionAtLeast(runtimeBunVersion, requiredBunVersion)) {
 	throw new Error(`Bun ${requiredBunVersion} or newer is required`);
@@ -65,17 +83,6 @@ if (uiManifest.engines?.bun !== `>=${requiredBunVersion}`) {
 }
 if (visualHarnessManifest.packageManager !== `bun@${requiredBunVersion}`) {
 	throw new Error(`Visual harness packageManager must pin bun@${requiredBunVersion}`);
-}
-
-const lockfilePath = resolve(uiRoot, 'bun.lock');
-if (existsSync(lockfilePath)) {
-	const lockfile = readFileSync(lockfilePath, 'utf8');
-	const packageUrls = lockfile.match(/https:\/\/[^"\s]+/g) ?? [];
-	const nonPublicUrl = packageUrls.find(
-		(packageUrl) => !packageUrl.startsWith('https://registry.npmjs.org/')
-	);
-	if (nonPublicUrl)
-		throw new Error(`Bun lockfile contains a non-public registry URL: ${nonPublicUrl}`);
 }
 
 console.log(`Bun ${runtimeBunVersion}, public npm, and crates.io registry configuration verified.`);
