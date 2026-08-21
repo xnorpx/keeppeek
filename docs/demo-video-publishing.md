@@ -1,7 +1,7 @@
 # Demo Video Publishing
 
-KeepPeek demo videos use Azure Blob Storage or an Azure Storage static website as their canonical
-self-updating host. Generated scenario assets keep stable names:
+KeepPeek demo videos use the dedicated `keeppeekdemos` Azure Blob Storage account as their
+canonical self-updating host. Generated scenario assets keep stable names:
 
 - `assets/<scenario-id>.mp4`
 - `assets/<scenario-id>.vtt`
@@ -25,7 +25,7 @@ previous manifest and all of its referenced assets intact.
 
 ## GitHub Configuration
 
-Create a `demo-videos` GitHub environment with these secrets:
+Create a `demo-videos` GitHub environment with these variables:
 
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
@@ -34,9 +34,10 @@ Create a `demo-videos` GitHub environment with these secrets:
 Add these environment variables:
 
 - `AZURE_STORAGE_ACCOUNT`
-- `AZURE_DEMO_CONTAINER` — use `$web` for an Azure static website
-- `AZURE_DEMO_PREFIX` — normally `demos`
-- `AZURE_DEMO_BASE_URL` — for example `https://media.example.com/demos`
+- `AZURE_STORAGE_ACCOUNT` — `keeppeekdemos`
+- `AZURE_DEMO_CONTAINER` — `demo-videos`
+- `AZURE_DEMO_PREFIX` — `demos`
+- `AZURE_DEMO_BASE_URL` — `https://keeppeekdemos.blob.core.windows.net/demo-videos/demos`
 
 ## Recording Stories
 
@@ -80,8 +81,9 @@ Narration remains an optional manual derivative. When a story declares Azure Ope
 `demo:narrate` and `demo:mux` create an H.264/AAC version that is intentionally outside the default
 H.264-only artifact policy. Browser action timing never depends on variable narration duration.
 
-Grant the federated Azure identity **Storage Blob Data Contributor** on the target storage account.
-The workflow uses GitHub OIDC; no storage account key is stored in GitHub.
+Use a dedicated app registration whose federated subject is the `demo-videos` GitHub environment.
+Grant that identity **Storage Blob Data Contributor** on only the `keeppeekdemos` account. The
+workflow uses GitHub OIDC; no storage account key is stored in GitHub.
 
 Disable **Blob versioning** and **soft delete for blobs** on this dedicated demo container or storage
 account. Otherwise Azure can retain historical blob versions even though the public URL always
@@ -97,6 +99,10 @@ new manifest last. A manual dispatch can republish an artifact from a specified 
 
 The workflow has `contents: read` only. Generated videos and the hosted manifest are never committed
 to the repository, so publishing does not create commits or require Git updates.
+
+The [KeepPeek book](https://xnorpx.github.io/keeppeek/demo-videos.html) embeds the stable MP4 and
+WebVTT URLs. Its gallery is checked against the canonical demo registry, so adding a recording also
+requires adding it to the book.
 
 YouTube can be added as a secondary discovery channel. It cannot replace a video's media while
 preserving the same video ID, so an automatic YouTube mirror must upload changed videos as new IDs,

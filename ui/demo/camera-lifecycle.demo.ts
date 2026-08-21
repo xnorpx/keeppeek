@@ -32,6 +32,7 @@ const viewport = demo.viewport;
 const outputDirectory = resolve(process.env.DEMO_OUTPUT_DIR ?? 'test-results/demo-videos/assets');
 const recordingDirectory = resolve('test-results/demo-playwright/recordings');
 const scenarioStem = join(outputDirectory, cameraLifecycleStory.paper.scenarioId);
+const recordingTailMs = 500;
 
 test('delete and re-add the same camera through the real server', async ({ browser }) => {
 	const draft = await readStableCameraDraft(browser);
@@ -89,6 +90,7 @@ test('delete and re-add the same camera through the real server', async ({ brows
 			throw new Error(`Camera lifecycle exceeded its ${demo.durationMs}ms story timeline`);
 		}
 		await waitUntil(page, demoStartAt, demo.durationMs);
+		await page.waitForTimeout(recordingTailMs);
 
 		const video = page.video();
 		if (!video) throw new Error('Playwright did not create the camera lifecycle recording');

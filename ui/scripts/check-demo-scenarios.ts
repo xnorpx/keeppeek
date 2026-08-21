@@ -126,10 +126,19 @@ const publishingWorkflow = await readFile(
 for (const requiredText of [
 	'workflows: [Generate Demo Videos]',
 	'name: keeppeek-demo-videos',
-	'path: demo-videos'
+	'path: demo-videos',
+	'client-id: ${{ vars.AZURE_CLIENT_ID }}',
+	'AZURE_DEMO_BASE_URL'
 ]) {
 	if (!publishingWorkflow.includes(requiredText)) {
 		throw new Error(`Demo publishing workflow is missing: ${requiredText}`);
+	}
+}
+
+const bookGallery = await readFile(resolve('..', 'book/src/demo-videos.md'), 'utf8');
+for (const scenarioId of [...scenarioIds, cameraLifecycleStory.paper.scenarioId]) {
+	if (!bookGallery.includes(`${scenarioId}.mp4`) || !bookGallery.includes(`${scenarioId}.vtt`)) {
+		throw new Error(`Book demo gallery is missing video or captions for: ${scenarioId}`);
 	}
 }
 
