@@ -33,8 +33,12 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
+      - name: Install Markdown formatting dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Check Markdown formatting
-        run: bunx prettier --check "**/*.md"
+        working-directory: ui
+        run: bunx prettier --check "../**/*.md"
 
   clippy:
     name: Clippy
