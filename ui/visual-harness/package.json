@@ -8,7 +8,7 @@
 		"storybook": "storybook dev --ci --port 6006",
 		"storybook:build": "storybook build --output-dir storybook-static",
 		"loki:test": "loki test --reactUri file:./storybook-static",
-		"loki:test:ci": "loki test --reactUri file:./storybook-static --configurationFilter '^chrome\\.' --requireReference=false",
+		"loki:test:ci": "env -u CI -u CONTINUOUS_INTEGRATION -u BUILD_NUMBER -u RUN_ID loki test --reactUri file:./storybook-static --configurationFilter '^chrome\\.' --requireReference=false --verboseRenderer",
 		"loki:update": "loki update --reactUri file:./storybook-static"
 	},
 	"devDependencies": {

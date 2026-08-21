@@ -6,7 +6,7 @@
 - Token hash: `cf3b1cd7`
 - Scenarios: 56 (6 contracts, 50 rendered scenarios)
 - Paper references: 50 (14 accepted, 36 capability-gated candidates)
-- Approved Linux Loki references: 0/14
+- Approved Linux Loki references: 14/14
 - Board classifications: 6 contract, 5 accepted, 3 mixed, 20 capability-gated
 - Unclassified candidates: 0
 
@@ -51,22 +51,22 @@
 
 ## Loki Baseline Queue
 
-| Scenario                         | Expected reference                                                                 | Status                         |
-| -------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------ |
-| `cameras.waiting.discovery`      | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.discovery.png`      | Pending reviewed Linux capture |
-| `cameras.waiting.fleet-skeleton` | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.fleet-skeleton.png` | Pending reviewed Linux capture |
-| `events.empty.no-results`        | `visual-harness/.loki/reference/chrome.desktop/events.empty.no-results.png`        | Pending reviewed Linux capture |
-| `health.mobile.overview`         | `visual-harness/.loki/reference/chrome.mobile/health.mobile.overview.png`          | Pending reviewed Linux capture |
-| `keep.desktop.calendar`          | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.calendar.png`          | Pending reviewed Linux capture |
-| `keep.desktop.export-lifecycle`  | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png`  | Pending reviewed Linux capture |
-| `keep.waiting.cold-seek`         | `visual-harness/.loki/reference/chrome.desktop/keep.waiting.cold-seek.png`         | Pending reviewed Linux capture |
-| `peek.desktop.light-theme`       | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png`       | Pending reviewed Linux capture |
-| `peek.desktop.live-wall`         | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png`         | Pending reviewed Linux capture |
-| `peek.desktop.rewind-ready`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-ready.png`      | Pending reviewed Linux capture |
-| `peek.desktop.rewind-to-keep`    | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-to-keep.png`    | Pending reviewed Linux capture |
-| `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Pending reviewed Linux capture |
-| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Pending reviewed Linux capture |
-| `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Pending reviewed Linux capture |
+| Scenario                         | Expected reference                                                                 | Status                                                                      |
+| -------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `cameras.waiting.discovery`      | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.discovery.png`      | Approved `24c0590621c54e83fb405345727ca056b9d6d1aeae2ad78fd6f0a4e27a9fb0b4` |
+| `cameras.waiting.fleet-skeleton` | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.fleet-skeleton.png` | Approved `90f92f4835cdf61566f085539f3edd2583c49a40c28946c45ab735aa98f3b194` |
+| `events.empty.no-results`        | `visual-harness/.loki/reference/chrome.desktop/events.empty.no-results.png`        | Approved `a58881eb304c9f78e10d675547c68b16f4383754019192a4a162815038931189` |
+| `health.mobile.overview`         | `visual-harness/.loki/reference/chrome.mobile/health.mobile.overview.png`          | Approved `addb2c3e76982ab113de98d8cd13a1d34f7c9c95840495e12bb9fbe5854df8f0` |
+| `keep.desktop.calendar`          | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.calendar.png`          | Approved `e192953cc22df1ef212112ae3a2293db3acaeb387f316d1f867655ad42cced40` |
+| `keep.desktop.export-lifecycle`  | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png`  | Approved `c045aad78865f1d3a5c8ebb8dd862018d3609711898a80b49fd4bc0fe307349d` |
+| `keep.waiting.cold-seek`         | `visual-harness/.loki/reference/chrome.desktop/keep.waiting.cold-seek.png`         | Approved `85bcb594d11464d3f0c0a06fb525a85a8c2ce84c604288f794b3f7a20e13550b` |
+| `peek.desktop.light-theme`       | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png`       | Approved `c0b04e71e4d62ba2540443ceb6e494b4ca7dde0ef473df93125573c5e4a0be91` |
+| `peek.desktop.live-wall`         | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png`         | Approved `3d8981d83cf3f524dc76af02102edb5b4a7ea7095fe650677d189016ae8433c3` |
+| `peek.desktop.rewind-ready`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-ready.png`      | Approved `cd07cb96c229d275657cbbdb3ec3f339f5e7dc819f58aab43be4c6788f843d57` |
+| `peek.desktop.rewind-to-keep`    | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-to-keep.png`    | Approved `9b6cc450ed24dda8bb5b73908026d9586a01c41cfe81bc1f68874130bad074b5` |
+| `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Approved `3d5eb367f51b9d20e74dc3ae346e66034a6bc13428b2a6dfe8f5c3ba49025128` |
+| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `6075b070128f6cffe19ad0669b2b421dcff14f9d233ff42c5fbef17379f5d95f` |
+| `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Approved `21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509` |
 
 ## Deliberate Capability Gates
 

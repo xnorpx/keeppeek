@@ -49,7 +49,10 @@ test('Board 16 shows target roles without claiming runtime identity enforcement'
 	expect(
 		await section.evaluate((element) => element.getBoundingClientRect().width)
 	).toBeGreaterThan(1200);
-	await expect(section).toContainText('No runtime identity or authorization evidence');
+	await expect(section).toContainText('No runtime identity or role evidence');
+	await expect(section).toContainText(
+		'The Rust server enforces loopback Administrator bypass and one shared Bearer key'
+	);
 	await expect(section).toContainText('Authored policy only · not enforced by this server');
 	await expect(section).toContainText('TARGET · IDENTITY.V1');
 	await expect(section).toContainText('Invite someone');
@@ -76,8 +79,10 @@ test('Board 16 shows target roles without claiming runtime identity enforcement'
 	await expect(section).toContainText('Identity directory unavailable');
 	await expect(section).toContainText('Token registry unavailable');
 	await expect(section.getByText('COUNT UNAVAILABLE')).toHaveCount(2);
-	await expect(section).toContainText('Administrator without sign-in · not implemented');
-	await expect(section).toContainText('One shared Bearer key · not implemented');
+	await expect(section).toContainText('IMPLEMENTED LOOPBACK MODEL');
+	await expect(section).toContainText('Administrator without sign-in');
+	await expect(section).toContainText('IMPLEMENTED REMOTE MODEL');
+	await expect(section).toContainText('One shared Bearer key');
 	await expect(section).toContainText('AUDIT TRAIL');
 
 	for (const absent of [

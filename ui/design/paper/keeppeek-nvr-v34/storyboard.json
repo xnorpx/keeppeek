@@ -141,6 +141,16 @@
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 16138,
 						"varianceReason": "The 1440x860 shell, 64/1374px columns, 52/774/32px main lanes, two 1342x340 rows, and six 439x340 shared tiles match exactly. Residual text pixels come from reporting the six fixture cameras as 6 OF 6 instead of inventing Paper's 127-source total, runtime-derived reconnect/offline evidence, and Paper/Chromium font rasterization; both references use neutral video surfaces."
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png",
+						"bytes": 64401,
+						"sha256": "3d8981d83cf3f524dc76af02102edb5b4a7ea7095fe650677d189016ae8433c3",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "4df6252215d92a3b624efb76ce316581310340f10419cfe231574f6afa2ce076",
+						"storybookStoryId": "peek.desktop.live-wall"
 					}
 				}
 			]
@@ -312,6 +322,16 @@
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 4088,
 						"varianceReason": "The exact 467x413 geometry and footage-backed day states match; the callout says the unavailable-date cause is not reported rather than claiming retention reclaimed it, with remaining text pixels attributable to this evidence-safe copy and Paper/Chromium font rasterization."
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/keep.desktop.calendar.png",
+						"bytes": 14627,
+						"sha256": "e192953cc22df1ef212112ae3a2293db3acaeb387f316d1f867655ad42cced40",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "8f1fe9dae5540b8a8a076d102d6df1199c3e3e90415bf68ad5d4c284a06573ba",
+						"storybookStoryId": "keep.desktop.calendar"
 					}
 				},
 				{
@@ -1255,6 +1275,16 @@
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 2196
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.mobile/health.mobile.overview.png",
+						"bytes": 46559,
+						"sha256": "addb2c3e76982ab113de98d8cd13a1d34f7c9c95840495e12bb9fbe5854df8f0",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "2f05f294eaa5a7dff49d229d26f473d47e8a9666c0096cb21744a87882905ce7",
+						"storybookStoryId": "health.mobile.overview"
 					}
 				},
 				{
@@ -1341,6 +1371,16 @@
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 1388
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png",
+						"bytes": 36868,
+						"sha256": "6075b070128f6cffe19ad0669b2b421dcff14f9d233ff42c5fbef17379f5d95f",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "f2aeeb8edc47fc6e5429c7d37f3b323613fea1780ca74bfbe7e95402e956f771",
+						"storybookStoryId": "settings.mobile.administration"
 					}
 				},
 				{
@@ -1441,6 +1481,16 @@
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 7765,
 						"varianceReason": "All four 342x369 cards, 41px headers, body insets, child lanes, status borders, actions, and progress segments match Paper. The residual is concentrated in two evidence-safe copy changes: partial export omits an unproven reconnect cause, and failed export omits an unproven 200 MB remedy; remaining pixels follow Paper and Chromium glyph and border antialiasing."
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png",
+						"bytes": 83608,
+						"sha256": "c045aad78865f1d3a5c8ebb8dd862018d3609711898a80b49fd4bc0fe307349d",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "dde0bb83ff0ddb16a499bd5a88feb1af998c4a6f24838292e1dfe6b379a480e1",
+						"storybookStoryId": "keep.desktop.export-lifecycle"
 					}
 				}
 			]
@@ -1517,6 +1567,16 @@
 						"totalPixels": 121568,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 245
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-ready.png",
+						"bytes": 8379,
+						"sha256": "cd07cb96c229d275657cbbdb3ec3f339f5e7dc819f58aab43be4c6788f843d57",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "e52c222cace55ecfdea6a9d67d5781fd7a2acd4696fb2372b5ca1255ae993f5b",
+						"storybookStoryId": "peek.desktop.rewind-ready"
 					}
 				},
 				{
@@ -1538,6 +1598,16 @@
 						"totalPixels": 121568,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 341
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-to-keep.png",
+						"bytes": 8748,
+						"sha256": "9b6cc450ed24dda8bb5b73908026d9586a01c41cfe81bc1f68874130bad074b5",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "3e59cbc4a91f865e07fc75b741703b4e1df88926c06a73bdf60be038ae0e13ad",
+						"storybookStoryId": "peek.desktop.rewind-to-keep"
 					}
 				}
 			]
@@ -1588,6 +1658,16 @@
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 1240,
 						"varianceReason": "Paper and Chromium use identical state, progress, and label boxes; the residual follows small-font glyph edges."
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png",
+						"bytes": 4816,
+						"sha256": "3d5eb367f51b9d20e74dc3ae346e66034a6bc13428b2a6dfe8f5c3ba49025128",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "8bec87079b9d92f34c1f64145e9bf9a05b2645e09ca4d9014b5d377c2adcd329",
+						"storybookStoryId": "peek.waiting.first-keyframe"
 					}
 				},
 				{
@@ -1610,6 +1690,16 @@
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 3798,
 						"varianceReason": "The 218x32, 289x12, and 403x12 text boxes match Paper exactly; the residual is the overlapping two-line timestamp and platform glyph rasterization."
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/keep.waiting.cold-seek.png",
+						"bytes": 8919,
+						"sha256": "85bcb594d11464d3f0c0a06fb525a85a8c2ce84c604288f794b3f7a20e13550b",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "0ce048f7dcdf3f37aac088a59fe810b68be262ec4537e7fd19a889603134b8f2",
+						"storybookStoryId": "keep.waiting.cold-seek"
 					}
 				},
 				{
@@ -1632,6 +1722,16 @@
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 1267,
 						"varianceReason": "The 18px inset and 45/99/115px lanes match Paper exactly; the residual follows the large Archivo numeral and mono glyph edges."
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/cameras.waiting.discovery.png",
+						"bytes": 5643,
+						"sha256": "24c0590621c54e83fb405345727ca056b9d6d1aeae2ad78fd6f0a4e27a9fb0b4",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "c1a6cd81daa61172fbffa12afd77f43be22e9a523aac36ad6eb4c8cb5b9aeb67",
+						"storybookStoryId": "cameras.waiting.discovery"
 					}
 				},
 				{
@@ -1653,6 +1753,16 @@
 						"totalPixels": 109956,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 735
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/events.empty.no-results.png",
+						"bytes": 23571,
+						"sha256": "a58881eb304c9f78e10d675547c68b16f4383754019192a4a162815038931189",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "f01b069be69ee0d3f907b6cc2af969f72ac3d0be9cb11aa4ec994062aa6f850e",
+						"storybookStoryId": "events.empty.no-results"
 					}
 				},
 				{
@@ -1674,6 +1784,16 @@
 						"totalPixels": 109956,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 0
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png",
+						"bytes": 14452,
+						"sha256": "21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "e2833d754b32c64e9d28cf0c6faca4a852f62335f3d0b3d0689271a85de94e17",
+						"storybookStoryId": "settings.waiting.applying"
 					}
 				},
 				{
@@ -1695,6 +1815,16 @@
 						"totalPixels": 109956,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 343
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/cameras.waiting.fleet-skeleton.png",
+						"bytes": 5598,
+						"sha256": "90f92f4835cdf61566f085539f3edd2583c49a40c28946c45ab735aa98f3b194",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "5e6a6eb745f310ff04245a30503e91a1273d9a110dbb8639a7bd152895a4c4df",
+						"storybookStoryId": "cameras.waiting.fleet-skeleton"
 					}
 				}
 			]
@@ -1731,6 +1861,16 @@
 						"totalPixels": 521280,
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 481
+					},
+					"lokiReference": {
+						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png",
+						"bytes": 40916,
+						"sha256": "c0b04e71e4d62ba2540443ceb6e494b4ca7dde0ef473df93125573c5e4a0be91",
+						"approvedAt": "2026-08-21",
+						"approvedBy": "GitHub Copilot",
+						"paperTokenHash": "cf3b1cd7",
+						"paperReferenceSha256": "55828067fdc8a63cc17572a29b597ec1559ad18bd412b3222d9090cf2c73819f",
+						"storybookStoryId": "peek.desktop.light-theme"
 					}
 				}
 			]

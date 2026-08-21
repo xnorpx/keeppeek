@@ -94,9 +94,13 @@ for (const reference of references) {
 const ciCommand = packageManifest.scripts['loki:test:ci'];
 if (
 	!ciCommand?.includes("--configurationFilter '^chrome\\.'") ||
-	!ciCommand.includes('--requireReference=false')
+	!ciCommand.includes('--requireReference=false') ||
+	!ciCommand.includes('env -u CI -u CONTINUOUS_INTEGRATION -u BUILD_NUMBER -u RUN_ID') ||
+	!ciCommand.includes('--verboseRenderer')
 ) {
-	throw new Error('Loki CI must compare both Chrome configurations and capture missing references');
+	throw new Error(
+		'Loki CI must compare both Chrome configurations and capture missing references noninteractively'
+	);
 }
 for (const requiredWorkflowText of [
 	'run: bun run storybook:build',

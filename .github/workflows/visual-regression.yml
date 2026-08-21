@@ -31,7 +31,7 @@ jobs:
         run: bunx svelte-kit sync
 
       - name: Install visual harness
-        run: bun install --registry=https://registry.npmjs.org/
+        run: bun install --frozen-lockfile --registry=https://registry.npmjs.org/
 
       - name: Build Storybook
         run: bun run storybook:build
@@ -46,7 +46,6 @@ jobs:
           name: keeppeek-visual-regression
           path: |
             ui/visual-harness/storybook-static
-            ui/visual-harness/bun.lock
             ui/visual-harness/.loki/reference
             ui/visual-harness/.loki/current
             ui/visual-harness/.loki/difference

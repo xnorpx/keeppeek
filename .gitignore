@@ -5,6 +5,7 @@ target
 .DS_Store
 Cargo.lock
 bun.lock
+!ui/visual-harness/bun.lock
 bun.lockb
 package-lock.json
 npm-shrinkwrap.json

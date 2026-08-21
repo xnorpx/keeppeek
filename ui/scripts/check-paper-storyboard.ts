@@ -25,6 +25,16 @@ type StoryboardReference = {
 	fixture: string;
 	bytes: number;
 	sha256: string;
+	lokiReference?: {
+		source: string;
+		bytes: number;
+		sha256: string;
+		approvedAt: string;
+		approvedBy: string;
+		paperTokenHash: string;
+		paperReferenceSha256: string;
+		storybookStoryId: string;
+	};
 	paperOverlay?: {
 		status: 'accepted' | 'candidate';
 		reviewedAt: string;
@@ -627,6 +637,34 @@ for (const { board, reference } of references) {
 		) {
 			throw new Error(`Paper overlay candidate needs named blockers for ${reference.scenarioId}`);
 		}
+	}
+
+	const lokiReference = reference.lokiReference;
+	if (paperOverlay?.status === 'accepted') {
+		if (!lokiReference) {
+			throw new Error(`Accepted Paper overlay needs a Loki reference for ${reference.scenarioId}`);
+		}
+		const configuration = scenario.viewport === 'mobile' ? 'chrome.mobile' : 'chrome.desktop';
+		const expectedSource = `visual-harness/.loki/reference/${configuration}/${reference.scenarioId}.png`;
+		if (
+			lokiReference.source !== expectedSource ||
+			lokiReference.paperTokenHash !== storyboard.source.tokenHash ||
+			lokiReference.paperReferenceSha256 !== reference.sha256 ||
+			lokiReference.storybookStoryId !== scenario.storybookStoryId ||
+			lokiReference.approvedBy.trim().length === 0 ||
+			!/^\d{4}-\d{2}-\d{2}$/.test(lokiReference.approvedAt)
+		) {
+			throw new Error(`Invalid Loki approval metadata for ${reference.scenarioId}`);
+		}
+		const lokiContents = await readFile(resolve(lokiReference.source));
+		if (
+			lokiContents.byteLength !== lokiReference.bytes ||
+			sha256(lokiContents) !== lokiReference.sha256
+		) {
+			throw new Error(`Loki reference drifted for ${reference.scenarioId}`);
+		}
+	} else if (lokiReference) {
+		throw new Error(`Capability-gated scenario cannot approve Loki: ${reference.scenarioId}`);
 	}
 }
 const actualCss = await readFile(resolve(root, 'tokens.css'), 'utf8');

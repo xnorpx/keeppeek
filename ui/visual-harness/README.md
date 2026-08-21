@@ -16,14 +16,15 @@ Loki references belong in `.loki/reference` and are committed only after compari
 linked Paper frame. Current captures, differences, dependencies, and static Storybook output are
 ignored.
 
-CI always runs Loki with `--requireReference=false`. Existing approved references still fail on
-pixel drift; stories without an approved reference produce review-only images under
-`.loki/current` without being treated as accepted. Loki filenames are stable and derived from the
-Paper scenario ID:
+CI runs Loki with `--requireReference=false` and removes the generic CI environment variables that
+Loki 0.35 incorrectly uses to override an explicit false value. Existing approved references still
+fail on pixel drift. Stories without an approved reference are written under `.loki/reference` in
+the ephemeral CI checkout and uploaded as review-only artifacts; they are not accepted or committed
+automatically. Loki filenames are stable and derived from the Paper scenario ID:
 
 ```text
-.loki/current/chrome.desktop/peek.desktop.live-wall.png
-.loki/current/chrome.mobile/health.mobile.overview.png
+.loki/reference/chrome.desktop/peek.desktop.live-wall.png
+.loki/reference/chrome.mobile/health.mobile.overview.png
 ```
 
 To approve a baseline, compare the Linux current image with its hash-locked Paper reference and
