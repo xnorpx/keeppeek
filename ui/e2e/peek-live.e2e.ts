@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test';
 
 const streams = [{ cameraId: '127.0.0.1', width: 640, height: 360 }] as const;
-const skipsH264DecodeOnWindowsCi = process.platform === 'win32' && Boolean(process.env.CI);
+const skipsRealWebRtcOnWindowsCi = process.platform === 'win32' && Boolean(process.env.CI);
 
 test('Peek presents native WebRTC frames without a canvas fallback', async ({ page }) => {
 	test.skip(
-		skipsH264DecodeOnWindowsCi,
-		'Windows CI browsers do not expose decoded H.264 frames for this WebRTC stream.'
+		skipsRealWebRtcOnWindowsCi,
+		'Windows CI does not establish or decode this real WebRTC H.264 stream.'
 	);
 	const browserErrors: string[] = [];
 	page.on('console', (message) => {
@@ -53,6 +53,10 @@ test('Peek presents native WebRTC frames without a canvas fallback', async ({ pa
 });
 
 test('Peek diagnostics stays open without interrupting live playback', async ({ page }) => {
+	test.skip(
+		skipsRealWebRtcOnWindowsCi,
+		'Windows CI does not establish the real WebRTC control channel used by this full-stack test.'
+	);
 	await page.goto('/');
 
 	const stream = streams[0];
