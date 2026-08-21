@@ -1,5 +1,6 @@
 import { fileURLToPath, URL } from 'node:url';
 import type { StorybookConfig } from '@storybook/svelte-vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { mergeConfig } from 'vite';
 
@@ -14,7 +15,7 @@ const config: StorybookConfig = {
 	},
 	async viteFinal(existingConfig) {
 		return mergeConfig(existingConfig, {
-			plugins: [tailwindcss()],
+			plugins: [tailwindcss(), svelte()],
 			resolve: {
 				alias: {
 					$lib: fileURLToPath(new URL('../../src/lib', import.meta.url)),
