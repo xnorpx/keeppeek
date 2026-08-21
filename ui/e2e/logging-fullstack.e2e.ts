@@ -1,6 +1,12 @@
 import { expect, test } from '@playwright/test';
 
+const skipsRealWebRtcOnWindowsCi = process.platform === 'win32' && Boolean(process.env.CI);
+
 test('streams a real tracing event through the server into headless Chromium', async ({ page }) => {
+	test.skip(
+		skipsRealWebRtcOnWindowsCi,
+		'Windows CI does not establish the real WebRTC control channel used by this full-stack test.'
+	);
 	await page.goto('/settings/logs');
 
 	await expect(page.getByRole('heading', { name: 'Logs' })).toBeVisible();

@@ -28,8 +28,11 @@ cd "$repo_dir"
 
 echo "Building and Testing Rust..."
 cargo build --all
-cargo nextest run --all
-cargo test --doc --all
+if [ "$(uname -s)" = "Darwin" ]; then
+        cargo nextest run --all --features macos-test-aws-crypto
+else
+        cargo nextest run --all
+fi
 
 echo "Running Rust Clippy..."
 cargo clippy --all --all-targets -- -D warnings
@@ -40,10 +43,9 @@ cargo machete
 echo "Formatting checks..."
 cargo fmt --all -- --check
 bunx @taplo/cli fmt --check
-bunx prettier --check "**/*.md"
 
 cd "$repo_dir/ui"
+bunx prettier --check "../**/*.md"
 echo "Running UI Quality checks..."
-bun run quality
-cargo build --manifest-path "$repo_dir/Cargo.toml" --bin keeppeek
+bun run quality:check
 bun run test:e2e

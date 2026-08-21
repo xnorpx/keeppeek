@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
-	import { getLoggingSettings, getServerLogs, updateLoggingFilter } from '$lib/api';
 	import { browserLogStore } from '$lib/browser-logs';
 	import LogViewer from '$lib/components/logging/LogViewer.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { downloadBugReport } from '$lib/log-export';
+	import { useControlClient } from '$lib/control-context';
 	import { ServerLogStream, type LogStreamState } from '$lib/server-log-stream';
-	import type { BrowserLogEntry, LoggingSettings, ServerLogEntry } from '$lib/types';
+	import type { BrowserLogEntry, LoggingSettings, LogSnapshot, ServerLogEntry } from '$lib/types';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
 	import SaveIcon from '@lucide/svelte/icons/save';
 
@@ -28,6 +28,7 @@
 	let streamState = $state<LogStreamState>('closed');
 	let skippedEntries = $state(0);
 	let stream: ServerLogStream | null = null;
+	const controlClient = useControlClient();
 
 	onMount(() => {
 		let active = true;
@@ -57,15 +58,10 @@
 		loading = true;
 		loadError = null;
 		try {
-			const [nextSettings, snapshot] = await Promise.all([
-				getLoggingSettings(),
-				getServerLogs(undefined, 10_000)
-			]);
+			const nextSettings = await controlClient.getLoggingSettings();
 			settings = nextSettings;
 			filterDraft = nextSettings.active_filter;
-			serverEntries = snapshot.entries;
-			if (snapshot.truncated) skippedEntries += snapshot.stats.evicted_entries;
-			startStream(snapshot.newest_sequence ?? undefined);
+			startStream(undefined, 1_000);
 		} catch (cause) {
 			loadError = cause instanceof Error ? cause.message : 'Unable to load logs.';
 			throw cause;
@@ -74,7 +70,7 @@
 		}
 	}
 
-	function startStream(after?: number): void {
+	function startStream(after?: number, tail = 200): void {
 		stream?.close(false);
 		stream = new ServerLogStream({
 			onentry: appendServerEntry,
@@ -82,7 +78,7 @@
 			ongap: (dropped) => (skippedEntries += dropped),
 			onreplaytruncated: () => (skippedEntries += 1)
 		});
-		stream.start(after);
+		stream.start(after, tail);
 	}
 
 	function appendServerEntry(entry: ServerLogEntry): void {
@@ -96,7 +92,7 @@
 		savingFilter = true;
 		filterError = null;
 		try {
-			settings = await updateLoggingFilter(filterDraft);
+			settings = await controlClient.setLoggingFilter(filterDraft);
 			filterDraft = settings.active_filter;
 		} catch (cause) {
 			filterError = cause instanceof Error ? cause.message : 'Unable to update the log filter.';
@@ -110,10 +106,9 @@
 		downloading = true;
 		exportError = null;
 		try {
-			const server = await getServerLogs(undefined, 10_000);
 			downloadBugReport({
 				settings,
-				server,
+				server: visibleServerSnapshot(settings),
 				browser: browserLogStore.snapshot(),
 				viewerFilters: { active_tab: activeTab }
 			});
@@ -122,6 +117,16 @@
 		} finally {
 			downloading = false;
 		}
+	}
+
+	function visibleServerSnapshot(currentSettings: LoggingSettings): LogSnapshot {
+		return {
+			entries: serverEntries,
+			oldest_sequence: serverEntries[0]?.sequence ?? null,
+			newest_sequence: serverEntries.at(-1)?.sequence ?? null,
+			truncated: skippedEntries > 0,
+			stats: currentSettings.buffer
+		};
 	}
 
 	function clearServerView(): void {

@@ -1,0 +1,56 @@
+name: Visual Regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  storybook:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/visual-harness
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+
+      - name: Install production UI
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+
+      - name: Generate SvelteKit metadata
+        working-directory: ui
+        run: bunx svelte-kit sync
+
+      - name: Install visual harness
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+
+      - name: Build Storybook
+        run: bun run storybook:build
+
+      - name: Compare approved Loki references and capture candidates
+        run: bun run loki:test:ci
+
+      - name: Upload visual artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: keeppeek-visual-regression
+          path: |
+            ui/visual-harness/storybook-static
+            ui/visual-harness/.loki/reference
+            ui/visual-harness/.loki/current
+            ui/visual-harness/.loki/difference
+            ui/design/paper/keeppeek-nvr-v34/references/*.png
+            ui/design/paper/keeppeek-nvr-v34/storyboard.json
+            ui/design/paper/keeppeek-nvr-v34/COVERAGE.md
+          if-no-files-found: ignore
+          retention-days: 14

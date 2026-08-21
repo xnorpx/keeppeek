@@ -102,8 +102,9 @@ pub fn run(
     };
 
     let storage_config = StorageConfig::from_toml(&cfg.storage);
-    let storage_engine = StorageEngine::start(storage_config.clone());
     let recording_catalog = RecordingCatalog::open(&storage_config.recording_catalog_path)?;
+    let storage_engine =
+        StorageEngine::start_with_catalog(storage_config.clone(), recording_catalog.handle());
     let event_store = EventStore::new(
         recording_catalog.handle(),
         &storage_config.event_thumbnail_path,

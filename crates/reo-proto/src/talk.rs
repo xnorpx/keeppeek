@@ -174,7 +174,7 @@ impl ImaAdpcmEncoder {
         output[..2].copy_from_slice(&self.predictor.to_le_bytes());
         output[2] = self.index;
         output[3] = 0;
-        for (index, sample_pair) in samples.chunks_exact(2).enumerate() {
+        for (index, sample_pair) in samples.as_chunks::<2>().0.iter().enumerate() {
             let first = self.encode_nibble(sample_pair[0]);
             let second = self.encode_nibble(sample_pair[1]);
             output[ADPCM_BLOCK_HEADER_LEN + index] = (first << 4) | second;

@@ -1,0 +1,138 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { cameraLifecycleStory } from '../demo/camera-lifecycle.story';
+import { validateStoryScenarioMetadata } from '../src/lib/storybook/demo';
+import { demoScenarios } from '../visual-harness/demo-scenarios';
+
+type ScenarioManifest = {
+	scenarios: Array<{ id: string; kind: string; storybookStoryId: string | null }>;
+};
+
+const manifest = JSON.parse(
+	await readFile(resolve('design/paper/keeppeek-nvr-v34/scenarios.json'), 'utf8')
+) as ScenarioManifest;
+const scenariosById = new Map(manifest.scenarios.map((scenario) => [scenario.id, scenario]));
+const storyIds = new Set<string>();
+const scenarioIds = new Set<string>();
+
+for (const definition of demoScenarios) {
+	const issues = validateStoryScenarioMetadata(definition.metadata);
+	if (issues.length > 0) {
+		throw new Error(
+			`${definition.metadata.storyId}: ${issues.map((issue) => `${issue.path} ${issue.message}`).join('; ')}`
+		);
+	}
+	if (storyIds.has(definition.metadata.storyId)) {
+		throw new Error(`Duplicate demo story ID: ${definition.metadata.storyId}`);
+	}
+	storyIds.add(definition.metadata.storyId);
+	const scenarioId = definition.metadata.paper.scenarioId;
+	if (scenarioIds.has(scenarioId)) throw new Error(`Duplicate demo scenario ID: ${scenarioId}`);
+	scenarioIds.add(scenarioId);
+	const manifestScenario = scenariosById.get(scenarioId);
+	if (!manifestScenario) throw new Error(`Demo has no Paper scenario: ${scenarioId}`);
+	if (manifestScenario.kind !== 'interaction') {
+		throw new Error(`Demo scenario must be an interaction: ${scenarioId}`);
+	}
+	if (definition.previewScenarioId !== scenarioId) {
+		throw new Error(`Demo preview and Paper scenario must match: ${scenarioId}`);
+	}
+	if (
+		definition.metadata.demo!.viewport.width % 2 ||
+		definition.metadata.demo!.viewport.height % 2
+	) {
+		throw new Error(`Demo viewport must use even H.264 dimensions: ${scenarioId}`);
+	}
+	const storySource = await readFile(resolve(definition.storySource), 'utf8');
+	if (!storySource.includes('metadata.demo') || !storySource.includes('metadata.paper')) {
+		throw new Error(`Story does not expose demo and Paper metadata: ${definition.storySource}`);
+	}
+	for (const fixtureSource of definition.fixtureSources) {
+		await readFile(resolve(fixtureSource));
+	}
+}
+
+const lifecycleIssues = validateStoryScenarioMetadata(cameraLifecycleStory);
+if (lifecycleIssues.length > 0) {
+	throw new Error(
+		`${cameraLifecycleStory.storyId}: ${lifecycleIssues.map((issue) => `${issue.path} ${issue.message}`).join('; ')}`
+	);
+}
+const lifecycleScenario = scenariosById.get(cameraLifecycleStory.paper.scenarioId);
+if (!lifecycleScenario) {
+	throw new Error(
+		`Camera lifecycle story has no Paper scenario: ${cameraLifecycleStory.paper.scenarioId}`
+	);
+}
+if (cameraLifecycleStory.demo.viewport.width % 2 || cameraLifecycleStory.demo.viewport.height % 2) {
+	throw new Error('Camera lifecycle viewport must use even H.264 dimensions');
+}
+for (const source of [
+	'demo/camera-lifecycle.story.ts',
+	'demo/camera-lifecycle.demo.ts',
+	'playwright.demo.config.ts'
+]) {
+	await readFile(resolve(source));
+}
+
+const previewSource = await readFile(resolve('visual-harness/local-preview.ts'), 'utf8');
+for (const scenarioId of scenarioIds) {
+	if (!previewSource.includes(`scenarioId === '${scenarioId}'`)) {
+		throw new Error(`Local preview does not mount demo scenario: ${scenarioId}`);
+	}
+}
+if (
+	!previewSource.includes('__keepPeekDemoStart') ||
+	!previewSource.includes('dataset.demoReady')
+) {
+	throw new Error('Local preview must emit the explicit demo-start signal');
+}
+
+const packageManifest = JSON.parse(await readFile(resolve('package.json'), 'utf8')) as {
+	scripts: Record<string, string>;
+};
+if (
+	packageManifest.scripts['demo:render'] !==
+	'bun run demo:render:storybook && bun run demo:render:camera-lifecycle'
+) {
+	throw new Error('demo:render must invoke both canonical Playwright recorders');
+}
+if (
+	packageManifest.scripts['demo:render:camera-lifecycle'] !==
+	'bun run test:e2e:prepare && playwright test --config playwright.demo.config.ts'
+) {
+	throw new Error('Camera lifecycle demo must use its real-server Playwright configuration');
+}
+const generationWorkflow = await readFile(
+	resolve('..', '.github/workflows/generate-demo-videos.yml'),
+	'utf8'
+);
+for (const requiredText of [
+	'name: Generate Demo Videos',
+	'bun run demo:render',
+	'bun run demo:publish:prepare',
+	"find test-results/demo-videos -name '*.webm'",
+	'stream=codec_name,codec_type,pix_fmt',
+	'name: keeppeek-demo-videos'
+]) {
+	if (!generationWorkflow.includes(requiredText)) {
+		throw new Error(`Demo generation workflow is missing: ${requiredText}`);
+	}
+}
+const publishingWorkflow = await readFile(
+	resolve('..', '.github/workflows/publish-demo-videos.yml'),
+	'utf8'
+);
+for (const requiredText of [
+	'workflows: [Generate Demo Videos]',
+	'name: keeppeek-demo-videos',
+	'path: demo-videos'
+]) {
+	if (!publishingWorkflow.includes(requiredText)) {
+		throw new Error(`Demo publishing workflow is missing: ${requiredText}`);
+	}
+}
+
+console.log(
+	`Demo registry verified: ${demoScenarios.length} interactive Storybook scenario(s), 1 real-server Playwright story`
+);

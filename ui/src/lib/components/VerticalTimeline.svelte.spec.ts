@@ -15,7 +15,7 @@ function pointer(type: string, pointerId: number, clientY: number): PointerEvent
 }
 
 describe('VerticalTimeline', () => {
-	it('seeks one minute forward from the start of the selected day', async () => {
+	it('seeks one minute into the past from the newest edge', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const onSeek = vi.fn();
 		await render(VerticalTimeline, {
@@ -32,10 +32,10 @@ describe('VerticalTimeline', () => {
 		await userEvent.type(timeline, '{ArrowDown}');
 
 		expect(onSeek).toHaveBeenCalledOnce();
-		expect(onSeek).toHaveBeenCalledWith(dayStartMs + 60_000);
+		expect(onSeek).toHaveBeenCalledWith(dayStartMs + 24 * 60 * 60_000 - 60_000);
 	});
 
-	it('leaves a visible gap between adjacent one-minute recordings', async () => {
+	it('renders an explicit gap between separated one-minute recordings', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const segments = [0, 1].map((index): RecordingSegment => ({
 			stream: 'main',
@@ -43,8 +43,8 @@ describe('VerticalTimeline', () => {
 			hour: '01',
 			filename: `0${index}00.mp4`,
 			url: `/recording-${index}.mp4`,
-			start_time_ms: dayStartMs + (60 + index) * 60_000,
-			end_time_ms: dayStartMs + (61 + index) * 60_000,
+			start_time_ms: dayStartMs + (60 + index * 2) * 60_000,
+			end_time_ms: dayStartMs + (61 + index * 2) * 60_000,
 			duration_ms: 60_000
 		}));
 		const { container } = await render(VerticalTimeline, {
@@ -57,13 +57,11 @@ describe('VerticalTimeline', () => {
 			}
 		});
 
-		const clips = container.querySelectorAll<HTMLButtonElement>('button[title*="–"]');
-		expect(clips).toHaveLength(2);
-		const firstBottom =
-			Number.parseFloat(clips[0].style.top) + Number.parseFloat(clips[0].style.height);
-		const secondTop = Number.parseFloat(clips[1].style.top);
-
-		expect(firstBottom).toBeLessThan(secondTop);
+		const gap = container.querySelector<HTMLElement>(
+			`[data-timeline-gap][data-start-ms="${dayStartMs + 61 * 60_000}"]`
+		);
+		expect(gap).not.toBeNull();
+		expect(Number.parseFloat(gap?.style.height ?? '0')).toBeGreaterThan(0);
 	});
 
 	it('seeks to the timestamp represented by an event thumbnail', async () => {
@@ -114,8 +112,8 @@ describe('VerticalTimeline', () => {
 
 		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
 		vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue({
-			bottom: 1_728,
-			height: 1_728,
+			bottom: 2_688,
+			height: 2_688,
 			left: 0,
 			right: 200,
 			top: 0,
@@ -129,12 +127,108 @@ describe('VerticalTimeline', () => {
 		playhead.hasPointerCapture = vi.fn(() => true);
 		playhead.releasePointerCapture = vi.fn();
 
-		playhead.dispatchEvent(pointer('pointerdown', 7, 864));
-		playhead.dispatchEvent(pointer('pointermove', 7, 432));
+		playhead.dispatchEvent(pointer('pointerdown', 7, 1_344));
+		playhead.dispatchEvent(pointer('pointermove', 7, 672));
 		expect(onSeek).not.toHaveBeenCalled();
-		playhead.dispatchEvent(pointer('pointerup', 7, 432));
+		playhead.dispatchEvent(pointer('pointerup', 7, 672));
 
 		expect(onSeek).toHaveBeenCalledOnce();
-		expect(onSeek).toHaveBeenCalledWith(dayStartMs + 6 * 60 * 60_000);
+		expect(onSeek).toHaveBeenCalledWith(dayStartMs + 18 * 60 * 60_000);
+	});
+
+	it('stops following on manual scroll and returns to the newest edge', async () => {
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		const initialNowMs = dayStartMs + 12 * 60 * 60_000;
+		const onSeek = vi.fn();
+		const view = await render(VerticalTimeline, {
+			props: {
+				segments: [],
+				selectedUrl: null,
+				playheadMs: dayStartMs + 12 * 60 * 60_000,
+				dayStartMs,
+				nowMs: initialNowMs,
+				onSeek
+			}
+		});
+
+		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 100 }));
+		await view.rerender({
+			segments: [],
+			selectedUrl: null,
+			playheadMs: dayStartMs + 12 * 60 * 60_000,
+			dayStartMs,
+			nowMs: initialNowMs + 60 * 60_000,
+			onSeek
+		});
+		expect(
+			page.getByRole('region', { name: 'Recording timeline', exact: true }).element().dataset
+				.timelineEndMs
+		).toBe(String(initialNowMs));
+		await userEvent.click(page.getByRole('button', { name: 'Back to live' }));
+
+		expect(onSeek).toHaveBeenCalledWith(initialNowMs + 60 * 60_000);
+	});
+
+	it('steps through the five fixed Paper zoom levels', async () => {
+		const { container } = await render(VerticalTimeline, {
+			props: {
+				segments: [],
+				selectedUrl: null,
+				playheadMs: null,
+				dayStartMs: Date.UTC(2026, 7, 10),
+				onSeek: vi.fn()
+			}
+		});
+		const timeline = container.querySelector<HTMLElement>('[data-timeline-zoom]');
+		const zoomIn = page.getByTitle('Zoom timeline in');
+
+		expect(timeline?.dataset.timelineZoom).toBe('6h');
+		await userEvent.click(zoomIn);
+		await userEvent.click(zoomIn);
+		await userEvent.click(zoomIn);
+		expect(timeline?.dataset.timelineZoom).toBe('1m');
+	});
+
+	it('filters event cards without dropping the underlying timeline', async () => {
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		const { container } = await render(VerticalTimeline, {
+			props: {
+				segments: [],
+				events: [
+					{
+						id: 'person',
+						source: 'camera',
+						kind: 'person',
+						start_time_ms: dayStartMs + 60_000,
+						end_time_ms: null,
+						confidence: null,
+						bbox: null,
+						zone: null,
+						thumbnail_url: null
+					},
+					{
+						id: 'motion',
+						source: 'camera',
+						kind: 'motion',
+						start_time_ms: dayStartMs + 2 * 60_000,
+						end_time_ms: null,
+						confidence: null,
+						bbox: null,
+						zone: null,
+						thumbnail_url: null
+					}
+				],
+				selectedUrl: null,
+				playheadMs: null,
+				dayStartMs,
+				onSeek: vi.fn()
+			}
+		});
+
+		await userEvent.click(page.getByRole('button', { name: 'Motion', exact: true }));
+
+		expect(container.querySelector('[data-timeline-event="motion"]')).not.toBeNull();
+		expect(container.querySelector('[data-timeline-event="person"]')).toBeNull();
 	});
 });

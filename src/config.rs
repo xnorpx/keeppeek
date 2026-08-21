@@ -1,21 +1,29 @@
+pub use crate::access::AccessKey;
 use crate::cameras::CameraConfig;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
 };
+use url::Url;
 
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
 const STORAGE_MIGRATION_SECTION: &str = "storage_migration";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default = "default_host")]
     pub host: String,
 
     #[serde(default = "default_port")]
     pub port: u16,
+
+    #[serde(default)]
+    pub access_key: AccessKey,
+
+    #[serde(default)]
+    pub direct_card: DirectCardConfig,
 
     #[serde(default)]
     pub storage: StorageToml,
@@ -25,6 +33,43 @@ pub struct Config {
 
     #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct DirectCardConfig {
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+impl DirectCardConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let mut unique = HashSet::with_capacity(self.allowed_origins.len());
+        for origin in &self.allowed_origins {
+            let url = Url::parse(origin)
+                .map_err(|error| anyhow::anyhow!("invalid direct card origin: {error}"))?;
+            if !matches!(url.scheme(), "http" | "https")
+                || url.path() != "/"
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                anyhow::bail!(
+                    "direct card origin must contain only an HTTP(S) scheme and authority"
+                );
+            }
+            let canonical = url.origin().ascii_serialization();
+            if canonical == "null" || canonical != *origin {
+                anyhow::bail!(
+                    "direct card origin must use its canonical exact origin: {canonical}"
+                );
+            }
+            if !unique.insert(origin) {
+                anyhow::bail!("direct card origin appears more than once: {origin}");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -400,6 +445,8 @@ impl Default for Config {
         Self {
             host: default_host(),
             port: default_port(),
+            access_key: AccessKey::unset(),
+            direct_card: DirectCardConfig::default(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
@@ -508,6 +555,28 @@ fn read_config_arg() -> Option<PathBuf> {
     None
 }
 
+fn read_access_key_arg() -> anyhow::Result<Option<AccessKey>> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut index = 1;
+    while index < args.len() {
+        if args[index] == "--access-key" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| anyhow::anyhow!("--access-key requires a UUID"))?;
+            return AccessKey::parse(value)
+                .map(Some)
+                .map_err(|error| anyhow::anyhow!("invalid --access-key: {error}"));
+        }
+        if let Some(value) = args[index].strip_prefix("--access-key=") {
+            return AccessKey::parse(value)
+                .map(Some)
+                .map_err(|error| anyhow::anyhow!("invalid --access-key: {error}"));
+        }
+        index += 1;
+    }
+    Ok(None)
+}
+
 pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     let path = read_config_arg().unwrap_or_else(config_path);
     let config_directory = ensure_config_dir()?;
@@ -521,6 +590,15 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     } else {
         (Config::default(), toml::Table::new(), false)
     };
+
+    if let Some(access_key) = read_access_key_arg()?.filter(|key| !key.is_unset()) {
+        cfg.access_key = access_key;
+    }
+    let generated_access_key = cfg.access_key.is_unset();
+    if generated_access_key {
+        cfg.access_key = AccessKey::generate();
+    }
+    cfg.direct_card.validate()?;
 
     let default_recordings = config_directory
         .join("recordings")
@@ -545,6 +623,9 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
 
     if !existing_config {
         tracing::info!("created default config at {}", path.display());
+    }
+    if generated_access_key {
+        println!("KeepPeek access key: {}", cfg.access_key.canonical());
     }
 
     Ok((cfg, path))
@@ -664,6 +745,7 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
     const RESERVED_SECTIONS: &[&str] = &[
         "storage",
         "battery_wake",
+        "direct_card",
         "logging",
         STORAGE_MIGRATION_SECTION,
     ];
@@ -1179,7 +1261,11 @@ mod tests {
             br#"
                 host = "0.0.0.0"
                 port = 8081
+                access_key = "550e8400-e29b-41d4-a716-446655440000"
                 unrelated_setting = "preserved"
+
+                [direct_card]
+                allowed_origins = ["https://home.example.net"]
 
                 [storage]
                 medium_term_path = "/media/keeppeek"
@@ -1208,14 +1294,17 @@ mod tests {
                 write_buffer_bytes: 16_384,
                 long_term_max_gb: 24,
             },
-            battery_wake: BatteryWakeConfig::default(),
-            logging: LoggingConfig::default(),
+            ..Config::default()
         };
 
         let updated = update_settings(&path, &settings).unwrap();
 
         assert_eq!(updated.host, "127.0.0.1");
         assert_eq!(updated.port, 3200);
+        assert_eq!(
+            updated.access_key.canonical(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
         assert_eq!(
             updated.storage.medium_term_path.as_deref(),
             Some("/media/keeppeek")
@@ -1235,6 +1324,14 @@ mod tests {
         assert_eq!(updated.storage.event_thumbnail_max_mb, 512);
         let saved: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["unrelated_setting"].as_str(), Some("preserved"));
+        assert_eq!(
+            saved["access_key"].as_str(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(
+            saved["direct_card"]["allowed_origins"][0].as_str(),
+            Some("https://home.example.net")
+        );
         assert_eq!(
             saved["storage"]["storage_extension"].as_str(),
             Some("preserved")
@@ -1259,6 +1356,45 @@ mod tests {
         );
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn direct_card_origins_are_exact_canonical_http_origins() {
+        DirectCardConfig {
+            allowed_origins: vec![
+                "https://home.example.net".to_owned(),
+                "http://127.0.0.1:4174".to_owned(),
+            ],
+        }
+        .validate()
+        .unwrap();
+
+        for origin in [
+            "*",
+            "ftp://home.example.net",
+            "https://home.example.net/",
+            "https://home.example.net/card",
+            "http://home.example.net:80",
+        ] {
+            assert!(
+                DirectCardConfig {
+                    allowed_origins: vec![origin.to_owned()],
+                }
+                .validate()
+                .is_err(),
+                "origin {origin} must be rejected"
+            );
+        }
+        assert!(
+            DirectCardConfig {
+                allowed_origins: vec![
+                    "https://home.example.net".to_owned(),
+                    "https://home.example.net".to_owned(),
+                ],
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]
@@ -1439,8 +1575,7 @@ mod tests {
                 long_term_path: Some(next.to_string_lossy().into_owned()),
                 ..StorageToml::default()
             },
-            battery_wake: BatteryWakeConfig::default(),
-            logging: LoggingConfig::default(),
+            ..Config::default()
         };
         let migration = StorageMigration::between(&current, &next, &current, &next)
             .unwrap()

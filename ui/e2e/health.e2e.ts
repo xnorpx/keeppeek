@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
+import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 
-const healthSnapshot = {
+const healthSnapshot: HealthFixture = {
 	status: 'degraded',
 	generated_at_ms: Date.UTC(2026, 7, 10, 12),
 	uptime_seconds: 3_661,
@@ -143,7 +144,7 @@ const healthSnapshot = {
 		queue_recovery_drops: 13,
 		session_queues: [
 			{
-				session_id: '42',
+				session_id: 42,
 				track_id: 'camera-0',
 				camera_ip: '192.168.137.199',
 				stream: 'sub',
@@ -389,10 +390,8 @@ async function expectTexts(scope: Locator, values: Array<string | RegExp>) {
 	for (const value of values) await expect(scope).toContainText(value);
 }
 
-test('shows comprehensive server health and camera outages', async ({ page }) => {
-	await page.route('**/api/health', async (route) => {
-		await route.fulfill({ json: healthSnapshot });
-	});
+test('Board 15 shows comprehensive server health and camera outages', async ({ page }) => {
+	await mockControlPeer(page, { health: healthSnapshot });
 
 	await page.goto('/system-health');
 
@@ -402,6 +401,21 @@ test('shows comprehensive server health and camera outages', async ({ page }) =>
 		'aria-current',
 		'page'
 	);
+	const priorityIssue = page.getByRole('region', { name: 'Highest priority health issue' });
+	await expect(priorityIssue).toContainText(
+		'North Courtyard · No stream health report has been received'
+	);
+	await expect(
+		page.getByRole('link', { name: 'Diagnose North Courtyard', exact: true })
+	).toHaveAttribute('href', '/system-health/camera/192.168.137.121');
+	expect(
+		await priorityIssue.evaluate((element) => {
+			const tablist = document.querySelector('[role="tablist"][aria-label="Health scope"]');
+			return Boolean(
+				tablist && element.compareDocumentPosition(tablist) & Node.DOCUMENT_POSITION_FOLLOWING
+			);
+		})
+	).toBe(true);
 	const clientTab = page.getByRole('tab', { name: 'Client' });
 	const serverTab = page.getByRole('tab', { name: 'Server' });
 	await expect(serverTab).toHaveAttribute('aria-selected', 'true');
@@ -413,6 +427,18 @@ test('shows comprehensive server health and camera outages', async ({ page }) =>
 	await serverTab.click();
 	await expect(page.getByText('degraded', { exact: true })).toBeVisible();
 	const summary = page.getByRole('region', { name: 'Health summary' });
+	const findings = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Current findings' })
+	});
+	expect(
+		await findings.evaluate((element) => {
+			const summaryElement = document.querySelector('[aria-label="Health summary"]');
+			return Boolean(
+				summaryElement &&
+				element.compareDocumentPosition(summaryElement) & Node.DOCUMENT_POSITION_FOLLOWING
+			);
+		})
+	).toBe(true);
 	await expectMetric(summary, 'Server egress', '18.8 Mbps');
 	await expect(summary).toContainText('Non-loopback host traffic');
 	await expectMetric(summary, 'Process CPU', '18.5%');
@@ -429,7 +455,9 @@ test('shows comprehensive server health and camera outages', async ({ page }) =>
 		page.getByRole('link', { name: 'Open Kitchen Deck camera information' })
 	).toHaveAttribute('href', '/camera?camera=192.168.137.199');
 	await expect(page.getByText('offline', { exact: true })).toBeVisible();
-	await expect(page.getByText('No stream health report has been received')).toBeVisible();
+	await expect(
+		page.getByText('No stream health report has been received', { exact: true })
+	).toBeVisible();
 	const streams = page.locator('section').filter({
 		has: page.getByRole('heading', { name: 'Camera streams' })
 	});
@@ -581,4 +609,33 @@ test('shows comprehensive server health and camera outages', async ({ page }) =>
 	await page.setViewportSize({ width: 390, height: 844 });
 	await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
 	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+});
+
+test('keeps the highest-cost health issue and diagnosis action first on mobile', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await mockControlPeer(page, { health: healthSnapshot });
+
+	await page.goto('/system-health');
+
+	const priorityIssue = page.getByRole('region', { name: 'Highest priority health issue' });
+	const diagnose = page.getByRole('link', { name: 'Diagnose North Courtyard', exact: true });
+	await expect(priorityIssue).toBeInViewport();
+	await expect(priorityIssue).toContainText('No stream health report has been received');
+	await expect(diagnose).toBeInViewport();
+	await expect(diagnose).toHaveAttribute('href', '/system-health/camera/192.168.137.121');
+	const findings = page.getByRole('heading', { name: 'Open issues' });
+	await expect(findings).toBeInViewport();
+	const mobileOverview = page.locator('[data-mobile-health-overview]');
+	await expect(mobileOverview).toContainText('North Courtyard offline');
+	await expect(mobileOverview).toContainText('CPU');
+	await expect(mobileOverview).toContainText('RAM');
+	await expect(mobileOverview).toContainText('INGEST');
+	expect(
+		await mobileOverview.evaluate((element) => Math.round(element.getBoundingClientRect().width))
+	).toBe(390);
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+		.toBe(true);
 });

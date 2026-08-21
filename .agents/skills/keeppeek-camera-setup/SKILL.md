@@ -14,7 +14,7 @@ Use this workflow to discover cameras, verify known credentials, test real strea
 2. Never pass passwords through `--password`, shell variables, environment variables, process arguments, or generated reports during agent-driven runs.
 3. Reuse known credentials only through `--credentials-from <local-config>`. If credentials are missing, tell the user to enter them directly in a local config file or terminal outside the agent conversation.
 4. Do not guess, brute-force, derive, reset, or change camera passwords. Test only credentials the user already stores locally.
-5. Never point `discover-cameras --output` at the live `config.toml`. Discovery output is a complete generated camera table and would replace application and storage settings.
+5. Never point `keeppeek-camera discover --output` at the live `config.toml`. Discovery output is a complete generated camera table and would replace application and storage settings.
 6. Keep every credential-bearing config and generated camera setup artifact under the OS-private KeepPeek config directory, never in the source checkout.
 7. Do not print or read a full generated config containing credentials. Inspect only redacted fields such as section names, IPs, models, backends, transports, and profile metadata.
 8. Do not add a camera to the live config until authentication, requested streams, MP4 parsing, and FFmpeg decode all pass.
@@ -45,7 +45,7 @@ Use these paths and quote paths containing spaces:
 3. Confirm required commands:
 
 ```bash
-cargo build --bin discover-cameras --bin camera-stream-test --bin validate-recordings --bin configure-cameras
+cargo build --bin keeppeek-camera
 command -v ffprobe
 command -v ffmpeg
 ```
@@ -58,7 +58,7 @@ command -v ffmpeg
 Run local discovery using credentials already present in the live config:
 
 ```bash
-cargo run --bin discover-cameras -- \
+cargo run --bin keeppeek-camera -- discover \
   --credentials-from "<config-dir>/config.toml" \
   --output "<config-dir>/camera-setup/discovered.toml" \
   --info "<config-dir>/camera-setup/cameras-info.toml"
@@ -93,7 +93,7 @@ Do not expose credential values or secret-bearing snapshot/stream URLs.
 For Reolink cameras, try `reo-proto` over TCP first:
 
 ```bash
-cargo run --bin camera-stream-test -- \
+cargo run --bin keeppeek-camera -- test \
   --config "<config-dir>/camera-setup/discovered.toml" \
   --camera <camera-ip> \
   --stream main,sub \
@@ -125,13 +125,7 @@ Record safe metrics in the report: codec, resolution, measured FPS, keyframe FPS
 ## Phase 5: Validate Media
 
 Enumerate every finalized MP4 under the test output using the platform's filesystem tools. For each file:
-
-```bash
-cargo run --bin validate-recordings -- \
-  --input "<config-dir>/camera-setup/streams/<camera>"
-```
-
-This must successfully read every indexed audio/video sample through KeepPeek's local MP4 reader. Then validate with independent tools:
+Validate with independent tools:
 
 ```bash
 ffprobe -v error \
@@ -173,31 +167,19 @@ Read-only optimization recommendations may include:
 
 Do not apply these camera-side changes automatically. For each proposed mutation, show current value, proposed value, expected benefit, risk, validation command, and rollback value, then obtain explicit approval.
 
-## Phase 7: Merge Verified Cameras
+## Phase 7: Save Verified Cameras
 
-1. Stop the running KeepPeek process cleanly before changing its config.
-2. Use a structured TOML merge that preserves all root application/storage fields and all existing camera-specific unknown fields.
-3. Add or update only IPs that passed stream and media validation.
-4. Preserve existing UID and name unless verified discovery provides a better user-approved name.
-5. Never remove an existing camera merely because one discovery pass missed it.
-6. Write atomically and preserve restrictive file permissions.
-7. Never print the resulting secret-bearing config.
-
-Use the repository merger after every listed camera has passed validation:
-
-```bash
-cargo run --bin configure-cameras -- \
-  --candidates "<config-dir>/camera-setup/discovered.toml" \
-  --verified <camera-ip>=reo-proto-tcp \
-  --verified <camera-ip>=retina-tcp
-```
-
-Repeat `--verified` for each proven camera. The merger preserves the existing section key and UID for a known IP so historical recording paths remain connected.
+1. Open KeepPeek Settings and use Camera setup to add or edit only cameras that passed stream and media validation.
+2. Enter credentials directly in the local UI; never route them through agent messages or shell arguments.
+3. Preserve the existing name and UID for a known camera so historical recording paths remain connected.
+4. Apply the selected backend, transport, and verified stream URLs.
+5. Apply the pending restart only after every intended camera is saved.
+6. Never remove an existing camera merely because one discovery pass missed it.
 
 ## Phase 8: Verify KeepPeek
 
 1. Start KeepPeek with the merged config.
-2. Verify `/api/cameras` lists every configured camera without exposing secrets.
+2. Verify the Cameras page lists every configured camera from WebRTC capabilities without exposing secrets.
 3. Open a fresh Peek page and verify every configured camera reaches decoded dimensions and the
    `live` state. Do not accept a tile that remains `Connecting` merely because its offer succeeded.
 4. Let at least one segment finalize, then verify Keep lists timeline coverage and decodes Main/Sub as configured.

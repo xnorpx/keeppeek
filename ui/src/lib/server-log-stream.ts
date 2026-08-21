@@ -24,7 +24,7 @@ export class ServerLogStream {
 		const params = new URLSearchParams({ tail: String(tail) });
 		if (after !== undefined) params.set('after', String(after));
 		this.callbacks.onstate('connecting');
-		const source = this.createEventSource(`/api/logs/stream?${params.toString()}`);
+		const source = this.createEventSource(`/logs?${params.toString()}`);
 		this.source = source;
 		source.onopen = () => this.callbacks.onstate('connected');
 		source.onerror = () => this.callbacks.onstate('reconnecting');

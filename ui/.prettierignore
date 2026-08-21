@@ -15,3 +15,6 @@ bun.lockb
 # Generated protobuf
 /src/lib/proto/
 
+# Generated Impeccable customization assets
+/.impeccable/
+

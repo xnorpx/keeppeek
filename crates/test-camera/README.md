@@ -18,7 +18,7 @@ entry with `backend = "retina"`, ephemeral ONVIF and HTTP UI ports, and the
 supplied credentials. The HTTP port serves a small fake built-in camera UI, so
 the Camera page's LAN-only UI link is testable. Add the entry to a camera
 configuration, then connect through the regular application or
-`camera-stream-test`.
+`keeppeek-camera test`.
 
 ## Reolink Baichuan
 
@@ -40,3 +40,18 @@ information page.
 Use `--username`, `--password`, `--uid`, and `--name` to customize the generated
 entry. Use `--bind-ip` when the host has another address configured and a second
 test camera is needed.
+
+## Recording Seed
+
+Seed deterministic H.264 history for browser tests:
+
+```sh
+cargo run -p test-camera --bin test_camera -- seed-recording \
+	--source testdata/cc-4k-640x360-h264.mp4 \
+	--recordings /tmp/keeppeek-recordings \
+	--catalog /tmp/keeppeek-recordings.db \
+	--stream-id e2e-h264/main
+```
+
+This mode replaces the former standalone E2E seeder and exits after finalizing
+the recording and catalog entries.

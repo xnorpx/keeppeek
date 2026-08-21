@@ -22,6 +22,7 @@ CI uses these same entry points. Individual UI commands may be used while diagno
 ## Package Registries
 
 - Use Bun as the only package manager and script runner under `ui/`; do not create npm, pnpm, or Yarn lockfiles.
+- Do not commit JavaScript lockfiles. Install with `--no-save` and keep direct dependency versions exact where reproducibility matters.
 - Resolve JavaScript packages only from the public npm registry configured in `.npmrc` and `ui/bunfig.toml`.
 - Resolve Rust packages only from public crates.io using the repository `.cargo/config.toml`.
 - Do not replace either public registry with a private mirror or proxy.

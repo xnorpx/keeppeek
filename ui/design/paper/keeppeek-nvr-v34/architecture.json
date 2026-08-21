@@ -1,0 +1,113 @@
+{
+	"schemaVersion": 1,
+	"boardId": "5Q-0",
+	"desktopDestinations": [
+		{
+			"label": "Peek",
+			"paperPath": "/",
+			"path": "/",
+			"routeSource": "src/routes/+page.svelte",
+			"scenarioIds": ["peek.desktop.live-wall", "peek.desktop.layout-editor"],
+			"status": "implemented"
+		},
+		{
+			"label": "Keep",
+			"paperPath": "/keep",
+			"path": "/keep",
+			"routeSource": "src/routes/keep/+page.svelte",
+			"scenarioIds": [
+				"keep.desktop.timeline-anatomy",
+				"keep.desktop.stories",
+				"keep.desktop.calendar",
+				"keep.desktop.export-gated",
+				"keep.desktop.swimlanes"
+			],
+			"status": "partial",
+			"blockers": [
+				"Story narrative and attachment history remain unavailable; exact keyframe positions are not returned for visible export snapping."
+			]
+		},
+		{
+			"label": "Events",
+			"paperPath": "/events",
+			"path": "/events",
+			"routeSource": "src/routes/events/+page.svelte",
+			"scenarioIds": ["events.desktop.browse", "events.desktop.detail"],
+			"status": "partial",
+			"blockers": [
+				"Narrative, publisher identity, payload, revision history, and multi-image attachments are absent."
+			]
+		},
+		{
+			"label": "Cameras",
+			"paperPath": "/cameras",
+			"path": "/cameras",
+			"routeSource": "src/routes/cameras/+page.svelte",
+			"scenarioIds": [
+				"cameras.desktop.fleet",
+				"cameras.desktop.add-wizard",
+				"camera.desktop.details-ptz"
+			],
+			"status": "partial",
+			"blockers": [
+				"Pre-save authentication/probing, published-source lineage, bulk templates, and broad camera settings writes are unavailable."
+			]
+		},
+		{
+			"label": "Health",
+			"paperPath": "/health",
+			"path": "/system-health",
+			"routeSource": "src/routes/system-health/+page.svelte",
+			"pathVarianceReason": "Later boards and the implemented deep-link contract standardize Health at /system-health, including /system-health/camera/[cameraId].",
+			"scenarioIds": ["health.desktop.overview", "health.desktop.camera-diagnosis"],
+			"status": "partial",
+			"blockers": [
+				"Historical loss, exact outage start, retries, credential probes, and external-service liveness are unavailable."
+			]
+		},
+		{
+			"label": "Settings",
+			"paperPath": "/settings",
+			"path": "/settings",
+			"routeSource": "src/routes/settings/+page.svelte",
+			"scenarioIds": [
+				"settings.desktop.storage-retention",
+				"settings.desktop.camera-defaults",
+				"settings.desktop.event-sources",
+				"groups.desktop.administration",
+				"groups.desktop.participant",
+				"settings.desktop.integrations",
+				"settings.desktop.notifications",
+				"settings.desktop.access",
+				"settings.desktop.appearance-system-logs"
+			],
+			"status": "partial",
+			"blockers": [
+				"Backend-owned administration registries and commands remain fail-closed in their owning sections."
+			]
+		}
+	],
+	"mobileTabs": ["Peek", "Keep", "Events", "Health", "More"],
+	"mobileCameraAccess": {
+		"path": "/cameras",
+		"reason": "The later responsive contract reserves five tabs; camera workflows remain reachable from Peek, camera detail, onboarding, and More rather than adding a sixth tab."
+	},
+	"settingsSections": [
+		"Camera defaults",
+		"Storage & retention",
+		"Event sources",
+		"Groups",
+		"Notifications",
+		"Access",
+		"Integrations",
+		"Appearance & time",
+		"System & updates",
+		"Logs & diagnostics"
+	],
+	"constraints": [
+		"Access remains a Settings section, never a seventh primary destination.",
+		"Camera configuration stays on one stacked per-camera page with anchors.",
+		"Peek and Keep retain product names and carry plain-language context.",
+		"Application controls remain on canonical WebRTC data channels."
+	]
+}

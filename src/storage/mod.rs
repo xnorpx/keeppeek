@@ -13,7 +13,10 @@ pub mod playback;
 pub mod segment;
 pub mod short_term;
 
-pub use catalog::{CatalogFragment, CatalogRecording, RecordingCatalog, RecordingCatalogHandle};
+pub use catalog::{
+    CatalogFragment, CatalogMediaFragment, CatalogRecording, RecordingCatalog,
+    RecordingCatalogHandle,
+};
 pub use demand::{RecordingDemand, RecordingDemandGuard};
 pub use engine::{StorageConfig, StorageEngine, StorageHandle};
 pub use events::EventStore;

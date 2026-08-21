@@ -1,13 +1,10 @@
-use clap::{Parser, ValueEnum};
-use std::{net::Ipv4Addr, path::PathBuf, sync::mpsc};
-use test_camera::{TestCameraBuilder, Transport};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::{net::Ipv4Addr, path::PathBuf, sync::mpsc, time::Duration};
+use test_camera::{
+    TestCameraBuilder, Transport,
+    seed::{RecordingSeedOptions, seed_recording},
+};
 use tracing_subscriber::EnvFilter;
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Protocol {
-    Rtsp,
-    ReoProto,
-}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum TransportChoice {
@@ -27,13 +24,25 @@ impl From<TransportChoice> for Transport {
 #[derive(Debug, Parser)]
 #[command(
     name = "test-camera",
-    about = "Start a local RTSP or Reolink test camera"
+    about = "Start deterministic cameras or seed deterministic recordings"
 )]
 struct Cli {
-    /// Transport protocol exposed by the test camera.
-    #[arg(value_enum)]
-    protocol: Protocol,
+    #[command(subcommand)]
+    command: Command,
+}
 
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Start a local RTSP camera.
+    Rtsp(CameraArgs),
+    /// Start a local Reolink camera.
+    ReoProto(CameraArgs),
+    /// Seed deterministic recording data for browser tests.
+    SeedRecording(SeedRecordingArgs),
+}
+
+#[derive(Debug, Args)]
+struct CameraArgs {
     /// MP4 source used for the main profile. The video track must be H.264 or H.265.
     #[arg(long)]
     main: PathBuf,
@@ -67,6 +76,27 @@ struct Cli {
     name: String,
 }
 
+#[derive(Debug, Args)]
+struct SeedRecordingArgs {
+    #[arg(long)]
+    source: PathBuf,
+
+    #[arg(long)]
+    recordings: PathBuf,
+
+    #[arg(long)]
+    catalog: PathBuf,
+
+    #[arg(long)]
+    stream_id: String,
+
+    #[arg(long, default_value_t = 300)]
+    duration_seconds: u64,
+
+    #[arg(long, default_value_t = 240)]
+    age_seconds: u64,
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -74,18 +104,33 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
-    let builder = match cli.protocol {
-        Protocol::Rtsp => TestCameraBuilder::rtsp(&cli.main, &cli.sub),
-        Protocol::ReoProto => TestCameraBuilder::reo_proto(&cli.main, &cli.sub),
+    match Cli::parse().command {
+        Command::Rtsp(command) => serve_camera(command, false),
+        Command::ReoProto(command) => serve_camera(command, true),
+        Command::SeedRecording(command) => seed_recording(&RecordingSeedOptions {
+            source: command.source,
+            recordings: command.recordings,
+            catalog: command.catalog,
+            stream_id: command.stream_id,
+            duration: Duration::from_secs(command.duration_seconds),
+            age: Duration::from_secs(command.age_seconds),
+        }),
     }
-    .bind_ip(cli.bind_ip)
-    .credentials(cli.username, cli.password)
-    .transport(cli.transport.into())
-    .uid(cli.uid);
+}
+
+fn serve_camera(command: CameraArgs, reo_proto: bool) -> anyhow::Result<()> {
+    let builder = if reo_proto {
+        TestCameraBuilder::reo_proto(&command.main, &command.sub)
+    } else {
+        TestCameraBuilder::rtsp(&command.main, &command.sub)
+    }
+    .bind_ip(command.bind_ip)
+    .credentials(command.username, command.password)
+    .transport(command.transport.into())
+    .uid(command.uid);
     let camera = builder.start()?;
 
-    println!("{}", camera.connection().toml_entry(&cli.name));
+    println!("{}", camera.connection().toml_entry(&command.name));
     tracing::info!(
         main = camera.connection().main_stream_url(),
         sub = camera.connection().sub_stream_url(),

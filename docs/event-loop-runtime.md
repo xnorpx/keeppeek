@@ -76,22 +76,15 @@ Global finalized-file movement and size-limit enforcement stay in a storage-main
 
 ## HTTP API
 
-Rouille serves health, camera, recording, event, and live-media APIs. The core runtime routes include:
+Rouille exposes only the checked-in HTTP contract: `POST /create`, `POST /delete`, `GET /logs`, and `GET /metrics`. Session creation is the sole SDP offer/answer exchange, deletion tears down the creator-owned session, logs use Server-Sent Events, and metrics use Prometheus text exposition.
 
-- `GET /health` reports process liveness.
-- `GET /ready` confirms that the router can answer requests after startup registration.
-- `GET /api/v1/cameras` returns cached camera summaries.
-- `GET /api/v1/cameras/{camera_id}` returns detailed cached state or `404`.
-- `GET /api/health` returns process and host CPU/memory/load, disks, network interfaces, temperatures, recording catalog and demand, WebRTC delivery, configured cameras, per-stream ingress rates and counters, and current health findings.
-- `POST /api/cameras/{camera_id}/live/offer` creates an adaptive WebRTC session from an SDP offer and returns its session ID, SDP answer, requested quality, active stream, and current egress estimate.
-- `GET /api/live/{session_id}` returns the requested quality, active stream, and server-side egress bitrate estimate.
-- `POST /api/live/{session_id}/quality` changes the quality ceiling to `auto`, `high`, or `low` without replacing the peer connection.
+Commands, state, camera configuration, typed health, live subscriptions, and stored-media queries run as protobuf messages over the negotiated WebRTC data channels. `HealthCommand.get` returns process and host CPU/memory/load, disks, network interfaces, temperatures, recording catalog and demand, WebRTC delivery, configured cameras, per-stream ingress rates and counters, and current health findings.
 
-Each live session subscribes to exactly one camera source at a time. `low` selects the substream, `high` selects the main stream, and `auto` starts on the substream while str0m estimates server-to-client capacity using TWCC or REMB. Auto mode upgrades after sustained headroom and downgrades more quickly under pressure. Source changes wait for a keyframe and preserve one outbound RTP stream; KeepPeek does not transmit main and sub concurrently to the same viewer.
+Each live subscription selects exactly one camera source at a time. `low` selects the substream, `high` selects the main stream, and `auto` starts on the substream while str0m estimates server-to-client capacity using TWCC or REMB. Auto mode upgrades after sustained headroom and downgrades more quickly under pressure. Source changes wait for a keyframe and preserve one outbound RTP stream; KeepPeek does not transmit main and sub concurrently to the same viewer.
 
 Camera loops publish their existing ten-second ingress reports into a shared registry. Reports remain keyed by camera and stream so separate RTSP main/sub loops cannot overwrite each other. Configured cameras remain present when capability discovery fails; after the report warm-up they are classified offline rather than disappearing from health output.
 
-Disconnected cameras remain visible in status and do not make the process unready. Start, stop, restart, PTZ, snapshot, reboot, and authentication are not part of this API.
+Disconnected cameras remain visible in typed health and capability snapshots. Unsupported control commands fail closed over the control channel.
 
 ## Shutdown
 

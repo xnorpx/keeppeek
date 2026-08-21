@@ -1,0 +1,633 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans)', fontSize: '12px', fontSynthesis: 'none', gap: '48px', height: 'fit-content', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased', width: '1440px' }}>
+      <div style={{ alignItems: 'flex-end', boxSizing: 'border-box', display: 'flex', gap: '40px', width: '100%' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '640px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, letterSpacing: 'var(--tracking-caps)', lineHeight: '14px' }}>
+              04 · KEEP · TIMELINE ANATOMY
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-4xl)', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '56px' }}>
+            The timeline is the product.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'inline-block', flexBasis: '0%', flexGrow: '1', paddingBottom: '6px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-base)', lineHeight: '26px' }}>
+            Vertical, right-edge, always visible — and one column, not two. The live edge is pinned to the top and time runs downward into the past, so the thing that just happened is where your eye already is. The thumbnail sits at the moment it happened rather than in a list beside it, so "what was that" and "when was that" are one glance.
+          </div>
+        </div>
+      </div>
+      <div style={{ backgroundColor: 'var(--color-ground)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '720px', overflow: 'clip', width: '1280px' }}>
+        <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '22px', paddingBlock: '20px', width: '64px' }}>
+          <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', flexShrink: '0', height: '26px', width: '26px' }} />
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '20px', justifyContent: 'center', width: '20px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+              <path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <rect x="2" y="6" width="14" height="12" rx="2" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '20px', justifyContent: 'center', width: '20px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+              <circle cx="12" cy="12" r="10" fill="none" stroke="var(--color-primary)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <polyline points="12 6 12 12 16 14" fill="none" stroke="var(--color-primary)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '20px', justifyContent: 'center', width: '20px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+              <path d="M10.268 21a2 2 0 0 0 3.464 0" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '20px', justifyContent: 'center', width: '20px' }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+              <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="12" cy="13" r="3" fill="none" stroke="var(--color-text-faint)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1' }}>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '14px', height: '52px', paddingInline: '20px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px' }}>
+              Front Door
+            </div>
+            <div style={{ backgroundColor: 'var(--color-hairline)', boxSizing: 'border-box', flexShrink: '0', height: '16px', width: '1px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+              Tue 18 Aug 2026
+            </div>
+            <div style={{ boxSizing: 'border-box', flexBasis: '0%', flexGrow: '1' }} />
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '7px', paddingBlock: '5px', paddingInline: '10px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '14px' }}>
+                MAIN
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '7px', paddingBlock: '5px', paddingInline: '10px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '14px' }}>
+                1.0×
+              </div>
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-video)', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', justifyContent: 'space-between', padding: '16px', width: '100%' }}>
+            <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+              <div style={{ backgroundColor: '#0A0B0CB8', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px', paddingBlock: '8px', paddingInline: '11px' }}>
+                <div style={{ boxSizing: 'border-box', color: '#FFFFFF', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                  2026-08-18 06:37:23.412
+                </div>
+                <div style={{ boxSizing: 'border-box', color: '#FFFFFF9E', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '14px' }}>
+                  3840×2160 · 25 FPS · HEVC
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: '#0A0B0CB8', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', gap: '7px', paddingBlock: '6px', paddingInline: '11px' }}>
+                <div style={{ backgroundColor: '#FFFFFFD9', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+                <div style={{ boxSizing: 'border-box', color: '#FFFFFF', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', fontWeight: 500, letterSpacing: '0.14em', lineHeight: '14px' }}>
+                  REC
+                </div>
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '20px', justifyContent: 'center', width: '100%' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px' }}>
+                RECORDED VIDEO SURFACE — LETTERBOXED, NEVER CROPPED
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: '#0A0B0CB8', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', display: 'flex', gap: '14px', paddingBlock: '10px', paddingInline: '12px', width: '100%' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <polygon points="6 3 20 12 6 21 6 3" fill="#FFFFFF" />
+              </svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <polygon points="19 20 9 12 19 4 19 20" fill="none" stroke="rgb(255 255 255 / 70%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <line x1="5" x2="5" y1="19" y2="5" stroke="rgb(255 255 255 / 70%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <polygon points="5 4 15 12 5 20 5 4" fill="none" stroke="rgb(255 255 255 / 70%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <line x1="19" x2="19" y1="5" y2="19" stroke="rgb(255 255 255 / 70%)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <div style={{ backgroundColor: '#FFFFFF2E', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexBasis: '0%', flexGrow: '1', height: '3px' }} />
+              <div style={{ boxSizing: 'border-box', color: '#FFFFFFB3', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                06:37:23 / 24:00:00
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ borderLeftColor: 'var(--color-hairline)', borderLeftStyle: 'solid', borderLeftWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '718px', width: '396px' }}>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '26px', height: '52px', paddingInline: '18px', width: '395px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', height: '51px', justifyContent: 'center', position: 'relative' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px' }}>
+                TIMELINE
+              </div>
+              <div style={{ backgroundColor: 'var(--color-primary)', bottom: '0px', boxSizing: 'border-box', height: '2px', position: 'absolute', width: '66px' }} />
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px' }}>
+              EVENTS
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px' }}>
+              STORIES
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '46px', justifyContent: 'space-between', paddingInline: '18px', width: '395px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', gap: '6px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, lineHeight: '14px' }}>
+                  All
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-full)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                  Person
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-full)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                  Vehicle
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-full)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                  Motion
+                </div>
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <circle cx="11" cy="11" r="7" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" />
+                <path d="m20 20-4.3-4.3M8.5 11h5M11 8.5v5" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" />
+              </svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <circle cx="11" cy="11" r="7" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" />
+                <path d="m20 20-4.3-4.3M8.5 11h5" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" />
+              </svg>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '620px', position: 'relative', width: '395px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '620px', position: 'relative', width: '56px' }}>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '6px', position: 'absolute', right: '0px', top: '69px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  06:30
+                </div>
+                <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '7px' }} />
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '6px', position: 'absolute', right: '0px', top: '172px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  06:00
+                </div>
+                <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '7px' }} />
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '6px', position: 'absolute', right: '0px', top: '275px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  05:30
+                </div>
+                <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '7px' }} />
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '6px', position: 'absolute', right: '0px', top: '379px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  05:00
+                </div>
+                <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '7px' }} />
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '6px', position: 'absolute', right: '0px', top: '482px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  04:30
+                </div>
+                <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '7px' }} />
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '6px', position: 'absolute', right: '0px', top: '585px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  04:00
+                </div>
+                <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '7px' }} />
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '620px', position: 'relative', width: '14px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '36px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '28px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '60px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '28px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '52px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '28px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '58px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '28px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '42px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-ground)', borderBottomColor: 'var(--color-hairline-strong)', borderBottomStyle: 'dashed', borderBottomWidth: '1px', borderTopColor: 'var(--color-hairline-strong)', borderTopStyle: 'dashed', borderTopWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '14px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '54px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '28px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '79px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '28px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '57px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-text)', borderRadius: 'var(--radius-full)', borderStyle: 'solid', borderWidth: '2px', boxSizing: 'border-box', height: '12px', left: '1px', position: 'absolute', top: '44px', width: '12px' }} />
+              <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', height: '8px', left: '3px', position: 'absolute', top: '134px', width: '8px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', height: '8px', left: '3px', position: 'absolute', top: '214px', width: '8px' }} />
+              <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', height: '8px', left: '3px', position: 'absolute', top: '300px', width: '8px' }} />
+              <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', height: '8px', left: '3px', position: 'absolute', top: '438px', width: '8px' }} />
+              <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', height: '8px', left: '3px', position: 'absolute', top: '545px', width: '8px' }} />
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '620px', position: 'relative', width: '325px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', height: '68px', left: '16px', padding: '7px', position: 'absolute', top: '515px', width: '300px' }}>
+                <div style={{ alignItems: 'flex-end', backgroundImage: 'linear-gradient(in oklab 160deg, oklab(30.7% -0.003 -0.014) 0%, oklab(20.7% -0.003 -0.007) 100%)', borderRadius: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '53px', justifyContent: 'flex-end', padding: '4px', width: '94px' }}>
+                  <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: '2px', boxSizing: 'border-box', display: 'flex', height: '15px', paddingInline: '5px' }}>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', fontWeight: 600, lineHeight: '12px' }}>
+                      6
+                    </div>
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    04:12:40
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                    Cat crossed the porch twice
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    story · 6 frames
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '549px', width: '17px' }} />
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', height: '68px', left: '16px', padding: '7px', position: 'absolute', top: '408px', width: '300px' }}>
+                <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(28.7% -0.004 -0.013) 0%, oklab(20.3% -0.003 -0.007) 100%)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '53px', width: '94px' }} />
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    04:43:33
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                    Person at the gate
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    object-detect · 0.88
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '442px', width: '17px' }} />
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', height: '68px', left: '16px', padding: '7px', position: 'absolute', top: '270px', width: '300px' }}>
+                <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(27.4% -0.004 -0.013) 0%, oklab(19.8% -0.003 -0.007) 100%)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '53px', width: '94px' }} />
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    05:23:36
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                    Car turned in the drive
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    object-detect · 0.79
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '304px', width: '17px' }} />
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', height: '68px', left: '16px', padding: '7px', position: 'absolute', top: '184px', width: '300px' }}>
+                <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: '2px', borderStyle: 'dashed', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '53px', justifyContent: 'center', width: '94px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: '0.06em', lineHeight: '12px' }}>
+                    NO JPEG
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    05:48:51
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                    Motion
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    camera onvif · no attachment
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '218px', width: '17px' }} />
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', height: '68px', left: '16px', padding: '7px', position: 'absolute', top: '104px', width: '300px' }}>
+                <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(26.6% -0.004 -0.011) 0%, oklab(19.8% -0.003 -0.007) 100%)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '53px', width: '94px' }} />
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    06:12:04
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                    Delivery van stopped
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    object-detect · 0.84
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '138px', width: '17px' }} />
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', height: '68px', left: '16px', padding: '7px', position: 'absolute', top: '16px', width: '300px' }}>
+                <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(33.4% -0.005 -0.014) 0%, oklab(22.4% -0.004 -0.009) 100%)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '53px', width: '94px' }} />
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    06:37:23
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '16px' }}>
+                    Person at front step
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    object-detect · 0.91 · rev 2
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '50px', width: '17px' }} />
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', height: '14px', left: '0px', position: 'absolute', top: '43px', width: '395px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-live)', borderRadius: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '14px', justifyContent: 'center', width: '58px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', fontWeight: 600, lineHeight: '12px' }}>
+                  06:37:23
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-live)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '29px' }} />
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', height: '14px', left: '0px', position: 'absolute', top: '0px', width: '395px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-live)', borderRadius: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '14px', justifyContent: 'center', width: '46px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', fontWeight: 600, letterSpacing: '0.08em', lineHeight: '12px' }}>
+                  LIVE
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-live)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '349px' }} />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '28px', paddingTop: '44px', width: '100%' }}>
+        <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+            Column anatomy
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', letterSpacing: '0.08em', lineHeight: '14px' }}>
+            396PX WIDE · 56PX RULER + 14PX BAND + 326PX CARD LANE
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+          <div style={{ borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '12px', paddingRight: '28px' }}>
+            <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '34px', width: '20px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 600, lineHeight: '16px' }}>
+              Availability
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '20px' }}>
+              Footage exists. Drawn from bucketed QueryStoredMediaTimeline results, never from per-fragment rows.
+            </div>
+          </div>
+          <div style={{ borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '12px', paddingInline: '28px' }}>
+            <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '34px', width: '20px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 600, lineHeight: '16px' }}>
+              Activity
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '20px' }}>
+              Motion density. Height is duration, not intensity — a taller band means a longer event, never a more important one.
+            </div>
+          </div>
+          <div style={{ borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '12px', paddingInline: '28px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '20px', width: '20px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 600, lineHeight: '16px' }}>
+              Event card
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '20px' }}>
+              One ingested event, anchored to its own second by a leader line. Cards that would overlap collapse into a stack showing the count, which expands on click or on zoom — the timeline never silently drops one.
+            </div>
+          </div>
+          <div style={{ borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '12px', paddingInline: '28px' }}>
+            <div style={{ borderLeftColor: 'var(--color-hairline-strong)', borderLeftStyle: 'dashed', borderLeftWidth: '1px', borderRightColor: 'var(--color-hairline-strong)', borderRightStyle: 'dashed', borderRightWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '34px', width: '20px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 600, lineHeight: '16px' }}>
+              Gap
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '20px' }}>
+              No footage. Rendered explicitly, never as empty space — a silent gap is the failure mode operators fear most.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '12px', paddingLeft: '28px' }}>
+            <div style={{ alignItems: 'center', alignSelf: 'flex-start', backgroundColor: 'var(--color-live)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', paddingBlock: '3px', paddingInline: '7px' }}>
+              <div style={{ boxSizing: 'border-box', color: '#FFFFFF', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '10px', fontWeight: 600, lineHeight: '12px' }}>
+                06:37:23
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 600, lineHeight: '16px' }}>
+              Playhead
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '20px' }}>
+              A red pill on the ruler at the second you are watching. Draggable across the ruler and the band; it stops at the card lane so it never crosses a thumbnail.
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '40px', width: '1280px' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '10px', width: '400px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+            The live edge
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '155%' }}>
+            LIVE is a marker at a time, not a label on a header. It scrolls with everything else, which is what makes "am I watching now" answerable without a second widget.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '155%' }}>
+            Two states, and only two. There is no partial follow and no auto-scroll that fights the hand on the wheel.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', width: '400px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px' }}>
+              A · AT THE LIVE EDGE
+            </div>
+            <div style={{ backgroundColor: 'var(--color-hairline)', boxSizing: 'border-box', flexBasis: '0%', flexGrow: '1', height: '1px' }} />
+          </div>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '196px', overflow: 'clip', paddingTop: '12px', position: 'relative', width: '400px' }}>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', position: 'relative', width: '56px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px', position: 'absolute', right: '6px', top: '74px' }}>
+                06:30
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', width: '14px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '26px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '26px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '132px', width: '14px' }} />
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', position: 'relative', width: '330px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '9px', height: '60px', left: '16px', padding: '6px', position: 'absolute', top: '8px', width: '300px' }}>
+                <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(33.4% -0.005 -0.014) 0%, oklab(22.4% -0.004 -0.009) 100%)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '46px', width: '82px' }} />
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                    06:51:44 · 8s ago
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '16px' }}>
+                    Person at front step
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '38px', width: '17px' }} />
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', height: '12px', left: '0px', position: 'absolute', top: '0px', width: '398px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-live)', borderRadius: '2px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '12px', justifyContent: 'center', width: '46px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', fontWeight: 600, letterSpacing: '0.08em', lineHeight: '12px' }}>
+                  LIVE
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-live)', boxSizing: 'border-box', flexShrink: '0', height: '1px', width: '352px' }} />
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '155%' }}>
+            The rule sits at the top and the column follows. A new event appears above the current top card and pushes it down. That movement is allowed only while explicitly following live; the first wheel or touch gesture stops follow before the person can begin reading history.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', width: '400px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px' }}>
+              B · SCROLLED INTO THE PAST
+            </div>
+            <div style={{ backgroundColor: 'var(--color-hairline)', boxSizing: 'border-box', flexBasis: '0%', flexGrow: '1', height: '1px' }} />
+          </div>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '196px', overflow: 'clip', paddingTop: '12px', position: 'relative', width: '400px' }}>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', position: 'relative', width: '56px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px', position: 'absolute', right: '6px', top: '22px' }}>
+                04:30
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px', position: 'absolute', right: '6px', top: '126px' }}>
+                04:00
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', width: '14px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '52px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', height: '26px', width: '14px' }} />
+              <div style={{ backgroundColor: 'var(--color-availability)', boxSizing: 'border-box', flexShrink: '0', height: '106px', width: '14px' }} />
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', position: 'relative', width: '330px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '9px', height: '60px', left: '16px', padding: '6px', position: 'absolute', top: '34px', width: '300px' }}>
+                <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(28.7% -0.004 -0.013) 0%, oklab(20.3% -0.003 -0.007) 100%)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '46px', width: '82px' }} />
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                    04:12:40
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+                    Cat crossed the porch
+                  </div>
+                </div>
+              </div>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', boxSizing: 'border-box', height: '1px', left: '0px', position: 'absolute', top: '64px', width: '17px' }} />
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', gap: '7px', height: '28px', left: '139px', paddingInline: '13px', position: 'absolute', top: '6px' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <path d="M12 19V6" fill="none" stroke="var(--color-on-primary)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+                <polyline points="5 13 12 6 19 13" fill="none" stroke="var(--color-on-primary)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', fontWeight: 600, lineHeight: '16px', width: 'max-content' }}>
+                Back to live
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '155%' }}>
+            One wheel notch downward stops the follow. The rule leaves the view and a single control floats in. It is an action, not a position readout — it says nothing about how far back you are, which is still the ruler's job.
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', paddingTop: '44px', width: '100%' }}>
+        <div style={{ borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '22px', paddingRight: '48px', width: '600px' }}>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+              Zoom and scroll
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '20px' }}>
+              Wheel, pinch and +/− step through five fixed levels; there is no free zoom. Scrolling moves the column itself — down goes back in time, up returns to now — and nothing draws a scrollbar or a position indicator. The ruler already says where you are, and a second answer to the same question is noise.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', fontWeight: 500, lineHeight: '16px', width: '70px' }}>
+                24h
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '16px', width: '110px' }}>
+                28 px/hr
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Whole day. Ticks every 4 h, buckets of 5 min
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', fontWeight: 500, lineHeight: '16px', width: '70px' }}>
+                6h
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '16px', width: '110px' }}>
+                112 px/hr
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Ticks every hour, buckets of 1 min
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', fontWeight: 500, lineHeight: '16px', width: '70px' }}>
+                1h
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '16px', width: '110px' }}>
+                672 px/hr
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Ticks every 10 min, buckets of 10 s
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', fontWeight: 500, lineHeight: '16px', width: '70px' }}>
+                15m
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '16px', width: '110px' }}>
+                2 688 px/hr
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Ticks every minute, buckets of 1 s
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', fontWeight: 500, lineHeight: '16px', width: '70px' }}>
+                1m
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '16px', width: '110px' }}>
+                frame level
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Individual fragments and keyframes become visible
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '22px', paddingLeft: '48px' }}>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+              Performance budget
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '20px' }}>
+              Non-negotiable targets, not measurements. No capacity profile has been run yet; these are the numbers the design is allowed to assume at the ceiling of 127 sources across 30 days on a mid-range laptop, and the first profile either confirms them or the timeline is redesigned.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ alignItems: 'baseline', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 500, lineHeight: '24px', width: '110px' }}>
+                60 fps
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px' }}>
+                Timeline's own pan and zoom render — not stream framerate. Bands draw to one canvas, not DOM nodes
+              </div>
+            </div>
+            <div style={{ alignItems: 'baseline', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 500, lineHeight: '24px', width: '110px' }}>
+                150 ms
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px' }}>
+                Click to first decoded frame, when the target keyframe is already cached
+              </div>
+            </div>
+            <div style={{ alignItems: 'baseline', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 500, lineHeight: '24px', width: '110px' }}>
+                400 ms
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px' }}>
+                Cold seek to an arbitrary timestamp, including the catalog round trip
+              </div>
+            </div>
+            <div style={{ alignItems: 'baseline', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 500, lineHeight: '24px', width: '110px' }}>
+                1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px' }}>
+                Timeline query per zoom level per day. Results cached, never refetched on pan
+              </div>
+            </div>
+            <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '20px', paddingBlock: '11px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '20px', fontWeight: 500, lineHeight: '24px', width: '110px' }}>
+                0
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px' }}>
+                Layout shifts while scrubbing. Cards are absolutely placed, so the column never reflows in response to data
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

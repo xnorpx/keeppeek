@@ -206,9 +206,11 @@ components:
       scheme: bearer
       bearerFormat: UUID
       description: >-
-        A locally configured random UUID or GUID access key. Every configured
-        key has identical access to every endpoint, including /logs and
-        /metrics.
+        A locally configured random UUID or GUID access key. Required for every
+        non-loopback peer. Same-host loopback requests that did not arrive
+        through a reverse proxy skip it and act as Administrator. Every
+        configured key has identical access to every endpoint, including /logs
+        and /metrics.
   responses:
     BadRequest:
       description: Bad Request. The request could not be accepted, or validation failed.
@@ -229,7 +231,9 @@ components:
           schema:
             $ref: '#/components/schemas/Status'
     Unauthorized:
-      description: The request has no valid local API key.
+      description: >-
+        A non-loopback or forwarded request has no valid API key. Only direct
+        same-host loopback requests may omit it.
       content:
         application/json:
           schema:

@@ -1,0 +1,123 @@
+{
+	"schemaVersion": 1,
+	"boardId": "1-0",
+	"headline": "Local-first video, reviewed fast.",
+	"oneRule": "KeepPeek ingests events; it does not own detection.",
+	"evidence": [
+		{
+			"source": "README.md",
+			"contains": "KeepPeek is a local-first network video recorder (NVR) and Media Gateway for IP cameras."
+		},
+		{
+			"source": "README.md",
+			"contains": "KeepPeek is currently a proof of concept (POC) and is not yet production-ready."
+		},
+		{
+			"source": "ui/PRODUCT.md",
+			"contains": "Recording, playback, review, and administration all work with no vendor cloud."
+		},
+		{
+			"source": "ui/PRODUCT.md",
+			"contains": "KeepPeek deliberately does not own detection."
+		},
+		{
+			"source": "api/README.md",
+			"contains": "The initial API has four operations:"
+		},
+		{
+			"source": "api/webrtc.md",
+			"contains": "PTZ is a control-channel command, not a media subscription and not an HTTP route."
+		}
+	],
+	"eventWireContract": {
+		"source": "api/webrtc.proto",
+		"message": "Event",
+		"fields": [
+			"event_id",
+			"revision",
+			"source_id",
+			"media_kind",
+			"origin",
+			"event_type",
+			"start_time",
+			"end_time",
+			"confidence",
+			"bounding_box",
+			"zone",
+			"text",
+			"payload",
+			"attachments",
+			"source_session_id",
+			"subscription_id"
+		],
+		"persistenceStatus": "partial",
+		"blockers": [
+			"Current persistence stores one mutable event row and one thumbnail rather than revision and attachment history.",
+			"The browser RecordingEvent adapter does not yet expose wire text, payload, revision, source_id, or multiple attachments."
+		]
+	},
+	"httpPaths": ["/create", "/delete", "/logs", "/metrics"],
+	"principles": [
+		{
+			"index": 1,
+			"name": "Footage first",
+			"scenarioIds": ["peek.desktop.live-wall", "camera.desktop.details-ptz"],
+			"status": "implemented"
+		},
+		{
+			"index": 2,
+			"name": "Time is the index",
+			"scenarioIds": ["keep.desktop.timeline-anatomy", "events.desktop.detail"],
+			"status": "implemented"
+		},
+		{
+			"index": 3,
+			"name": "Never lie about state",
+			"scenarioIds": [
+				"peek.desktop.live-wall",
+				"events.empty.no-results",
+				"cameras.waiting.discovery",
+				"settings.waiting.applying"
+			],
+			"status": "implemented"
+		},
+		{
+			"index": 4,
+			"name": "Test before save",
+			"scenarioIds": ["cameras.desktop.add-wizard", "cameras.mobile.add-streams"],
+			"status": "partial",
+			"blockers": [
+				"The final write boundary is enforced, but candidate authentication and decoded stream probing are unavailable before save."
+			]
+		},
+		{
+			"index": 5,
+			"name": "Deep-linkable",
+			"scenarioIds": [
+				"keep.desktop.timeline-anatomy",
+				"events.desktop.browse",
+				"events.desktop.detail",
+				"camera.desktop.details-ptz",
+				"health.desktop.camera-diagnosis"
+			],
+			"status": "implemented"
+		}
+	],
+	"forbiddenRouteFragments": [
+		"detection",
+		"detector",
+		"model",
+		"training",
+		"enrollment",
+		"zone-editor",
+		"mask-editor",
+		"tripwire"
+	],
+	"constraints": [
+		"Core NVR operation has no vendor-cloud or relay dependency.",
+		"Application controls use binary protobuf over negotiated WebRTC data channels.",
+		"HTTP is limited to session create/delete plus logs and metrics.",
+		"Missing event evidence is labelled unavailable and is never synthesized.",
+		"No product surface may imply production readiness, customers, benchmarks, pricing, or uptime claims."
+	]
+}

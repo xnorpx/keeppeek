@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -6,6 +7,10 @@ const testRoot = path.join(repositoryRoot, 'target', 'ui-logging-e2e');
 const storageRoot = path.join(testRoot, 'recordings');
 const configPath = path.join(testRoot, 'config.toml');
 const testdataRoot = path.join(repositoryRoot, 'crates', 'test-camera', 'testdata');
+const executableExtension = process.platform === 'win32' ? '.exe' : '';
+const releaseRoot = path.join(repositoryRoot, 'target', 'release');
+const keeppeekBinary = requiredBinary('keeppeek');
+const testCameraBinary = requiredBinary('test_camera');
 
 type TestCamera = {
 	name: string;
@@ -15,23 +20,7 @@ type TestCamera = {
 
 async function startTestCamera(name: string, main: string, sub: string): Promise<TestCamera> {
 	const camera = Bun.spawn(
-		[
-			'cargo',
-			'run',
-			'--quiet',
-			'-p',
-			'test-camera',
-			'--bin',
-			'test_camera',
-			'--',
-			'rtsp',
-			'--main',
-			main,
-			'--sub',
-			sub,
-			'--name',
-			name
-		],
+		[testCameraBinary, 'rtsp', '--main', main, '--sub', sub, '--name', name],
 		{
 			cwd: repositoryRoot,
 			stdout: 'pipe',
@@ -90,6 +79,9 @@ await writeFile(
 	`host = "127.0.0.1"
 port = 4317
 
+[direct_card]
+allowed_origins = ["http://127.0.0.1:4174"]
+
 [storage]
 medium_term_path = ${tomlString(storageRoot)}
 long_term_path = ${tomlString(storageRoot)}
@@ -106,25 +98,34 @@ ${testCameras.map((camera) => camera.config).join('\n')}
 `
 );
 
-const server = Bun.spawn(
+const seed = Bun.spawn(
 	[
-		'cargo',
-		'run',
-		'--quiet',
-		'-p',
-		'keeppeek',
-		'--bin',
-		'keeppeek',
-		'--',
-		`--config=${configPath}`
+		testCameraBinary,
+		'seed-recording',
+		'--source',
+		path.join(testdataRoot, 'cc-4k-640x360-h264.mp4'),
+		'--recordings',
+		storageRoot,
+		'--catalog',
+		path.join(testRoot, 'recordings.db'),
+		'--stream-id',
+		'e2e-h264/main'
 	],
-	{
-		cwd: repositoryRoot,
-		env: { ...process.env, RUST_LOG: 'info,keeppeek=debug' },
-		stdout: 'inherit',
-		stderr: 'inherit'
-	}
+	{ cwd: repositoryRoot, stdout: 'inherit', stderr: 'inherit' }
 );
+const seedExitCode = await seed.exited;
+if (seedExitCode !== 0) {
+	for (const camera of testCameras) camera.process.kill('SIGINT');
+	await Promise.all(testCameras.map((camera) => camera.process.exited));
+	throw new Error(`Recording seed exited with code ${seedExitCode}`);
+}
+
+const server = Bun.spawn([keeppeekBinary, `--config=${configPath}`], {
+	cwd: repositoryRoot,
+	env: { ...process.env, RUST_LOG: 'info,keeppeek=debug' },
+	stdout: 'inherit',
+	stderr: 'inherit'
+});
 
 let stopping = false;
 function stopServer(): void {
@@ -140,3 +141,13 @@ process.once('exit', stopServer);
 
 const exitCode = await server.exited;
 process.exitCode = stopping ? 0 : exitCode;
+
+function requiredBinary(binaryName: string): string {
+	const binaryPath = path.join(releaseRoot, `${binaryName}${executableExtension}`);
+	if (!existsSync(binaryPath)) {
+		throw new Error(
+			`Missing release E2E binary: ${binaryPath}. Run \`bun run test:e2e:prepare\` first.`
+		);
+	}
+	return binaryPath;
+}

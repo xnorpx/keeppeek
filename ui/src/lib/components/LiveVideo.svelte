@@ -79,10 +79,19 @@
 		cameraId: string;
 		stream: 'main' | 'sub';
 		quality?: LiveQuality;
+		showDiagnostics?: boolean;
+		onframeactivitychange?: (active: boolean) => void;
 		class?: string;
 	};
 
-	let { cameraId, stream, quality, class: className = '' }: Props = $props();
+	let {
+		cameraId,
+		stream,
+		quality,
+		showDiagnostics = true,
+		onframeactivitychange,
+		class: className = ''
+	}: Props = $props();
 
 	const livePeer = useLivePeer();
 	let track = $derived(livePeer.track(cameraId));
@@ -98,6 +107,8 @@
 	} | null = null;
 	let statsRefreshInFlight = false;
 	let presentedFrames = 0;
+	let lastPresentedFrameAt = 0;
+	let frameActivityActive = $state(false);
 	// The compositor discards every frame while the tab is hidden; those are not render drops.
 	let renderDropsNeedRebaseline = false;
 	let status = $derived(track?.status ?? 'connecting');
@@ -142,15 +153,26 @@
 
 	$effect(() => {
 		const element = video;
-		if (!element || typeof element.requestVideoFrameCallback !== 'function') return;
+		if (!element) return;
 		let active = true;
-		let handle = element.requestVideoFrameCallback(function onFrame(_now, metadata) {
-			presentedFrames = metadata.presentedFrames;
-			if (active) handle = element.requestVideoFrameCallback(onFrame);
-		});
+		let handle: number | null = null;
+		if (typeof element.requestVideoFrameCallback === 'function') {
+			handle = element.requestVideoFrameCallback(function onFrame(_now, metadata) {
+				presentedFrames = metadata.presentedFrames;
+				markFrameActivity();
+				if (active) handle = element.requestVideoFrameCallback(onFrame);
+			});
+		}
+		const monitor = window.setInterval(() => {
+			if (frameActivityActive && performance.now() - lastPresentedFrameAt >= 5_000) {
+				setFrameActivity(false);
+			}
+		}, 500);
 		return () => {
 			active = false;
-			element.cancelVideoFrameCallback?.(handle);
+			if (handle !== null) element.cancelVideoFrameCallback?.(handle);
+			window.clearInterval(monitor);
+			setFrameActivity(false);
 		};
 	});
 
@@ -177,6 +199,21 @@
 	async function handlePlaying() {
 		livePeer.markPlaying(cameraId);
 		void refreshReceiverStats(false);
+	}
+
+	function markFrameActivity(): void {
+		lastPresentedFrameAt = performance.now();
+		setFrameActivity(true);
+	}
+
+	function setFrameActivity(active: boolean): void {
+		if (frameActivityActive === active) return;
+		frameActivityActive = active;
+		onframeactivitychange?.(active);
+	}
+
+	function handlePlaybackInactive(): void {
+		setFrameActivity(false);
 	}
 
 	async function refreshReceiverStats(measureRate: boolean) {
@@ -334,7 +371,7 @@
 </script>
 
 <div
-	class="relative bg-black {className}"
+	class="relative bg-video {className}"
 	data-status={status}
 	data-camera-id={cameraId}
 	data-session-id={sessionId}
@@ -343,6 +380,7 @@
 	data-estimated-bitrate-bps={estimatedBitrateBps}
 	data-decoder="browser"
 	data-codec={negotiatedCodec}
+	data-frame-activity={frameActivityActive ? 'active' : 'idle'}
 >
 	<video
 		bind:this={video}
@@ -350,15 +388,25 @@
 		playsinline
 		muted
 		onplaying={handlePlaying}
+		onwaiting={handlePlaybackInactive}
+		onstalled={handlePlaybackInactive}
+		onpause={handlePlaybackInactive}
+		onemptied={handlePlaybackInactive}
+		ontimeupdate={() => {
+			if (typeof video?.requestVideoFrameCallback !== 'function') markFrameActivity();
+		}}
 		onresize={() => void refreshReceiverStats(false)}
-		onerror={() => livePeer.markUnavailable(cameraId)}
+		onerror={() => {
+			handlePlaybackInactive();
+			livePeer.markUnavailable(cameraId);
+		}}
 		class="h-full w-full object-contain"
 	></video>
 	<Popover.Root bind:open={diagnosticsOpen}>
 		<Popover.Trigger
-			class="absolute top-2 right-2 z-30 grid size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {diagnosticsOpen
-				? 'bg-black/90 text-white ring-1 ring-white/35'
-				: ''}"
+			class="absolute top-2 right-2 z-30 size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {showDiagnostics
+				? 'grid'
+				: 'hidden'} {diagnosticsOpen ? 'bg-black/90 text-white ring-1 ring-white/35' : ''}"
 			aria-label="WebRTC stream diagnostics"
 		>
 			<InfoIcon class="size-3.5" />

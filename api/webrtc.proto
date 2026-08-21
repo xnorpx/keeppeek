@@ -35,7 +35,15 @@ message Request {
     StateStoreCommand state_store_command = 12;
     CameraControlCommand camera_control_command = 13;
     PublicationReport publication_report = 14;
+    CameraConfigurationCommand camera_configuration_command = 15;
+    RuntimeConfigurationCommand runtime_configuration_command = 16;
+    LoggingCommand logging_command = 17;
+    ServerCommand server_command = 18;
+    HealthCommand health_command = 21;
+    ExportCommand export_command = 22;
   }
+  reserved 19, 20;
+  reserved "recording_command", "live_session_command";
 }
 
 message Response {
@@ -88,7 +96,7 @@ message GroupMemberChanged {
 message ServerCapabilities {
   uint64 revision = 1;
   // Configured cameras, including offline ones. Identity and device
-  // capability only; numeric health is on GET /metrics.
+  // capability only; numeric health is on GET /metrics and HealthCommand.
   repeated CameraInfo cameras = 2;
   // Complete source-session state visible to this connection.
   repeated SourceSession source_sessions = 3;
@@ -96,6 +104,8 @@ message ServerCapabilities {
   // The source session owned by this WebRTC connection. It is present in this
   // connection's snapshot even before the session has active media.
   string self_source_session_id = 5;
+  // Exact versioned server contracts. Unknown IDs must remain disabled.
+  repeated string capability_ids = 6;
 }
 
 message CameraInfo {
@@ -140,7 +150,24 @@ message PtzCapability {
 message CameraControlCommand {
   oneof action {
     PtzCommand ptz = 1;
+    SetMotionDetection set_motion_detection = 2;
+    SetCameraManufacturer set_manufacturer = 3;
+    GetMotionDetection get_motion_detection = 4;
   }
+}
+
+message GetMotionDetection {
+  string source_id = 1;
+}
+
+message SetMotionDetection {
+  string source_id = 1;
+  bool enabled = 2;
+}
+
+message SetCameraManufacturer {
+  string source_id = 1;
+  OptionalStringUpdate manufacturer = 2;
 }
 
 message PtzCommand {
@@ -196,6 +223,210 @@ message PtzPreset {
   uint32 preset_id = 1;
   string name = 2;
 }
+
+message CameraConfigurationCommand {
+  oneof action {
+    DiscoverCameras discover = 1;
+    UpdateCameraConfiguration update = 2;
+    RemoveCameraConfiguration remove = 3;
+    GetCameraConfigurations get = 4;
+  }
+}
+
+message GetCameraConfigurations {}
+
+message DiscoverCameras {
+  repeated uint32 subnets = 1;
+}
+
+message UpdateCameraConfiguration {
+  string ip = 1;
+  OptionalStringUpdate display_name = 2;
+  OptionalStringUpdate manufacturer = 3;
+  optional string username = 4;
+  optional string password = 5;
+  OptionalUint32Update onvif_port = 6;
+  OptionalUint32Update http_port = 7;
+  OptionalStringUpdate main_rtsp_url = 8;
+  OptionalStringUpdate sub_rtsp_url = 9;
+  OptionalStringUpdate uid = 10;
+  optional CameraBackend backend = 11;
+  optional CameraTransport transport = 12;
+}
+
+message RemoveCameraConfiguration {
+  string ip = 1;
+}
+
+message OptionalStringUpdate {
+  oneof value {
+    string set = 1;
+    bool clear = 2;
+  }
+}
+
+message OptionalUint32Update {
+  oneof value {
+    uint32 set = 1;
+    bool clear = 2;
+  }
+}
+
+enum CameraBackend {
+  CAMERA_BACKEND_UNSPECIFIED = 0;
+  CAMERA_BACKEND_AUTO = 1;
+  CAMERA_BACKEND_RETINA = 2;
+  CAMERA_BACKEND_REO_PROTO = 3;
+}
+
+enum CameraTransport {
+  CAMERA_TRANSPORT_UNSPECIFIED = 0;
+  CAMERA_TRANSPORT_TCP = 1;
+  CAMERA_TRANSPORT_UDP = 2;
+}
+
+message RuntimeConfigurationCommand {
+  oneof action {
+    UpdateRuntimeConfiguration update = 1;
+    GetRuntimeConfiguration get = 2;
+  }
+}
+
+message GetRuntimeConfiguration {}
+
+message HealthCommand {
+  oneof action {
+    GetHealth get = 1;
+  }
+}
+
+message GetHealth {}
+
+message ExportCommand {
+  oneof action {
+    CreateExportJob create = 1;
+    ListExportJobs list = 2;
+    GetExportJob get = 3;
+    CancelExportJob cancel = 4;
+    RetryExportJob retry = 5;
+    DownloadExport download = 6;
+  }
+}
+
+message CreateExportJob {
+  string job_id = 1;
+  string source_id = 2;
+  string stream_id = 3;
+  google.protobuf.Timestamp start_time = 4;
+  google.protobuf.Timestamp end_time = 5;
+  bool allow_partial = 6;
+  bool burn_in_timestamp = 7;
+}
+
+message ListExportJobs {}
+
+message GetExportJob {
+  string job_id = 1;
+}
+
+message CancelExportJob {
+  string job_id = 1;
+}
+
+message RetryExportJob {
+  string job_id = 1;
+}
+
+message DownloadExport {
+  string job_id = 1;
+  DataChannelKind channel = 2;
+}
+
+enum ExportJobStatus {
+  EXPORT_JOB_STATUS_UNSPECIFIED = 0;
+  EXPORT_JOB_STATUS_RUNNING = 1;
+  EXPORT_JOB_STATUS_PARTIAL = 2;
+  EXPORT_JOB_STATUS_READY = 3;
+  EXPORT_JOB_STATUS_FAILED = 4;
+  EXPORT_JOB_STATUS_CANCELLED = 5;
+  EXPORT_JOB_STATUS_EXPIRED = 6;
+}
+
+message ExportJob {
+  string job_id = 1;
+  string source_id = 2;
+  string stream_id = 3;
+  google.protobuf.Timestamp requested_start_time = 4;
+  google.protobuf.Timestamp requested_end_time = 5;
+  optional google.protobuf.Timestamp aligned_start_time = 6;
+  ExportJobStatus status = 7;
+  uint32 progress_per_mille = 8;
+  uint64 bytes_written = 9;
+  optional uint64 estimated_bytes = 10;
+  optional string file_name = 11;
+  optional string sha256 = 12;
+  optional google.protobuf.Timestamp expires_at = 13;
+  repeated ExportMissingRange missing_ranges = 14;
+  optional string error = 15;
+  bool retryable = 16;
+  bool burn_in_timestamp = 17;
+}
+
+message ExportMissingRange {
+  google.protobuf.Timestamp start_time = 1;
+  google.protobuf.Timestamp end_time = 2;
+}
+
+message ExportJobList {
+  repeated ExportJob jobs = 1;
+}
+
+message ExportDownloadResult {
+  ExportJob job = 1;
+  DataChannelKind channel = 2;
+  uint32 chunk_count = 3;
+}
+
+message UpdateRuntimeConfiguration {
+  string host = 1;
+  uint32 port = 2;
+  RuntimeStorageConfiguration storage = 3;
+  bool move_existing_recordings = 4;
+}
+
+message RuntimeStorageConfiguration {
+  string medium_term_path = 1;
+  string long_term_path = 2;
+  string recording_catalog_path = 3;
+  string event_thumbnail_path = 4;
+  uint64 event_thumbnail_max_mb = 5;
+  uint64 short_term_secs = 6;
+  uint64 medium_term_secs = 7;
+  uint64 flush_interval_secs = 8;
+  uint64 write_buffer_bytes = 9;
+  uint64 long_term_max_gb = 10;
+}
+
+message LoggingCommand {
+  oneof action {
+    SetLoggingFilter set_filter = 1;
+    GetLoggingSettings get_settings = 2;
+  }
+}
+
+message SetLoggingFilter {
+  string filter = 1;
+}
+
+message GetLoggingSettings {}
+
+message ServerCommand {
+  oneof action {
+    RestartServer restart = 1;
+  }
+}
+
+message RestartServer {}
 
 message SourceSession {
   string source_session_id = 1;
@@ -494,6 +725,7 @@ message StoredMediaCommand {
     CloseStoredMedia close = 4;
     QueryStoredMediaTimeline query_timeline = 5;
     CancelStoredMediaTimelineQuery cancel_timeline_query = 6;
+    RefillStoredMedia refill = 7;
   }
 }
 
@@ -525,6 +757,11 @@ message SetStoredMediaPlayback {
 
 message CloseStoredMedia {
   string stored_media_id = 1;
+}
+
+message RefillStoredMedia {
+  string stored_media_id = 1;
+  google.protobuf.Timestamp playback_time = 2;
 }
 
 enum StoredMediaMode {
@@ -1003,7 +1240,390 @@ message Ok {
     EventPublicationState event_publication_state = 7;
     GroupState group_state = 8;
     StateStoreResult state_store_result = 9;
+    MotionDetectionResult motion_detection_result = 10;
+    CameraManufacturerResult camera_manufacturer_result = 11;
+    CameraDiscoveryResult camera_discovery_result = 12;
+    CameraConfigurationResult camera_configuration_result = 13;
+    RuntimeConfigurationResult runtime_configuration_result = 14;
+    LoggingSettingsResult logging_settings_result = 15;
+    RestartResult restart_result = 16;
+    ServerHealthSnapshot health_result = 19;
+    ExportJob export_job = 20;
+    ExportJobList export_jobs = 21;
+    ExportDownloadResult export_download = 22;
   }
+  reserved 17, 18;
+  reserved "recording_activity_result", "live_session_result";
+}
+
+message MotionDetectionResult {
+  bool supported = 1;
+  bool controllable = 2;
+  optional bool enabled = 3;
+  optional string error = 4;
+}
+
+message CameraManufacturerResult {
+  string source_id = 1;
+  optional string manufacturer = 2;
+}
+
+message CameraDiscoveryResult {
+  repeated DiscoveredCamera cameras = 1;
+}
+
+message DiscoveredCamera {
+  string ip = 1;
+  string brand = 2;
+  optional string name = 3;
+  optional string model = 4;
+  optional uint32 onvif_port = 5;
+  repeated string sources = 6;
+  bool configured = 7;
+  optional string health = 8;
+}
+
+message CameraConfigurationResult {
+  optional CameraSettings camera = 1;
+  bool restart_required = 2;
+  bool removed = 3;
+  repeated CameraSettings cameras = 4;
+}
+
+message CameraSettings {
+  string id = 1;
+  string ip = 2;
+  optional string display_name = 3;
+  optional string manufacturer_override = 4;
+  bool username_configured = 5;
+  bool password_configured = 6;
+  optional uint32 onvif_port = 7;
+  optional uint32 http_port = 8;
+  optional string main_rtsp_url = 9;
+  optional string sub_rtsp_url = 10;
+  bool uid_configured = 11;
+  CameraBackend backend = 12;
+  CameraTransport transport = 13;
+  optional string health = 14;
+  optional string model = 15;
+}
+
+message RuntimeConfigurationResult {
+  SanitizedRuntimeConfiguration config = 1;
+  bool restart_required = 2;
+}
+
+message SanitizedRuntimeConfiguration {
+  string host = 1;
+  uint32 port = 2;
+  RuntimeStorageConfiguration storage = 3;
+  uint64 camera_count = 4;
+  RecordingCapacityEstimate recording_estimate = 5;
+}
+
+message RecordingCapacityEstimate {
+  uint64 estimated_bitrate_bps = 1;
+  uint64 bytes_per_day = 2;
+  uint64 known_streams = 3;
+  uint64 unknown_streams = 4;
+  optional double estimated_retention_days = 5;
+}
+
+message ServerHealthSnapshot {
+  string status = 1;
+  uint64 generated_at_ms = 2;
+  uint64 uptime_seconds = 3;
+  string version = 4;
+  HealthTotalsSnapshot totals = 5;
+  SystemHealthSnapshot system = 6;
+  StorageHealthSnapshot storage = 7;
+  WebRtcHealthSnapshot webrtc = 8;
+  repeated CameraHealthSnapshot cameras = 9;
+  repeated HealthIssueSnapshot issues = 10;
+}
+
+message HealthTotalsSnapshot {
+  uint64 configured_cameras = 1;
+  uint64 reporting_cameras = 2;
+  uint64 configured_video_streams = 3;
+  uint64 reporting_video_streams = 4;
+  double ingress_fps = 5;
+  uint64 ingress_bitrate_bps = 6;
+  uint64 frames = 7;
+  uint64 keyframes = 8;
+  uint64 drops = 9;
+  uint64 errors = 10;
+  uint64 reconnects = 11;
+}
+
+message CameraHealthSnapshot {
+  string id = 1;
+  string ip = 2;
+  string name = 3;
+  optional string manufacturer = 4;
+  optional string model = 5;
+  optional string firmware_version = 6;
+  string backend = 7;
+  string transport = 8;
+  string state = 9;
+  optional string lifecycle = 10;
+  optional string last_error = 11;
+  repeated HealthProfileSummary configured_profiles = 12;
+  repeated StreamHealthSnapshot streams = 13;
+}
+
+message HealthProfileSummary {
+  string name = 1;
+  string stream = 2;
+  optional string encoding = 3;
+  optional string resolution = 4;
+  optional double framerate = 5;
+  optional uint32 bitrate_kbps = 6;
+  optional uint32 gop = 7;
+  optional string h264_profile = 8;
+  HealthAudioProfileSummary audio = 9;
+}
+
+message HealthAudioProfileSummary {
+  string encoding = 1;
+  optional uint32 sample_rate = 2;
+  optional uint32 bitrate_kbps = 3;
+}
+
+message StreamHealthSnapshot {
+  string type = 1;
+  optional string codec = 2;
+  optional string resolution = 3;
+  optional double fps = 4;
+  optional double expected_fps = 5;
+  optional double kf_fps = 6;
+  optional double kbps = 7;
+  optional double max_frame_kb = 8;
+  optional double gap_min_ms = 9;
+  optional double gap_avg_ms = 10;
+  optional double gap_max_ms = 11;
+  optional uint64 jitter_samples = 12;
+  optional double jitter_p50_ms = 13;
+  optional double jitter_p99_ms = 14;
+  optional uint64 frames = 15;
+  optional uint64 bytes = 16;
+  optional uint64 keyframes = 17;
+  optional uint64 reconnects = 18;
+  optional uint64 drops = 19;
+  optional uint64 errors = 20;
+  uint64 updated_at_ms = 21;
+  uint64 report_age_ms = 22;
+}
+
+message HealthIssueSnapshot {
+  string severity = 1;
+  string scope = 2;
+  string message = 3;
+}
+
+message SystemHealthSnapshot {
+  optional string host_name = 1;
+  optional string os_name = 2;
+  optional string os_version = 3;
+  optional string kernel_version = 4;
+  string architecture = 5;
+  uint64 system_uptime_seconds = 6;
+  uint64 boot_time_seconds = 7;
+  uint64 logical_cores = 8;
+  optional uint64 physical_cores = 9;
+  optional string cpu_brand = 10;
+  float system_cpu_percent = 11;
+  ProcessHealthSnapshot process = 12;
+  MemoryHealthSnapshot memory = 13;
+  LoadHealthSnapshot load = 14;
+  repeated CpuHealthSnapshot cpus = 15;
+  uint64 network_egress_bps = 16;
+  repeated NetworkHealthSnapshot networks = 17;
+  repeated DiskHealthSnapshot disks = 18;
+  repeated TemperatureHealthSnapshot temperatures = 19;
+}
+
+message ProcessHealthSnapshot {
+  uint32 pid = 1;
+  optional string name = 2;
+  optional string executable = 3;
+  optional string working_directory = 4;
+  optional float cpu_percent = 5;
+  optional float cpu_capacity_percent = 6;
+  optional float cpu_core_equivalents = 7;
+  optional uint64 resident_memory_bytes = 8;
+  optional double memory_capacity_percent = 9;
+  optional uint64 virtual_memory_bytes = 10;
+  optional uint64 started_at_seconds = 11;
+  optional uint64 uptime_seconds = 12;
+  optional uint64 tasks = 13;
+  optional uint64 read_bytes_per_second = 14;
+  optional uint64 write_bytes_per_second = 15;
+  optional uint64 total_read_bytes = 16;
+  optional uint64 total_written_bytes = 17;
+}
+
+message MemoryHealthSnapshot {
+  uint64 total_bytes = 1;
+  uint64 used_bytes = 2;
+  uint64 available_bytes = 3;
+  uint64 total_swap_bytes = 4;
+  uint64 used_swap_bytes = 5;
+}
+
+message LoadHealthSnapshot {
+  double one_minute = 1;
+  double five_minutes = 2;
+  double fifteen_minutes = 3;
+}
+
+message CpuHealthSnapshot {
+  string name = 1;
+  float usage_percent = 2;
+  uint64 frequency_mhz = 3;
+}
+
+message NetworkHealthSnapshot {
+  string name = 1;
+  uint64 received_bytes_per_second = 2;
+  uint64 transmitted_bytes_per_second = 3;
+  uint64 received_packets_per_second = 4;
+  uint64 transmitted_packets_per_second = 5;
+  uint64 receive_errors = 6;
+  uint64 transmit_errors = 7;
+  uint64 total_received_bytes = 8;
+  uint64 total_transmitted_bytes = 9;
+}
+
+message DiskHealthSnapshot {
+  string name = 1;
+  string kind = 2;
+  string file_system = 3;
+  string mount_point = 4;
+  uint64 total_bytes = 5;
+  uint64 available_bytes = 6;
+  uint64 used_bytes = 7;
+  bool removable = 8;
+  bool stores_recordings = 9;
+}
+
+message TemperatureHealthSnapshot {
+  string label = 1;
+  optional float current_celsius = 2;
+  optional float max_celsius = 3;
+  optional float critical_celsius = 4;
+}
+
+message StorageHealthSnapshot {
+  string medium_term_path = 1;
+  string long_term_path = 2;
+  bool paths_are_same = 3;
+  uint64 short_term_seconds = 4;
+  uint64 medium_term_seconds = 5;
+  uint64 flush_interval_seconds = 6;
+  uint64 write_buffer_bytes = 7;
+  uint64 long_term_max_bytes = 8;
+  optional uint64 catalog_bytes = 9;
+  CatalogHealthSnapshot catalog = 10;
+  RecordingDemandHealthSnapshot demand = 11;
+}
+
+message CatalogHealthSnapshot {
+  uint64 recording_files = 1;
+  uint64 finalized_files = 2;
+  uint64 active_files = 3;
+  uint64 fragments = 4;
+  uint64 fragment_bytes = 5;
+  uint64 events = 6;
+  uint64 open_events = 7;
+  uint64 event_thumbnails = 8;
+}
+
+message RecordingDemandHealthSnapshot {
+  uint64 active_streams = 1;
+  uint64 total_viewers = 2;
+  uint64 leased_streams = 3;
+  repeated RecordingDemandStreamHealthSnapshot streams = 4;
+}
+
+message RecordingDemandStreamHealthSnapshot {
+  string stream_id = 1;
+  uint64 viewers = 2;
+  optional uint64 lease_remaining_ms = 3;
+}
+
+message WebRtcHealthSnapshot {
+  uint64 active_sessions = 1;
+  uint64 adaptive_sessions = 2;
+  uint64 multi_track_sessions = 3;
+  uint64 multi_tracks = 4;
+  uint64 fixed_sessions = 5;
+  uint64 active_main = 6;
+  uint64 active_sub = 7;
+  uint64 requested_auto = 8;
+  uint64 requested_high = 9;
+  uint64 requested_low = 10;
+  optional uint64 estimated_bitrate_min_bps = 11;
+  optional uint64 estimated_bitrate_avg_bps = 12;
+  optional uint64 estimated_bitrate_max_bps = 13;
+  uint64 source_bitrate_bps = 14;
+  uint64 published_frames = 15;
+  uint64 published_bytes = 16;
+  uint64 delivered_frames = 17;
+  uint64 written_frames = 18;
+  uint64 queue_capacity = 19;
+  uint64 queued_frames = 20;
+  uint64 queue_depth_max = 21;
+  uint64 queue_high_water = 22;
+  uint64 queue_drops = 23;
+  uint64 queue_discarded_frames = 24;
+  uint64 queue_recovery_drops = 25;
+  repeated WebRtcSessionQueueHealthSnapshot session_queues = 26;
+  repeated WebRtcSourceHealthSnapshot sources = 27;
+}
+
+message WebRtcSessionQueueHealthSnapshot {
+  uint64 session_id = 1;
+  optional string track_id = 2;
+  string camera_ip = 3;
+  string stream = 4;
+  uint64 depth = 5;
+  uint64 high_water = 6;
+  uint64 written_frames = 7;
+  uint64 full_drops = 8;
+  uint64 discarded_frames = 9;
+  uint64 recovery_drops = 10;
+}
+
+message WebRtcSourceHealthSnapshot {
+  string camera_ip = 1;
+  string stream = 2;
+  uint64 subscribers = 3;
+  optional uint64 bitrate_bps = 4;
+  bool has_keyframe = 5;
+  optional uint64 keyframe_age_ms = 6;
+}
+
+message LoggingSettingsResult {
+  string active_filter = 1;
+  string default_filter = 2;
+  optional string filter_error = 3;
+  string version = 4;
+  LogBufferStats buffer = 5;
+}
+
+message LogBufferStats {
+  uint64 entry_count = 1;
+  uint64 byte_count = 2;
+  uint64 evicted_entries = 3;
+  uint64 max_entries = 4;
+  uint64 max_bytes = 5;
+  uint64 active_streams = 6;
+  uint64 max_streams = 7;
+}
+
+message RestartResult {
+  bool restarting = 1;
 }
 
 message Error {
@@ -1133,7 +1753,21 @@ message Message {
     StoredMediaMessage stored_media = 4;
     StoredMediaQueryMessage stored_media_query = 5;
     EventMessage event = 6;
+    ExportMessage export = 7;
   }
+}
+
+message ExportMessage {
+  oneof message {
+    ExportFileChunk file_chunk = 1;
+  }
+}
+
+message ExportFileChunk {
+  string job_id = 1;
+  uint32 chunk_index = 2;
+  uint32 chunk_count = 3;
+  bytes payload = 4;
 }
 
 message AudioMessage {

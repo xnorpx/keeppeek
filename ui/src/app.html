@@ -7,12 +7,21 @@
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
 		<script>
 			try {
-				const theme = localStorage.getItem('keeppeek-theme') === 'light' ? 'light' : 'dark';
+				const stored = localStorage.getItem('keeppeek-theme');
+				const preference = stored === 'light' || stored === 'system' ? stored : 'dark';
+				const theme =
+					preference === 'system'
+						? matchMedia('(prefers-color-scheme: dark)').matches
+							? 'dark'
+							: 'light'
+						: preference;
 				document.documentElement.classList.toggle('dark', theme === 'dark');
 				document.documentElement.dataset.theme = theme;
+				document.documentElement.dataset.themePreference = preference;
 			} catch {
 				document.documentElement.classList.add('dark');
 				document.documentElement.dataset.theme = 'dark';
+				document.documentElement.dataset.themePreference = 'dark';
 			}
 		</script>
 		%sveltekit.head%

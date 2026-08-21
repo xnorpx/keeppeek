@@ -1,0 +1,69 @@
+import type { Meta, StoryObj } from '@storybook/svelte';
+import Board27MobileAdministrationStory from './Board27MobileAdministrationStory.svelte';
+
+const meta = {
+	title: 'Settings/Mobile Administration',
+	component: Board27MobileAdministrationStory,
+	parameters: {
+		viewport: { defaultViewport: 'reset' },
+		docs: {
+			description: {
+				component:
+					'Board 27 mobile administration index rendered with the production settings index, header, and primary navigation using deterministic WebRTC evidence.'
+			}
+		},
+		paper: {
+			fileId: '01M0B0VBH78TMTX40GCYYQ37SG',
+			tokenHash: 'cf3b1cd7',
+			boardId: '40J-0',
+			frameId: '4I6-0',
+			scenarioId: 'settings.mobile.administration',
+			reference: 'references/27-mobile-administration-index.png',
+			referenceSha256: 'f2aeeb8edc47fc6e5429c7d37f3b323613fea1780ca74bfbe7e95402e956f771',
+			exceptions: [
+				'Unavailable event-source, group, rule, and identity counts render as em dashes rather than fixture-only numbers.',
+				'The header identifies the verified local connection rather than fabricating a signed-in person.'
+			]
+		}
+	}
+} satisfies Meta<typeof Board27MobileAdministrationStory>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Index: Story = {
+	name: 'Administration index',
+	args: { state: 'index' }
+};
+
+export const CameraDefaults: Story = {
+	name: 'Camera defaults',
+	args: { state: 'camera-defaults' },
+	parameters: {
+		paper: {
+			fileId: '01M0B0VBH78TMTX40GCYYQ37SG',
+			tokenHash: 'cf3b1cd7',
+			boardId: '40J-0',
+			frameId: '4KD-0',
+			scenarioId: 'settings.mobile.camera-defaults',
+			reference: 'references/27-mobile-camera-defaults.png',
+			referenceSha256: '7313b2c7b8512d3309af907e536c9375de9282a58ec9670eb39298a23d5966df'
+		}
+	}
+};
+
+export const Access: Story = {
+	name: 'Access',
+	args: { state: 'access' },
+	parameters: {
+		paper: {
+			fileId: '01M0B0VBH78TMTX40GCYYQ37SG',
+			tokenHash: 'cf3b1cd7',
+			boardId: '40J-0',
+			frameId: '4M9-0',
+			scenarioId: 'settings.mobile.access',
+			reference: 'references/27-mobile-access.png',
+			referenceSha256: '2055c42ff058345ad88b6a1c7f9f24da4f1a77a6b8fbd1952832860943bd2e39'
+		}
+	}
+};

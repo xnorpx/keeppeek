@@ -66,11 +66,6 @@ export interface CameraDetailsResponse {
 	motion_detection: MotionDetection;
 }
 
-export interface CameraStatsResponse {
-	camera_id: string;
-	report: Record<string, unknown> | null;
-}
-
 export interface RecordingSegment {
 	stream: 'main' | 'sub';
 	date: string;
@@ -200,38 +195,11 @@ export interface CameraSettingsUpdateResponse {
 	restart_required: boolean;
 }
 
-export interface RestartResponse {
-	restarting: boolean;
-}
-
 export interface Health {
 	status: string;
 }
 
 export type LiveQuality = 'auto' | 'high' | 'low';
-
-export interface LiveSessionStatus {
-	requested_quality: LiveQuality;
-	active_stream: 'main' | 'sub';
-	estimated_bitrate_bps: number | null;
-}
-
-export interface LiveSessionResponse extends LiveSessionStatus {
-	session_id: number;
-	answer: RTCSessionDescriptionInit;
-}
-
-export interface BrowserLiveTrackOffer {
-	track_id: string;
-	camera_id: string;
-	mid: string;
-	quality: LiveQuality;
-}
-
-export interface BrowserLiveSessionResponse {
-	session_id: number;
-	answer: RTCSessionDescriptionInit;
-}
 
 export interface ServerHealthResponse {
 	status: 'healthy' | 'degraded';

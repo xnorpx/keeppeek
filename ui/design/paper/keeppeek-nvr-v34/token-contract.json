@@ -1,0 +1,77 @@
+{
+	"schemaVersion": 1,
+	"boardId": "20-0",
+	"tokenHash": "cf3b1cd7",
+	"tokenCount": 80,
+	"typeCounts": {
+		"breakpoint": 3,
+		"color": 33,
+		"container": 4,
+		"fontFamily": 2,
+		"fontSize": 13,
+		"fontWeight": 5,
+		"letterSpacing": 4,
+		"lineHeight": 3,
+		"radius": 5,
+		"spacing": 8
+	},
+	"requiredSemanticTokens": [
+		"--color-video",
+		"--color-ground",
+		"--color-surface",
+		"--color-raised",
+		"--color-hairline",
+		"--color-hairline-strong",
+		"--color-text",
+		"--color-text-muted",
+		"--color-text-faint",
+		"--color-primary",
+		"--color-primary-deep",
+		"--color-primary-soft",
+		"--color-on-primary",
+		"--color-live",
+		"--color-live-text",
+		"--color-activity",
+		"--color-healthy",
+		"--color-availability",
+		"--light-ground",
+		"--light-surface",
+		"--light-raised",
+		"--light-text",
+		"--light-text-muted",
+		"--light-text-faint",
+		"--font-sans",
+		"--font-mono",
+		"--text-2xs",
+		"--tracking-caps",
+		"--container-rail",
+		"--container-timeline",
+		"--container-sidebar",
+		"--radius-full"
+	],
+	"minimumFontSizeToken": {
+		"name": "--text-2xs",
+		"value": "10px"
+	},
+	"fonts": [
+		{
+			"family": "Archivo",
+			"package": "@fontsource/archivo",
+			"version": "5.3.0",
+			"weights": [300, 400, 500, 600, 700]
+		},
+		{
+			"family": "IBM Plex Mono",
+			"package": "@fontsource/ibm-plex-mono",
+			"version": "5.3.0",
+			"weights": [300, 400, 500, 600, 700]
+		}
+	],
+	"constraints": [
+		"Archivo owns language; IBM Plex Mono owns timestamps, bitrates, codecs, IDs, and caps labels.",
+		"The primary accent is not used for small text; primary-soft carries rust text on dark surfaces.",
+		"Live red is reserved for failure/offline and the timeline live edge, never the quiet REC indicator.",
+		"Video remains darker than ground so media reads as an aperture.",
+		"No product text renders below the 10px token floor."
+	]
+}

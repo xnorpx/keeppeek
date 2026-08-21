@@ -7,11 +7,6 @@ pub struct Health {
     pub status: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct Ready {
-    pub ready: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub struct CameraId(String);
 
@@ -101,46 +96,6 @@ pub struct CameraInfo {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RecordingSegment {
-    pub stream: String,
-    pub date: String,
-    pub hour: String,
-    pub filename: String,
-    pub url: String,
-    pub start_time_ms: i64,
-    pub end_time_ms: i64,
-    pub duration_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RecordingsResponse {
-    pub camera_id: String,
-    pub date: Option<String>,
-    pub dates: Vec<String>,
-    pub segments: Vec<RecordingSegment>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RecordingEvent {
-    pub id: String,
-    pub source: String,
-    pub kind: String,
-    pub start_time_ms: i64,
-    pub end_time_ms: Option<i64>,
-    pub confidence: Option<f64>,
-    pub bbox: Option<[f32; 4]>,
-    pub zone: Option<String>,
-    pub thumbnail_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RecordingEventsResponse {
-    pub camera_id: String,
-    pub date: String,
-    pub events: Vec<RecordingEvent>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SanitizedStorage {
     pub medium_term_path: String,
     pub long_term_path: String,
@@ -186,6 +141,14 @@ pub struct CreateResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeleteRequest {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Status {
+    pub code: i32,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

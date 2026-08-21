@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getRecordings } from '$lib/api';
+	import { useControlClient } from '$lib/control-context';
 	import RecordingFilmstripPreview from '$lib/components/RecordingFilmstripPreview.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import type { CameraListItem, RecordingSegment } from '$lib/types';
@@ -12,7 +12,7 @@
 		timestampMs: number | null;
 		playing: boolean;
 		playbackRate: number;
-		onselect: (cameraId: string) => void;
+		onselect: (cameraId: string, timestampMs: number) => void;
 	};
 
 	type CameraRecordings = {
@@ -27,6 +27,7 @@
 
 	let { cameras, selectedCameraId, date, timestampMs, playing, playbackRate, onselect }: Props =
 		$props();
+	const controlClient = useControlClient();
 	let recordings = $state.raw<CameraRecordings[]>([]);
 	let loading = $state(false);
 	let requestVersion = 0;
@@ -83,17 +84,18 @@
 		signal: AbortSignal,
 		version: number
 	) {
-		const results = await Promise.all(
-			cameraList.map(async (camera): Promise<CameraRecordings> => {
-				try {
-					const response = await getRecordings(camera.id, selectedDate, signal);
-					return { camera, segments: response.segments };
-				} catch (cause) {
-					if (signal.aborted) throw cause;
-					return { camera, segments: [] };
-				}
-			})
+		const responses = await controlClient.getRecordingsForDate(
+			cameraList.map((camera) => camera.id),
+			selectedDate,
+			signal
 		);
+		const segmentsByCamera = new Map(
+			responses.map((response) => [response.camera_id, response.segments] as const)
+		);
+		const results = cameraList.map<CameraRecordings>((camera) => ({
+			camera,
+			segments: segmentsByCamera.get(camera.id) ?? []
+		}));
 		if (!signal.aborted && version === requestVersion) recordings = results;
 	}
 

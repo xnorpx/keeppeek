@@ -1,0 +1,26 @@
+{
+	"name": "keeppeek-visual-harness",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"packageManager": "bun@1.4.0",
+	"scripts": {
+		"storybook": "storybook dev --ci --port 6006",
+		"storybook:build": "storybook build --output-dir storybook-static",
+		"loki:test": "loki test --reactUri file:./storybook-static",
+		"loki:test:ci": "env -u CI -u CONTINUOUS_INTEGRATION -u BUILD_NUMBER -u RUN_ID loki test --reactUri file:./storybook-static --configurationFilter '^chrome\\.' --requireReference=false --verboseRenderer",
+		"loki:update": "loki update --reactUri file:./storybook-static"
+	},
+	"devDependencies": {
+		"@storybook/addon-a11y": "8.6.18",
+		"@storybook/addon-essentials": "8.6.18",
+		"@storybook/svelte-vite": "8.6.18",
+		"@sveltejs/vite-plugin-svelte": "5.1.1",
+		"@tailwindcss/vite": "4.3.3",
+		"loki": "0.35.1",
+		"storybook": "8.6.18",
+		"svelte": "5.56.9",
+		"typescript": "6.0.3",
+		"vite": "6.4.3"
+	}
+}

@@ -1,17 +1,8 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
-	import {
-		discoverSettingsCameras,
-		getConfig,
-		getHealth,
-		getHealthAt,
-		getSettingsCameras,
-		removeSettingsCamera,
-		restartSettingsServer,
-		updateSettingsConfig,
-		updateSettingsCamera
-	} from '$lib/api';
+	import { waitForMetricsAt } from '$lib/api';
 	import type {
 		CameraBackend,
 		CameraSettings,
@@ -19,9 +10,24 @@
 		CameraTransport,
 		DiscoveredCameraSettings,
 		SanitizedConfig,
+		ServerHealthResponse,
 		SettingsConfigUpdate
 	} from '$lib/types';
 	import * as Card from '$lib/components/ui/card/index.js';
+	import CameraDefaultsSection from '$lib/components/CameraDefaultsSection.svelte';
+	import AccessSection from '$lib/components/AccessSection.svelte';
+	import MobileAccessSection from '$lib/components/MobileAccessSection.svelte';
+	import MobileCameraDefaultsSection from '$lib/components/MobileCameraDefaultsSection.svelte';
+	import MobileSettingsActionBar from '$lib/components/MobileSettingsActionBar.svelte';
+	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
+	import AppearanceSystemSection from '$lib/components/AppearanceSystemSection.svelte';
+	import EventSourcesSection from '$lib/components/EventSourcesSection.svelte';
+	import GroupsSection from '$lib/components/GroupsSection.svelte';
+	import IntegrationsSection from '$lib/components/IntegrationsSection.svelte';
+	import MobileSettingsIndex from '$lib/components/MobileSettingsIndex.svelte';
+	import NotificationsSection from '$lib/components/NotificationsSection.svelte';
+	import StorageRetentionSection from '$lib/components/StorageRetentionSection.svelte';
+	import SettingsApplyingState from '$lib/components/SettingsApplyingState.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Separator } from '$lib/components/ui/separator/index.js';
@@ -36,6 +42,8 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import XIcon from '@lucide/svelte/icons/x';
+	import { mobileSettingsFocus, type MobileSettingsRenderTarget } from '$lib/mobile-settings';
+	import { useControlClient } from '$lib/control-context';
 
 	type EditorMode = 'new' | 'edit' | null;
 
@@ -76,8 +84,11 @@
 	const MAX_WRITE_BUFFER_BYTES = 64 * 1024 * 1024;
 	const DEFAULT_REOLINK_ONVIF_PORT = 8000;
 	const DEFAULT_REOLINK_HTTP_PORT = 80;
+	const controlClient = useControlClient();
 
 	let config = $state.raw<SanitizedConfig | null>(null);
+	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
+	let serverHealthError = $state<string | null>(null);
 	let cameras = $state.raw<CameraSettings[]>([]);
 	let discovered = $state.raw<DiscoveredCameraSettings[]>([]);
 	let loading = $state(true);
@@ -103,9 +114,13 @@
 	let runtimeSettingsForm = $state<RuntimeSettingsForm>(emptyRuntimeSettingsForm());
 	let restartTargetOrigin = $state<string | null>(null);
 	let isNewCamera = $derived(editorMode === 'new');
+	let mobileFocus = $derived(mobileSettingsFocus(page.url.hash));
 
 	onMount(() => {
 		void loadSettings();
+		const handleHashChange = () => void scrollToHashTarget();
+		window.addEventListener('hashchange', handleHashChange);
+		return () => window.removeEventListener('hashchange', handleHashChange);
 	});
 
 	function emptyForm(): CameraForm {
@@ -193,14 +208,51 @@
 		loading = true;
 		error = null;
 		try {
-			const [nextConfig, nextCameras] = await Promise.all([getConfig(), getSettingsCameras()]);
+			const healthRequest = controlClient.getHealth().then(
+				(value) => ({ value, error: null }),
+				(cause: unknown) => ({
+					value: null,
+					error: cause instanceof Error ? cause.message : 'Storage health is unavailable.'
+				})
+			);
+			const [nextConfig, nextCameras, nextHealth] = await Promise.all([
+				controlClient.getRuntimeConfiguration(),
+				controlClient.getCameraSettings(),
+				healthRequest
+			]);
 			config = nextConfig;
 			cameras = nextCameras;
+			serverHealth = nextHealth.value;
+			serverHealthError = nextHealth.error;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load settings.';
 		} finally {
 			loading = false;
 		}
+		await scrollToHashTarget();
+	}
+
+	async function scrollToHashTarget(): Promise<void> {
+		await tick();
+		const targetId = window.location.hash.slice(1);
+		if (
+			![
+				'storage',
+				'camera-defaults',
+				'event-sources',
+				'groups',
+				'access',
+				'integrations',
+				'notifications',
+				'appearance'
+			].includes(targetId)
+		)
+			return;
+		if (window.matchMedia('(max-width: 767px)').matches && mobileSettingsFocus(targetId)) {
+			document.querySelector('[data-mobile-settings-focus]')?.scrollIntoView({ block: 'start' });
+			return;
+		}
+		document.getElementById(targetId)?.scrollIntoView({ block: 'start' });
 	}
 
 	function parseSubnetPrefixes(): number[] {
@@ -230,7 +282,7 @@
 		discovering = true;
 		discoveryError = null;
 		try {
-			discovered = await discoverSettingsCameras(parseSubnetPrefixes());
+			discovered = await controlClient.discoverCameras(parseSubnetPrefixes());
 			didDiscover = true;
 		} catch (cause) {
 			discoveryError = cause instanceof Error ? cause.message : 'Camera discovery failed.';
@@ -291,11 +343,16 @@
 		cameraEditor?.querySelector<HTMLInputElement>(`#${focusId}`)?.focus({ preventScroll: true });
 	}
 
-	function openRuntimeSettings() {
+	async function openRuntimeSettings() {
 		if (!config) return;
 		runtimeSettingsForm = runtimeSettingsFormFromConfig(config);
 		runtimeSettingsError = null;
 		editingRuntimeSettings = true;
+		await tick();
+		document.getElementById('runtime-settings-form')?.scrollIntoView({
+			behavior: 'smooth',
+			block: 'start'
+		});
 	}
 
 	function closeRuntimeSettings() {
@@ -446,7 +503,7 @@
 		saving = true;
 		editorError = null;
 		try {
-			const result = await updateSettingsCamera(ip, update);
+			const result = await controlClient.updateCamera(ip, update);
 			cameras = [
 				...cameras.filter((camera) => camera.ip !== result.camera.ip),
 				result.camera
@@ -469,7 +526,7 @@
 		removingIp = camera.ip;
 		statusMessage = null;
 		try {
-			await removeSettingsCamera(camera.ip);
+			await controlClient.removeCamera(camera.ip);
 			cameras = cameras.filter((candidate) => candidate.ip !== camera.ip);
 			discovered = discovered.map((candidate) =>
 				candidate.ip === camera.ip ? { ...candidate, configured: false, health: null } : candidate
@@ -496,16 +553,19 @@
 			return;
 		}
 
+		const submittedForm = { ...runtimeSettingsForm };
 		savingRuntimeSettings = true;
+		runtimeSettingsForm = runtimeSettingsFormFromConfig(config!);
 		runtimeSettingsError = null;
 		try {
-			const result = await updateSettingsConfig(update);
+			const result = await controlClient.updateRuntimeConfiguration(update);
 			config = result.config;
 			restartTargetOrigin = restartOrigin(result.config);
 			pendingRestart ||= result.restart_required;
 			statusMessage = 'Server and storage settings saved.';
 			closeRuntimeSettings();
 		} catch (cause) {
+			runtimeSettingsForm = submittedForm;
 			runtimeSettingsError =
 				cause instanceof Error ? cause.message : 'Server and storage settings were not saved.';
 		} finally {
@@ -522,11 +582,10 @@
 		await delay(500);
 		for (let attempt = 0; attempt < 40; attempt += 1) {
 			try {
+				await waitForMetricsAt(targetOrigin);
 				if (targetOrigin === window.location.origin) {
-					await getHealth();
 					window.location.reload();
 				} else {
-					await getHealthAt(targetOrigin);
 					window.location.assign(new URL('/settings', targetOrigin).toString());
 				}
 				return;
@@ -542,7 +601,35 @@
 		restarting = true;
 		restartError = null;
 		try {
-			await restartSettingsServer();
+			await controlClient.restartServer();
+			await waitForRestart();
+		} catch (cause) {
+			restartError = cause instanceof Error ? cause.message : 'The server did not restart.';
+		} finally {
+			restarting = false;
+		}
+	}
+
+	function handleSaveShortcut(event: KeyboardEvent): void {
+		if (!(event.metaKey || event.ctrlKey) || event.altKey || event.key.toLowerCase() !== 's')
+			return;
+		event.preventDefault();
+		if (editorMode && cameraEditor) {
+			cameraEditor.requestSubmit();
+			return;
+		}
+		if (editingRuntimeSettings) {
+			document.querySelector<HTMLFormElement>('#runtime-settings-form')?.requestSubmit();
+		}
+	}
+
+	async function restartRecorder() {
+		if (restarting) return;
+		restarting = true;
+		restartError = null;
+		statusMessage = null;
+		try {
+			await controlClient.restartServer();
 			await waitForRestart();
 		} catch (cause) {
 			restartError = cause instanceof Error ? cause.message : 'The server did not restart.';
@@ -561,6 +648,17 @@
 
 	function cameraInfoHref(cameraId: string): string {
 		return `${resolve('/camera')}?camera=${encodeURIComponent(cameraId)}`;
+	}
+
+	function mobileSectionClass(target: MobileSettingsRenderTarget): string {
+		if (mobileFocus?.renderTarget !== target) return 'max-md:hidden';
+		return target === 'camera-defaults' || target === 'access' ? '' : 'max-md:mx-4';
+	}
+
+	function mobileFocusTrailing(target: MobileSettingsRenderTarget): string | undefined {
+		if (target === 'camera-defaults') return 'Save · Server update required';
+		if (target === 'access') return 'Target · identity v1';
+		return undefined;
 	}
 
 	function credentialState(camera: CameraSettings): string {
@@ -610,15 +708,17 @@
 	}
 </script>
 
+<svelte:window onkeydowncapture={handleSaveShortcut} />
+
 <svelte:head>
 	<title>Settings - KeepPeek</title>
 </svelte:head>
 
 <div class="space-y-6">
-	<h1 class="text-2xl font-bold tracking-tight">Settings</h1>
+	<h1 class="hidden text-2xl font-bold tracking-tight md:block">Settings</h1>
 
 	{#if loading}
-		<div class="max-w-5xl space-y-6">
+		<div class="max-w-[1310px] space-y-6">
 			{#each [0, 1, 2] as skeleton (skeleton)}
 				<Card.Root>
 					<Card.Header>
@@ -645,10 +745,26 @@
 			</Card.Content>
 		</Card.Root>
 	{:else if config}
-		<div class="max-w-5xl space-y-6">
+		<div class="max-w-[1310px] space-y-6">
+			<div class="md:hidden">
+				{#if mobileFocus}
+					<div data-mobile-settings-focus>
+						<MobileSettingsHeader
+							title={mobileFocus.label}
+							backHref={resolve('/settings')}
+							trailing={mobileFocusTrailing(mobileFocus.renderTarget!)}
+						/>
+					</div>
+				{:else}
+					<MobileSettingsIndex {config} {cameras} health={serverHealth} />
+				{/if}
+			</div>
+
 			{#if pendingRestart || statusMessage || restartError}
 				<div
-					class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/45 px-3 py-2 text-sm"
+					class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/45 px-3 py-2 text-sm {mobileFocus
+						? 'max-md:mx-4'
+						: 'max-md:hidden'}"
 					role="status"
 				>
 					<p class={restartError ? 'text-destructive' : 'text-muted-foreground'}>
@@ -663,7 +779,7 @@
 				</div>
 			{/if}
 
-			<Card.Root>
+			<Card.Root class="hidden md:grid">
 				<Card.Header>
 					<Card.Title>Diagnostics</Card.Title>
 					<Card.Description>Inspect live server and browser logs.</Card.Description>
@@ -676,7 +792,64 @@
 				</Card.Header>
 			</Card.Root>
 
-			<Card.Root>
+			<div class={mobileSectionClass('storage')}>
+				<StorageRetentionSection
+					{config}
+					health={serverHealth}
+					healthError={serverHealthError}
+					onedit={() => void openRuntimeSettings()}
+				/>
+			</div>
+
+			<div class={mobileSectionClass('camera-defaults')}>
+				<MobileCameraDefaultsSection {cameras} {config} />
+				<div class="hidden md:block">
+					<CameraDefaultsSection {cameras} {config} />
+				</div>
+			</div>
+
+			<div class={mobileSectionClass('event-sources')}>
+				<EventSourcesSection health={serverHealth} healthError={serverHealthError} />
+			</div>
+
+			<div class={mobileSectionClass('groups')}>
+				<GroupsSection />
+			</div>
+
+			<div class={mobileSectionClass('access')}>
+				<MobileAccessSection />
+				<div class="hidden md:block">
+					<AccessSection />
+				</div>
+			</div>
+
+			{#if mobileFocus?.id === 'camera-defaults'}
+				<MobileSettingsActionBar
+					action="Add an exception"
+					capability="keeppeek.runtime-config.v1"
+				/>
+			{:else if mobileFocus?.id === 'access'}
+				<MobileSettingsActionBar action="New token" capability="keeppeek.identity.v1" />
+			{/if}
+
+			<div class={mobileSectionClass('integrations')}>
+				<IntegrationsSection />
+			</div>
+
+			<div class={mobileSectionClass('notifications')}>
+				<NotificationsSection />
+			</div>
+
+			<div class={mobileSectionClass('appearance')}>
+				<AppearanceSystemSection
+					health={serverHealth}
+					healthError={serverHealthError}
+					{restarting}
+					onrestart={() => void restartRecorder()}
+				/>
+			</div>
+
+			<Card.Root class="hidden md:grid">
 				<Card.Header>
 					<Card.Title>Camera setup</Card.Title>
 					<Card.Action>
@@ -964,316 +1137,336 @@
 				</Card.Content>
 			</Card.Root>
 
-			<form class="space-y-4" onsubmit={saveRuntimeSettings}>
-				<div class="grid gap-6 lg:grid-cols-2">
-					<Card.Root>
-						<Card.Header>
-							<Card.Title>Server</Card.Title>
-							{#if !editingRuntimeSettings}
-								<Card.Action>
-									<Button variant="outline" size="sm" onclick={openRuntimeSettings}>
-										<PencilIcon />
-										Edit server
-									</Button>
-								</Card.Action>
-							{/if}
-						</Card.Header>
-						<Card.Content class="pb-6">
-							{#if editingRuntimeSettings}
-								<div class="grid gap-4">
-									<label class="grid gap-1.5 text-sm font-medium" for="server-host">
-										Host
-										<Input
-											id="server-host"
-											bind:value={runtimeSettingsForm.host}
-											autocomplete="off"
-										/>
-									</label>
-									<label class="grid gap-1.5 text-sm font-medium" for="server-port">
-										Port
-										<Input
-											id="server-port"
-											bind:value={runtimeSettingsForm.port}
-											inputmode="numeric"
-											autocomplete="off"
-										/>
-									</label>
-								</div>
-							{:else}
-								<dl class="space-y-3 text-sm">
-									<div class="flex justify-between gap-4">
-										<dt class="text-muted-foreground">Host</dt>
-										<dd class="text-right">{config.host}</dd>
+			<form
+				id="runtime-settings-form"
+				class="hidden scroll-mt-4 space-y-4 md:block"
+				onsubmit={saveRuntimeSettings}
+			>
+				<fieldset disabled={savingRuntimeSettings} class="contents">
+					<div class="grid gap-6 lg:grid-cols-2">
+						<Card.Root>
+							<Card.Header>
+								<Card.Title>Server</Card.Title>
+								{#if !editingRuntimeSettings}
+									<Card.Action>
+										<Button variant="outline" size="sm" onclick={openRuntimeSettings}>
+											<PencilIcon />
+											Edit server
+										</Button>
+									</Card.Action>
+								{/if}
+							</Card.Header>
+							<Card.Content class="pb-6">
+								{#if editingRuntimeSettings}
+									<div class="grid gap-4">
+										<label class="grid gap-1.5 text-sm font-medium" for="server-host">
+											Host
+											<Input
+												id="server-host"
+												bind:value={runtimeSettingsForm.host}
+												autocomplete="off"
+											/>
+										</label>
+										<label class="grid gap-1.5 text-sm font-medium" for="server-port">
+											Port
+											<Input
+												id="server-port"
+												bind:value={runtimeSettingsForm.port}
+												inputmode="numeric"
+												autocomplete="off"
+											/>
+										</label>
 									</div>
-									<Separator />
-									<div class="flex justify-between gap-4">
-										<dt class="text-muted-foreground">Port</dt>
-										<dd>{config.port}</dd>
-									</div>
-									<Separator />
-									<div class="flex justify-between gap-4">
-										<dt class="text-muted-foreground">Running cameras</dt>
-										<dd>{config.camera_count}</dd>
-									</div>
-								</dl>
-							{/if}
-						</Card.Content>
-					</Card.Root>
-
-					<Card.Root>
-						<Card.Header>
-							<Card.Title>Storage</Card.Title>
-							{#if !editingRuntimeSettings}
-								<Card.Action>
-									<Button variant="outline" size="sm" onclick={openRuntimeSettings}>
-										<PencilIcon />
-										Edit storage
-									</Button>
-								</Card.Action>
-							{/if}
-						</Card.Header>
-						<Card.Content class="pb-6">
-							{#if editingRuntimeSettings}
-								<div class="grid gap-4 sm:grid-cols-2">
-									<label
-										class="grid gap-1.5 text-sm font-medium sm:col-span-2"
-										for="medium-term-path"
-									>
-										Medium-term path
-										<Input
-											id="medium-term-path"
-											bind:value={runtimeSettingsForm.mediumTermPath}
-											autocomplete="off"
-										/>
-									</label>
-									<label
-										class="grid gap-1.5 text-sm font-medium sm:col-span-2"
-										for="long-term-path"
-									>
-										Long-term path
-										<Input
-											id="long-term-path"
-											bind:value={runtimeSettingsForm.longTermPath}
-											autocomplete="off"
-										/>
-									</label>
-									<label
-										class="grid gap-1.5 text-sm font-medium sm:col-span-2"
-										for="recording-catalog-path"
-									>
-										Recording metadata database path
-										<Input
-											id="recording-catalog-path"
-											bind:value={runtimeSettingsForm.recordingCatalogPath}
-											autocomplete="off"
-										/>
-									</label>
-									<label
-										class="grid gap-1.5 text-sm font-medium sm:col-span-2"
-										for="event-thumbnail-path"
-									>
-										Event JPEG storage path
-										<Input
-											id="event-thumbnail-path"
-											bind:value={runtimeSettingsForm.eventThumbnailPath}
-											autocomplete="off"
-										/>
-									</label>
-									<label
-										class="grid gap-1.5 text-sm font-medium"
-										for="event-thumbnail-max-megabytes"
-									>
-										Event JPEG limit MB
-										<Input
-											id="event-thumbnail-max-megabytes"
-											bind:value={runtimeSettingsForm.eventThumbnailMaxMegabytes}
-											inputmode="numeric"
-											autocomplete="off"
-										/>
-									</label>
-									<label
-										class="flex items-center gap-2 text-sm font-medium sm:col-span-2"
-										for="move-existing-recordings"
-									>
-										<input
-											id="move-existing-recordings"
-											type="checkbox"
-											bind:checked={runtimeSettingsForm.moveExistingRecordings}
-										/>
-										Move current storage files
-									</label>
-									<label class="grid gap-1.5 text-sm font-medium" for="short-term-seconds">
-										Short-term buffer seconds
-										<Input
-											id="short-term-seconds"
-											bind:value={runtimeSettingsForm.shortTermSeconds}
-											inputmode="numeric"
-											autocomplete="off"
-										/>
-									</label>
-									<label class="grid gap-1.5 text-sm font-medium" for="medium-term-seconds">
-										Medium-term segment seconds
-										<Input
-											id="medium-term-seconds"
-											bind:value={runtimeSettingsForm.mediumTermSeconds}
-											inputmode="numeric"
-											autocomplete="off"
-										/>
-									</label>
-									<label class="grid gap-1.5 text-sm font-medium" for="flush-interval-seconds">
-										Flush interval seconds
-										<Input
-											id="flush-interval-seconds"
-											bind:value={runtimeSettingsForm.flushIntervalSeconds}
-											inputmode="numeric"
-											autocomplete="off"
-										/>
-									</label>
-									<label class="grid gap-1.5 text-sm font-medium" for="write-buffer-bytes">
-										Write buffer bytes
-										<Input
-											id="write-buffer-bytes"
-											bind:value={runtimeSettingsForm.writeBufferBytes}
-											inputmode="numeric"
-											autocomplete="off"
-										/>
-									</label>
-									<label class="grid gap-1.5 text-sm font-medium" for="long-term-max-gigabytes">
-										Long-term max GB
-										<Input
-											id="long-term-max-gigabytes"
-											bind:value={runtimeSettingsForm.longTermMaxGigabytes}
-											inputmode="numeric"
-											autocomplete="off"
-										/>
-									</label>
-								</div>
-							{:else}
-								<div class="space-y-4">
+								{:else}
 									<dl class="space-y-3 text-sm">
 										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Medium-term path</dt>
-											<dd class="max-w-[60%] text-right break-all">
-												{config.storage.medium_term_path}
-											</dd>
+											<dt class="text-muted-foreground">Host</dt>
+											<dd class="text-right">{config.host}</dd>
 										</div>
 										<Separator />
 										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Long-term path</dt>
-											<dd class="max-w-[60%] text-right break-all">
-												{config.storage.long_term_path}
-											</dd>
+											<dt class="text-muted-foreground">Port</dt>
+											<dd>{config.port}</dd>
 										</div>
 										<Separator />
 										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Recording metadata database</dt>
-											<dd class="max-w-[60%] text-right break-all">
-												{config.storage.recording_catalog_path}
-											</dd>
-										</div>
-										<Separator />
-										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Event JPEG storage</dt>
-											<dd class="max-w-[60%] text-right break-all">
-												{config.storage.event_thumbnail_path}
-											</dd>
-										</div>
-										<Separator />
-										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Event JPEG limit</dt>
-											<dd>
-												{config.storage.event_thumbnail_max_mb === 0
-													? 'Unlimited'
-													: `${config.storage.event_thumbnail_max_mb} MB`}
-											</dd>
-										</div>
-										<Separator />
-										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Short-term buffer</dt>
-											<dd>{config.storage.short_term_secs}s</dd>
-										</div>
-										<Separator />
-										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Medium-term segment</dt>
-											<dd>{config.storage.medium_term_secs}s</dd>
-										</div>
-										<Separator />
-										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Flush interval</dt>
-											<dd>{config.storage.flush_interval_secs}s</dd>
-										</div>
-										<Separator />
-										<div class="flex justify-between gap-4">
-											<dt class="text-muted-foreground">Long-term max</dt>
-											<dd>
-												{config.storage.long_term_max_gb === 0
-													? 'Unlimited'
-													: `${config.storage.long_term_max_gb} GB`}
-											</dd>
+											<dt class="text-muted-foreground">Running cameras</dt>
+											<dd>{config.camera_count}</dd>
 										</div>
 									</dl>
-									<Separator />
-									<section class="space-y-3" aria-labelledby="recording-estimate-title">
-										<div class="flex flex-wrap items-center justify-between gap-2">
-											<h2 id="recording-estimate-title" class="text-sm font-semibold">
-												Current recording estimate
-											</h2>
-											<span class="text-xs text-muted-foreground">
-												{config.recording_estimate.known_streams} known of {config
-													.recording_estimate.known_streams +
-													config.recording_estimate.unknown_streams} streams
-											</span>
-										</div>
-										<dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-											<div class="min-w-0">
-												<dt class="text-muted-foreground">Estimated rate</dt>
-												<dd class="mt-1 font-mono">
-													{formatBitrate(config.recording_estimate.estimated_bitrate_bps)}
+								{/if}
+							</Card.Content>
+						</Card.Root>
+
+						<Card.Root>
+							<Card.Header>
+								<Card.Title>Storage</Card.Title>
+								{#if !editingRuntimeSettings}
+									<Card.Action>
+										<Button variant="outline" size="sm" onclick={openRuntimeSettings}>
+											<PencilIcon />
+											Edit storage
+										</Button>
+									</Card.Action>
+								{/if}
+							</Card.Header>
+							<Card.Content class="pb-6">
+								{#if editingRuntimeSettings}
+									<div class="grid gap-4 sm:grid-cols-2">
+										<label
+											class="grid gap-1.5 text-sm font-medium sm:col-span-2"
+											for="medium-term-path"
+										>
+											Medium-term path
+											<Input
+												id="medium-term-path"
+												bind:value={runtimeSettingsForm.mediumTermPath}
+												autocomplete="off"
+											/>
+										</label>
+										<label
+											class="grid gap-1.5 text-sm font-medium sm:col-span-2"
+											for="long-term-path"
+										>
+											Long-term path
+											<Input
+												id="long-term-path"
+												bind:value={runtimeSettingsForm.longTermPath}
+												autocomplete="off"
+											/>
+										</label>
+										<label
+											class="grid gap-1.5 text-sm font-medium sm:col-span-2"
+											for="recording-catalog-path"
+										>
+											Recording metadata database path
+											<Input
+												id="recording-catalog-path"
+												bind:value={runtimeSettingsForm.recordingCatalogPath}
+												autocomplete="off"
+											/>
+										</label>
+										<label
+											class="grid gap-1.5 text-sm font-medium sm:col-span-2"
+											for="event-thumbnail-path"
+										>
+											Event JPEG storage path
+											<Input
+												id="event-thumbnail-path"
+												bind:value={runtimeSettingsForm.eventThumbnailPath}
+												autocomplete="off"
+											/>
+										</label>
+										<label
+											class="grid gap-1.5 text-sm font-medium"
+											for="event-thumbnail-max-megabytes"
+										>
+											Event JPEG limit MB
+											<Input
+												id="event-thumbnail-max-megabytes"
+												bind:value={runtimeSettingsForm.eventThumbnailMaxMegabytes}
+												inputmode="numeric"
+												autocomplete="off"
+											/>
+										</label>
+										<label
+											class="flex items-center gap-2 text-sm font-medium sm:col-span-2"
+											for="move-existing-recordings"
+										>
+											<input
+												id="move-existing-recordings"
+												type="checkbox"
+												bind:checked={runtimeSettingsForm.moveExistingRecordings}
+											/>
+											Move current storage files
+										</label>
+										<label class="grid gap-1.5 text-sm font-medium" for="short-term-seconds">
+											Short-term buffer seconds
+											<Input
+												id="short-term-seconds"
+												bind:value={runtimeSettingsForm.shortTermSeconds}
+												inputmode="numeric"
+												autocomplete="off"
+											/>
+										</label>
+										<label class="grid gap-1.5 text-sm font-medium" for="medium-term-seconds">
+											Medium-term segment seconds
+											<Input
+												id="medium-term-seconds"
+												bind:value={runtimeSettingsForm.mediumTermSeconds}
+												inputmode="numeric"
+												autocomplete="off"
+											/>
+										</label>
+										<label class="grid gap-1.5 text-sm font-medium" for="flush-interval-seconds">
+											Flush interval seconds
+											<Input
+												id="flush-interval-seconds"
+												bind:value={runtimeSettingsForm.flushIntervalSeconds}
+												inputmode="numeric"
+												autocomplete="off"
+											/>
+										</label>
+										<label class="grid gap-1.5 text-sm font-medium" for="write-buffer-bytes">
+											Write buffer bytes
+											<Input
+												id="write-buffer-bytes"
+												bind:value={runtimeSettingsForm.writeBufferBytes}
+												inputmode="numeric"
+												autocomplete="off"
+											/>
+										</label>
+										<label class="grid gap-1.5 text-sm font-medium" for="long-term-max-gigabytes">
+											Long-term max GB
+											<Input
+												id="long-term-max-gigabytes"
+												bind:value={runtimeSettingsForm.longTermMaxGigabytes}
+												inputmode="numeric"
+												autocomplete="off"
+											/>
+										</label>
+									</div>
+								{:else}
+									<div class="space-y-4">
+										<dl class="space-y-3 text-sm">
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Medium-term path</dt>
+												<dd class="max-w-[60%] text-right break-all">
+													{config.storage.medium_term_path}
 												</dd>
 											</div>
-											<div class="min-w-0">
-												<dt class="text-muted-foreground">1 day</dt>
-												<dd class="mt-1 font-mono">
-													{formatBytes(config.recording_estimate.bytes_per_day)}
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Long-term path</dt>
+												<dd class="max-w-[60%] text-right break-all">
+													{config.storage.long_term_path}
 												</dd>
 											</div>
-											<div class="min-w-0">
-												<dt class="text-muted-foreground">7 days</dt>
-												<dd class="mt-1 font-mono">
-													{formatBytes(config.recording_estimate.bytes_per_day * 7)}
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Recording metadata database</dt>
+												<dd class="max-w-[60%] text-right break-all">
+													{config.storage.recording_catalog_path}
 												</dd>
 											</div>
-											<div class="min-w-0">
-												<dt class="text-muted-foreground">30 days</dt>
-												<dd class="mt-1 font-mono">
-													{formatBytes(config.recording_estimate.bytes_per_day * 30)}
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Event JPEG storage</dt>
+												<dd class="max-w-[60%] text-right break-all">
+													{config.storage.event_thumbnail_path}
 												</dd>
 											</div>
-											<div class="min-w-0">
-												<dt class="text-muted-foreground">At long-term cap</dt>
-												<dd class="mt-1 font-mono">
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Event JPEG limit</dt>
+												<dd>
+													{config.storage.event_thumbnail_max_mb === 0
+														? 'Unlimited'
+														: `${config.storage.event_thumbnail_max_mb} MB`}
+												</dd>
+											</div>
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Short-term buffer</dt>
+												<dd>{config.storage.short_term_secs}s</dd>
+											</div>
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Medium-term segment</dt>
+												<dd>{config.storage.medium_term_secs}s</dd>
+											</div>
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Flush interval</dt>
+												<dd>{config.storage.flush_interval_secs}s</dd>
+											</div>
+											<Separator />
+											<div class="flex justify-between gap-4">
+												<dt class="text-muted-foreground">Long-term max</dt>
+												<dd>
 													{config.storage.long_term_max_gb === 0
 														? 'Unlimited'
-														: config.recording_estimate.estimated_retention_days === null
-															? 'Unavailable'
-															: formatRetentionDays(
-																	config.recording_estimate.estimated_retention_days
-																)}
+														: `${config.storage.long_term_max_gb} GB`}
 												</dd>
 											</div>
 										</dl>
-									</section>
-								</div>
-							{/if}
-						</Card.Content>
-					</Card.Root>
-				</div>
+										<Separator />
+										<section class="space-y-3" aria-labelledby="recording-estimate-title">
+											<div class="flex flex-wrap items-center justify-between gap-2">
+												<h2 id="recording-estimate-title" class="text-sm font-semibold">
+													Current recording estimate
+												</h2>
+												<span class="text-xs text-muted-foreground">
+													{config.recording_estimate.known_streams} known of {config
+														.recording_estimate.known_streams +
+														config.recording_estimate.unknown_streams} streams
+												</span>
+											</div>
+											<dl class="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+												<div class="min-w-0">
+													<dt class="text-muted-foreground">Estimated rate</dt>
+													<dd class="mt-1 font-mono">
+														{formatBitrate(config.recording_estimate.estimated_bitrate_bps)}
+													</dd>
+												</div>
+												<div class="min-w-0">
+													<dt class="text-muted-foreground">1 day</dt>
+													<dd class="mt-1 font-mono">
+														{formatBytes(config.recording_estimate.bytes_per_day)}
+													</dd>
+												</div>
+												<div class="min-w-0">
+													<dt class="text-muted-foreground">7 days</dt>
+													<dd class="mt-1 font-mono">
+														{formatBytes(config.recording_estimate.bytes_per_day * 7)}
+													</dd>
+												</div>
+												<div class="min-w-0">
+													<dt class="text-muted-foreground">30 days</dt>
+													<dd class="mt-1 font-mono">
+														{formatBytes(config.recording_estimate.bytes_per_day * 30)}
+													</dd>
+												</div>
+												<div class="min-w-0">
+													<dt class="text-muted-foreground">At long-term cap</dt>
+													<dd class="mt-1 font-mono">
+														{config.storage.long_term_max_gb === 0
+															? 'Unlimited'
+															: config.recording_estimate.estimated_retention_days === null
+																? 'Unavailable'
+																: formatRetentionDays(
+																		config.recording_estimate.estimated_retention_days
+																	)}
+													</dd>
+												</div>
+											</dl>
+										</section>
+									</div>
+								{/if}
+							</Card.Content>
+						</Card.Root>
+					</div>
+				</fieldset>
 				{#if editingRuntimeSettings}
+					{#if savingRuntimeSettings}
+						<SettingsApplyingState
+							fieldLabel="Port"
+							confirmedValue={String(config?.port ?? '')}
+							actionLabel="Applying server and storage settings"
+							lockLabel="Fields locked until server responds"
+							detail="Confirmed values remain visible and fields stay locked until the server responds."
+							class="rounded-sm border border-activity/45"
+						/>
+					{/if}
 					{#if runtimeSettingsError}
 						<p class="text-sm text-destructive" role="alert">{runtimeSettingsError}</p>
 					{/if}
 					<div class="flex justify-end gap-2">
-						<Button variant="outline" onclick={closeRuntimeSettings}>Cancel</Button>
+						<Button
+							variant="outline"
+							onclick={closeRuntimeSettings}
+							disabled={savingRuntimeSettings}>Cancel</Button
+						>
 						<Button type="submit" disabled={savingRuntimeSettings}>
 							{#if !savingRuntimeSettings}<SaveIcon />{:else}<RefreshCwIcon
 									class="animate-spin"

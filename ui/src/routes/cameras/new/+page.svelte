@@ -1,0 +1,573 @@
+<script lang="ts">
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import { useControlClient } from '$lib/control-context';
+	import {
+		applyManualCameraAddress,
+		cameraWizardSteps,
+		cameraWizardUpdate,
+		draftFromDiscoveredCamera,
+		emptyCameraWizardDraft,
+		validateCameraWizardStep,
+		type CameraWizardDraft,
+		type CameraWizardStep
+	} from '$lib/camera-wizard';
+	import type { CameraSettingsUpdateResponse, DiscoveredCameraSettings } from '$lib/types';
+	import DiscoveryProgressState from '$lib/components/DiscoveryProgressState.svelte';
+	import DesktopCameraWizardStreamsStep from '$lib/components/DesktopCameraWizardStreamsStep.svelte';
+	import MobileAddCameraWizard, {
+		type MobileCameraWizardStage
+	} from '$lib/components/MobileAddCameraWizard.svelte';
+	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
+	import ArrowRightIcon from '@lucide/svelte/icons/arrow-right';
+	import CheckIcon from '@lucide/svelte/icons/check';
+	import LockIcon from '@lucide/svelte/icons/lock';
+	import SearchIcon from '@lucide/svelte/icons/search';
+
+	const stepLabels: Record<CameraWizardStep, string> = {
+		find: 'Find',
+		connect: 'Connect',
+		streams: 'Streams',
+		recording: 'Recording',
+		review: 'Review & save'
+	};
+
+	let stepIndex = $state(0);
+	let draft = $state.raw<CameraWizardDraft>(emptyCameraWizardDraft());
+	let discovered = $state.raw<DiscoveredCameraSettings[]>([]);
+	let subnetPrefixes = $state('192.168.1');
+	let manualAddress = $state('');
+	let discovering = $state(false);
+	let discoveryAttempted = $state(false);
+	let discoveryStartedAt = $state(0);
+	let discoveryElapsedMs = $state(0);
+	let discoverySubnetCount = $state(0);
+	let saving = $state(false);
+	let error = $state<string | null>(null);
+	let saved = $state.raw<CameraSettingsUpdateResponse | null>(null);
+	const controlClient = useControlClient();
+	let currentStep = $derived(cameraWizardSteps[stepIndex]);
+	let mobileStage = $derived<MobileCameraWizardStage>(
+		currentStep === 'streams'
+			? 'streams'
+			: currentStep === 'recording' || currentStep === 'review'
+				? 'review'
+				: 'find-connect'
+	);
+
+	$effect(() => {
+		if (!discovering) return;
+		const updateElapsed = () => {
+			discoveryElapsedMs = Math.max(0, performance.now() - discoveryStartedAt);
+		};
+		updateElapsed();
+		const timer = window.setInterval(updateElapsed, 100);
+		return () => window.clearInterval(timer);
+	});
+
+	function updateDraft(update: Partial<CameraWizardDraft>): void {
+		draft = { ...draft, ...update };
+		error = null;
+	}
+
+	function parseSubnetPrefixes(): number[] {
+		const values = subnetPrefixes
+			.split(',')
+			.map((value) => value.trim())
+			.filter(Boolean);
+		const subnets = values.map((value) => {
+			const octets = value.split('.');
+			if (
+				octets.length !== 3 ||
+				octets.some((octet) => !/^\d+$/.test(octet) || Number(octet) > 255)
+			) {
+				throw new Error('Enter subnet prefixes such as 192.168.1.');
+			}
+			return Number(octets[2]);
+		});
+		return [...new Set(subnets)];
+	}
+
+	async function discover(): Promise<void> {
+		if (discovering) return;
+		let subnets: number[];
+		try {
+			subnets = parseSubnetPrefixes();
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Camera discovery settings are invalid.';
+			return;
+		}
+		discovered = [];
+		discoverySubnetCount = subnets.length;
+		discoveryElapsedMs = 0;
+		discoveryStartedAt = performance.now();
+		discovering = true;
+		error = null;
+		try {
+			discovered = await controlClient.discoverCameras(subnets);
+			discoveryAttempted = true;
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Camera discovery failed.';
+		} finally {
+			discovering = false;
+		}
+	}
+
+	function selectDiscovered(camera: DiscoveredCameraSettings): void {
+		if (camera.configured) return;
+		draft = draftFromDiscoveredCamera(camera);
+		error = null;
+	}
+
+	function useManualAddress(): void {
+		try {
+			draft = applyManualCameraAddress(draft, manualAddress);
+			error = null;
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Camera address is invalid.';
+		}
+	}
+
+	function next(): void {
+		const validationError = validateCameraWizardStep(currentStep, draft);
+		if (validationError) {
+			error = validationError;
+			return;
+		}
+		if (stepIndex < cameraWizardSteps.length - 1) stepIndex += 1;
+		error = null;
+	}
+
+	function back(): void {
+		if (stepIndex > 0) stepIndex -= 1;
+		error = null;
+	}
+
+	function mobileConnect(): void {
+		let nextDraft = draft;
+		if (!nextDraft.ip.trim() && manualAddress.trim()) {
+			try {
+				nextDraft = applyManualCameraAddress(nextDraft, manualAddress);
+			} catch (cause) {
+				error = cause instanceof Error ? cause.message : 'Camera address is invalid.';
+				return;
+			}
+		}
+		for (const step of ['find', 'connect'] as const) {
+			const validationError = validateCameraWizardStep(step, nextDraft);
+			if (validationError) {
+				error = validationError;
+				return;
+			}
+		}
+		draft = nextDraft;
+		stepIndex = cameraWizardSteps.indexOf('streams');
+		error = null;
+	}
+
+	function mobileReview(): void {
+		const validationError = validateCameraWizardStep('streams', draft);
+		if (validationError) {
+			error = validationError;
+			return;
+		}
+		stepIndex = cameraWizardSteps.indexOf('review');
+		error = null;
+	}
+
+	async function save(): Promise<void> {
+		if (saving) return;
+		let update;
+		try {
+			update = cameraWizardUpdate(draft);
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Camera configuration is invalid.';
+			return;
+		}
+		saving = true;
+		error = null;
+		try {
+			saved = await controlClient.updateCamera(draft.ip, update);
+			draft = { ...draft, password: '' };
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Camera settings were not saved.';
+		} finally {
+			saving = false;
+		}
+	}
+
+	function discard(): void {
+		void goto(resolve('/cameras'));
+	}
+
+	function handleKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Escape' && saved === null) discard();
+	}
+
+	function evidenceLabel(camera: DiscoveredCameraSettings): string {
+		return [camera.brand, camera.model, ...camera.sources]
+			.filter((value): value is string => Boolean(value))
+			.join(' · ');
+	}
+</script>
+
+<svelte:head>
+	<title>Add camera - KeepPeek</title>
+</svelte:head>
+
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="mx-auto max-w-5xl md:space-y-4 md:p-4">
+	<header
+		class="hidden min-h-11 flex-wrap items-center gap-3 border-b border-hairline pb-3 md:flex"
+	>
+		<button
+			type="button"
+			class="grid size-9 place-items-center rounded-sm border border-hairline-strong text-text-muted hover:bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+			aria-label="Cancel add camera"
+			onclick={discard}
+		>
+			<ArrowLeftIcon class="size-4" />
+		</button>
+		<div>
+			<h1 class="text-xl font-semibold">Add camera</h1>
+			<p class="font-mono text-2xs tracking-caps text-text-faint">NOTHING SAVED UNTIL STEP 5</p>
+		</div>
+	</header>
+
+	{#if saved}
+		<section
+			class="m-4 grid min-h-[28rem] place-items-center rounded-md border border-healthy/40 bg-surface p-6 text-center md:m-0"
+			aria-label="Camera saved"
+		>
+			<div class="max-w-lg space-y-4">
+				<span
+					class="mx-auto grid size-12 place-items-center rounded-full bg-healthy/15 text-healthy"
+					><CheckIcon class="size-6" /></span
+				>
+				<div>
+					<h2 class="text-lg font-semibold">Camera saved</h2>
+					<p class="mt-1 text-sm text-text-muted">
+						{saved.camera.display_name ?? saved.camera.ip} is now in configuration.
+					</p>
+				</div>
+				{#if saved.restart_required}
+					<p
+						class="rounded-md border border-activity bg-activity/10 px-3 py-2.5 text-xs text-text-muted"
+					>
+						The server reported that a restart is required before recording can begin.
+					</p>
+				{/if}
+				<div class="flex flex-wrap justify-center gap-2">
+					<a
+						href={resolve('/cameras')}
+						class="inline-flex h-9 items-center rounded-sm bg-primary px-4 text-xs font-semibold text-on-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+						>View cameras</a
+					>
+					{#if saved.restart_required}<a
+							href={resolve('/settings')}
+							class="inline-flex h-9 items-center rounded-sm border border-hairline-strong bg-raised px-4 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							>Apply restart</a
+						>{/if}
+				</div>
+			</div>
+		</section>
+	{:else}
+		<MobileAddCameraWizard
+			stage={mobileStage}
+			{draft}
+			{discovered}
+			{subnetPrefixes}
+			{manualAddress}
+			{discovering}
+			{discoveryElapsedMs}
+			{discoveryAttempted}
+			{error}
+			{saving}
+			oncancel={discard}
+			ondiscover={discover}
+			onselect={selectDiscovered}
+			onsubnets={(value) => (subnetPrefixes = value)}
+			onmanualaddress={(value) => (manualAddress = value)}
+			onupdate={updateDraft}
+			onconnect={mobileConnect}
+			onreview={mobileReview}
+			onsave={save}
+		/>
+		<div class="hidden md:block" data-desktop-camera-wizard>
+			<ol class="grid grid-cols-5 gap-1" aria-label="Add camera progress">
+				{#each cameraWizardSteps as step, index (step)}
+					<li class="min-w-0">
+						<div class="h-1 rounded-full {index <= stepIndex ? 'bg-primary' : 'bg-hairline'}"></div>
+						<p
+							class="mt-1 truncate text-center font-mono text-2xs {index === stepIndex
+								? 'text-primary-soft'
+								: 'text-text-faint'}"
+						>
+							{index + 1} · {stepLabels[step]}
+						</p>
+					</li>
+				{/each}
+			</ol>
+
+			<section
+				class="overflow-hidden rounded-md border border-hairline bg-surface"
+				aria-labelledby="wizard-step-heading"
+			>
+				<header class="flex min-h-14 items-center gap-3 border-b border-hairline px-4">
+					<span
+						class="grid size-7 shrink-0 place-items-center rounded-full bg-primary font-mono text-xs font-semibold text-on-primary"
+						>{stepIndex + 1}</span
+					>
+					<h2 id="wizard-step-heading" class="text-base font-semibold">
+						{stepLabels[currentStep]}
+					</h2>
+					<span class="ml-auto font-mono text-2xs tracking-caps text-text-faint"
+						>STEP {stepIndex + 1} OF 5</span
+					>
+				</header>
+
+				<div class="min-h-[28rem] p-4 md:p-6">
+					{#if currentStep === 'find'}
+						<div class="grid gap-5 lg:grid-cols-2">
+							<div id="discover-camera" class="space-y-3">
+								<h3 class="text-sm font-semibold">Discover on your network</h3>
+								<p class="text-xs leading-5 text-text-muted">
+									Five-second ONVIF window across the selected /24 prefixes.
+								</p>
+								<label class="grid gap-1.5 text-xs font-medium"
+									>Subnet prefixes
+									<input
+										class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+										bind:value={subnetPrefixes}
+									/>
+								</label>
+								<button
+									type="button"
+									class="inline-flex h-9 items-center gap-2 rounded-sm bg-primary px-4 text-xs font-semibold text-on-primary disabled:opacity-50"
+									disabled={discovering}
+									onclick={() => void discover()}
+									><SearchIcon class="size-3.5" />{discovering
+										? 'Scanning network'
+										: 'Discover cameras'}</button
+								>
+								{#if discovering}
+									<DiscoveryProgressState
+										answeredCount={discovered.length}
+										elapsedMs={discoveryElapsedMs}
+										subnetCount={discoverySubnetCount}
+										class="h-[172px] rounded-sm border border-hairline"
+									/>
+								{/if}
+								<div class="space-y-1.5">
+									{#each discovered as camera (camera.ip)}
+										<button
+											type="button"
+											class="flex min-h-12 w-full items-center gap-3 rounded-sm border px-3 text-left disabled:cursor-not-allowed disabled:opacity-45 {draft.ip ===
+											camera.ip
+												? 'border-primary bg-primary/5'
+												: 'border-hairline bg-raised'}"
+											disabled={camera.configured}
+											onclick={() => selectDiscovered(camera)}
+										>
+											<span
+												class="size-2 shrink-0 rounded-full {camera.configured
+													? 'bg-text-faint'
+													: 'bg-healthy'}"
+											></span>
+											<span class="min-w-0 flex-1"
+												><span class="block truncate text-xs font-medium"
+													>{camera.name ?? camera.ip}</span
+												><span class="block truncate font-mono text-2xs text-text-faint"
+													>{camera.configured ? 'ALREADY ADDED' : evidenceLabel(camera)}</span
+												></span
+											>
+										</button>
+									{:else}
+										{#if discoveryAttempted && !discovering}
+											<p
+												class="rounded-sm border border-dashed border-hairline-strong px-3 py-4 text-center text-xs text-text-muted"
+											>
+												No cameras answered. Manual entry still works.
+											</p>
+										{/if}
+									{/each}
+								</div>
+							</div>
+							<div
+								id="manual-camera"
+								class="space-y-3 border-t border-hairline pt-5 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5"
+							>
+								<h3 class="text-sm font-semibold">Enter manually</h3>
+								<p class="text-xs leading-5 text-text-muted">
+									Use an IPv4 address or a complete RTSP URL for a camera that stays quiet.
+								</p>
+								<label class="grid gap-1.5 text-xs font-medium"
+									>Address or RTSP URL
+									<input
+										class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+										bind:value={manualAddress}
+										placeholder="192.168.1.71 or rtsp://…"
+									/>
+								</label>
+								<button
+									type="button"
+									class="h-9 rounded-sm border border-hairline-strong bg-raised px-4 text-xs font-medium"
+									onclick={useManualAddress}>Use this address</button
+								>
+								{#if draft.discoveryEvidence}<p
+										class="rounded-sm border border-healthy/30 bg-healthy/5 px-3 py-2.5 text-xs text-text-muted"
+									>
+										<span class="font-medium text-foreground">Selected {draft.ip}</span><br
+										/>{draft.discoveryEvidence}
+									</p>{/if}
+							</div>
+						</div>
+					{:else if currentStep === 'connect'}
+						<div class="mx-auto grid max-w-2xl gap-4 sm:grid-cols-2">
+							<label class="grid gap-1.5 text-xs font-medium"
+								>Username<input
+									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+									value={draft.username}
+									oninput={(event) => updateDraft({ username: event.currentTarget.value })}
+									autocomplete="username"
+								/></label
+							>
+							<label class="grid gap-1.5 text-xs font-medium"
+								>Password<input
+									type="password"
+									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+									value={draft.password}
+									oninput={(event) => updateDraft({ password: event.currentTarget.value })}
+									autocomplete="new-password"
+								/></label
+							>
+							<label class="grid gap-1.5 text-xs font-medium"
+								>Protocol<select
+									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs"
+									value={draft.backend}
+									onchange={(event) =>
+										updateDraft({
+											backend: event.currentTarget.value as CameraWizardDraft['backend']
+										})}
+									><option value="auto">Auto — recommended</option><option value="retina"
+										>ONVIF / RTSP</option
+									><option value="reo-proto">Reolink native</option></select
+								></label
+							>
+							<label class="grid gap-1.5 text-xs font-medium"
+								>Transport<select
+									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs"
+									value={draft.transport}
+									onchange={(event) =>
+										updateDraft({
+											transport: event.currentTarget.value as CameraWizardDraft['transport']
+										})}><option value="tcp">TCP</option><option value="udp">UDP</option></select
+								></label
+							>
+							<label class="grid gap-1.5 text-xs font-medium"
+								>ONVIF port<input
+									inputmode="numeric"
+									class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs"
+									value={draft.onvifPort}
+									oninput={(event) => updateDraft({ onvifPort: event.currentTarget.value })}
+								/></label
+							>
+							<label class="grid gap-1.5 text-xs font-medium"
+								>HTTP port<input
+									inputmode="numeric"
+									class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs"
+									value={draft.httpPort}
+									oninput={(event) => updateDraft({ httpPort: event.currentTarget.value })}
+								/></label
+							>
+							<p
+								class="flex items-start gap-2 rounded-md border border-activity bg-activity/10 px-3 py-2.5 text-xs leading-5 text-text-muted sm:col-span-2"
+							>
+								<LockIcon class="mt-0.5 size-3.5 shrink-0" />Credentials remain only in this browser
+								draft and are sent once at step 5.
+							</p>
+						</div>
+					{:else if currentStep === 'streams'}
+						<DesktopCameraWizardStreamsStep {draft} onupdate={updateDraft} />
+					{:else if currentStep === 'recording'}
+						<div class="mx-auto max-w-2xl space-y-4">
+							<label class="grid gap-1.5 text-xs font-medium"
+								>Camera name<input
+									class="h-10 rounded-sm border border-hairline bg-raised px-3 text-sm outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+									value={draft.displayName}
+									oninput={(event) => updateDraft({ displayName: event.currentTarget.value })}
+								/></label
+							>
+							<div class="grid gap-3 sm:grid-cols-2">
+								<div class="rounded-md border border-hairline bg-raised p-3">
+									<p class="font-mono text-2xs tracking-caps text-text-faint">RECORDING</p>
+									<p class="mt-1 text-sm font-medium">Continuous</p>
+									<p class="mt-1 text-xs text-text-muted">Current server behavior</p>
+								</div>
+								<div class="rounded-md border border-hairline bg-raised p-3">
+									<p class="font-mono text-2xs tracking-caps text-text-faint">RETENTION</p>
+									<p class="mt-1 text-sm font-medium">Server defaults</p>
+									<p class="mt-1 text-xs text-text-muted">
+										Per-camera override is not exposed by the current API.
+									</p>
+								</div>
+							</div>
+						</div>
+					{:else}
+						<div class="mx-auto max-w-2xl space-y-4">
+							<dl
+								class="divide-y divide-hairline rounded-md border border-hairline bg-raised text-xs"
+							>
+								{#each [['Name', draft.displayName], ['Address', draft.ip], ['Protocol', draft.backend], ['Transport', draft.transport], ['Record', draft.mainRtspUrl || 'Automatic main stream'], ['Live', draft.subRtspUrl || 'Automatic live stream'], ['Credentials', draft.username ? 'Provided · password write-only' : 'Missing']] as item (item[0])}<div
+										class="flex items-center justify-between gap-4 px-3 py-2.5"
+									>
+										<dt class="text-text-muted">{item[0]}</dt>
+										<dd class="max-w-[70%] truncate text-right font-mono">{item[1]}</dd>
+									</div>{/each}
+							</dl>
+							<p
+								class="rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs leading-5 text-text-muted"
+							>
+								Saving is the first configuration write. The server may require a restart before
+								recording begins.
+							</p>
+						</div>
+					{/if}
+
+					{#if error}<p
+							class="mt-4 rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-xs text-destructive"
+							role="alert"
+						>
+							{error}
+						</p>{/if}
+				</div>
+
+				<footer
+					data-wizard-actions
+					class="sticky bottom-[78px] z-30 flex min-h-14 items-center gap-2 border-t border-hairline bg-surface px-4 md:bottom-0"
+				>
+					<span class="mr-auto font-mono text-2xs tracking-caps text-text-faint"
+						>ESC DISCARDS EVERYTHING</span
+					>
+					{#if stepIndex > 0}<button
+							type="button"
+							class="inline-flex h-9 items-center gap-1.5 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
+							onclick={back}><ArrowLeftIcon class="size-3.5" />Back</button
+						>{/if}
+					{#if currentStep === 'review'}<button
+							type="button"
+							class="inline-flex h-9 items-center gap-1.5 rounded-sm bg-primary px-4 text-xs font-semibold text-on-primary disabled:opacity-50"
+							disabled={saving}
+							onclick={() => void save()}
+							><CheckIcon class="size-3.5" />{saving ? 'Saving…' : 'Save camera'}</button
+						>{:else}<button
+							type="button"
+							class="inline-flex h-9 items-center gap-1.5 rounded-sm bg-primary px-4 text-xs font-semibold text-on-primary"
+							onclick={next}>Continue<ArrowRightIcon class="size-3.5" /></button
+						>{/if}
+				</footer>
+			</section>
+		</div>
+	{/if}
+</div>
