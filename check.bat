@@ -34,9 +34,9 @@ cargo machete || exit /b 1
 echo Formatting checks...
 cargo fmt --all -- --check || exit /b 1
 call bunx @taplo/cli fmt --check || exit /b 1
-call bunx prettier --check "**/*.md" || exit /b 1
 
 cd /d "%~dp0ui" || exit /b 1
+call bunx prettier --check "../**/*.md" || exit /b 1
 
 echo Running UI Quality checks...
 call bun run quality:check || exit /b 1
