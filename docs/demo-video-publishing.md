@@ -1,7 +1,7 @@
 # Demo Video Publishing
 
-KeepPeek demo videos use Azure Blob Storage or an Azure Storage static website as their canonical
-self-updating host. Generated scenario assets keep stable names:
+KeepPeek demo videos use the dedicated `keeppeekdemos` Azure Blob Storage account as their
+canonical self-updating host. Generated scenario assets keep stable names:
 
 - `assets/<scenario-id>.mp4`
 - `assets/<scenario-id>.vtt`
@@ -25,7 +25,7 @@ previous manifest and all of its referenced assets intact.
 
 ## GitHub Configuration
 
-Create a `demo-videos` GitHub environment with these secrets:
+Create a `demo-videos` GitHub environment with these variables:
 
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
@@ -33,10 +33,18 @@ Create a `demo-videos` GitHub environment with these secrets:
 
 Add these environment variables:
 
-- `AZURE_STORAGE_ACCOUNT`
-- `AZURE_DEMO_CONTAINER` — use `$web` for an Azure static website
-- `AZURE_DEMO_PREFIX` — normally `demos`
-- `AZURE_DEMO_BASE_URL` — for example `https://media.example.com/demos`
+- `AZURE_STORAGE_ACCOUNT` — `keeppeekdemos`
+- `AZURE_DEMO_CONTAINER` — `demo-videos`
+- `AZURE_DEMO_PREFIX` — `demos`
+- `AZURE_DEMO_BASE_URL` — `https://keeppeekdemos.blob.core.windows.net/demo-videos/demos`
+- `AZURE_OPENAI_ENDPOINT` — the dedicated Azure OpenAI account endpoint
+- `AZURE_OPENAI_TTS_DEPLOYMENT` — `keeppeek-demo-tts-gpt-4o-mini-tts`
+
+The narration account is `keeppeek-openai` in East US 2. It deploys GA
+`gpt-4o-mini-tts` version `2025-12-15` on the consumption-based `GlobalStandard` SKU at capacity
+
+1. The deployment has no fixed charge; current pricing meters text input and generated audio
+   tokens. Local API-key authentication is disabled.
 
 ## Recording Stories
 
@@ -76,12 +84,20 @@ stream. The JSON records story/Paper IDs, action timeline, fixture SHA-256, comm
 pre-roll, viewport, duration, codec, and stream count. Local and CI generation require Chromium,
 ffmpeg, and ffprobe.
 
-Narration remains an optional manual derivative. When a story declares Azure OpenAI narration,
-`demo:narrate` and `demo:mux` create an H.264/AAC version that is intentionally outside the default
-H.264-only artifact policy. Browser action timing never depends on variable narration duration.
+Every published demo uses ordered Azure OpenAI narration cues. `demo:narrate` writes one numbered
+WAV per cue plus a manifest containing its source timestamp, measured duration, size, and SHA-256.
+`demo:mux` verifies those files before producing the H.264/AAC video and narration-timed WebVTT.
 
-Grant the federated Azure identity **Storage Blob Data Contributor** on the target storage account.
-The workflow uses GitHub OIDC; no storage account key is stored in GitHub.
+Narration controls pacing by partitioning the silent source at cue timestamps. Each visual phase
+plays at normal speed. When its WAV plus authored pause is longer than the phase, ffmpeg freezes the
+phase's final frame until speech catches up; the next phase never starts early. Short speech does not
+speed up the visual phase. The artifact retains silent sources, individual WAV files, and measured
+freeze durations for auditability, while only final narrated media is published to Blob Storage.
+
+Use a dedicated app registration whose federated subject is the `demo-videos` GitHub environment.
+Grant that identity **Storage Blob Data Contributor** on only the `keeppeekdemos` account. The
+same identity receives **Cognitive Services OpenAI User** on only the narration account. The
+workflow uses GitHub OIDC; no storage account key or Azure OpenAI key is stored in GitHub.
 
 Disable **Blob versioning** and **soft delete for blobs** on this dedicated demo container or storage
 account. Otherwise Azure can retain historical blob versions even though the public URL always
@@ -97,6 +113,10 @@ new manifest last. A manual dispatch can republish an artifact from a specified 
 
 The workflow has `contents: read` only. Generated videos and the hosted manifest are never committed
 to the repository, so publishing does not create commits or require Git updates.
+
+The [KeepPeek book](https://xnorpx.github.io/keeppeek/demo-videos.html) embeds the stable MP4 and
+WebVTT URLs. Its gallery is checked against the canonical demo registry, so adding a recording also
+requires adding it to the book.
 
 YouTube can be added as a secondary discovery channel. It cannot replace a video's media while
 preserving the same video ID, so an automatic YouTube mirror must upload changed videos as new IDs,

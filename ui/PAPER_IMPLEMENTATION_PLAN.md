@@ -74,7 +74,7 @@ Implement the complete current 34-board Paper system as a phased Svelte 5 migrat
 5. **Rebuild the application shell and repeated primitives.** Keep `setLivePeer()` and browser logging ownership in the root layout, but implement the Paper desktop rail, fixed workspace geometry, and the 390×844 mobile tab bar (`Peek`, `Keep`, `Events`, `Health`, `More`). Add only repeated, independently meaningful primitives: page and section headings, status signals, exact capability gates, fixed action bars, desktop anchor rail, mobile tab bar, timeline markers, and deterministic loading or empty shells. Reuse shadcn-svelte and Lucide; do not create another component vocabulary or custom SVG icons.
 6. **Add the capability provider and command-state rules.** Model exact IDs, structural camera capabilities, pending, succeeded, and failed commands, and mid-edit capability loss in a request-isolated Svelte 5 context or factory. A missing capability leaves observed data visible, replaces the command with `Server update required · <id>`, and preserves drafts. Applying states are pessimistic rather than optimistic. Add focused component tests for supported, unsupported, failure, and capability-loss cases before routes consume the provider.
 7. **Create deterministic Storybook, Loki, and Playwright infrastructure.** Loki 0.35 supports Storybook through version 8, while KeepPeek's production Vite 8 requires a newer Storybook line. Isolate the visual harness as a Bun workspace pinned to Storybook 8 and Vite 6 instead of downgrading or adding unsupported peers to the production app. Every Paper scenario names a Storybook story, and every route names its owning Playwright spec and test case in the design manifest. Stories render production Svelte components using canonical fleet, event, recording, health, capability, and config fixtures. Loki runs those stories in pinned Linux Chromium at native Paper viewports with fixed time, bundled fonts, disabled motion and caret, stable scrollbars, and static video posters. Commit Paper references and Loki references; update Loki only with a matching Paper revision and overlay review. Capture current, reference, difference, story metadata, and Paper reference artifacts on failure. Playwright continues to run behavior E2E across Ubuntu, macOS, and Windows. Visual assertions supplement rather than replace behavior assertions.
-8. **Generate deterministic demo videos from stories.** Give demo-capable stories human-readable documentation plus typed demo metadata for title, purpose, narration, captions, viewport, timing, and ordered actions. Use Playwright against either the static story preview or an isolated real-server application fixture. Treat Playwright WebM as disposable input, then retain one H.264/yuv420p MP4, metadata JSON, and sidecar WebVTT file per story. Loki uses a stable visual story or stable checkpoint, never a frame captured while the demo is moving. GitHub Actions validates demo metadata and rejects retained WebM or any MP4 with additional codec streams.
+8. **Generate deterministic demo timelines from stories.** Give demo-capable stories human-readable documentation plus typed demo metadata for title, purpose, ordered narration cues, captions, viewport, source timing, and actions. Use Playwright against either the static story preview or an isolated real-server application fixture. Treat Playwright WebM as disposable input, retain the trimmed silent H.264/yuv420p source for auditability, then publish one audio-paced H.264/AAC MP4, metadata JSON, and narration-timed sidecar WebVTT file per story. Loki uses a stable visual story or stable checkpoint, never a frame captured while the demo is moving. GitHub Actions validates demo metadata, measured WAV manifests, and final media streams.
 
 ### Phase 2 — Migrate User Workflows
 
@@ -219,10 +219,12 @@ export const RewindToKeep = {
 			title: 'Review what just happened',
 			purpose: 'Show the live-to-recorded transition without disturbing other cameras.',
 			narration: {
-				text: 'Drag backward on one camera to review the last two minutes.',
 				voice: 'coral',
 				instructions: 'Speak clearly in a calm product-demo tone.',
-				startAtMs: 500
+				cues: [
+					{ atMs: 0, text: 'First, choose one live camera.', pauseAfterMs: 250 },
+					{ atMs: 2500, text: 'Then drag backward to review the last two minutes.' }
+				]
 			},
 			durationMs: 9000,
 			viewport: { width: 1440, height: 860 },
@@ -250,20 +252,21 @@ export const RewindToKeep = {
 
 Visual stories and demo stories may share a fixture, but Loki captures a stable state. If a demo moves through several states, create explicit static checkpoint stories for Loki rather than snapshotting arbitrary video frames.
 
-Narration uses Azure OpenAI TTS. Each story pins the narration text, voice, optional delivery instructions, speed, and start offset. `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_TTS_DEPLOYMENT` select the deployed model; exactly one of `AZURE_OPENAI_API_KEY` or `AZURE_OPENAI_AUTH_TOKEN` authenticates it. Secrets exist only in ignored local environment files, GitHub Actions secrets, or short-lived CI tokens and are never copied into story metadata or artifacts.
+Narration uses the GA Azure OpenAI `gpt-4o-mini-tts` model. Each story pins a voice, optional delivery instructions and speed, plus ordered text cues on the silent source timeline. `AZURE_OPENAI_ENDPOINT` and `AZURE_OPENAI_TTS_DEPLOYMENT` select the deployment. Local and CI generation authenticate with short-lived Entra tokens; local API-key authentication is disabled on the Azure account. Credentials are never copied into story metadata or artifacts.
 
-Playwright internally records a silent WebM and does not expose an H.264 recorder. After the browser context closes, ffmpeg trims and transcodes it to a one-stream H.264/yuv420p MP4, then deletes the WebM. WebVTT remains a sidecar. Optional manual narration combines the temporary video, Azure OpenAI WAV, and captions into a separate H.264/AAC derivative; it is not part of the H.264-only CI artifact.
+Playwright internally records a silent WebM and does not expose an H.264 recorder. After the browser context closes, ffmpeg trims and transcodes it to a one-stream H.264/yuv420p audit source, then deletes the WebM. Azure OpenAI produces one normalized PCM WAV per cue. The canonical published MP4 contains one H.264/yuv420p video stream and one AAC narration stream; WebVTT remains a narration-timed sidecar.
 
-All media uses one scenario clock in milliseconds. Azure narration is generated first and measured with `ffprobe`. Playwright records before navigation, then the renderer records the monotonic offset at the explicit `demo-start` signal as `recordingPreRollMs`. ffmpeg trims that pre-roll, resets video timestamps to zero, delays narration by `startAtMs`, and trims video and audio to `durationMs`. Generation fails when the measured recording does not cover the timeline or when narration would overrun it; synchronization is never inferred from independent sleeps.
+All source media uses one scenario clock in milliseconds. Playwright records before navigation, then the renderer records the monotonic offset at the explicit `demo-start` signal as `recordingPreRollMs`. ffmpeg trims that pre-roll and resets source timestamps to zero. Azure narration is generated per cue and measured with `ffprobe`; manifests bind each WAV's source time, duration, byte count, and SHA-256 to immutable story text.
 
-Use one narration clip when the voiceover describes the demo as a whole. When spoken phrases must land on specific actions, split narration into independently generated cues keyed to the same timeline offsets as the actions and captions, then delay and mix each cue in ffmpeg. Do not rely on Azure's variable speech duration or JavaScript sleeps to align phrases.
+Each cue owns the visual phase from its source timestamp to the next cue. The phase plays at normal speed. If narration plus its authored pause lasts longer, ffmpeg clones the phase's final frame until speech catches up; only then can the next phase and action begin. Short narration never accelerates video. The generated sidecar captions use the expanded output timeline, and metadata records every output start and freeze duration.
 
 The generated artifact set is:
 
-- `<scenario-id>.mp4` containing exactly one H.264/yuv420p video stream.
-- `<scenario-id>.vtt` for sidecar captions.
-- `<scenario-id>.json` containing Paper IDs, story ID, fixture hash, viewport, duration, commit SHA, and codec evidence.
-- Optional local `<scenario-id>.wav` and H.264/AAC narrated derivative, excluded from the default CI artifact.
+- `assets/<scenario-id>.mp4` containing one H.264/yuv420p video stream and one AAC narration stream.
+- `assets/<scenario-id>.vtt` containing narration cues on the expanded output timeline.
+- `assets/<scenario-id>.json` containing Paper IDs, story ID, fixture hash, source and output durations, commit SHA, codec evidence, WAV measurements, and freeze durations.
+- `silent/<scenario-id>.mp4`, `.vtt`, and `.json` preserving the authored source timeline for auditability.
+- `narration/<scenario-id>/*.wav` plus `manifest.json`, retained in the Actions artifact and excluded from public Blob publication.
 
 GitHub Actions validates all demo metadata on pull requests. Video rendering is a separate manual or release job so normal pull requests stay fast; failures upload the partial recording, console log, and metadata.
 
@@ -389,8 +392,8 @@ CI never runs `loki update` or `loki approve`. A changed Loki reference without 
 | 2026-08-20 | 3.3 Board 01 positioning  | Planned → accounted contract  | Local-first/no-relay evidence; exact Event/HTTP boundaries; five scenario-backed principles; prohibited-route checks                                    | Current persistence remains partial; POC and non-production-ready wording is mandatory                             |
 | 2026-08-20 | 3.5 coverage report       | Not started → complete        | Generated 34/34-board, 56-scenario, 50-reference matrix; all story, Playwright, contract, and blocker owners freshness-checked                          | 14 references accepted; 36 candidates stay capability-gated; zero candidates are unclassified                      |
 | 2026-08-20 | 3.4 canonical checkpoint  | Not started → in progress     | `./check.sh`; Rust tests/doctests, Clippy, cargo-machete, UI quality/build, and 85 Playwright scenarios pass                                            | Storybook build/Loki remains blocked by public-registry `ConnectionClosed` before package resolution               |
-| 2026-08-20 | 1.5 demo recording        | In progress → complete        | Board 31 Playwright drag; 9.000s H.264-only MP4; VTT/JSON; fixture hash; publish manifest; generation workflow                                          | Azure OpenAI narration remains an optional non-default derivative                                                  |
-| 2026-08-20 | 1.5 camera lifecycle      | Static fixture → real server  | Rust server + local H.264 RTSP camera; stable decode; WebRTC remove/re-add; 22.000s 1280×720 H.264-only MP4; zero retained WebM                         | Apply remains visibly pending; restart capability refresh is a separate product defect                             |
+| 2026-08-20 | 1.5 demo recording        | In progress → complete        | Board 31; 9.000s source → 15.480s narrated; 3 WAV cues; H.264/AAC; VTT/JSON; publish manifest                                                           | Speech duration measured; silent source retained in artifact                                                       |
+| 2026-08-20 | 1.5 camera lifecycle      | Static fixture → real server  | Real server/camera; WebRTC remove/re-add; 22.000s source → 31.920s narrated; 5 WAV cues; H.264/AAC                                                      | Apply remains pending; speech duration is measured                                                                 |
 
 ## Next Update Template
 

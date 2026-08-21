@@ -13,6 +13,27 @@ export const board31RewindDemo = {
 		demo: {
 			title: 'Review what just happened',
 			purpose: 'Show a camera rewind gesture and the selected moment opening in Keep.',
+			narration: {
+				voice: 'coral',
+				instructions: 'Use a calm, concise product-demo voice with clear transitions.',
+				cues: [
+					{
+						atMs: 0,
+						text: 'First, choose the live camera you want to review.',
+						pauseAfterMs: 250
+					},
+					{
+						atMs: 2_000,
+						text: 'Next, drag down on that camera to rewind without interrupting the live wall.',
+						pauseAfterMs: 300
+					},
+					{
+						atMs: 6_000,
+						text: 'Then Keep opens at the selected moment, ready for detailed review.',
+						pauseAfterMs: 300
+					}
+				]
+			},
 			durationMs: 9_000,
 			viewport: { width: 928, height: 524 },
 			captions: [

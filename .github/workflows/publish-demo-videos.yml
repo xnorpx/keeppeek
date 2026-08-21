@@ -28,6 +28,10 @@ jobs:
        github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     environment: demo-videos
+    env:
+      AZURE_CORE_OUTPUT: none
+      AZURE_LOGIN_PRE_CLEANUP: true
+      AZURE_LOGIN_POST_CLEANUP: true
     steps:
       - uses: actions/checkout@v7
 
@@ -46,12 +50,24 @@ jobs:
           test "$(find demo-videos/assets -maxdepth 1 -type f | wc -l)" -gt 0
           jq -e '.schemaVersion == 1 and (.videos | length > 0)' demo-videos/manifest.json >/dev/null
 
+      - name: Validate publishing configuration
+        env:
+          STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.AZURE_DEMO_CONTAINER }}
+          PREFIX: ${{ vars.AZURE_DEMO_PREFIX }}
+          BASE_URL: ${{ vars.AZURE_DEMO_BASE_URL }}
+        run: |
+          test -n "$STORAGE_ACCOUNT"
+          test -n "$CONTAINER"
+          test -n "$PREFIX"
+          [[ "$BASE_URL" == https://* ]]
+
       - name: Sign in to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Upload demo assets
         env:

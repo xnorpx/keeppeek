@@ -103,6 +103,12 @@ if (
 ) {
 	throw new Error('Camera lifecycle demo must use its real-server Playwright configuration');
 }
+if (
+	packageManifest.scripts['demo:render:narrated'] !==
+	'bun run demo:render && bun run demo:narrate:all'
+) {
+	throw new Error('Narrated demo rendering must preserve silent sources before Azure synthesis');
+}
 const generationWorkflow = await readFile(
 	resolve('..', '.github/workflows/generate-demo-videos.yml'),
 	'utf8'
@@ -110,6 +116,11 @@ const generationWorkflow = await readFile(
 for (const requiredText of [
 	'name: Generate Demo Videos',
 	'bun run demo:render',
+	'bun run demo:narrate:all',
+	'AZURE_OPENAI_AUTH_TOKEN',
+	'gpt-4o-mini-tts',
+	'src/lib/server/storybook/azure-openai-tts.spec.ts',
+	'src/lib/server/storybook/demo-narration.spec.ts',
 	'bun run demo:publish:prepare',
 	"find test-results/demo-videos -name '*.webm'",
 	'stream=codec_name,codec_type,pix_fmt',
@@ -126,10 +137,19 @@ const publishingWorkflow = await readFile(
 for (const requiredText of [
 	'workflows: [Generate Demo Videos]',
 	'name: keeppeek-demo-videos',
-	'path: demo-videos'
+	'path: demo-videos',
+	'client-id: ${{ vars.AZURE_CLIENT_ID }}',
+	'AZURE_DEMO_BASE_URL'
 ]) {
 	if (!publishingWorkflow.includes(requiredText)) {
 		throw new Error(`Demo publishing workflow is missing: ${requiredText}`);
+	}
+}
+
+const bookGallery = await readFile(resolve('..', 'book/src/demo-videos.md'), 'utf8');
+for (const scenarioId of [...scenarioIds, cameraLifecycleStory.paper.scenarioId]) {
+	if (!bookGallery.includes(`${scenarioId}.mp4`) || !bookGallery.includes(`${scenarioId}.vtt`)) {
+		throw new Error(`Book demo gallery is missing video or captions for: ${scenarioId}`);
 	}
 }
 

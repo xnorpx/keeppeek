@@ -1,19 +1,37 @@
-export type DemoVideoMuxOptions = {
-	videoPath: string;
-	audioPath: string;
-	captionsPath?: string;
-	outputPath: string;
-	durationMs: number;
-	recordingPreRollMs: number;
-	audioDelayMs?: number;
-};
-
 export type SilentDemoVideoMuxOptions = {
 	videoPath: string;
 	captionsPath?: string;
 	outputPath: string;
 	durationMs: number;
 	recordingPreRollMs: number;
+};
+
+export type NarrationCueMedia = {
+	sourceAtMs: number;
+	audioPath: string;
+	audioDurationMs: number;
+	pauseAfterMs?: number;
+};
+
+export type NarratedDemoSegment = {
+	sourceStartMs: number;
+	sourceEndMs: number;
+	outputStartMs: number;
+	outputDurationMs: number;
+	audioDurationMs: number;
+	freezeDurationMs: number;
+};
+
+export type NarratedDemoPlan = {
+	outputDurationMs: number;
+	segments: NarratedDemoSegment[];
+};
+
+export type PacedDemoVideoMuxOptions = {
+	videoPath: string;
+	outputPath: string;
+	sourceDurationMs: number;
+	cues: readonly NarrationCueMedia[];
 };
 
 function requireNonNegativeInteger(name: string, value: number): void {
@@ -24,6 +42,92 @@ function requireNonNegativeInteger(name: string, value: number): void {
 
 function formatSeconds(timeMs: number): string {
 	return (timeMs / 1_000).toFixed(3);
+}
+
+export function createNarratedDemoPlan(
+	sourceDurationMs: number,
+	cues: readonly NarrationCueMedia[]
+): NarratedDemoPlan {
+	if (!Number.isInteger(sourceDurationMs) || sourceDurationMs <= 0) {
+		throw new Error('sourceDurationMs must be a positive integer');
+	}
+	if (cues.length === 0) throw new Error('Narrated demos require at least one cue');
+
+	let outputStartMs = 0;
+	const segments = cues.map((cue, index): NarratedDemoSegment => {
+		requireNonNegativeInteger(`cues[${index}].sourceAtMs`, cue.sourceAtMs);
+		if (!Number.isInteger(cue.audioDurationMs) || cue.audioDurationMs <= 0) {
+			throw new Error(`cues[${index}].audioDurationMs must be a positive integer`);
+		}
+		const pauseAfterMs = cue.pauseAfterMs ?? 0;
+		requireNonNegativeInteger(`cues[${index}].pauseAfterMs`, pauseAfterMs);
+		if (index === 0 && cue.sourceAtMs !== 0) {
+			throw new Error('The first narration cue must start at source time zero');
+		}
+		const nextSourceAtMs = cues[index + 1]?.sourceAtMs ?? sourceDurationMs;
+		if (nextSourceAtMs <= cue.sourceAtMs || nextSourceAtMs > sourceDurationMs) {
+			throw new Error('Narration cue source times must increase within the source video');
+		}
+
+		const sourceSegmentDurationMs = nextSourceAtMs - cue.sourceAtMs;
+		const outputDurationMs = Math.max(sourceSegmentDurationMs, cue.audioDurationMs + pauseAfterMs);
+		const segment = {
+			sourceStartMs: cue.sourceAtMs,
+			sourceEndMs: nextSourceAtMs,
+			outputStartMs,
+			outputDurationMs,
+			audioDurationMs: cue.audioDurationMs,
+			freezeDurationMs: outputDurationMs - sourceSegmentDurationMs
+		};
+		outputStartMs += outputDurationMs;
+		return segment;
+	});
+
+	return { outputDurationMs: outputStartMs, segments };
+}
+
+export function createPacedDemoVideoMuxArgs(options: PacedDemoVideoMuxOptions): string[] {
+	const plan = createNarratedDemoPlan(options.sourceDurationMs, options.cues);
+	const filters = plan.segments.flatMap((segment, index) => {
+		const freeze =
+			segment.freezeDurationMs === 0
+				? ''
+				: `,tpad=stop_mode=clone:stop_duration=${formatSeconds(segment.freezeDurationMs)}`;
+		return [
+			`[0:v]trim=start=${formatSeconds(segment.sourceStartMs)}:end=${formatSeconds(segment.sourceEndMs)},setpts=PTS-STARTPTS${freeze}[v${index}]`,
+			`[${index + 1}:a]aresample=48000,apad,atrim=duration=${formatSeconds(segment.outputDurationMs)},asetpts=PTS-STARTPTS[a${index}]`
+		];
+	});
+	const concatInputs = plan.segments.map((_, index) => `[v${index}][a${index}]`).join('');
+	filters.push(`${concatInputs}concat=n=${plan.segments.length}:v=1:a=1[video][narration]`);
+
+	return [
+		'-y',
+		'-i',
+		options.videoPath,
+		...options.cues.flatMap((cue) => ['-i', cue.audioPath]),
+		'-filter_complex',
+		filters.join(';'),
+		'-map',
+		'[video]',
+		'-map',
+		'[narration]',
+		'-c:v',
+		'libx264',
+		'-preset',
+		'medium',
+		'-crf',
+		'18',
+		'-pix_fmt',
+		'yuv420p',
+		'-c:a',
+		'aac',
+		'-b:a',
+		'96k',
+		'-movflags',
+		'+faststart',
+		options.outputPath
+	];
 }
 
 export function createFfprobeDurationArgs(mediaPath: string): string[] {
@@ -51,7 +155,7 @@ export function createFfprobeStreamsArgs(mediaPath: string): string[] {
 		'-v',
 		'error',
 		'-show_entries',
-		'stream=codec_name,codec_type,pix_fmt',
+		'stream=codec_name,codec_type,pix_fmt,duration',
 		'-of',
 		'json',
 		mediaPath
@@ -77,22 +181,39 @@ export function assertH264OnlyVideo(output: string): void {
 	}
 }
 
-export function assertDemoMediaFits(options: {
-	demoDurationMs: number;
-	videoDurationMs: number;
-	recordingPreRollMs: number;
-	narrationDurationMs: number;
-	audioDelayMs: number;
-}): void {
-	requireNonNegativeInteger('demoDurationMs', options.demoDurationMs);
-	requireNonNegativeInteger('videoDurationMs', options.videoDurationMs);
-	requireNonNegativeInteger('recordingPreRollMs', options.recordingPreRollMs);
-	requireNonNegativeInteger('narrationDurationMs', options.narrationDurationMs);
-	requireNonNegativeInteger('audioDelayMs', options.audioDelayMs);
-
-	assertDemoRecordingCovers(options);
-	if (options.audioDelayMs + options.narrationDurationMs > options.demoDurationMs) {
-		throw new Error('Azure OpenAI narration exceeds the demo timeline');
+export function assertH264AacVideo(output: string, expectedDurationMs?: number): void {
+	let probe: {
+		streams?: Array<{
+			codec_name?: string;
+			codec_type?: string;
+			pix_fmt?: string;
+			duration?: string;
+		}>;
+	};
+	try {
+		probe = JSON.parse(output) as typeof probe;
+	} catch {
+		throw new Error('ffprobe returned invalid stream metadata');
+	}
+	const videoStreams = probe.streams?.filter((stream) => stream.codec_type === 'video') ?? [];
+	const audioStreams = probe.streams?.filter((stream) => stream.codec_type === 'audio') ?? [];
+	if (
+		probe.streams?.length !== 2 ||
+		videoStreams.length !== 1 ||
+		videoStreams[0].codec_name !== 'h264' ||
+		videoStreams[0].pix_fmt !== 'yuv420p' ||
+		audioStreams.length !== 1 ||
+		audioStreams[0].codec_name !== 'aac'
+	) {
+		throw new Error(`Expected H.264 yuv420p video with AAC audio, received ${output.trim()}`);
+	}
+	if (expectedDurationMs !== undefined) {
+		for (const stream of probe.streams) {
+			const durationMs = Number(stream.duration) * 1_000;
+			if (!Number.isFinite(durationMs) || Math.abs(durationMs - expectedDurationMs) > 100) {
+				throw new Error(`Media stream duration does not match ${expectedDurationMs}ms`);
+			}
+		}
 	}
 }
 
@@ -140,53 +261,4 @@ export function createSilentDemoVideoMuxArgs(options: SilentDemoVideoMuxOptions)
 		'+faststart',
 		options.outputPath
 	];
-}
-
-export function createDemoVideoMuxArgs(options: DemoVideoMuxOptions): string[] {
-	const audioDelayMs = options.audioDelayMs ?? 0;
-	requireNonNegativeInteger('audioDelayMs', audioDelayMs);
-	requireNonNegativeInteger('recordingPreRollMs', options.recordingPreRollMs);
-	if (!Number.isInteger(options.durationMs) || options.durationMs <= 0) {
-		throw new Error('durationMs must be a positive integer');
-	}
-
-	const durationSeconds = formatSeconds(options.durationMs);
-	const filter = [
-		`[0:v]trim=start=${formatSeconds(options.recordingPreRollMs)}:duration=${durationSeconds},setpts=PTS-STARTPTS[video]`,
-		`[1:a]adelay=${audioDelayMs}:all=1,apad,atrim=duration=${durationSeconds}[narration]`
-	].join(';');
-
-	const args = [
-		'-y',
-		'-i',
-		options.videoPath,
-		'-i',
-		options.audioPath,
-		...(options.captionsPath === undefined ? [] : ['-i', options.captionsPath]),
-		'-filter_complex',
-		filter,
-		'-map',
-		'[video]',
-		'-map',
-		'[narration]',
-		...(options.captionsPath === undefined ? [] : ['-map', '2:s:0']),
-		'-c:v',
-		'libx264',
-		'-preset',
-		'medium',
-		'-crf',
-		'18',
-		'-pix_fmt',
-		'yuv420p',
-		'-c:a',
-		'aac',
-		'-b:a',
-		'96k',
-		...(options.captionsPath === undefined ? [] : ['-c:s', 'mov_text']),
-		'-movflags',
-		'+faststart',
-		options.outputPath
-	];
-
-	return args;
 }

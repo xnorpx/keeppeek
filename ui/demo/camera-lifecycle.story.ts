@@ -13,6 +13,37 @@ export const cameraLifecycleStory = {
 		title: 'Delete and re-add a camera',
 		purpose:
 			'Prove camera configuration changes against a real KeepPeek server and a deterministic H.264 camera.',
+		narration: {
+			voice: 'coral',
+			instructions: 'Use a calm, concise product-demo voice with clear transitions.',
+			cues: [
+				{
+					atMs: 0,
+					text: 'First, confirm that the local H.264 camera is live and stable.',
+					pauseAfterMs: 250
+				},
+				{
+					atMs: 2_000,
+					text: 'Next, open Settings and locate the configured camera.',
+					pauseAfterMs: 250
+				},
+				{
+					atMs: 5_000,
+					text: 'Remove the camera configuration. The draft remains unapplied until you choose to update the server.',
+					pauseAfterMs: 350
+				},
+				{
+					atMs: 8_000,
+					text: 'Then add the same camera again and restore its connection details.',
+					pauseAfterMs: 300
+				},
+				{
+					atMs: 16_000,
+					text: 'Finally, save the camera. It is configured again and ready to apply.',
+					pauseAfterMs: 300
+				}
+			]
+		},
 		durationMs: 22_000,
 		viewport: { width: 1280, height: 720 },
 		captions: [

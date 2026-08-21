@@ -1,4 +1,4 @@
-import type { DemoNarration } from '$lib/storybook/demo';
+import type { DemoNarrationSpeech } from '../../storybook/demo';
 
 export type AzureOpenAiTtsConfig = {
 	endpoint: URL;
@@ -54,7 +54,7 @@ export function loadAzureOpenAiTtsConfig(
 }
 
 export function createAzureOpenAiTtsRequest(
-	narration: DemoNarration,
+	narration: DemoNarrationSpeech,
 	deployment: string
 ): Record<string, string | number> {
 	return {
@@ -68,7 +68,7 @@ export function createAzureOpenAiTtsRequest(
 }
 
 export async function synthesizeAzureOpenAiNarration(
-	narration: DemoNarration,
+	narration: DemoNarrationSpeech,
 	config: AzureOpenAiTtsConfig,
 	fetchImplementation: typeof fetch = fetch
 ): Promise<ArrayBuffer> {
