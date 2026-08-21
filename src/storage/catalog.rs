@@ -33,6 +33,20 @@ pub struct CatalogFragment {
     pub random_access: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogMediaFragment {
+    pub recording_id: String,
+    pub recording_started_at_ms: i64,
+    pub path: String,
+    pub init_offset: u64,
+    pub init_len: u64,
+    pub sequence: u64,
+    pub start_ms: i64,
+    pub duration_ms: u64,
+    pub byte_offset: u64,
+    pub byte_len: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CatalogStats {
     pub recording_files: u64,
@@ -64,11 +78,23 @@ enum Command {
         fragment: CatalogFragment,
         reply: SyncSender<anyhow::Result<()>>,
     },
+    UpdateRecordingPath {
+        recording_id: String,
+        path: String,
+        finalized: bool,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
     FragmentsInRange {
         stream_id: String,
         start_ms: i64,
         end_ms: i64,
         reply: SyncSender<anyhow::Result<Vec<CatalogFragment>>>,
+    },
+    MediaFragmentsInRange {
+        stream_id: String,
+        start_ms: i64,
+        end_ms: i64,
+        reply: SyncSender<anyhow::Result<Vec<CatalogMediaFragment>>>,
     },
     InsertEvent {
         event: TimelineEvent,
@@ -173,6 +199,29 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub fn update_recording_path(
+        &self,
+        recording_id: &str,
+        path: &Path,
+        finalized: bool,
+    ) -> anyhow::Result<()> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("recording path is not valid UTF-8"))?;
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::UpdateRecordingPath {
+                recording_id: recording_id.to_owned(),
+                path: path.to_owned(),
+                finalized,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
     pub fn fragments_in_range(
         &self,
         stream_id: &str,
@@ -185,6 +234,29 @@ impl RecordingCatalogHandle {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .send(Command::FragmentsInRange {
+                stream_id: stream_id.to_owned(),
+                start_ms,
+                end_ms,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub fn media_fragments_in_range(
+        &self,
+        stream_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> anyhow::Result<Vec<CatalogMediaFragment>> {
+        if start_ms >= end_ms {
+            anyhow::bail!("media fragment query start must be before end");
+        }
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::MediaFragmentsInRange {
                 stream_id: stream_id.to_owned(),
                 start_ms,
                 end_ms,
@@ -303,6 +375,19 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             Command::InsertFragment { fragment, reply } => {
                 let _ = reply.send(pollster::block_on(insert_fragment(&connection, fragment)));
             }
+            Command::UpdateRecordingPath {
+                recording_id,
+                path,
+                finalized,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(update_recording_path(
+                    &connection,
+                    &recording_id,
+                    &path,
+                    finalized,
+                )));
+            }
             Command::FragmentsInRange {
                 stream_id,
                 start_ms,
@@ -310,6 +395,19 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 reply,
             } => {
                 let _ = reply.send(pollster::block_on(fragments_in_range(
+                    &connection,
+                    &stream_id,
+                    start_ms,
+                    end_ms,
+                )));
+            }
+            Command::MediaFragmentsInRange {
+                stream_id,
+                start_ms,
+                end_ms,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(media_fragments_in_range(
                     &connection,
                     &stream_id,
                     start_ms,
@@ -473,6 +571,21 @@ async fn insert_fragment(
     Ok(())
 }
 
+async fn update_recording_path(
+    connection: &turso::Connection,
+    recording_id: &str,
+    path: &str,
+    finalized: bool,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "UPDATE recording_files SET path = ?1, finalized = ?2 WHERE id = ?3",
+            (path, i64::from(finalized), recording_id),
+        )
+        .await?;
+    Ok(())
+}
+
 async fn fragments_in_range(
     connection: &turso::Connection,
     stream_id: &str,
@@ -502,6 +615,43 @@ async fn fragments_in_range(
             byte_offset: to_u64(row.get(4)?, "fragment byte offset")?,
             byte_len: to_u64(row.get(5)?, "fragment byte length")?,
             random_access: row.get::<i64>(6)? != 0,
+        });
+    }
+    Ok(fragments)
+}
+
+async fn media_fragments_in_range(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> anyhow::Result<Vec<CatalogMediaFragment>> {
+    let mut rows = connection
+        .query(
+            "SELECT f.recording_id, r.started_at_ms, r.path, r.init_offset, r.init_len,
+                    f.sequence, f.start_ms, f.duration_ms, f.byte_offset, f.byte_len
+             FROM recording_fragments AS f
+             JOIN recording_files AS r ON r.id = f.recording_id
+             WHERE r.stream_id = ?1
+               AND f.start_ms < ?3
+               AND f.start_ms + f.duration_ms > ?2
+             ORDER BY f.start_ms, f.sequence",
+            (stream_id, start_ms, end_ms),
+        )
+        .await?;
+    let mut fragments = Vec::new();
+    while let Some(row) = rows.next().await? {
+        fragments.push(CatalogMediaFragment {
+            recording_id: row.get(0)?,
+            recording_started_at_ms: row.get(1)?,
+            path: row.get(2)?,
+            init_offset: to_u64(row.get(3)?, "initialization offset")?,
+            init_len: to_u64(row.get(4)?, "initialization length")?,
+            sequence: to_u64(row.get(5)?, "fragment sequence")?,
+            start_ms: row.get(6)?,
+            duration_ms: to_u64(row.get(7)?, "fragment duration")?,
+            byte_offset: to_u64(row.get(8)?, "fragment byte offset")?,
+            byte_len: to_u64(row.get(9)?, "fragment byte length")?,
         });
     }
     Ok(fragments)

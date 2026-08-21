@@ -15,3 +15,8 @@ bun.lockb
 # Generated protobuf
 /src/lib/proto/
 
+# Generated Impeccable customization assets
+/.github/agents/impeccable-*.agent.md
+/.github/skills/impeccable/
+/.impeccable/
+

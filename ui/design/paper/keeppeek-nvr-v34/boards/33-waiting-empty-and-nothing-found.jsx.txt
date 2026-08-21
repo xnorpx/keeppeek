@@ -1,0 +1,282 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '48px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+      <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '40px', justifyContent: 'space-between', width: '1440px' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '640px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '14px', textTransform: 'uppercase' }}>
+              33 · States · Waiting and nothing-found
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-4xl)', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '105%' }}>
+            A spinner is a system that will not say what it is doing.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', paddingTop: '44px', width: '700px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-base)', lineHeight: '155%' }}>
+            Across the first thirty boards the word loading does not appear once. That is not restraint — it is a gap, and the gap is where a bare spinner gets bolted on later. Every wait in this product names its subject and its age, and every empty result says which part of the question came back with nothing.
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px', paddingTop: '4px' }}>
+            <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              No new capability · these are states of screens that already exist
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ boxSizing: 'border-box', display: 'flex', gap: '24px', width: '1440px' }}>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '464px' }}>
+          <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px', paddingBlock: '15px', paddingInline: '18px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-lg-plus)', fontWeight: 600, lineHeight: '22px' }}>
+              A tile before its first frame
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              Peek · board 06
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-video)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '172px', justifyContent: 'space-between', padding: '12px' }}>
+            <div style={{ alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '6px', height: '22px', paddingInline: '8px' }}>
+              <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '5px', width: '5px' }} />
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: '0.08em', lineHeight: '12px' }}>
+                CONNECTING
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ backgroundColor: '#FFFFFF2E', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '3px', overflow: 'clip', width: '180px' }}>
+                <div style={{ backgroundColor: 'var(--color-activity)', boxSizing: 'border-box', flexShrink: '0', width: '72px' }} />
+              </div>
+              <div style={{ boxSizing: 'border-box', color: '#FFFFFFB3', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                Negotiated · waiting for a keyframe · 0.4s
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-md)', fontWeight: 600, lineHeight: '18px' }}>
+              Alley
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', paddingBottom: '16px', paddingInline: '18px', paddingTop: '14px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+              The tile is never a black rectangle. It names the stage it is in, because "negotiated, waiting for a keyframe" and "cannot reach the camera" look identical for the first second and mean opposite things. Past 5s it becomes the degraded state with a reason.
+            </div>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '464px' }}>
+          <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px', paddingBlock: '15px', paddingInline: '18px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-lg-plus)', fontWeight: 600, lineHeight: '22px' }}>
+              A seek that is taking too long
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              Keep · board 04 · budget 400ms cold
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', backgroundColor: 'var(--color-video)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', height: '172px', justifyContent: 'center', padding: '12px' }}>
+            <div style={{ boxSizing: 'border-box', color: '#FFFFFFB3', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-2xl)', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '32px' }}>
+              14 Aug · 22:41:07
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              Reading from the long-term tier · 1.2s
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#FFFFFF80', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              The frame you were on stays until the new one arrives
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', paddingBottom: '16px', paddingInline: '18px', paddingTop: '14px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+              Under 400ms nothing appears at all — a message that flashes is worse than the wait. Over it, the old frame dims and the reason arrives: which tier is being read, and how long it has taken so far.
+            </div>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '464px' }}>
+          <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px', paddingBlock: '15px', paddingInline: '18px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-lg-plus)', fontWeight: 600, lineHeight: '22px' }}>
+              Five seconds of discovery
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              Add camera · board 12
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-raised)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '12px', height: '172px', justifyContent: 'center', padding: '18px' }}>
+            <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-3xl)', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '42px' }}>
+                7
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-base)', lineHeight: '20px' }}>
+                devices answered so far
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '4px', overflow: 'clip', width: '100%' }}>
+              <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', width: '262px' }} />
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                143 of 200 probes sent
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                3.2s of 5s
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', paddingBottom: '16px', paddingInline: '18px', paddingTop: '14px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+              The count climbs while the bar fills, so a scan that will find nothing is obvious at two seconds rather than at five. Devices appear in the list as they answer; nobody waits for the whole window to see the first one.
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ boxSizing: 'border-box', display: 'flex', gap: '24px', width: '1440px' }}>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '464px' }}>
+          <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px', paddingBlock: '15px', paddingInline: '18px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-lg-plus)', fontWeight: 600, lineHeight: '22px' }}>
+              A search that matched nothing
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              Events · board 10 · was missing entirely
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-raised)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '14px', height: '238px', padding: '18px' }}>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                  camera:workshop
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                  type:vehicle
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: '#C93B4029', borderColor: '#C93B4066', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-live-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                  confidence:>0.9
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                  14 Aug
+                </div>
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, lineHeight: '24px' }}>
+              No vehicles on Workshop that day
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+              There were 41 events on Workshop on 14 August, and 4 of them were vehicles — none scored above 0.9. Confidence is the filter that emptied this, and it is the one marked above.
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '32px', paddingInline: '14px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 600, lineHeight: '16px' }}>
+                  Drop to >0.5 · 4 results
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '32px', paddingInline: '14px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '16px' }}>
+                  Clear filters
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', paddingBottom: '16px', paddingInline: '18px', paddingTop: '14px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+              Empty is a result, not a failure. The screen names which clause did the emptying and offers the smallest loosening that would produce something, with the count already computed.
+            </div>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '464px' }}>
+          <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px', paddingBlock: '15px', paddingInline: '18px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-lg-plus)', fontWeight: 600, lineHeight: '22px' }}>
+              A change being applied
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              Any settings screen · runtime-config.v1
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-raised)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '14px', height: '238px', padding: '18px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                Transport
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', paddingInline: '12px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '16px' }}>
+                  TCP
+                </div>
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary-deep)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '8px', height: '34px', paddingInline: '14px' }}>
+                <div style={{ backgroundColor: 'var(--color-on-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 600, lineHeight: '16px' }}>
+                  Applying…
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                Fields locked until it lands
+              </div>
+            </div>
+            <div style={{ backgroundColor: '#E8A33D17', borderColor: '#E8A33D57', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px', paddingBlock: '12px', paddingInline: '14px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+                Restarting the worker for Back Yard. Its recording pauses for about two seconds and the gap will be visible in Keep — no other camera is touched.
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', paddingBottom: '16px', paddingInline: '18px', paddingTop: '14px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+              Optimistic UI is banned here. The field shows the old value until the server confirms the new one, because a setting that silently reverts is how somebody discovers a week later that nothing was recording.
+            </div>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '464px' }}>
+          <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px', paddingBlock: '15px', paddingInline: '18px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-lg-plus)', fontWeight: 600, lineHeight: '22px' }}>
+              A table that has not arrived
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+              Cameras · board 11 · 56px rows
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-raised)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '238px' }}>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '14px', height: '30px', paddingInline: '18px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase', width: '118px' }}>
+                Camera
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase', width: '78px' }}>
+                Transport
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase', width: '88px' }}>
+                Recording
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexBasis: '0%', flexGrow: '1', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                GB/day
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '14px', height: '56px', paddingInline: '18px' }}>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '118px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '64px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '72px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '44px' }} />
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '14px', height: '56px', paddingInline: '18px' }}>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '96px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '64px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '72px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '38px' }} />
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '14px', height: '56px', paddingInline: '18px' }}>
+              <div style={{ backgroundColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '110px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '64px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '72px' }} />
+              <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', flexShrink: '0', height: '11px', width: '44px' }} />
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '40px', paddingInline: '18px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                Reading the catalog · 42 cameras
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', paddingBottom: '16px', paddingInline: '18px', paddingTop: '14px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+              The skeleton keeps the real column lanes and the real row height, so nothing moves when the data lands. It never shimmers — a moving gradient across a wall display reads as a fault.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

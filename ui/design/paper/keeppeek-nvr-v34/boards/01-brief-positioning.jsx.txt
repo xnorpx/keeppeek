@@ -1,0 +1,169 @@
+(
+    <div style={{ backgroundColor: '#0C0D0F', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '64px', height: 'fit-content', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased', width: '1440px' }}>
+      <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '20px', width: '100%' }}>
+        <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+          <div style={{ backgroundColor: '#B7410E', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, letterSpacing: 'var(--tracking-caps)', lineHeight: '14px' }}>
+            KEEPPEEK · NVR · DESIGN SPECIFICATION
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-end', boxSizing: 'border-box', display: 'flex', gap: '40px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-5xl)', fontWeight: 700, letterSpacing: '-0.03em', lineHeight: '84px', width: '620px' }}>
+            Local-first video, reviewed fast.
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'inline-block', flexShrink: '0', paddingBottom: '10px', width: '420px' }}>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', lineHeight: '28px' }}>
+              A self-hosted NVR for home and small-business operators. Everything runs on the user's own hardware — no vendor cloud, no relay. On the LAN you watch without signing in; remote access needs a key.
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ borderBottomColor: '#282C31', borderBottomStyle: 'solid', borderBottomWidth: '1px', borderTopColor: '#282C31', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+        <div style={{ borderRightColor: '#282C31', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '14px', paddingBlock: '36px', paddingRight: '40px', width: '600px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', fontWeight: 500, letterSpacing: '0.16em', lineHeight: '14px' }}>
+            THE ONE RULE
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '2px', width: '100%' }}>
+            <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '14px' }}>
+              <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '40px', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: '46px' }}>
+                KeepPeek does not
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '40px', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: '46px' }}>
+                detect.
+              </div>
+            </div>
+            <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '14px' }}>
+              <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '40px', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: '46px' }}>
+                It
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '40px', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: '46px' }}>
+                ingests.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '18px', paddingBlock: '36px', paddingLeft: '40px' }}>
+          <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '26px' }}>
+            Object detection happens elsewhere — in the camera, or in an external detection service. KeepPeek receives those events over the WebRTC control channel, stores them, and puts them on the timeline.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '26px' }}>
+            Design consequence: there is no model tuning, no detector hardware config, no face or plate enrollment anywhere in this product. Instead there is an Event Sources admin surface that a recorder owning its own detector has no reason to build.
+          </div>
+        </div>
+      </div>
+      <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '24px', width: '100%' }}>
+        <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+          <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, letterSpacing: '-0.01em', lineHeight: '24px' }}>
+            What an ingested event carries
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '14px' }}>
+            api/webrtc.proto · Event
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+          <div style={{ borderRightColor: '#282C31', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '8px', paddingRight: '24px' }}>
+            <div style={{ boxSizing: 'border-box', color: '#E8A33D', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+              event_type
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              motion, person, vehicle — free-form, mapped to a label and icon by the operator
+            </div>
+          </div>
+          <div style={{ borderRightColor: '#282C31', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '8px', paddingInline: '24px' }}>
+            <div style={{ boxSizing: 'border-box', color: '#E8A33D', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+              text
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Natural-language description written by an external service or a person
+            </div>
+          </div>
+          <div style={{ borderRightColor: '#282C31', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '8px', paddingInline: '24px' }}>
+            <div style={{ boxSizing: 'border-box', color: '#E8A33D', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+              payload
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Arbitrary struct — scenarios, model name, custom operator fields
+            </div>
+          </div>
+          <div style={{ borderRightColor: '#282C31', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '8px', paddingInline: '24px' }}>
+            <div style={{ boxSizing: 'border-box', color: '#E8A33D', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+              attachments[]
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Zero or many JPEGs — snapshot, story-frame, text-summary. Events may have none
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '8px', paddingLeft: '24px' }}>
+            <div style={{ boxSizing: 'border-box', color: '#E8A33D', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
+              revision
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Events mutate. The UI must show the latest and expose history
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: '#282C31', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '28px', paddingTop: '56px', width: '100%' }}>
+        <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, letterSpacing: '-0.01em', lineHeight: '24px' }}>
+          Five principles
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px', paddingRight: '28px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 300, lineHeight: '30px' }}>
+              01
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px' }}>
+              Footage first
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Chrome is near-neutral so video and event colour read true. One rust moment per screen.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px', paddingInline: '28px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 300, lineHeight: '30px' }}>
+              02
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px' }}>
+              Time is the index
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Every artefact — clip, event, alert, export — resolves to a moment on one shared timeline.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px', paddingInline: '28px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 300, lineHeight: '30px' }}>
+              03
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px' }}>
+              Never lie about state
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Degraded, reconnecting and gap-in-recording are first-class visuals, not silent failures.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px', paddingInline: '28px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 300, lineHeight: '30px' }}>
+              04
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px' }}>
+              Test before save
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Configuration that can be verified is verified in place, with live evidence, before it commits.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px', paddingLeft: '28px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 300, lineHeight: '30px' }}>
+              05
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#E8E9EA', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px' }}>
+              Deep-linkable
+            </div>
+            <div style={{ boxSizing: 'border-box', color: '#9AA0A6', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Filters, time position and camera live in the URL. Any view can be sent to a colleague.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

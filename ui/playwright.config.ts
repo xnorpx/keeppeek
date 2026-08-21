@@ -33,7 +33,7 @@ export default defineConfig({
 	webServer: [
 		{
 			command: 'bun scripts/start-logging-e2e-server.ts',
-			url: `${backendURL}/health`,
+			url: `${backendURL}/metrics`,
 			reuseExistingServer: false,
 			timeout: 180_000
 		},

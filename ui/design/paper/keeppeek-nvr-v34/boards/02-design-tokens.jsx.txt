@@ -1,0 +1,383 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans)', fontSize: '12px', fontSynthesis: 'none', gap: '56px', height: 'fit-content', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased', width: '1440px' }}>
+      <div style={{ alignItems: 'flex-end', boxSizing: 'border-box', display: 'flex', gap: '40px', width: '100%' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '620px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, letterSpacing: 'var(--tracking-caps)', lineHeight: '14px' }}>
+              02 · DESIGN TOKENS
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-4xl)', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '56px' }}>
+            Rusted. Graphite body, oxidized bolt.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'inline-block', flexBasis: '0%', flexGrow: '1', paddingBottom: '6px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-base)', lineHeight: '26px' }}>
+            Every colour has exactly one job. If a screen needs a colour that isn't here, the screen is wrong — not the palette. Sixteen roles carry the dark theme and fifteen --light-* values remap them on board 34; no screen ever names a hex. Only the three rust values exist in code today, as --keeppeek-rust, --keeppeek-rust-bright and --keeppeek-rust-light in ui/src/styles/style.css.
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '28px', paddingTop: '44px', width: '100%' }}>
+        <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+            Surfaces & text
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', letterSpacing: '0.08em', lineHeight: '14px' }}>
+            GRAPHITE — HAIRLINES SEPARATE, NOT CARDS
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', gap: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-video)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-video
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #0A0B0C
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Below ground. A frame reads as an aperture, not a panel
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-ground)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-ground
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #0C0D0F
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              App background
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-surface
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #141619
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Sidebar, panels
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-raised
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #1C1F23
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Popovers, inputs
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-hairline
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #282C31
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Default 1px rule
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --hairline-strong
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #3A3F45
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Active tile edge
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-text)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-text
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #E8E9EA
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Primary text
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-text-muted)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --text-muted
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #9AA0A6
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Descriptions
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-text-faint)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '88px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-text-faint
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #838A92
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '18px' }}>
+              Never below 10px · 4.74:1 on raised
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '28px', paddingTop: '44px', width: '100%' }}>
+        <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+            Signal
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', letterSpacing: '0.08em', lineHeight: '14px' }}>
+            ONE COLOUR, ONE JOB — DO NOT REUSE ACROSS ROLES
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', gap: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-primary
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #B7410E
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Markers, focus, selected. Never small text — 3.5:1
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary-deep)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --primary-deep
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #8B3A20
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Pressed state · brand mark
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary-soft)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --primary-soft
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #D67B53
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Rust text on dark · hover
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-live)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-live
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #C93B40
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Failure, offline, timeline live-edge marker. Never REC
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-live-text)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-live-text
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #EE7175
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Every red word. --color-live is a fill and is only 3.61:1 as text
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-activity
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #E8A33D
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Timeline motion bands · warning
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --color-healthy
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #3FA37A
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Connected camera · stream test passed
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: 'var(--radius-md)', boxSizing: 'border-box', flexShrink: '0', height: '120px', width: '100%' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px' }}>
+              --availability
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px' }}>
+              #5A6470
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', fontWeight: 500, lineHeight: '19px' }}>
+              Footage exists here. Absence = a gap. 3.23:1
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '28px', paddingTop: '44px', width: '100%' }}>
+        <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+            Type
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', letterSpacing: '0.08em', lineHeight: '14px' }}>
+            ARCHIVO FOR LANGUAGE · IBM PLEX MONO FOR MACHINE VALUES
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', width: '100%' }}>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-4xl
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              56px / 700 / -0.03em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '56px', fontWeight: 700, letterSpacing: '-0.03em', lineHeight: '58px' }}>
+              Front Door
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-3xl
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              40px / 700 / -0.02em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '40px', fontWeight: 700, letterSpacing: '-0.02em', lineHeight: '44px' }}>
+              14 cameras recording
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-2xl
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              28px / 600 / -0.015em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 600, letterSpacing: '-0.015em', lineHeight: '34px' }}>
+              Storage & retention
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-xl
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              20px / 600 / -0.015em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, letterSpacing: '-0.015em', lineHeight: '26px' }}>
+              Assign stream roles
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-lg-plus
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              18px / 600 / -0.015em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-lg-plus)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '22px' }}>
+              Mobile card and section headings
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-base
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              15px / 400 / 155%
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '23px' }}>
+              The substream is used for the grid and for analysis. The main stream is recorded.
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-md
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              14px / 400 / 0em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-md)', lineHeight: '20px' }}>
+              Dense sans values that 13px sets too tight
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-sm mono
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              13px / 400 / tabular
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '20px' }}>
+              2026-08-18 06:37:23.412 · 3840×2160 · 25 fps · hevc · 6.2 Mb/s
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-xs-plus
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              12px / 400 / 0em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+              Status bars, chips, table sub-labels, inline captions — the workhorse of dense chrome
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-xs caps
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              11px / 500 / 0.16em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', fontWeight: 500, letterSpacing: '0.16em', lineHeight: '14px' }}>
+              RECORDING · SUBSTREAM · REO-PROTO
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '32px', paddingBlock: '20px', width: '100%' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', fontWeight: 500, lineHeight: '14px', width: '130px' }}>
+              --text-2xs caps
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '14px', width: '200px' }}>
+              10px / 400 / 0.16em
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px' }}>
+              FLOOR · NOTHING RENDERS BELOW THIS · TILE OVERLAYS AND BADGE NUMERALS
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

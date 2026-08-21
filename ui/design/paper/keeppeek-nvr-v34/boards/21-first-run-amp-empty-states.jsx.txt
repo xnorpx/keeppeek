@@ -1,0 +1,214 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '48px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+      <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '40px', justifyContent: 'space-between', width: '1440px' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '700px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: 'var(--tracking-caps)', lineHeight: '14px', textTransform: 'uppercase' }}>
+              21 · First run & empty states
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '56px', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '105%' }}>
+            Nothing recorded yet is not an error.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingTop: '44px', width: '700px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '155%' }}>
+            On the LAN you can start without an account. Two of these three answers are already filled in correctly — where footage goes and what time it is here — and both are expensive to change later. The remote key is last because most people should skip it.
+          </div>
+        </div>
+      </div>
+      <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '24px', width: '1440px' }}>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '708px' }}>
+          <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '12px', paddingBottom: '24px', paddingInline: '32px', paddingTop: '32px' }}>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '34px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 700, lineHeight: '20px' }}>
+                  K
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 700, letterSpacing: 'var(--tracking-snug)', lineHeight: '34px' }}>
+                KeepPeek
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '155%', width: '600px' }}>
+              Nothing has left this machine. On the LAN you are already administrator. The remote key is optional; storage and time are not.
+            </div>
+            <div style={{ alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#E8A33D1F', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '8px', height: '26px', paddingInline: '10px' }}>
+              <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '14px' }}>
+                PROOF OF CONCEPT · v0.4.1-pre
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '22px', paddingBlock: '26px', paddingInline: '32px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '24px', justifyContent: 'center', width: '24px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, lineHeight: '14px' }}>
+                  1
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '604px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+                  Where footage goes
+                </div>
+                <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', justifyContent: 'space-between', paddingInline: '12px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                    /mnt/keeppeek
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    7.9 TB FREE · WRITABLE
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
+                  Checked for space and write permission before this screen let you continue. At four cameras that is roughly six weeks.
+                </div>
+                <div style={{ backgroundColor: '#C93B4017', borderColor: '#C93B4066', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '7px', paddingBlock: '12px', paddingInline: '14px' }}>
+                  <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+                    <div style={{ backgroundColor: 'var(--color-live)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-live-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                      If the path will not do — you cannot continue past this
+                    </div>
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+                    KeepPeek can see /mnt/keeppeek but cannot write to it. It runs as the user keeppeek, and that folder belongs to root. Either choose a folder you own, or give this one to that user. Nothing starts recording until a real write succeeds here.
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '16px' }}>
+                    sudo chown -R keeppeek /mnt/keeppeek
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '24px', justifyContent: 'center', width: '24px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, lineHeight: '14px' }}>
+                  2
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '604px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+                  What time it is here
+                </div>
+                <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', justifyContent: 'space-between', paddingInline: '12px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                    Europe/Stockholm
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    DETECTED FROM THIS MACHINE
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', gap: '16px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '24px', justifyContent: 'center', width: '24px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, lineHeight: '14px' }}>
+                  3
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '604px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+                  Remote sign-in (optional — skip it)
+                </div>
+                <div style={{ boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+                  <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', paddingInline: '12px', width: '296px' }}>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                      marcus
+                    </div>
+                  </div>
+                  <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', paddingInline: '12px', width: '296px' }}>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '14px', letterSpacing: '0.18em', lineHeight: '18px' }}>
+                      ••••••••••••
+                    </div>
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
+                  Leave this empty on the LAN; you are already an administrator here. Fill it only when a reverse proxy or a VPN will carry requests in from outside, because those need an account to sign in to.
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between', paddingBlock: '20px', paddingInline: '32px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.1em', lineHeight: '14px' }}>
+              AGPL-3.0 · LOCAL OPEN · REMOTE KEY · NO CLOUD
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '38px', paddingInline: '20px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+                Start the recorder
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <path d="M5 12h13" fill="none" stroke="var(--color-on-primary)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                <polyline points="12 5 19 12 12 19" fill="none" stroke="var(--color-on-primary)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '20px', width: '708px' }}>
+          <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '14px', height: '300px', justifyContent: 'center', width: '708px' }}>
+            <svg width="34" height="34" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+              <path d="M3 7h3l2-2h8l2 2h3v12H3z" fill="none" stroke="var(--color-hairline-strong)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="12" cy="13" r="3.5" fill="none" stroke="var(--color-hairline-strong)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+              No cameras yet
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', flexWrap: 'wrap', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', justifyContent: 'center', lineHeight: '155%', textAlign: 'center', width: '420px' }}>
+              KeepPeek can look for cameras on this network, or you can paste an RTSP URL if you already know it.
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px', paddingTop: '4px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', height: '38px', paddingInline: '20px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+                  Scan this network
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '38px', paddingInline: '16px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+                  Enter an address
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', padding: '22px', width: '708px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '6px', width: '430px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '18px', fontWeight: 600, lineHeight: '22px' }}>
+                Keep, before there is anything to keep
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '155%' }}>
+                The timeline still draws — it just shows an honest empty day rather than a spinner or a shrug. Recording starts the moment a camera is saved.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '6px' }}>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '2px', height: '44px', width: '212px' }}>
+                <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '44px', width: '52px' }} />
+                <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '44px', width: '52px' }} />
+                <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '44px', width: '52px' }} />
+                <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '44px', width: '52px' }} />
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
+                NO FOOTAGE ON 18 AUG
+              </div>
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '20px', padding: '22px', width: '708px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '6px', width: '430px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '18px', fontWeight: 600, lineHeight: '22px' }}>
+                Events, with no service connected
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '155%' }}>
+                This state names the actual reason rather than saying "no results". Cameras can report motion on their own; anything richer needs a service.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '8px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.1em', lineHeight: '14px' }}>
+                0 EVENT SOURCES REGISTERED
+              </div>
+              <div style={{ alignItems: 'center', alignSelf: 'flex-start', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '32px', paddingInline: '12px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                  Connect a detection service
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

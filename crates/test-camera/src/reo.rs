@@ -41,6 +41,7 @@ const BATTERY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 pub struct ReoServer {
     stop: Option<Sender<()>>,
     worker: Option<JoinHandle<()>>,
+    tcp_port: Option<u16>,
     _udp: ReoUdpServer,
     _battery_wake: Option<BatteryWakeClient>,
 }
@@ -56,8 +57,14 @@ impl ReoServer {
         uid: String,
     ) -> anyhow::Result<Self> {
         let awake = Arc::new(AtomicBool::new(battery_wake.is_none()));
+        let udp_ports = if address.port() == 0 {
+            [0, 0]
+        } else {
+            [UDP_PRIMARY_PORT, UDP_SECONDARY_PORT]
+        };
         let udp = ReoUdpServer::start(
             address.ip(),
+            udp_ports,
             username.clone(),
             password.clone(),
             main.clone(),
@@ -67,24 +74,34 @@ impl ReoServer {
         let battery_client = battery_wake
             .map(|endpoint| BatteryWakeClient::start(address.ip(), uid, endpoint, awake))
             .transpose()?;
-        let (stop, worker) = if battery_client.is_some() {
-            (None, None)
+        let (stop, worker, tcp_port) = if battery_client.is_some() {
+            (None, None, None)
         } else {
             let listener = TcpListener::bind(address)
                 .with_context(|| format!("unable to bind Baichuan listener on {address}"))?;
+            let tcp_port = listener.local_addr()?.port();
             listener.set_nonblocking(true)?;
             let (stop, stopped) = mpsc::channel();
             let worker = thread::Builder::new()
                 .name("test-camera-reo".to_owned())
                 .spawn(move || serve(listener, stopped, username, password, main, sub))?;
-            (Some(stop), Some(worker))
+            (Some(stop), Some(worker), Some(tcp_port))
         };
         Ok(Self {
             stop,
             worker,
+            tcp_port,
             _udp: udp,
             _battery_wake: battery_client,
         })
+    }
+
+    pub(crate) const fn tcp_port(&self) -> Option<u16> {
+        self.tcp_port
+    }
+
+    pub(crate) const fn primary_udp_port(&self) -> u16 {
+        self._udp.primary_port
     }
 }
 
@@ -102,25 +119,32 @@ impl Drop for ReoServer {
 struct ReoUdpServer {
     stop: Sender<()>,
     worker: Option<JoinHandle<()>>,
+    primary_port: u16,
 }
 
 impl ReoUdpServer {
     fn start(
         bind_ip: IpAddr,
+        ports: [u16; 2],
         username: String,
         password: String,
         main: VideoSource,
         sub: VideoSource,
         awake: Arc<AtomicBool>,
     ) -> anyhow::Result<Self> {
-        let primary =
-            UdpSocket::bind(SocketAddr::new(bind_ip, UDP_PRIMARY_PORT)).with_context(|| {
-                format!("unable to bind Baichuan UDP listener on {bind_ip}:{UDP_PRIMARY_PORT}")
-            })?;
-        let secondary = UdpSocket::bind(SocketAddr::new(bind_ip, UDP_SECONDARY_PORT))
-            .with_context(|| {
-                format!("unable to bind Baichuan UDP listener on {bind_ip}:{UDP_SECONDARY_PORT}")
-            })?;
+        let primary = UdpSocket::bind(SocketAddr::new(bind_ip, ports[0])).with_context(|| {
+            format!(
+                "unable to bind Baichuan UDP listener on {bind_ip}:{}",
+                ports[0]
+            )
+        })?;
+        let secondary = UdpSocket::bind(SocketAddr::new(bind_ip, ports[1])).with_context(|| {
+            format!(
+                "unable to bind Baichuan UDP listener on {bind_ip}:{}",
+                ports[1]
+            )
+        })?;
+        let primary_port = primary.local_addr()?.port();
         primary.set_nonblocking(true)?;
         secondary.set_nonblocking(true)?;
         let (stop, stopped) = mpsc::channel();
@@ -140,6 +164,7 @@ impl ReoUdpServer {
         Ok(Self {
             stop,
             worker: Some(worker),
+            primary_port,
         })
     }
 }

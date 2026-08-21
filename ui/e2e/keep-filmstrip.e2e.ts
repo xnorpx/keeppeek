@@ -1,9 +1,11 @@
 import { expect, test } from '@playwright/test';
+import type { CameraListItem } from '../src/lib/types';
+import { mockControlPeer } from './fixtures/control-peer';
 
 const day = '2026-08-10';
 const dayStartMs = Date.UTC(2026, 7, 10);
 
-function camera(id: string, name: string) {
+function camera(id: string, name: string): CameraListItem {
 	return {
 		id,
 		ip: id === 'deck' ? '192.0.2.10' : '192.0.2.11',
@@ -20,6 +22,7 @@ function camera(id: string, name: string) {
 }
 
 test('switches synchronized historical cameras from the Keep filmstrip', async ({ page }) => {
+	const cameras = [camera('deck', 'Deck'), camera('garden', 'Garden'), camera('gate', 'Gate')];
 	await page.addInitScript(() => {
 		class VisibleIntersectionObserver {
 			constructor(private callback: IntersectionObserverCallback) {}
@@ -82,54 +85,17 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 			value() {}
 		});
 	});
-	await page.route('**/api/cameras', async (route) => {
-		await route.fulfill({
-			json: [camera('deck', 'Deck'), camera('garden', 'Garden'), camera('gate', 'Gate')]
-		});
+	await mockControlPeer(page, {
+		cameras,
+		storedRanges: ['deck', 'garden', 'gate'].flatMap((sourceId) =>
+			(['main', 'sub'] as const).map((streamId) => ({
+				sourceId,
+				streamId,
+				startMs: dayStartMs + 10 * 60 * 60_000,
+				endMs: dayStartMs + 11 * 60 * 60_000
+			}))
+		)
 	});
-	await page.route('**/api/recordings/*', async (route) => {
-		const cameraId = new URL(route.request().url()).pathname.split('/').at(-1)!;
-		await route.fulfill({
-			json: {
-				camera_id: cameraId,
-				date: day,
-				dates: [day],
-				segments: [
-					{
-						stream: 'main',
-						date: day,
-						hour: '10',
-						filename: `${cameraId}-main.mp4`,
-						url: `/${cameraId}-main.mp4`,
-						start_time_ms: dayStartMs + 10 * 60 * 60_000,
-						end_time_ms: dayStartMs + 11 * 60 * 60_000,
-						duration_ms: 60 * 60_000
-					},
-					{
-						stream: 'sub',
-						date: day,
-						hour: '10',
-						filename: `${cameraId}-sub.mp4`,
-						url: `/${cameraId}-sub.mp4`,
-						start_time_ms: dayStartMs + 10 * 60 * 60_000,
-						end_time_ms: dayStartMs + 11 * 60 * 60_000,
-						duration_ms: 60 * 60_000
-					}
-				]
-			}
-		});
-	});
-	await page.route('**/api/events/*', async (route) => {
-		const cameraId = new URL(route.request().url()).pathname.split('/').at(-1)!;
-		await route.fulfill({ json: { camera_id: cameraId, date: day, events: [] } });
-	});
-	await page.route('**/api/recordings/*/*/activity', async (route) => {
-		await route.fulfill({ status: 204 });
-	});
-	await page.route('**/*.mp4', async (route) => {
-		await route.fulfill({ status: 200, contentType: 'video/mp4', body: Buffer.alloc(0) });
-	});
-
 	await page.goto(`/keep?camera=deck&stream=main&date=${day}`);
 
 	const player = page.getByRole('region', { name: 'Recorded video player' });
@@ -147,7 +113,9 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 	await expect(visiblePreviews).toHaveCount(2);
 	await expect(visiblePreviews.first()).toHaveAttribute('preload', 'metadata');
 	await expect(visiblePreviews.last()).toHaveAttribute('preload', 'metadata');
-	await expect(mainVideo).toHaveAttribute('src', '/deck-main.mp4');
+	await expect(mainVideo).toHaveAttribute('src', /^blob:/);
+	await expect(visiblePreviews.first()).toHaveAttribute('src', /^blob:/);
+	await expect(visiblePreviews.last()).toHaveAttribute('src', /^blob:/);
 	await mainVideo.evaluate(async (node) => {
 		const video = node as HTMLVideoElement;
 		video.currentTime = 120;
@@ -158,12 +126,18 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 	await expect
 		.poll(() =>
 			visiblePreviews.evaluateAll((videos) =>
-				videos.map((video) => (video as HTMLVideoElement).currentTime)
+				videos.map(
+					(video) =>
+						Number((video as HTMLElement).dataset.playbackAnchorMs) +
+						(video as HTMLVideoElement).currentTime * 1_000
+				)
 			)
 		)
-		.toEqual([120, 120]);
+		.toEqual([dayStartMs + 10 * 60 * 60_000 + 120_000, dayStartMs + 10 * 60 * 60_000 + 120_000]);
 	await expect(visiblePreviews.first()).toHaveAttribute('data-play-requested', 'true');
 	await expect(visiblePreviews.last()).toHaveAttribute('data-play-requested', 'true');
+	const synchronizedGarden = filmstrip.getByRole('button', { name: 'Review Garden at 10:02 UTC' });
+	await expect(synchronizedGarden).toBeVisible();
 
 	await mainVideo.evaluate((node) => {
 		const video = node as HTMLVideoElement;
@@ -172,7 +146,8 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 	});
 	await expect(visiblePreviews.first()).toHaveAttribute('data-pause-requested', 'true');
 	await expect(visiblePreviews.last()).toHaveAttribute('data-pause-requested', 'true');
-	await filmstrip.getByRole('button', { name: /Review Garden at/ }).click();
+	await expect(synchronizedGarden).toBeVisible();
+	await synchronizedGarden.click();
 
 	await expect(page).toHaveURL(new RegExp(`/keep\\?camera=garden&stream=main&date=${day}`));
 	await expect(player.getByText('Garden', { exact: true })).toBeVisible();

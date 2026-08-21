@@ -1,0 +1,18 @@
+@import '../src/app.css';
+
+@source '../src';
+@source './stories';
+
+html[data-demo='true'],
+html[data-demo='true'] body {
+	width: 928px;
+	height: 524px;
+	overflow: hidden;
+}
+
+html[data-demo='true'] #app {
+	width: 464px;
+	height: 262px;
+	transform: scale(2);
+	transform-origin: top left;
+}

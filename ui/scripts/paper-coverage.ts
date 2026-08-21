@@ -1,0 +1,209 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { format } from 'prettier';
+
+type PaperOverlay = {
+	status: 'accepted' | 'candidate';
+	blockers?: string[];
+};
+
+type Reference = {
+	scenarioId: string;
+	storySource?: string;
+	paperOverlay?: PaperOverlay;
+};
+
+type Board = {
+	index: number;
+	id: string;
+	name: string;
+	references?: Reference[];
+};
+
+type Storyboard = {
+	source: { tokenHash: string };
+	boards: Board[];
+};
+
+type Scenario = {
+	id: string;
+	boardId: string;
+	kind: 'contract' | 'interaction' | 'screen' | 'state';
+	viewport: 'contract' | 'desktop' | 'mobile' | 'responsive';
+	requiredCapabilities: string[];
+	playwrightOwner: string | null;
+	contractOwner?: string;
+};
+
+type ScenarioManifest = {
+	scenarios: Scenario[];
+};
+
+type Classification = 'contract' | 'accepted' | 'mixed' | 'capability-gated';
+
+const defaultUiRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+
+function sortedUnique(values: Iterable<string>): string[] {
+	return [...new Set(values)].toSorted();
+}
+
+function codeList(values: Iterable<string>): string {
+	const entries = sortedUnique(values);
+	return entries.length === 0 ? 'None' : entries.map((entry) => `\`${entry}\``).join('<br>');
+}
+
+function boardTitle(board: Board): string {
+	return board.name.replace(/^\d+\s+[^A-Za-z0-9]+\s+/, '');
+}
+
+function classifyBoard(board: Board): Classification {
+	const references = board.references ?? [];
+	if (references.length === 0) return 'contract';
+	if (references.some((reference) => reference.paperOverlay === undefined)) {
+		throw new Error(`Board ${board.index} has an unreviewed Paper reference`);
+	}
+
+	const accepted = references.filter((reference) => reference.paperOverlay?.status === 'accepted');
+	const candidates = references.filter(
+		(reference) => reference.paperOverlay?.status === 'candidate'
+	);
+	for (const candidate of candidates) {
+		if (!candidate.paperOverlay?.blockers?.length) {
+			throw new Error(`Board ${board.index} has an unclassified Paper candidate`);
+		}
+	}
+
+	if (candidates.length === 0) return 'accepted';
+	if (accepted.length > 0) return 'mixed';
+	return 'capability-gated';
+}
+
+function classificationLabel(classification: Classification): string {
+	if (classification === 'accepted') return 'Paper accepted';
+	if (classification === 'mixed') return 'Accepted + capability-gated';
+	if (classification === 'capability-gated') return 'Capability-gated';
+	return 'Contract';
+}
+
+export async function renderPaperCoverageReport(uiRoot = defaultUiRoot): Promise<string> {
+	const designRoot = resolve(uiRoot, 'design/paper/keeppeek-nvr-v34');
+	const storyboard = JSON.parse(
+		await readFile(resolve(designRoot, 'storyboard.json'), 'utf8')
+	) as Storyboard;
+	const scenarioManifest = JSON.parse(
+		await readFile(resolve(designRoot, 'scenarios.json'), 'utf8')
+	) as ScenarioManifest;
+	const scenariosByBoard = new Map<string, Scenario[]>();
+	const scenariosById = new Map<string, Scenario>();
+	for (const scenario of scenarioManifest.scenarios) {
+		const scenarios = scenariosByBoard.get(scenario.boardId) ?? [];
+		scenarios.push(scenario);
+		scenariosByBoard.set(scenario.boardId, scenarios);
+		scenariosById.set(scenario.id, scenario);
+	}
+	const classifications = storyboard.boards.map((board) => ({
+		board,
+		classification: classifyBoard(board)
+	}));
+	const classificationCounts: Record<Classification, number> = {
+		contract: 0,
+		accepted: 0,
+		mixed: 0,
+		'capability-gated': 0
+	};
+	for (const entry of classifications) classificationCounts[entry.classification] += 1;
+	const references = storyboard.boards.flatMap((board) => board.references ?? []);
+	const acceptedReferences = references.filter(
+		(reference) => reference.paperOverlay?.status === 'accepted'
+	);
+	const lokiBaselines = await Promise.all(
+		acceptedReferences.map(async (reference) => {
+			const scenario = scenariosById.get(reference.scenarioId);
+			if (!scenario) throw new Error(`Accepted reference has no scenario: ${reference.scenarioId}`);
+			const configuration = scenario.viewport === 'mobile' ? 'chrome.mobile' : 'chrome.desktop';
+			const path = `visual-harness/.loki/reference/${configuration}/${reference.scenarioId}.png`;
+			let sha256: string | null = null;
+			try {
+				sha256 = createHash('sha256')
+					.update(await readFile(resolve(uiRoot, path)))
+					.digest('hex');
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+			}
+			return { scenarioId: reference.scenarioId, path, sha256 };
+		})
+	);
+	const approvedLokiBaselines = lokiBaselines.filter((baseline) => baseline.sha256 !== null).length;
+	const candidateReferences = references.length - acceptedReferences.length;
+	const contractScenarios = scenarioManifest.scenarios.filter(
+		(scenario) => scenario.kind === 'contract'
+	);
+
+	const lines = [
+		'# KeepPeek Paper Coverage Report',
+		'',
+		'> Generated by `bun run paper:coverage`. Do not edit by hand.',
+		'',
+		`- Paper boards: ${storyboard.boards.length}/34`,
+		`- Token hash: \`${storyboard.source.tokenHash}\``,
+		`- Scenarios: ${scenarioManifest.scenarios.length} (${contractScenarios.length} contracts, ${scenarioManifest.scenarios.length - contractScenarios.length} rendered scenarios)`,
+		`- Paper references: ${references.length} (${acceptedReferences.length} accepted, ${candidateReferences} capability-gated candidates)`,
+		`- Approved Linux Loki references: ${approvedLokiBaselines}/${lokiBaselines.length}`,
+		`- Board classifications: ${classificationCounts.contract} contract, ${classificationCounts.accepted} accepted, ${classificationCounts.mixed} mixed, ${classificationCounts['capability-gated']} capability-gated`,
+		'- Unclassified candidates: 0',
+		'',
+		'## Board Matrix',
+		'',
+		'| Board | Classification | Scenarios | References A/C/T | Story owners | Playwright owners | Contract owner |',
+		'| --- | --- | --- | ---: | --- | --- | --- |'
+	];
+
+	for (const { board, classification } of classifications) {
+		const boardScenarios = scenariosByBoard.get(board.id) ?? [];
+		const boardReferences = board.references ?? [];
+		const accepted = boardReferences.filter(
+			(reference) => reference.paperOverlay?.status === 'accepted'
+		).length;
+		const candidates = boardReferences.length - accepted;
+		lines.push(
+			`| ${String(board.index).padStart(2, '0')} ${boardTitle(board)} | ${classificationLabel(classification)} | ${codeList(boardScenarios.map((scenario) => scenario.id))} | ${accepted}/${candidates}/${boardReferences.length} | ${codeList(boardReferences.flatMap((reference) => (reference.storySource ? [reference.storySource] : [])))} | ${codeList(boardScenarios.flatMap((scenario) => (scenario.playwrightOwner ? [scenario.playwrightOwner] : [])))} | ${codeList(boardScenarios.flatMap((scenario) => (scenario.contractOwner ? [scenario.contractOwner] : [])))} |`
+		);
+	}
+
+	lines.push('', '## Loki Baseline Queue', '');
+	lines.push('| Scenario | Expected reference | Status |', '| --- | --- | --- |');
+	for (const baseline of lokiBaselines.toSorted((left, right) =>
+		left.scenarioId.localeCompare(right.scenarioId)
+	)) {
+		lines.push(
+			`| \`${baseline.scenarioId}\` | \`${baseline.path}\` | ${baseline.sha256 ? `Approved \`${baseline.sha256}\`` : 'Pending reviewed Linux capture'} |`
+		);
+	}
+
+	lines.push('', '## Deliberate Capability Gates', '');
+	for (const { board, classification } of classifications) {
+		if (classification !== 'mixed' && classification !== 'capability-gated') continue;
+		const boardScenarios = scenariosByBoard.get(board.id) ?? [];
+		const capabilities = boardScenarios.flatMap((scenario) => scenario.requiredCapabilities);
+		lines.push(`### ${String(board.index).padStart(2, '0')} ${boardTitle(board)}`, '');
+		lines.push(`Scenario capability IDs: ${codeList(capabilities)}`, '');
+		for (const reference of board.references ?? []) {
+			if (reference.paperOverlay?.status !== 'candidate') continue;
+			lines.push(`- \`${reference.scenarioId}\``);
+			for (const blocker of reference.paperOverlay.blockers ?? []) {
+				lines.push(`  - ${blocker}`);
+			}
+		}
+		lines.push('');
+	}
+
+	return format(`${lines.join('\n').trimEnd()}\n`, {
+		parser: 'markdown',
+		printWidth: 100,
+		singleQuote: true,
+		trailingComma: 'none',
+		useTabs: true
+	});
+}

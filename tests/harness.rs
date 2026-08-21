@@ -33,8 +33,8 @@ impl TestHarness {
 
         let client = KeepPeekClient::new(&format!("http://{addr}"));
 
-        let ready = client.ready().unwrap();
-        assert!(ready.ready);
+        let health = client.health().unwrap();
+        assert_eq!(health.status, "ok");
 
         Self {
             client,

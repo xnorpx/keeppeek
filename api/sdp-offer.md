@@ -50,11 +50,11 @@ channels. It must have an SDP `a=mid` distinct from every RTP media MID in the o
 
 The client and server each create these three channels locally before offer/answer exchange:
 
-| SCTP stream ID | Label             | Negotiated | Delivery                           | Payload                      |
-| -------------- | ----------------- | ---------- | ---------------------------------- | ---------------------------- |
-| `0`            | `control-channel` | `true`     | Ordered and reliable               | Proto3 JSON control messages |
-| `1`            | `reliable-data`   | `true`     | Ordered and reliable               | Binary `Message` messages    |
-| `2`            | `unreliable-data` | `true`     | Unordered with `maxRetransmits: 0` | Binary `Message` messages    |
+| SCTP stream ID | Label             | Negotiated | Delivery                           | Payload                                    |
+| -------------- | ----------------- | ---------- | ---------------------------------- | ------------------------------------------ |
+| `0`            | `control-channel` | `true`     | Ordered and reliable               | Binary protobuf `ControlEnvelope` messages |
+| `1`            | `reliable-data`   | `true`     | Ordered and reliable               | Binary `Message` messages                  |
+| `2`            | `unreliable-data` | `true`     | Unordered with `maxRetransmits: 0` | Binary `Message` messages                  |
 
 The SCTP stream ID namespace is separate from the SDP MID namespace. A data-channel stream ID
 and an SDP MID may happen to contain the same characters, but they identify unrelated protocol

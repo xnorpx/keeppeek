@@ -1,0 +1,116 @@
+name: Publish Demo Videos
+
+on:
+  workflow_run:
+    workflows: [Generate Demo Videos]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Workflow run containing the keeppeek-demo-videos artifact
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-demo-videos
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    environment: demo-videos
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download generated videos
+        uses: actions/download-artifact@v8
+        with:
+          name: keeppeek-demo-videos
+          path: demo-videos
+          run-id: ${{ github.event_name == 'workflow_dispatch' && inputs.run_id || github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate generated artifact
+        run: |
+          test -d demo-videos/assets
+          test -f demo-videos/manifest.json
+          test "$(find demo-videos/assets -maxdepth 1 -type f | wc -l)" -gt 0
+          jq -e '.schemaVersion == 1 and (.videos | length > 0)' demo-videos/manifest.json >/dev/null
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload demo assets
+        env:
+          STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.AZURE_DEMO_CONTAINER }}
+          PREFIX: ${{ vars.AZURE_DEMO_PREFIX }}
+        run: |
+          az storage blob upload-batch \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login \
+            --destination "$CONTAINER" \
+            --destination-path "$PREFIX/assets" \
+            --source demo-videos/assets \
+            --overwrite true \
+            --content-cache-control no-cache
+
+      - name: Publish active manifest
+        env:
+          STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.AZURE_DEMO_CONTAINER }}
+          PREFIX: ${{ vars.AZURE_DEMO_PREFIX }}
+        run: |
+          az storage blob upload \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login \
+            --container-name "$CONTAINER" \
+            --name "$PREFIX/manifest.json" \
+            --file demo-videos/manifest.json \
+            --overwrite true \
+            --content-type application/json \
+            --content-cache-control no-cache
+
+      - name: Delete stale demo assets
+        env:
+          STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ vars.AZURE_DEMO_CONTAINER }}
+          PREFIX: ${{ vars.AZURE_DEMO_PREFIX }}
+        run: |
+          find demo-videos/assets -maxdepth 1 -type f \
+            -printf "$PREFIX/assets/%f\n" | sort -u > /tmp/desired-demo-blobs.txt
+          az storage blob list \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login \
+            --container-name "$CONTAINER" \
+            --prefix "$PREFIX/assets/" \
+            --query '[].name' \
+            --output tsv | sort -u > /tmp/current-demo-blobs.txt
+          comm -23 /tmp/current-demo-blobs.txt /tmp/desired-demo-blobs.txt |
+            while IFS= read -r blob_name; do
+              if [[ -n "$blob_name" ]]; then
+                az storage blob delete \
+                  --account-name "$STORAGE_ACCOUNT" \
+                  --auth-mode login \
+                  --container-name "$CONTAINER" \
+                  --name "$blob_name"
+              fi
+            done
+
+      - name: Publish summary
+        env:
+          BASE_URL: ${{ vars.AZURE_DEMO_BASE_URL }}
+        run: echo "Published demo manifest to $BASE_URL/manifest.json" >> "$GITHUB_STEP_SUMMARY"

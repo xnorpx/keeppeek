@@ -1,0 +1,319 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '48px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+      <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '40px', justifyContent: 'space-between', width: '1440px' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '700px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: 'var(--tracking-caps)', lineHeight: '14px' }}>
+              28 · DELIVERY · CAPABILITY CONTRACT
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '56px', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '105%' }}>
+            A control exists only when its server does.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingTop: '44px', width: '700px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '155%' }}>
+            Camera, storage, logging, and restart writes already exist and stay live. Every other backend-owned action has a capability gate, a read-only fallback, and a failure state that preserves the user's draft.
+          </div>
+        </div>
+      </div>
+      <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '24px', width: '1440px' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', gap: '20px', width: '1440px' }}>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: '#3FA37A61', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', padding: '18px', width: '466px' }}>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+              <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.1em', lineHeight: '14px' }}>
+                CAPABILITY READY
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+              The target control is active
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
+              The server advertises the exact version the screen was designed against. The command remains local until submitted.
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', padding: '18px', width: '466px' }}>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.1em', lineHeight: '14px' }}>
+                CAPABILITY MISSING
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+              Read-only, never fake-active
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
+              The current values stay visible. The command is replaced by “Server update required”; drafts cannot begin.
+            </div>
+          </div>
+          <div style={{ backgroundColor: 'var(--color-surface)', borderColor: '#E8A33D61', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', padding: '18px', width: '468px' }}>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+              <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.1em', lineHeight: '14px' }}>
+                COMMAND FAILED
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+              Keep the draft and name the failure
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
+              No optimistic lie and no partial apply. The user's fields remain intact with the exact server error beside the command.
+            </div>
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', width: '1440px' }}>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline-strong)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', width: '1440px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px', width: '250px' }}>
+              CAPABILITY
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px', width: '350px' }}>
+              SERVER MUST OWN
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px', width: '280px' }}>
+              UNLOCKS
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px', width: '280px' }}>
+              WHEN MISSING
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', flexShrink: '0', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.14em', lineHeight: '14px', width: '280px' }}>
+              FAILURE GUARANTEE
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '78px', width: '1440px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '3px', width: '250px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                keeppeek.runtime-config.v1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                SHIPS · CAMERA + STORAGE
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '350px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '145%' }}>
+                Revisioned read, validate, compare-and-set write, restart impact, atomic apply.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Camera create/update, storage paths, logging, restart
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Those stay live. Shared defaults, identity, rules, groups, export still gate.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px', width: '280px' }}>
+              Draft preserved; zero partial writes; current revision returned on conflict.
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '78px', width: '1440px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '3px', width: '250px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                keeppeek.media-export.v1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                REQUIRED FOR MVP
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '350px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '145%' }}>
+                Create job, keyframe-aligned range, progress, cancel, expiry, download URL.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Export range and Export clip
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Range remains selectable and estimated; command says “Server update required”.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px', width: '280px' }}>
+              Failed jobs remain retryable; no corrupt partial download is exposed.
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '78px', width: '1440px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '3px', width: '250px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                keeppeek.identity.v1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                REMOTE REQUIRES A KEY
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '350px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '145%' }}>
+                Remote sign-in, sessions, two roles, invitations, token CRUD. Local LAN never asks.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Access screens and remote sign-in
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Shared key remains for remote clients. People and roles stay read-only until identity.v1 exists.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px', width: '280px' }}>
+              Local LAN remains admin without a key. Failed writes cannot revoke that.
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '78px', width: '1440px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '3px', width: '250px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                keeppeek.rules.v1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                TARGET
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '350px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '145%' }}>
+                Rule and action CRUD, quiet hours, cooldown, test delivery, retries, delivery history.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Notifications and automation actions
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Channels show health only; Add rule and Test are replaced by the update requirement.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px', width: '280px' }}>
+              Test failures never enable a rule; retry count and last response remain visible.
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '78px', width: '1440px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '3px', width: '250px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                keeppeek.group-admin.v1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                ADMIN CONFIG ONLY
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '350px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '145%' }}>
+                Revisioned group definitions, static source validation, password replacement, recording policy.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                New group and group editing
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Groups remain listable and joinable; administration is read-only.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px', width: '280px' }}>
+              A failed edit leaves the previous definition live; participants are never evicted.
+            </div>
+          </div>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '78px', width: '1440px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '3px', width: '250px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                keeppeek.offsite-archive.v1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
+                TARGET
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '350px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '145%' }}>
+                Target CRUD, secret replacement, test write, queue, retry, reconciliation, delete policy.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Add offsite location and copy status
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                Existing target is labelled planned; no credentials may be entered.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px', width: '280px' }}>
+              Local recording never blocks on offsite failure; backlog and oldest uncopied time remain visible.
+            </div>
+          </div>
+          <div style={{ alignItems: 'flex-start', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', paddingBlock: '18px' }}>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '5px', width: '250px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '16px' }}>
+                keeppeek.bookmarks.v1
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                Target
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingRight: '20px', width: '350px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
+                Pin a moment or a span by hand, survive retention, list and remove.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '16px' }}>
+                Bookmark in the event drawer and on the timeline
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingRight: '20px', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '16px' }}>
+                Existing pins stay visible and keep protecting their segments; new ones cannot be made.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', width: '280px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '16px' }}>
+                A failed pin never silently lets cleanup reclaim the span it was meant to hold.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingTop: '8px', width: '1440px' }}>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '7px', width: '344px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+              Exact version, not a boolean
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
+              A v2 screen never activates against v1 by accident. Capability identifiers are proposed API contracts, not decorative badges.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '7px', width: '344px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+              No mid-draft disappearance
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
+              Capability loss after editing starts freezes submission, preserves fields, and names the server transition.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '7px', width: '344px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+              Read remains useful
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
+              Missing write support never hides existing configuration, export ranges, people, rules, groups, or archive status.
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '7px', width: '344px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+              One fallback phrase
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
+              Every unavailable command says “Server update required”. No “coming soon”, disabled mystery button, or fake success.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

@@ -1,6 +1,7 @@
 use crate::media_time::duration_to_ticks;
 use crate::storage::{
     adts,
+    catalog::{CatalogFragment, CatalogRecording, RecordingCatalogHandle},
     frame::{AudioCodec, MediaFrame, VideoCodec},
     layout, nal,
     segment::RecordingFrame,
@@ -12,6 +13,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use uuid::Uuid;
 
 const VIDEO_TIMESCALE: u32 = 90_000;
 
@@ -19,6 +21,10 @@ pub struct MediumTermWriter {
     state: WriterState,
     path: PathBuf,
     final_path: PathBuf,
+    recording_id: String,
+    stream_id: String,
+    started_at_ms: i64,
+    catalog: Option<RecordingCatalogHandle>,
     started_at: Instant,
     segment_origin: Option<Instant>,
     camera_timestamp_origin: Option<Duration>,
@@ -39,6 +45,8 @@ struct ActiveWriter {
     audio_track: Option<u32>,
     audio_timescale: u32,
     last_video_dts: Option<u64>,
+    last_video_duration: u32,
+    fragment_start_dts: Option<u64>,
     next_audio_dts: Option<u64>,
 }
 
@@ -49,7 +57,35 @@ impl MediumTermWriter {
         started_at: Instant,
         write_buffer_bytes: usize,
     ) -> std::io::Result<Self> {
+        Self::create_inner(root, camera_id, started_at, write_buffer_bytes, None)
+    }
+
+    pub fn create_with_catalog(
+        root: &Path,
+        camera_id: &str,
+        started_at: Instant,
+        write_buffer_bytes: usize,
+        catalog: RecordingCatalogHandle,
+    ) -> std::io::Result<Self> {
+        Self::create_inner(
+            root,
+            camera_id,
+            started_at,
+            write_buffer_bytes,
+            Some(catalog),
+        )
+    }
+
+    fn create_inner(
+        root: &Path,
+        camera_id: &str,
+        started_at: Instant,
+        write_buffer_bytes: usize,
+        catalog: Option<RecordingCatalogHandle>,
+    ) -> std::io::Result<Self> {
         let started_at_utc = time::OffsetDateTime::now_utc() - started_at.elapsed();
+        let started_at_ms = i64::try_from(started_at_utc.unix_timestamp_nanos() / 1_000_000)
+            .map_err(|_| std::io::Error::other("recording start timestamp is out of range"))?;
         let active_path = layout::active_segment_path(root, camera_id, started_at_utc, "mp4");
         let final_path = layout::segment_path(root, camera_id, started_at_utc, "mp4");
 
@@ -61,6 +97,10 @@ impl MediumTermWriter {
             state: WriterState::WaitingForKeyframe,
             path: active_path,
             final_path,
+            recording_id: Uuid::new_v4().hyphenated().to_string(),
+            stream_id: camera_id.to_owned(),
+            started_at_ms,
+            catalog,
             started_at,
             segment_origin: None,
             camera_timestamp_origin: None,
@@ -207,6 +247,21 @@ impl MediumTermWriter {
         }
         let writer = mp4::FragmentedMp4Writer::write_start(file, &mp4_config, &track_configs)
             .map_err(mp4_err)?;
+        let initialization = writer.initialization();
+        if let Some(catalog) = &self.catalog {
+            catalog
+                .upsert_recording(CatalogRecording {
+                    id: self.recording_id.clone(),
+                    stream_id: self.stream_id.clone(),
+                    started_at_ms: self.started_at_ms,
+                    ended_at_ms: None,
+                    path: self.path.to_string_lossy().into_owned(),
+                    init_offset: initialization.offset,
+                    init_len: initialization.size,
+                    finalized: false,
+                })
+                .map_err(catalog_err)?;
+        }
         tracing::debug!(
             path = %self.path.display(),
             audio = audio.is_some(),
@@ -220,6 +275,8 @@ impl MediumTermWriter {
             audio_track: audio.map(|_| 2),
             audio_timescale: audio.map_or(0, |(timescale, _)| timescale),
             last_video_dts: None,
+            last_video_duration: 0,
+            fragment_start_dts: None,
             next_audio_dts: None,
         })
     }
@@ -231,6 +288,7 @@ impl MediumTermWriter {
         let origin = self.segment_origin.unwrap();
         let elapsed = rf.received_at.saturating_duration_since(origin);
 
+        let mut completed_fragment = None;
         match rf.frame {
             MediaFrame::Video(video) => {
                 let camera_dts = timestamp_ticks_or_fallback(
@@ -243,11 +301,18 @@ impl MediumTermWriter {
                 let previous_dts = active.last_video_dts;
                 let dts = resolve_video_dts(previous_dts, camera_dts, default_duration);
                 if video.is_keyframe && active.writer.has_pending_samples() {
-                    active
+                    let fragment_start_dts = active.fragment_start_dts.ok_or_else(|| {
+                        std::io::Error::other("active MP4 fragment has no start timestamp")
+                    })?;
+                    let fragment = active
                         .writer
                         .flush_fragment_before_sample(active.video_track, dts)
                         .map_err(mp4_err)?;
+                    completed_fragment =
+                        fragment.map(|fragment| (fragment, fragment_start_dts, dts));
+                    active.fragment_start_dts = Some(dts);
                 }
+                active.fragment_start_dts.get_or_insert(dts);
                 let duration = active
                     .last_video_dts
                     .and_then(|last| u32::try_from(dts - last).ok())
@@ -268,6 +333,7 @@ impl MediumTermWriter {
                     )
                     .map_err(mp4_err)?;
                 active.last_video_dts = Some(dts);
+                active.last_video_duration = duration;
                 self.frames_written += 1;
                 self.bytes_written += data_len as u64;
             }
@@ -320,7 +386,38 @@ impl MediumTermWriter {
                 self.bytes_written += raw_aac.len() as u64;
             }
         }
+        if let Some((fragment, start_dts, end_dts)) = completed_fragment {
+            self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
+        }
         Ok(())
+    }
+
+    fn insert_catalog_fragment(
+        &self,
+        fragment: mp4::Mp4FragmentInfo,
+        start_dts: u64,
+        end_dts: u64,
+    ) -> std::io::Result<()> {
+        let Some(catalog) = &self.catalog else {
+            return Ok(());
+        };
+        let start_offset_ms = ticks_to_millis(start_dts, VIDEO_TIMESCALE);
+        let duration_ms =
+            ticks_to_millis(end_dts.saturating_sub(start_dts), VIDEO_TIMESCALE).max(1);
+        let start_ms = self
+            .started_at_ms
+            .saturating_add(i64::try_from(start_offset_ms).unwrap_or(i64::MAX));
+        catalog
+            .insert_fragment(CatalogFragment {
+                recording_id: self.recording_id.clone(),
+                sequence: u64::from(fragment.sequence_number),
+                start_ms,
+                duration_ms,
+                byte_offset: fragment.range.offset,
+                byte_len: fragment.range.size,
+                random_access: true,
+            })
+            .map_err(catalog_err)
     }
 
     pub fn finalize(mut self) -> std::io::Result<PathBuf> {
@@ -329,14 +426,34 @@ impl MediumTermWriter {
         }
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         match state {
-            WriterState::Active(ActiveWriter { mut writer, .. }) => {
+            WriterState::Active(ActiveWriter {
+                mut writer,
+                last_video_dts,
+                last_video_duration,
+                fragment_start_dts,
+                ..
+            }) => {
                 tracing::debug!(path = %self.path.display(), "writing final MP4 fragment");
-                writer.write_end().map_err(mp4_err)?;
+                let final_fragment = writer.write_end().map_err(mp4_err)?;
                 let mut inner = writer.into_writer();
                 std::io::Write::flush(&mut inner)?;
                 drop(inner);
+                if let Some(fragment) = final_fragment {
+                    let start_dts = fragment_start_dts.ok_or_else(|| {
+                        std::io::Error::other("final MP4 fragment has no start timestamp")
+                    })?;
+                    let end_dts = last_video_dts
+                        .unwrap_or(start_dts)
+                        .saturating_add(u64::from(last_video_duration));
+                    self.insert_catalog_fragment(fragment, start_dts, end_dts)?;
+                }
                 tracing::debug!(from = %self.path.display(), to = %self.final_path.display(), "renaming active segment");
                 std::fs::rename(&self.path, &self.final_path)?;
+                if let Some(catalog) = &self.catalog {
+                    catalog
+                        .update_recording_path(&self.recording_id, &self.final_path, true)
+                        .map_err(catalog_err)?;
+                }
                 Ok(self.final_path)
             }
             _ => {
@@ -356,6 +473,10 @@ impl MediumTermWriter {
 
     pub fn active_path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn recording_id(&self) -> &str {
+        &self.recording_id
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -395,6 +516,15 @@ fn audio_sample_duration(duration: Duration, timescale: u32) -> std::io::Result<
         .ok_or_else(|| std::io::Error::other("invalid audio frame duration"))
 }
 
+fn ticks_to_millis(ticks: u64, timescale: u32) -> u64 {
+    let millis = u128::from(ticks).saturating_mul(1_000) / u128::from(timescale);
+    u64::try_from(millis).unwrap_or(u64::MAX)
+}
+
+fn catalog_err(error: anyhow::Error) -> std::io::Error {
+    std::io::Error::other(error.to_string())
+}
+
 fn mp4_err(e: mp4::Error) -> std::io::Error {
     match e {
         mp4::Error::IoError(io_err) => io_err,
@@ -424,11 +554,13 @@ const fn sample_freq_index(rate: u32) -> mp4::SampleFreqIndex {
 mod tests {
     use super::{MediumTermWriter, audio_sample_duration, resolve_video_dts};
     use crate::storage::{
-        AudioCodec, AudioFrame, MediaFrame, RecordingFrame, VideoCodec, VideoFrame,
+        AudioCodec, AudioFrame, MediaFrame, RecordingCatalog, RecordingFrame, VideoCodec,
+        VideoFrame,
     };
     use bytes::Bytes;
     use std::{
         fs::File,
+        io::{Read, Seek, SeekFrom},
         time::{Duration, Instant},
     };
 
@@ -515,6 +647,69 @@ mod tests {
         assert_eq!(gap_audio.start_time, 4_800);
         assert_eq!(gap_audio.duration, 960);
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_indexes_exact_initialization_and_fragment_ranges() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-catalog-{}",
+            rand::random::<u64>()
+        ));
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let started_at = Instant::now();
+        let now_ms = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        let mut writer = MediumTermWriter::create_with_catalog(
+            &root,
+            "camera/main",
+            started_at,
+            8 * 1024,
+            handle.clone(),
+        )
+        .unwrap();
+        for offset_ms in [0, 1_000, 2_000] {
+            writer
+                .append_one(video_frame(
+                    started_at + Duration::from_millis(offset_ms),
+                    Duration::from_millis(offset_ms),
+                ))
+                .unwrap();
+        }
+
+        let path = writer.finalize().unwrap();
+        let fragments = handle
+            .media_fragments_in_range("camera/main", now_ms - 10_000, now_ms + 10_000)
+            .unwrap();
+
+        assert_eq!(fragments.len(), 3);
+        assert!(
+            fragments
+                .iter()
+                .all(|fragment| fragment.path == path.to_string_lossy())
+        );
+        assert_eq!(fragments[0].duration_ms, 1_000);
+        let mut file = File::open(path).unwrap();
+        let mut initialization = vec![0; usize::try_from(fragments[0].init_len).unwrap()];
+        file.seek(SeekFrom::Start(fragments[0].init_offset))
+            .unwrap();
+        file.read_exact(&mut initialization).unwrap();
+        assert_eq!(&initialization[4..8], b"ftyp");
+        for fragment in &fragments {
+            let mut header = [0; 8];
+            file.seek(SeekFrom::Start(fragment.byte_offset)).unwrap();
+            file.read_exact(&mut header).unwrap();
+            assert_eq!(&header[4..8], b"moof");
+        }
+
+        drop(handle);
+        catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }
 

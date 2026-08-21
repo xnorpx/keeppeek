@@ -1,0 +1,1739 @@
+{
+	"schemaVersion": 2,
+	"exportedAt": "2026-08-19",
+	"source": {
+		"fileId": "01M0B0VBH78TMTX40GCYYQ37SG",
+		"fileName": "KeepPeek — NVR Design System & Spec",
+		"pageId": "1-0",
+		"pageName": "Page 1",
+		"url": "https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0",
+		"nodeCount": 6755,
+		"artboardCount": 34,
+		"tokenCount": 80,
+		"tokenHash": "cf3b1cd7",
+		"fontFamilies": ["IBM Plex Mono", "Archivo", "System Sans-Serif"],
+		"jsxFormat": "inline-styles"
+	},
+	"boards": [
+		{
+			"index": 1,
+			"id": "1-0",
+			"name": "01 — Brief & Positioning",
+			"childCount": 4,
+			"width": 1440,
+			"height": 1255,
+			"worldX": -690,
+			"worldY": -242,
+			"source": "boards/01-brief-positioning.jsx.txt",
+			"bytes": 15744,
+			"sha256": "a64fb3ce7b162f44f322d2a1ecdec00b93fd4b5f187dc0e7f07d1c7ff09922a2"
+		},
+		{
+			"index": 2,
+			"id": "20-0",
+			"name": "02 — Design Tokens",
+			"childCount": 4,
+			"width": 1440,
+			"height": 1933,
+			"worldX": 830,
+			"worldY": -242,
+			"source": "boards/02-design-tokens.jsx.txt",
+			"bytes": 36318,
+			"sha256": "f88ebd8a8d279a682027c90a77ac350c9d6899d5eaee86bb79ba13c37744619f"
+		},
+		{
+			"index": 3,
+			"id": "5Q-0",
+			"name": "03 — Information Architecture",
+			"childCount": 2,
+			"width": 1440,
+			"height": 1044,
+			"worldX": 2350,
+			"worldY": -242,
+			"source": "boards/03-information-architecture.jsx.txt",
+			"bytes": 49248,
+			"sha256": "b28ffa79f80938275412c0072f158f8ac5d431149fd73f607032fc042b566eee"
+		},
+		{
+			"index": 4,
+			"id": "C4-0",
+			"name": "04 — Keep: Timeline Anatomy",
+			"childCount": 5,
+			"width": 1440,
+			"height": 2244.5,
+			"worldX": 3870,
+			"worldY": -242,
+			"source": "boards/04-keep-timeline-anatomy.jsx.txt",
+			"bytes": 69012,
+			"sha256": "d737faea9a8075030a03c5281702f820febdf7d4adc5ecf310e708a3f9c99b24",
+			"references": [
+				{
+					"nodeId": "CE-0",
+					"scenarioId": "keep.desktop.timeline-anatomy",
+					"storySource": "visual-harness/stories/Board04KeepTimeline.stories.ts",
+					"source": "references/04-keep-timeline-anatomy.png",
+					"width": 1280,
+					"height": 720,
+					"theme": "dark",
+					"fixture": "recordings.dense-day",
+					"bytes": 123822,
+					"sha256": "657cafc17086d3b62d803bb78321b791991d1ecb080341dc03fdad72b470176e",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 50052,
+						"totalPixels": 921600,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 14523,
+						"blockers": [
+							"Event records expose kind and source category rather than Paper's narrative labels, publisher service names, and revision metadata.",
+							"One optional thumbnail URL cannot prove Paper's multi-frame story count, and approved deterministic player/event imagery is unavailable.",
+							"Paper's hand-positioned ruler scale conflicts with its explanatory 6-hour zoom value; the visual override remains isolated from production zoom math."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 5,
+			"id": "II-0",
+			"name": "05 — Handoff: What To Design Next",
+			"childCount": 3,
+			"width": 1440,
+			"height": 2140,
+			"worldX": 5390,
+			"worldY": -242,
+			"source": "boards/05-handoff-what-to-design-next.jsx.txt",
+			"bytes": 47513,
+			"sha256": "7d3017b59ae1db79633144e8d628e11a6a96cede44f9d698974c05f89b632cb9"
+		},
+		{
+			"index": 6,
+			"id": "MX-0",
+			"name": "06 — App Shell &amp; Peek (Live)",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1210,
+			"worldX": 6910.001,
+			"worldY": -242,
+			"source": "boards/06-app-shell-amp-peek-live.jsx.txt",
+			"bytes": 43901,
+			"sha256": "84a330258386ffeb252714b6a19713f3c734ffe958d0d2006df63fdc01e808ea",
+			"references": [
+				{
+					"nodeId": "N7-0",
+					"scenarioId": "peek.desktop.live-wall",
+					"storySource": "visual-harness/stories/Board06PeekLiveWall.stories.ts",
+					"source": "references/06-peek-live-wall.png",
+					"width": 1440,
+					"height": 860,
+					"theme": "dark",
+					"fixture": "fleet.mixed-health",
+					"bytes": 101136,
+					"sha256": "4df6252215d92a3b624efb76ce316581310340f10419cfe231574f6afa2ce076",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 30263,
+						"totalPixels": 1238400,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 16138,
+						"varianceReason": "The 1440x860 shell, 64/1374px columns, 52/774/32px main lanes, two 1342x340 rows, and six 439x340 shared tiles match exactly. Residual text pixels come from reporting the six fixture cameras as 6 OF 6 instead of inventing Paper's 127-source total, runtime-derived reconnect/offline evidence, and Paper/Chromium font rasterization; both references use neutral video surfaces."
+					}
+				}
+			]
+		},
+		{
+			"index": 7,
+			"id": "TS-0",
+			"name": "07 — Camera page &amp; PTZ",
+			"childCount": 2,
+			"width": 1600,
+			"height": 2409,
+			"worldX": 8590,
+			"worldY": -242,
+			"source": "boards/07-camera-page-amp-ptz.jsx.txt",
+			"bytes": 94266,
+			"sha256": "cbaf7c90e9bd52d671e99fd7a2e2919f51db91da9d13663d4be27a1721bc3946",
+			"references": [
+				{
+					"nodeId": "U2-0",
+					"scenarioId": "camera.desktop.details-ptz",
+					"storySource": "visual-harness/stories/Board07CameraPage.stories.ts",
+					"source": "references/07-camera-details-ptz.png",
+					"width": 1440,
+					"height": 2059,
+					"theme": "dark",
+					"fixture": "camera.ptz-supported",
+					"bytes": 349716,
+					"sha256": "b2242878797afd3b47cd81202f6d56404d78da36330d1cef233430172931a5c5",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 188509,
+						"totalPixels": 2964960,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 72610,
+						"blockers": [
+							"Per-camera retention, recording mode, inheritance provenance, shared credentials, broad save, and probe-resolution evidence are absent.",
+							"Stored events expose source categories rather than Paper's publisher registry, tokens, mappings, heartbeat, last-event age, and daily counts.",
+							"PTZ movement and recall use WebRTC, but speed control, preset mutation, audio commands, deterministic media pixels, and live recording status remain unavailable."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 8,
+			"id": "15P-0",
+			"name": "08 — Layout editor",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1578,
+			"worldX": 10270,
+			"worldY": -242,
+			"source": "boards/08-layout-editor.jsx.txt",
+			"bytes": 46994,
+			"sha256": "7e2bf4bf9e71919cff56eaa1b06eb9c1a1d77d1fce2ff1af007665f7dd2d8f8e",
+			"references": [
+				{
+					"nodeId": "15Z-0",
+					"scenarioId": "peek.desktop.layout-editor",
+					"storySource": "visual-harness/stories/Board08LayoutEditor.stories.ts",
+					"source": "references/08-layout-editor.png",
+					"width": 1440,
+					"height": 840,
+					"theme": "dark",
+					"fixture": "fleet.layout-editor",
+					"bytes": 102305,
+					"sha256": "a4c4f51fd31b464751656cce2301b7056bc2cf775348fdfed615ec0e3bf3ee1b",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 42766,
+						"totalPixels": 1209600,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 23425,
+						"blockers": [
+							"No server layout persistence contract exists, so Done is disabled and edited drafts can only be undone or discarded.",
+							"No server layout registry returns a total source count, placed count, stable layout identity, or current saved arrangement.",
+							"Activity Focus and pin values are editable draft state; no persisted runtime promotion or four-second marker contract exists."
+						]
+					}
+				},
+				{
+					"nodeId": "1AE-0",
+					"scenarioId": "peek.desktop.layout-registry",
+					"storySource": "visual-harness/stories/Board08LayoutRegistry.stories.ts",
+					"source": "references/08-layout-registry-dialogs.png",
+					"width": 1440,
+					"height": 396,
+					"theme": "dark",
+					"fixture": "fleet.layout-registry-unavailable",
+					"bytes": 77260,
+					"sha256": "c27ed38545b228b1c0a948ab6291a40f6b25b4859e2857eef9530ac083127ec6",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 32725,
+						"totalPixels": 570240,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 19337,
+						"blockers": [
+							"No server layout directory returns names, camera counts, stable identities, or current selection.",
+							"No create, rename, persist, or delete layout command exists in the canonical WebRTC API.",
+							"A destructive confirmation cannot target fixture-only layout data, so both registry and deletion remain explicitly unavailable."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 9,
+			"id": "1BV-0",
+			"name": "09 — Keep: stories, export, swimlanes",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1166,
+			"worldX": 2270,
+			"worldY": 2320,
+			"source": "boards/09-keep-stories-export-swimlanes.jsx.txt",
+			"bytes": 39356,
+			"sha256": "1a14fcc1aae9507a96b924737eef984de1f253397940efea84735c967ab068bd",
+			"references": [
+				{
+					"nodeId": "1C6-0",
+					"scenarioId": "keep.desktop.stories",
+					"storySource": "visual-harness/stories/Board09KeepModes.stories.ts",
+					"source": "references/09-keep-stories.png",
+					"width": 467,
+					"height": 413,
+					"theme": "dark",
+					"fixture": "recordings.stories",
+					"bytes": 30647,
+					"sha256": "c453419c776d2094df765fa95bf057eab5e9982a42a06a258c80e94eed9162d2",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 10877,
+						"totalPixels": 192871,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 7347,
+						"blockers": [
+							"The current story event carries no narrative summary or publisher service identity.",
+							"One optional thumbnail URL cannot reproduce Paper's multi-frame attachment sequence or additional-frame count.",
+							"Source attribution remains the returned camera or KeepPeek category rather than an invented detection-service name."
+						]
+					}
+				},
+				{
+					"nodeId": "1DV-0",
+					"scenarioId": "keep.desktop.calendar",
+					"storySource": "visual-harness/stories/Board09KeepModes.stories.ts",
+					"source": "references/09-keep-calendar.png",
+					"width": 467,
+					"height": 413,
+					"theme": "dark",
+					"fixture": "recordings.calendar",
+					"bytes": 27101,
+					"sha256": "8f1fe9dae5540b8a8a076d102d6df1199c3e3e90415bf68ad5d4c284a06573ba",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 6868,
+						"totalPixels": 192871,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 4088,
+						"varianceReason": "The exact 467x413 geometry and footage-backed day states match; the callout says the unavailable-date cause is not reported rather than claiming retention reclaimed it, with remaining text pixels attributable to this evidence-safe copy and Paper/Chromium font rasterization."
+					}
+				},
+				{
+					"nodeId": "1CX-0",
+					"scenarioId": "keep.desktop.export-gated",
+					"storySource": "visual-harness/stories/Board09KeepModes.stories.ts",
+					"source": "references/09-keep-export-gated.png",
+					"width": 467,
+					"height": 413,
+					"theme": "dark",
+					"fixture": "recordings.export-range",
+					"bytes": 43270,
+					"sha256": "5b2278798201fc3d1ff9e8b8b0831ba428dc737563626cc300c65822f2b23a2d",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 30756,
+						"totalPixels": 192871,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 8685,
+						"blockers": [
+							"The server aligns exports internally but does not return keyframe positions, so the UI cannot claim its draft handles snapped to keyframes.",
+							"The fail-closed gate intentionally names the full canonical keeppeek.media-export.v1 capability rather than Paper's shortened label.",
+							"Range bounds and bitrate-derived size remain available while the command is unavailable, preserving the production draft contract."
+						]
+					}
+				},
+				{
+					"nodeId": "1FB-0",
+					"scenarioId": "keep.desktop.swimlanes",
+					"storySource": "visual-harness/stories/Board09KeepModes.stories.ts",
+					"source": "references/09-keep-swimlanes.png",
+					"width": 1440,
+					"height": 363,
+					"theme": "dark",
+					"fixture": "recordings.swimlanes",
+					"bytes": 59764,
+					"sha256": "cebae9aff8ce25ffac19423d595206f2fe06bd6ee49796774354820d69a3bb15",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 34360,
+						"totalPixels": 522720,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 17112,
+						"blockers": [
+							"Indexed ranges and event spans do not establish that events on different cameras describe the same subject.",
+							"A gap between indexed ranges has no returned outage cause, so the legend cannot claim a missing camera.",
+							"The evidence-safe title and legend describe returned ranges, events, gaps, and the eight-lane cap without causal inference."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 10,
+			"id": "1GP-0",
+			"name": "10 — Events: browse, search, detail",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1879,
+			"worldX": 11950,
+			"worldY": -242,
+			"source": "boards/10-events-browse-search-detail.jsx.txt",
+			"bytes": 56794,
+			"sha256": "22fc89d57274a5e8dc251f8d5674aeb64b58ccb3dbe9c72983f91639d95f482e",
+			"references": [
+				{
+					"nodeId": "1GZ-0",
+					"scenarioId": "events.desktop.browse",
+					"storySource": "visual-harness/stories/Board10Events.stories.ts",
+					"source": "references/10-events-browse.png",
+					"width": 1440,
+					"height": 820,
+					"theme": "dark",
+					"fixture": "events.mixed",
+					"bytes": 118898,
+					"sha256": "5b3cd145334d1f7b014e8b3008f9db7ceb1b4254b7bf02c2e65ab9b692766eab",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 27675,
+						"totalPixels": 1180800,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 18223,
+						"blockers": [
+							"Event rows expose kind and source category but no narrative display label or publisher service identity.",
+							"One optional thumbnail URL carries no attachment history or frame count, so multi-image story treatments cannot be reproduced.",
+							"Neutral fixture media cannot become an approved Loki baseline until deterministic Event imagery is approved from Paper."
+						]
+					}
+				},
+				{
+					"nodeId": "1LM-0",
+					"scenarioId": "events.desktop.detail",
+					"storySource": "visual-harness/stories/Board10Events.stories.ts",
+					"source": "references/10-event-detail.png",
+					"width": 1440,
+					"height": 669,
+					"theme": "dark",
+					"fixture": "events.mixed",
+					"bytes": 125001,
+					"sha256": "9e53e221f88e8a0cd3b5be1ab67ddc44e6a70fe113cfaf5939c0f9d92e2ed2a9",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 119507,
+						"totalPixels": 963360,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 90135,
+						"blockers": [
+							"The event API returns one optional thumbnail URL rather than attachment history or a three-frame story.",
+							"Narrative title, payload, revision history, and publisher source_id are absent from the current event record.",
+							"Export and bookmark remain fail-closed capability gates, whose exact IDs intentionally exceed Paper's shorter target labels."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 11,
+			"id": "1NF-0",
+			"name": "11 — Cameras: fleet list",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1174,
+			"worldX": 3950,
+			"worldY": 2320,
+			"source": "boards/11-cameras-fleet-list.jsx.txt",
+			"bytes": 60913,
+			"sha256": "d63937572a9e5c45d4ea4a51c79a750313f35393b28b992b83ed46a6cc199ef3",
+			"references": [
+				{
+					"nodeId": "1NP-0",
+					"scenarioId": "cameras.desktop.fleet",
+					"storySource": "visual-harness/stories/Board11CameraFleet.stories.ts",
+					"source": "references/11-camera-fleet.png",
+					"width": 1440,
+					"height": 624,
+					"theme": "dark",
+					"fixture": "fleet.127-sources",
+					"bytes": 153561,
+					"sha256": "3e429d22a99506eccf9d09d072ab4d1336c0cfefd41ee983cb3dc708c6d01f67",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 50349,
+						"totalPixels": 898560,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 26623,
+						"blockers": [
+							"Fleet and health snapshots do not expose last-event timestamp, kind, or publisher provenance.",
+							"Group membership/directory state and service-published media variants are unavailable.",
+							"Bulk set-recording, move-to-group, restart-stream, and remove operations have no implemented shared command contract."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 12,
+			"id": "1VG-0",
+			"name": "12 — Add camera wizard",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1588,
+			"worldX": 5630,
+			"worldY": 2320,
+			"source": "boards/12-add-camera-wizard.jsx.txt",
+			"bytes": 58430,
+			"sha256": "c7b75db1eaaec3627d8088d319259d6202b93e66eb11007dab32cd4dd3c5814b",
+			"references": [
+				{
+					"nodeId": "1VQ-0",
+					"scenarioId": "cameras.desktop.add-wizard",
+					"storySource": "visual-harness/stories/Board12AddCamera.stories.ts",
+					"source": "references/12-add-camera-stream-evidence.png",
+					"width": 1440,
+					"height": 685,
+					"theme": "dark",
+					"fixture": "camera.discovery-results",
+					"bytes": 317380,
+					"sha256": "55b57aad24ed47de14f0fd0e86ea5dc525a6d26baf10c55ab0dc68c0a6168e6c",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 68168,
+						"totalPixels": 986400,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 39589,
+						"blockers": [
+							"The server has no candidate-camera authentication or stream-probe command, so declared RTSP URLs cannot be presented as decoded proof before save.",
+							"Audio codec, first-keyframe timing, frame count, bitrate, recording mode, retention impact, and group assignment are unavailable before the final write.",
+							"A permanent source ID exists only after save, and credentials remain write-only browser draft data until the final configuration command."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 13,
+			"id": "233-0",
+			"name": "13 — Settings: storage &amp; retention",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1487,
+			"worldX": 7310,
+			"worldY": 2320,
+			"source": "boards/13-settings-storage-amp-retention.jsx.txt",
+			"bytes": 53893,
+			"sha256": "771c7ec799bdb18d1469a45e11c15d9663b1ed0976ac5fab4417e959db42c568",
+			"references": [
+				{
+					"nodeId": "23D-0",
+					"scenarioId": "settings.desktop.storage-retention",
+					"storySource": "visual-harness/stories/Board13StorageRetention.stories.ts",
+					"source": "references/13-storage-retention.png",
+					"width": 1440,
+					"height": 1163,
+					"theme": "dark",
+					"fixture": "settings.storage",
+					"bytes": 264096,
+					"sha256": "888a17ae7c9ca723426274cc0bfb95df2bbd567ec5d4551bec04513abbdcb2b0",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 104158,
+						"totalPixels": 1674720,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 58560,
+						"blockers": [
+							"Estimated retention is a configured-cap projection; actual oldest-footage time and observed retention history are not exposed.",
+							"The active writer duration controls MP4 rollover, not medium-tier retention age, and prune-oldest is fixed engine behavior rather than a selectable fill policy.",
+							"Per-camera recording/retention overrides, pinned recordings, additional locations, and offsite archive runtime are unavailable."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 14,
+			"id": "29O-0",
+			"name": "14 — Settings: event sources",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1404,
+			"worldX": 8990,
+			"worldY": 2320,
+			"source": "boards/14-settings-event-sources.jsx.txt",
+			"bytes": 56366,
+			"sha256": "4e161cf5b2a2e5e502d8ecd4c530b1da8c7316d2324084216b8b526b2d300fbc",
+			"references": [
+				{
+					"nodeId": "29Y-0",
+					"scenarioId": "settings.desktop.event-sources",
+					"storySource": "visual-harness/stories/Board14EventSources.stories.ts",
+					"source": "references/14-event-sources.png",
+					"width": 1440,
+					"height": 1048,
+					"theme": "dark",
+					"fixture": "settings.event-sources",
+					"bytes": 234138,
+					"sha256": "07b1e3f67e777af096a1265a8f8e836618ecd41678c14d686a1af22db875dcb4",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 87342,
+						"totalPixels": 1509120,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 46554,
+						"blockers": [
+							"Catalog counts are all-time aggregates; events-today and last-event time are not returned.",
+							"Persisted camera and keeppeek origins are categories rather than publisher identities, connections, or sessions.",
+							"Publisher registry, heartbeat, token metadata, scopes, permissions, type mappings, and WebRTC publication runtime are unavailable."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 15,
+			"id": "2GO-0",
+			"name": "15 — Health: server &amp; client",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1626,
+			"worldX": 10670.001,
+			"worldY": 2320,
+			"source": "boards/15-health-server-amp-client.jsx.txt",
+			"bytes": 61404,
+			"sha256": "38bfbe192f64c544c5d12e3e00cb42a02d78976e2dd858cd3b69edd0fa361c2b",
+			"references": [
+				{
+					"nodeId": "2GY-0",
+					"scenarioId": "health.desktop.overview",
+					"storySource": "visual-harness/stories/Board15Health.stories.ts",
+					"source": "references/15-health-server-client.png",
+					"width": 1440,
+					"height": 1302,
+					"theme": "dark",
+					"fixture": "health.mixed-outages",
+					"bytes": 278114,
+					"sha256": "de44fdef07d7c14bce45237e1fea81f6d6c6461b636f602b2e655f89c69cf68b",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 101420,
+						"totalPixels": 1874880,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 64298,
+						"blockers": [
+							"Health is read through HealthCommand over the WebRTC control channel, so Paper's obsolete GET /health endpoint label is intentionally not reproduced.",
+							"Current stream snapshots do not expose 24-hour frame loss, writer lag, recorded-today completeness, or exact recording-gap start.",
+							"Issue mute and external-service liveness are unavailable, so unsupported actions and service-state inferences are omitted."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 16,
+			"id": "2O3-0",
+			"name": "16 — Settings: access &amp; roles",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1605,
+			"worldX": 12350,
+			"worldY": 2320,
+			"source": "boards/16-settings-access-amp-roles.jsx.txt",
+			"bytes": 50405,
+			"sha256": "e0fcecc532ce3ab35331f9c9c5bd6637f4cd7d6529e0238eb34dae8144b19530",
+			"references": [
+				{
+					"nodeId": "2OD-0",
+					"scenarioId": "settings.desktop.access",
+					"storySource": "visual-harness/stories/Board16Access.stories.ts",
+					"source": "references/16-access-roles.png",
+					"width": 1440,
+					"height": 1249,
+					"theme": "dark",
+					"fixture": "settings.access",
+					"bytes": 263559,
+					"sha256": "bafb5e6d7e80e269863285084a303d817ace40ca05981d4b00338f25504cdacd",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 99272,
+						"totalPixels": 1798560,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 54910,
+						"blockers": [
+							"The Administrator/User matrix is target policy; the current identity runtime neither enforces nor reports assigned roles.",
+							"People, invitations, current identity, sessions, last-seen values, and directory counts are unavailable.",
+							"Token listing, creation, rotation, revocation, scopes, owners, last use, and audit rows are unavailable; raw key material is never rendered."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 17,
+			"id": "2UB-0",
+			"name": "17 — Settings: integrations",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1225,
+			"worldX": -690,
+			"worldY": 5200,
+			"source": "boards/17-settings-integrations.jsx.txt",
+			"bytes": 36566,
+			"sha256": "56ad6e6d5f7d4c623f7645ac3d5ee47ee867d188f7844e7743674ae30ada23a5",
+			"references": [
+				{
+					"nodeId": "2UL-0",
+					"scenarioId": "settings.desktop.integrations",
+					"storySource": "visual-harness/stories/Board17Integrations.stories.ts",
+					"source": "references/17-integrations.png",
+					"width": 1440,
+					"height": 869,
+					"theme": "dark",
+					"fixture": "settings.integrations",
+					"bytes": 207526,
+					"sha256": "bdd8ccd79fcebc11497e7b71a9259c2ba6a7e8f45f7940c90e29bcfc868af8f1",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 77517,
+						"totalPixels": 1251360,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 42463,
+						"blockers": [
+							"HealthCommand, /logs, /metrics, exact-origin CORS, and Bearer access exist, but no external integration configuration or health state can be inferred from them.",
+							"The Home Assistant card package, per-key token scope registry, origin editor, and token rotation command are unavailable.",
+							"MQTT forwarding, webhook endpoint/signing/retry runtime, Prometheus scrape configuration, and external collector health evidence are unavailable."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 18,
+			"id": "2YM-0",
+			"name": "18 — Settings: notifications",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1431,
+			"worldX": 990,
+			"worldY": 5200,
+			"source": "boards/18-settings-notifications.jsx.txt",
+			"bytes": 52523,
+			"sha256": "ec25d34216553979dcb933a12ea2dad2fc65446ec3bcb1ab3290fac42f05d456",
+			"references": [
+				{
+					"nodeId": "2YW-0",
+					"scenarioId": "settings.desktop.notifications",
+					"storySource": "visual-harness/stories/Board18Notifications.stories.ts",
+					"source": "references/18-notifications.png",
+					"width": 1440,
+					"height": 1075,
+					"theme": "dark",
+					"fixture": "settings.notifications",
+					"bytes": 273694,
+					"sha256": "c9c08bab308e95ae0964b5356547adca2e3a5bebb2a42b51348089909a614eee",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 138601,
+						"totalPixels": 1548000,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 56600,
+						"blockers": [
+							"No notification channel registry, configuration, health, browser-permission, or delivery-history contract exists, so channel states and receipts remain unavailable.",
+							"Rules, firing counts, cooldowns, enablement, quiet hours, critical bypass, retry state, tests, and human delivery actions require keeppeek.rules.v1 and are not synthesized.",
+							"MQTT and webhook architecture belongs to Integrations and cannot prove human notification delivery."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 19,
+			"id": "35C-0",
+			"name": "19 — Groups &amp; two-way audio",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1208,
+			"worldX": 2670,
+			"worldY": 5200,
+			"source": "boards/19-groups-amp-two-way-audio.jsx.txt",
+			"bytes": 36226,
+			"sha256": "a96a45aed3cf1faaada06876315bff533ce2ace4b871d6e04b7fa31494e34015",
+			"references": [
+				{
+					"nodeId": "35M-0",
+					"scenarioId": "groups.desktop.administration",
+					"storySource": "visual-harness/stories/Board19Groups.stories.ts",
+					"source": "references/19-groups-administration.png",
+					"width": 1440,
+					"height": 416,
+					"theme": "dark",
+					"fixture": "groups.mixed",
+					"bytes": 64990,
+					"sha256": "1e362cd0e3ac84de2a44ccd7d3d638da33e27eba9db6e8cf1ffbee85337901af",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 18020,
+						"totalPixels": 599040,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 10928,
+						"blockers": [
+							"ListGroups, JoinGroup, and LeaveGroup have generated protobuf types but no server or browser runtime handler, so no group names, definitions, members, recording policy, or presence can be shown.",
+							"Group definition administration remains unavailable until keeppeek.group-admin.v1 is implemented and advertised."
+						]
+					}
+				},
+				{
+					"nodeId": "380-0",
+					"scenarioId": "groups.desktop.participant",
+					"storySource": "visual-harness/stories/Board19Groups.stories.ts",
+					"source": "references/19-groups-participant.png",
+					"width": 1440,
+					"height": 420,
+					"theme": "dark",
+					"fixture": "groups.unavailable",
+					"bytes": 121878,
+					"sha256": "7a0fcac70292a43501fb7570121d635e2ff557face17b99bd3a227d3b383d5e3",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 43642,
+						"totalPixels": 604800,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 34505,
+						"blockers": [
+							"Without a successful JoinGroup runtime, GroupState cannot provide joined duration, recording state, round-trip time, participant identities, capacity, or speaking state.",
+							"Push-to-talk is client-side media behavior after a real join; it remains disabled rather than simulating an active publication."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 20,
+			"id": "39R-0",
+			"name": "20 — Settings: appearance, system, logs",
+			"childCount": 2,
+			"width": 1600,
+			"height": 881,
+			"worldX": 4350,
+			"worldY": 5200,
+			"source": "boards/20-settings-appearance-system-logs.jsx.txt",
+			"bytes": 27331,
+			"sha256": "827a228ec5a9eceeada684c62850b5db5f8f3a91ae877bf2d4c1e3e01222e46b",
+			"references": [
+				{
+					"nodeId": "3A1-0",
+					"scenarioId": "settings.desktop.appearance-system-logs",
+					"storySource": "visual-harness/stories/Board20AppearanceSystem.stories.ts",
+					"source": "references/20-appearance-system-logs.png",
+					"width": 1440,
+					"height": 581,
+					"theme": "dark",
+					"fixture": "settings.system",
+					"bytes": 181556,
+					"sha256": "0c672c70765094c6b4e02fdba147e3dd46eab18424774028908606104e76a467",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 62415,
+						"totalPixels": 836640,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 30479,
+						"blockers": [
+							"The server does not report or update timezone, clock, or week-start preferences; the observed browser timezone is labeled browser-only.",
+							"Update channel, config path, update-check, and configuration-backup contracts are absent, so those values and controls remain unavailable.",
+							"Restart is implemented over WebRTC, but no erase-recordings command exists and the destructive action remains disabled.",
+							"The real log viewer exports redacted logs and metadata, not Paper's broader sanitized-config plus health diagnostics bundle."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 21,
+			"id": "3CX-0",
+			"name": "21 — First run &amp; empty states",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1141,
+			"worldX": 6030,
+			"worldY": 5200,
+			"source": "boards/21-first-run-amp-empty-states.jsx.txt",
+			"bytes": 22545,
+			"sha256": "f3ba936368b2d5d4de6822949e5018689482a4df8ddf5eb0225b49af661b09b1",
+			"references": [
+				{
+					"nodeId": "3D7-0",
+					"scenarioId": "setup.desktop.first-run",
+					"storySource": "visual-harness/stories/Board21FirstRun.stories.ts",
+					"source": "references/21-first-run-empty-states.png",
+					"width": 1440,
+					"height": 785,
+					"theme": "dark",
+					"fixture": "setup.new-installation",
+					"bytes": 189713,
+					"sha256": "4df4c58bba6272ad07cc6cefc6646377ee9d94046ad06eb1835febadf6b1a650",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 75479,
+						"totalPixels": 1130400,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 43350,
+						"blockers": [
+							"The server reports disk capacity but exposes neither a candidate storage write probe nor a setup-completion command, so writability and an enabled Start action cannot be claimed.",
+							"The server does not report or update its timezone; the implementation labels Europe/Stockholm as browser evidence rather than machine evidence.",
+							"Identity fields remain unavailable without keeppeek.identity.v1, so the story renders the exact fail-closed capability gate instead of fixture credentials.",
+							"No event-source registry or configuration command exists, so the implementation cannot claim zero registered sources or offer a working Connect action."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 22,
+			"id": "3FF-0",
+			"name": "22 — Mobile: Peek, Keep, Events",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1200,
+			"worldX": 7710,
+			"worldY": 5200,
+			"source": "boards/22-mobile-peek-keep-events.jsx.txt",
+			"bytes": 61283,
+			"sha256": "174536efebfafe801caa457ef32be012990ff5090745b5427e57eabec645ce6d",
+			"references": [
+				{
+					"nodeId": "3FQ-0",
+					"scenarioId": "peek.mobile.live",
+					"storySource": "visual-harness/stories/Board22MobileMedia.stories.ts",
+					"source": "references/22-mobile-peek.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "fleet.mobile",
+					"bytes": 175359,
+					"sha256": "bdeca9ecc8b6aa34636ac474eb7d32d1a90481ff089cafb1080ead60e3a6af7a",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 115445,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 10768,
+						"blockers": [
+							"No approved deterministic camera-frame posters exist for the seven live tiles; production must continue to use native WebRTC video.",
+							"The current fleet/health APIs do not expose Paper's activity-focus event label, age, or a verified 41-live layout count."
+						]
+					}
+				},
+				{
+					"nodeId": "3HN-0",
+					"scenarioId": "keep.mobile.timeline",
+					"storySource": "visual-harness/stories/Board22MobileMedia.stories.ts",
+					"source": "references/22-mobile-keep.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "recordings.mobile",
+					"bytes": 125067,
+					"sha256": "f32ef096bee42369b752ec9a6ab8b55ae5eb26931b94aee199d6dbb81e154c5d",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 73924,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 12930,
+						"blockers": [
+							"No approved deterministic recorded-frame or event-thumbnail imagery exists for the player and timeline cards.",
+							"Recording events expose kind, time, source, confidence, and optional image, but not Paper's human-authored narrative descriptions."
+						]
+					}
+				},
+				{
+					"nodeId": "3K0-0",
+					"scenarioId": "events.mobile.browse",
+					"storySource": "visual-harness/stories/Board22MobileMedia.stories.ts",
+					"source": "references/22-mobile-events.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "events.mobile",
+					"bytes": 127478,
+					"sha256": "c6b2868d5f1dcc4f4d368ffb987427f04a12846beb5e6ae79c998450c2bd2c73",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 70863,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 14816,
+						"blockers": [
+							"No approved deterministic event-thumbnail imagery exists; the story renders the production no-image state instead.",
+							"The event contract does not provide Paper's descriptive prose, revision number, or multi-frame story summary."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 23,
+			"id": "3VQ-0",
+			"name": "23 — Settings: camera defaults",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1208,
+			"worldX": 9390,
+			"worldY": 5200,
+			"source": "boards/23-settings-camera-defaults.jsx.txt",
+			"bytes": 37833,
+			"sha256": "0afe852a4809ce06dc60cb1da534fe6b319d1ce5092d904103db2c2ee51d103f",
+			"references": [
+				{
+					"nodeId": "3X7-0",
+					"scenarioId": "settings.desktop.camera-defaults",
+					"storySource": "visual-harness/stories/Board23CameraDefaults.stories.ts",
+					"source": "references/23-camera-defaults-content.png",
+					"width": 1374,
+					"height": 806,
+					"theme": "dark",
+					"fixture": "settings.camera-defaults",
+					"bytes": 192890,
+					"sha256": "373aa28cc59e1ff1db5ab03a06ff91b4f0ca8c8e3b08ee02b4edcfdc9f3a604f",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 117826,
+						"totalPixels": 1107444,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 53146,
+						"blockers": [
+							"Runtime configuration exposes per-camera credential-presence booleans but no shared username, shared secret, inheritance marker, override provenance, or reset-to-default command.",
+							"Per-camera recording mode and shared default write semantics are not exposed, so observed configuration cannot be presented as inherited defaults.",
+							"The production section matches Paper's 84/302/312px lanes; strict mismatch was reduced from 27.5% to 10.6% without fabricating inheritance evidence."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 24,
+			"id": "40G-0",
+			"name": "24 — Mobile: Camera & PTZ",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1144,
+			"worldX": -690,
+			"worldY": 6800,
+			"source": "boards/24-mobile-camera-ptz.jsx.txt",
+			"bytes": 51461,
+			"sha256": "f6d31fcb3659341b91b0d8b4af1930128e18f0f87a775ee4bdc11c6eabc1fced",
+			"references": [
+				{
+					"nodeId": "41Z-0",
+					"scenarioId": "camera.mobile.details-ptz",
+					"storySource": "visual-harness/stories/Board24MobileCamera.stories.ts",
+					"source": "references/24-mobile-camera-live.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "camera.ptz-supported",
+					"bytes": 123966,
+					"sha256": "403b8fa83523eee07d1ec979e6eb0c431b332ea134840937d41dda96d79e5f9c",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 80176,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 6918,
+						"blockers": [
+							"The deterministic story has no approved camera-frame poster; production uses the native WebRTC video element and must not replace it with implementation-generated imagery.",
+							"Camera details do not return recent events, and no camera-page talk/listen command is implemented, so those controls remain unavailable."
+						]
+					}
+				},
+				{
+					"nodeId": "42R-0",
+					"scenarioId": "camera.mobile.ptz",
+					"storySource": "visual-harness/stories/Board24MobileCamera.stories.ts",
+					"source": "references/24-mobile-camera-ptz.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "camera.ptz-supported",
+					"bytes": 107731,
+					"sha256": "8d40405a302fbbe234eca8120f27af63183f7cca18d37d52e15bb7dd97aa4ada",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 89251,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 6415,
+						"blockers": [
+							"The deterministic PTZ story has no approved camera-frame poster; production preserves the native WebRTC video element.",
+							"The PTZ command contract exposes continuous pan/tilt/zoom and presets, but not Paper's named Wide/Tele modes or a configurable speed value."
+						]
+					}
+				},
+				{
+					"nodeId": "43E-0",
+					"scenarioId": "camera.mobile.settings",
+					"storySource": "visual-harness/stories/Board24MobileCamera.stories.ts",
+					"source": "references/24-mobile-camera-settings.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "camera.ptz-supported",
+					"bytes": 55552,
+					"sha256": "97f410b81f772f53a597f8717f6b0a5304a33df9d1a4dc1a894a6ec1baeae0e3",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 24655,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 11305,
+						"blockers": [
+							"Camera details expose credential presence but not inherited secrets, override provenance, or per-camera retention inheritance.",
+							"The route has no broad camera-settings draft/save contract or measured connection-probe latency, so the compact screen remains read-only evidence."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 25,
+			"id": "40H-0",
+			"name": "25 — Mobile: Add camera",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1144,
+			"worldX": 990,
+			"worldY": 6800,
+			"source": "boards/25-mobile-add-camera.jsx.txt",
+			"bytes": 41529,
+			"sha256": "9715882109138289f732e687f1faa78d23ff5d2ec03f5b65d8f975ca5fb90796",
+			"references": [
+				{
+					"nodeId": "481-0",
+					"scenarioId": "cameras.mobile.add-wizard",
+					"storySource": "visual-harness/stories/Board25MobileAddCamera.stories.ts",
+					"source": "references/25-mobile-find-connect.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "camera.discovery-results",
+					"bytes": 47335,
+					"sha256": "310a61ceca39b8b98071baf2a6449caf8f45ae8d8db7b4abf69969d7f8711214",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 32391,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 7997,
+						"blockers": [
+							"Discovery returns camera identity evidence but no shared-login or inheritance marker; credentials remain a write-only per-camera draft.",
+							"The selected camera is not configured until final review, so no server-backed connection result exists in this stage."
+						]
+					}
+				},
+				{
+					"nodeId": "49K-0",
+					"scenarioId": "cameras.mobile.add-streams",
+					"storySource": "visual-harness/stories/Board25MobileAddCamera.stories.ts",
+					"source": "references/25-mobile-streams.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "camera.stream-declarations",
+					"bytes": 109767,
+					"sha256": "8d9dfc99c3c4c0e51ca6c79d2294e61fadddff0eed916ae66865a7f74f672f97",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 88136,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 14212,
+						"blockers": [
+							"No candidate-camera authentication or stream-probe command exists before the first configuration write.",
+							"Without decoded candidate media, the UI cannot claim tested stream roles, codecs, resolutions, bitrate, keyframe age, or audio compatibility."
+						]
+					}
+				},
+				{
+					"nodeId": "4B5-0",
+					"scenarioId": "cameras.mobile.add-review",
+					"storySource": "visual-harness/stories/Board25MobileAddCamera.stories.ts",
+					"source": "references/25-mobile-review.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "camera.review",
+					"bytes": 56707,
+					"sha256": "35656121bd00c8372eae00bc380ca072c84e43dfb9db57f71ffaa6fa23154cc8",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 27686,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 10560,
+						"blockers": [
+							"The unsaved camera has no server-backed stream proof, codec assignment, or permanent source ID until the final WebRTC configuration write succeeds.",
+							"No API estimates an unsaved camera's per-day recording cost or projected retention impact."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 26,
+			"id": "40I-0",
+			"name": "26 — Mobile: Health",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1200,
+			"worldX": 2670,
+			"worldY": 6800,
+			"source": "boards/26-mobile-health.jsx.txt",
+			"bytes": 48009,
+			"sha256": "2b5c5e0169950464e430e5491c4652fb46e5cda9bb1e6ccc444d419598488303",
+			"references": [
+				{
+					"nodeId": "4CM-0",
+					"scenarioId": "health.mobile.overview",
+					"storySource": "visual-harness/stories/Board26MobileHealth.stories.ts",
+					"source": "references/26-mobile-health-overview.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "health.mixed-outages",
+					"bytes": 60213,
+					"sha256": "2f05f294eaa5a7dff49d229d26f473d47e8a9666c0096cb21744a87882905ce7",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 4069,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 2196
+					}
+				},
+				{
+					"nodeId": "4EU-0",
+					"scenarioId": "health.mobile.camera-issue",
+					"storySource": "visual-harness/stories/Board26MobileDiagnosis.stories.ts",
+					"source": "references/26-mobile-health-issue.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "health.camera-outage",
+					"bytes": 69520,
+					"sha256": "c2bc11e1097bbe539b143c423bed2c0e0863e6033ad83e8a45f6db9b3f192889",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 25513,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 20836,
+						"blockers": [
+							"Server health does not expose recording-gap start or last accepted recording time, so the screen cannot claim when footage stopped.",
+							"No retry countdown, retry command, or credential probe exists; the compact route keeps those actions unavailable."
+						]
+					}
+				},
+				{
+					"nodeId": "4GF-0",
+					"scenarioId": "health.mobile.stream-evidence",
+					"storySource": "visual-harness/stories/Board26MobileDiagnosis.stories.ts",
+					"source": "references/26-mobile-stream-evidence.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "health.stream-degraded",
+					"bytes": 50366,
+					"sha256": "a1d6c9a37eb78c415524ca3bfc9819746069fdd7465d90810d9e7236d60c03dc",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 15555,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 12262,
+						"blockers": [
+							"Health exposes current cumulative drops and reconnects but no 24-hour loss aggregate, 30-minute history, or writer-lag series.",
+							"Health does not provide causal attribution or confidence, so the screen cannot claim UDP is the likely cause; Switch to TCP remains available through WebRTC."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 27,
+			"id": "40J-0",
+			"name": "27 — Mobile: Administration",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1144,
+			"worldX": 4350,
+			"worldY": 6800,
+			"source": "boards/27-mobile-administration.jsx.txt",
+			"bytes": 54971,
+			"sha256": "1152897704cd2734709a69f5080b4a456fdbacadfc08f119b35679ca27bd48da",
+			"references": [
+				{
+					"nodeId": "4I6-0",
+					"scenarioId": "settings.mobile.administration",
+					"storySource": "visual-harness/stories/Board27MobileAdministration.stories.ts",
+					"source": "references/27-mobile-administration-index.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "settings.mobile",
+					"bytes": 48884,
+					"sha256": "f2aeeb8edc47fc6e5429c7d37f3b323613fea1780ca74bfbe7e95402e956f771",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 2570,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 1388
+					}
+				},
+				{
+					"nodeId": "4KD-0",
+					"scenarioId": "settings.mobile.camera-defaults",
+					"storySource": "visual-harness/stories/Board27MobileAdministration.stories.ts",
+					"source": "references/27-mobile-camera-defaults.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "settings.camera-defaults",
+					"bytes": 51666,
+					"sha256": "7313b2c7b8512d3309af907e536c9375de9282a58ec9670eb39298a23d5966df",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 30330,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 8381,
+						"blockers": [
+							"Runtime configuration exposes only per-camera credential-presence booleans, not a shared username, shared secret, inheritance marker, or reset-to-default command.",
+							"Per-camera recording mode is not exposed, so the compact screen must render that value as unavailable."
+						]
+					}
+				},
+				{
+					"nodeId": "4M9-0",
+					"scenarioId": "settings.mobile.access",
+					"storySource": "visual-harness/stories/Board27MobileAdministration.stories.ts",
+					"source": "references/27-mobile-access.png",
+					"width": 390,
+					"height": 844,
+					"theme": "dark",
+					"fixture": "settings.access",
+					"bytes": 61827,
+					"sha256": "2055c42ff058345ad88b6a1c7f9f24da4f1a77a6b8fbd1952832860943bd2e39",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 26038,
+						"totalPixels": 329160,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 13219,
+						"blockers": [
+							"No identity runtime returns people, assigned roles, invitations, sessions, or current-user evidence.",
+							"No access-token registry returns token names, scopes, owners, or audit evidence; raw key material must never be fabricated."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 28,
+			"id": "40K-0",
+			"name": "28 — Backend capability contract",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1205,
+			"worldX": 6030,
+			"worldY": 6800,
+			"source": "boards/28-backend-capability-contract.jsx.txt",
+			"bytes": 28935,
+			"sha256": "62c1cd59ed2eff9699632fe052d37899e10b690e2fac17e490a96243b04884b7"
+		},
+		{
+			"index": 29,
+			"id": "4VX-0",
+			"name": "29 — Keep: export job lifecycle",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1060,
+			"worldX": 7710,
+			"worldY": 6800,
+			"source": "boards/29-keep-export-job-lifecycle.jsx.txt",
+			"bytes": 32673,
+			"sha256": "2302752b65b515d6a28246f266c4696db4123873fad65e8ce57b523e2d778a36",
+			"references": [
+				{
+					"nodeId": "4WA-0",
+					"scenarioId": "keep.desktop.export-lifecycle",
+					"storySource": "visual-harness/stories/ExportLifecycle.stories.ts",
+					"source": "references/29-export-job-lifecycle-states.png",
+					"width": 1440,
+					"height": 369,
+					"theme": "dark",
+					"fixture": "recordings.export-lifecycle",
+					"bytes": 126881,
+					"sha256": "dde0bb83ff0ddb16a499bd5a88feb1af998c4a6f24838292e1dfe6b379a480e1",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 20418,
+						"totalPixels": 531360,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 7765,
+						"varianceReason": "All four 342x369 cards, 41px headers, body insets, child lanes, status borders, actions, and progress segments match Paper. The residual is concentrated in two evidence-safe copy changes: partial export omits an unproven reconnect cause, and failed export omits an unproven 200 MB remedy; remaining pixels follow Paper and Chromium glyph and border antialiasing."
+					}
+				}
+			]
+		},
+		{
+			"index": 30,
+			"id": "4ZU-0",
+			"name": "30 — Health: diagnose a camera (desktop)",
+			"childCount": 2,
+			"width": 1600,
+			"height": 1140,
+			"worldX": 9390,
+			"worldY": 6800,
+			"source": "boards/30-health-diagnose-a-camera-desktop.jsx.txt",
+			"bytes": 42162,
+			"sha256": "e654e4c52508d7c906fdce791e97734c8a9af391a679cf1c175d80ca462ee02f",
+			"references": [
+				{
+					"nodeId": "507-0",
+					"scenarioId": "health.desktop.camera-diagnosis",
+					"storySource": "visual-harness/stories/Board30CameraDiagnosis.stories.ts",
+					"source": "references/30-camera-diagnosis.png",
+					"width": 1440,
+					"height": 776,
+					"theme": "dark",
+					"fixture": "health.camera-outage",
+					"bytes": 234097,
+					"sha256": "7f2bcedfcb182a70e3a1f73eb2413505ba08de5ae03c11ad7ceb7571b9b07f4a",
+					"paperOverlay": {
+						"status": "candidate",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 109217,
+						"totalPixels": 1117440,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 68423,
+						"blockers": [
+							"Server health does not expose packet-loss history, recording-gap start, or retry countdown.",
+							"No credential probe command exists, so the route and story must keep that action unavailable."
+						]
+					}
+				}
+			]
+		},
+		{
+			"index": 31,
+			"id": "5GD-0",
+			"name": "31 — Peek → Keep: the rewind gesture",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1105,
+			"worldX": 11070,
+			"worldY": 6800,
+			"source": "boards/31-peek-keep-the-rewind-gesture.jsx.txt",
+			"bytes": 26366,
+			"sha256": "f69fa234113c378ee9ac7be39a44a9dc4ecb24fbefcd6e9bb2b459a832e7cf50",
+			"references": [
+				{
+					"nodeId": "5GV-0",
+					"scenarioId": "peek.desktop.rewind-ready",
+					"storySource": "visual-harness/stories/Board31Rewind.stories.ts",
+					"source": "references/31-rewind-ready.png",
+					"width": 464,
+					"height": 262,
+					"theme": "dark",
+					"fixture": "fleet.rewind",
+					"bytes": 11195,
+					"sha256": "e52c222cace55ecfdea6a9d67d5781fd7a2acd4696fb2372b5ca1255ae993f5b",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 957,
+						"totalPixels": 121568,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 245
+					}
+				},
+				{
+					"nodeId": "5HF-0",
+					"scenarioId": "peek.desktop.rewind-to-keep",
+					"storySource": "visual-harness/stories/Board31Rewind.stories.ts",
+					"source": "references/31-rewind-scrubbing.png",
+					"width": 464,
+					"height": 262,
+					"theme": "dark",
+					"fixture": "fleet.rewind",
+					"bytes": 12710,
+					"sha256": "3e59cbc4a91f865e07fc75b741703b4e1df88926c06a73bdf60be038ae0e13ad",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 1924,
+						"totalPixels": 121568,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 341
+					}
+				}
+			]
+		},
+		{
+			"index": 32,
+			"id": "5JK-0",
+			"name": "32 — Keyboard: the whole model",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1190,
+			"worldX": 12750,
+			"worldY": 6800,
+			"source": "boards/32-keyboard-the-whole-model.jsx.txt",
+			"bytes": 48909,
+			"sha256": "29eaaba4c711a20eda1c72df269ebd900dd8088fc0c1167f0092a505ccd3a57d"
+		},
+		{
+			"index": 33,
+			"id": "5P3-0",
+			"name": "33 — Waiting, empty and nothing-found",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1206,
+			"worldX": 14429.999,
+			"worldY": 6800,
+			"source": "boards/33-waiting-empty-and-nothing-found.jsx.txt",
+			"bytes": 31675,
+			"sha256": "443ca159a8e4cc9bf6eee3a4350d8b2aa38a8414da0315063420b6c3311e859e",
+			"references": [
+				{
+					"nodeId": "5PL-0",
+					"scenarioId": "peek.waiting.first-keyframe",
+					"storySource": "visual-harness/stories/Board33States.stories.ts",
+					"source": "references/33-first-keyframe.png",
+					"width": 462,
+					"height": 172,
+					"theme": "dark",
+					"fixture": "fleet.first-keyframe",
+					"bytes": 8407,
+					"sha256": "8bec87079b9d92f34c1f64145e9bf9a05b2645e09ca4d9014b5d377c2adcd329",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 1818,
+						"totalPixels": 79464,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 1240,
+						"varianceReason": "Paper and Chromium use identical state, progress, and label boxes; the residual follows small-font glyph edges."
+					}
+				},
+				{
+					"nodeId": "5Q0-0",
+					"scenarioId": "keep.waiting.cold-seek",
+					"storySource": "visual-harness/stories/Board33States.stories.ts",
+					"source": "references/33-cold-seek.png",
+					"width": 462,
+					"height": 172,
+					"theme": "dark",
+					"fixture": "recordings.cold-seek",
+					"bytes": 14770,
+					"sha256": "0ce048f7dcdf3f37aac088a59fe810b68be262ec4537e7fd19a889603134b8f2",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 5218,
+						"totalPixels": 79464,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 3798,
+						"varianceReason": "The 218x32, 289x12, and 403x12 text boxes match Paper exactly; the residual is the overlapping two-line timestamp and platform glyph rasterization."
+					}
+				},
+				{
+					"nodeId": "5QA-0",
+					"scenarioId": "cameras.waiting.discovery",
+					"storySource": "visual-harness/stories/Board33States.stories.ts",
+					"source": "references/33-discovery-progress.png",
+					"width": 462,
+					"height": 172,
+					"theme": "dark",
+					"fixture": "camera.discovery-progress",
+					"bytes": 9706,
+					"sha256": "c1a6cd81daa61172fbffa12afd77f43be22e9a523aac36ad6eb4c8cb5b9aeb67",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 2309,
+						"totalPixels": 79464,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 1267,
+						"varianceReason": "The 18px inset and 45/99/115px lanes match Paper exactly; the residual follows the large Archivo numeral and mono glyph edges."
+					}
+				},
+				{
+					"nodeId": "5QR-0",
+					"scenarioId": "events.empty.no-results",
+					"storySource": "visual-harness/stories/Board33States.stories.ts",
+					"source": "references/33-no-results.png",
+					"width": 462,
+					"height": 238,
+					"theme": "dark",
+					"fixture": "events.no-results",
+					"bytes": 32712,
+					"sha256": "f01b069be69ee0d3f907b6cc2af969f72ac3d0be9cb11aa4ec994062aa6f850e",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 1416,
+						"totalPixels": 109956,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 735
+					}
+				},
+				{
+					"nodeId": "5RE-0",
+					"scenarioId": "settings.waiting.applying",
+					"storySource": "visual-harness/stories/Board33States.stories.ts",
+					"source": "references/33-settings-applying.png",
+					"width": 462,
+					"height": 238,
+					"theme": "dark",
+					"fixture": "settings.applying",
+					"bytes": 21597,
+					"sha256": "e2833d754b32c64e9d28cf0c6faca4a852f62335f3d0b3d0689271a85de94e17",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 451,
+						"totalPixels": 109956,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 0
+					}
+				},
+				{
+					"nodeId": "5RW-0",
+					"scenarioId": "cameras.waiting.fleet-skeleton",
+					"storySource": "visual-harness/stories/Board33States.stories.ts",
+					"source": "references/33-fleet-skeleton.png",
+					"width": 462,
+					"height": 238,
+					"theme": "dark",
+					"fixture": "fleet.health-pending",
+					"bytes": 10102,
+					"sha256": "5e6a6eb745f310ff04245a30503e91a1273d9a110dbb8639a7bd152895a4c4df",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 840,
+						"totalPixels": 109956,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 343
+					}
+				}
+			]
+		},
+		{
+			"index": 34,
+			"id": "5SM-0",
+			"name": "34 — Light theme",
+			"childCount": 3,
+			"width": 1600,
+			"height": 1271,
+			"worldX": 16110.001,
+			"worldY": 6800,
+			"source": "boards/34-light-theme.jsx.txt",
+			"bytes": 39630,
+			"sha256": "909142bf259971ba391a2360535c542de9e96c6e35979e720b8156602a341c62",
+			"references": [
+				{
+					"nodeId": "5SZ-0",
+					"scenarioId": "peek.desktop.light-theme",
+					"storySource": "visual-harness/stories/LightThemePeek.stories.ts",
+					"source": "references/34-light-theme-peek.png",
+					"width": 1440,
+					"height": 362,
+					"theme": "light",
+					"fixture": "fleet.mixed-health",
+					"bytes": 53734,
+					"sha256": "55828067fdc8a63cc17572a29b597ec1559ad18bd412b3222d9090cf2c73819f",
+					"paperOverlay": {
+						"status": "accepted",
+						"reviewedAt": "2026-08-20",
+						"comparisonThreshold": 16,
+						"mismatchPixels": 1876,
+						"totalPixels": 521280,
+						"highContrastThreshold": 64,
+						"highContrastMismatchPixels": 481
+					}
+				}
+			]
+		}
+	]
+}

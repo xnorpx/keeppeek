@@ -1,0 +1,455 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans)', fontSize: '12px', fontSynthesis: 'none', gap: '48px', height: 'fit-content', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased', width: '1440px' }}>
+      <div style={{ alignItems: 'flex-end', boxSizing: 'border-box', display: 'flex', gap: '40px', width: '100%' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '640px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', fontWeight: 500, letterSpacing: 'var(--tracking-caps)', lineHeight: '14px' }}>
+              05 · HANDOFF
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-4xl)', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '56px' }}>
+            Fourteen original screens. Thirty-four boards.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'inline-block', flexBasis: '0%', flexGrow: '1', paddingBottom: '6px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-base)', lineHeight: '26px' }}>
+            The original queue is complete and the design now extends through board 34: desktop product flows, mobile review and administration, exact-version capability gates, the export job lifecycle that ends the evidence workflow (29), the single desktop destination every Diagnose points at (30), the Peek-to-Keep rewind (31), the keyboard and focus model (32), every waiting and nothing-found state (33), and the light theme (34). Reference sets: ref-a production, ref-b settings, ref-c layout editor.
+          </div>
+        </div>
+      </div>
+      <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', width: '100%' }}>
+        <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline-strong)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBottom: '12px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '10px', letterSpacing: '0.14em', lineHeight: '12px', width: '34px' }}>
+            #
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '10px', letterSpacing: '0.14em', lineHeight: '12px', width: '250px' }}>
+            SCREEN
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '10px', letterSpacing: '0.14em', lineHeight: '12px', width: '330px' }}>
+            WHAT IT MUST PROVE
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: '10px', letterSpacing: '0.14em', lineHeight: '12px' }}>
+            ATTACH THESE REFERENCES
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            01
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Peek — live grid, 8 cameras
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Tile overlays legible over real footage. Degraded, reconnecting and offline tiles drawn — see board 06.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-a/01, 02, 06, 50, 52 · ref-c/01, 57
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            02
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Peek — single camera
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Player settings popover, variant selector, stats overlay. PTZ is a quick-nudge affordance only — the full cluster lives on the camera page.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-a/03, 04, 05, 06, 07 · ref-b/34, 35
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            03
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Layout editor — edit mode
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Free-form drag and resize on a 12-column snap grid. Handles, guides, presets rail, Activity Focus toggle.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-c/33, 34, 35, 42, 59–65, 67
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            04
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Keep — timeline, events tab
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Board 04 rendered against real footage at 1440. This is the screen the product is judged on.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-a/08, 09, 10, 153 · ref-c/16, 19, 20, 22
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            05
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Keep — stories tab
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Multi-frame JPEG sequences with the external service's own description. Provenance always visible.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-c/21, 24, 27, 30
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            06
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Keep — export range selection
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Drag a range directly on the timeline column, with preview and estimated file size.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-a/14, 15, 16, 34, 36
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            07
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Events — grid + filter drawer
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Structured search with autocomplete, filter chips that read back as a sentence, URL-persisted state.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-a/20, 21, 25, 29, 31 · ref-c/43, 50
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            08
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Events — detail drawer
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            JPEG carousel, description, scenarios payload, bounding box, revision history, jump to timeline.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-a/32, 33 · ref-c/55
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            09
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Add camera wizard — 5 steps
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Discover, connect, test each stream with a live preview, assign roles, review. Inline validation throughout.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-b/03–16, 21, 24, 25
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            10
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Cameras — list & per-camera page
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            One page per camera: live preview, PTZ cluster, presets, then stacked config sections with a sticky anchor rail. Override badges inline.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-b/02, 26, 53, 58, 59, 142
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            11
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Settings — storage & retention
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Three tiers visualised, quota bars, projected retention in days. Settings search and breadcrumbs.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-b/39, 52, 84, 106 · ref-a/44
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            12
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Settings — event sources
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Net new. Register detection services, issue tokens, map event types to label, icon and colour, watch ingest health.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            No reference exists — design from the brief on board 01
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            13
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Health — server & client
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Issues feed first, charts second. Client-side WebRTC health is a peer section, not a footnote.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-b/105, 106, 107, 108, 143
+          </div>
+        </div>
+        <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '24px', paddingBlock: '16px', width: '100%' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', flexShrink: '0', fontFamily: 'var(--font-mono)', fontSize: '13px', fontWeight: 500, lineHeight: '16px', width: '34px' }}>
+            14
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px', width: '250px' }}>
+            Access — roles & permissions
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexShrink: '0', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px', width: '330px' }}>
+            Two fixed roles only: administrator, and user. Users may operate PTZ and talk. No per-camera scoping, no role builder. Local LAN skips the key; remote must sign in.
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+            ref-b/96, 97, 98, 99 · ref-a/53
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', paddingTop: '44px', width: '100%' }}>
+        <div style={{ borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '18px', paddingRight: '48px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+            Build only from these
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+            shadcn-svelte is the component source of truth. Nine components are already vendored — button, card, input, badge, separator, sheet, sidebar, skeleton, tooltip. Everything below must be added from the registry rather than hand-built.
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexWrap: 'wrap', gap: '6px', width: '100%' }}>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                tabs
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                dialog
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                alert-dialog
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                dropdown-menu
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                popover
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                select
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                switch
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                slider
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                checkbox
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                radio-group
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                calendar
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                range-calendar
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                command
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                table
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                breadcrumb
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                collapsible
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                resizable
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                scroll-area
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                sonner
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                chart
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                empty
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                progress
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                avatar
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'inline-block', fontFamily: 'var(--font-mono)', paddingBlock: '5px', paddingInline: '9px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                kbd
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+            Icons are Lucide only, imported one per file as @lucide/svelte/icons/name. Stroke width 1.75 at 20px, 2 at 16px. Never mix icon families.
+          </div>
+          <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '14px', paddingTop: '24px', width: '711px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+              States already drawn
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+              Board 06 specifies these four camera-tile states. Reuse them exactly rather than inventing a treatment; the colour each one carries is load-bearing.
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexWrap: 'wrap', gap: '8px', width: '100%' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '7px', paddingInline: '12px' }}>
+                <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                  Recording — bone REC dot, quiet
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '7px', paddingInline: '12px' }}>
+                <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                  Degraded — amber edge, states the reason
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '7px', paddingInline: '12px' }}>
+                <div style={{ backgroundColor: 'var(--color-text-muted)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                  Reconnecting — attempt count, age of last frame
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '7px', paddingInline: '12px' }}>
+                <div style={{ backgroundColor: 'var(--color-live)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
+                  Offline — the only red on the wall, plus Diagnose
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '18px', paddingLeft: '48px', width: '520px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xl)', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
+            Do not invent
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Any detection, model, detector-hardware, training or enrollment screen. KeepPeek ingests results.
+              </div>
+            </div>
+            <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Colours outside the sixteen on board 02. If a screen seems to need one, the screen is wrong.
+              </div>
+            </div>
+            <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                A horizontal primary timeline. The primary timeline is vertical on every breakpoint.
+              </div>
+            </div>
+            <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Cloud accounts, sign-in-with providers, or any screen implying a vendor service.
+              </div>
+            </div>
+            <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Raw stack traces in user-facing errors. Summary first, technical detail behind disclosure.
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Settings buried more than two levels deep without search and breadcrumbs.
+              </div>
+            </div>
+            <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Zone, mask or tripwire drawing tools. Geometry belongs to the detection service; KeepPeek renders the zone an event already carries.
+              </div>
+            </div>
+            <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                A settings tree deeper than two levels, or a per-camera config split across navigation. One page per camera, sections stacked.
+              </div>
+            </div>
+            <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'inline-block', paddingBlock: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+                Red for anything except failure. Recording is the expected state and stays quiet — a bone dot in a neutral pill, never a red one.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

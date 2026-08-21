@@ -1,0 +1,367 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '44px', height: 'fit-content', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased', width: '1600px' }}>
+      <div style={{ alignItems: 'flex-end', boxSizing: 'border-box', display: 'flex', gap: '40px', width: '100%' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '700px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 500, letterSpacing: '0.16em', lineHeight: '14px' }}>
+              09 · KEEP · MODES
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '56px', fontWeight: 700, letterSpacing: '-0.03em', lineHeight: '56px' }}>
+            Three ways to ask “what happened?”
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'inline-block', flexBasis: '0%', flexGrow: '1', paddingBottom: '6px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '26px' }}>
+            Timeline embeds event cards at their time; Events removes the clock for cross-camera scanning; Stories groups frames around an external service's conclusion. Three views, one event model. Board 04 specifies the timeline column.
+          </div>
+        </div>
+      </div>
+      <div style={{ boxSizing: 'border-box', display: 'flex', gap: '20px', width: '100%' }}>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '10px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', overflow: 'clip' }}>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '18px', height: '48px', paddingInline: '16px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, letterSpacing: '0.14em', lineHeight: '14px' }}>
+              TIMELINE
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, letterSpacing: '0.14em', lineHeight: '14px' }}>
+              EVENTS
+            </div>
+            <div style={{ alignSelf: 'stretch', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '13px', justifyContent: 'center' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, letterSpacing: '0.14em', lineHeight: '14px' }}>
+                STORIES
+              </div>
+              <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '2px', width: '100%' }} />
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '14px', padding: '16px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+              Tuesday 18 August
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', padding: '14px' }}>
+              <div style={{ boxSizing: 'border-box', display: 'flex', gap: '6px', width: '100%' }}>
+                <div style={{ backgroundColor: 'var(--color-video)', borderRadius: '4px', boxSizing: 'border-box', flexBasis: '0%', flexGrow: '1', height: '56px' }} />
+                <div style={{ backgroundColor: 'var(--color-video)', borderRadius: '4px', boxSizing: 'border-box', flexBasis: '0%', flexGrow: '1', height: '56px' }} />
+                <div style={{ backgroundColor: 'var(--color-video)', borderRadius: '4px', boxSizing: 'border-box', flexBasis: '0%', flexGrow: '1', height: '56px' }} />
+                <div style={{ alignItems: 'center', backgroundColor: 'var(--color-video)', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexGrow: '1', height: '56px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    +3
+                  </div>
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '19px' }}>
+                A delivery van stopped at the kerb, someone carried a parcel to the front step and left without ringing.
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
+                  06:12 – 06:14
+                </div>
+                <div style={{ backgroundColor: 'var(--color-text-faint)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '3px' }} />
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
+                  OBJECT-DETECT
+                </div>
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: '#E8A33D1A', borderColor: 'var(--color-activity)', borderRadius: '6px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '10px', paddingInline: '12px' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <circle cx="12" cy="12" r="10" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M12 16v-4" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M12 8h.01" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '17px' }}>
+                Written by a detection service, not by KeepPeek. Wording is theirs.
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '10px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', overflow: 'clip' }}>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '10px', height: '48px', paddingInline: '16px' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" fill="none" stroke="var(--color-primary-soft)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <polyline points="7 10 12 15 17 10" fill="none" stroke="var(--color-primary-soft)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <line x1="12" x2="12" y1="15" y2="3" stroke="var(--color-primary-soft)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+              Export a range
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '14px', padding: '16px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '17px' }}>
+              Drag on the timeline column to mark a range. Handles snap to keyframes, so the export never starts mid-GOP.
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', gap: '10px', width: '100%' }}>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '5px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
+                  FROM
+                </div>
+                <div style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', paddingBlock: '8px', paddingInline: '10px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                    06:11:48
+                  </div>
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '5px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
+                  TO
+                </div>
+                <div style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', paddingBlock: '8px', paddingInline: '10px' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                    06:14:20
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: '6px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' }}>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                  Duration
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                  2m 32s
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                  Estimated size
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                  118 MB
+                </div>
+              </div>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                  Container
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                  MP4 · no re-encode
+                </div>
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+              <div style={{ borderColor: 'var(--color-hairline-strong)', borderRadius: '3px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '18px', width: '18px' }} />
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                Burn in timestamp (forces re-encode)
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-hairline)', borderColor: 'var(--color-hairline-strong)', borderRadius: '4px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', justifyContent: 'center', padding: '10px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '16px' }}>
+                Server update required · media-export.v1
+              </div>
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '11px', lineHeight: '16px' }}>
+              Range selection and size estimation remain available; the export command requires keeppeek.media-export.v1.
+            </div>
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '10px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', overflow: 'clip' }}>
+          <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '10px', height: '48px', paddingInline: '16px' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+              <rect width="18" height="18" x="3" y="4" rx="2" fill="none" stroke="var(--color-primary-soft)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M3 10h18" fill="none" stroke="var(--color-primary-soft)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M8 2v4" fill="none" stroke="var(--color-primary-soft)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M16 2v4" fill="none" stroke="var(--color-primary-soft)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+              August 2026
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '14px', padding: '16px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '17px' }}>
+              A dot means footage exists. Days without one are not selectable — you cannot navigate to a gap by accident.
+            </div>
+            <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ boxSizing: 'border-box', display: 'flex', gap: '6px' }}>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    10
+                  </div>
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    11
+                  </div>
+                  <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    12
+                  </div>
+                  <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    13
+                  </div>
+                  <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    14
+                  </div>
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    15
+                  </div>
+                  <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    16
+                  </div>
+                  <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', gap: '6px' }}>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    17
+                  </div>
+                  <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+                </div>
+                <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '3px', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', fontWeight: 600, lineHeight: '14px' }}>
+                    18
+                  </div>
+                  <div style={{ backgroundColor: 'var(--color-on-primary)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    19
+                  </div>
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    20
+                  </div>
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    21
+                  </div>
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    22
+                  </div>
+                </div>
+                <div style={{ alignItems: 'center', borderRadius: '4px', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', height: '34px', justifyContent: 'center' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
+                    23
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderRadius: '6px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '10px', paddingInline: '12px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '4px', width: '4px' }} />
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                14 August has no footage — retention reclaimed it
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '20px', paddingTop: '40px', width: '100%' }}>
+        <div style={{ alignItems: 'baseline', boxSizing: 'border-box', display: 'flex', gap: '14px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 600, letterSpacing: '-0.015em', lineHeight: '34px' }}>
+            Swimlanes
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
+            When the question is “where else did this happen?”, switch from the single-camera column to swimlanes: one lane per camera on a shared horizontal clock.
+          </div>
+        </div>
+        <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: '10px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', overflow: 'clip', width: '100%' }}>
+          <div style={{ borderRightColor: 'var(--color-hairline)', borderRightStyle: 'solid', borderRightWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', width: '150px' }}>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', paddingInline: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.12em', lineHeight: '12px' }}>
+                CAMERA
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', fontWeight: 500, lineHeight: '16px' }}>
+                Front Door
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                Driveway
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                Side Gate
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                Back Yard
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', position: 'relative' }}>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'space-between', paddingInline: '12px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                06:00
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                06:15
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                06:30
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                06:45
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                07:00
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ alignItems: 'center', backgroundColor: 'var(--color-availability)', borderRadius: '2px', boxSizing: 'border-box', display: 'flex', height: '14px', position: 'relative', width: '100%' }}>
+                <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: '2px', boxSizing: 'border-box', height: '14px', left: '22%', position: 'absolute', width: 'round(9%, 1px)' }} />
+                <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: '2px', boxSizing: 'border-box', height: '14px', left: '48%', position: 'absolute', width: 'round(5%, 1px)' }} />
+                <div style={{ backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-surface)', borderRadius: '999px', borderStyle: 'solid', borderWidth: '2px', boxSizing: 'border-box', height: '9px', left: '24%', position: 'absolute', width: '9px' }} />
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '2px', boxSizing: 'border-box', height: '14px', position: 'relative', width: '100%' }}>
+                <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: '2px', boxSizing: 'border-box', height: '14px', left: '20%', position: 'absolute', width: 'round(12%, 1px)' }} />
+                <div style={{ backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-surface)', borderRadius: '999px', borderStyle: 'solid', borderWidth: '2px', boxSizing: 'border-box', height: '9px', left: '21%', position: 'absolute', width: '9px' }} />
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '2px', boxSizing: 'border-box', height: '14px', position: 'relative', width: '100%' }}>
+                <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: '2px', boxSizing: 'border-box', height: '14px', left: '60%', position: 'absolute', width: 'round(6%, 1px)' }} />
+              </div>
+            </div>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', paddingInline: '12px' }}>
+              <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '2px', boxSizing: 'border-box', height: '14px', position: 'relative', width: '100%' }}>
+                <div style={{ borderLeftColor: 'var(--color-hairline-strong)', borderLeftStyle: 'dashed', borderLeftWidth: '1px', borderRightColor: 'var(--color-hairline-strong)', borderRightStyle: 'dashed', borderRightWidth: '1px', boxSizing: 'border-box', height: '14px', left: '36%', position: 'absolute', width: 'round(14%, 1px)' }} />
+              </div>
+            </div>
+            <div style={{ backgroundColor: 'var(--color-text)', boxSizing: 'border-box', height: '210px', left: '24%', position: 'absolute', top: '0px', width: '2px' }} />
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', gap: '24px', width: '100%' }}>
+          <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-availability)', borderRadius: '2px', boxSizing: 'border-box', flexShrink: '0', height: '12px', marginTop: '2px', width: '20px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+              Two cameras caught the same person 40 seconds apart — the pattern is legible without opening either clip.
+            </div>
+          </div>
+          <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexGrow: '1', gap: '10px' }}>
+            <div style={{ borderLeftColor: 'var(--color-hairline-strong)', borderLeftStyle: 'dashed', borderLeftWidth: '1px', borderRightColor: 'var(--color-hairline-strong)', borderRightStyle: 'dashed', borderRightWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '12px', marginTop: '2px', width: '20px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+              Back Yard has a gap in the same window. Swimlanes make a missing camera obvious rather than silent.
+            </div>
+          </div>
+          <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexGrow: '1', gap: '10px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', borderRadius: '999px', boxSizing: 'border-box', flexShrink: '0', height: '9px', marginTop: '4px', width: '9px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '18px' }}>
+              Lanes are capped at eight. Beyond that, pick cameras — 127 lanes is a chart, not a tool.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )

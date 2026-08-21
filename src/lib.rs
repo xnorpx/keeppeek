@@ -1,3 +1,4 @@
+mod access;
 pub mod api;
 pub mod app;
 pub mod battery_wake;
@@ -8,6 +9,7 @@ pub mod health;
 pub mod keeppeek;
 pub mod logging;
 mod media_time;
+mod metrics;
 pub mod reolink;
 pub mod rtsp;
 pub mod runtime;

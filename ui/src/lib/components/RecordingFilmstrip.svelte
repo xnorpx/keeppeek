@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getRecordings } from '$lib/api';
+	import { useControlClient } from '$lib/control-context';
 	import RecordingFilmstripPreview from '$lib/components/RecordingFilmstripPreview.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import type { CameraListItem, RecordingSegment } from '$lib/types';
@@ -12,7 +12,7 @@
 		timestampMs: number | null;
 		playing: boolean;
 		playbackRate: number;
-		onselect: (cameraId: string) => void;
+		onselect: (cameraId: string, timestampMs: number) => void;
 	};
 
 	type CameraRecordings = {
@@ -27,6 +27,7 @@
 
 	let { cameras, selectedCameraId, date, timestampMs, playing, playbackRate, onselect }: Props =
 		$props();
+	const controlClient = useControlClient();
 	let recordings = $state.raw<CameraRecordings[]>([]);
 	let loading = $state(false);
 	let requestVersion = 0;
@@ -86,7 +87,7 @@
 		const results = await Promise.all(
 			cameraList.map(async (camera): Promise<CameraRecordings> => {
 				try {
-					const response = await getRecordings(camera.id, selectedDate, signal);
+					const response = await controlClient.getRecordings(camera.id, selectedDate);
 					return { camera, segments: response.segments };
 				} catch (cause) {
 					if (signal.aborted) throw cause;

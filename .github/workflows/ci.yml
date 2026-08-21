@@ -67,6 +67,22 @@ jobs:
           tool: cargo-machete@0.9.2
       - run: cargo machete
 
+  doctest:
+    name: Rust Doctests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - working-directory: ui
+        run: bun install --registry=https://registry.npmjs.org/
+      - run: cargo test --doc --all
+
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -224,7 +240,14 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --all 2>&1 | tee rust-test-results.log
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            export KEEPPEEK_RUN_SLOW_TESTS=1
+          fi
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            cargo test --all --lib --bins --tests --features macos-test-aws-crypto 2>&1 | tee rust-test-results.log
+          else
+            cargo test --all --lib --bins --tests 2>&1 | tee rust-test-results.log
+          fi
       - name: Upload Rust test log
         if: always()
         uses: actions/upload-artifact@v7

@@ -1,0 +1,139 @@
+{
+	"schemaVersion": 1,
+	"boardId": "II-0",
+	"requirements": [
+		{
+			"index": 1,
+			"name": "Peek live grid",
+			"scenarioIds": ["peek.desktop.live-wall", "peek.mobile.live"],
+			"status": "implemented"
+		},
+		{
+			"index": 2,
+			"name": "Peek single camera",
+			"scenarioIds": ["camera.desktop.details-ptz", "camera.mobile.details-ptz"],
+			"status": "partial",
+			"blockers": [
+				"Desktop focus quality and diagnostics exist, but no separately authored Paper implementation frame owns a player-settings popover."
+			]
+		},
+		{
+			"index": 3,
+			"name": "Layout editor",
+			"scenarioIds": ["peek.desktop.layout-editor", "peek.desktop.layout-registry"],
+			"status": "partial",
+			"blockers": [
+				"Drag, resize, snap, presets, pinning, Activity Focus draft state, and discard work; server layout persistence and CRUD are unavailable."
+			]
+		},
+		{
+			"index": 4,
+			"name": "Keep timeline and events",
+			"scenarioIds": ["keep.desktop.timeline-anatomy", "keep.mobile.timeline"],
+			"status": "implemented"
+		},
+		{
+			"index": 5,
+			"name": "Keep stories",
+			"scenarioIds": ["keep.desktop.stories"],
+			"status": "blocked",
+			"blockers": [
+				"Event persistence returns one optional thumbnail and no narrative, publisher identity, or multi-frame attachment sequence."
+			]
+		},
+		{
+			"index": 6,
+			"name": "Keep export range",
+			"scenarioIds": ["keep.desktop.export-gated", "keep.desktop.export-lifecycle"],
+			"status": "partial",
+			"blockers": [
+				"Export jobs and editable ranges work over WebRTC, but exact keyframe positions are not returned for a visible snapped-handle claim."
+			]
+		},
+		{
+			"index": 7,
+			"name": "Events grid and filters",
+			"scenarioIds": ["events.desktop.browse", "events.mobile.browse"],
+			"status": "implemented"
+		},
+		{
+			"index": 8,
+			"name": "Events detail",
+			"scenarioIds": ["events.desktop.detail"],
+			"status": "blocked",
+			"blockers": [
+				"Payload, revision history, publisher source_id, narrative, and attachment history are absent from the current event record."
+			]
+		},
+		{
+			"index": 9,
+			"name": "Add camera wizard",
+			"scenarioIds": [
+				"cameras.desktop.add-wizard",
+				"cameras.mobile.add-wizard",
+				"cameras.mobile.add-streams",
+				"cameras.mobile.add-review"
+			],
+			"status": "partial",
+			"blockers": [
+				"Candidate authentication and decoded stream probing do not exist before the final configuration write."
+			]
+		},
+		{
+			"index": 10,
+			"name": "Camera list and per-camera page",
+			"scenarioIds": ["cameras.desktop.fleet", "camera.desktop.details-ptz"],
+			"status": "partial",
+			"blockers": [
+				"Fleet and camera evidence exist, but server layout/group provenance, per-camera retention inheritance, and broad settings writes are unavailable."
+			]
+		},
+		{
+			"index": 11,
+			"name": "Storage and retention",
+			"scenarioIds": ["settings.desktop.storage-retention"],
+			"status": "partial",
+			"blockers": [
+				"Projected capacity exists, while observed oldest-footage history, selectable fill policy, per-camera retention, pins, and offsite locations do not."
+			]
+		},
+		{
+			"index": 12,
+			"name": "Event sources",
+			"scenarioIds": ["settings.desktop.event-sources"],
+			"status": "blocked",
+			"blockers": [
+				"Publisher registration, token/scopes, mapping, heartbeat, and publication-runtime contracts are unavailable."
+			]
+		},
+		{
+			"index": 13,
+			"name": "Server and client health",
+			"scenarioIds": [
+				"health.desktop.overview",
+				"health.mobile.overview",
+				"health.desktop.camera-diagnosis"
+			],
+			"status": "partial",
+			"blockers": [
+				"Current server, storage, camera, and WebRTC evidence exists; long-window loss, exact gap start, retries, probes, and external-service liveness do not."
+			]
+		},
+		{
+			"index": 14,
+			"name": "Access roles and permissions",
+			"scenarioIds": ["settings.desktop.access", "settings.mobile.access"],
+			"status": "blocked",
+			"blockers": [
+				"The target two-role policy is visible, but identity enforcement, people, sessions, invitations, token scopes, and audit evidence are unavailable."
+			]
+		}
+	],
+	"constraints": [
+		"KeepPeek ingests detections and does not provide detector training, enrollment, zone, mask, or tripwire editors.",
+		"The primary Keep timeline remains vertical at every breakpoint.",
+		"Application controls use canonical WebRTC commands; HTTP remains limited to create, delete, logs, and metrics.",
+		"Recording stays visually quiet and red is reserved for failure.",
+		"One camera page owns its stacked configuration sections."
+	]
+}

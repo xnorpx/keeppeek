@@ -1,8 +1,8 @@
 use crate::{
     config::StorageToml,
     storage::{
-        demand::RecordingDemand, long_term::LongTermStore, medium_term::MediumTermWriter,
-        segment::RecordingFrame, short_term::ShortTermBuffer,
+        catalog::RecordingCatalogHandle, demand::RecordingDemand, long_term::LongTermStore,
+        medium_term::MediumTermWriter, segment::RecordingFrame, short_term::ShortTermBuffer,
     },
 };
 use std::{
@@ -115,6 +115,14 @@ pub struct StorageEngine {
 
 impl StorageEngine {
     pub fn start(config: StorageConfig) -> Self {
+        Self::start_inner(config, None)
+    }
+
+    pub fn start_with_catalog(config: StorageConfig, catalog: RecordingCatalogHandle) -> Self {
+        Self::start_inner(config, Some(catalog))
+    }
+
+    fn start_inner(config: StorageConfig, catalog: Option<RecordingCatalogHandle>) -> Self {
         cleanup_stale_active_files(&config.medium_term_path);
         if config.medium_term_path != config.long_term_path {
             cleanup_stale_active_files(&config.long_term_path);
@@ -141,7 +149,7 @@ impl StorageEngine {
         let thread = std::thread::Builder::new()
             .name("storage-writer".into())
             .spawn(move || {
-                let mut worker = WriterWorker::new(config, worker_demand);
+                let mut worker = WriterWorker::new(config, worker_demand, catalog);
                 worker.run(rx);
             })
             .expect("failed to spawn storage writer thread");
@@ -200,16 +208,22 @@ impl Drop for StorageEngine {
 struct WriterWorker {
     config: StorageConfig,
     demand: RecordingDemand,
+    catalog: Option<RecordingCatalogHandle>,
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
 }
 
 impl WriterWorker {
-    fn new(config: StorageConfig, demand: RecordingDemand) -> Self {
+    fn new(
+        config: StorageConfig,
+        demand: RecordingDemand,
+        catalog: Option<RecordingCatalogHandle>,
+    ) -> Self {
         let long_term = LongTermStore::new(config.long_term_path.clone());
         Self {
             config,
             demand,
+            catalog,
             pipelines: HashMap::new(),
             long_term,
         }
@@ -288,10 +302,11 @@ impl WriterWorker {
             .as_ref()
             .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
 
-        let mut rotated_path = None;
+        let mut rotated = None;
         if needs_rotation && frame.is_video_keyframe() {
             let old = pipeline.medium_term.take().unwrap();
-            rotated_path = Some(old.finalize()?);
+            let recording_id = old.recording_id().to_owned();
+            rotated = Some((old.finalize()?, recording_id));
         }
 
         if pipeline.medium_term.is_none() {
@@ -299,11 +314,11 @@ impl WriterWorker {
                 return Ok(());
             }
             let started_at = frame.received_at;
-            let writer = MediumTermWriter::create(
-                &self.config.medium_term_path,
+            let writer = create_medium_term_writer(
+                &self.config,
+                self.catalog.as_ref(),
                 camera_id,
                 started_at,
-                self.config.write_buffer_bytes,
             )?;
             tracing::info!(
                 camera = camera_id,
@@ -315,8 +330,8 @@ impl WriterWorker {
 
         pipeline.medium_term.as_mut().unwrap().append_one(frame)?;
 
-        if let Some(path) = rotated_path {
-            self.move_to_long_term(camera_id, &path)?;
+        if let Some((path, recording_id)) = rotated {
+            self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
         Ok(())
@@ -341,7 +356,7 @@ impl WriterWorker {
             .as_ref()
             .is_some_and(|w| w.elapsed() >= self.config.medium_term_duration);
 
-        let mut rotated_path = None;
+        let mut rotated = None;
 
         if needs_rotation {
             if let Some(kf_idx) = frames.iter().position(|f| f.is_video_keyframe()) {
@@ -364,7 +379,8 @@ impl WriterWorker {
             }
 
             let old = pipeline.medium_term.take().unwrap();
-            rotated_path = Some(old.finalize()?);
+            let recording_id = old.recording_id().to_owned();
+            rotated = Some((old.finalize()?, recording_id));
         }
 
         if !frames.is_empty() && pipeline.medium_term.is_none() {
@@ -374,11 +390,11 @@ impl WriterWorker {
                     frames = frames.split_off(keyframe_index);
                 }
                 let started_at = frames[0].received_at;
-                let writer = MediumTermWriter::create(
-                    &self.config.medium_term_path,
+                let writer = create_medium_term_writer(
+                    &self.config,
+                    self.catalog.as_ref(),
                     camera_id,
                     started_at,
-                    self.config.write_buffer_bytes,
                 )?;
                 tracing::info!(
                     camera = camera_id,
@@ -399,8 +415,8 @@ impl WriterWorker {
                 .append_batch(frames)?;
         }
 
-        if let Some(path) = rotated_path {
-            self.move_to_long_term(camera_id, &path)?;
+        if let Some((path, recording_id)) = rotated {
+            self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
         Ok(())
@@ -435,12 +451,8 @@ impl WriterWorker {
                     frames = frames.split_off(keyframe_index);
                 }
                 let started_at = frames[0].received_at;
-                match MediumTermWriter::create(
-                    &self.config.medium_term_path,
-                    id,
-                    started_at,
-                    self.config.write_buffer_bytes,
-                ) {
+                match create_medium_term_writer(&self.config, self.catalog.as_ref(), id, started_at)
+                {
                     Ok(writer) => pipeline.medium_term = Some(writer),
                     Err(e) => {
                         tracing::error!(camera = %id, error = %e, "failed to create segment on shutdown");
@@ -463,9 +475,10 @@ impl WriterWorker {
                 .get_mut(&id)
                 .and_then(|p| p.medium_term.take())
             {
+                let recording_id = writer.recording_id().to_owned();
                 match writer.finalize() {
                     Ok(path) => {
-                        if let Err(e) = self.move_to_long_term(&id, &path) {
+                        if let Err(e) = self.move_to_long_term(&id, &path, &recording_id) {
                             tracing::error!(camera = %id, error = %e, "move to long-term failed");
                         }
                     }
@@ -477,37 +490,48 @@ impl WriterWorker {
         }
     }
 
-    fn move_to_long_term(&self, camera_id: &str, path: &Path) -> std::io::Result<PathBuf> {
-        if self.config.medium_term_path == self.config.long_term_path {
+    fn move_to_long_term(
+        &self,
+        camera_id: &str,
+        path: &Path,
+        recording_id: &str,
+    ) -> std::io::Result<PathBuf> {
+        let destination = if self.config.medium_term_path == self.config.long_term_path {
             tracing::info!(
                 camera = camera_id,
                 path = %path.display(),
                 "segment finalized to long-term storage",
             );
-            return Ok(path.to_path_buf());
+            path.to_path_buf()
+        } else {
+            let rel = path
+                .strip_prefix(&self.config.medium_term_path)
+                .unwrap_or(path);
+            let destination = self.config.long_term_path.join(rel);
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            std::fs::rename(path, &destination).or_else(|_| {
+                std::fs::copy(path, &destination)?;
+                std::fs::remove_file(path)?;
+                Ok::<(), std::io::Error>(())
+            })?;
+
+            tracing::info!(
+                camera = camera_id,
+                from = %path.display(),
+                to = %destination.display(),
+                "segment moved to long-term storage",
+            );
+            destination
+        };
+        if let Some(catalog) = &self.catalog {
+            catalog
+                .update_recording_path(recording_id, &destination, true)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
         }
-
-        let rel = path
-            .strip_prefix(&self.config.medium_term_path)
-            .unwrap_or(path);
-        let dest = self.config.long_term_path.join(rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        std::fs::rename(path, &dest).or_else(|_| {
-            std::fs::copy(path, &dest)?;
-            std::fs::remove_file(path)?;
-            Ok::<(), std::io::Error>(())
-        })?;
-
-        tracing::info!(
-            camera = camera_id,
-            from = %path.display(),
-            to = %dest.display(),
-            "segment moved to long-term storage",
-        );
-        Ok(dest)
+        Ok(destination)
     }
 
     fn pipeline_for(&mut self, camera_id: &str) -> &mut CameraPipeline {
@@ -520,6 +544,33 @@ impl WriterWorker {
                 last_flush: Instant::now(),
             })
     }
+}
+
+fn create_medium_term_writer(
+    config: &StorageConfig,
+    catalog: Option<&RecordingCatalogHandle>,
+    camera_id: &str,
+    started_at: Instant,
+) -> std::io::Result<MediumTermWriter> {
+    catalog.map_or_else(
+        || {
+            MediumTermWriter::create(
+                &config.medium_term_path,
+                camera_id,
+                started_at,
+                config.write_buffer_bytes,
+            )
+        },
+        |catalog| {
+            MediumTermWriter::create_with_catalog(
+                &config.medium_term_path,
+                camera_id,
+                started_at,
+                config.write_buffer_bytes,
+                catalog.clone(),
+            )
+        },
+    )
 }
 
 pub struct ShortTermStats {
@@ -610,7 +661,7 @@ mod tests {
     fn active_demand_drains_idle_frames_immediately() {
         const STREAM: &str = "front-door/main";
         let demand = RecordingDemand::new(Duration::ZERO);
-        let mut worker = WriterWorker::new(storage_config("adaptive-demand"), demand.clone());
+        let mut worker = WriterWorker::new(storage_config("adaptive-demand"), demand.clone(), None);
 
         worker.ingest(STREAM, inter_frame());
         assert_eq!(worker.pipelines[STREAM].short_term.len(), 1);
@@ -631,7 +682,7 @@ mod tests {
         let mut config = storage_config("direct-write-keyframe-start");
         config.short_term_duration = Duration::ZERO;
         config.flush_interval = Duration::ZERO;
-        let mut worker = WriterWorker::new(config, demand);
+        let mut worker = WriterWorker::new(config, demand, None);
 
         worker.ingest(STREAM, inter_frame());
 

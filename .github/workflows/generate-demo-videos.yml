@@ -1,0 +1,107 @@
+name: Generate Demo Videos
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Optional HTTPS base URL override for the generated manifest
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/generate-demo-videos.yml
+      - ui/bun.lock
+      - ui/package.json
+      - ui/scripts/render-story-demos.ts
+      - ui/scripts/check-demo-scenarios.ts
+      - ui/scripts/prepare-demo-publish.ts
+      - ui/src/lib/storybook/demo.ts
+      - ui/src/lib/server/storybook/**
+      - ui/demo/**
+      - ui/playwright.demo.config.ts
+      - ui/visual-harness/demo-scenarios.ts
+      - ui/visual-harness/local-preview.*
+      - ui/visual-harness/stories/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: generate-demo-videos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    environment: demo-videos
+    defaults:
+      run:
+        working-directory: ui
+    env:
+      DEMO_BASE_URL: ${{ inputs.base_url || vars.AZURE_DEMO_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+
+      - name: Install UI dependencies
+        run: bun install --frozen-lockfile --registry=https://registry.npmjs.org/
+
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Build real-server demo binaries
+        run: bun run test:e2e:prepare
+
+      - name: Validate demo registry
+        run: |
+          bun run demo:typecheck
+          bun run demo:check
+          bun run test:unit -- \
+            src/lib/storybook/demo.spec.ts \
+            src/lib/server/storybook/demo-video.spec.ts \
+            src/lib/server/storybook/video-publish.spec.ts
+
+      - name: Record story demos
+        run: bun run demo:render
+
+      - name: Prepare hosted manifest
+        run: |
+          test -n "$DEMO_BASE_URL"
+          bun run demo:publish:prepare -- \
+            test-results/demo-videos/assets \
+            "$DEMO_BASE_URL" \
+            test-results/demo-videos/manifest.json
+
+      - name: Validate generated artifact
+        run: |
+          test -f test-results/demo-videos/manifest.json
+          test "$(find test-results/demo-videos/assets -maxdepth 1 -name '*.mp4' | wc -l)" -gt 0
+          test "$(find test-results/demo-videos -name '*.webm' | wc -l)" -eq 0
+          while IFS= read -r video; do
+            ffprobe -v error \
+              -show_entries stream=codec_name,codec_type,pix_fmt \
+              -of json "$video" |
+              jq -e '.streams | length == 1 and .[0].codec_name == "h264" and .[0].codec_type == "video" and .[0].pix_fmt == "yuv420p"' >/dev/null
+          done < <(find test-results/demo-videos/assets -maxdepth 1 -name '*.mp4' -print)
+          jq -e '.schemaVersion == 1 and (.videos | length > 0)' \
+            test-results/demo-videos/manifest.json >/dev/null
+
+      - name: Upload demo videos
+        uses: actions/upload-artifact@v7
+        with:
+          name: keeppeek-demo-videos
+          path: ui/test-results/demo-videos
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish summary
+        run: |
+          count=$(jq '.videos | length' test-results/demo-videos/manifest.json)
+          echo "Generated $count deterministic story demo video(s)." >> "$GITHUB_STEP_SUMMARY"

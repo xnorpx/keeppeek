@@ -7,9 +7,8 @@ use std::{
 const UI_INPUTS: &[&str] = &[
     "ui/src",
     "ui/static",
-    "ui/app.html",
+    "ui/src/app.html",
     "ui/bun.lock",
-    "ui/bun.lockb",
     "ui/bunfig.toml",
     "ui/components.json",
     "ui/package.json",

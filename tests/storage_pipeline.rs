@@ -14,6 +14,11 @@ const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
 const FPS: u32 = 30;
 const DURATION_SECS: u64 = 20;
+const RUN_SLOW_TESTS_ENV: &str = "KEEPPEEK_RUN_SLOW_TESTS";
+
+fn slow_tests_enabled() -> bool {
+    std::env::var_os(RUN_SLOW_TESTS_ENV).is_some()
+}
 
 fn test_output_dir(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -44,6 +49,9 @@ fn to_recording_frame(ef: EncodedFrame) -> RecordingFrame {
 
 #[test]
 fn three_tier_storage_pipeline() {
+    if !slow_tests_enabled() {
+        return;
+    }
     let out = test_output_dir("pipeline");
 
     let config = StorageConfig {
@@ -139,6 +147,9 @@ fn three_tier_storage_pipeline() {
 
 #[test]
 fn segment_moves_from_medium_to_long_term() {
+    if !slow_tests_enabled() {
+        return;
+    }
     let base = test_output_dir("move");
 
     let medium = base.join("medium");
@@ -224,6 +235,9 @@ fn segment_moves_from_medium_to_long_term() {
 
 #[test]
 fn same_path_no_extra_copy() {
+    if !slow_tests_enabled() {
+        return;
+    }
     let base = test_output_dir("same-path");
 
     let config = StorageConfig {
@@ -291,6 +305,9 @@ fn same_path_no_extra_copy() {
 
 #[test]
 fn long_term_retention_limit() {
+    if !slow_tests_enabled() {
+        return;
+    }
     let base = test_output_dir("retention");
 
     let max_bytes: u64 = 150_000;

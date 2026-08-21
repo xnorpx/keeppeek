@@ -53,9 +53,6 @@ does not respond to `Notification`s.
 
 The initial `ServerCapabilities` notification is sent when the connection is established over the `control-channel`.
 
-Telemetry is client-provided diagnostic data. Clients must redact credentials, access keys,
-cookies, and other secrets before sending logs or metric labels.
-
 ## Capabilities and events
 
 `ServerCapabilities` is a complete snapshot for its receiving connection, not a delta. The server
@@ -78,21 +75,27 @@ bitrate, reconnect counts, or other numeric health. Those belong on `GET /metric
 
 `CameraInfo.ptz` is how a client learns whether PTZ is available. `ptz.supported` is the
 authority. When it is false, KeepPeek rejects every `CameraControlCommand.ptz` for that
-`source_id` with `CAMERA_CONTROL_ERROR_CODE_PTZ_UNSUPPORTED`. When it is true, `continuous`,
-`relative`, `presets`, and `zoom` say which verbs that camera accepts. A client shows PTZ
-controls from this snapshot and does not probe with rejected commands. An offline camera can
-still advertise `ptz.supported`; a later command then returns
-`CAMERA_CONTROL_ERROR_CODE_UNAVAILABLE` until the device is reachable.
+`source_id` with `ERROR_CODE_UNSUPPORTED_REQUEST`. KeepPeek advertises support only when camera
+discovery reports PTZ and the server owns an executable command transport. `continuous`,
+`relative`, `presets`, and `zoom` describe the implemented transport surface. A client shows PTZ
+controls from this snapshot and does not probe with rejected commands. A command can still return
+`ERROR_CODE_UNAVAILABLE` when the device cannot be reached or authenticated.
 
 ### Camera PTZ control
 
 PTZ is a control-channel command, not a media subscription and not an HTTP route. The client
 sends `CameraControlCommand` with `ptz` addressed by stable `source_id`. KeepPeek forwards the
-verb to the camera over ONVIF or the vendor protocol and replies with `Ok` or `Error`.
+verb to the camera over the implemented vendor protocol and replies with `Ok` or `Error`.
 `Ok.ptz_result` is used for `list_presets` and otherwise may be empty. Continuous move uses
 pan, tilt, and zoom in `-1.0` through `1.0`; `stop` ends motion. Preset list, goto, save, and
 delete require `ptz.presets`. There is no PTZ stream, no floor, and no camera-to-camera
 forwarding.
+
+Continuous movement is owned by the WebRTC connection that started it. Another connection cannot
+replace or stop that movement. Releasing the control sends `stop`; closing the data channel or
+WebRTC session also sends `stop` before releasing ownership. The current Reolink transport supports
+continuous pan/tilt/zoom, explicit stop, preset list, and preset goto. Relative move and preset
+save/delete fail closed with `ERROR_CODE_UNSUPPORTED_REQUEST`.
 
 When a previously advertised media kind or variant is absent from a new snapshot, the server
 stops sending its media on the associated RTP MID or data channel. The server does not silently
@@ -741,16 +744,23 @@ A seek at or after the cursor's exclusive end timestamp is rejected with
 `STORED_MEDIA_PLAYBACK_ERROR_CODE_TIMESTAMP_UNAVAILABLE`.
 
 `SetStoredMediaPlayback` changes the cursor's playing state, forward playback rate, or mode and
-returns the complete resulting `StoredMediaState`. `CloseStoredMedia` releases the cursor and
-is a fire-and-forget notification. When an active cursor reaches its end timestamp or the end of available media,
-KeepPeek sends an unsolicited `StoredMediaState` with status `ENDED`; the client acknowledges it
-with `Ok` or `Error`.
+returns the complete resulting `StoredMediaState`. `RefillStoredMedia` supplies the browser's
+current absolute playback time. When the remaining accepted delivery window reaches half of
+`max_buffer_duration`, the client requests another bounded window. A successful refill that
+enqueues media advances the cursor generation, returns the complete state, and sends the new
+generation's initialization before its fragments. It does not cancel bytes already queued for the
+preceding generation. `CloseStoredMedia` releases the cursor and returns `Ok`.
 
-In `PLAYBACK` mode, KeepPeek sends consecutive fragments paced by the recording timeline and
-`playback_rate` while `playing` is true. In `SCRUB` mode, the cursor is paused and each successful
-open or seek produces at most the one fragment containing the requested timestamp. Scrub mode is
-intended for rapidly changing preview positions; playback mode is intended for continuous
-viewing.
+When an explicit end timestamp has been fully delivered, KeepPeek returns status `ENDED` and sends
+an unsolicited `StoredMediaState` notification with the same terminal state. The client does not
+acknowledge notifications. It waits for every terminal-generation chunk to be appended before
+calling `MediaSource.endOfStream()`.
+
+In `PLAYBACK` mode, KeepPeek sends an initial bounded window and accepts client-paced refills while
+`playing` is true. `playback_rate` controls presentation but does not enlarge the recorded-time
+window. In `SCRUB` mode, the cursor is paused and each successful open or seek produces at most the
+one fragment containing the requested timestamp. Scrub mode is intended for rapidly changing
+preview positions; playback mode is intended for continuous viewing.
 
 ### MP4 and timed-data delivery
 
@@ -803,7 +813,7 @@ any message whose generation is not the cursor's current generation, so delayed 
 packets can never move the visible cursor backward.
 
 Generation filtering cannot remove bytes already queued on an ordered reliable SCTP stream. The
-server therefore keeps no more than the accepted `max_buffer_duration_ms` ahead of the playback
+server therefore keeps no more than the accepted `max_buffer_duration` ahead of the playback
 cursor, measured in recorded media time rather than wall-clock drain time. Zero in
 `OpenStoredMedia` requests a server default, and the complete state response reports the accepted
 value. A playback-rate change does not change this recorded-time bound. For the lowest seek
@@ -1025,5 +1035,4 @@ remain defined and readable; removed field numbers and names are reserved rather
 
 Implementations ignore unknown protobuf fields, unknown control-envelope bodies, unknown event
 types, unknown payload IDs, unknown enum values, and unknown `Message` or nested message
-subtypes when their runtime supports doing so. A proto3 JSON control parser must be configured to
-ignore unknown JSON fields. Unknown source events are not protocol errors.
+subtypes when their runtime supports doing so. Unknown source events are not protocol errors.

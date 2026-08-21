@@ -8,10 +8,15 @@ const isCI = Boolean(process.env.CI);
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
+	optimizeDeps: {
+		include: ['@lucide/svelte/icons/arrow-up']
+	},
 	server: {
 		proxy: {
-			'/health': apiTarget,
-			'/ready': apiTarget,
+			'/create': apiTarget,
+			'/delete': apiTarget,
+			'/logs': apiTarget,
+			'/metrics': apiTarget,
 			'/api': apiTarget
 		}
 	},
@@ -41,7 +46,25 @@ export default defineConfig({
 						instances: [{ browser: 'chromium', headless: true }]
 					},
 					include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
-					exclude: ['src/lib/server/**']
+					exclude: ['src/lib/server/**', 'src/**/*.story.svelte.spec.ts']
+				}
+			},
+			{
+				extends: './vite.config.ts',
+				test: {
+					name: 'visual',
+					browser: {
+						enabled: true,
+						provider: playwright(),
+						instances: [
+							{
+								browser: 'chromium',
+								headless: true,
+								viewport: { width: 1440, height: 900 }
+							}
+						]
+					},
+					include: ['src/**/*.story.svelte.spec.ts']
 				}
 			},
 

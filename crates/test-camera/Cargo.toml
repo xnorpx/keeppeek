@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 
+[[bin]]
+name = "test_camera"
+path = "src/bin/test_camera.rs"
+test = false
+
 [lints]
 workspace = true
 
@@ -15,6 +20,7 @@ clap = { version = "4", default-features = false, features = [
   "help",
 ] }
 ctrlc = { version = "*" }
+keeppeek = { path = "../.." }
 mp4 = { path = "../mp4" }
 reo-proto = { path = "../reo-proto" }
 retina = { path = "../retina" }

@@ -1,12 +1,8 @@
 import { expect, test } from '@playwright/test';
+import { mockMixedHealth } from './fixtures/peek';
 
 test('switches and persists one theme across Peek and Keep', async ({ page }) => {
-	await page.route('http://127.0.0.1:4174/health', async (route) => {
-		await route.fulfill({ json: { status: 'ok', cameras: [] } });
-	});
-	await page.route('**/api/cameras', async (route) => {
-		await route.fulfill({ json: [] });
-	});
+	await mockMixedHealth(page);
 
 	await page.goto('/');
 
@@ -19,6 +15,26 @@ test('switches and persists one theme across Peek and Keep', async ({ page }) =>
 	await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
 	await expect(page.locator('html')).not.toHaveClass(/dark/);
 	await expect(page.getByRole('button', { name: 'Switch to dark theme' })).toBeVisible();
+	await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(239, 232, 218)');
+	await expect(page.locator('[data-shell-rail]')).toHaveCSS(
+		'background-color',
+		'rgb(239, 232, 218)'
+	);
+	await expect(page.locator('[data-peek-camera="front-door"]')).toHaveCSS(
+		'background-color',
+		'rgb(10, 11, 12)'
+	);
+	await expect(page.locator('[data-peek-camera="back-yard"]')).toHaveCSS(
+		'background-color',
+		'rgb(248, 244, 236)'
+	);
+	await expect(
+		page.locator('[data-peek-camera="back-yard"] [data-peek-camera-region="evidence"]')
+	).toHaveCSS('color', 'rgb(28, 26, 22)');
+	await expect(page.locator('[data-peek-camera="porch"]')).toHaveCSS(
+		'border-color',
+		'rgb(168, 115, 16)'
+	);
 	await expect
 		.poll(() => page.evaluate(() => localStorage.getItem('keeppeek-theme')))
 		.toBe('light');
@@ -33,4 +49,25 @@ test('switches and persists one theme across Peek and Keep', async ({ page }) =>
 	await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 	await expect(page.locator('html')).toHaveClass(/dark/);
 	await expect.poll(() => page.evaluate(() => localStorage.getItem('keeppeek-theme'))).toBe('dark');
+});
+
+test('applies persisted light roles before hydration without lightening video', async ({
+	page
+}) => {
+	await page.addInitScript(() => localStorage.setItem('keeppeek-theme', 'light'));
+	await mockMixedHealth(page);
+	await page.goto('/', { waitUntil: 'domcontentloaded' });
+
+	await expect(page.locator('html')).toHaveAttribute('data-theme-preference', 'light');
+	await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+	await expect(page.locator('html')).not.toHaveClass(/dark/);
+	await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(239, 232, 218)');
+	await expect(page.locator('[data-peek-camera="front-door"]')).toHaveCSS(
+		'background-color',
+		'rgb(10, 11, 12)'
+	);
+	await expect(page.locator('[data-peek-camera="back-yard"]')).toHaveCSS(
+		'background-color',
+		'rgb(248, 244, 236)'
+	);
 });

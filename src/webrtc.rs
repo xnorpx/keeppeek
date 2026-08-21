@@ -1,6 +1,10 @@
 //! Provides thread-based WebRTC delivery for encoded camera frames.
 
 use crate::{
+    api::proto::{
+        ControlEnvelope, Error as ControlError, ErrorCode, Response as ControlResponse,
+        control_envelope, response as control_response,
+    },
     keeppeek::StreamKind,
     media_time::duration_to_ticks,
     storage::{RecordingDemand, RecordingDemandGuard, VideoCodec, nal},
@@ -9,13 +13,14 @@ use bytes::Bytes;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use polling::{Event as PollEvent, Events, Poller};
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::ErrorKind,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     sync::{
-        Arc, Condvar, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock, Weak,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
@@ -25,6 +30,7 @@ use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig,
     bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer},
+    channel::{ChannelConfig, ChannelId, Reliability},
     format::Codec,
     media::{MediaKind, MediaTime, Mid},
     net::{Protocol, Receive},
@@ -45,12 +51,156 @@ const UPGRADE_HOLD: Duration = Duration::from_secs(3);
 const DOWNGRADE_HOLD: Duration = Duration::from_secs(1);
 /// Bounds an HTTP close request while the poller wakes and the session thread releases resources.
 const SESSION_CLOSE_WAIT: Duration = Duration::from_secs(1);
-/// Limits one browser session so a malformed offer cannot monopolize the session thread.
-const MAX_TRACKS: usize = 32;
 /// Limits client-generated track identifiers kept in server session state.
 const MAX_TRACK_ID_BYTES: usize = 64;
-/// Matches str0m's fixed-width SDP media identifier capacity.
-const MAX_MID_BYTES: usize = 16;
+const CONTROL_CHANNEL_LABEL: &str = "control-channel";
+const RELIABLE_DATA_CHANNEL_LABEL: &str = "reliable-data";
+const UNRELIABLE_DATA_CHANNEL_LABEL: &str = "unreliable-data";
+const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1_024;
+
+#[derive(Debug, Clone, Copy)]
+struct SessionChannels {
+    control: ChannelId,
+    reliable_data: ChannelId,
+    unreliable_data: ChannelId,
+}
+
+fn session_channel_configs() -> [ChannelConfig; 3] {
+    [
+        ChannelConfig {
+            label: CONTROL_CHANNEL_LABEL.to_owned(),
+            negotiated: Some(0),
+            ..ChannelConfig::default()
+        },
+        ChannelConfig {
+            label: RELIABLE_DATA_CHANNEL_LABEL.to_owned(),
+            negotiated: Some(1),
+            ..ChannelConfig::default()
+        },
+        ChannelConfig {
+            label: UNRELIABLE_DATA_CHANNEL_LABEL.to_owned(),
+            ordered: false,
+            reliability: Reliability::MaxRetransmits { retransmits: 0 },
+            negotiated: Some(2),
+            ..ChannelConfig::default()
+        },
+    ]
+}
+
+fn configure_session_channels(rtc: &mut Rtc) -> SessionChannels {
+    let mut direct = rtc.direct_api();
+    let [control_config, reliable_config, unreliable_config] = session_channel_configs();
+    let control = direct.create_data_channel(control_config);
+    let reliable_data = direct.create_data_channel(reliable_config);
+    let unreliable_data = direct.create_data_channel(unreliable_config);
+    SessionChannels {
+        control,
+        reliable_data,
+        unreliable_data,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_api_offer() -> SdpOffer {
+    let mut offerer = rtc_config().build(Instant::now());
+    let mut changes = offerer.sdp_api();
+    for config in session_channel_configs() {
+        changes.add_channel_with_config(config);
+    }
+    changes
+        .apply()
+        .expect("documented API channel offer must be valid")
+        .0
+}
+
+pub(crate) trait ControlRequestHandler: Send + Sync {
+    fn handle(&self, request: crate::api::proto::Request) -> ControlDispatch;
+
+    fn handle_for_session(
+        &self,
+        _session_id: SessionId,
+        request: crate::api::proto::Request,
+    ) -> ControlDispatch {
+        self.handle(request)
+    }
+
+    fn session_closed(&self, _session_id: SessionId) {}
+
+    fn resolve_media_subscription(
+        &self,
+        _request: &crate::api::proto::SubscribeMedia,
+    ) -> Result<MediaSubscriptionPlan, ControlHandlerError> {
+        Err(ControlHandlerError::new(
+            ErrorCode::UnsupportedRequest,
+            "media subscriptions are not implemented by this server",
+        ))
+    }
+
+    fn initial_capabilities(
+        &self,
+        _session_id: SessionId,
+    ) -> Option<crate::api::proto::ServerCapabilities> {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MediaSubscriptionPlan {
+    pub(crate) source_session_id: String,
+    pub(crate) camera_ip: IpAddr,
+    pub(crate) has_sub_stream: bool,
+    pub(crate) recording_label: String,
+    pub(crate) quality: StreamQuality,
+    pub(crate) selected_variant_id: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct ControlHandlerError {
+    pub(crate) code: ErrorCode,
+    pub(crate) message: String,
+}
+
+impl ControlHandlerError {
+    pub(crate) fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+pub(crate) type PostSendAction = Box<dyn FnOnce() + Send>;
+
+pub(crate) struct ControlDispatch {
+    pub(crate) response: ControlResponse,
+    pub(crate) after_send: Option<PostSendAction>,
+    pub(crate) data_messages: Vec<OutboundDataMessage>,
+    pub(crate) notifications: Vec<crate::api::proto::Notification>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DataChannelTarget {
+    Reliable,
+    Unreliable,
+}
+
+pub(crate) struct OutboundDataMessage {
+    pub(crate) target: DataChannelTarget,
+    pub(crate) group: String,
+    pub(crate) message: crate::api::proto::Message,
+}
+
+struct EnvelopeDispatch {
+    envelope: ControlEnvelope,
+    after_send: Option<PostSendAction>,
+    data_messages: Vec<OutboundDataMessage>,
+    notifications: Vec<crate::api::proto::Notification>,
+}
+
+struct ControlDecodeError {
+    request_id: u64,
+    message: &'static str,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +247,10 @@ impl SessionId {
     pub(crate) const fn from_u64(value: u64) -> Self {
         Self(value)
     }
+
+    pub(crate) const fn as_u64(self) -> u64 {
+        self.0
+    }
 }
 
 impl std::fmt::Display for SessionId {
@@ -132,35 +286,12 @@ pub(crate) struct Session {
     pub(crate) answer: SdpAnswer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(crate) struct SessionStatus {
-    pub(crate) requested_quality: StreamQuality,
-    pub(crate) active_stream: StreamKind,
-    pub(crate) estimated_bitrate_bps: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct TrackStatus {
-    pub(crate) track_id: TrackId,
-    pub(crate) requested_quality: StreamQuality,
-    pub(crate) active_stream: StreamKind,
-    pub(crate) estimated_bitrate_bps: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct MultiTrackSessionStatus {
-    pub(crate) estimated_bitrate_bps: Option<u64>,
-    pub(crate) tracks: Vec<TrackStatus>,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct TrackPlan {
     pub(crate) track_id: TrackId,
-    pub(crate) mid: String,
     pub(crate) camera_ip: IpAddr,
     pub(crate) has_sub_stream: bool,
     pub(crate) recording_label: String,
-    pub(crate) quality: StreamQuality,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -355,37 +486,16 @@ struct SessionControl {
     requested_quality: AtomicU8,
     active_stream: AtomicU8,
     estimated_bitrate_bps: AtomicU64,
-    poller: Arc<Poller>,
 }
 
 impl SessionControl {
-    const fn new(quality: StreamQuality, active_stream: StreamKind, poller: Arc<Poller>) -> Self {
+    const fn new(quality: StreamQuality, active_stream: StreamKind) -> Self {
         Self {
             requested_quality: AtomicU8::new(quality.as_u8()),
             active_stream: AtomicU8::new(stream_as_u8(active_stream)),
             estimated_bitrate_bps: AtomicU64::new(0),
-            poller,
         }
     }
-
-    fn status(&self) -> SessionStatus {
-        let estimated_bitrate_bps = self.estimated_bitrate_bps.load(Ordering::Acquire);
-        SessionStatus {
-            requested_quality: StreamQuality::from_u8(
-                self.requested_quality.load(Ordering::Acquire),
-            ),
-            active_stream: stream_from_u8(self.active_stream.load(Ordering::Acquire)),
-            estimated_bitrate_bps: (estimated_bitrate_bps > 0).then_some(estimated_bitrate_bps),
-        }
-    }
-}
-
-struct MultiTrackControl {
-    tracks: BTreeMap<TrackId, Arc<SessionControl>>,
-    estimated_bitrate_bps: AtomicU64,
-    poller: Arc<Poller>,
-    shutdown: Arc<AtomicBool>,
-    completion: SessionCompletion,
 }
 
 #[derive(Default)]
@@ -419,63 +529,161 @@ impl SessionCompletion {
     }
 }
 
-impl MultiTrackControl {
-    fn status(&self) -> MultiTrackSessionStatus {
-        let estimated_bitrate_bps = self.estimated_bitrate_bps.load(Ordering::Acquire);
-        let tracks = self
-            .tracks
-            .iter()
-            .map(|(track_id, control)| {
-                let status = control.status();
-                TrackStatus {
-                    track_id: track_id.clone(),
-                    requested_quality: status.requested_quality,
-                    active_stream: status.active_stream,
-                    estimated_bitrate_bps: status.estimated_bitrate_bps,
-                }
-            })
-            .collect();
-        MultiTrackSessionStatus {
-            estimated_bitrate_bps: (estimated_bitrate_bps > 0).then_some(estimated_bitrate_bps),
-            tracks,
-        }
+struct ApiSessionControl {
+    session_id: SessionId,
+    inner: Arc<Inner>,
+    recording_demand: Option<RecordingDemand>,
+    poller: Arc<Poller>,
+    shutdown: Arc<AtomicBool>,
+    completion: SessionCompletion,
+    control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
+}
+
+struct ApiMediaTrack {
+    source_session_id: String,
+    runtime: TrackRuntime,
+}
+
+#[derive(Default)]
+struct ApiMediaRuntime {
+    available_video_mids: Vec<Mid>,
+    tracks: Vec<ApiMediaTrack>,
+    outbound: VecDeque<QueuedDataMessage>,
+}
+
+struct QueuedDataMessage {
+    target: DataChannelTarget,
+    group: String,
+    payload: Vec<u8>,
+}
+
+impl ApiMediaRuntime {
+    fn enqueue(&mut self, messages: Vec<OutboundDataMessage>) {
+        self.outbound
+            .extend(messages.into_iter().map(|message| QueuedDataMessage {
+                target: message.target,
+                group: message.group,
+                payload: message.message.encode_to_vec(),
+            }));
     }
 
-    fn set_quality(&self, track_id: &TrackId, quality: StreamQuality) -> Option<TrackStatus> {
-        let control = self.tracks.get(track_id)?;
-        if quality != StreamQuality::Low {
-            for (other_track_id, other_control) in &self.tracks {
-                if other_track_id != track_id {
-                    other_control
-                        .requested_quality
-                        .store(StreamQuality::Low.as_u8(), Ordering::Release);
-                }
+    fn cancel_group(&mut self, group: &str) {
+        self.outbound.retain(|message| message.group != group);
+    }
+
+    fn flush_outbound(&mut self, rtc: &mut Rtc, channels: SessionChannels) -> anyhow::Result<()> {
+        while let Some(message) = self.outbound.pop_front() {
+            let channel_id = match message.target {
+                DataChannelTarget::Reliable => channels.reliable_data,
+                DataChannelTarget::Unreliable => channels.unreliable_data,
+            };
+            let Some(mut channel) = rtc.channel(channel_id) else {
+                anyhow::bail!("WebRTC data channel disappeared before queued delivery");
+            };
+            if !channel.write(true, &message.payload)? {
+                self.outbound.push_front(message);
+                break;
             }
         }
-        control
-            .requested_quality
-            .store(quality.as_u8(), Ordering::Release);
-        if let Err(error) = self.poller.notify() {
-            tracing::debug!(%track_id, %error, "unable to wake shared WebRTC session for quality change");
+        Ok(())
+    }
+
+    fn subscribe(
+        &mut self,
+        session: &ApiSessionControl,
+        request: &crate::api::proto::SubscribeMedia,
+        plan: MediaSubscriptionPlan,
+    ) -> Result<crate::api::proto::SubscriptionResult, ControlHandlerError> {
+        let track_id = TrackId::parse(request.subscription_id.clone()).map_err(|error| {
+            ControlHandlerError::new(ErrorCode::InvalidRequest, error.to_string())
+        })?;
+        let existing_index = self
+            .tracks
+            .iter()
+            .position(|track| track.runtime.track_id == track_id);
+        let mid = if let Some(index) = existing_index {
+            if self.tracks[index].source_session_id != plan.source_session_id {
+                return Err(ControlHandlerError::new(
+                    ErrorCode::InvalidRequest,
+                    "a media subscription replacement must keep the same source session",
+                ));
+            }
+            self.tracks[index].runtime.mid
+        } else {
+            self.available_video_mids.pop().ok_or_else(|| {
+                ControlHandlerError::new(
+                    ErrorCode::Unavailable,
+                    "no negotiated video MID is available",
+                )
+            })?
+        };
+        let control = Arc::new(SessionControl::new(
+            plan.quality,
+            initial_stream(
+                plan.quality,
+                plan.has_sub_stream.then_some(Source {
+                    camera_ip: plan.camera_ip,
+                    stream: StreamKind::Sub,
+                }),
+            ),
+        ));
+        let runtime = TrackRuntime::new(
+            TrackPlan {
+                track_id,
+                camera_ip: plan.camera_ip,
+                has_sub_stream: plan.has_sub_stream,
+                recording_label: plan.recording_label,
+            },
+            mid,
+            TrackDeps {
+                inner: session.inner.clone(),
+                session_id: session.session_id,
+                control,
+                poller: session.poller.clone(),
+                shutdown: session.shutdown.clone(),
+                recording_demand: session.recording_demand.clone(),
+            },
+        );
+        let track = ApiMediaTrack {
+            source_session_id: plan.source_session_id,
+            runtime,
+        };
+        if let Some(index) = existing_index {
+            self.tracks[index] = track;
+        } else {
+            self.tracks.push(track);
         }
-        let status = control.status();
-        Some(TrackStatus {
-            track_id: track_id.clone(),
-            requested_quality: status.requested_quality,
-            active_stream: status.active_stream,
-            estimated_bitrate_bps: status.estimated_bitrate_bps,
+        Ok(crate::api::proto::SubscriptionResult {
+            subscription_id: request.subscription_id.clone(),
+            delivery: Some(crate::api::proto::subscription_result::Delivery::Rtp(
+                crate::api::proto::RtpDelivery {
+                    mid: mid.to_string(),
+                },
+            )),
+            selected_variant_id: plan.selected_variant_id,
+            selected_lineage: Vec::new(),
         })
     }
 
-    fn update_estimate(&self, bitrate: Bitrate) {
-        self.estimated_bitrate_bps
-            .store(bitrate.as_u64(), Ordering::Release);
+    fn unsubscribe(&mut self, subscription_ids: &[String]) {
+        for subscription_id in subscription_ids {
+            if let Some(index) = self
+                .tracks
+                .iter()
+                .position(|track| track.runtime.track_id.0 == *subscription_id)
+            {
+                let track = self.tracks.swap_remove(index);
+                self.available_video_mids.push(track.runtime.mid);
+            }
+        }
     }
+}
 
+impl ApiSessionControl {
     fn close(&self) {
         self.shutdown.store(true, Ordering::Release);
         if let Err(error) = self.poller.notify() {
-            tracing::debug!(%error, "unable to wake shared WebRTC session for shutdown");
+            tracing::debug!(%error, "unable to wake API WebRTC session for shutdown");
         }
     }
 
@@ -492,14 +700,6 @@ const fn stream_as_u8(stream: StreamKind) -> u8 {
     match stream {
         StreamKind::Main => 0,
         StreamKind::Sub => 1,
-    }
-}
-
-const fn stream_from_u8(value: u8) -> StreamKind {
-    if value == 1 {
-        StreamKind::Sub
-    } else {
-        StreamKind::Main
     }
 }
 
@@ -607,10 +807,10 @@ impl SourceBitrate {
 #[derive(Default)]
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
-    sessions: Mutex<HashMap<SessionId, Arc<SessionControl>>>,
-    multi_track_sessions: Mutex<HashMap<SessionId, Arc<MultiTrackControl>>>,
+    api_sessions: Mutex<HashMap<SessionId, Arc<ApiSessionControl>>>,
     threads: Mutex<Vec<SessionThread>>,
     next_session_id: AtomicU64,
+    control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
     published_frames: AtomicU64,
     published_bytes: AtomicU64,
     delivered_frames: AtomicU64,
@@ -714,6 +914,12 @@ pub(crate) struct WebRtcSessionQueueHealth {
     pub recovery_drops: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LiveVideoSourceCapability {
+    pub(crate) stream: StreamKind,
+    pub(crate) codec: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct WebRtcSourceHealth {
     pub camera_ip: IpAddr,
@@ -722,19 +928,6 @@ pub(crate) struct WebRtcSourceHealth {
     pub bitrate_bps: Option<u64>,
     pub has_keyframe: bool,
     pub keyframe_age_ms: Option<u64>,
-}
-
-enum SessionPlan {
-    Fixed {
-        source: Source,
-        demand_guard: Option<RecordingDemandGuard>,
-    },
-    Adaptive {
-        camera_ip: IpAddr,
-        has_sub_stream: bool,
-        quality: StreamQuality,
-        recording_label: String,
-    },
 }
 
 struct SourceSubscription {
@@ -816,10 +1009,11 @@ impl SourceSubscription {
         recording_demand: Option<RecordingDemand>,
         recording_label: String,
     ) -> Self {
-        let active_source = match control.status().requested_quality {
-            StreamQuality::High => high_source,
-            StreamQuality::Auto | StreamQuality::Low => low_source.unwrap_or(high_source),
-        };
+        let active_source =
+            match StreamQuality::from_u8(control.requested_quality.load(Ordering::Acquire)) {
+                StreamQuality::High => high_source,
+                StreamQuality::Auto | StreamQuality::Low => low_source.unwrap_or(high_source),
+            };
         control
             .active_stream
             .store(stream_as_u8(active_source.stream), Ordering::Release);
@@ -928,10 +1122,6 @@ impl SourceSubscription {
                 },
                 Bitrate::bps,
             )
-    }
-
-    fn low_delivery_bitrate(&self) -> Bitrate {
-        self.source_bitrate(self.low_source.unwrap_or(self.high_source))
     }
 
     fn source_codec(&self, source: Source) -> Option<VideoCodec> {
@@ -1300,154 +1490,69 @@ impl WebRtc {
         Self::default()
     }
 
-    pub fn live(&self) -> Publisher {
-        self.live.clone()
+    pub(crate) fn set_control_handler(&self, handler: Weak<dyn ControlRequestHandler>) {
+        *self
+            .live
+            .inner
+            .control_handler
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
     }
 
-    pub fn with_recording_demand(recording_demand: RecordingDemand) -> Self {
-        Self {
-            live: Publisher::default(),
-            recording_demand: Some(recording_demand),
-        }
-    }
-
-    pub fn accept_offer(&self, source: Source, offer: SdpOffer) -> anyhow::Result<SdpAnswer> {
-        self.accept_offer_inner(
-            SessionPlan::Fixed {
-                source,
-                demand_guard: None,
-            },
-            offer,
-        )
-        .map(|session| session.answer)
-    }
-
-    pub fn accept_offer_for_recording(
-        &self,
-        source: Source,
-        recording_stream_id: &str,
-        offer: SdpOffer,
-    ) -> anyhow::Result<SdpAnswer> {
-        let demand_guard = self
-            .recording_demand
-            .as_ref()
-            .map(|demand| demand.acquire(recording_stream_id));
-        self.accept_offer_inner(
-            SessionPlan::Fixed {
-                source,
-                demand_guard,
-            },
-            offer,
-        )
-        .map(|session| session.answer)
-    }
-
-    pub(crate) fn accept_adaptive_offer(
-        &self,
-        camera_ip: IpAddr,
-        has_sub_stream: bool,
-        recording_label: &str,
-        quality: StreamQuality,
-        offer: SdpOffer,
-    ) -> anyhow::Result<Session> {
-        self.accept_offer_inner(
-            SessionPlan::Adaptive {
-                camera_ip,
-                has_sub_stream,
-                quality,
-                recording_label: recording_label.to_owned(),
-            },
-            offer,
-        )
-    }
-
-    pub(crate) fn accept_multi_track_offer(
-        &self,
-        plans: Vec<TrackPlan>,
-        offer: SdpOffer,
-    ) -> anyhow::Result<Session> {
+    pub(crate) fn accept_api_offer(&self, offer: SdpOffer) -> anyhow::Result<Session> {
         reap_finished_threads(&self.live.inner);
-        validate_multi_tracks(&plans)?;
-        let SessionIo {
-            rtc,
-            socket,
-            poller,
-            answer,
-        } = accept_session(offer)?;
+        let (
+            SessionIo {
+                rtc,
+                socket,
+                poller,
+                answer,
+            },
+            channels,
+        ) = accept_api_session(offer)?;
         let session_id = next_session_id(&self.live.inner);
         let shutdown = Arc::new(AtomicBool::new(false));
-        let mut controls = BTreeMap::new();
-        for plan in &plans {
-            let low_source = plan.has_sub_stream.then_some(Source {
-                camera_ip: plan.camera_ip,
-                stream: StreamKind::Sub,
-            });
-            let control = Arc::new(SessionControl::new(
-                plan.quality,
-                initial_stream(plan.quality, low_source),
-                poller.clone(),
-            ));
-            let previous = controls.insert(plan.track_id.clone(), control);
-            debug_assert!(
-                previous.is_none(),
-                "browser track IDs were validated as unique"
-            );
-        }
-        let control = Arc::new(MultiTrackControl {
-            tracks: controls,
-            estimated_bitrate_bps: AtomicU64::new(0),
+        let control = Arc::new(ApiSessionControl {
+            session_id,
+            inner: self.live.inner.clone(),
+            recording_demand: self.recording_demand.clone(),
             poller: poller.clone(),
             shutdown: shutdown.clone(),
             completion: SessionCompletion::default(),
+            control_handler: self.live.inner.control_handler.clone(),
         });
-        let mids = bind_mids(&plans);
-        let mut tracks = Vec::with_capacity(plans.len());
-        for plan in plans {
-            let mid = *mids
-                .get(&plan.track_id)
-                .expect("validated browser track must have a negotiated MID");
-            let track_control = control
-                .tracks
-                .get(&plan.track_id)
-                .expect("validated browser track must have a control")
-                .clone();
-            tracks.push(TrackRuntime::new(
-                plan,
-                mid,
-                TrackDeps {
-                    inner: self.live.inner.clone(),
-                    session_id,
-                    control: track_control,
-                    poller: poller.clone(),
-                    shutdown: shutdown.clone(),
-                    recording_demand: self.recording_demand.clone(),
-                },
-            ));
-        }
-
         self.live
             .inner
-            .multi_track_sessions
+            .api_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(session_id, control.clone());
         let thread_inner = self.live.inner.clone();
         let thread_control = control.clone();
         let thread = match std::thread::Builder::new()
-            .name(format!("webrtc-browser-{session_id}"))
+            .name(format!("webrtc-api-{session_id}"))
             .spawn(move || {
-                if let Err(error) = run_multi_track_session(
+                if let Err(error) = run_api_session(
                     rtc,
                     socket,
                     poller,
-                    tracks,
+                    channels,
                     thread_control.clone(),
                     shutdown,
                 ) {
-                    tracing::debug!(%error, "shared WebRTC session stopped with error");
+                    tracing::debug!(%error, "API WebRTC session stopped with error");
+                }
+                if let Some(handler) = thread_control
+                    .control_handler
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                {
+                    handler.session_closed(session_id);
                 }
                 thread_inner
-                    .multi_track_sessions
+                    .api_sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&session_id);
@@ -1458,7 +1563,7 @@ impl WebRtc {
                 control.finish();
                 self.live
                     .inner
-                    .multi_track_sessions
+                    .api_sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&session_id);
@@ -1481,42 +1586,12 @@ impl WebRtc {
         })
     }
 
-    pub(crate) fn multi_track_session_status(
-        &self,
-        session_id: SessionId,
-    ) -> Option<MultiTrackSessionStatus> {
-        reap_finished_threads(&self.live.inner);
-        self.live
-            .inner
-            .multi_track_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session_id)
-            .map(|control| control.status())
-    }
-
-    pub(crate) fn set_multi_track_quality(
-        &self,
-        session_id: SessionId,
-        track_id: &TrackId,
-        quality: StreamQuality,
-    ) -> Option<TrackStatus> {
-        reap_finished_threads(&self.live.inner);
-        self.live
-            .inner
-            .multi_track_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session_id)
-            .and_then(|control| control.set_quality(track_id, quality))
-    }
-
-    pub(crate) fn close_multi_track_session(&self, session_id: SessionId) -> bool {
+    pub(crate) fn close_api_session(&self, session_id: SessionId) -> bool {
         reap_finished_threads(&self.live.inner);
         let control = self
             .live
             .inner
-            .multi_track_sessions
+            .api_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session_id);
@@ -1525,7 +1600,7 @@ impl WebRtc {
         };
         control.close();
         if !control.wait_for_finish() {
-            tracing::warn!(%session_id, "shared WebRTC session did not finish before close timeout");
+            tracing::warn!(%session_id, "API WebRTC session did not finish before close timeout");
         } else {
             join_session_thread(&self.live.inner, session_id);
         }
@@ -1533,38 +1608,66 @@ impl WebRtc {
         true
     }
 
-    pub(crate) fn set_quality(
-        &self,
-        session_id: SessionId,
-        quality: StreamQuality,
-    ) -> Option<SessionStatus> {
-        reap_finished_threads(&self.live.inner);
-        let control = self
-            .live
-            .inner
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session_id)
-            .cloned()?;
-        control
-            .requested_quality
-            .store(quality.as_u8(), Ordering::Release);
-        if let Err(error) = control.poller.notify() {
-            tracing::debug!(%session_id, %error, "unable to wake WebRTC session for quality change");
-        }
-        Some(control.status())
-    }
-
-    pub(crate) fn session_status(&self, session_id: SessionId) -> Option<SessionStatus> {
+    pub(crate) fn active_api_session_ids(&self) -> HashSet<SessionId> {
         reap_finished_threads(&self.live.inner);
         self.live
             .inner
-            .sessions
+            .api_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session_id)
-            .map(|control| control.status())
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    pub fn live(&self) -> Publisher {
+        self.live.clone()
+    }
+
+    pub(crate) fn live_video_sources(&self, camera_ip: IpAddr) -> Vec<LiveVideoSourceCapability> {
+        let sources = self
+            .live
+            .inner
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        [StreamKind::Main, StreamKind::Sub]
+            .into_iter()
+            .filter_map(|stream| {
+                let source = sources.get(&Source { camera_ip, stream })?;
+                let codec = match source.keyframe.as_ref()?.codec {
+                    VideoCodec::H264 => "h264",
+                    VideoCodec::H265 => "h265",
+                };
+                Some(LiveVideoSourceCapability { stream, codec })
+            })
+            .collect()
+    }
+
+    pub fn with_recording_demand(recording_demand: RecordingDemand) -> Self {
+        Self {
+            live: Publisher::default(),
+            recording_demand: Some(recording_demand),
+        }
+    }
+
+    pub fn accept_offer(&self, source: Source, offer: SdpOffer) -> anyhow::Result<SdpAnswer> {
+        self.accept_offer_inner(source, None, offer)
+            .map(|session| session.answer)
+    }
+
+    pub fn accept_offer_for_recording(
+        &self,
+        source: Source,
+        recording_stream_id: &str,
+        offer: SdpOffer,
+    ) -> anyhow::Result<SdpAnswer> {
+        let demand_guard = self
+            .recording_demand
+            .as_ref()
+            .map(|demand| demand.acquire(recording_stream_id));
+        self.accept_offer_inner(source, demand_guard, offer)
+            .map(|session| session.answer)
     }
 
     pub(crate) fn health_snapshot(&self) -> WebRtcHealth {
@@ -1657,66 +1760,13 @@ impl WebRtc {
             .max()
             .unwrap_or(0);
 
-        let (
-            adaptive_sessions,
-            mut requested_auto,
-            mut requested_high,
-            mut requested_low,
-            mut estimates,
-        ) = {
-            let sessions = self
-                .live
-                .inner
-                .sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut requested_auto = 0;
-            let mut requested_high = 0;
-            let mut requested_low = 0;
-            let mut estimates = Vec::new();
-            for control in sessions.values() {
-                let status = control.status();
-                match status.requested_quality {
-                    StreamQuality::Auto => requested_auto += 1,
-                    StreamQuality::High => requested_high += 1,
-                    StreamQuality::Low => requested_low += 1,
-                }
-                if let Some(estimate) = status.estimated_bitrate_bps {
-                    estimates.push(estimate);
-                }
-            }
-            (
-                sessions.len(),
-                requested_auto,
-                requested_high,
-                requested_low,
-                estimates,
-            )
-        };
-        let (multi_track_sessions, multi_tracks) = {
-            let sessions = self
-                .live
-                .inner
-                .multi_track_sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut multi_tracks = 0;
-            for control in sessions.values() {
-                let status = control.status();
-                multi_tracks += status.tracks.len();
-                for track in status.tracks {
-                    match track.requested_quality {
-                        StreamQuality::Auto => requested_auto += 1,
-                        StreamQuality::High => requested_high += 1,
-                        StreamQuality::Low => requested_low += 1,
-                    }
-                }
-                if let Some(estimate) = status.estimated_bitrate_bps {
-                    estimates.push(estimate);
-                }
-            }
-            (sessions.len(), multi_tracks)
-        };
+        let adaptive_sessions = 0;
+        let multi_track_sessions = 0;
+        let multi_tracks = 0;
+        let requested_auto = 0;
+        let requested_high = 0;
+        let requested_low = 0;
+        let estimates: Vec<u64> = Vec::new();
         let estimated_bitrate_min_bps = estimates.iter().copied().min();
         let estimated_bitrate_max_bps = estimates.iter().copied().max();
         let estimated_bitrate_avg_bps = (!estimates.is_empty())
@@ -1759,7 +1809,12 @@ impl WebRtc {
         }
     }
 
-    fn accept_offer_inner(&self, plan: SessionPlan, offer: SdpOffer) -> anyhow::Result<Session> {
+    fn accept_offer_inner(
+        &self,
+        source: Source,
+        demand_guard: Option<RecordingDemandGuard>,
+        offer: SdpOffer,
+    ) -> anyhow::Result<Session> {
         reap_finished_threads(&self.live.inner);
         let SessionIo {
             rtc,
@@ -1782,88 +1837,20 @@ impl WebRtc {
             shutdown: shutdown.clone(),
         };
 
-        let (subscription, control) = match plan {
-            SessionPlan::Fixed {
-                source,
-                demand_guard,
-            } => (
-                SourceSubscription::fixed(self.live.inner.clone(), sender, source, demand_guard),
-                None,
-            ),
-            SessionPlan::Adaptive {
-                camera_ip,
-                has_sub_stream,
-                quality,
-                recording_label,
-            } => {
-                let high_source = Source {
-                    camera_ip,
-                    stream: StreamKind::Main,
-                };
-                let low_source = has_sub_stream.then_some(Source {
-                    camera_ip,
-                    stream: StreamKind::Sub,
-                });
-                let initial_stream = match quality {
-                    StreamQuality::High => StreamKind::Main,
-                    StreamQuality::Auto | StreamQuality::Low => {
-                        low_source.map_or(StreamKind::Main, |source| source.stream)
-                    }
-                };
-                let control =
-                    Arc::new(SessionControl::new(quality, initial_stream, poller.clone()));
-                let subscription = SourceSubscription::adaptive(
-                    self.live.inner.clone(),
-                    sender,
-                    high_source,
-                    low_source,
-                    control.clone(),
-                    self.recording_demand.clone(),
-                    recording_label,
-                );
-                self.live
-                    .inner
-                    .sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(session_id, control.clone());
-                (subscription, Some(control))
-            }
-        };
+        let subscription =
+            SourceSubscription::fixed(self.live.inner.clone(), sender, source, demand_guard);
 
         let thread_name = format!(
             "webrtc-{}-{}",
             subscription.active_source.camera_ip, subscription.active_source.stream
         );
-        let inner = self.live.inner.clone();
-        let thread_inner = inner.clone();
-        let registered_session = control.is_some();
-        let thread = match std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
                 if let Err(error) = run_session(rtc, socket, poller, rx, subscription, shutdown) {
                     tracing::debug!(%error, "WebRTC session stopped with error");
                 }
-                if registered_session {
-                    thread_inner
-                        .sessions
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&session_id);
-                }
-            }) {
-            Ok(thread) => thread,
-            Err(error) => {
-                if registered_session {
-                    inner
-                        .sessions
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&session_id);
-                }
-                return Err(error.into());
-            }
-        };
+            })?;
         self.live
             .inner
             .threads
@@ -1881,16 +1868,16 @@ impl WebRtc {
     }
 
     pub fn shutdown(&self) {
-        let browser_controls = self
+        let api_controls = self
             .live
             .inner
-            .multi_track_sessions
+            .api_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        for control in browser_controls {
+        for control in api_controls {
             control.close();
         }
         let senders = {
@@ -1927,7 +1914,7 @@ impl WebRtc {
         }
         self.live
             .inner
-            .multi_track_sessions
+            .api_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
@@ -1964,6 +1951,33 @@ fn accept_session(offer: SdpOffer) -> anyhow::Result<SessionIo> {
     })
 }
 
+fn accept_api_session(offer: SdpOffer) -> anyhow::Result<(SessionIo, SessionChannels)> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+    socket.set_nonblocking(true)?;
+    let port = socket.local_addr()?.port();
+    let mut rtc = rtc_config().set_ice_lite(true).build(Instant::now());
+    let channels = configure_session_channels(&mut rtc);
+    for ip in candidate_addresses() {
+        let candidate = Candidate::host(SocketAddr::new(IpAddr::V4(ip), port), "udp")?;
+        let _ = rtc.add_local_candidate(candidate);
+    }
+    let answer = rtc.sdp_api().accept_offer(offer)?;
+    let poller = Arc::new(Poller::new()?);
+    // SAFETY: The session thread owns the socket and removes it before either resource drops.
+    unsafe {
+        poller.add(&socket, PollEvent::readable(UDP_EVENT_KEY))?;
+    }
+    Ok((
+        SessionIo {
+            rtc,
+            socket,
+            poller,
+            answer,
+        },
+        channels,
+    ))
+}
+
 fn next_session_id(inner: &Inner) -> SessionId {
     let sequence = inner.next_session_id.fetch_add(1, Ordering::Relaxed);
     SessionId(
@@ -1982,48 +1996,10 @@ fn initial_stream(quality: StreamQuality, low_source: Option<Source>) -> StreamK
     }
 }
 
-fn validate_multi_tracks(plans: &[TrackPlan]) -> anyhow::Result<()> {
-    if plans.is_empty() || plans.len() > MAX_TRACKS {
-        anyhow::bail!("browser offer must contain 1 to {MAX_TRACKS} video tracks");
-    }
-    let mut track_ids = HashSet::with_capacity(plans.len());
-    let mut mids = HashSet::with_capacity(plans.len());
-    let mut promoted_tracks = 0;
-    for plan in plans {
-        if !track_ids.insert(plan.track_id.clone()) {
-            anyhow::bail!(
-                "browser offer contains duplicate live track ID '{}'",
-                plan.track_id
-            );
-        }
-        if plan.mid.is_empty()
-            || plan.mid.len() > MAX_MID_BYTES
-            || Mid::from(plan.mid.as_str()).to_string() != plan.mid
-        {
-            anyhow::bail!("browser offer contains invalid SDP MID '{}'", plan.mid);
-        }
-        if !mids.insert(plan.mid.as_str()) {
-            anyhow::bail!("browser offer contains duplicate SDP MID '{}'", plan.mid);
-        }
-        if plan.quality != StreamQuality::Low {
-            promoted_tracks += 1;
-        }
-    }
-    if promoted_tracks > 1 {
-        anyhow::bail!("browser offer may promote only one camera track");
-    }
-    Ok(())
-}
-
-fn bind_mids(plans: &[TrackPlan]) -> BTreeMap<TrackId, Mid> {
-    plans
-        .iter()
-        .map(|plan| (plan.track_id.clone(), Mid::from(plan.mid.as_str())))
-        .collect()
-}
-
 fn rtc_config() -> RtcConfig {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "macos-test-aws-crypto"))]
+    let provider = str0m_aws_lc_rs::default_provider();
+    #[cfg(all(target_os = "macos", not(feature = "macos-test-aws-crypto")))]
     let provider = str0m_apple_crypto::default_provider();
     #[cfg(target_os = "linux")]
     let provider = str0m_openssl::default_provider();
@@ -2085,20 +2061,22 @@ fn run_session(
     result.and_then(|()| delete_result.map_err(Into::into))
 }
 
-fn run_multi_track_session(
+fn run_api_session(
     mut rtc: Rtc,
     socket: UdpSocket,
     poller: Arc<Poller>,
-    mut tracks: Vec<TrackRuntime>,
-    control: Arc<MultiTrackControl>,
+    channels: SessionChannels,
+    control: Arc<ApiSessionControl>,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    let result =
-        drive_multi_track_session(&mut rtc, &socket, &poller, &mut tracks, &control, &shutdown);
-    for track in tracks {
-        let queue_stats = track.subscription.sender.queue_stats.clone();
-        let inner = track.subscription.inner.clone();
-        let abandoned_frames = track.rx.try_iter().count() as u64;
+    let mut media = ApiMediaRuntime::default();
+    let result = drive_api_session(
+        &mut rtc, &socket, &poller, channels, &control, &shutdown, &mut media,
+    );
+    for track in media.tracks {
+        let queue_stats = track.runtime.subscription.sender.queue_stats.clone();
+        let inner = track.runtime.subscription.inner.clone();
+        let abandoned_frames = track.runtime.rx.try_iter().count() as u64;
         queue_stats
             .discarded_frames
             .fetch_add(abandoned_frames, Ordering::Relaxed);
@@ -2110,142 +2088,35 @@ fn run_multi_track_session(
     result.and_then(|()| delete_result.map_err(Into::into))
 }
 
-fn drive_multi_track_session(
+fn drive_api_session(
     rtc: &mut Rtc,
     socket: &UdpSocket,
     poller: &Poller,
-    tracks: &mut [TrackRuntime],
-    control: &MultiTrackControl,
+    channels: SessionChannels,
+    control: &ApiSessionControl,
     shutdown: &AtomicBool,
+    media: &mut ApiMediaRuntime,
 ) -> anyhow::Result<()> {
     let mut events = Events::new();
     let mut udp_buffer = vec![0; UDP_PACKET_CAPACITY];
-    let mut configured_desired_bitrate = None;
-    let mut next_desired_bitrate_refresh = Instant::now();
     let mut peer_destinations = HashMap::new();
     let mut connected = false;
-    let mut next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
+    let mut next_timeout =
+        drain_api_outputs(rtc, socket, channels, control, media, &mut connected)?;
 
     loop {
         if shutdown.load(Ordering::Acquire) {
             break;
         }
         let now = Instant::now();
-        if now >= next_desired_bitrate_refresh {
-            let desired_bitrate = desired_bitrate(tracks);
-            if Some(desired_bitrate) != configured_desired_bitrate {
-                rtc.bwe().set_desired_bitrate(desired_bitrate);
-                configured_desired_bitrate = Some(desired_bitrate);
-            }
-            next_desired_bitrate_refresh = now + DESIRED_BITRATE_REFRESH;
+        let mut wrote_media = false;
+        for track in &mut media.tracks {
+            wrote_media |= drive_track_runtime(rtc, &mut track.runtime, connected, now)?;
         }
-        update_track_estimates(
-            tracks,
-            control.estimated_bitrate_bps.load(Ordering::Acquire),
-        );
-
-        for track in &mut *tracks {
-            track.subscription.select_source(rtc, Some(track.mid), now);
-            if connected && !track.keyframe_prepared {
-                track.subscription.prepare_keyframe(&track.rx);
-                track.last_frame_sequence = None;
-                track.recovering_queue_gap = false;
-                track.keyframe_prepared = true;
-            }
-            if connected && track.keyframe_gate.allows(FrameOrigin::Cached, true) {
-                let keyframe = track
-                    .subscription
-                    .sender
-                    .latest_keyframe
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take();
-                if let Some(keyframe) = keyframe {
-                    track.subscription.discard_queued_frames(&track.rx);
-                    track.last_frame_sequence = None;
-                    track.recovering_queue_gap = false;
-                    let wrote_frame =
-                        write_frame(rtc, Some(track.mid), &keyframe, &mut track.media_clock)?;
-                    if wrote_frame {
-                        track.keyframe_gate.mark_written(FrameOrigin::Cached);
-                        next_timeout =
-                            drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
-                    }
-                }
-            }
+        if wrote_media {
+            next_timeout =
+                drain_api_outputs(rtc, socket, channels, control, media, &mut connected)?;
         }
-
-        loop {
-            let mut handled_frame = false;
-            for track in &mut *tracks {
-                let Ok(SessionCommand::Frame {
-                    sequence,
-                    source,
-                    frame,
-                }) = track.rx.try_recv()
-                else {
-                    continue;
-                };
-                handled_frame = true;
-                if track
-                    .subscription
-                    .finish_switch_on_frame(source, frame.is_keyframe)
-                {
-                    track.reset_source_state();
-                }
-                if source != track.subscription.active_source {
-                    track.subscription.record_discarded_frames(1);
-                    continue;
-                }
-                if !track
-                    .keyframe_gate
-                    .observe_sequence(&mut track.last_frame_sequence, sequence)
-                {
-                    track.recovering_queue_gap = true;
-                    tracing::debug!(track_id = %track.track_id, sequence, "shared WebRTC track queue gap; waiting for keyframe");
-                }
-                if !track.received_source_frame {
-                    tracing::debug!(
-                        track_id = %track.track_id,
-                        codec = ?frame.codec,
-                        keyframe = frame.is_keyframe,
-                        "received first shared WebRTC source frame"
-                    );
-                    track.received_source_frame = true;
-                }
-                let frame_allowed = track
-                    .keyframe_gate
-                    .allows(FrameOrigin::Live, frame.is_keyframe);
-                let wrote_frame = connected
-                    && frame_allowed
-                    && write_frame(rtc, Some(track.mid), &frame, &mut track.media_clock)?;
-                if wrote_frame {
-                    track.keyframe_gate.mark_written(FrameOrigin::Live);
-                    track.recovering_queue_gap = false;
-                    track.subscription.record_written_frame();
-                    next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
-                } else if connected && track.recovering_queue_gap && !frame_allowed {
-                    track.subscription.record_discarded_frames(1);
-                    track
-                        .subscription
-                        .sender
-                        .queue_stats
-                        .recovery_drops
-                        .fetch_add(1, Ordering::Relaxed);
-                    track
-                        .subscription
-                        .inner
-                        .queue_recovery_drops
-                        .fetch_add(1, Ordering::Relaxed);
-                } else {
-                    track.subscription.record_discarded_frames(1);
-                }
-            }
-            if !handled_frame {
-                break;
-            }
-        }
-
         events.clear();
         poller.wait(
             &mut events,
@@ -2271,8 +2142,14 @@ fn drive_multi_track_session(
                             contents: (&udp_buffer[..length]).try_into()?,
                         };
                         rtc.handle_input(Input::Receive(Instant::now(), receive))?;
-                        next_timeout =
-                            drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
+                        next_timeout = drain_api_outputs(
+                            rtc,
+                            socket,
+                            channels,
+                            control,
+                            media,
+                            &mut connected,
+                        )?;
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => break,
                     Err(error) => return Err(error.into()),
@@ -2284,45 +2161,236 @@ fn drive_multi_track_session(
         let now = Instant::now();
         if next_timeout <= now {
             rtc.handle_input(Input::Timeout(now))?;
-            next_timeout = drain_multi_track_outputs(rtc, socket, &mut connected, control)?;
+            next_timeout =
+                drain_api_outputs(rtc, socket, channels, control, media, &mut connected)?;
         }
     }
 
     Ok(())
 }
 
-fn desired_bitrate(tracks: &[TrackRuntime]) -> Bitrate {
-    let desired_bps = tracks.iter().fold(0u64, |total, track| {
-        let quality = track
-            .subscription
-            .requested_quality()
-            .unwrap_or(StreamQuality::Low);
-        let bitrate = match quality {
-            StreamQuality::Low => track.subscription.low_delivery_bitrate(),
-            StreamQuality::Auto | StreamQuality::High => {
-                track.subscription.desired_bitrate(quality)
-            }
-        };
-        total.saturating_add(bitrate.as_u64())
-    });
-    Bitrate::bps(desired_bps.min(MAX_DESIRED_BITRATE.as_u64()))
-}
-
-fn update_track_estimates(tracks: &mut [TrackRuntime], aggregate_bps: u64) {
-    let background_reserve_bps = tracks.iter().fold(0u64, |total, track| {
-        total.saturating_add(track.subscription.low_delivery_bitrate().as_u64())
-    });
-    for track in tracks {
-        let own_low_bps = track.subscription.low_delivery_bitrate().as_u64();
-        let available_bps = available_bitrate(aggregate_bps, background_reserve_bps, own_low_bps);
-        track
-            .subscription
-            .update_estimate(Bitrate::bps(available_bps));
+fn drive_track_runtime(
+    rtc: &mut Rtc,
+    track: &mut TrackRuntime,
+    connected: bool,
+    now: Instant,
+) -> anyhow::Result<bool> {
+    let mut wrote_media = false;
+    track.subscription.select_source(rtc, Some(track.mid), now);
+    if connected && !track.keyframe_prepared {
+        track.subscription.prepare_keyframe(&track.rx);
+        track.last_frame_sequence = None;
+        track.recovering_queue_gap = false;
+        track.keyframe_prepared = true;
     }
+    if connected && track.keyframe_gate.allows(FrameOrigin::Cached, true) {
+        let keyframe = track
+            .subscription
+            .sender
+            .latest_keyframe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(keyframe) = keyframe {
+            track.subscription.discard_queued_frames(&track.rx);
+            track.last_frame_sequence = None;
+            track.recovering_queue_gap = false;
+            if write_frame(rtc, Some(track.mid), &keyframe, &mut track.media_clock)? {
+                track.keyframe_gate.mark_written(FrameOrigin::Cached);
+                wrote_media = true;
+            }
+        }
+    }
+
+    while let Ok(SessionCommand::Frame {
+        sequence,
+        source,
+        frame,
+    }) = track.rx.try_recv()
+    {
+        if track
+            .subscription
+            .finish_switch_on_frame(source, frame.is_keyframe)
+        {
+            track.reset_source_state();
+        }
+        if source != track.subscription.active_source {
+            track.subscription.record_discarded_frames(1);
+            continue;
+        }
+        if !track
+            .keyframe_gate
+            .observe_sequence(&mut track.last_frame_sequence, sequence)
+        {
+            track.recovering_queue_gap = true;
+            tracing::debug!(track_id = %track.track_id, sequence, "API WebRTC track queue gap; waiting for keyframe");
+        }
+        if !track.received_source_frame {
+            tracing::debug!(
+                track_id = %track.track_id,
+                codec = ?frame.codec,
+                keyframe = frame.is_keyframe,
+                "received first API WebRTC source frame"
+            );
+            track.received_source_frame = true;
+        }
+        let frame_allowed = track
+            .keyframe_gate
+            .allows(FrameOrigin::Live, frame.is_keyframe);
+        let wrote_frame = connected
+            && frame_allowed
+            && write_frame(rtc, Some(track.mid), &frame, &mut track.media_clock)?;
+        if wrote_frame {
+            track.keyframe_gate.mark_written(FrameOrigin::Live);
+            track.recovering_queue_gap = false;
+            track.subscription.record_written_frame();
+            wrote_media = true;
+        } else if connected && track.recovering_queue_gap && !frame_allowed {
+            track.subscription.record_discarded_frames(1);
+            track
+                .subscription
+                .sender
+                .queue_stats
+                .recovery_drops
+                .fetch_add(1, Ordering::Relaxed);
+            track
+                .subscription
+                .inner
+                .queue_recovery_drops
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            track.subscription.record_discarded_frames(1);
+        }
+    }
+    Ok(wrote_media)
 }
 
-const fn available_bitrate(aggregate_bps: u64, total_low_bps: u64, own_low_bps: u64) -> u64 {
-    aggregate_bps.saturating_sub(total_low_bps.saturating_sub(own_low_bps))
+fn drain_api_outputs(
+    rtc: &mut Rtc,
+    socket: &UdpSocket,
+    channels: SessionChannels,
+    control: &ApiSessionControl,
+    media: &mut ApiMediaRuntime,
+    connected: &mut bool,
+) -> anyhow::Result<Instant> {
+    let mut after_send: Vec<PostSendAction> = Vec::new();
+    loop {
+        media.flush_outbound(rtc, channels)?;
+        match rtc.poll_output()? {
+            Output::Timeout(deadline) => {
+                for action in after_send {
+                    action();
+                }
+                return Ok(deadline);
+            }
+            Output::Transmit(transmit) => {
+                socket.send_to(&transmit.contents, transmit.destination)?;
+            }
+            Output::Event(event) if terminal_session_event(&event) => {
+                anyhow::bail!("WebRTC transport ended")
+            }
+            Output::Event(Event::Connected) => {
+                *connected = true;
+                tracing::debug!("API WebRTC session connected");
+            }
+            Output::Event(Event::MediaAdded(added))
+                if added.kind == MediaKind::Video && added.direction.is_sending() =>
+            {
+                if !media.available_video_mids.contains(&added.mid)
+                    && !media
+                        .tracks
+                        .iter()
+                        .any(|track| track.runtime.mid == added.mid)
+                {
+                    media.available_video_mids.push(added.mid);
+                }
+            }
+            Output::Event(Event::ChannelOpen(channel_id, label)) => {
+                let expected_label = if channel_id == channels.control {
+                    CONTROL_CHANNEL_LABEL
+                } else if channel_id == channels.reliable_data {
+                    RELIABLE_DATA_CHANNEL_LABEL
+                } else if channel_id == channels.unreliable_data {
+                    UNRELIABLE_DATA_CHANNEL_LABEL
+                } else {
+                    anyhow::bail!("unexpected WebRTC data channel opened");
+                };
+                if label != expected_label {
+                    anyhow::bail!(
+                        "WebRTC data channel label '{label}' does not match '{expected_label}'"
+                    );
+                }
+                if channel_id == channels.control {
+                    let handler = control
+                        .control_handler
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .and_then(Weak::upgrade);
+                    if let Some(capabilities) = handler
+                        .as_deref()
+                        .and_then(|handler| handler.initial_capabilities(control.session_id))
+                    {
+                        let envelope = ControlEnvelope {
+                            message: Some(control_envelope::Message::Notification(
+                                crate::api::proto::Notification {
+                                    event: Some(
+                                        crate::api::proto::notification::Event::InitialCapabilities(
+                                            capabilities,
+                                        ),
+                                    ),
+                                },
+                            )),
+                        };
+                        let payload = envelope.encode_to_vec();
+                        let Some(mut channel) = rtc.channel(channels.control) else {
+                            anyhow::bail!("WebRTC control channel disappeared before capabilities");
+                        };
+                        if !channel.write(true, &payload)? {
+                            anyhow::bail!("WebRTC capability response buffer is full");
+                        }
+                    }
+                }
+            }
+            Output::Event(Event::ChannelData(data)) if data.id == channels.control => {
+                let handler = control
+                    .control_handler
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .and_then(Weak::upgrade);
+                let reply =
+                    api_control_reply(data.binary, &data.data, handler.as_deref(), control, media);
+                let payload = reply.envelope.encode_to_vec();
+                let Some(mut channel) = rtc.channel(channels.control) else {
+                    anyhow::bail!("WebRTC control channel disappeared before response");
+                };
+                if !channel.write(true, &payload)? {
+                    anyhow::bail!("WebRTC control response buffer is full");
+                }
+                media.enqueue(reply.data_messages);
+                for notification in reply.notifications {
+                    let payload = ControlEnvelope {
+                        message: Some(control_envelope::Message::Notification(notification)),
+                    }
+                    .encode_to_vec();
+                    let Some(mut channel) = rtc.channel(channels.control) else {
+                        anyhow::bail!("WebRTC control channel disappeared before notification");
+                    };
+                    if !channel.write(true, &payload)? {
+                        anyhow::bail!("WebRTC control notification buffer is full");
+                    }
+                }
+                if let Some(action) = reply.after_send {
+                    after_send.push(action);
+                }
+            }
+            Output::Event(Event::ChannelClose(channel_id)) if channel_id == channels.control => {
+                anyhow::bail!("WebRTC control channel closed")
+            }
+            Output::Event(_) => {}
+        }
+    }
 }
 
 fn drive_session(
@@ -2571,47 +2639,212 @@ fn drain_outputs(
     }
 }
 
-fn drain_multi_track_outputs(
-    rtc: &mut Rtc,
-    socket: &UdpSocket,
-    connected: &mut bool,
-    control: &MultiTrackControl,
-) -> anyhow::Result<Instant> {
-    loop {
-        match rtc.poll_output()? {
-            Output::Timeout(deadline) => return Ok(deadline),
-            Output::Transmit(transmit) => {
-                socket.send_to(&transmit.contents, transmit.destination)?;
-            }
-            Output::Event(event) if terminal_session_event(&event) => {
-                anyhow::bail!("WebRTC transport ended")
-            }
-            Output::Event(Event::Connected) => {
-                *connected = true;
-                tracing::debug!("shared WebRTC session connected");
-            }
-            Output::Event(Event::MediaAdded(media)) if media.kind == MediaKind::Video => {
-                let payloads = rtc
-                    .writer(media.mid)
-                    .map(|writer| {
-                        writer
-                            .payload_params()
-                            .map(|params| (params.pt(), params.spec().codec, params.resend()))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                tracing::debug!(?media, ?payloads, "shared WebRTC video media negotiated");
-            }
-            Output::Event(Event::EgressBitrateEstimate(estimate)) => {
-                let bitrate = match estimate {
-                    BweKind::Twcc(bitrate) | BweKind::Remb(_, bitrate) => bitrate,
-                    _ => continue,
-                };
-                control.update_estimate(bitrate);
-                tracing::trace!(%bitrate, "shared WebRTC egress bitrate estimate updated");
-            }
-            Output::Event(_) => {}
+#[cfg(test)]
+fn control_reply(
+    binary: bool,
+    payload: &[u8],
+    handler: Option<&dyn ControlRequestHandler>,
+) -> EnvelopeDispatch {
+    let request = match decode_control_request(binary, payload) {
+        Ok(request) => request,
+        Err(error) => {
+            return control_error(error.request_id, ErrorCode::InvalidRequest, error.message);
         }
+    };
+    let dispatch = if let Some(handler) = handler {
+        handler.handle(request)
+    } else {
+        unavailable_control_dispatch(request.request_id)
+    };
+    envelope_dispatch(dispatch)
+}
+
+fn api_control_reply(
+    binary: bool,
+    payload: &[u8],
+    handler: Option<&dyn ControlRequestHandler>,
+    control: &ApiSessionControl,
+    media: &mut ApiMediaRuntime,
+) -> EnvelopeDispatch {
+    let request = match decode_control_request(binary, payload) {
+        Ok(request) => request,
+        Err(error) => {
+            return control_error(error.request_id, ErrorCode::InvalidRequest, error.message);
+        }
+    };
+    let request_id = request.request_id;
+    let dispatch = match request.command.as_ref() {
+        Some(crate::api::proto::request::Command::SubscribeMedia(subscribe)) => {
+            let Some(handler) = handler else {
+                return envelope_dispatch(unavailable_control_dispatch(request_id));
+            };
+            match handler
+                .resolve_media_subscription(subscribe)
+                .and_then(|plan| media.subscribe(control, subscribe, plan))
+            {
+                Ok(result) => ControlDispatch {
+                    response: ControlResponse {
+                        request_id,
+                        result: Some(control_response::Result::Ok(crate::api::proto::Ok {
+                            result: Some(crate::api::proto::ok::Result::SubscriptionResult(result)),
+                        })),
+                    },
+                    after_send: None,
+                    data_messages: Vec::new(),
+                    notifications: Vec::new(),
+                },
+                Err(error) => failed_control_dispatch(request_id, error.code, error.message),
+            }
+        }
+        Some(crate::api::proto::request::Command::Unsubscribe(unsubscribe)) => {
+            media.unsubscribe(&unsubscribe.subscription_ids);
+            ControlDispatch {
+                response: ControlResponse {
+                    request_id,
+                    result: Some(control_response::Result::Ok(crate::api::proto::Ok {
+                        result: None,
+                    })),
+                },
+                after_send: None,
+                data_messages: Vec::new(),
+                notifications: Vec::new(),
+            }
+        }
+        _ => handler.map_or_else(
+            || unavailable_control_dispatch(request_id),
+            |handler| {
+                let data_group = control_data_group(request.command.as_ref());
+                let dispatch = handler.handle_for_session(control.session_id, request);
+                if matches!(
+                    dispatch.response.result,
+                    Some(control_response::Result::Ok(_))
+                ) && let Some(data_group) = data_group
+                {
+                    media.cancel_group(&data_group);
+                }
+                dispatch
+            },
+        ),
+    };
+    envelope_dispatch(dispatch)
+}
+
+fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> Option<String> {
+    match command? {
+        crate::api::proto::request::Command::StoredMediaCommand(command) => {
+            use crate::api::proto::stored_media_command::Action;
+            match command.action.as_ref()? {
+                Action::Open(open) => Some(format!("stored:{}", open.stored_media_id)),
+                Action::Seek(seek) => Some(format!("stored:{}", seek.stored_media_id)),
+                Action::Close(close) => Some(format!("stored:{}", close.stored_media_id)),
+                Action::QueryTimeline(query) => Some(format!("query:{}", query.query_id)),
+                Action::CancelTimelineQuery(cancel) => Some(format!("query:{}", cancel.query_id)),
+                Action::SetPlayback(_) | Action::Refill(_) => None,
+            }
+        }
+        crate::api::proto::request::Command::ExportCommand(command) => {
+            use crate::api::proto::export_command::Action;
+            match command.action.as_ref()? {
+                Action::Download(download) => Some(format!("export:{}", download.job_id)),
+                Action::Cancel(cancel) => Some(format!("export:{}", cancel.job_id)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn decode_control_request(
+    binary: bool,
+    payload: &[u8],
+) -> Result<crate::api::proto::Request, ControlDecodeError> {
+    if !binary {
+        return Err(ControlDecodeError {
+            request_id: 0,
+            message: "control messages must be binary",
+        });
+    }
+    if payload.len() > MAX_CONTROL_MESSAGE_BYTES {
+        return Err(ControlDecodeError {
+            request_id: 0,
+            message: "control message exceeds 64 KiB",
+        });
+    }
+    let Ok(envelope) = ControlEnvelope::decode(payload) else {
+        return Err(ControlDecodeError {
+            request_id: 0,
+            message: "invalid control envelope",
+        });
+    };
+    let Some(control_envelope::Message::Request(request)) = envelope.message else {
+        return Err(ControlDecodeError {
+            request_id: 0,
+            message: "expected a control request",
+        });
+    };
+    if request.command.is_none() {
+        return Err(ControlDecodeError {
+            request_id: request.request_id,
+            message: "control request has no command",
+        });
+    }
+    Ok(request)
+}
+
+fn unavailable_control_dispatch(request_id: u64) -> ControlDispatch {
+    failed_control_dispatch(
+        request_id,
+        ErrorCode::Unavailable,
+        "control service is unavailable",
+    )
+}
+
+fn failed_control_dispatch(
+    request_id: u64,
+    code: ErrorCode,
+    message: impl Into<String>,
+) -> ControlDispatch {
+    ControlDispatch {
+        response: ControlResponse {
+            request_id,
+            result: Some(control_response::Result::Error(ControlError {
+                code: code as i32,
+                message: message.into(),
+                details: Vec::new(),
+            })),
+        },
+        after_send: None,
+        data_messages: Vec::new(),
+        notifications: Vec::new(),
+    }
+}
+
+fn envelope_dispatch(dispatch: ControlDispatch) -> EnvelopeDispatch {
+    EnvelopeDispatch {
+        envelope: ControlEnvelope {
+            message: Some(control_envelope::Message::Response(dispatch.response)),
+        },
+        after_send: dispatch.after_send,
+        data_messages: dispatch.data_messages,
+        notifications: dispatch.notifications,
+    }
+}
+
+fn control_error(request_id: u64, code: ErrorCode, message: &str) -> EnvelopeDispatch {
+    EnvelopeDispatch {
+        envelope: ControlEnvelope {
+            message: Some(control_envelope::Message::Response(ControlResponse {
+                request_id,
+                result: Some(control_response::Result::Error(ControlError {
+                    code: code as i32,
+                    message: message.to_owned(),
+                    details: Vec::new(),
+                })),
+            })),
+        },
+        after_send: None,
+        data_messages: Vec::new(),
+        notifications: Vec::new(),
     }
 }
 
@@ -2779,18 +3012,6 @@ mod tests {
     }
 
     #[test]
-    fn focused_auto_track_keeps_capacity_after_low_stream_reservation() {
-        let aggregate_bps = 20_000_000;
-        let total_low_bps = 8 * 500_000;
-        let focused_low_bps = 500_000;
-
-        assert_eq!(
-            available_bitrate(aggregate_bps, total_low_bps, focused_low_bps),
-            16_500_000
-        );
-    }
-
-    #[test]
     fn media_clock_rebases_each_source_onto_one_output_timeline() {
         let now = Instant::now();
         let mut clock = MediaClock::default();
@@ -2918,47 +3139,12 @@ mod tests {
                 rx,
             )
         };
-        let (adaptive_sender, _adaptive_rx) = sender(1, None);
-        let (multi_track_sender, _multi_track_rx) = sender(2, Some(track_id.clone()));
-        let (fixed_sender, _fixed_rx) = sender(3, None);
-        let adaptive = SourceSubscription::fixed(inner.clone(), adaptive_sender, main_source, None);
-        let browser =
-            SourceSubscription::fixed(inner.clone(), multi_track_sender, sub_source, None);
-        let fixed = SourceSubscription::fixed(inner.clone(), fixed_sender, main_source, None);
-
-        let adaptive_control = Arc::new(SessionControl::new(
-            StreamQuality::Auto,
-            StreamKind::Main,
-            Arc::new(Poller::new().unwrap()),
-        ));
-        adaptive_control
-            .estimated_bitrate_bps
-            .store(3_000_000, Ordering::Release);
-        inner
-            .sessions
-            .lock()
-            .unwrap()
-            .insert(SessionId(1), adaptive_control);
-        let multi_track = Arc::new(SessionControl::new(
-            StreamQuality::Low,
-            StreamKind::Sub,
-            Arc::new(Poller::new().unwrap()),
-        ));
-        multi_track
-            .estimated_bitrate_bps
-            .store(1_500_000, Ordering::Release);
-        let browser_control = Arc::new(MultiTrackControl {
-            tracks: BTreeMap::from([(track_id, multi_track)]),
-            estimated_bitrate_bps: AtomicU64::new(9_000_000),
-            poller: Arc::new(Poller::new().unwrap()),
-            shutdown: Arc::new(AtomicBool::new(false)),
-            completion: SessionCompletion::default(),
-        });
-        inner
-            .multi_track_sessions
-            .lock()
-            .unwrap()
-            .insert(SessionId(2), browser_control);
+        let (first_sender, _first_rx) = sender(1, None);
+        let (second_sender, _second_rx) = sender(2, Some(track_id));
+        let (third_sender, _third_rx) = sender(3, None);
+        let first = SourceSubscription::fixed(inner.clone(), first_sender, main_source, None);
+        let second = SourceSubscription::fixed(inner.clone(), second_sender, sub_source, None);
+        let third = SourceSubscription::fixed(inner.clone(), third_sender, main_source, None);
         {
             let mut sources = inner.sources.lock().unwrap();
             sources.get_mut(&main_source).unwrap().bitrate.estimate_bps = Some(8_000_000);
@@ -2991,10 +3177,10 @@ mod tests {
                 Bytes::from_static(&[5, 6, 7, 8]),
             );
         }
-        adaptive.record_written_frame();
-        browser.record_written_frame();
-        adaptive.record_discarded_frames(2);
-        browser
+        first.record_written_frame();
+        second.record_written_frame();
+        first.record_discarded_frames(2);
+        second
             .sender
             .queue_stats
             .recovery_drops
@@ -3004,18 +3190,18 @@ mod tests {
         let health = webrtc.health_snapshot();
 
         assert_eq!(health.active_sessions, 3);
-        assert_eq!(health.adaptive_sessions, 1);
-        assert_eq!(health.multi_track_sessions, 1);
-        assert_eq!(health.multi_tracks, 1);
-        assert_eq!(health.fixed_sessions, 1);
+        assert_eq!(health.adaptive_sessions, 0);
+        assert_eq!(health.multi_track_sessions, 0);
+        assert_eq!(health.multi_tracks, 0);
+        assert_eq!(health.fixed_sessions, 3);
         assert_eq!(health.active_main, 2);
         assert_eq!(health.active_sub, 1);
-        assert_eq!(health.requested_auto, 1);
+        assert_eq!(health.requested_auto, 0);
         assert_eq!(health.requested_high, 0);
-        assert_eq!(health.requested_low, 1);
-        assert_eq!(health.estimated_bitrate_min_bps, Some(3_000_000));
-        assert_eq!(health.estimated_bitrate_avg_bps, Some(6_000_000));
-        assert_eq!(health.estimated_bitrate_max_bps, Some(9_000_000));
+        assert_eq!(health.requested_low, 0);
+        assert_eq!(health.estimated_bitrate_min_bps, None);
+        assert_eq!(health.estimated_bitrate_avg_bps, None);
+        assert_eq!(health.estimated_bitrate_max_bps, None);
         assert_eq!(health.source_bitrate_bps, 8_500_000);
         assert_eq!(health.published_frames, 4);
         assert_eq!(health.published_bytes, 16);
@@ -3031,7 +3217,7 @@ mod tests {
         assert_eq!(health.sources.len(), 2);
         assert!(health.sources.iter().all(|source| source.has_keyframe));
 
-        drop((adaptive, browser, fixed));
+        drop((first, second, third));
     }
 
     #[test]
@@ -3100,7 +3286,7 @@ mod tests {
             queue_stats: Arc::new(SessionQueueStats::default()),
             queue_high_water: Arc::new(AtomicUsize::new(0)),
             latest_keyframe: Arc::new(Mutex::new(None)),
-            poller: poller.clone(),
+            poller,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         let high_source = Source {
@@ -3111,11 +3297,7 @@ mod tests {
             stream: StreamKind::Sub,
             ..high_source
         };
-        let control = Arc::new(SessionControl::new(
-            StreamQuality::High,
-            StreamKind::Main,
-            poller,
-        ));
+        let control = Arc::new(SessionControl::new(StreamQuality::High, StreamKind::Main));
         let mut subscription = SourceSubscription::adaptive(
             inner.clone(),
             sender,
@@ -3185,7 +3367,7 @@ mod tests {
             queue_stats: Arc::new(SessionQueueStats::default()),
             queue_high_water: Arc::new(AtomicUsize::new(0)),
             latest_keyframe: Arc::new(Mutex::new(None)),
-            poller: poller.clone(),
+            poller,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         let high_source = Source {
@@ -3204,11 +3386,7 @@ mod tests {
             .or_default()
             .bitrate
             .estimate_bps = Some(4_000_000);
-        let control = Arc::new(SessionControl::new(
-            StreamQuality::Auto,
-            StreamKind::Sub,
-            poller,
-        ));
+        let control = Arc::new(SessionControl::new(StreamQuality::Auto, StreamKind::Sub));
         let mut subscription = SourceSubscription::adaptive(
             inner,
             sender,
@@ -3251,55 +3429,204 @@ mod tests {
     }
 
     #[test]
-    fn browser_offer_binds_each_negotiated_video_mid_to_its_track() {
-        use str0m::media::Direction;
+    fn canonical_session_channels_use_the_documented_sctp_topology() {
+        let [control, reliable, unreliable] = session_channel_configs();
 
-        let mut offerer = rtc_config().build(Instant::now());
-        let mut changes = offerer.sdp_api();
-        let first_mid = changes.add_media(
-            MediaKind::Video,
-            Direction::RecvOnly,
-            Some("browser".to_owned()),
-            Some("kitchen".to_owned()),
-            None,
+        assert_eq!(control.label, "control-channel");
+        assert_eq!(control.negotiated, Some(0));
+        assert!(control.ordered);
+        assert_eq!(control.reliability, Reliability::Reliable);
+        assert_eq!(reliable.label, "reliable-data");
+        assert_eq!(reliable.negotiated, Some(1));
+        assert!(reliable.ordered);
+        assert_eq!(reliable.reliability, Reliability::Reliable);
+        assert_eq!(unreliable.label, "unreliable-data");
+        assert_eq!(unreliable.negotiated, Some(2));
+        assert!(!unreliable.ordered);
+        assert_eq!(
+            unreliable.reliability,
+            Reliability::MaxRetransmits { retransmits: 0 }
         );
-        let second_mid = changes.add_media(
-            MediaKind::Video,
-            Direction::RecvOnly,
-            Some("browser".to_owned()),
-            Some("garden".to_owned()),
-            None,
-        );
-        let (_offer, _) = changes.apply().unwrap();
-
-        let kitchen = TrackId::parse("kitchen".to_owned()).unwrap();
-        let garden = TrackId::parse("garden".to_owned()).unwrap();
-        let plans = vec![
-            TrackPlan {
-                track_id: kitchen.clone(),
-                mid: first_mid.to_string(),
-                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                has_sub_stream: true,
-                recording_label: "kitchen".to_owned(),
-                quality: StreamQuality::Low,
-            },
-            TrackPlan {
-                track_id: garden.clone(),
-                mid: second_mid.to_string(),
-                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                has_sub_stream: true,
-                recording_label: "garden".to_owned(),
-                quality: StreamQuality::Low,
-            },
-        ];
-
-        let bindings = bind_mids(&plans);
-        assert_eq!(bindings.get(&kitchen), Some(&first_mid));
-        assert_eq!(bindings.get(&garden), Some(&second_mid));
     }
 
     #[test]
-    fn multi_track_drop_keeps_sibling_subscription_active() {
+    fn control_requests_receive_correlated_fail_closed_responses() {
+        use crate::api::proto::{CameraControlCommand, Request, request};
+
+        struct UnsupportedHandler;
+
+        impl ControlRequestHandler for UnsupportedHandler {
+            fn handle(&self, request: Request) -> ControlDispatch {
+                ControlDispatch {
+                    response: ControlResponse {
+                        request_id: request.request_id,
+                        result: Some(control_response::Result::Error(ControlError {
+                            code: ErrorCode::UnsupportedRequest as i32,
+                            message: "unsupported test command".to_owned(),
+                            details: Vec::new(),
+                        })),
+                    },
+                    after_send: None,
+                    data_messages: Vec::new(),
+                    notifications: Vec::new(),
+                }
+            }
+        }
+
+        let request = ControlEnvelope {
+            message: Some(control_envelope::Message::Request(Request {
+                request_id: 42,
+                command: Some(request::Command::CameraControlCommand(
+                    CameraControlCommand { action: None },
+                )),
+            })),
+        };
+
+        let reply = control_reply(true, &request.encode_to_vec(), Some(&UnsupportedHandler));
+        let Some(control_envelope::Message::Response(response)) = reply.envelope.message else {
+            panic!("control request must produce a response envelope");
+        };
+        assert_eq!(response.request_id, 42);
+        let Some(control_response::Result::Error(error)) = response.result else {
+            panic!("unsupported control request must fail closed");
+        };
+        assert_eq!(error.code, ErrorCode::UnsupportedRequest as i32);
+    }
+
+    #[test]
+    fn api_media_subscription_reuses_mid_and_releases_source_on_unsubscribe() {
+        let inner = Arc::new(Inner::default());
+        let poller = Arc::new(Poller::new().unwrap());
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let camera_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let session = ApiSessionControl {
+            session_id: SessionId(1),
+            inner: inner.clone(),
+            recording_demand: None,
+            poller,
+            shutdown,
+            completion: SessionCompletion::default(),
+            control_handler: Arc::new(RwLock::new(None)),
+        };
+        let mut media = ApiMediaRuntime {
+            available_video_mids: vec![Mid::from("video_0")],
+            tracks: Vec::new(),
+            outbound: VecDeque::new(),
+        };
+        let request = crate::api::proto::SubscribeMedia {
+            subscription_id: "front-door".to_owned(),
+            source_session_id: "camera:front-door".to_owned(),
+            kind: crate::api::proto::MediaKind::Video as i32,
+            requested_delivery_transport: crate::api::proto::DeliveryTransport::Rtp as i32,
+            video_quality: crate::api::proto::VideoQuality::Auto as i32,
+            variant_id: String::new(),
+        };
+
+        let first = media
+            .subscribe(
+                &session,
+                &request,
+                MediaSubscriptionPlan {
+                    source_session_id: request.source_session_id.clone(),
+                    camera_ip,
+                    has_sub_stream: true,
+                    recording_label: "front-door".to_owned(),
+                    quality: StreamQuality::Auto,
+                    selected_variant_id: "sub".to_owned(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            first.delivery,
+            Some(crate::api::proto::subscription_result::Delivery::Rtp(
+                crate::api::proto::RtpDelivery { ref mid }
+            )) if mid == "video_0"
+        ));
+        assert!(media.available_video_mids.is_empty());
+        assert_eq!(
+            inner.sources.lock().unwrap()[&Source {
+                camera_ip,
+                stream: StreamKind::Sub
+            }]
+                .subscribers
+                .len(),
+            1
+        );
+
+        let replacement = media
+            .subscribe(
+                &session,
+                &crate::api::proto::SubscribeMedia {
+                    video_quality: crate::api::proto::VideoQuality::High as i32,
+                    ..request.clone()
+                },
+                MediaSubscriptionPlan {
+                    source_session_id: request.source_session_id.clone(),
+                    camera_ip,
+                    has_sub_stream: true,
+                    recording_label: "front-door".to_owned(),
+                    quality: StreamQuality::High,
+                    selected_variant_id: "main".to_owned(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            replacement.delivery,
+            Some(crate::api::proto::subscription_result::Delivery::Rtp(
+                crate::api::proto::RtpDelivery { ref mid }
+            )) if mid == "video_0"
+        ));
+        assert_eq!(
+            inner.sources.lock().unwrap()[&Source {
+                camera_ip,
+                stream: StreamKind::Sub
+            }]
+                .subscribers
+                .len(),
+            0
+        );
+        assert_eq!(
+            inner.sources.lock().unwrap()[&Source {
+                camera_ip,
+                stream: StreamKind::Main
+            }]
+                .subscribers
+                .len(),
+            1
+        );
+
+        media.unsubscribe(&[request.subscription_id]);
+        assert_eq!(media.available_video_mids, vec![Mid::from("video_0")]);
+        assert!(
+            inner
+                .sources
+                .lock()
+                .unwrap()
+                .values()
+                .all(|source| source.subscribers.is_empty())
+        );
+    }
+
+    #[test]
+    fn api_session_accepts_the_documented_data_channel_offer() {
+        let mut offerer = rtc_config().build(Instant::now());
+        let mut changes = offerer.sdp_api();
+        for config in session_channel_configs() {
+            changes.add_channel_with_config(config);
+        }
+        let (offer, _) = changes.apply().unwrap();
+        let webrtc = WebRtc::new();
+
+        let session = webrtc.accept_api_offer(offer).unwrap();
+        let answer = session.answer.to_sdp_string();
+        assert!(answer.lines().any(|line| line.starts_with("m=application")));
+        assert!(answer.lines().any(|line| line == "a=ice-lite"));
+        assert!(webrtc.close_api_session(session.id));
+        webrtc.shutdown();
+    }
+
+    #[test]
+    fn dropping_one_track_keeps_sibling_subscription_active() {
         let inner = Arc::new(Inner::default());
         let poller = Arc::new(Poller::new().unwrap());
         let source = test_source();
@@ -3333,179 +3660,5 @@ mod tests {
         assert_eq!(inner.sources.lock().unwrap()[&source].subscribers.len(), 1);
         drop(second_subscription);
         assert_eq!(inner.sources.lock().unwrap()[&source].subscribers.len(), 0);
-    }
-
-    #[test]
-    fn browser_session_accepts_multiple_camera_tracks() {
-        use str0m::media::Direction;
-
-        let mut offerer = rtc_config().build(Instant::now());
-        let mut changes = offerer.sdp_api();
-        let kitchen_mid = changes.add_media(
-            MediaKind::Video,
-            Direction::RecvOnly,
-            Some("browser".to_owned()),
-            Some("kitchen".to_owned()),
-            None,
-        );
-        let garden_mid = changes.add_media(
-            MediaKind::Video,
-            Direction::RecvOnly,
-            Some("browser".to_owned()),
-            Some("garden".to_owned()),
-            None,
-        );
-        let (offer, _) = changes.apply().unwrap();
-        let kitchen = TrackId::parse("kitchen".to_owned()).unwrap();
-        let garden = TrackId::parse("garden".to_owned()).unwrap();
-        let plans = vec![
-            TrackPlan {
-                track_id: kitchen.clone(),
-                mid: kitchen_mid.to_string(),
-                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                has_sub_stream: true,
-                recording_label: "kitchen".to_owned(),
-                quality: StreamQuality::Low,
-            },
-            TrackPlan {
-                track_id: garden.clone(),
-                mid: garden_mid.to_string(),
-                camera_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
-                has_sub_stream: true,
-                recording_label: "garden".to_owned(),
-                quality: StreamQuality::Low,
-            },
-        ];
-        let webrtc = WebRtc::new();
-
-        let session = webrtc.accept_multi_track_offer(plans, offer).unwrap();
-        let status = webrtc.multi_track_session_status(session.id).unwrap();
-        assert_eq!(status.tracks.len(), 2);
-        assert_eq!(status.tracks[0].track_id, garden);
-        assert_eq!(status.tracks[1].track_id, kitchen);
-        assert!(webrtc.close_multi_track_session(session.id));
-        assert!(webrtc.multi_track_session_status(session.id).is_none());
-        assert!(
-            webrtc
-                .live
-                .inner
-                .sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .all(|source| source.subscribers.is_empty())
-        );
-        assert!(
-            webrtc
-                .live
-                .inner
-                .threads
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_empty()
-        );
-        webrtc.shutdown();
-    }
-
-    #[test]
-    fn shutdown_closes_active_browser_session() {
-        use str0m::media::Direction;
-
-        let mut offerer = rtc_config().build(Instant::now());
-        let mut changes = offerer.sdp_api();
-        let mid = changes.add_media(
-            MediaKind::Video,
-            Direction::RecvOnly,
-            Some("browser".to_owned()),
-            Some("camera".to_owned()),
-            None,
-        );
-        let (offer, _) = changes.apply().unwrap();
-        let track_id = TrackId::parse("camera".to_owned()).unwrap();
-        let plans = vec![TrackPlan {
-            track_id,
-            mid: mid.to_string(),
-            camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            has_sub_stream: true,
-            recording_label: "camera".to_owned(),
-            quality: StreamQuality::Low,
-        }];
-        let webrtc = WebRtc::new();
-
-        let session = webrtc.accept_multi_track_offer(plans, offer).unwrap();
-        assert!(webrtc.multi_track_session_status(session.id).is_some());
-        assert_eq!(
-            webrtc
-                .live
-                .inner
-                .threads
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len(),
-            1
-        );
-
-        let shutdown_started = Instant::now();
-        webrtc.shutdown();
-        assert!(
-            shutdown_started.elapsed() < Duration::from_secs(2),
-            "active WebRTC shutdown took {:?}",
-            shutdown_started.elapsed()
-        );
-
-        assert!(webrtc.multi_track_session_status(session.id).is_none());
-        assert!(
-            webrtc
-                .live
-                .inner
-                .sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .all(|source| source.subscribers.is_empty())
-        );
-        assert!(
-            webrtc
-                .live
-                .inner
-                .threads
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn browser_quality_promotion_demotes_sibling_tracks() {
-        let poller = Arc::new(Poller::new().unwrap());
-        let kitchen = TrackId::parse("kitchen".to_owned()).unwrap();
-        let garden = TrackId::parse("garden".to_owned()).unwrap();
-        let kitchen_control = Arc::new(SessionControl::new(
-            StreamQuality::Low,
-            StreamKind::Sub,
-            poller.clone(),
-        ));
-        let garden_control = Arc::new(SessionControl::new(
-            StreamQuality::Auto,
-            StreamKind::Sub,
-            poller.clone(),
-        ));
-        let control = MultiTrackControl {
-            tracks: BTreeMap::from([
-                (kitchen.clone(), kitchen_control),
-                (garden, garden_control.clone()),
-            ]),
-            estimated_bitrate_bps: AtomicU64::new(0),
-            poller,
-            shutdown: Arc::new(AtomicBool::new(false)),
-            completion: SessionCompletion::default(),
-        };
-
-        let status = control.set_quality(&kitchen, StreamQuality::High).unwrap();
-        assert_eq!(status.requested_quality, StreamQuality::High);
-        assert_eq!(
-            StreamQuality::from_u8(garden_control.requested_quality.load(Ordering::Acquire)),
-            StreamQuality::Low
-        );
     }
 }

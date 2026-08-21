@@ -4,7 +4,14 @@
 	"categories": {
 		"correctness": "error"
 	},
-	"ignorePatterns": ["src/lib/components/ui/**", "src/lib/hooks/**", "src/lib/proto/**"],
+	"ignorePatterns": [
+		".github/agents/impeccable-*.agent.md",
+		".github/skills/impeccable/**",
+		".impeccable/**",
+		"src/lib/components/ui/**",
+		"src/lib/hooks/**",
+		"src/lib/proto/**"
+	],
 	"env": {
 		"builtin": true,
 		"browser": true,

@@ -40,14 +40,13 @@ compatibility guarantees begin with the 1.0 release.
 
 ## HTTP API
 
-The initial API has five operations:
+The initial API has four operations:
 
 1. `POST /create` sends a gzip-compressed SDP offer and returns a gzip-compressed SDP answer
    with a session ID.
 2. `POST /delete` closes the session identified by the session ID in its JSON body.
-3. `POST /telemetry` uploads diagnostic client logs and metrics out-of-band without multiplexing them onto WebRTC.
-4. `GET /logs` reads server logs through Server-Sent Events.
-5. `GET /metrics` exposes Prometheus text metrics.
+3. `GET /logs` reads server logs through Server-Sent Events.
+4. `GET /metrics` exposes Prometheus text metrics.
 
 ## Access key
 
@@ -56,9 +55,11 @@ On the wire and in `config.toml` it is the usual hyphenated UUID string. The int
 reserved: it means unset, and tests may use `access_key = 0` / `AccessKey(0)` without minting a
 real secret.
 
-There is no localhost or loopback bypass. A process that can open the port is not treated as
-trusted. The first-party UI may later receive the same key in an HttpOnly SameSite cookie when
-KeepPeek serves the origin; remote clients, Home Assistant, and Prometheus always send Bearer.
+Local requests skip the key. A local request is one whose peer is loopback, link-local, or a
+private LAN address and that did not arrive through a reverse proxy. Those requests are
+Administrator. Remote requests, Home Assistant, Prometheus, and any forwarded client must send
+Bearer. The first-party UI may later receive the same key in an HttpOnly SameSite cookie when
+KeepPeek serves the origin for a remote browser.
 
 ### How the key is chosen
 
@@ -95,7 +96,7 @@ Until per-key scopes exist, every configured GUID has the same rights to `/creat
 `/logs`, and `/metrics`. A Home Assistant card token is therefore also a metrics and log
 credential.
 
-Every request sends its configured key in the Authorization header:
+Every remote request sends its configured key in the Authorization header:
 
 ```http
 Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000

@@ -4,6 +4,7 @@ mod media;
 mod onvif;
 mod reo;
 mod reolink_http;
+pub mod seed;
 mod web_ui;
 
 use crate::{
@@ -123,6 +124,7 @@ pub struct TestCameraBuilder {
     uid: String,
     transport: Transport,
     battery_wake: Option<BatteryWakeEndpoint>,
+    isolated_reo_ports: bool,
 }
 
 impl TestCameraBuilder {
@@ -160,6 +162,7 @@ impl TestCameraBuilder {
             uid: "TESTCAMERA0001".to_owned(),
             transport: Transport::Tcp,
             battery_wake: None,
+            isolated_reo_ports: false,
         }
     }
 
@@ -194,6 +197,12 @@ impl TestCameraBuilder {
         self
     }
 
+    /// Uses OS-assigned loopback ports for an isolated Reo-proto test camera.
+    pub const fn isolated_reo_ports(mut self) -> Self {
+        self.isolated_reo_ports = true;
+        self
+    }
+
     /// Starts the configured camera and its accompanying ONVIF façade.
     ///
     /// # Errors
@@ -214,45 +223,61 @@ impl TestCameraBuilder {
             bail!("battery wake simulation requires the Reo-proto camera protocol");
         }
 
-        let (ip, main_stream_url, sub_stream_url, transport) = match self.protocol {
-            Protocol::Rtsp => {
-                let camera = RtspServer::from_mp4_streams_on(
-                    SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
-                    &self.main_source,
-                    &self.sub_source,
-                )
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                let address = camera.address();
-                let ip = match address.ip() {
-                    IpAddr::V4(ip) => ip,
-                    IpAddr::V6(_) => bail!("Retina test camera returned a non-IPv4 address"),
-                };
-                (
-                    ip,
-                    camera.high_resolution_url().to_string(),
-                    camera.low_resolution_url().to_string(),
-                    ServerTransport::Rtsp { _server: camera },
-                )
-            }
-            Protocol::ReoProto => {
-                let address = SocketAddr::new(IpAddr::V4(self.bind_ip), BAICHUAN_PORT);
-                let camera = ReoServer::start(
-                    address,
-                    self.username.clone(),
-                    self.password.clone(),
-                    main.clone(),
-                    sub.clone(),
-                    self.battery_wake,
-                    self.uid.clone(),
-                )?;
-                (
-                    self.bind_ip,
-                    format!("rtsp://{address}/main"),
-                    format!("rtsp://{address}/sub"),
-                    ServerTransport::Reo { _server: camera },
-                )
-            }
-        };
+        let (ip, main_stream_url, sub_stream_url, baichuan_port, bcudp_port, transport) =
+            match self.protocol {
+                Protocol::Rtsp => {
+                    let camera = RtspServer::from_mp4_streams_on(
+                        SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
+                        &self.main_source,
+                        &self.sub_source,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                    let address = camera.address();
+                    let ip = match address.ip() {
+                        IpAddr::V4(ip) => ip,
+                        IpAddr::V6(_) => bail!("Retina test camera returned a non-IPv4 address"),
+                    };
+                    (
+                        ip,
+                        camera.high_resolution_url().to_string(),
+                        camera.low_resolution_url().to_string(),
+                        None,
+                        None,
+                        ServerTransport::Rtsp { _server: camera },
+                    )
+                }
+                Protocol::ReoProto => {
+                    let address = SocketAddr::new(
+                        IpAddr::V4(self.bind_ip),
+                        if self.isolated_reo_ports {
+                            0
+                        } else {
+                            BAICHUAN_PORT
+                        },
+                    );
+                    let camera = ReoServer::start(
+                        address,
+                        self.username.clone(),
+                        self.password.clone(),
+                        main.clone(),
+                        sub.clone(),
+                        self.battery_wake,
+                        self.uid.clone(),
+                    )?;
+                    let baichuan_port = camera.tcp_port();
+                    let bcudp_port = camera.primary_udp_port();
+                    let stream_port = baichuan_port.unwrap_or(0);
+                    let stream_address = SocketAddr::new(IpAddr::V4(self.bind_ip), stream_port);
+                    (
+                        self.bind_ip,
+                        format!("rtsp://{stream_address}/main"),
+                        format!("rtsp://{stream_address}/sub"),
+                        baichuan_port,
+                        Some(bcudp_port),
+                        ServerTransport::Reo { _server: camera },
+                    )
+                }
+            };
 
         let manufacturer = match self.protocol {
             Protocol::Rtsp => "Test Camera",
@@ -315,6 +340,8 @@ impl TestCameraBuilder {
             uid: self.uid,
             transport: self.transport,
             battery: self.battery_wake.is_some(),
+            baichuan_port,
+            bcudp_port,
             main_stream_url,
             sub_stream_url,
         };
@@ -366,6 +393,8 @@ pub struct ConnectionInfo {
     uid: String,
     transport: Transport,
     battery: bool,
+    baichuan_port: Option<u16>,
+    bcudp_port: Option<u16>,
     main_stream_url: String,
     sub_stream_url: String,
 }
@@ -389,6 +418,16 @@ impl ConnectionInfo {
     /// Returns whether this camera begins asleep and requires a P2P wake packet.
     pub const fn is_battery(&self) -> bool {
         self.battery
+    }
+
+    /// Returns the Baichuan TCP port for a Reo-proto camera.
+    pub const fn baichuan_port(&self) -> Option<u16> {
+        self.baichuan_port
+    }
+
+    /// Returns the primary BCUDP discovery port for a Reo-proto camera.
+    pub const fn bcudp_port(&self) -> Option<u16> {
+        self.bcudp_port
     }
 
     /// Returns the main-profile RTSP URI advertised through ONVIF.
@@ -440,7 +479,7 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::{Shutdown, TcpStream, UdpSocket},
-        sync::{Mutex, OnceLock, mpsc},
+        sync::mpsc,
         thread,
         time::{Duration, Instant},
     };
@@ -448,7 +487,11 @@ mod tests {
 
     const H264_SPS: &[u8] = &[0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40];
     const H264_PPS: &[u8] = &[0x68, 0xce, 0x3c, 0x80];
-    static REO_PORT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    const RUN_SLOW_TESTS_ENV: &str = "KEEPPEEK_RUN_SLOW_TESTS";
+
+    fn slow_tests_enabled() -> bool {
+        std::env::var_os(RUN_SLOW_TESTS_ENV).is_some()
+    }
 
     struct BatteryWakeMock {
         endpoint: BatteryWakeEndpoint,
@@ -626,7 +669,9 @@ mod tests {
 
     #[test]
     fn checked_in_mp4_fixtures_stream_through_both_backends() {
-        let _lock = reo_port_lock();
+        if !slow_tests_enabled() {
+            return;
+        }
         for (file_name, expected_codec) in [
             ("cc-4k-640x360-h264.mp4", reo_proto::VideoCodec::H264),
             ("cc-4k-640x360-h265.mp4", reo_proto::VideoCodec::H265),
@@ -652,6 +697,7 @@ mod tests {
             }
 
             let camera = TestCameraBuilder::reo_proto(&fixture_path, &fixture_path)
+                .isolated_reo_ports()
                 .start()
                 .unwrap();
             assert_reo_camera_delivers_main_and_sub_frames(&camera, expected_codec);
@@ -769,6 +815,9 @@ mod tests {
 
     #[test]
     fn rtsp_camera_streams_main_and_sub_profiles() {
+        if !slow_tests_enabled() {
+            return;
+        }
         for codec in [Codec::H264, Codec::H265] {
             for transport in [Transport::Tcp, Transport::Udp] {
                 let fixture = write_fixture(codec);
@@ -793,13 +842,13 @@ mod tests {
 
     #[test]
     fn reo_camera_delivers_main_and_sub_frames() {
-        let _lock = reo_port_lock();
         for (source_codec, expected_codec) in [
             (Codec::H264, reo_proto::VideoCodec::H264),
             (Codec::H265, reo_proto::VideoCodec::H265),
         ] {
             let fixture = write_fixture(source_codec);
             let camera = TestCameraBuilder::reo_proto(fixture.path(), fixture.path())
+                .isolated_reo_ports()
                 .start()
                 .unwrap();
             let config = camera.connection().toml_entry("reo");
@@ -811,9 +860,9 @@ mod tests {
 
     #[test]
     fn reo_camera_exposes_a_fake_reolink_motion_control_api() {
-        let _lock = reo_port_lock();
         let fixture = write_fixture(Codec::H264);
         let camera = TestCameraBuilder::reo_proto(fixture.path(), fixture.path())
+            .isolated_reo_ports()
             .start()
             .unwrap();
         let connection = camera.connection();
@@ -873,13 +922,13 @@ mod tests {
 
     #[test]
     fn reo_udp_camera_delivers_main_and_sub_frames() {
-        let _lock = reo_port_lock();
         for (source_codec, expected_codec) in [
             (Codec::H264, reo_proto::VideoCodec::H264),
             (Codec::H265, reo_proto::VideoCodec::H265),
         ] {
             let fixture = write_fixture(source_codec);
             let camera = TestCameraBuilder::reo_proto(fixture.path(), fixture.path())
+                .isolated_reo_ports()
                 .transport(Transport::Udp)
                 .start()
                 .unwrap();
@@ -913,7 +962,10 @@ mod tests {
             let BcUdpDiscoveryOutput::Datagram(request) = discovery.poll_output(now) else {
                 panic!("expected initial Baichuan UDP discovery packet");
             };
-            let server = SocketAddr::new(IpAddr::V4(camera.connection().ip()), 2018);
+            let server = SocketAddr::new(
+                IpAddr::V4(camera.connection().ip()),
+                camera.connection().bcudp_port().unwrap(),
+            );
             socket.send_to(&request, server).unwrap();
             let mut datagram = [0_u8; 65_535];
             let (read, source) = socket.recv_from(&mut datagram).unwrap();
@@ -976,11 +1028,11 @@ mod tests {
 
     #[test]
     fn battery_reo_camera_requires_p2p_wake_before_bcudp_discovery() {
-        let _lock = reo_port_lock();
         let fixture = write_fixture(Codec::H264);
         let wake = BatteryWakeMock::start();
         let camera =
             TestCameraBuilder::battery_reo_proto(fixture.path(), fixture.path(), wake.endpoint())
+                .isolated_reo_ports()
                 .transport(Transport::Udp)
                 .start()
                 .unwrap();
@@ -1003,7 +1055,10 @@ mod tests {
         let BcUdpDiscoveryOutput::Datagram(request) = discovery.poll_output(now) else {
             panic!("expected initial BCUDP discovery request");
         };
-        let camera_address = SocketAddr::new(IpAddr::V4(camera.connection().ip()), 2018);
+        let camera_address = SocketAddr::new(
+            IpAddr::V4(camera.connection().ip()),
+            camera.connection().bcudp_port().unwrap(),
+        );
         socket.send_to(&request, camera_address).unwrap();
         let mut datagram = [0u8; 65_535];
         assert!(matches!(
@@ -1047,18 +1102,14 @@ mod tests {
         );
     }
 
-    fn reo_port_lock() -> std::sync::MutexGuard<'static, ()> {
-        REO_PORT_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     fn assert_reo_camera_delivers_main_and_sub_frames(
         camera: &TestCamera,
         expected_codec: reo_proto::VideoCodec,
     ) {
-        let address = SocketAddr::new(IpAddr::V4(camera.connection().ip()), BAICHUAN_PORT);
+        let address = SocketAddr::new(
+            IpAddr::V4(camera.connection().ip()),
+            camera.connection().baichuan_port().unwrap(),
+        );
         let mut stream = TcpStream::connect(address).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_millis(100)))
