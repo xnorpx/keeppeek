@@ -1,6 +1,7 @@
 module.exports = {
 	chromeSelector: '#storybook-root > *',
 	diffingEngine: 'pixelmatch',
+	pixelmatch: { threshold: 0.004 },
 	skipStories: '^(Foundation|Demos)/',
 	fileNameFormatter: ({ configurationName, parameters }) => {
 		const scenarioId = parameters?.paper?.scenarioId;

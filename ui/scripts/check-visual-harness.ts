@@ -25,6 +25,7 @@ type LokiConfiguration = {
 
 type LokiConfig = {
 	skipStories: string;
+	pixelmatch: { threshold: number };
 	fileNameFormatter: (input: {
 		configurationName: string;
 		parameters: { paper: { scenarioId: string } };
@@ -61,6 +62,9 @@ for (const [configurationName, configuration] of Object.entries(loki.configurati
 }
 if (!loki.configurations['chrome.mobile'].mobile) {
 	throw new Error('Loki mobile capture must enable browser mobile emulation');
+}
+if (loki.pixelmatch.threshold <= 0 || loki.pixelmatch.threshold > 0.004) {
+	throw new Error('Loki pixelmatch threshold must stay within the reviewed antialias ceiling');
 }
 
 const references = storyboard.boards.flatMap((board) => board.references ?? []);
