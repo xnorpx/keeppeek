@@ -1,17 +1,13 @@
 import { resolve } from 'node:path';
+import { isBunCompatibleTest, normalizeTestPath } from './bun-test-selection';
 
 const workspaceRoot = resolve(import.meta.dir, '..');
-const vitestOnlyTests = new Set([
-	'src/lib/api.spec.ts',
-	'src/lib/capability-state.spec.ts',
-	'src/lib/control-client.spec.ts'
-]);
 const testGlob = new Bun.Glob('src/**/*.{test,spec}.{js,ts}');
-const testFiles: string[] = [];
+const testFiles = ['scripts/bun-test-selection.spec.ts'];
 
 for await (const testFile of testGlob.scan({ cwd: workspaceRoot, onlyFiles: true })) {
-	if (testFile.includes('.svelte.') || vitestOnlyTests.has(testFile)) continue;
-	testFiles.push(testFile);
+	if (!isBunCompatibleTest(testFile)) continue;
+	testFiles.push(normalizeTestPath(testFile));
 }
 
 testFiles.sort();
