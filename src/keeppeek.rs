@@ -305,10 +305,14 @@ impl KeepPeekLoop {
         }
     }
 
-    /// Profile 0 is treated as Main, all others as Sub.
+    /// Profiles 0 and 1 are treated as Main and Sub; additional profiles are ignored.
     pub fn add_cameras(&mut self, cameras: &HashMap<IpAddr, Camera>) -> anyhow::Result<()> {
         for camera in cameras.values() {
-            self.add_camera(camera, true, true)?;
+            self.add_camera(
+                camera,
+                camera.config.streams.main_enabled(),
+                camera.config.streams.sub_enabled(),
+            )?;
         }
         Ok(())
     }
@@ -394,7 +398,7 @@ impl KeepPeekLoop {
         );
     }
 
-    /// Profile 0 is treated as Main, all others as Sub.
+    /// Profiles 0 and 1 are treated as Main and Sub; additional profiles are ignored.
     pub fn add_camera_streams(
         &mut self,
         cameras: &HashMap<IpAddr, Camera>,
@@ -409,7 +413,7 @@ impl KeepPeekLoop {
         );
     }
 
-    /// Profile 0 is treated as Main, all others as Sub.
+    /// Profiles 0 and 1 are treated as Main and Sub; additional profiles are ignored.
     pub fn add_camera_streams_with_transport(
         &mut self,
         cameras: &HashMap<IpAddr, Camera>,
@@ -429,7 +433,7 @@ impl KeepPeekLoop {
         enable_sub: bool,
         transport: RtspTransport,
     ) {
-        for (i, profile) in camera.profiles.iter().enumerate() {
+        for (i, profile) in camera.profiles.iter().take(2).enumerate() {
             let stream_kind = if i == 0 {
                 StreamKind::Main
             } else {
@@ -661,7 +665,11 @@ impl KeepPeekLoop {
             };
             match command {
                 KeepPeekCommand::StartCamera { camera, reply } => {
-                    let result = self.add_camera(&camera, true, true);
+                    let result = self.add_camera(
+                        &camera,
+                        camera.config.streams.main_enabled(),
+                        camera.config.streams.sub_enabled(),
+                    );
                     let _ = reply.send(result);
                 }
             }
@@ -717,6 +725,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::ReoProto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
 
         assert_eq!(
@@ -758,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn rtsp_profile_workers_begin_connecting_in_parallel() {
+    fn rtsp_camera_starts_only_main_and_sub_profile_workers() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -779,6 +788,96 @@ mod tests {
                 uid: None,
                 backend: CameraBackend::Retina,
                 transport: CameraTransport::Tcp,
+                streams: Default::default(),
+            },
+            device: DeviceInfo::default(),
+            reported_manufacturer: None,
+            hostname: None,
+            mac_address: None,
+            ports: CameraPorts {
+                rtsp: Some(address.port()),
+                ..CameraPorts::default()
+            },
+            capabilities: CameraCapabilities::default(),
+            profiles: vec![
+                MediaProfile {
+                    token: "main".to_owned(),
+                    name: "Main".to_owned(),
+                    stream_uri: None,
+                    snapshot_uri: None,
+                    video: None,
+                    audio: None,
+                },
+                MediaProfile {
+                    token: "sub".to_owned(),
+                    name: "Sub".to_owned(),
+                    stream_uri: None,
+                    snapshot_uri: None,
+                    video: None,
+                    audio: None,
+                },
+                MediaProfile {
+                    token: "jpeg".to_owned(),
+                    name: "JPEG".to_owned(),
+                    stream_uri: Some(format!("rtsp://{address}/jpeg")),
+                    snapshot_uri: None,
+                    video: None,
+                    audio: None,
+                },
+            ],
+            is_reolink: false,
+            ptz: None,
+            imaging: None,
+        };
+
+        loop_.add_camera(&camera, true, true).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut connections = Vec::new();
+        while connections.len() < 3 && Instant::now() < deadline {
+            match listener.accept() {
+                Ok((stream, _)) => connections.push(stream),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("RTSP listener failed: {error}"),
+            }
+        }
+
+        let worker_count = connections.len();
+        drop(connections);
+        shutdown.cancel();
+        loop_.run();
+
+        assert_eq!(
+            worker_count, 2,
+            "only main and sub profiles should start RTSP workers"
+        );
+    }
+
+    #[test]
+    fn configured_main_only_camera_starts_one_rtsp_worker() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let shutdown = Shutdown::new();
+        let mut loop_ = KeepPeekLoop::new(shutdown.clone(), None);
+        let camera = Camera {
+            config: CameraConfig {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                name: Some("main-only".to_owned()),
+                display_name: None,
+                manufacturer: None,
+                username: "operator".to_owned(),
+                password: "secret".to_owned(),
+                onvif_port: None,
+                http_port: None,
+                main_rtsp_url: Some(format!("rtsp://{address}/main")),
+                sub_rtsp_url: Some(format!("rtsp://{address}/sub")),
+                uid: None,
+                backend: CameraBackend::Retina,
+                transport: CameraTransport::Tcp,
+                streams: crate::cameras::CameraStreamSelection::Main,
             },
             device: DeviceInfo::default(),
             reported_manufacturer: None,
@@ -812,9 +911,11 @@ mod tests {
             imaging: None,
         };
 
-        loop_.add_camera(&camera, true, true).unwrap();
+        loop_
+            .add_cameras(&HashMap::from([(camera.config.ip, camera)]))
+            .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_millis(500);
         let mut connections = Vec::new();
         while connections.len() < 2 && Instant::now() < deadline {
             match listener.accept() {
@@ -831,10 +932,7 @@ mod tests {
         shutdown.cancel();
         loop_.run();
 
-        assert_eq!(
-            worker_count, 2,
-            "main and sub workers must connect concurrently"
-        );
+        assert_eq!(worker_count, 1);
     }
 
     #[test]
@@ -860,6 +958,7 @@ mod tests {
                     uid: None,
                     backend: CameraBackend::Retina,
                     transport: CameraTransport::Tcp,
+                    streams: Default::default(),
                 },
                 device: DeviceInfo::default(),
                 reported_manufacturer: None,

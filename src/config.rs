@@ -1128,6 +1128,7 @@ mod tests {
 
         assert_eq!(config.backend, CameraBackend::Auto);
         assert_eq!(config.transport, CameraTransport::Tcp);
+        assert_eq!(config.streams, crate::cameras::CameraStreamSelection::Both);
         assert_eq!(config.http_port, None);
         assert_eq!(config.uid, None);
     }
@@ -1141,6 +1142,7 @@ mod tests {
                 password = "secret"
                 backend = "reo-proto"
                 transport = "udp"
+                streams = "main"
                 http_port = 8080
                 uid = "95270001UVBK2KJ6"
             "#,
@@ -1149,6 +1151,7 @@ mod tests {
 
         assert_eq!(config.backend, CameraBackend::ReoProto);
         assert_eq!(config.transport, CameraTransport::Udp);
+        assert_eq!(config.streams, crate::cameras::CameraStreamSelection::Main);
         assert_eq!(config.http_port, Some(8080));
         assert_eq!(config.uid.as_deref(), Some("95270001UVBK2KJ6"));
     }
@@ -1544,6 +1547,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
 
         assert_eq!(upsert_camera(&path, &config).unwrap(), "existing");

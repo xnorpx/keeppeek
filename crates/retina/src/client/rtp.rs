@@ -158,9 +158,34 @@ impl InorderParser {
 
         let sequence_number = raw.sequence_number();
         let ssrc = raw.ssrc();
+        let is_udp = pkt_ctx.is_udp();
+        if is_udp && self.seen_rtp_packets == 0 {
+            if !matches!(self.ssrc, Some(expected) if expected.ssrc == ssrc)
+                || !matches!(self.seq, Some(expected) if expected.next == sequence_number)
+            {
+                debug!(
+                    "using first UDP RTP packet instead of control-plane hints: ssrc={ssrc:08x} seq={sequence_number}"
+                );
+            }
+            self.ssrc = Some(Ssrc {
+                init: InitialExpectation::RtpPacket,
+                ssrc,
+            });
+            self.seq = Some(Seq {
+                init: InitialExpectation::RtpPacket,
+                next: sequence_number,
+            });
+        }
         let loss =
             sequence_number.wrapping_sub(self.seq.map(|s| s.next).unwrap_or(sequence_number));
         if matches!(self.ssrc, Some(s) if s.ssrc != ssrc) {
+            if is_udp {
+                debug!(
+                    "dropping UDP RTP packet from unexpected ssrc={ssrc:08x}; expecting {:?}",
+                    self.ssrc
+                );
+                return Ok(None);
+            }
             note_stale_live555_data_if_tcp(tool, session_options, conn_ctx, stream_ctx, pkt_ctx);
             bail!(ErrorInt::RtpPacketError {
                 conn_ctx: *conn_ctx,
@@ -181,6 +206,13 @@ impl InorderParser {
             });
         }
         if loss > 0x80_00 {
+            if is_udp {
+                debug!(
+                    "dropping out-of-order UDP RTP packet ssrc={ssrc:08x} seq={sequence_number}; expecting {:?}",
+                    self.seq
+                );
+                return Ok(None);
+            }
             bail!(ErrorInt::RtpPacketError {
                 conn_ctx: *conn_ctx,
                 pkt_ctx: *pkt_ctx,
@@ -262,6 +294,7 @@ impl InorderParser {
                             self.ssrc, ssrc
                         ));
                     }
+                    UnknownRtcpSsrcPolicy::Default if pkt_ctx.is_udp() => {}
                     UnknownRtcpSsrcPolicy::Default | UnknownRtcpSsrcPolicy::DropPackets => {
                         if !self.seen_unknown_rtcp_session {
                             warn!(
@@ -300,6 +333,152 @@ impl InorderParser {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn rtp_packet(sequence_number: u16, timestamp: u32, ssrc: u32) -> Bytes {
+        let (packet, _) = crate::rtp::RawPacketBuilder {
+            sequence_number,
+            timestamp,
+            payload_type: 96,
+            ssrc,
+            mark: true,
+        }
+        .build(*b"packet")
+        .unwrap();
+        packet.0
+    }
+
+    fn rtcp_sender_report(ssrc: u32, timestamp: u32) -> Bytes {
+        let mut packet = Vec::with_capacity(28);
+        packet.extend_from_slice(&[0x80, 200, 0, 6]);
+        packet.extend_from_slice(&ssrc.to_be_bytes());
+        packet.extend_from_slice(&[0; 8]);
+        packet.extend_from_slice(&timestamp.to_be_bytes());
+        packet.extend_from_slice(&1u32.to_be_bytes());
+        packet.extend_from_slice(&12u32.to_be_bytes());
+        packet.into()
+    }
+
+    #[test]
+    fn udp_first_rtp_packet_replaces_control_plane_hints() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser = InorderParser::new(
+            Some(0x1111_1111),
+            Some(1234),
+            UnknownRtcpSsrcPolicy::Default,
+        );
+
+        assert!(matches!(
+            parser.rtp(
+                &SessionOptions::default(),
+                &StreamContext::dummy(),
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::udp(),
+                &mut timeline,
+                0,
+                rtp_packet(4321, 90_000, 0x2222_2222),
+            ),
+            Ok(Some(PacketItem::Rtp(_)))
+        ));
+    }
+
+    #[test]
+    fn udp_out_of_order_packet_is_dropped() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser = InorderParser::new(Some(0xd25614e), None, UnknownRtcpSsrcPolicy::Default);
+        let session_options = SessionOptions::default();
+        let stream_ctx = StreamContext::dummy();
+
+        assert!(matches!(
+            parser.rtp(
+                &session_options,
+                &stream_ctx,
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::udp(),
+                &mut timeline,
+                0,
+                rtp_packet(2, 2, 0xd25614e),
+            ),
+            Ok(Some(PacketItem::Rtp(_)))
+        ));
+        assert!(matches!(
+            parser.rtp(
+                &session_options,
+                &stream_ctx,
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::udp(),
+                &mut timeline,
+                0,
+                rtp_packet(1, 1, 0xd25614e),
+            ),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn udp_default_processes_tapo_sender_report_alias() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser =
+            InorderParser::new(Some(0x2c3a_0f44), None, UnknownRtcpSsrcPolicy::Default);
+
+        assert!(matches!(
+            parser.rtcp(
+                &SessionOptions::default(),
+                &StreamContext::dummy(),
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::udp(),
+                &mut timeline,
+                0,
+                rtcp_sender_report(0x0047_6f5c, 90_000),
+            ),
+            Ok(Some(PacketItem::Rtcp(_)))
+        ));
+    }
+
+    #[test]
+    fn tcp_default_drops_tapo_sender_report_alias() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser =
+            InorderParser::new(Some(0x2c3a_0f44), None, UnknownRtcpSsrcPolicy::Default);
+
+        assert!(matches!(
+            parser.rtcp(
+                &SessionOptions::default(),
+                &StreamContext::dummy(),
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::dummy(),
+                &mut timeline,
+                0,
+                rtcp_sender_report(0x0047_6f5c, 90_000),
+            ),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn udp_explicit_drop_rejects_tapo_sender_report_alias() {
+        let mut timeline = Timeline::new(None, 90_000, None).unwrap();
+        let mut parser =
+            InorderParser::new(Some(0x2c3a_0f44), None, UnknownRtcpSsrcPolicy::DropPackets);
+
+        assert!(matches!(
+            parser.rtcp(
+                &SessionOptions::default(),
+                &StreamContext::dummy(),
+                None,
+                &ConnectionContext::dummy(),
+                &PacketContext::udp(),
+                &mut timeline,
+                0,
+                rtcp_sender_report(0x0047_6f5c, 90_000),
+            ),
+            Ok(None)
+        ));
+    }
 
     /// Checks dropping and logging Geovision's extra payload type 50 packets.
     /// On a GV-EBD4701 running V1.02_2021_04_08, these seem to appear after

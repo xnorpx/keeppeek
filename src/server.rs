@@ -5,7 +5,8 @@ use crate::{
         RecordingSegment, RecordingsResponse, SanitizedConfig, SanitizedStorage,
     },
     cameras::{
-        Camera, CameraBackend, CameraConfig, CameraPorts, CameraTransport, reolink::ReolinkClient,
+        Camera, CameraBackend, CameraConfig, CameraPorts, CameraStreamSelection, CameraTransport,
+        reolink::ReolinkClient,
     },
     config::{self, Config, StorageMigration, StorageMigrationPaths, StorageToml},
     health::{
@@ -114,6 +115,7 @@ struct CameraSettingsUpdate {
     uid: Option<Option<String>>,
     backend: Option<CameraBackend>,
     transport: Option<CameraTransport>,
+    streams: Option<CameraStreamSelection>,
 }
 
 #[derive(Deserialize)]
@@ -154,6 +156,7 @@ struct CameraSettings {
     uid_configured: bool,
     backend: String,
     transport: String,
+    streams: String,
     health: Option<String>,
     model: Option<String>,
 }
@@ -249,6 +252,11 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
         || {
             ["main", "sub"]
                 .into_iter()
+                .filter(|stream| match *stream {
+                    "main" => camera_config.streams.main_enabled(),
+                    "sub" => camera_config.streams.sub_enabled(),
+                    _ => false,
+                })
                 .map(|stream| ProfileSummary {
                     name: format!("{stream}Stream"),
                     stream: stream.to_owned(),
@@ -266,7 +274,13 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
             camera
                 .profiles
                 .iter()
+                .take(2)
                 .enumerate()
+                .filter(|(index, _)| match index {
+                    0 => camera_config.streams.main_enabled(),
+                    1 => camera_config.streams.sub_enabled(),
+                    _ => false,
+                })
                 .map(|(index, profile)| ProfileSummary {
                     name: profile.name.clone(),
                     stream: if index == 0 { "main" } else { "sub" }.to_owned(),
@@ -1316,6 +1330,7 @@ fn camera_settings_entry(
         uid_configured: configuration.uid.is_some(),
         backend: camera_backend_name(configuration.backend).to_owned(),
         transport: camera_transport_name(configuration.transport).to_owned(),
+        streams: camera_stream_selection_name(configuration.streams).to_owned(),
         health,
         model: camera.and_then(|camera| camera.info.model.clone()),
     }
@@ -1646,6 +1661,10 @@ fn update_camera_settings(
             .transport
             .or_else(|| existing_config.as_ref().map(|camera| camera.transport))
             .unwrap_or_default(),
+        streams: update
+            .streams
+            .or_else(|| existing_config.as_ref().map(|camera| camera.streams))
+            .unwrap_or_default(),
     };
     if let Err(error) = config::upsert_camera(config_path, &config) {
         return service_error(
@@ -1679,6 +1698,7 @@ fn update_camera_settings(
         uid_configured: config.uid.is_some(),
         backend: camera_backend_name(config.backend).to_owned(),
         transport: camera_transport_name(config.transport).to_owned(),
+        streams: camera_stream_selection_name(config.streams).to_owned(),
         health,
         model: existing
             .as_ref()
@@ -1964,6 +1984,14 @@ const fn camera_transport_name(transport: CameraTransport) -> &'static str {
     match transport {
         CameraTransport::Tcp => "tcp",
         CameraTransport::Udp => "udp",
+    }
+}
+
+const fn camera_stream_selection_name(streams: CameraStreamSelection) -> &'static str {
+    match streams {
+        CameraStreamSelection::Main => "main",
+        CameraStreamSelection::Sub => "sub",
+        CameraStreamSelection::Both => "both",
     }
 }
 
@@ -3156,6 +3184,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
 
@@ -3274,6 +3303,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Udp,
+            streams: Default::default(),
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
         let state = ServerState::new(
@@ -3304,6 +3334,59 @@ mod tests {
         assert_eq!(body["camera"]["web_url"], "http://192.0.2.41:8080");
         assert_eq!(body["camera"]["profiles"].as_array().map(Vec::len), Some(2));
         assert_eq!(body["motion_detection"]["controllable"], false);
+        assert_eq!(router_thread.join().unwrap(), 1);
+    }
+
+    #[test]
+    fn main_only_camera_advertises_no_sub_profile() {
+        let config = Config::default();
+        let storage = StorageConfig::default();
+        let camera = CameraConfig {
+            ip: "192.0.2.42".parse().unwrap(),
+            name: Some("main-only".to_owned()),
+            display_name: Some("Main Only".to_owned()),
+            manufacturer: None,
+            username: "operator".to_owned(),
+            password: "secret".to_owned(),
+            onvif_port: Some(8000),
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: CameraBackend::Retina,
+            transport: CameraTransport::Udp,
+            streams: CameraStreamSelection::Main,
+        };
+        let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
+        let state = ServerState::new(
+            &config,
+            &camera_configs,
+            &HashMap::new(),
+            &storage,
+            RecordingDemand::new(Duration::ZERO),
+            WebRtc::new(),
+        );
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+
+        let response = handle_request(
+            &Request::fake_http(
+                "GET",
+                "/api/cameras/192.0.2.42/details",
+                Vec::new(),
+                Vec::new(),
+            ),
+            &router_tx,
+            &state,
+        );
+
+        assert_eq!(response.status_code, 200);
+        let body: serde_json::Value = serde_json::from_slice(&response_data(response)).unwrap();
+        let profiles = body["camera"]["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0]["stream"], "main");
         assert_eq!(router_thread.join().unwrap(), 1);
     }
 
@@ -3361,6 +3444,7 @@ mod tests {
                 uid: None,
                 backend: CameraBackend::Retina,
                 transport: CameraTransport::Tcp,
+                streams: Default::default(),
             },
             recording_label: "back-yard".to_owned(),
             control: None,
@@ -4005,6 +4089,7 @@ mod tests {
                 uid: None,
                 backend: CameraBackend::ReoProto,
                 transport: CameraTransport::Tcp,
+                streams: Default::default(),
             },
             recording_label: "front-door".to_owned(),
             control: None,

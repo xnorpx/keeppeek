@@ -171,6 +171,9 @@ pub struct CameraConfig {
     pub backend: CameraBackend,
     #[serde(default)]
     pub transport: CameraTransport,
+    /// Video profiles KeepPeek ingests for this camera.
+    #[serde(default)]
+    pub streams: CameraStreamSelection,
 }
 
 impl CameraConfig {
@@ -213,6 +216,28 @@ pub enum CameraTransport {
     #[default]
     Tcp,
     Udp,
+}
+
+/// Selects which video profiles KeepPeek ingests for a camera.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CameraStreamSelection {
+    Main,
+    Sub,
+    #[default]
+    Both,
+}
+
+impl CameraStreamSelection {
+    /// Returns whether the main profile should be ingested.
+    pub const fn main_enabled(self) -> bool {
+        matches!(self, Self::Main | Self::Both)
+    }
+
+    /// Returns whether the sub profile should be ingested.
+    pub const fn sub_enabled(self) -> bool {
+        matches!(self, Self::Sub | Self::Both)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1095,6 +1120,8 @@ pub fn query_cameras(configs: &HashMap<String, Vec<CameraConfig>>) -> HashMap<Ip
                         tracing::warn!("Reolink HTTP API failed for {}: {}", config.ip, e);
                     }
                 }
+            } else {
+                select_onvif_video_profiles(&mut camera.profiles);
             }
 
             camera
@@ -1153,13 +1180,89 @@ enum ProfileStream {
 fn profile_stream(profile: &MediaProfile) -> Option<ProfileStream> {
     let name = profile.name.to_ascii_lowercase();
     let token = profile.token.to_ascii_lowercase();
+    let path = profile
+        .stream_uri
+        .as_deref()
+        .and_then(|stream_uri| Url::parse(stream_uri).ok())
+        .map(|url| url.path().to_ascii_lowercase());
 
-    if name.contains("main") || token.ends_with("_main") {
+    if name.contains("main")
+        || token.ends_with("_main")
+        || path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("/stream1"))
+    {
         Some(ProfileStream::Main)
-    } else if name.contains("sub") || token.ends_with("_sub") {
+    } else if name.contains("sub")
+        || name.contains("minor")
+        || token.ends_with("_sub")
+        || token.contains("minor")
+        || path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("/stream2"))
+    {
         Some(ProfileStream::Sub)
     } else {
         None
+    }
+}
+
+fn select_onvif_video_profiles(profiles: &mut Vec<MediaProfile>) {
+    let mut candidates: Vec<MediaProfile> = std::mem::take(profiles)
+        .into_iter()
+        .filter(|profile| {
+            !matches!(
+                profile.video.as_ref().map(|video| &video.encoding),
+                Some(VideoEncoding::JPEG)
+            ) && !profile.name.to_ascii_lowercase().contains("jpeg")
+                && !profile.token.to_ascii_lowercase().contains("jpeg")
+        })
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+
+    let main_index = candidates
+        .iter()
+        .position(|profile| profile_stream(profile) == Some(ProfileStream::Main))
+        .or_else(|| {
+            candidates
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, profile)| {
+                    profile
+                        .video
+                        .as_ref()
+                        .map_or(0, |video| u64::from(video.width) * u64::from(video.height))
+                })
+                .map(|(index, _)| index)
+        })
+        .expect("a non-empty ONVIF profile list has a main candidate");
+    let main = candidates.remove(main_index);
+
+    let sub_index = candidates
+        .iter()
+        .position(|profile| profile_stream(profile) == Some(ProfileStream::Sub))
+        .or_else(|| {
+            candidates
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, profile)| {
+                    let encoding_rank = match profile.video.as_ref().map(|video| &video.encoding) {
+                        Some(VideoEncoding::H264) => 0,
+                        _ => 1,
+                    };
+                    let area = profile.video.as_ref().map_or(u64::MAX, |video| {
+                        u64::from(video.width) * u64::from(video.height)
+                    });
+                    (encoding_rank, area)
+                })
+                .map(|(index, _)| index)
+        });
+
+    profiles.push(main);
+    if let Some(sub_index) = sub_index {
+        profiles.push(candidates.remove(sub_index));
     }
 }
 
@@ -1294,6 +1397,25 @@ mod tests {
     }
 
     #[test]
+    fn tapo_onvif_profiles_select_main_and_minor_when_jpeg_is_first() {
+        let mut profiles = vec![
+            profile(
+                "jpegStream",
+                VideoEncoding::JPEG,
+                "rtsp://camera/jpegStream",
+            ),
+            profile("minorStream", VideoEncoding::H264, "rtsp://camera/stream2"),
+            profile("mainStream", VideoEncoding::H264, "rtsp://camera/stream1"),
+        ];
+
+        select_onvif_video_profiles(&mut profiles);
+
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0].name, "mainStream");
+        assert_eq!(profiles[1].name, "minorStream");
+    }
+
+    #[test]
     fn configured_rtsp_urls_create_direct_main_and_sub_profiles() {
         let config = CameraConfig {
             ip: "192.0.2.77".parse().unwrap(),
@@ -1309,6 +1431,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
 
         let camera = configured_camera(&config);
@@ -1343,6 +1466,7 @@ mod tests {
             uid: Some("test-uid".to_owned()),
             backend: CameraBackend::ReoProto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1376,6 +1500,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1410,6 +1535,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
         let mut camera = Camera {
             config,
@@ -1464,6 +1590,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
         let mut camera = Camera {
             config,

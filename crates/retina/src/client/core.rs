@@ -11,7 +11,7 @@ use crate::rtsp::{
 };
 use bytes::{Buf, Bytes, BytesMut};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::Cursor,
     net::IpAddr,
     time::{Duration, Instant, SystemTime},
@@ -20,7 +20,9 @@ use url::Url;
 
 const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_USER_AGENT: &str = concat!("retina_", env!("CARGO_PKG_VERSION"));
-const MAX_PENDING_UDP_DATAGRAMS: usize = 64;
+const MAX_PENDING_UDP_DATAGRAMS: usize = 256;
+const UDP_REORDER_DELAY: Duration = Duration::from_millis(50);
+const UDP_REORDER_CAPACITY: usize = 128;
 
 /// A pair of caller-supplied clocks associated with an I/O event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -391,6 +393,117 @@ struct PendingUdpDatagram {
     data: Bytes,
 }
 
+struct BufferedUdpRtp {
+    time: Time,
+    data: Bytes,
+}
+
+#[derive(Default)]
+struct UdpRtpReorderBuffer {
+    initial_sequence: Option<u16>,
+    next_sequence: Option<u16>,
+    priming_since: Option<Instant>,
+    gap_since: Option<Instant>,
+    pending: HashMap<u16, BufferedUdpRtp>,
+}
+
+impl UdpRtpReorderBuffer {
+    fn push(&mut self, packet: BufferedUdpRtp) -> Vec<BufferedUdpRtp> {
+        let Some(sequence) = rtp_sequence_number(&packet.data) else {
+            return vec![packet];
+        };
+        if self
+            .next_sequence
+            .is_some_and(|next| sequence != next && sequence.wrapping_sub(next) >= 0x8000)
+        {
+            return Vec::new();
+        }
+        let received_at = packet.time.monotonic;
+        self.initial_sequence.get_or_insert(sequence);
+        self.priming_since.get_or_insert(received_at);
+        self.pending.entry(sequence).or_insert(packet);
+        self.drain(received_at)
+    }
+
+    fn drain(&mut self, now: Instant) -> Vec<BufferedUdpRtp> {
+        let mut ready = Vec::new();
+        if self.next_sequence.is_none() {
+            if self.pending.is_empty()
+                || (self.pending.len() < UDP_REORDER_CAPACITY
+                    && self.priming_since.is_some_and(|started| {
+                        now.saturating_duration_since(started) < UDP_REORDER_DELAY
+                    }))
+            {
+                return ready;
+            }
+            let anchor = self
+                .initial_sequence
+                .expect("a non-empty reorder buffer has an initial sequence");
+            self.next_sequence = self
+                .pending
+                .keys()
+                .copied()
+                .min_by_key(|sequence| sequence.wrapping_sub(anchor) as i16);
+        }
+
+        loop {
+            let next = self
+                .next_sequence
+                .expect("a primed reorder buffer has a next sequence");
+            if let Some(packet) = self.pending.remove(&next) {
+                ready.push(packet);
+                self.next_sequence = Some(next.wrapping_add(1));
+                self.gap_since = None;
+                continue;
+            }
+            if self.pending.is_empty() {
+                self.gap_since = None;
+                break;
+            }
+            let pending_since = self
+                .pending
+                .values()
+                .map(|packet| packet.time.monotonic)
+                .min()
+                .unwrap_or(now);
+            let gap_since = *self.gap_since.get_or_insert(pending_since);
+            if self.pending.len() < UDP_REORDER_CAPACITY
+                && now.saturating_duration_since(gap_since) < UDP_REORDER_DELAY
+            {
+                break;
+            }
+            let Some(next_available) = self
+                .pending
+                .keys()
+                .copied()
+                .filter(|sequence| sequence.wrapping_sub(next) < 0x8000)
+                .min_by_key(|sequence| sequence.wrapping_sub(next))
+            else {
+                self.pending.clear();
+                self.gap_since = None;
+                break;
+            };
+            self.next_sequence = Some(next_available);
+            self.gap_since = None;
+        }
+        ready
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        self.next_sequence
+            .is_none()
+            .then_some(self.priming_since)
+            .flatten()
+            .or(self.gap_since)
+            .and_then(|started| started.checked_add(UDP_REORDER_DELAY))
+    }
+}
+
+fn rtp_sequence_number(datagram: &[u8]) -> Option<u16> {
+    let sequence = datagram.get(2..4)?.try_into().ok()?;
+    Some(u16::from_be_bytes(sequence))
+}
+
 /// A runtime-neutral RTSP control-plane client.
 pub struct RtspClient {
     options: ClientOptions,
@@ -404,6 +517,7 @@ pub struct RtspClient {
     connection_context: Option<crate::ConnectionContext>,
     requested_auth: Option<http_auth::PasswordClient>,
     pending_udp: VecDeque<PendingUdpDatagram>,
+    udp_reorder: HashMap<usize, UdpRtpReorderBuffer>,
     outputs: VecDeque<Output>,
 }
 
@@ -428,6 +542,7 @@ impl RtspClient {
             connection_context: None,
             requested_auth: None,
             pending_udp: VecDeque::new(),
+            udp_reorder: HashMap::new(),
             outputs: VecDeque::new(),
         }
     }
@@ -518,6 +633,7 @@ impl RtspClient {
                 self.connection_context = None;
                 self.requested_auth = None;
                 self.pending_udp.clear();
+                self.udp_reorder.clear();
                 self.phase = Phase::Connecting { connection, url };
                 self.outputs
                     .push_back(Output::OpenTcp { connection, target });
@@ -995,7 +1111,28 @@ impl RtspClient {
         if !matches!(&self.phase, Phase::Playing { .. }) {
             return Ok(());
         }
-        self.handle_playing_udp_data(time, stream_id, kind, Bytes::copy_from_slice(data))
+        self.handle_ordered_udp_data(time, stream_id, kind, Bytes::copy_from_slice(data))
+    }
+
+    fn handle_ordered_udp_data(
+        &mut self,
+        time: Time,
+        stream_id: usize,
+        kind: UdpPacketKind,
+        data: Bytes,
+    ) -> Result<(), CoreError> {
+        let packets = match kind {
+            UdpPacketKind::Rtp => self
+                .udp_reorder
+                .entry(stream_id)
+                .or_default()
+                .push(BufferedUdpRtp { time, data }),
+            UdpPacketKind::Rtcp => vec![BufferedUdpRtp { time, data }],
+        };
+        for packet in packets {
+            self.handle_playing_udp_data(packet.time, stream_id, kind, packet.data)?;
+        }
+        Ok(())
     }
 
     fn handle_playing_udp_data(
@@ -1008,7 +1145,7 @@ impl RtspClient {
         let connection_context = self.connection_context.ok_or_else(|| {
             CoreError::InvalidState("received UDP media without a connection context".to_string())
         })?;
-        let packet_context = crate::PacketContext::dummy();
+        let packet_context = crate::PacketContext::udp();
         let session_options = super::SessionOptions::default();
         let presentation = self.presentation.as_mut().ok_or_else(|| {
             CoreError::InvalidState("received UDP media without a presentation".to_string())
@@ -1087,12 +1224,28 @@ impl RtspClient {
 
     fn drain_pending_udp(&mut self) -> Result<(), CoreError> {
         while let Some(datagram) = self.pending_udp.pop_front() {
-            self.handle_playing_udp_data(
+            self.handle_ordered_udp_data(
                 datagram.time,
                 datagram.stream,
                 datagram.kind,
                 datagram.data,
             )?;
+        }
+        Ok(())
+    }
+
+    fn flush_udp_reorder(&mut self, now: Instant) -> Result<(), CoreError> {
+        let mut ready = Vec::new();
+        for (&stream, reorder) in &mut self.udp_reorder {
+            ready.extend(
+                reorder
+                    .drain(now)
+                    .into_iter()
+                    .map(|packet| (stream, packet)),
+            );
+        }
+        for (stream, packet) in ready {
+            self.handle_playing_udp_data(packet.time, stream, UdpPacketKind::Rtp, packet.data)?;
         }
         Ok(())
     }
@@ -1343,6 +1496,7 @@ impl RtspClient {
         let (response, body) = expected_response(framed, cseq, "PLAY")?;
         if !response.status_code.is_success() {
             self.pending_udp.clear();
+            self.udp_reorder.clear();
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
             self.outputs.push_back(Output::Event(Event::PlayResponse {
@@ -1437,6 +1591,7 @@ impl RtspClient {
         })();
         if let Err(description) = result {
             self.pending_udp.clear();
+            self.udp_reorder.clear();
             self.phase = Phase::Failed;
             self.outputs.push_back(Output::CloseTcp { connection });
             return Err(CoreError::UnexpectedResponse(format!(
@@ -1526,6 +1681,7 @@ impl RtspClient {
         }
 
         self.pending_udp.clear();
+        self.udp_reorder.clear();
         self.phase = Phase::Closed;
         self.outputs
             .push_back(Output::Event(Event::TcpClosed { connection }));
@@ -1533,6 +1689,9 @@ impl RtspClient {
     }
 
     fn handle_timeout(&mut self, time: Time) -> Result<(), CoreError> {
+        if matches!(self.phase, Phase::Playing { .. }) {
+            return self.flush_udp_reorder(time.monotonic);
+        }
         let (connection, cseq, deadline) = match &self.phase {
             Phase::AwaitingDescribeResponse {
                 connection,
@@ -1559,6 +1718,7 @@ impl RtspClient {
         }
 
         self.pending_udp.clear();
+        self.udp_reorder.clear();
         self.phase = Phase::Failed;
         self.outputs
             .push_back(Output::Event(Event::RequestTimedOut { connection, cseq }));
@@ -1566,12 +1726,21 @@ impl RtspClient {
         Ok(())
     }
 
-    const fn deadline(&self) -> Option<Instant> {
-        match self.phase {
+    fn deadline(&self) -> Option<Instant> {
+        let control = match self.phase {
             Phase::AwaitingDescribeResponse { deadline, .. }
             | Phase::AwaitingSetupResponse { deadline, .. }
             | Phase::AwaitingPlayResponse { deadline, .. } => Some(deadline),
             _ => None,
+        };
+        let media = self
+            .udp_reorder
+            .values()
+            .filter_map(UdpRtpReorderBuffer::deadline)
+            .min();
+        match (control, media) {
+            (Some(control), Some(media)) => Some(control.min(media)),
+            (control, media) => control.or(media),
         }
     }
 }
@@ -1775,6 +1944,130 @@ fn expected_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reorder_packet(start: Instant, offset: Duration, sequence: u16) -> BufferedUdpRtp {
+        let mut data = vec![0x80, 96];
+        data.extend_from_slice(&sequence.to_be_bytes());
+        data.extend_from_slice(&[0; 8]);
+        BufferedUdpRtp {
+            time: time(start, offset),
+            data: data.into(),
+        }
+    }
+
+    fn reordered_sequences(packets: &[BufferedUdpRtp]) -> Vec<u16> {
+        packets
+            .iter()
+            .map(|packet| u16::from_be_bytes(packet.data[2..4].try_into().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn udp_reorder_orders_tapo_marker_burst() {
+        let start = Instant::now();
+        let mut reorder = UdpRtpReorderBuffer::default();
+
+        for (offset, sequence) in [1571, 1572, 1574, 1568, 1569, 1570, 1573]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(
+                reorder
+                    .push(reorder_packet(
+                        start,
+                        Duration::from_micros(offset as u64 * 250),
+                        sequence,
+                    ))
+                    .is_empty()
+            );
+        }
+
+        assert_eq!(
+            reordered_sequences(&reorder.drain(start + UDP_REORDER_DELAY)),
+            [1568, 1569, 1570, 1571, 1572, 1573, 1574]
+        );
+    }
+
+    #[test]
+    fn udp_reorder_releases_permanent_gap_at_deadline() {
+        let start = Instant::now();
+        let mut reorder = UdpRtpReorderBuffer::default();
+
+        assert!(
+            reorder
+                .push(reorder_packet(start, Duration::ZERO, 20))
+                .is_empty()
+        );
+        assert_eq!(reorder.deadline(), Some(start + UDP_REORDER_DELAY));
+        assert_eq!(
+            reordered_sequences(&reorder.drain(start + UDP_REORDER_DELAY)),
+            [20]
+        );
+        assert!(
+            reorder
+                .push(reorder_packet(
+                    start,
+                    UDP_REORDER_DELAY + Duration::from_millis(1),
+                    22,
+                ))
+                .is_empty()
+        );
+        assert_eq!(
+            reordered_sequences(
+                &reorder.drain(start + (UDP_REORDER_DELAY * 2) + Duration::from_millis(1))
+            ),
+            [22]
+        );
+    }
+
+    #[test]
+    fn udp_reorder_releases_multiple_expired_gaps_together() {
+        let start = Instant::now();
+        let mut reorder = UdpRtpReorderBuffer::default();
+
+        for (offset, sequence) in [20, 22, 24].into_iter().enumerate() {
+            assert!(
+                reorder
+                    .push(reorder_packet(
+                        start,
+                        Duration::from_millis(offset as u64),
+                        sequence,
+                    ))
+                    .is_empty()
+            );
+        }
+
+        assert_eq!(
+            reordered_sequences(
+                &reorder.drain(start + UDP_REORDER_DELAY + Duration::from_millis(2))
+            ),
+            [20, 22, 24]
+        );
+        assert_eq!(reorder.deadline(), None);
+    }
+
+    #[test]
+    fn udp_reorder_orders_across_sequence_wrap() {
+        let start = Instant::now();
+        let mut reorder = UdpRtpReorderBuffer::default();
+
+        for (offset, sequence) in [u16::MAX, 1, u16::MAX - 1, 0].into_iter().enumerate() {
+            assert!(
+                reorder
+                    .push(reorder_packet(
+                        start,
+                        Duration::from_millis(offset as u64),
+                        sequence,
+                    ))
+                    .is_empty()
+            );
+        }
+
+        assert_eq!(
+            reordered_sequences(&reorder.drain(start + UDP_REORDER_DELAY)),
+            [u16::MAX - 1, u16::MAX, 0, 1]
+        );
+    }
     use crate::testutil::ScriptedDriver;
     use std::time::UNIX_EPOCH;
 
@@ -2882,6 +3175,15 @@ mod tests {
             client.poll_output(),
             Output::Event(Event::PlayResponse { connection: actual, .. }) if actual == connection
         ));
+        let deadline = match client.poll_output() {
+            Output::Timeout(Some(deadline)) => deadline,
+            output => panic!("expected UDP reorder deadline, got {output:?}"),
+        };
+        client
+            .handle_input(Input::Timeout {
+                time: time(start, deadline.duration_since(start)),
+            })
+            .unwrap();
         assert!(matches!(
             client.poll_output(),
             Output::Event(Event::CodecItem(crate::codec::CodecItem::VideoFrame(_)))

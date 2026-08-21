@@ -51,7 +51,7 @@ pub enum InitialSequenceNumberPolicy {
 #[derive(Copy, Clone, Debug, Default, derive_more::Display)]
 #[non_exhaustive]
 pub enum UnknownRtcpSsrcPolicy {
-    /// Drop RTCP packets from unknown SSRCs.
+    /// Process RTCP packets from the negotiated UDP source and drop unknown TCP SSRCs.
     #[default]
     #[display("default")]
     Default,

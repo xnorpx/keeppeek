@@ -3,13 +3,14 @@ use clap::Parser;
 use keeppeek::{
     cameras,
     cameras::{
-        CameraBackend, CameraCapabilities, CameraConfig, CameraPorts, CameraTransport, DeviceInfo,
-        DiscoveredCamera, ImagingSettings, MediaProfile, PtzInfo, reolink::ReolinkClient,
+        AudioConfig, AudioEncoding, CameraBackend, CameraCapabilities, CameraConfig, CameraPorts,
+        CameraTransport, DeviceInfo, DiscoveredCamera, ImagingSettings, MediaProfile, PtzInfo,
+        VideoConfig, VideoEncoding, reolink::ReolinkClient,
     },
     config,
 };
 use onvif::soap::client::{AuthType, ClientBuilder, Credentials};
-use schema::devicemgmt;
+use schema::{devicemgmt, media as onvif_media, onvif as onvif_xsd};
 use serde::Serialize;
 use sha1::{Digest, Sha1};
 use std::{
@@ -144,6 +145,21 @@ struct CameraInfoEntry {
     system_time: Option<toml::Value>,
     rtsp_urls: Option<toml::Value>,
     onvif_services: Option<Vec<String>>,
+    video_encoder_profiles: Option<Vec<VideoEncoderProfileInfo>>,
+}
+
+#[derive(Serialize)]
+struct VideoEncoderProfileInfo {
+    profile_name: String,
+    current_resolution: String,
+    supported_resolutions: Vec<String>,
+    current_h264_profile: Option<String>,
+    supported_h264_profiles: Vec<String>,
+}
+
+struct OnvifMediaInfo {
+    profiles: Vec<MediaProfile>,
+    video_encoder_profiles: Vec<VideoEncoderProfileInfo>,
 }
 
 fn json_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
@@ -419,6 +435,7 @@ fn gather_camera_info(
         system_time: None,
         rtsp_urls: None,
         onvif_services: None,
+        video_encoder_profiles: None,
     };
 
     let Some(auth) = auth else {
@@ -440,6 +457,7 @@ fn gather_camera_info(
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         };
 
         match ReolinkClient::connect(&config) {
@@ -528,6 +546,28 @@ fn gather_camera_info(
                 );
                 entry.onvif_services = Some(services);
             }
+            if let Some(media_url) = resp
+                .service
+                .iter()
+                .find(|service| service.namespace.contains("media/wsdl"))
+                .map(|service| service.x_addr.as_str())
+            {
+                match query_onvif_media_info(media_url, &auth.username, &auth.password) {
+                    Ok(media) => {
+                        if entry.profiles.is_none() && !media.profiles.is_empty() {
+                            entry.profiles = Some(media.profiles);
+                        }
+                        if !media.video_encoder_profiles.is_empty() {
+                            entry.video_encoder_profiles = Some(media.video_encoder_profiles);
+                        }
+                    }
+                    Err(error) => tracing::warn!(
+                        ip = %cam.ip,
+                        %error,
+                        "unable to query ONVIF video encoder profiles",
+                    ),
+                }
+            }
         }
 
         if entry.hostname.is_none() {
@@ -593,6 +633,158 @@ fn gather_camera_info(
     }
 
     entry
+}
+
+fn query_onvif_media_info(
+    media_url: &str,
+    username: &str,
+    password: &str,
+) -> anyhow::Result<OnvifMediaInfo> {
+    let url = Url::parse(media_url)?;
+    let client = ClientBuilder::new(&url)
+        .credentials(Some(Credentials {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        }))
+        .auth_type(AuthType::Any)
+        .timeout(Duration::from_secs(10))
+        .build();
+    let profiles = onvif_media::get_profiles(&client, &onvif_media::GetProfiles {})?;
+    let mut result = OnvifMediaInfo {
+        profiles: Vec::new(),
+        video_encoder_profiles: Vec::new(),
+    };
+
+    for profile in profiles.profiles {
+        let video_config = profile.video_encoder_configuration.as_ref().map(|video| {
+            let encoding = match &video.encoding {
+                onvif_xsd::VideoEncoding::Jpeg => VideoEncoding::JPEG,
+                onvif_xsd::VideoEncoding::Mpeg4 => VideoEncoding::MPEG4,
+                onvif_xsd::VideoEncoding::H264 => VideoEncoding::H264,
+                onvif_xsd::VideoEncoding::__Unknown__(encoding) => {
+                    if encoding.to_ascii_lowercase().contains("265") {
+                        VideoEncoding::H265
+                    } else {
+                        VideoEncoding::Unknown(encoding.clone())
+                    }
+                }
+            };
+            let (framerate, bitrate_kbps) =
+                video.rate_control.as_ref().map_or((0.0, None), |rate| {
+                    (
+                        rate.frame_rate_limit as f64,
+                        Some(rate.bitrate_limit as u32),
+                    )
+                });
+            VideoConfig {
+                encoding,
+                width: video.resolution.width as u32,
+                height: video.resolution.height as u32,
+                framerate,
+                bitrate_kbps,
+                quality: Some(video.quality),
+                gov_length: video.h264.as_ref().map(|h264| h264.gov_length as u32),
+                h264_profile: video
+                    .h264
+                    .as_ref()
+                    .map(|h264| format!("{:?}", h264.h264_profile)),
+            }
+        });
+        let audio = profile.audio_encoder_configuration.as_ref().map(|audio| {
+            let encoding = match &audio.encoding {
+                onvif_xsd::AudioEncoding::G711 => AudioEncoding::G711,
+                onvif_xsd::AudioEncoding::G726 => AudioEncoding::G726,
+                onvif_xsd::AudioEncoding::Aac => AudioEncoding::AAC,
+                onvif_xsd::AudioEncoding::__Unknown__(encoding) => {
+                    AudioEncoding::Unknown(encoding.clone())
+                }
+            };
+            AudioConfig {
+                encoding,
+                sample_rate: Some(audio.sample_rate as u32),
+                bitrate_kbps: Some(audio.bitrate as u32),
+            }
+        });
+        result.profiles.push(MediaProfile {
+            token: profile.token.0.clone(),
+            name: profile.name.0.clone(),
+            stream_uri: None,
+            snapshot_uri: None,
+            video: video_config,
+            audio,
+        });
+
+        let Some(video) = profile.video_encoder_configuration.as_ref() else {
+            continue;
+        };
+        let options = onvif_media::get_video_encoder_configuration_options(
+            &client,
+            &onvif_media::GetVideoEncoderConfigurationOptions {
+                configuration_token: Some(onvif_xsd::ReferenceToken(video.token.0.clone())),
+                profile_token: Some(onvif_xsd::ReferenceToken(profile.token.0.clone())),
+            },
+        )
+        .map(|response| response.options)
+        .inspect_err(|error| {
+            tracing::warn!(
+                profile = %profile.name.0,
+                %error,
+                "unable to query ONVIF video encoder options",
+            );
+        })
+        .ok();
+        let mut supported_h264_profiles = Vec::new();
+        let mut supported_resolutions = Vec::new();
+        if let Some(options) = options {
+            if let Some(h264) = options.h264 {
+                extend_h264_profile_names(
+                    &mut supported_h264_profiles,
+                    h264.h264_profiles_supported,
+                );
+                extend_resolution_names(&mut supported_resolutions, h264.resolutions_available);
+            }
+            if let Some(h264) = options.extension.and_then(|extension| extension.h264) {
+                extend_h264_profile_names(
+                    &mut supported_h264_profiles,
+                    h264.h264_profiles_supported,
+                );
+                extend_resolution_names(&mut supported_resolutions, h264.resolutions_available);
+            }
+        }
+        result.video_encoder_profiles.push(VideoEncoderProfileInfo {
+            profile_name: profile.name.0,
+            current_resolution: format!("{}x{}", video.resolution.width, video.resolution.height),
+            supported_resolutions,
+            current_h264_profile: video
+                .h264
+                .as_ref()
+                .map(|h264| format!("{:?}", h264.h264_profile)),
+            supported_h264_profiles,
+        });
+    }
+
+    Ok(result)
+}
+
+fn extend_h264_profile_names(profiles: &mut Vec<String>, supported: Vec<onvif_xsd::H264Profile>) {
+    for profile in supported {
+        let name = format!("{profile:?}");
+        if !profiles.contains(&name) {
+            profiles.push(name);
+        }
+    }
+}
+
+fn extend_resolution_names(
+    resolutions: &mut Vec<String>,
+    supported: Vec<onvif_xsd::VideoResolution>,
+) {
+    for resolution in supported {
+        let name = format!("{}x{}", resolution.width, resolution.height);
+        if !resolutions.contains(&name) {
+            resolutions.push(name);
+        }
+    }
 }
 
 fn query_onvif_services(
@@ -738,6 +930,7 @@ fn main() -> anyhow::Result<()> {
                     uid: None,
                     backend: CameraBackend::Auto,
                     transport: CameraTransport::Tcp,
+                    streams: Default::default(),
                 },
                 |result| CameraConfig {
                     ip: cam.ip,
@@ -753,6 +946,7 @@ fn main() -> anyhow::Result<()> {
                     uid: None,
                     backend: CameraBackend::Auto,
                     transport: CameraTransport::Tcp,
+                    streams: Default::default(),
                 },
             )
         })
@@ -907,6 +1101,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         }
     }
 

@@ -243,6 +243,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            streams: Default::default(),
         }
     }
 

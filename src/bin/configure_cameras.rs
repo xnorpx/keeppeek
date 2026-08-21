@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use keeppeek::config;
+use keeppeek::{cameras::CameraStreamSelection, config};
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::IpAddr,
@@ -40,6 +40,12 @@ struct DisplayName {
 struct RtspEndpoint {
     camera: String,
     url: String,
+}
+
+#[derive(Debug, Clone)]
+struct StreamSelection {
+    camera: String,
+    streams: CameraStreamSelection,
 }
 
 fn parse_display_name(value: &str) -> Result<DisplayName, String> {
@@ -98,6 +104,26 @@ fn parse_rtsp_endpoint(value: &str) -> Result<RtspEndpoint, String> {
     })
 }
 
+fn parse_stream_selection(value: &str) -> Result<StreamSelection, String> {
+    let (camera, streams) = value
+        .split_once('=')
+        .ok_or_else(|| "expected CAMERA=main, CAMERA=sub, or CAMERA=both".to_owned())?;
+    let camera = camera.trim();
+    if camera.is_empty() {
+        return Err("camera must not be empty".to_owned());
+    }
+    let streams = match streams.trim() {
+        "main" => CameraStreamSelection::Main,
+        "sub" => CameraStreamSelection::Sub,
+        "both" => CameraStreamSelection::Both,
+        streams => return Err(format!("invalid stream selection '{streams}'")),
+    };
+    Ok(StreamSelection {
+        camera: camera.to_owned(),
+        streams,
+    })
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "configure-cameras",
@@ -128,6 +154,10 @@ struct Cli {
     #[arg(long = "sub-rtsp-url", value_parser = parse_rtsp_endpoint)]
     sub_rtsp_urls: Vec<RtspEndpoint>,
 
+    /// Select video profiles as CAMERA=main, CAMERA=sub, or CAMERA=both.
+    #[arg(long = "streams", value_parser = parse_stream_selection)]
+    streams: Vec<StreamSelection>,
+
     /// Camera config key or IP address to remove.
     #[arg(long = "remove")]
     remove: Vec<String>,
@@ -142,10 +172,11 @@ fn main() -> anyhow::Result<()> {
         && cli.display_names.is_empty()
         && cli.main_rtsp_urls.is_empty()
         && cli.sub_rtsp_urls.is_empty()
+        && cli.streams.is_empty()
         && cli.remove.is_empty()
     {
         anyhow::bail!(
-            "provide at least one --verified, --display-name, --main-rtsp-url, --sub-rtsp-url, or --remove update"
+            "provide at least one --verified, --display-name, --main-rtsp-url, --sub-rtsp-url, --streams, or --remove update"
         );
     }
 
@@ -163,16 +194,18 @@ fn main() -> anyhow::Result<()> {
     let renamed = apply_display_names(&mut base, &cli.display_names)?;
     let rtsp_urls = apply_rtsp_urls(&mut base, "main_rtsp_url", &cli.main_rtsp_urls)?
         + apply_rtsp_urls(&mut base, "sub_rtsp_url", &cli.sub_rtsp_urls)?;
+    let streams = apply_stream_selections(&mut base, &cli.streams)?;
     let removed = remove_cameras(&mut base, &cli.remove)?;
     atomic_write(&cli.base, toml::to_string_pretty(&base)?.as_bytes())?;
     println!(
-        "CONFIGURE_CAMERAS_OK file={} verified={} added={} updated={} display_names={} rtsp_urls={} removed={}",
+        "CONFIGURE_CAMERAS_OK file={} verified={} added={} updated={} display_names={} rtsp_urls={} streams={} removed={}",
         cli.base.display(),
         verified.len(),
         merged.added,
         merged.updated,
         renamed,
         rtsp_urls,
+        streams,
         removed,
     );
     Ok(())
@@ -261,6 +294,44 @@ fn apply_rtsp_urls(
             .insert(key.to_owned(), toml::Value::String(url));
     }
     Ok(endpoints.len())
+}
+
+fn apply_stream_selections(
+    base: &mut toml::Table,
+    selections: &[StreamSelection],
+) -> anyhow::Result<usize> {
+    let cameras = base
+        .get_mut("cameras")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| anyhow::anyhow!("base config has no [cameras] table"))?;
+    let mut updates = Vec::with_capacity(selections.len());
+    for selection in selections {
+        let camera = if cameras.contains_key(&selection.camera) {
+            selection.camera.clone()
+        } else if let Ok(ip) = selection.camera.parse() {
+            find_camera(cameras, ip)
+                .map(|(camera, _)| camera.to_owned())
+                .ok_or_else(|| anyhow::anyhow!("camera '{}' was not found", selection.camera))?
+        } else {
+            anyhow::bail!("camera '{}' was not found", selection.camera);
+        };
+        let streams = match selection.streams {
+            CameraStreamSelection::Main => "main",
+            CameraStreamSelection::Sub => "sub",
+            CameraStreamSelection::Both => "both",
+        };
+        updates.push((camera, streams));
+    }
+    for (camera, streams) in updates {
+        cameras[&camera]
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("camera '{camera}' is not a table"))?
+            .insert(
+                "streams".to_owned(),
+                toml::Value::String(streams.to_owned()),
+            );
+    }
+    Ok(selections.len())
 }
 
 fn remove_cameras(base: &mut toml::Table, removals: &[String]) -> anyhow::Result<usize> {
@@ -524,6 +595,28 @@ mod tests {
     #[test]
     fn rtsp_url_rejects_embedded_credentials() {
         assert!(parse_rtsp_endpoint("deck=rtsp://operator:secret@192.168.1.10/main").is_err());
+    }
+
+    #[test]
+    fn stream_selection_preserves_credentials_and_other_settings() {
+        let mut base: toml::Table = toml::from_str(
+            r#"
+                [cameras.tapo]
+                ip = "192.168.1.10"
+                username = "operator"
+                password = "secret"
+                transport = "udp"
+            "#,
+        )
+        .unwrap();
+        let selections = vec![parse_stream_selection("192.168.1.10=main").unwrap()];
+
+        assert_eq!(apply_stream_selections(&mut base, &selections).unwrap(), 1);
+        let camera = base["cameras"]["tapo"].as_table().unwrap();
+        assert_eq!(camera["streams"].as_str(), Some("main"));
+        assert_eq!(camera["username"].as_str(), Some("operator"));
+        assert_eq!(camera["password"].as_str(), Some("secret"));
+        assert_eq!(camera["transport"].as_str(), Some("udp"));
     }
 
     #[test]

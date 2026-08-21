@@ -421,7 +421,7 @@ impl PacketContext {
     pub fn received(&self) -> Instant {
         match self.0 {
             PacketContextInner::Tcp { msg_ctx } => msg_ctx.received,
-            PacketContextInner::Dummy => Instant::now(),
+            PacketContextInner::Udp | PacketContextInner::Dummy => Instant::now(),
         }
     }
 
@@ -429,13 +429,21 @@ impl PacketContext {
     pub fn received_wall(&self) -> WallTime {
         match self.0 {
             PacketContextInner::Tcp { msg_ctx } => msg_ctx.received_wall,
-            PacketContextInner::Dummy => WallTime::now(),
+            PacketContextInner::Udp | PacketContextInner::Dummy => WallTime::now(),
         }
     }
 
     #[doc(hidden)]
     pub const fn dummy() -> Self {
         Self(PacketContextInner::Dummy)
+    }
+
+    pub(crate) const fn udp() -> Self {
+        Self(PacketContextInner::Udp)
+    }
+
+    pub(crate) const fn is_udp(&self) -> bool {
+        matches!(self.0, PacketContextInner::Udp)
     }
 
     pub(crate) const fn tcp(message: RtspMessageContext) -> Self {
@@ -446,6 +454,7 @@ impl PacketContext {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum PacketContextInner {
     Tcp { msg_ctx: RtspMessageContext },
+    Udp,
     Dummy,
 }
 
@@ -453,6 +462,7 @@ impl Display for PacketContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             PacketContextInner::Tcp { msg_ctx } => std::fmt::Display::fmt(&msg_ctx, f),
+            PacketContextInner::Udp => write!(f, "udp"),
             PacketContextInner::Dummy => write!(f, "dummy"),
         }
     }

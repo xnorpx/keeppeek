@@ -51,6 +51,19 @@ struct UdpSockets {
     rtcp: UdpSocket,
 }
 
+fn receive_udp_datagrams(socket: &UdpSocket, buffer: &mut [u8]) -> anyhow::Result<Vec<Vec<u8>>> {
+    let mut datagrams = Vec::new();
+    loop {
+        match socket.recv(buffer) {
+            Ok(len) => datagrams.push(buffer[..len].to_vec()),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(datagrams)
+}
+
 struct VideoContinuity {
     awaiting_random_access: bool,
 }
@@ -413,24 +426,24 @@ impl BlockingRtsp {
     fn pump_udp(&mut self) -> anyhow::Result<bool> {
         let mut datagrams = Vec::new();
         let mut buffer = [0u8; UDP_READ_BUFFER_SIZE];
-        for (&stream, sockets) in &self.udp_streams {
-            for (kind, socket) in [
-                (UdpPacketKind::Rtcp, &sockets.rtcp),
-                (UdpPacketKind::Rtp, &sockets.rtp),
-            ] {
-                loop {
-                    match socket.recv(&mut buffer) {
-                        Ok(len) => datagrams.push((stream, kind, buffer[..len].to_vec())),
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-                            break;
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            }
+        let mut received = false;
+        for (&stream, sockets) in &mut self.udp_streams {
+            let rtcp_datagrams = receive_udp_datagrams(&sockets.rtcp, &mut buffer)?;
+            received |= !rtcp_datagrams.is_empty();
+            datagrams.extend(
+                rtcp_datagrams
+                    .into_iter()
+                    .map(|data| (stream, UdpPacketKind::Rtcp, data)),
+            );
+
+            let rtp_datagrams = receive_udp_datagrams(&sockets.rtp, &mut buffer)?;
+            received |= !rtp_datagrams.is_empty();
+            datagrams.extend(
+                rtp_datagrams
+                    .into_iter()
+                    .map(|data| (stream, UdpPacketKind::Rtp, data)),
+            );
         }
-        let received = !datagrams.is_empty();
         for (stream, kind, data) in datagrams {
             self.apply(Input::UdpData {
                 time: now(),

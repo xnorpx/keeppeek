@@ -537,7 +537,7 @@ impl Depacketizer {
                         fu_a
                     }
                     (false, None) => {
-                        if loss > 0 {
+                        if loss > 0 || ctx.is_udp() {
                             self.pieces.clear();
                             self.nals.clear();
                             self.input_state = DepacketizerInputState::Loss {
@@ -2772,6 +2772,60 @@ mod tests {
     }
 
     #[test]
+    fn udp_orphan_fu_a_fragment_is_discarded() {
+        init_logging();
+        let mut depacketizer = super::Depacketizer::new(90_000, None).unwrap();
+        let orphan_timestamp = crate::Timestamp {
+            timestamp: 0,
+            clock_rate: NonZeroU32::new(90_000).unwrap(),
+            start: 0,
+        };
+        depacketizer
+            .push(
+                ReceivedPacketBuilder {
+                    ctx: crate::PacketContext::udp(),
+                    stream_id: 0,
+                    timestamp: orphan_timestamp,
+                    ssrc: 0,
+                    sequence_number: 0,
+                    loss: 0,
+                    mark: false,
+                    payload_type: 0,
+                }
+                .build(*b"\x7c\x01orphan continuation")
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(depacketizer.pull(), None);
+
+        let recovered_timestamp = crate::Timestamp {
+            timestamp: 1,
+            clock_rate: NonZeroU32::new(90_000).unwrap(),
+            start: 0,
+        };
+        depacketizer
+            .push(
+                ReceivedPacketBuilder {
+                    ctx: crate::PacketContext::udp(),
+                    stream_id: 0,
+                    timestamp: recovered_timestamp,
+                    ssrc: 0,
+                    sequence_number: 1,
+                    loss: 0,
+                    mark: true,
+                    payload_type: 0,
+                }
+                .build(*b"\x01recovered")
+                .unwrap(),
+            )
+            .unwrap();
+        let Some(Ok(CodecItem::VideoFrame(frame))) = depacketizer.pull() else {
+            panic!("expected the complete frame after the orphan UDP fragment");
+        };
+        assert_eq_hex!(frame.data(), b"\x00\x00\x00\x0a\x01recovered");
+    }
+
+    #[test]
     fn skip_end_of_fragment() {
         init_logging();
         let mut d = super::Depacketizer::new(90_000, None).unwrap();
@@ -2947,5 +3001,90 @@ mod tests {
         );
         assert!(frame.is_random_access_point());
         assert_eq!(d.pull(), None);
+    }
+
+    #[test]
+    fn depacketize_tapo_marker_sei_after_vcl() {
+        init_logging();
+        let mut depacketizer = super::Depacketizer::new(90_000, None).unwrap();
+        depacketizer.set_frame_format(crate::codec::FrameFormat {
+            parameter_set_insertion: crate::codec::ParameterSetInsertion::Never,
+            ..Default::default()
+        });
+        let first_timestamp = crate::Timestamp {
+            timestamp: 0,
+            clock_rate: NonZeroU32::new(90_000).unwrap(),
+            start: 0,
+        };
+
+        depacketizer
+            .push(
+                ReceivedPacketBuilder {
+                    ctx: crate::PacketContext::udp(),
+                    stream_id: 0,
+                    timestamp: first_timestamp,
+                    ssrc: 0x2c3a_0f44,
+                    sequence_number: 1573,
+                    loss: 0,
+                    mark: true,
+                    payload_type: 96,
+                }
+                .build(*b"\x65idr")
+                .unwrap(),
+            )
+            .unwrap();
+        let Some(Ok(CodecItem::VideoFrame(first))) = depacketizer.pull() else {
+            panic!("expected the IDR frame before the TP-Link marker")
+        };
+        assert_eq_hex!(first.data(), b"\x00\x00\x00\x04\x65idr");
+
+        let marker = b"\x06\x05\x15TPLINKMARKERBOX.\x01\x00\xff\xff\x00\x80";
+        depacketizer
+            .push(
+                ReceivedPacketBuilder {
+                    ctx: crate::PacketContext::udp(),
+                    stream_id: 0,
+                    timestamp: first_timestamp,
+                    ssrc: 0x2c3a_0f44,
+                    sequence_number: 1574,
+                    loss: 0,
+                    mark: true,
+                    payload_type: 96,
+                }
+                .build(marker.iter().copied())
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(depacketizer.pull(), None);
+
+        depacketizer
+            .push(
+                ReceivedPacketBuilder {
+                    ctx: crate::PacketContext::udp(),
+                    stream_id: 0,
+                    timestamp: crate::Timestamp {
+                        timestamp: 3_600,
+                        ..first_timestamp
+                    },
+                    ssrc: 0x2c3a_0f44,
+                    sequence_number: 1575,
+                    loss: 0,
+                    mark: true,
+                    payload_type: 96,
+                }
+                .build(*b"\x41p")
+                .unwrap(),
+            )
+            .unwrap();
+        let Some(Ok(CodecItem::VideoFrame(second))) = depacketizer.pull() else {
+            panic!("expected the frame after the TP-Link marker")
+        };
+        assert_eq_hex!(
+            second.data(),
+            b"\x00\x00\x00\x19\x06\x05\x15TPLINKMARKERBOX.\x01\x00\xff\xff\x00\x80\
+              \x00\x00\x00\x02\x41p"
+        );
+        assert!(!second.is_random_access_point());
+        assert_eq!(depacketizer.pull(), None);
     }
 }
