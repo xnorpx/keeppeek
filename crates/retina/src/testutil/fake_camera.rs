@@ -12,7 +12,7 @@ use std::{
     path::Path,
     sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use url::Url;
 #[cfg(windows)]
@@ -25,6 +25,34 @@ const FAKE_SSRC: u32 = 0x0102_0304;
 const RTP_CLOCK_RATE: u32 = 90_000;
 const RTP_PAYLOAD_TYPE: u8 = 96;
 const RTP_MAX_PAYLOAD_SIZE: u16 = 1_200;
+
+/// Controls how an MP4-backed RTSP profile is replayed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mp4Playback {
+    start_at: Duration,
+    realtime: bool,
+    looping: bool,
+}
+
+impl Mp4Playback {
+    /// Starts on the latest sync sample at or before `start_at` and follows MP4 timestamps.
+    pub const fn realtime(start_at: Duration) -> Self {
+        Self {
+            start_at,
+            realtime: true,
+            looping: false,
+        }
+    }
+
+    /// Repeats real-time playback while preserving a continuous RTP timeline.
+    pub const fn realtime_looping(start_at: Duration) -> Self {
+        Self {
+            start_at,
+            realtime: true,
+            looping: true,
+        }
+    }
+}
 
 #[cfg(windows)]
 struct WindowsTimerResolution(u32);
@@ -158,11 +186,20 @@ impl FakeRtspCamera {
         address: SocketAddr,
         path: impl AsRef<Path>,
     ) -> Result<Self, FakeRtspCameraError> {
+        Self::from_mp4_on_with_playback(address, path, Mp4Playback::default())
+    }
+
+    /// Starts an MP4-backed camera at `address` with explicit playback behavior.
+    pub fn from_mp4_on_with_playback(
+        address: SocketAddr,
+        path: impl AsRef<Path>,
+        playback: Mp4Playback,
+    ) -> Result<Self, FakeRtspCameraError> {
         Self::start_with_sources(
             address,
             vec![NamedMediaSource {
                 path: "stream".into(),
-                source: MediaSource::from_mp4(path.as_ref())?,
+                source: MediaSource::from_mp4_with_playback(path.as_ref(), playback)?,
             }],
         )
     }
@@ -291,6 +328,7 @@ struct MediaSource {
     initial_sequence_number: u16,
     initial_timestamp: u32,
     hold_after_media: bool,
+    playback: Mp4Playback,
 }
 
 #[derive(Clone)]
@@ -310,12 +348,20 @@ impl Default for MediaSource {
             initial_sequence_number: 1,
             initial_timestamp: 90_000,
             hold_after_media: false,
+            playback: Mp4Playback::default(),
         }
     }
 }
 
 impl MediaSource {
     fn from_mp4(path: &Path) -> Result<Self, FakeRtspCameraError> {
+        Self::from_mp4_with_playback(path, Mp4Playback::default())
+    }
+
+    fn from_mp4_with_playback(
+        path: &Path,
+        playback: Mp4Playback,
+    ) -> Result<Self, FakeRtspCameraError> {
         let reader = mp4::read_mp4(File::open(path)?)
             .map_err(|error| FakeRtspCameraError::Mp4(error.to_string()))?;
         let media_type = reader
@@ -336,13 +382,13 @@ impl MediaSource {
                 FakeRtspCameraError::Mp4("MP4 source has no H.264 or H.265 video track".to_string())
             })?;
         match media_type {
-            mp4::MediaType::H264 => Self::from_h264_mp4(path),
-            mp4::MediaType::H265 => Self::from_h265_mp4(path),
+            mp4::MediaType::H264 => Self::from_h264_mp4(path, playback),
+            mp4::MediaType::H265 => Self::from_h265_mp4(path, playback),
             _ => unreachable!("video track selection only returns H.264 or H.265"),
         }
     }
 
-    fn from_h264_mp4(path: &Path) -> Result<Self, FakeRtspCameraError> {
+    fn from_h264_mp4(path: &Path, playback: Mp4Playback) -> Result<Self, FakeRtspCameraError> {
         let mut reader = mp4::read_mp4(File::open(path)?)
             .map_err(|error| FakeRtspCameraError::Mp4(error.to_string()))?;
         let mut h264_track = None;
@@ -412,6 +458,14 @@ impl MediaSource {
                 "H.264 track has no samples".to_string(),
             ));
         }
+        let first_sample = select_start_sample(
+            &mut reader,
+            track_id,
+            sample_count,
+            timescale,
+            playback.start_at,
+            "H.264",
+        )?;
 
         let clock_rate = NonZeroU32::new(RTP_CLOCK_RATE).expect("RTP clock rate is non-zero");
         let mut packetizer = crate::codec::h264::Packetizer::new(
@@ -426,7 +480,7 @@ impl MediaSource {
         let mut first_packet = None;
         let mut rtp_packets = Vec::new();
 
-        for sample_id in 1..=sample_count {
+        for sample_id in first_sample..=sample_count {
             let sample = reader
                 .read_sample(track_id, sample_id)
                 .map_err(|error| FakeRtspCameraError::Mp4(error.to_string()))?
@@ -472,11 +526,12 @@ impl MediaSource {
             initial_sequence_number,
             initial_timestamp,
             hold_after_media: false,
+            playback,
         })
     }
 
     #[cfg(feature = "h265")]
-    fn from_h265_mp4(path: &Path) -> Result<Self, FakeRtspCameraError> {
+    fn from_h265_mp4(path: &Path, playback: Mp4Playback) -> Result<Self, FakeRtspCameraError> {
         let mut reader = mp4::read_mp4(File::open(path)?)
             .map_err(|error| FakeRtspCameraError::Mp4(error.to_string()))?;
         let mut h265_track = None;
@@ -546,11 +601,19 @@ impl MediaSource {
                 "H.265 track has no samples".to_string(),
             ));
         }
+        let first_sample = select_start_sample(
+            &mut reader,
+            track_id,
+            sample_count,
+            timescale,
+            playback.start_at,
+            "H.265",
+        )?;
 
         let mut initial_timestamp = None;
         let mut rtp_packets = Vec::new();
         let mut next_sequence_number = 1;
-        for sample_id in 1..=sample_count {
+        for sample_id in first_sample..=sample_count {
             let sample = reader
                 .read_sample(track_id, sample_id)
                 .map_err(|error| FakeRtspCameraError::Mp4(error.to_string()))?
@@ -584,11 +647,12 @@ impl MediaSource {
             initial_sequence_number: 1,
             initial_timestamp,
             hold_after_media: false,
+            playback,
         })
     }
 
     #[cfg(not(feature = "h265"))]
-    fn from_h265_mp4(_path: &Path) -> Result<Self, FakeRtspCameraError> {
+    fn from_h265_mp4(_path: &Path, _playback: Mp4Playback) -> Result<Self, FakeRtspCameraError> {
         Err(FakeRtspCameraError::Mp4(
             "H.265 MP4 sources require Retina's h265 feature".to_string(),
         ))
@@ -779,7 +843,13 @@ fn serve_presentation(
     }
     expect_header(&play, "Session", FAKE_SESSION_ID)?;
     send_play(&mut connection.stream, &cseq(&play)?, &stream_url, &source)?;
-    send_rtp_packets(&mut connection.stream, &transport, &source.rtp_packets)?;
+    send_rtp_packets(
+        &mut connection.stream,
+        &transport,
+        &source.rtp_packets,
+        source.playback,
+        connection.stop,
+    )?;
     if source.hold_after_media {
         loop {
             if stopped(connection.stop) {
@@ -1054,31 +1124,170 @@ fn send_rtp_packets(
     stream: &mut TcpStream,
     transport: &SessionTransport,
     packets: &[Bytes],
+    playback: Mp4Playback,
+    stop: &Receiver<()>,
 ) -> Result<(), FakeRtspCameraError> {
     let accepts_client_close = matches!(transport, SessionTransport::Tcp { .. });
-    for packet in packets {
-        let result = match transport {
-            SessionTransport::Tcp { channel } => msg::OwnedMessage::Data {
-                channel_id: *channel,
-                body: packet.clone(),
-            }
-            .write(stream),
-            SessionTransport::Udp {
-                rtp, client_rtp, ..
-            } => rtp.send_to(packet, client_rtp).map(|_| ()),
+    let first_timestamp = packets
+        .first()
+        .map(|packet| rtp_timestamp(packet))
+        .transpose()?;
+    let loop_duration_ticks = playback
+        .looping
+        .then(|| rtp_loop_duration(packets))
+        .transpose()?;
+    let packet_count = u64::try_from(packets.len()).map_err(|_| {
+        FakeRtspCameraError::Protocol("RTP packet count does not fit u64".to_string())
+    })?;
+    let playback_started = Instant::now();
+    let mut loop_index = 0_u64;
+    loop {
+        let loop_elapsed_ticks = match loop_duration_ticks {
+            Some(duration) => loop_index.checked_mul(u64::from(duration)).ok_or_else(|| {
+                FakeRtspCameraError::Protocol("RTP playback timeline overflowed".to_string())
+            })?,
+            None => 0,
         };
-        if let Err(error) = result {
-            if accepts_client_close && client_disconnected(&error) {
-                return Ok(());
+        let sequence_offset =
+            u16::try_from(loop_index.wrapping_mul(packet_count) % (u64::from(u16::MAX) + 1))
+                .expect("sequence offset is reduced to u16 range");
+        let timestamp_offset = u32::try_from(loop_elapsed_ticks % (u64::from(u32::MAX) + 1))
+            .expect("timestamp offset is reduced to u32 range");
+
+        for packet in packets {
+            if playback.realtime {
+                let first_timestamp = first_timestamp.expect("non-empty RTP packet sequence");
+                let elapsed_ticks = loop_elapsed_ticks
+                    .checked_add(u64::from(
+                        rtp_timestamp(packet)?.wrapping_sub(first_timestamp),
+                    ))
+                    .ok_or_else(|| {
+                        FakeRtspCameraError::Protocol(
+                            "RTP playback timeline overflowed".to_string(),
+                        )
+                    })?;
+                wait_for_media_time(playback_started, elapsed_ticks, stop)?;
             }
-            return Err(error.into());
+            let packet = if loop_index == 0 {
+                packet.clone()
+            } else {
+                shifted_rtp_packet(packet, sequence_offset, timestamp_offset)?
+            };
+            let result = match transport {
+                SessionTransport::Tcp { channel } => msg::OwnedMessage::Data {
+                    channel_id: *channel,
+                    body: packet,
+                }
+                .write(stream),
+                SessionTransport::Udp {
+                    rtp, client_rtp, ..
+                } => rtp.send_to(&packet, client_rtp).map(|_| ()),
+            };
+            if let Err(error) = result {
+                if accepts_client_close && client_disconnected(&error) {
+                    return Ok(());
+                }
+                return Err(error.into());
+            }
         }
+        if !playback.looping {
+            break;
+        }
+        loop_index = loop_index.checked_add(1).ok_or_else(|| {
+            FakeRtspCameraError::Protocol("RTP playback loop count overflowed".to_string())
+        })?;
     }
     match stream.flush() {
         Ok(()) => Ok(()),
         Err(error) if accepts_client_close && client_disconnected(&error) => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn wait_for_media_time(
+    playback_started: Instant,
+    elapsed_ticks: u64,
+    stop: &Receiver<()>,
+) -> Result<(), FakeRtspCameraError> {
+    let elapsed_nanos = elapsed_ticks.checked_mul(1_000_000_000).ok_or_else(|| {
+        FakeRtspCameraError::Protocol("RTP playback duration overflowed".to_string())
+    })? / u64::from(RTP_CLOCK_RATE);
+    let deadline = playback_started + Duration::from_nanos(elapsed_nanos);
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Ok(());
+        };
+        match stop.recv_timeout(remaining.min(READ_POLL_INTERVAL)) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                return Err(FakeRtspCameraError::Stopped);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+fn rtp_timestamp(packet: &[u8]) -> Result<u32, FakeRtspCameraError> {
+    let timestamp = packet.get(4..8).ok_or_else(|| {
+        FakeRtspCameraError::Protocol("RTP packet is too short for a timestamp".to_string())
+    })?;
+    Ok(u32::from_be_bytes(
+        timestamp.try_into().expect("four-byte RTP timestamp slice"),
+    ))
+}
+
+fn rtp_loop_duration(packets: &[Bytes]) -> Result<u32, FakeRtspCameraError> {
+    let first_timestamp = packets
+        .first()
+        .ok_or_else(|| {
+            FakeRtspCameraError::Protocol(
+                "looping playback requires at least one RTP packet".to_string(),
+            )
+        })
+        .and_then(|packet| rtp_timestamp(packet))?;
+    let mut previous_timestamp = first_timestamp;
+    let mut final_step = None;
+    for packet in packets.iter().skip(1) {
+        let timestamp = rtp_timestamp(packet)?;
+        if timestamp == previous_timestamp {
+            continue;
+        }
+        let step = timestamp.wrapping_sub(previous_timestamp);
+        if step > i32::MAX as u32 {
+            return Err(FakeRtspCameraError::Protocol(
+                "looping playback requires ordered RTP timestamps".to_string(),
+            ));
+        }
+        final_step = Some(step);
+        previous_timestamp = timestamp;
+    }
+    previous_timestamp
+        .wrapping_sub(first_timestamp)
+        .checked_add(final_step.ok_or_else(|| {
+            FakeRtspCameraError::Protocol(
+                "looping playback requires at least two RTP timestamps".to_string(),
+            )
+        })?)
+        .ok_or_else(|| FakeRtspCameraError::Protocol("RTP loop duration overflowed".to_string()))
+}
+
+fn shifted_rtp_packet(
+    packet: &Bytes,
+    sequence_offset: u16,
+    timestamp_offset: u32,
+) -> Result<Bytes, FakeRtspCameraError> {
+    let sequence = packet.get(2..4).ok_or_else(|| {
+        FakeRtspCameraError::Protocol("RTP packet is too short for a sequence number".to_string())
+    })?;
+    let sequence = u16::from_be_bytes(
+        sequence
+            .try_into()
+            .expect("two-byte RTP sequence number slice"),
+    );
+    let timestamp = rtp_timestamp(packet)?;
+    let mut shifted = packet.to_vec();
+    shifted[2..4].copy_from_slice(&sequence.wrapping_add(sequence_offset).to_be_bytes());
+    shifted[4..8].copy_from_slice(&timestamp.wrapping_add(timestamp_offset).to_be_bytes());
+    Ok(Bytes::from(shifted))
 }
 
 fn h264_describe_body(
@@ -1303,6 +1512,49 @@ fn scale_timestamp(start_time: u64, timescale: u32) -> Result<u32, FakeRtspCamer
         .map_err(|_| FakeRtspCameraError::Mp4("MP4 timestamp overflowed".to_string()))
 }
 
+fn select_start_sample<R: Read + std::io::Seek>(
+    reader: &mut mp4::Mp4Reader<R>,
+    track_id: u32,
+    sample_count: u32,
+    timescale: u32,
+    start_at: Duration,
+    codec: &str,
+) -> Result<u32, FakeRtspCameraError> {
+    let target = u128::from(start_at.as_secs())
+        .checked_mul(u128::from(timescale))
+        .and_then(|ticks| {
+            ticks.checked_add(
+                u128::from(start_at.subsec_nanos()) * u128::from(timescale) / 1_000_000_000,
+            )
+        })
+        .and_then(|ticks| u64::try_from(ticks).ok())
+        .ok_or_else(|| FakeRtspCameraError::Mp4("MP4 start time overflowed".to_string()))?;
+    let mut sync_before = None;
+    let mut sync_after = None;
+    for sample_id in 1..=sample_count {
+        let sample = reader
+            .read_sample(track_id, sample_id)
+            .map_err(|error| FakeRtspCameraError::Mp4(error.to_string()))?
+            .ok_or_else(|| {
+                FakeRtspCameraError::Mp4(format!(
+                    "{codec} sample {sample_id} is missing from the MP4 source"
+                ))
+            })?;
+        if !sample.is_sync {
+            continue;
+        }
+        if sample.start_time <= target {
+            sync_before = Some(sample_id);
+        } else {
+            sync_after = Some(sample_id);
+            break;
+        }
+    }
+    sync_before
+        .or(sync_after)
+        .ok_or_else(|| FakeRtspCameraError::Mp4(format!("{codec} track has no sync samples")))
+}
+
 fn response_headers(cseq: &str) -> Result<msg::Headers, FakeRtspCameraError> {
     Ok([(msg::HeaderName::CSEQ, header_value(cseq)?)].into())
 }
@@ -1333,4 +1585,94 @@ fn send_response(
     .write(stream)?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paced_rtp_delivery_follows_media_timestamps() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let (_stop, stopped) = mpsc::channel();
+        let packets = [rtp_packet(1, 0), rtp_packet(2, 9_000)];
+        let started = Instant::now();
+
+        let sender = thread::spawn(move || {
+            send_rtp_packets(
+                &mut server,
+                &SessionTransport::Tcp { channel: 0 },
+                &packets,
+                Mp4Playback::realtime(Duration::ZERO),
+                &stopped,
+            )
+            .unwrap();
+        });
+        let mut frame = [0_u8; 4 + 12];
+        client.read_exact(&mut frame).unwrap();
+        client.read_exact(&mut frame).unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(80));
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn looping_rtp_delivery_keeps_timeline_monotonic() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let (stop, stopped) = mpsc::channel();
+        let packets = [rtp_packet(1, 0), rtp_packet(2, 900)];
+
+        let sender = thread::spawn(move || {
+            assert!(matches!(
+                send_rtp_packets(
+                    &mut server,
+                    &SessionTransport::Tcp { channel: 0 },
+                    &packets,
+                    Mp4Playback::realtime_looping(Duration::ZERO),
+                    &stopped,
+                ),
+                Err(FakeRtspCameraError::Stopped)
+            ));
+        });
+        let received = (0..6)
+            .map(|_| read_interleaved_rtp(&mut client))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            received
+                .iter()
+                .map(|packet| u16::from_be_bytes(packet[2..4].try_into().unwrap()))
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5, 6]
+        );
+        assert_eq!(
+            received
+                .iter()
+                .map(|packet| u32::from_be_bytes(packet[4..8].try_into().unwrap()))
+                .collect::<Vec<_>>(),
+            [0, 900, 1_800, 2_700, 3_600, 4_500]
+        );
+        stop.send(()).unwrap();
+        sender.join().unwrap();
+    }
+
+    fn rtp_packet(sequence: u16, timestamp: u32) -> Bytes {
+        let mut packet = [0_u8; 12];
+        packet[0] = 0x80;
+        packet[1] = RTP_PAYLOAD_TYPE;
+        packet[2..4].copy_from_slice(&sequence.to_be_bytes());
+        packet[4..8].copy_from_slice(&timestamp.to_be_bytes());
+        Bytes::copy_from_slice(&packet)
+    }
+
+    fn read_interleaved_rtp(stream: &mut TcpStream) -> [u8; 12] {
+        let mut frame = [0_u8; 4 + 12];
+        stream.read_exact(&mut frame).unwrap();
+        assert_eq!(&frame[..4], &[b'$', 0, 0, 12]);
+        frame[4..].try_into().unwrap()
+    }
 }

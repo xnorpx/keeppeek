@@ -25,5 +25,5 @@
 #[doc(inline)]
 pub use crate::testutil::fake_camera::{
     FakeRtspCamera as RtspServer, FakeRtspCameraError as RtspServerError,
-    FakeRtspCameraTranscript as RtspServerTranscript,
+    FakeRtspCameraTranscript as RtspServerTranscript, Mp4Playback,
 };

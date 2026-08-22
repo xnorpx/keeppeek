@@ -23,3 +23,23 @@ profiles to deliver non-empty video, covering all eight backend-source pairs.
 | `cc-4k-640x360-h265.mp4`   | H.265 (`hvc1`) | 640x360    | `0ce9f4b28a4305a191e3210d8691e14b370fa91eb7e14fef7e8f8aabd674a141` |
 | `cc-4k-3840x2160-h264.mp4` | H.264 (`avc1`) | 3840x2160  | `f3c5893d87a6559cc494a41dd328965a4095f6994ec09e90d4186b8573d2ae49` |
 | `cc-4k-3840x2160-h265.mp4` | H.265 (`hvc1`) | 3840x2160  | `81fc67e32fb8354b4374b3358caca2be1f45bf89c2deb50048dc1f1eae4352a4` |
+
+## Long Demo Fixture
+
+The nine-camera live-wall demo uses the complete 9:56 _Big Buck Bunny_ film
+rather than adding another large binary to git. From `ui/`, run:
+
+```sh
+bun run demo:fixtures:prepare
+```
+
+The script downloads Blender Foundation's official
+`BigBuckBunny_640x360.m4v.zip` release into ignored `target/demo-fixtures/`,
+requires archive SHA-256
+`7118242b6728d40c871479c5b3c0f0fb27d748089df15d7f1b469f297c74a2d6`, and
+derives a video-only 640x360, 15 fps, constrained-baseline H.264 MP4 with a
+one-second GOP. It validates the result with FFprobe and records its output hash
+in a neighboring generated manifest.
+
+_Big Buck Bunny_ is © 2008 Blender Foundation and is licensed under
+[Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/).

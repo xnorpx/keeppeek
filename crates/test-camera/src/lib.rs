@@ -12,10 +12,11 @@ use crate::{
     web_ui::CameraWebUiServer,
 };
 use anyhow::{Context, bail};
-use retina::server::RtspServer;
+use retina::server::{Mp4Playback, RtspServer};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
+    time::Duration,
 };
 #[cfg(windows)]
 use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
@@ -119,12 +120,14 @@ pub struct TestCameraBuilder {
     main_source: PathBuf,
     sub_source: PathBuf,
     bind_ip: Ipv4Addr,
+    config_ip: Option<Ipv4Addr>,
     username: String,
     password: String,
     uid: String,
     transport: Transport,
     battery_wake: Option<BatteryWakeEndpoint>,
     isolated_reo_ports: bool,
+    realtime_start_at: Option<Duration>,
 }
 
 impl TestCameraBuilder {
@@ -157,18 +160,32 @@ impl TestCameraBuilder {
             main_source: main_source.as_ref().to_path_buf(),
             sub_source: sub_source.as_ref().to_path_buf(),
             bind_ip: Ipv4Addr::LOCALHOST,
+            config_ip: None,
             username: "test".to_owned(),
             password: "test".to_owned(),
             uid: "TESTCAMERA0001".to_owned(),
             transport: Transport::Tcp,
             battery_wake: None,
             isolated_reo_ports: false,
+            realtime_start_at: None,
         }
     }
 
     /// Sets the address advertised by the test camera.
     pub const fn bind_ip(mut self, bind_ip: Ipv4Addr) -> Self {
         self.bind_ip = bind_ip;
+        self
+    }
+
+    /// Sets the camera IP rendered into configuration while services remain on `bind_ip`.
+    pub const fn config_ip(mut self, config_ip: Ipv4Addr) -> Self {
+        self.config_ip = Some(config_ip);
+        self
+    }
+
+    /// Paces and loops RTSP media from the latest sync sample at or before `start_at`.
+    pub const fn realtime_start_at(mut self, start_at: Duration) -> Self {
+        self.realtime_start_at = Some(start_at);
         self
     }
 
@@ -222,29 +239,60 @@ impl TestCameraBuilder {
         if self.battery_wake.is_some() && self.protocol != Protocol::ReoProto {
             bail!("battery wake simulation requires the Reo-proto camera protocol");
         }
+        if self.realtime_start_at.is_some() && self.protocol != Protocol::Rtsp {
+            bail!("real-time MP4 start offsets require the RTSP camera protocol");
+        }
+        if self.config_ip.is_some() && self.protocol != Protocol::Rtsp {
+            bail!("a separate configuration IP requires the RTSP camera protocol");
+        }
 
-        let (ip, main_stream_url, sub_stream_url, baichuan_port, bcudp_port, transport) =
+        let (endpoint_ip, main_stream_url, sub_stream_url, baichuan_port, bcudp_port, transport) =
             match self.protocol {
                 Protocol::Rtsp => {
-                    let camera = RtspServer::from_mp4_streams_on(
-                        SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
-                        &self.main_source,
-                        &self.sub_source,
-                    )
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                    let address = camera.address();
-                    let ip = match address.ip() {
-                        IpAddr::V4(ip) => ip,
-                        IpAddr::V6(_) => bail!("Retina test camera returned a non-IPv4 address"),
-                    };
-                    (
-                        ip,
-                        camera.high_resolution_url().to_string(),
-                        camera.low_resolution_url().to_string(),
-                        None,
-                        None,
-                        ServerTransport::Rtsp { _server: camera },
-                    )
+                    if let Some(start_at) = self.realtime_start_at {
+                        let playback = Mp4Playback::realtime_looping(start_at);
+                        let main = RtspServer::from_mp4_on_with_playback(
+                            SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
+                            &self.main_source,
+                            playback,
+                        )
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                        let sub = RtspServer::from_mp4_on_with_playback(
+                            SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
+                            &self.sub_source,
+                            playback,
+                        )
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                        let endpoint_ip = ipv4_server_ip(main.address())?;
+                        (
+                            endpoint_ip,
+                            main.url().to_string(),
+                            sub.url().to_string(),
+                            None,
+                            None,
+                            ServerTransport::Rtsp {
+                                _servers: vec![main, sub],
+                            },
+                        )
+                    } else {
+                        let camera = RtspServer::from_mp4_streams_on(
+                            SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
+                            &self.main_source,
+                            &self.sub_source,
+                        )
+                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                        let endpoint_ip = ipv4_server_ip(camera.address())?;
+                        (
+                            endpoint_ip,
+                            camera.high_resolution_url().to_string(),
+                            camera.low_resolution_url().to_string(),
+                            None,
+                            None,
+                            ServerTransport::Rtsp {
+                                _servers: vec![camera],
+                            },
+                        )
+                    }
                 }
                 Protocol::ReoProto => {
                     let address = SocketAddr::new(
@@ -278,13 +326,14 @@ impl TestCameraBuilder {
                     )
                 }
             };
+        let config_ip = self.config_ip.unwrap_or(endpoint_ip);
 
         let manufacturer = match self.protocol {
             Protocol::Rtsp => "Test Camera",
             Protocol::ReoProto => "Reolink",
         };
         let onvif = OnvifServer::start(
-            SocketAddr::new(IpAddr::V4(ip), 0),
+            SocketAddr::new(IpAddr::V4(endpoint_ip), 0),
             onvif::CameraDescription {
                 manufacturer: manufacturer.to_owned(),
                 model: if self.battery_wake.is_some() {
@@ -312,7 +361,7 @@ impl TestCameraBuilder {
         let reolink_http = match self.protocol {
             Protocol::Rtsp => None,
             Protocol::ReoProto => Some(ReolinkHttpServer::start(
-                SocketAddr::new(IpAddr::V4(ip), 0),
+                SocketAddr::new(IpAddr::V4(endpoint_ip), 0),
                 self.username.clone(),
                 self.password.clone(),
                 main,
@@ -322,13 +371,14 @@ impl TestCameraBuilder {
         };
         let web_ui = match self.protocol {
             Protocol::Rtsp => Some(CameraWebUiServer::start(
-                SocketAddr::new(IpAddr::V4(ip), 0),
+                SocketAddr::new(IpAddr::V4(endpoint_ip), 0),
                 "Fake Retina Camera".to_owned(),
             )?),
             Protocol::ReoProto => None,
         };
         let connection = ConnectionInfo {
-            ip,
+            ip: config_ip,
+            endpoint_ip,
             onvif_port: onvif.address().port(),
             http_port: reolink_http
                 .as_ref()
@@ -377,14 +427,22 @@ impl TestCamera {
 }
 
 enum ServerTransport {
-    Rtsp { _server: RtspServer },
+    Rtsp { _servers: Vec<RtspServer> },
     Reo { _server: ReoServer },
+}
+
+fn ipv4_server_ip(address: SocketAddr) -> anyhow::Result<Ipv4Addr> {
+    match address.ip() {
+        IpAddr::V4(ip) => Ok(ip),
+        IpAddr::V6(_) => bail!("Retina test camera returned a non-IPv4 address"),
+    }
 }
 
 /// Connection information for a running [`TestCamera`].
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
     ip: Ipv4Addr,
+    endpoint_ip: Ipv4Addr,
     onvif_port: u16,
     http_port: Option<u16>,
     protocol: Protocol,
@@ -403,6 +461,11 @@ impl ConnectionInfo {
     /// Returns the IP address to use in a camera configuration.
     pub const fn ip(&self) -> Ipv4Addr {
         self.ip
+    }
+
+    /// Returns the local address hosting the camera services.
+    pub const fn endpoint_ip(&self) -> Ipv4Addr {
+        self.endpoint_ip
     }
 
     /// Returns the ONVIF service port to use in a camera configuration.
@@ -443,18 +506,24 @@ impl ConnectionInfo {
     /// Renders a TOML entry accepted by the application camera configuration loader.
     pub fn toml_entry(&self, name: &str) -> String {
         let name = name.replace('"', "\\\"");
-        let http_port = self
-            .http_port
-            .map(|port| format!("http_port = {port}\n"))
-            .unwrap_or_default();
+        let services_share_config_ip = self.ip == self.endpoint_ip;
+        let (onvif_port, http_port) = if services_share_config_ip {
+            (
+                format!("onvif_port = {}\n", self.onvif_port),
+                self.http_port
+                    .map(|port| format!("http_port = {port}\n"))
+                    .unwrap_or_default(),
+            )
+        } else {
+            (String::new(), String::new())
+        };
         let uid = matches!(self.protocol, Protocol::ReoProto)
             .then(|| format!("uid = \"{}\"\n", self.uid));
         format!(
-            "[test-camera.\"{name}\"]\nip = \"{}\"\nusername = \"{}\"\npassword = \"{}\"\nonvif_port = {}\n{http_port}main_rtsp_url = \"{}\"\nsub_rtsp_url = \"{}\"\nbackend = \"{}\"\ntransport = \"{}\"\n{}",
+            "[test-camera.\"{name}\"]\nip = \"{}\"\nusername = \"{}\"\npassword = \"{}\"\n{onvif_port}{http_port}main_rtsp_url = \"{}\"\nsub_rtsp_url = \"{}\"\nbackend = \"{}\"\ntransport = \"{}\"\n{}",
             self.ip,
             self.username,
             self.password,
-            self.onvif_port,
             self.main_stream_url,
             self.sub_stream_url,
             self.protocol.config_backend(),
@@ -481,7 +550,7 @@ mod tests {
         net::{Shutdown, TcpStream, UdpSocket},
         sync::mpsc,
         thread,
-        time::{Duration, Instant},
+        time::Instant,
     };
     use tempfile::NamedTempFile;
 
@@ -838,6 +907,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn realtime_rtsp_profiles_use_independent_servers_and_config_identity() {
+        let fixture = write_fixture(Codec::H264);
+        let config_ip = Ipv4Addr::new(192, 0, 2, 41);
+        let camera = TestCameraBuilder::rtsp(fixture.path(), fixture.path())
+            .config_ip(config_ip)
+            .realtime_start_at(Duration::ZERO)
+            .start()
+            .unwrap();
+        let connection = camera.connection();
+        let main_authority = connection
+            .main_stream_url()
+            .strip_prefix("rtsp://")
+            .unwrap()
+            .split_once('/')
+            .unwrap()
+            .0;
+        let sub_authority = connection
+            .sub_stream_url()
+            .strip_prefix("rtsp://")
+            .unwrap()
+            .split_once('/')
+            .unwrap()
+            .0;
+
+        assert_eq!(connection.ip(), config_ip);
+        assert_eq!(connection.endpoint_ip(), Ipv4Addr::LOCALHOST);
+        assert_ne!(main_authority, sub_authority);
+        assert!(rtsp_profile_yields_rtp(
+            connection.main_stream_url(),
+            Transport::Tcp
+        ));
+        assert!(rtsp_profile_yields_rtp(
+            connection.sub_stream_url(),
+            Transport::Tcp
+        ));
+        let config = connection.toml_entry("camera-1");
+        assert!(config.contains("ip = \"192.0.2.41\""));
+        assert!(!config.contains("onvif_port"));
+        assert!(!config.contains("http_port"));
     }
 
     #[test]

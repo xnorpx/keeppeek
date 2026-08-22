@@ -55,6 +55,14 @@ struct CameraArgs {
     #[arg(long, default_value = "127.0.0.1")]
     bind_ip: Ipv4Addr,
 
+    /// Camera identity written to config while services remain on --bind-ip.
+    #[arg(long)]
+    config_ip: Option<Ipv4Addr>,
+
+    /// Start RTSP playback near this many seconds, pace it in real time, and loop it.
+    #[arg(long)]
+    start_at_seconds: Option<f64>,
+
     /// Username accepted by the camera.
     #[arg(long, default_value = "test")]
     username: String,
@@ -119,7 +127,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn serve_camera(command: CameraArgs, reo_proto: bool) -> anyhow::Result<()> {
-    let builder = if reo_proto {
+    let mut builder = if reo_proto {
         TestCameraBuilder::reo_proto(&command.main, &command.sub)
     } else {
         TestCameraBuilder::rtsp(&command.main, &command.sub)
@@ -128,6 +136,15 @@ fn serve_camera(command: CameraArgs, reo_proto: bool) -> anyhow::Result<()> {
     .credentials(command.username, command.password)
     .transport(command.transport.into())
     .uid(command.uid);
+    if let Some(config_ip) = command.config_ip {
+        builder = builder.config_ip(config_ip);
+    }
+    if let Some(seconds) = command.start_at_seconds {
+        if !seconds.is_finite() || seconds < 0.0 {
+            anyhow::bail!("--start-at-seconds must be a finite non-negative number");
+        }
+        builder = builder.realtime_start_at(Duration::from_secs_f64(seconds));
+    }
     let camera = builder.start()?;
 
     println!("{}", camera.connection().toml_entry(&command.name));

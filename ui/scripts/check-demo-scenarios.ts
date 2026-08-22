@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { cameraLifecycleStory } from '../demo/camera-lifecycle.story';
+import { nineCameraLiveStory } from '../demo/nine-camera-live.story';
 import { validateStoryScenarioMetadata } from '../src/lib/storybook/demo';
 import { demoScenarios } from '../visual-harness/demo-scenarios';
 
@@ -75,6 +76,34 @@ for (const source of [
 	await readFile(resolve(source));
 }
 
+const nineCameraIssues = validateStoryScenarioMetadata(nineCameraLiveStory);
+if (nineCameraIssues.length > 0) {
+	throw new Error(
+		`${nineCameraLiveStory.storyId}: ${nineCameraIssues.map((issue) => `${issue.path} ${issue.message}`).join('; ')}`
+	);
+}
+const nineCameraScenario = scenariosById.get(nineCameraLiveStory.paper.scenarioId);
+if (!nineCameraScenario) {
+	throw new Error(
+		`Nine-camera story has no Paper scenario: ${nineCameraLiveStory.paper.scenarioId}`
+	);
+}
+if (nineCameraLiveStory.demo.viewport.width % 2 || nineCameraLiveStory.demo.viewport.height % 2) {
+	throw new Error('Nine-camera viewport must use even H.264 dimensions');
+}
+if (nineCameraLiveStory.demo.actions.length !== 2) {
+	throw new Error('Nine-camera demo must open and close WebRTC diagnostics');
+}
+for (const source of [
+	'demo/nine-camera-live.story.ts',
+	'demo/nine-camera-live.demo.ts',
+	'playwright.nine-camera-demo.config.ts',
+	'scripts/prepare-nine-camera-demo-fixture.ts',
+	'scripts/start-nine-camera-demo-server.ts'
+]) {
+	await readFile(resolve(source));
+}
+
 const previewSource = await readFile(resolve('visual-harness/local-preview.ts'), 'utf8');
 for (const scenarioId of scenarioIds) {
 	if (!previewSource.includes(`scenarioId === '${scenarioId}'`)) {
@@ -93,15 +122,23 @@ const packageManifest = JSON.parse(await readFile(resolve('package.json'), 'utf8
 };
 if (
 	packageManifest.scripts['demo:render'] !==
-	'bun run demo:render:storybook && bun run demo:render:camera-lifecycle'
+	'bun run demo:render:storybook && bun run demo:render:camera-lifecycle && bun run demo:render:nine-camera'
 ) {
-	throw new Error('demo:render must invoke both canonical Playwright recorders');
+	throw new Error('demo:render must invoke every canonical recorder');
 }
 if (
 	packageManifest.scripts['demo:render:camera-lifecycle'] !==
 	'bun run test:e2e:prepare && playwright test --config playwright.demo.config.ts'
 ) {
 	throw new Error('Camera lifecycle demo must use its real-server Playwright configuration');
+}
+if (
+	packageManifest.scripts['demo:render:nine-camera'] !==
+	'bun run demo:fixtures:prepare && bun run test:e2e:prepare && playwright test --config playwright.nine-camera-demo.config.ts'
+) {
+	throw new Error(
+		'Nine-camera demo must prepare its fixture and use its real-server configuration'
+	);
 }
 if (
 	packageManifest.scripts['demo:render:narrated'] !==
@@ -147,12 +184,16 @@ for (const requiredText of [
 }
 
 const bookGallery = await readFile(resolve('..', 'book/src/demo-videos.md'), 'utf8');
-for (const scenarioId of [...scenarioIds, cameraLifecycleStory.paper.scenarioId]) {
+for (const scenarioId of [
+	...scenarioIds,
+	cameraLifecycleStory.paper.scenarioId,
+	nineCameraLiveStory.paper.scenarioId
+]) {
 	if (!bookGallery.includes(`${scenarioId}.mp4`) || !bookGallery.includes(`${scenarioId}.vtt`)) {
 		throw new Error(`Book demo gallery is missing video or captions for: ${scenarioId}`);
 	}
 }
 
 console.log(
-	`Demo registry verified: ${demoScenarios.length} interactive Storybook scenario(s), 1 real-server Playwright story`
+	`Demo registry verified: ${demoScenarios.length} interactive Storybook scenario(s), 2 real-server Playwright stories`
 );

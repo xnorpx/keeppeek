@@ -77,6 +77,41 @@ frames, removes the configured camera through WebRTC control, re-adds the same c
 production Settings UI, and verifies the restored row. It does not read or mutate the user's
 private KeepPeek configuration.
 
+Prepare and record only the real nine-camera live wall:
+
+```sh
+bun run demo:fixtures:prepare
+bun run demo:render:nine-camera
+```
+
+The fixture command downloads the official 116 MB compressed _Big Buck Bunny_
+release, verifies its pinned SHA-256, and writes a 9:56 browser-safe derivative
+under ignored `target/demo-fixtures/`. The source is © 2008 Blender Foundation
+and licensed under
+[Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/).
+No source movie or derivative is committed or published as a standalone asset.
+
+The nine-camera launcher starts nine local RTSP camera processes, two paced
+profiles per camera, and one KeepPeek server. Each camera receives a unique
+`192.0.2.101` through `192.0.2.109` configuration identity while its services
+stay on portable `127.0.0.1` ports. Start positions are randomized across nine
+non-overlapping source bands with at least 90 seconds remaining. The exact
+offsets and source hash are written to `target/nine-camera-demo/camera-starts.json`
+and copied into the recording metadata. The production live wall must decode
+advancing, nonblank 640x360 frames from all nine feeds before recording begins.
+
+To inspect the server outside the recorder, run the fixture and E2E binary
+preparation commands, then start `bun scripts/start-nine-camera-demo-server.ts`
+from `ui/`. In another terminal, run:
+
+```sh
+KEEPPEEK_API_TARGET=http://127.0.0.1:4318 \
+   bun run dev -- --host 127.0.0.1 --port 4175
+```
+
+Open `http://127.0.0.1:4175/`. The launcher writes only under ignored `target/`
+and never reads or modifies the user's private KeepPeek configuration.
+
 Generated files are written under `ui/test-results/demo-videos/assets/`. Playwright's VP8 WebM is a
 temporary capture only and is deleted after transcoding. Every retained MP4 contains exactly one
 H.264/yuv420p video stream; WebVTT captions remain a sidecar rather than an embedded subtitle
