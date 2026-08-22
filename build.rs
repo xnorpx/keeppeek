@@ -61,17 +61,8 @@ fn main() -> io::Result<()> {
 }
 
 fn emit_rerun_if_changed(path: &Path) -> io::Result<()> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "declared build input {} is unavailable: {error}",
-                path.display()
-            ),
-        )
-    })?;
     println!("cargo:rerun-if-changed={}", path.display());
-    if !metadata.is_dir() {
+    if !path.is_dir() {
         return Ok(());
     }
 
