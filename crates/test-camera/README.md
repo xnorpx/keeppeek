@@ -20,6 +20,28 @@ the Camera page's LAN-only UI link is testable. Add the entry to a camera
 configuration, then connect through the regular application or
 `keeppeek-camera test`.
 
+By default, RTSP samples are emitted without wall-clock pacing for fast,
+deterministic integration tests. Add `--start-at-seconds <seconds>` to begin at
+the latest decodable sync sample at or before that offset and emit frames according to the MP4
+timestamps, looping with continuous RTP timestamps at the end. Real-time mode serves main and sub from independent ephemeral RTSP
+ports so KeepPeek can keep both profile workers connected concurrently.
+
+Use `--config-ip <ip>` with real-time RTSP playback when several camera
+processes share `127.0.0.1`. Services remain bound to `--bind-ip`, while the
+generated camera entry uses the distinct configuration IP as its stable
+identity. The generated entry omits ONVIF and HTTP ports in this mode because
+those services are not hosted on the synthetic identity address; the explicit
+localhost RTSP URLs remain usable.
+
+```sh
+cargo run -p test-camera -- rtsp \
+	--main big-buck-bunny.mp4 \
+	--sub big-buck-bunny.mp4 \
+	--start-at-seconds 127.5 \
+	--config-ip 192.0.2.101 \
+	--name "North Meadow"
+```
+
 ## Reolink Baichuan
 
 Start a Reolink-compatible Baichuan camera with TCP:
@@ -38,8 +60,7 @@ KeepPeek can read and toggle the fake motion state through the normal camera
 information page.
 
 Use `--username`, `--password`, `--uid`, and `--name` to customize the generated
-entry. Use `--bind-ip` when the host has another address configured and a second
-test camera is needed.
+entry. Use `--bind-ip` when the host has another address configured.
 
 ## Recording Seed
 

@@ -18,13 +18,19 @@ on:
       - ui/scripts/mux-demo-video.ts
       - ui/scripts/check-demo-scenarios.ts
       - ui/scripts/prepare-demo-publish.ts
+      - ui/scripts/prepare-nine-camera-demo-fixture.ts
+      - ui/scripts/start-nine-camera-demo-server.ts
       - ui/src/lib/storybook/demo.ts
       - ui/src/lib/server/storybook/**
       - ui/demo/**
       - ui/playwright.demo.config.ts
+      - ui/playwright.nine-camera-demo.config.ts
       - ui/visual-harness/demo-scenarios.ts
       - ui/visual-harness/local-preview.*
       - ui/visual-harness/stories/**
+      - crates/retina/src/server.rs
+      - crates/retina/src/testutil/fake_camera.rs
+      - crates/test-camera/src/**
 
 permissions:
   contents: read
@@ -53,7 +59,7 @@ jobs:
           bun-version-file: ui/.bun-version
 
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg unzip
 
       - name: Install UI dependencies
         run: bun install --no-save --registry=https://registry.npmjs.org/
