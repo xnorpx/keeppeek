@@ -6,7 +6,6 @@ use std::{
 
 const UI_INPUTS: &[&str] = &[
     "ui/src",
-    "ui/static",
     "ui/.bun-version",
     "ui/bunfig.toml",
     "ui/components.json",
@@ -15,6 +14,8 @@ const UI_INPUTS: &[&str] = &[
     "ui/tsconfig.json",
     "ui/vite.config.ts",
 ];
+
+const OPTIONAL_UI_INPUTS: &[&str] = &["ui/static"];
 
 fn main() -> io::Result<()> {
     let manifest_dir = PathBuf::from(
@@ -28,7 +29,10 @@ fn main() -> io::Result<()> {
     prost_build::compile_protos(&["api/webrtc.proto"], &["api/"])?;
 
     for input in UI_INPUTS {
-        emit_rerun_if_changed(&manifest_dir.join(input))?;
+        emit_rerun_if_changed(&manifest_dir.join(input), true)?;
+    }
+    for input in OPTIONAL_UI_INPUTS {
+        emit_rerun_if_changed(&manifest_dir.join(input), false)?;
     }
 
     let ui_dir = manifest_dir.join("ui");
@@ -60,14 +64,32 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn emit_rerun_if_changed(path: &Path) -> io::Result<()> {
+fn emit_rerun_if_changed(path: &Path, required: bool) -> io::Result<()> {
     println!("cargo:rerun-if-changed={}", path.display());
-    if !path.is_dir() {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if !required && error.kind() == io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                println!("cargo:rerun-if-changed={}", parent.display());
+            }
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "declared build input {} is unavailable: {error}",
+                    path.display()
+                ),
+            ));
+        }
+    };
+    if !metadata.is_dir() {
         return Ok(());
     }
 
     for entry in fs::read_dir(path)? {
-        emit_rerun_if_changed(&entry?.path())?;
+        emit_rerun_if_changed(&entry?.path(), required)?;
     }
     Ok(())
 }
