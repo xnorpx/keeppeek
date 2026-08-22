@@ -75,6 +75,10 @@ for (const source of [
 ]) {
 	await readFile(resolve(source));
 }
+const lifecyclePlaywrightConfig = await readFile(resolve('playwright.demo.config.ts'), 'utf8');
+if (!lifecyclePlaywrightConfig.includes("testMatch: '**/camera-lifecycle.demo.ts'")) {
+	throw new Error('Camera lifecycle Playwright config must select only its own recorder');
+}
 
 const nineCameraIssues = validateStoryScenarioMetadata(nineCameraLiveStory);
 if (nineCameraIssues.length > 0) {
@@ -117,6 +121,13 @@ for (const source of [
 	'scripts/start-nine-camera-demo-server.ts'
 ]) {
 	await readFile(resolve(source));
+}
+const nineCameraPlaywrightConfig = await readFile(
+	resolve('playwright.nine-camera-demo.config.ts'),
+	'utf8'
+);
+if (!nineCameraPlaywrightConfig.includes("testMatch: '**/nine-camera-live.demo.ts'")) {
+	throw new Error('Nine-camera Playwright config must select only its own recorder');
 }
 const nineCameraLauncher = await readFile(
 	resolve('scripts/start-nine-camera-demo-server.ts'),

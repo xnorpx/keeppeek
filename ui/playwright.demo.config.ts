@@ -8,7 +8,7 @@ const environment = Object.fromEntries(
 
 export default defineConfig({
 	testDir: './demo',
-	testMatch: '**/*.demo.ts',
+	testMatch: '**/camera-lifecycle.demo.ts',
 	fullyParallel: false,
 	workers: 1,
 	timeout: 180_000,
