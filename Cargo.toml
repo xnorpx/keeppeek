@@ -180,7 +180,7 @@ debug = true
 
 [profile.release]
 # https://doc.rust-lang.org/cargo/reference/profiles.html#release
-codegen-units = 1
+# Cargo's default codegen unit count keeps regular release builds parallel.
 overflow-checks = true
 panic = 'abort'
 # Production artifacts omit debug data and symbol tables.
@@ -189,6 +189,7 @@ strip = "symbols"
 
 [profile.release-lto]
 inherits = 'release'
+codegen-units = 1
 lto = 'fat'
 
 [build-dependencies]

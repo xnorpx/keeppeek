@@ -7,8 +7,7 @@ use std::{
 const UI_INPUTS: &[&str] = &[
     "ui/src",
     "ui/static",
-    "ui/src/app.html",
-    "ui/bun.lock",
+    "ui/.bun-version",
     "ui/bunfig.toml",
     "ui/components.json",
     "ui/package.json",
@@ -62,8 +61,17 @@ fn main() -> io::Result<()> {
 }
 
 fn emit_rerun_if_changed(path: &Path) -> io::Result<()> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "declared build input {} is unavailable: {error}",
+                path.display()
+            ),
+        )
+    })?;
     println!("cargo:rerun-if-changed={}", path.display());
-    if !path.is_dir() {
+    if !metadata.is_dir() {
         return Ok(());
     }
 
