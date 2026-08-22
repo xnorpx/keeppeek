@@ -9,7 +9,7 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const testRoot = path.join(repositoryRoot, 'target', 'nine-camera-demo');
 const storageRoot = path.join(testRoot, 'recordings');
 const configPath = path.join(testRoot, 'config.toml');
-const startsPath = path.join(testRoot, 'camera-starts.json');
+const draftsPath = path.join(testRoot, 'camera-drafts.json');
 const fixtureManifestPath = path.join(
 	repositoryRoot,
 	'target',
@@ -50,9 +50,34 @@ type CameraStart = {
 	startAtSeconds: number;
 };
 
-type TestCamera = CameraStart & {
+type CameraDraft = CameraStart & {
+	ip: string;
+	displayName: string;
+	username: string;
+	password: string;
+	mainRtspUrl: string;
+	subRtspUrl: string;
+	backend: string;
+	transport: string;
+};
+
+type TestCamera = {
 	process: ChildProcess;
-	config: string;
+	draft: CameraDraft;
+};
+
+type CameraConfigEntry = {
+	ip: string;
+	username: string;
+	password: string;
+	main_rtsp_url: string;
+	sub_rtsp_url: string;
+	backend: string;
+	transport: string;
+};
+
+type BunRuntime = typeof globalThis & {
+	Bun: { TOML: { parse(input: string): unknown } };
 };
 
 const fixture = JSON.parse(await readFile(fixtureManifestPath, 'utf8')) as FixtureManifest;
@@ -64,7 +89,7 @@ await rm(testRoot, { recursive: true, force: true });
 await mkdir(storageRoot, { recursive: true });
 
 const safeBeforeSeconds = 1;
-const safeAfterSeconds = 30;
+const safeAfterSeconds = 65;
 const cameraStarts = randomCameraStarts(fixture);
 const testCameras: TestCamera[] = [];
 try {
@@ -77,7 +102,7 @@ try {
 }
 
 await writeFile(
-	startsPath,
+	draftsPath,
 	`${JSON.stringify(
 		{
 			schemaVersion: 1,
@@ -87,7 +112,7 @@ await writeFile(
 				safeAfterSeconds,
 				excludedBlackIntervals: fixture.blackIntervals
 			},
-			cameras: cameraStarts
+			cameras: testCameras.map((camera) => camera.draft)
 		},
 		null,
 		2
@@ -114,8 +139,6 @@ medium_term_secs = 60
 flush_interval_secs = 1
 write_buffer_bytes = 8192
 long_term_max_gb = 0
-
-${testCameras.map((camera) => camera.config).join('\n')}
 `
 );
 
@@ -177,10 +200,28 @@ async function startTestCamera(camera: CameraStart, mediaPath: string): Promise<
 		output += chunk;
 		const configEnd = output.indexOf(transportLine);
 		if (configEnd !== -1) {
+			const config = output.slice(0, configEnd + transportLine.length);
+			const parsed = (globalThis as BunRuntime).Bun.TOML.parse(config) as {
+				'test-camera'?: Record<string, CameraConfigEntry>;
+			};
+			const entry = parsed['test-camera']?.[camera.name];
+			if (!entry) {
+				cameraProcess.kill('SIGINT');
+				throw new Error(`Unable to parse ${camera.name} test camera configuration`);
+			}
 			return {
-				...camera,
 				process: cameraProcess,
-				config: output.slice(0, configEnd + transportLine.length)
+				draft: {
+					...camera,
+					ip: entry.ip,
+					displayName: camera.name,
+					username: entry.username,
+					password: entry.password,
+					mainRtspUrl: entry.main_rtsp_url,
+					subRtspUrl: entry.sub_rtsp_url,
+					backend: entry.backend,
+					transport: entry.transport
+				}
 			};
 		}
 	}

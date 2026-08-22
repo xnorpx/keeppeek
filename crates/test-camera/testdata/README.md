@@ -26,7 +26,7 @@ profiles to deliver non-empty video, covering all eight backend-source pairs.
 
 ## Long Demo Fixture
 
-The nine-camera live-wall demo uses the complete 9:56 _Big Buck Bunny_ film
+The nine-camera Settings onboarding demo uses the complete 9:56 _Big Buck Bunny_ film
 rather than adding another large binary to git. From `ui/`, run:
 
 ```sh

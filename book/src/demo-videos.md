@@ -4,10 +4,10 @@ These audio-paced H.264/AAC recordings exercise KeepPeek's production controls a
 from the canonical Paper scenarios. Azure OpenAI narration controls each visual phase, and captions
 are available from every player.
 
-## Nine live cameras, nine moments
+## Add nine cameras in Settings
 
-Connect nine real-time virtual cameras at randomized positions in a ten-minute source, then inspect
-one feed's WebRTC evidence without interrupting the live wall.
+Begin with an empty KeepPeek server, enter nine real-time RTSP camera configurations through
+Settings, then inspect the completed live wall and one feed's WebRTC evidence.
 
 <video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
   <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.mp4" type="video/mp4">

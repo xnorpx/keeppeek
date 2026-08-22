@@ -91,8 +91,23 @@ if (!nineCameraScenario) {
 if (nineCameraLiveStory.demo.viewport.width % 2 || nineCameraLiveStory.demo.viewport.height % 2) {
 	throw new Error('Nine-camera viewport must use even H.264 dimensions');
 }
-if (nineCameraLiveStory.demo.actions.length !== 2) {
-	throw new Error('Nine-camera demo must open and close WebRTC diagnostics');
+const nineCameraActions = nineCameraLiveStory.demo.actions;
+if (
+	nineCameraActions.filter((action) => action.selector === 'role=button[name="Add camera"]')
+		.length !== 9 ||
+	nineCameraActions.filter((action) => action.selector === 'role=button[name="Save camera"]')
+		.length !== 9 ||
+	nineCameraActions.filter((action) => action.selector === 'role=button[name="Restart"]').length !==
+		1 ||
+	nineCameraActions.filter((action) => action.selector === 'a[aria-label="Settings"]').length !==
+		1 ||
+	nineCameraActions.filter((action) => action.selector === 'a[aria-label="Peek"]').length !== 1 ||
+	nineCameraActions.filter((action) => action.selector.includes('WebRTC stream diagnostics'))
+		.length !== 2
+) {
+	throw new Error(
+		'Nine-camera demo must save nine cameras and restart once before opening Peek diagnostics'
+	);
 }
 for (const source of [
 	'demo/nine-camera-live.story.ts',
@@ -102,6 +117,18 @@ for (const source of [
 	'scripts/start-nine-camera-demo-server.ts'
 ]) {
 	await readFile(resolve(source));
+}
+const nineCameraLauncher = await readFile(
+	resolve('scripts/start-nine-camera-demo-server.ts'),
+	'utf8'
+);
+if (
+	!nineCameraLauncher.includes('camera-drafts.json') ||
+	nineCameraLauncher.includes('testCameras.map((camera) => camera.config)')
+) {
+	throw new Error(
+		'Nine-camera demo server must stage manual drafts and start without camera tables'
+	);
 }
 
 const previewSource = await readFile(resolve('visual-harness/local-preview.ts'), 'utf8');
