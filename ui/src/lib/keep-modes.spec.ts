@@ -62,6 +62,12 @@ describe('Keep modes', () => {
 			estimatedBytes: 120_000_000
 		});
 		expect(createExportRange(source, null)?.estimatedBytes).toBeNull();
+		expect(createExportRange(segment('front-door', 0, 300_000), 8_000)).toEqual({
+			startMs: 0,
+			endMs: 120_000,
+			durationMs: 120_000,
+			estimatedBytes: 120_000_000
+		});
 	});
 
 	it('orders edited export handles without inventing bitrate', () => {
@@ -72,6 +78,18 @@ describe('Keep modes', () => {
 			startMs: 30_000,
 			endMs: 90_000,
 			durationMs: 60_000,
+			estimatedBytes: null
+		});
+		expect(updateExportRange(original, 0, 300_000, null)).toEqual({
+			startMs: 180_000,
+			endMs: 300_000,
+			durationMs: 120_000,
+			estimatedBytes: null
+		});
+		expect(updateExportRange(original, -180_000, 120_000, null)).toEqual({
+			startMs: -180_000,
+			endMs: -60_000,
+			durationMs: 120_000,
 			estimatedBytes: null
 		});
 	});

@@ -22,8 +22,9 @@ heavy JSON serialization over the unthrottled WebRTC connection and allows nativ
 zero-copy abstractions. The envelope explicitly models the RPC lifecycle using `Request`, `Response`,
 and `Notification` (fire-and-forget). Each binary message on either data channel is one protobuf-encoded
 `Message`. Its first `oneof` selects `AudioMessage`, `VideoMessage`, `DataMessage`, `EventMessage`,
-`StoredMediaMessage`, or `StoredMediaQueryMessage`; that message's nested `oneof` selects its frame,
-attachment, fragment, page, or payload subtype. Binary payload bytes are not base64-expanded.
+`StoredMediaMessage`, `StoredMediaQueryMessage`, or `EventSearchMessage`; that message's nested
+`oneof` selects its frame, attachment, fragment, page, search result, or payload subtype. Binary
+payload bytes are not base64-expanded.
 
 Every `Request` uses a `request_id`. `Response` messages immediately carry back the exact
 same `request_id` to correlate the result. `Notification` messages are server-originated, completely
@@ -43,7 +44,8 @@ server-originated control requests with newly allocated even request IDs.
 ## Acknowledgements
 
 Every client-originated `Request` receives exactly one `Response`. `Ok` wraps `SubscriptionResult` for a
-successful subscription, `StoredMediaQueryDelivery` for a successful timeline query, and other success types.
+successful subscription, `StoredMediaQueryDelivery` for a successful timeline query,
+`EventSearchDelivery` for a successful event search, and other success types.
 Rejected operations use `Error` with their corresponding typed error detail.
 
 `Notification` messages such as `CameraUpdated`, `SourceSessionAdded`, `ConnectionUpdate`, and `Event` are
@@ -881,6 +883,103 @@ cancelled ID.
 Reliable delivery gives a complete ordered result and should be used to fetch all events. On
 unreliable delivery, sequences and final counts expose loss; a client that needs an authoritative
 result repeats the query on `reliable-data`.
+
+### Clip exports
+
+The `keeppeek.media-export.v1` capability enables `ExportCommand`. `CreateExportJob` selects one
+stable camera source, `main` or `sub`, and a half-open stored-media range of at most two minutes.
+KeepPeek rejects longer ranges rather than silently trimming them. The UI applies the same limit
+when creating or moving export handles.
+
+Each successful job remuxes the selected fragmented-MP4 ranges into a separate `.mp4` file under
+the long-term storage `.exports/<job-id>/` directory; it never modifies a recording. The filename
+has the filesystem-safe camera name and exact UTC range:
+`Front-Door_2026-08-22T14-30-00-000Z_to_2026-08-22T14-32-00-000Z.mp4`.
+`ExportJob.file_name` returns this basename for downloads. Job IDs keep repeated exports of the
+same camera and range in separate directories.
+
+Exports preserve source codecs and timestamps without re-encoding. Missing recording intervals
+produce `PARTIAL` unless `allow_partial` permits exporting the available portions. Ready artifacts
+include their byte count and SHA-256 digest, expire after 24 hours, and can be downloaded only on
+`reliable-data`.
+
+## Event search and encoded previews
+
+The `keeppeek.event-search` capability enables `EventSearchCommand`. It searches durable event
+metadata without opening a playback cursor and fetches selected immutable media bytes separately.
+Search result messages always use `reliable-data`; encoded object chunks use the explicitly
+requested data channel.
+
+`ReplaceEventSearchTerms` names the event's stable source and replaces producer-supplied
+`FACE_NAME`, `OBJECT_CLASS`, and `TEXT` terms for one event. KeepPeek rejects attempts to mutate
+`EVENT_TYPE`, which it maintains from the durable event record. Terms are whitespace-normalized
+and matched case-insensitively by prefix. `SetEventSearchEmbedding` likewise names the source and
+creates or replaces one dense embedding under its model ID.
+The producer owns embedding generation. KeepPeek never compares vectors with different model IDs
+or dimensions.
+
+`QueryEvents` has exactly one `search`: `EventTextSearch` for structured prefix matching or
+`EventSemanticSearch` for exact cosine ranking. It selects an optional stable source, one logical
+stored stream, a half-open time interval, a bounded result page, and a preview interval. Omitted
+preview durations use five seconds before event start and ten seconds after event end. Their sum
+cannot exceed 60 seconds. Every search is limited to 31 days. Page size defaults to 50 and is
+capped at 128. New clients leave the deprecated `offset` at zero and pass the opaque `page_token`
+from the preceding page.
+
+A successful query first returns `Ok.event_search_delivery`, then one
+`Message.event_search.result` per hit and one `Message.event_search.query_end`. Results are ordered
+by the selected search mode and numbered from one within the page. `next_page_token` is present
+only when another page exists. A token binds the query and its event/embedding snapshot, so events
+inserted between pages neither shift nor duplicate the original result set. Clients repeat the
+original page size and preview durations. If an existing event in the snapshot has its terms,
+embedding, or end time changed, KeepPeek rejects the token with `ERROR_CODE_REJECTED` instead of
+returning an inconsistent page; the client restarts the query. Each hit contains event metadata and zero or more
+`EventSearchKeyframe` descriptors whose GOPs overlap its preview interval. A descriptor contains
+stable source, stream, recording, and fragment identities but never a path or byte offset. Empty
+keyframes mean matching event metadata remains available while its recorded media is unavailable.
+`keyframes_truncated` reports the 60-second or 64-descriptor preview bound.
+
+Semantic search ranks at most the 10,000 most recent compatible embeddings in the requested
+source/time snapshot. `candidates_truncated` reports when older matching embeddings were outside
+that bounded candidate set. Search runs on a catalog connection separate from recording writes.
+
+`FetchEventSearchMedia` accepts at most 64 descriptors copied into `EventSearchMediaObject`
+references. Every reference has a client correlation ID and requests exactly one representation:
+
+- `ENCODED_KEYFRAME` returns the indexed AVCC/HVCC sync sample. Its content type identifies H.264
+  AVCC or H.265 HVCC framing.
+- `FMP4_INITIALIZATION` returns the exact `ftyp`/`moov` range required by its recording.
+- `FMP4_GOP` returns the complete indexed `moof`/`mdat` fragment beginning at that keyframe.
+
+Every chunk repeats the source video's decoder configuration. `codec` is a complete RFC 6381
+identifier, `width` and `height` are coded dimensions, `decoder_config` is the raw
+`AVCDecoderConfigurationRecord` or `HEVCDecoderConfigurationRecord`, and `nal_length_size`
+describes each NAL-unit prefix in an encoded-keyframe payload. A WebCodecs client passes `codec`,
+the dimensions, and `decoder_config` as `VideoDecoderConfig`, reassembles the object's payload,
+then submits it as an `EncodedVideoChunk` with type `key`. The decoder configuration remains
+available on fragmented-MP4 representations but is not needed by a MediaSource consumer.
+
+KeepPeek resolves each stable reference against cataloged source and logical-stream identity.
+Rows created before stable identities were recorded may use the configured legacy storage label
+as a fallback; a later label change does not invalidate identified archive rows. Clients cannot
+supply paths or ranges. A transfer is limited to 64 objects and 32 MiB. Success returns
+`Ok.event_search_media_delivery`, followed by one or more
+`Message.event_search.media_chunk` values per object and a reliable
+`Message.event_search.media_end`. Chunk index begins at zero, chunk count is nonzero, and every
+chunk repeats object ID, recording/fragment identity, representation, content type, and complete
+byte length. KeepPeek orders requested initialization objects before keyframes and GOPs and always
+sends initialization over `reliable-data`. Receivers reject an object whose chunks are missing,
+duplicated, out of range, or inconsistent.
+
+`CancelEventSearchQuery` and `CancelEventSearchMedia` remove unsent messages from their connection's
+outbound queue. Messages already handed to SCTP may still arrive, so clients discard them by query
+or transfer ID. Background workers observe cancellation between media chunks, and queued worker
+messages remain cancellable until a FIFO completion marker is drained. Cancellation succeeds
+without a typed response payload. An accepted operation that later fails emits reliable
+`Message.event_search.error` with its query or transfer ID.
+Canceled work remains charged against the per-session and global task limits until its worker has
+stopped. A bounded worker channel and bounded session byte queue propagate data-channel
+backpressure instead of accumulating transfer bytes in memory.
 
 ## Media publishing
 

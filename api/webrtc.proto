@@ -41,6 +41,7 @@ message Request {
     ServerCommand server_command = 18;
     HealthCommand health_command = 21;
     ExportCommand export_command = 22;
+    EventSearchCommand event_search_command = 23;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -317,6 +318,7 @@ message CreateExportJob {
   string job_id = 1;
   string source_id = 2;
   string stream_id = 3;
+  // The half-open export range. Its duration must not exceed two minutes.
   google.protobuf.Timestamp start_time = 4;
   google.protobuf.Timestamp end_time = 5;
   bool allow_partial = 6;
@@ -363,6 +365,7 @@ message ExportJob {
   uint32 progress_per_mille = 8;
   uint64 bytes_written = 9;
   optional uint64 estimated_bytes = 10;
+  // Filesystem-safe camera name and UTC start/end range, ending in `.mp4`.
   optional string file_name = 11;
   optional string sha256 = 12;
   optional google.protobuf.Timestamp expires_at = 13;
@@ -385,6 +388,120 @@ message ExportDownloadResult {
   ExportJob job = 1;
   DataChannelKind channel = 2;
   uint32 chunk_count = 3;
+}
+
+message EventSearchCommand {
+  oneof action {
+    ReplaceEventSearchTerms replace_terms = 1;
+    SetEventSearchEmbedding set_embedding = 2;
+    QueryEvents query = 3;
+    CancelEventSearchQuery cancel_query = 4;
+    FetchEventSearchMedia fetch_media = 5;
+    CancelEventSearchMedia cancel_media = 6;
+  }
+}
+
+message ReplaceEventSearchTerms {
+  string event_id = 1;
+  repeated EventSearchTerm terms = 2;
+  string source_id = 3;
+}
+
+message SetEventSearchEmbedding {
+  string event_id = 1;
+  EventSearchEmbedding embedding = 2;
+  string source_id = 3;
+}
+
+message EventSearchTerm {
+  EventSearchField field = 1;
+  string value = 2;
+}
+
+enum EventSearchField {
+  EVENT_SEARCH_FIELD_UNSPECIFIED = 0;
+  EVENT_SEARCH_FIELD_EVENT_TYPE = 1;
+  EVENT_SEARCH_FIELD_FACE_NAME = 2;
+  EVENT_SEARCH_FIELD_OBJECT_CLASS = 3;
+  EVENT_SEARCH_FIELD_TEXT = 4;
+}
+
+message EventSearchEmbedding {
+  string model_id = 1;
+  repeated float values = 2;
+}
+
+message QueryEvents {
+  string query_id = 1;
+  oneof search {
+    EventTextSearch text = 2;
+    EventSemanticSearch semantic = 3;
+  }
+  optional string source_id = 4;
+  string stream_id = 5;
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Timestamp end_time = 7;
+  optional google.protobuf.Duration preview_before = 8;
+  optional google.protobuf.Duration preview_after = 9;
+  uint32 page_size = 10;
+  // Deprecated. New clients leave this zero and use page_token.
+  uint32 offset = 11;
+  DataChannelKind channel = 12;
+  string page_token = 13;
+}
+
+message EventTextSearch {
+  string query = 1;
+  optional EventSearchField field = 2;
+}
+
+message EventSemanticSearch {
+  EventSearchEmbedding embedding = 1;
+}
+
+message CancelEventSearchQuery {
+  string query_id = 1;
+}
+
+message FetchEventSearchMedia {
+  string transfer_id = 1;
+  repeated EventSearchMediaObject objects = 2;
+  DataChannelKind channel = 3;
+}
+
+message CancelEventSearchMedia {
+  string transfer_id = 1;
+}
+
+message EventSearchMediaObject {
+  string object_id = 1;
+  string source_id = 2;
+  string stream_id = 3;
+  string recording_id = 4;
+  uint64 fragment_sequence = 5;
+  StoredMediaObjectRepresentation representation = 6;
+}
+
+enum StoredMediaObjectRepresentation {
+  STORED_MEDIA_OBJECT_REPRESENTATION_UNSPECIFIED = 0;
+  STORED_MEDIA_OBJECT_REPRESENTATION_ENCODED_KEYFRAME = 1;
+  STORED_MEDIA_OBJECT_REPRESENTATION_FMP4_INITIALIZATION = 2;
+  STORED_MEDIA_OBJECT_REPRESENTATION_FMP4_GOP = 3;
+}
+
+message EventSearchMutationResult {
+  string event_id = 1;
+}
+
+message EventSearchDelivery {
+  string query_id = 1;
+  DataChannelKind channel = 2;
+}
+
+message EventSearchMediaDelivery {
+  string transfer_id = 1;
+  DataChannelKind channel = 2;
+  uint32 object_count = 3;
 }
 
 message UpdateRuntimeConfiguration {
@@ -1251,6 +1368,9 @@ message Ok {
     ExportJob export_job = 20;
     ExportJobList export_jobs = 21;
     ExportDownloadResult export_download = 22;
+    EventSearchDelivery event_search_delivery = 23;
+    EventSearchMutationResult event_search_mutation = 24;
+    EventSearchMediaDelivery event_search_media_delivery = 25;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -1754,6 +1874,7 @@ message Message {
     StoredMediaQueryMessage stored_media_query = 5;
     EventMessage event = 6;
     ExportMessage export = 7;
+    EventSearchMessage event_search = 8;
   }
 }
 
@@ -1768,6 +1889,85 @@ message ExportFileChunk {
   uint32 chunk_index = 2;
   uint32 chunk_count = 3;
   bytes payload = 4;
+}
+
+message EventSearchMessage {
+  oneof message {
+    EventSearchResult result = 1;
+    EventSearchQueryEnd query_end = 2;
+    EventSearchMediaChunk media_chunk = 3;
+    EventSearchMediaEnd media_end = 4;
+    EventSearchError error = 5;
+  }
+}
+
+message EventSearchResult {
+  string query_id = 1;
+  uint64 sequence = 2;
+  EventSearchHit hit = 3;
+}
+
+message EventSearchHit {
+  string event_id = 1;
+  string source_id = 2;
+  string event_type = 3;
+  google.protobuf.Timestamp start_time = 4;
+  optional google.protobuf.Timestamp end_time = 5;
+  optional double score = 6;
+  google.protobuf.Timestamp preview_start_time = 7;
+  google.protobuf.Timestamp preview_end_time = 8;
+  repeated EventSearchKeyframe keyframes = 9;
+  bool keyframes_truncated = 10;
+}
+
+message EventSearchKeyframe {
+  string source_id = 1;
+  string stream_id = 2;
+  string recording_id = 3;
+  uint64 fragment_sequence = 4;
+  google.protobuf.Timestamp event_time = 5;
+  google.protobuf.Timestamp fragment_start_time = 6;
+  uint64 byte_len = 7;
+}
+
+message EventSearchQueryEnd {
+  string query_id = 1;
+  uint64 result_count = 2;
+  optional uint32 next_offset = 3;
+  string next_page_token = 4;
+  bool candidates_truncated = 5;
+}
+
+message EventSearchMediaChunk {
+  string transfer_id = 1;
+  string object_id = 2;
+  StoredMediaObjectRepresentation representation = 3;
+  string content_type = 4;
+  uint64 byte_len = 5;
+  uint32 chunk_index = 6;
+  uint32 chunk_count = 7;
+  bytes payload = 8;
+  string recording_id = 9;
+  uint64 fragment_sequence = 10;
+  string codec = 11;
+  uint32 width = 12;
+  uint32 height = 13;
+  bytes decoder_config = 14;
+  uint32 nal_length_size = 15;
+}
+
+message EventSearchMediaEnd {
+  string transfer_id = 1;
+  uint32 object_count = 2;
+}
+
+message EventSearchError {
+  oneof context {
+    string query_id = 1;
+    string transfer_id = 2;
+  }
+  ErrorCode code = 3;
+  string message = 4;
 }
 
 message AudioMessage {

@@ -79,7 +79,7 @@ describe('Board 9 Keep mode stories', () => {
 			.toHaveValue('06:11:48');
 		await expect
 			.element(page.getByRole('textbox', { name: 'TO', exact: true }))
-			.toHaveValue('06:14:20');
+			.toHaveValue('06:13:48');
 		await expect
 			.element(page.getByText('Server update required · keeppeek.media-export.v1'))
 			.toBeVisible();

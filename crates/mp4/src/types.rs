@@ -577,6 +577,8 @@ pub struct HevcConfig {
     pub vps: Vec<u8>,
     pub sps: Vec<u8>,
     pub pps: Vec<u8>,
+    /// Complete HEVC decoder configuration record, when already available.
+    pub decoder_config: Vec<u8>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
@@ -623,6 +625,43 @@ pub struct Mp4Sample {
     pub rendering_offset: i32,
     pub is_sync: bool,
     pub bytes: Bytes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Exact byte location of one encoded sample in the MP4 input.
+pub struct Mp4SampleLocation {
+    /// Absolute byte offset from the beginning of the input.
+    pub offset: u64,
+    /// Encoded sample length in bytes.
+    pub size: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// First encoded sample of one fragmented MP4 track fragment.
+pub struct Mp4FragmentSampleLocation {
+    /// `mfhd` sequence number identifying the complete `moof`/`mdat` fragment.
+    pub sequence_number: u32,
+    /// One-based sample ID within the track.
+    pub sample_id: u32,
+    /// Exact encoded sample location in the MP4 input.
+    pub location: Mp4SampleLocation,
+    /// Whether the sample is a random-access sample.
+    pub is_sync: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Decoder configuration for length-prefixed H.264 or H.265 samples.
+pub struct Mp4VideoDecoderConfig {
+    /// RFC 6381-style codec string suitable for `VideoDecoderConfig.codec`.
+    pub codec: String,
+    /// Video sample-entry width in pixels.
+    pub width: u16,
+    /// Video sample-entry height in pixels.
+    pub height: u16,
+    /// Raw `AVCDecoderConfigurationRecord` or `HEVCDecoderConfigurationRecord` bytes.
+    pub description: Vec<u8>,
+    /// Number of bytes used for each encoded NAL-unit length prefix.
+    pub nal_length_size: u8,
 }
 
 impl PartialEq for Mp4Sample {

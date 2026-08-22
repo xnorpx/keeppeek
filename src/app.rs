@@ -103,10 +103,26 @@ pub fn run(
 
     let storage_config = StorageConfig::from_toml(&cfg.storage);
     let recording_catalog = RecordingCatalog::open(&storage_config.recording_catalog_path)?;
+    let catalog_handle = recording_catalog.handle();
+    for camera in cameras.values() {
+        let source_id = camera.config.ip.to_string();
+        let recording_label = camera
+            .config
+            .name
+            .clone()
+            .unwrap_or_else(|| source_id.clone());
+        for stream_id in ["main", "sub"] {
+            catalog_handle.backfill_recording_identity(
+                &format!("{recording_label}/{stream_id}"),
+                &source_id,
+                stream_id,
+            )?;
+        }
+    }
     let storage_engine =
-        StorageEngine::start_with_catalog(storage_config.clone(), recording_catalog.handle());
+        StorageEngine::start_with_catalog(storage_config.clone(), catalog_handle.clone());
     let event_store = EventStore::new(
-        recording_catalog.handle(),
+        catalog_handle,
         &storage_config.event_thumbnail_path,
         storage_config.event_thumbnail_max_bytes,
     )?;

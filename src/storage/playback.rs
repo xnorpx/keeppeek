@@ -360,6 +360,7 @@ fn playback_track_config(track: &mp4::Mp4Track) -> anyhow::Result<Option<mp4::Tr
                 vps: configuration.vps.first().cloned().unwrap_or_default(),
                 sps: configuration.sps.first().cloned().unwrap_or_default(),
                 pps: configuration.pps.first().cloned().unwrap_or_default(),
+                decoder_config: sample_entry.hvcc.record_data.clone(),
             })
         }
         mp4::MediaType::AAC => {

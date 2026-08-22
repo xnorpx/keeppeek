@@ -34,6 +34,8 @@ pub struct Mp4FragmentInfo {
     pub sequence_number: u32,
     /// Exact byte range containing the complete fragment.
     pub range: Mp4ByteRange,
+    /// Exact file location of the first video sync sample, when the fragment contains video.
+    pub video_keyframe: Option<Mp4SampleLocation>,
 }
 
 #[derive(Debug)]
@@ -283,6 +285,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
             .box_size()
             .checked_add(HEADER_SIZE)
             .ok_or(Error::InvalidData("fragmented MP4 data offset overflow"))?;
+        let mut video_keyframe = None;
         for (traf, track) in moof
             .trafs
             .iter_mut()
@@ -292,6 +295,19 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 i32::try_from(payload_offset)
                     .map_err(|_| Error::InvalidData("fragmented MP4 data offset exceeds i32"))?,
             );
+            if video_keyframe.is_none() && track.track_type == TrackType::Video {
+                let first_sample = &track.samples[0];
+                if first_sample.is_sync {
+                    video_keyframe = Some(Mp4SampleLocation {
+                        offset: fragment_start
+                            .checked_add(payload_offset)
+                            .ok_or(Error::InvalidData("keyframe byte offset overflow"))?,
+                        size: u32::try_from(first_sample.bytes.len()).map_err(|_| {
+                            Error::InvalidData("fragmented MP4 sample exceeds 4 GiB")
+                        })?,
+                    });
+                }
+            }
             for sample in &track.samples {
                 payload_offset = payload_offset
                     .checked_add(sample.bytes.len() as u64)
@@ -318,6 +334,7 @@ impl<W: Write + Seek> FragmentedMp4Writer<W> {
                 offset: fragment_start,
                 size: fragment_end - fragment_start,
             },
+            video_keyframe,
         };
         self.sequence_number = self
             .sequence_number
@@ -416,6 +433,35 @@ mod tests {
                 chan_conf: ChannelConfig::Stereo,
             }),
         }
+    }
+
+    #[test]
+    fn h265_initialization_exposes_decoder_configuration() {
+        let track = TrackConfig {
+            track_type: TrackType::Video,
+            timescale: 90_000,
+            language: "und".to_owned(),
+            media_conf: MediaConfig::HevcConfig(HevcConfig {
+                width: 640,
+                height: 360,
+                vps: vec![0x40, 0x01, 0x0c],
+                sps: vec![0x42, 0x01, 0x01],
+                pps: vec![0x44, 0x01, 0xc0],
+                decoder_config: Vec::new(),
+            }),
+        };
+        let writer =
+            FragmentedMp4Writer::write_start(Cursor::new(Vec::new()), &mp4_config(), &[track])
+                .unwrap();
+        let mut buffer = writer.into_writer();
+        let size = buffer.get_ref().len() as u64;
+        buffer.set_position(0);
+        let reader = Mp4Reader::read_header(buffer, size).unwrap();
+        let decoder = reader.tracks()[&1].video_decoder_config().unwrap().unwrap();
+        assert_eq!(decoder.codec, "hev1.0.0.L0.00");
+        assert_eq!((decoder.width, decoder.height), (640, 360));
+        assert_eq!(decoder.nal_length_size, 4);
+        assert!(!decoder.description.is_empty());
     }
 
     fn sample(start_time: u64, is_sync: bool, bytes: &'static [u8]) -> Mp4Sample {

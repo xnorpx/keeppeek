@@ -7,7 +7,8 @@ use crate::{
         log_camera_report, video_report,
     },
     storage::{
-        AudioCodec, AudioFrame, MediaFrame, RecordingFrame, StorageHandle, VideoCodec, VideoFrame,
+        AudioCodec, AudioFrame, MediaFrame, RecordingFrame, RecordingStreamIdentity, StorageHandle,
+        VideoCodec, VideoFrame,
     },
     webrtc::{Publisher, Source},
 };
@@ -668,9 +669,12 @@ impl RtspLoop {
                             data,
                         });
                         if let Some(storage) = &self.storage {
-                            let camera_id = format!("{}/{}", self.storage_label(), self.stream);
-                            storage.ingest(
-                                &camera_id,
+                            storage.ingest_stream(
+                                RecordingStreamIdentity::new(
+                                    self.camera_ip.to_string(),
+                                    self.stream.to_string(),
+                                    &self.storage_label(),
+                                ),
                                 RecordingFrame {
                                     received_at,
                                     timestamp,
@@ -702,11 +706,14 @@ impl RtspLoop {
                                 data,
                             });
                             if let Some(storage) = &self.storage {
-                                let camera_id = format!("{}/{}", self.storage_label(), self.stream);
                                 let timestamp = timestamp
                                     .map(|timestamp| audio_timestamps.normalize(timestamp));
-                                storage.ingest(
-                                    &camera_id,
+                                storage.ingest_stream(
+                                    RecordingStreamIdentity::new(
+                                        self.camera_ip.to_string(),
+                                        self.stream.to_string(),
+                                        &self.storage_label(),
+                                    ),
                                     RecordingFrame {
                                         received_at: Instant::now(),
                                         timestamp,
@@ -965,6 +972,7 @@ mod tests {
                             .decode("QgEBAWAAAAMAsAAAAwAAAwBaoAWCAeFja5JFL83BQYFBAAADAAEAAAMADKE=")
                             .unwrap(),
                         pps: STANDARD.decode("RAHA8saNA7NA").unwrap(),
+                        decoder_config: Vec::new(),
                     }),
                 })
                 .unwrap();

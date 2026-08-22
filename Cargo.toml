@@ -59,6 +59,10 @@ test = false
 name = "keeppeek-camera"
 path = "src/bin/keeppeek_camera/main.rs"
 
+[[bench]]
+name = "event_keyframe_lookup"
+harness = false
+
 [dependencies]
 anyhow = { version = "*" }
 base64 = { version = "*" }

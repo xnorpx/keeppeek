@@ -56,6 +56,7 @@ fn fragmented_test_frame_is_readable_and_seekable() {
     let mut writer = FragmentedMp4Writer::write_start(file, &config, &[track]).unwrap();
     let initialization = writer.initialization();
     let mut fragment_ranges = Vec::new();
+    let mut keyframe_locations = Vec::new();
     let mut expected_samples = Vec::new();
 
     for frame in &frames {
@@ -64,6 +65,7 @@ fn fragmented_test_frame_is_readable_and_seekable() {
             && let Some(fragment) = writer.flush_fragment().unwrap()
         {
             fragment_ranges.push(fragment.range);
+            keyframe_locations.push(fragment.video_keyframe.unwrap());
         }
         let avcc = annexb_to_avcc(&frame.data);
         expected_samples.push((frame.is_keyframe, avcc.clone()));
@@ -82,6 +84,7 @@ fn fragmented_test_frame_is_readable_and_seekable() {
     }
     if let Some(fragment) = writer.write_end().unwrap() {
         fragment_ranges.push(fragment.range);
+        keyframe_locations.push(fragment.video_keyframe.unwrap());
     }
     drop(writer.into_writer());
 
@@ -91,6 +94,15 @@ fn fragmented_test_frame_is_readable_and_seekable() {
     for ranges in fragment_ranges.windows(2) {
         assert_eq!(ranges[1].offset, ranges[0].offset + ranges[0].size);
     }
+    for (location, expected) in keyframe_locations.iter().zip(
+        expected_samples
+            .iter()
+            .filter_map(|(is_sync, bytes)| is_sync.then_some(bytes)),
+    ) {
+        let start = usize::try_from(location.offset).unwrap();
+        let end = start + location.size as usize;
+        assert_eq!(&std::fs::read(&output).unwrap()[start..end], expected);
+    }
     let last = fragment_ranges.last().unwrap();
     assert_eq!(last.offset + last.size, size);
 
@@ -99,6 +111,21 @@ fn fragmented_test_frame_is_readable_and_seekable() {
     assert!(reader.is_fragmented());
     assert_eq!(reader.moofs.len(), fragment_ranges.len());
     assert_eq!(reader.sample_count(1).unwrap(), frames.len() as u32);
+    let decoder = reader.tracks()[&1].video_decoder_config().unwrap().unwrap();
+    assert!(decoder.codec.starts_with("avc1."));
+    assert_eq!(
+        (decoder.width, decoder.height),
+        (WIDTH as u16, HEIGHT as u16)
+    );
+    assert_eq!(decoder.nal_length_size, 4);
+    assert!(!decoder.description.is_empty());
+    let indexed_fragments = reader.fragment_first_sample_locations(1).unwrap();
+    assert_eq!(indexed_fragments.len(), fragment_ranges.len());
+    assert!(indexed_fragments.iter().all(|fragment| fragment.is_sync));
+    for (index, fragment) in indexed_fragments.iter().enumerate() {
+        assert_eq!(fragment.sequence_number, index as u32 + 1);
+        assert_eq!(fragment.location, keyframe_locations[index]);
+    }
     for (index, (expected_sync, expected_bytes)) in expected_samples.iter().enumerate() {
         let sample = reader.read_sample(1, index as u32 + 1).unwrap().unwrap();
         assert_eq!(sample.is_sync, *expected_sync);

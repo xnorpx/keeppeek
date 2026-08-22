@@ -216,6 +216,69 @@ impl Mp4Track {
         }
     }
 
+    /// Returns decoder-ready configuration for an H.264 or H.265 video track.
+    pub fn video_decoder_config(&self) -> Result<Option<Mp4VideoDecoderConfig>> {
+        if let Some(avc1) = &self.trak.mdia.minf.stbl.stsd.avc1 {
+            if avc1.avcc.sequence_parameter_sets.is_empty()
+                || avc1.avcc.picture_parameter_sets.is_empty()
+            {
+                return Err(Error::InvalidData(
+                    "AVC decoder configuration has incomplete parameter sets",
+                ));
+            }
+            let mut boxed = Vec::new();
+            avc1.avcc.write_box(&mut boxed)?;
+            let description = boxed
+                .get(HEADER_SIZE as usize..)
+                .ok_or(Error::InvalidData("invalid avcC box size"))?
+                .to_vec();
+            return Ok(Some(Mp4VideoDecoderConfig {
+                codec: format!(
+                    "avc1.{:02X}{:02X}{:02X}",
+                    avc1.avcc.avc_profile_indication,
+                    avc1.avcc.profile_compatibility,
+                    avc1.avcc.avc_level_indication,
+                ),
+                width: avc1.width,
+                height: avc1.height,
+                description,
+                nal_length_size: (avc1.avcc.length_size_minus_one & 0x03) + 1,
+            }));
+        }
+        let sample_entry = self.trak.mdia.minf.stbl.stsd.hvc1.as_ref().or(self
+            .trak
+            .mdia
+            .minf
+            .stbl
+            .stsd
+            .hev1
+            .as_ref());
+        if let Some(sample_entry) = sample_entry {
+            let configuration = sample_entry.hvcc.configuration()?;
+            if configuration.vps.is_empty()
+                || configuration.sps.is_empty()
+                || configuration.pps.is_empty()
+            {
+                return Err(Error::InvalidData(
+                    "HEVC decoder configuration has incomplete parameter sets",
+                ));
+            }
+            let sample_entry_name = if self.trak.mdia.minf.stbl.stsd.hvc1.is_some() {
+                "hvc1"
+            } else {
+                "hev1"
+            };
+            return Ok(Some(Mp4VideoDecoderConfig {
+                codec: hevc_codec_string(sample_entry_name, &sample_entry.hvcc.record_data)?,
+                width: sample_entry.width,
+                height: sample_entry.height,
+                description: sample_entry.hvcc.record_data.clone(),
+                nal_length_size: configuration.nal_length_size,
+            }));
+        }
+        Ok(None)
+    }
+
     pub fn width(&self) -> u16 {
         self.trak.mdia.minf.stbl.stsd.avc1.as_ref().map_or_else(
             || {
@@ -672,7 +735,7 @@ impl Mp4Track {
         0
     }
 
-    fn is_sync_sample(&self, sample_id: u32) -> bool {
+    pub(crate) fn is_sync_sample(&self, sample_id: u32) -> bool {
         if !self.trafs.is_empty() {
             if let Some((traf_idx, sample_idx)) = self.find_traf_idx_and_sample_idx(sample_id) {
                 let traf = &self.trafs[traf_idx];
@@ -703,6 +766,20 @@ impl Mp4Track {
             .stss
             .as_ref()
             .is_none_or(|stss| stss.entries.binary_search(&sample_id).is_ok())
+    }
+
+    pub(crate) fn sample_location(&self, sample_id: u32) -> Result<Option<Mp4SampleLocation>> {
+        let offset = match self.sample_offset(sample_id) {
+            Ok(offset) => offset,
+            Err(Error::EntryInStblNotFound(_, _, _)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let size = match self.sample_size(sample_id) {
+            Ok(size) => size,
+            Err(Error::EntryInStblNotFound(_, _, _)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(Some(Mp4SampleLocation { offset, size }))
     }
 
     pub(crate) fn read_sample<R: Read + Seek>(
@@ -741,6 +818,47 @@ impl Mp4Track {
             bytes: Bytes::from(buffer),
         }))
     }
+}
+
+fn hevc_codec_string(sample_entry_name: &str, record: &[u8]) -> Result<String> {
+    let profile_tier = *record
+        .get(1)
+        .ok_or(Error::InvalidData("invalid hvcC configuration record"))?;
+    let compatibility = u32::from_be_bytes(
+        record
+            .get(2..6)
+            .ok_or(Error::InvalidData("invalid hvcC configuration record"))?
+            .try_into()
+            .map_err(|_| Error::InvalidData("invalid hvcC configuration record"))?,
+    )
+    .reverse_bits();
+    let constraints = record
+        .get(6..12)
+        .ok_or(Error::InvalidData("invalid hvcC configuration record"))?;
+    let level = record
+        .get(12)
+        .ok_or(Error::InvalidData("invalid hvcC configuration record"))?;
+    let profile_space = match profile_tier >> 6 {
+        0 => "",
+        1 => "A",
+        2 => "B",
+        3 => "C",
+        _ => unreachable!(),
+    };
+    let tier = if profile_tier & 0x20 == 0 { 'L' } else { 'H' };
+    let mut codec = format!(
+        "{sample_entry_name}.{profile_space}{}.{compatibility:X}.{tier}{level}",
+        profile_tier & 0x1f
+    );
+    let constraint_len = constraints
+        .iter()
+        .rposition(|value| *value != 0)
+        .map_or(1, |index| index + 1);
+    for value in &constraints[..constraint_len] {
+        use std::fmt::Write as _;
+        write!(codec, ".{value:02X}").expect("writing to String cannot fail");
+    }
+    Ok(codec)
 }
 
 // TODO creation_time, modification_time
