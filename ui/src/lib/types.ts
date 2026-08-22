@@ -148,6 +148,25 @@ export interface SettingsConfigUpdateResponse {
 	restart_required: boolean;
 }
 
+export interface HomeKitSettings {
+	enabled: boolean;
+	name: string;
+	bind: string;
+	port: number;
+	exported_camera_count: number;
+	accessories: HomeKitAccessorySettings[];
+}
+
+export interface HomeKitAccessorySettings {
+	camera_id: string;
+	name: string;
+	paired: boolean;
+	pairing_count: number;
+	port: number;
+	setup_code: string | null;
+	setup_qr_svg_base64: string | null;
+}
+
 export type CameraBackend = 'auto' | 'retina' | 'reo-proto';
 
 export type CameraTransport = 'tcp' | 'udp';

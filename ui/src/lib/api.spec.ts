@@ -10,12 +10,14 @@ import {
 	getCameraDetails,
 	getLiveSessionStatus,
 	getLoggingSettings,
+	getHomeKitSettings,
 	getSettingsCameras,
 	getRecordingEvents,
 	getRecordings,
 	getServerHealth,
 	getServerLogs,
 	renewRecordingActivity,
+	resetCameraHomeKitPairings,
 	restartSettingsServer,
 	removeSettingsCamera,
 	setBrowserLiveTrackQuality,
@@ -140,6 +142,42 @@ describe('KeepPeek API client', () => {
 
 		expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/settings/logging');
 		expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/logs?after=41&limit=500');
+	});
+
+	it('loads HomeKit pairing status and setup image', async () => {
+		const settings = {
+			enabled: true,
+			name: 'KeepPeek',
+			bind: '0.0.0.0',
+			port: 32000,
+			exported_camera_count: 3,
+			accessories: [
+				{
+					camera_id: 'front-door',
+					name: 'Front Door',
+					paired: false,
+					pairing_count: 0,
+					port: 32000,
+					setup_code: '123-45-678',
+					setup_qr_svg_base64: 'PHN2Zy8+'
+				}
+			]
+		};
+		const fetchMock = vi.fn(async () => jsonResponse(settings));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await expect(getHomeKitSettings()).resolves.toEqual(settings);
+		expect(fetchMock).toHaveBeenCalledWith('/api/settings/homekit');
+	});
+
+	it('resets stored HomeKit pairings for one camera', async () => {
+		const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+		vi.stubGlobal('fetch', fetchMock);
+
+		await expect(resetCameraHomeKitPairings('front/door')).resolves.toBeUndefined();
+		expect(fetchMock).toHaveBeenCalledWith('/api/cameras/front%2Fdoor/homekit/pairings', {
+			method: 'DELETE'
+		});
 	});
 
 	it('updates the server log filter', async () => {

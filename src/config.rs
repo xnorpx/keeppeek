@@ -24,7 +24,49 @@ pub struct Config {
     pub battery_wake: BatteryWakeConfig,
 
     #[serde(default)]
+    pub homekit: HomeKitConfig,
+
+    #[serde(default)]
     pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HomeKitConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(default = "default_homekit_bind")]
+    pub bind: IpAddr,
+
+    #[serde(default = "default_homekit_port")]
+    /// Base HAP TCP port; each exported camera uses the next consecutive port.
+    pub port: u16,
+
+    #[serde(default = "default_homekit_name")]
+    pub name: String,
+}
+
+impl Default for HomeKitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: default_homekit_bind(),
+            port: default_homekit_port(),
+            name: default_homekit_name(),
+        }
+    }
+}
+
+const fn default_homekit_bind() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+}
+
+const fn default_homekit_port() -> u16 {
+    32_000
+}
+
+fn default_homekit_name() -> String {
+    "KeepPeek".to_owned()
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -402,6 +444,7 @@ impl Default for Config {
             port: default_port(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
+            homekit: HomeKitConfig::default(),
             logging: LoggingConfig::default(),
         }
     }
@@ -664,6 +707,8 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
     const RESERVED_SECTIONS: &[&str] = &[
         "storage",
         "battery_wake",
+        "direct_card",
+        "homekit",
         "logging",
         STORAGE_MIGRATION_SECTION,
     ];
@@ -1088,6 +1133,41 @@ mod tests {
 
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn homekit_config_is_not_treated_as_camera_configuration() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-homekit-config-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [homekit]
+                enabled = true
+                bind = "0.0.0.0"
+                port = 32000
+                name = "KeepPeek"
+
+                [direct_card]
+                allowed_origins = ["https://example.invalid"]
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                username = "operator"
+                password = "secret"
+            "#,
+        )
+        .unwrap();
+
+        let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(config.homekit.enabled);
+        assert_eq!(config.homekit.port, 32_000);
+        let cameras = load_cameras(&path).unwrap();
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras["cameras"].len(), 1);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     use crate::cameras::{CameraBackend, CameraTransport};
 
     #[cfg(unix)]
@@ -1209,6 +1289,7 @@ mod tests {
                 long_term_max_gb: 24,
             },
             battery_wake: BatteryWakeConfig::default(),
+            homekit: HomeKitConfig::default(),
             logging: LoggingConfig::default(),
         };
 
@@ -1440,6 +1521,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: BatteryWakeConfig::default(),
+            homekit: HomeKitConfig::default(),
             logging: LoggingConfig::default(),
         };
         let migration = StorageMigration::between(&current, &next, &current, &next)

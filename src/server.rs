@@ -11,6 +11,7 @@ use crate::{
     health::{
         CameraHealth, HealthIssue, HealthTotals, ServerHealthResponse, StorageHealth, SystemMonitor,
     },
+    homekit,
     keeppeek::KeepPeekControl,
     logging::{LogStreamError, LoggingService},
     runtime::{
@@ -355,6 +356,7 @@ pub struct ServerState {
     storage_config: StorageConfig,
     catalog: Option<RecordingCatalogHandle>,
     logging: Option<LoggingService>,
+    homekit_config: config::HomeKitConfig,
     started_at: Instant,
 }
 
@@ -404,6 +406,7 @@ impl ServerState {
             storage_config: storage.clone(),
             catalog: None,
             logging: None,
+            homekit_config: config.homekit.clone(),
             started_at: Instant::now(),
         }
     }
@@ -702,6 +705,12 @@ fn handle_request(
         (GET) (/api/settings/cameras) => {
             Response::json(&camera_settings(router_tx, state))
         },
+        (GET) (/api/settings/homekit) => {
+            homekit_settings(state)
+        },
+        (DELETE) (/api/cameras/{camera_id: String}/homekit/pairings) => {
+            reset_camera_homekit_pairings(state, &camera_id)
+        },
         (POST) (/api/settings/cameras/discover) => {
             discover_settings_cameras(request, router_tx, state)
         },
@@ -794,6 +803,38 @@ fn handle_request(
         },
         _ => serve_ui(request)
     )
+}
+
+fn homekit_settings(state: &ServerState) -> Response {
+    let Some(config_path) = &state.camera_config_path else {
+        return service_error(503, "HomeKit settings persistence is unavailable");
+    };
+    homekit::settings_snapshot(
+        &state.homekit_config,
+        config_path,
+        state.camera_entries().len(),
+    )
+    .map_or_else(
+        |error| service_error(503, &format!("HomeKit settings are unavailable: {error}")),
+        |settings| Response::json(&settings),
+    )
+}
+
+fn reset_camera_homekit_pairings(state: &ServerState, camera_id: &str) -> Response {
+    let Some(camera) = state.camera(camera_id) else {
+        return service_error(404, &format!("camera {camera_id} was not found"));
+    };
+    let Some(config_path) = &state.camera_config_path else {
+        return service_error(503, "HomeKit settings persistence is unavailable");
+    };
+    let _update = state
+        .config_update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match homekit::reset_pairings(config_path, &camera.info.ip) {
+        Ok(()) => Response::empty_204(),
+        Err(error) => service_error(404, &format!("unable to reset HomeKit pairing: {error}")),
+    }
 }
 
 fn logging_settings(state: &ServerState) -> Response {
@@ -1470,6 +1511,7 @@ fn update_runtime_settings(request: &Request, state: &ServerState) -> Response {
             long_term_max_gb: update.storage.long_term_max_gb,
         },
         battery_wake: Default::default(),
+        homekit: Default::default(),
         logging: Default::default(),
     };
     let next_storage_config = StorageConfig::from_toml(&settings.storage);
@@ -3112,6 +3154,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: Default::default(),
+            homekit: Default::default(),
             logging: Default::default(),
         };
         let storage = StorageConfig::from_toml(&config.storage);
@@ -3719,6 +3762,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: Default::default(),
+            homekit: Default::default(),
             logging: Default::default(),
         };
         crate::config::write_private_file(
@@ -3834,6 +3878,7 @@ mod tests {
                 ..StorageToml::default()
             },
             battery_wake: Default::default(),
+            homekit: Default::default(),
             logging: Default::default(),
         };
         crate::config::write_private_file(

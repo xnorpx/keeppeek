@@ -7,6 +7,7 @@ use crate::{
     battery_wake::BatteryWakeService,
     cameras,
     config::{self, Config},
+    homekit::HomeKitService,
     keeppeek::KeepPeekLoop,
     logging::LoggingService,
     runtime::{Router, RouterMessage, WorkerEvent},
@@ -111,6 +112,13 @@ pub fn run(
     )?;
     let recording_demand = storage_engine.demand();
     let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
+    let homekit = HomeKitService::start(
+        &cfg.homekit,
+        config_path,
+        &cameras,
+        webrtc.clone(),
+        shutdown.clone(),
+    )?;
     let health_registry = HealthRegistry::new();
     let server_state = ServerState::new(
         &cfg,
@@ -195,6 +203,9 @@ pub fn run(
 
     if let Some(battery_wake) = battery_wake {
         battery_wake.join();
+    }
+    if let Some(homekit) = homekit {
+        homekit.join();
     }
 
     tracing::info!("flushing and finalizing all recordings...");

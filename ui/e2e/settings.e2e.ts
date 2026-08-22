@@ -124,6 +124,10 @@ test('discovers and configures a camera without rendering its saved password', a
 	await page.goto('/settings');
 
 	await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'HomeKit' })).toHaveCount(0);
+	await expect(page.getByRole('img', { name: 'North Garden HomeKit setup QR code' })).toHaveCount(
+		0
+	);
 	await expect(page.getByText('online', { exact: true })).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Open North Garden live view' })).toHaveAttribute(
 		'href',
@@ -140,7 +144,11 @@ test('discovers and configures a camera without rendering its saved password', a
 	await expect(page.getByRole('heading', { name: 'Edit camera' })).toBeInViewport();
 	await expect(page.getByLabel('IP address')).toHaveValue('192.0.2.10');
 	await expect(page.getByLabel('Display name')).toBeFocused();
+	await expect(page.getByRole('heading', { name: 'HomeKit' })).toHaveCount(0);
 	await page.getByRole('button', { name: 'Cancel' }).first().click();
+	await expect(page.getByRole('img', { name: 'North Garden HomeKit setup QR code' })).toHaveCount(
+		0
+	);
 	await page.getByRole('button', { name: 'Configure' }).click();
 	await expect(page.getByRole('heading', { name: 'Add camera' })).toBeInViewport();
 	await expect(page.getByLabel('IP address')).toHaveValue('192.0.2.77');

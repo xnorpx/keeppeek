@@ -1,5 +1,23 @@
 import { expect, test } from '@playwright/test';
 
+const homeKitSetupQrSvgBase64 =
+	'PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNjAiIGhlaWdodD0iMTYwIi8+';
+
+test.beforeEach(async ({ page }) => {
+	await page.route('**/api/settings/homekit', async (route) => {
+		await route.fulfill({
+			json: {
+				enabled: false,
+				name: 'KeepPeek',
+				bind: '0.0.0.0',
+				port: 32000,
+				exported_camera_count: 0,
+				accessories: []
+			}
+		});
+	});
+});
+
 function streamHealth(id: string, backend: string, transport: string) {
 	return {
 		id,
@@ -124,6 +142,93 @@ test('shows fake Retina UDP configuration and live stream observations', async (
 		'href',
 		'http://192.0.2.41'
 	);
+});
+
+test('owns HomeKit pairing and resets a stale stored controller', async ({ page }) => {
+	const health = streamHealth('fake-retina', 'retina', 'tcp');
+	let paired = true;
+	let resetRequests = 0;
+	await page.route('**/api/cameras/fake-retina/details', async (route) => {
+		await route.fulfill({
+			json: {
+				camera: {
+					id: 'fake-retina',
+					ip: health.ip,
+					name: health.name,
+					manufacturer: health.manufacturer,
+					model: health.model,
+					firmware_version: health.firmware_version,
+					serial_number: 'RETINA-0001',
+					hardware_id: 'rtsp-test',
+					hostname: 'fake-retina',
+					mac_address: '02:00:00:00:00:41',
+					is_reolink: false,
+					backend: 'retina',
+					transport: 'tcp',
+					web_url: 'http://192.0.2.41',
+					ports: { http: 80, https: null, rtsp: 554, onvif: 8000 },
+					capabilities: {},
+					profiles: []
+				},
+				health,
+				motion_detection: { supported: false, controllable: false, enabled: null, error: null }
+			}
+		});
+	});
+	await page.unroute('**/api/settings/homekit');
+	await page.route('**/api/settings/homekit', async (route) => {
+		await route.fulfill({
+			json: {
+				enabled: true,
+				name: 'KeepPeek',
+				bind: '0.0.0.0',
+				port: 32000,
+				exported_camera_count: 1,
+				accessories: [
+					{
+						camera_id: health.ip,
+						name: health.name,
+						paired,
+						pairing_count: paired ? 1 : 0,
+						port: 32000,
+						setup_code: paired ? null : '123-45-678',
+						setup_qr_svg_base64: paired ? null : homeKitSetupQrSvgBase64
+					}
+				]
+			}
+		});
+	});
+	await page.route('**/api/cameras/fake-retina/homekit/pairings', async (route) => {
+		expect(route.request().method()).toBe('DELETE');
+		resetRequests += 1;
+		paired = false;
+		await route.fulfill({ status: 204 });
+	});
+	await page.route('**/api/settings/restart', async (route) => {
+		await route.fulfill({ json: { restarting: true } });
+	});
+	await page.route(
+		(url) => url.pathname === '/health',
+		async (route) => {
+			await route.fulfill({ json: { status: 'ok' } });
+		}
+	);
+	await page.route('**/api/health', async (route) => {
+		await route.fulfill({ json: { cameras: [health] } });
+	});
+	page.on('dialog', (dialog) => void dialog.accept());
+
+	await page.goto('/camera?camera=fake-retina');
+
+	await expect(page.getByRole('heading', { name: 'HomeKit' })).toBeVisible();
+	await expect(page.getByText('1 controller key stored', { exact: true })).toBeVisible();
+	await expect(page.getByRole('img', { name: 'Fake Retina HomeKit setup QR code' })).toHaveCount(0);
+	await page.getByRole('button', { name: 'Reset stored pairing' }).click();
+
+	await expect.poll(() => resetRequests).toBe(1);
+	await expect(page.getByText('Ready to pair', { exact: true })).toBeVisible();
+	await expect(page.getByRole('img', { name: 'Fake Retina HomeKit setup QR code' })).toBeVisible();
+	await expect(page.getByText('123-45-678', { exact: true })).toBeVisible();
 });
 
 test('saves and restores a camera manufacturer override', async ({ page }) => {

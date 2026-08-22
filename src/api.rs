@@ -173,6 +173,27 @@ pub struct SanitizedConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HomeKitSettings {
+    pub enabled: bool,
+    pub name: String,
+    pub bind: String,
+    pub port: u16,
+    pub exported_camera_count: usize,
+    pub accessories: Vec<HomeKitAccessorySettings>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HomeKitAccessorySettings {
+    pub camera_id: String,
+    pub name: String,
+    pub paired: bool,
+    pub pairing_count: usize,
+    pub port: u16,
+    pub setup_code: Option<String>,
+    pub setup_qr_svg_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CreateRequest {
     pub offer: SdpOffer,
 }

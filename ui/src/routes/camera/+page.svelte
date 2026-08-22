@@ -3,16 +3,22 @@
 	import { page } from '$app/state';
 	import {
 		getCameraDetails,
+		getHealth,
+		getHomeKitSettings,
 		getServerHealth,
+		resetCameraHomeKitPairings,
+		restartSettingsServer,
 		setCameraManufacturer,
 		setCameraMotionDetection
 	} from '$lib/api';
 	import type {
 		CameraDetailsResponse,
 		CameraHealth,
+		HomeKitSettings,
 		MotionDetection,
 		StreamHealth
 	} from '$lib/types';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
@@ -30,7 +36,9 @@
 
 	let details = $state.raw<CameraDetailsResponse | null>(null);
 	let serverHealth = $state.raw<CameraHealth | null>(null);
+	let homekit = $state.raw<HomeKitSettings | null>(null);
 	let error = $state<string | null>(null);
+	let homeKitError = $state<string | null>(null);
 	let motionError = $state<string | null>(null);
 	let loading = $state(true);
 	let refreshing = $state(false);
@@ -39,8 +47,14 @@
 	let manufacturerDraft = $state('');
 	let manufacturerError = $state<string | null>(null);
 	let updatingManufacturer = $state(false);
+	let resettingHomeKit = $state(false);
 	let cameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let camera = $derived(details?.camera ?? null);
+	let homeKitAccessory = $derived(
+		camera
+			? (homekit?.accessories.find((accessory) => accessory.camera_id === camera.ip) ?? null)
+			: null
+	);
 	let liveHealth = $derived(serverHealth ?? details?.health ?? null);
 	let capabilityItems = $derived.by(() => {
 		const capabilities = camera?.capabilities;
@@ -69,6 +83,7 @@
 		const controller = new AbortController();
 		loading = true;
 		error = null;
+		homeKitError = null;
 		motionError = null;
 		manufacturerError = null;
 		editingManufacturer = false;
@@ -84,13 +99,22 @@
 
 	async function loadCamera(id: string, signal?: AbortSignal) {
 		try {
-			const [nextDetails, nextHealth] = await Promise.all([
+			const homeKitRequest = getHomeKitSettings(signal)
+				.then((settings) => ({ settings, error: null }))
+				.catch((cause: unknown) => ({
+					settings: null,
+					error: cause instanceof Error ? cause.message : 'HomeKit status is unavailable.'
+				}));
+			const [nextDetails, nextHealth, nextHomeKit] = await Promise.all([
 				getCameraDetails(id, signal),
-				getServerHealth(signal)
+				getServerHealth(signal),
+				homeKitRequest
 			]);
 			if (signal?.aborted || id !== cameraId) return;
 			details = nextDetails;
 			serverHealth = nextHealth.cameras.find((candidate) => candidate.id === id) ?? null;
+			homekit = nextHomeKit.settings;
+			homeKitError = nextHomeKit.error;
 			error = null;
 		} catch (cause) {
 			if (signal?.aborted) return;
@@ -115,6 +139,47 @@
 		refreshing = true;
 		await loadCamera(cameraId);
 		refreshing = false;
+	}
+
+	function delay(milliseconds: number): Promise<void> {
+		return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+	}
+
+	async function waitForRestart() {
+		await delay(500);
+		for (let attempt = 0; attempt < 40; attempt += 1) {
+			try {
+				await getHealth();
+				window.location.reload();
+				return;
+			} catch {
+				await delay(500);
+			}
+		}
+		throw new Error('KeepPeek is taking longer than expected to restart.');
+	}
+
+	async function resetHomeKitPairing() {
+		if (!camera || !homeKitAccessory || resettingHomeKit) return;
+		const name = camera.name ?? camera.id;
+		if (
+			!window.confirm(
+				`Reset the stored HomeKit pairing for ${name}? KeepPeek will restart and the camera must be added to Apple Home again.`
+			)
+		) {
+			return;
+		}
+		resettingHomeKit = true;
+		homeKitError = null;
+		try {
+			await resetCameraHomeKitPairings(camera.id);
+			await restartSettingsServer();
+			await waitForRestart();
+		} catch (cause) {
+			homeKitError = cause instanceof Error ? cause.message : 'HomeKit pairing was not reset.';
+		} finally {
+			resettingHomeKit = false;
+		}
 	}
 
 	async function updateMotion(enabled: boolean) {
@@ -453,6 +518,75 @@
 				</p>
 			{/if}
 		</section>
+
+		{#if homekit?.enabled && homeKitAccessory}
+			<section class="border-y py-5" aria-labelledby="homekit-heading">
+				<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+					<div>
+						<h2 id="homekit-heading" class="text-sm font-semibold">HomeKit</h2>
+						<p class="mt-0.5 text-xs text-muted-foreground">{homeKitAccessory.name}</p>
+					</div>
+					<span
+						class="text-xs font-medium {homeKitAccessory.pairing_count > 0
+							? 'text-foreground'
+							: 'text-amber-700 dark:text-amber-300'}"
+					>
+						{homeKitAccessory.pairing_count > 0
+							? `${homeKitAccessory.pairing_count} controller key${homeKitAccessory.pairing_count === 1 ? '' : 's'} stored`
+							: 'Ready to pair'}
+					</span>
+				</div>
+				<div
+					class="grid items-start gap-5 {homeKitAccessory.setup_qr_svg_base64
+						? 'sm:grid-cols-[minmax(0,1fr)_10rem]'
+						: ''}"
+				>
+					<div class="space-y-4">
+						<dl
+							class="grid max-w-xl grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] gap-x-5 gap-y-2 text-xs"
+						>
+							<dt class="text-muted-foreground">Listener</dt>
+							<dd class="text-right font-mono">{homekit.bind}:{homeKitAccessory.port}</dd>
+							<dt class="text-muted-foreground">Stored controllers</dt>
+							<dd class="text-right">{homeKitAccessory.pairing_count}</dd>
+							{#if homeKitAccessory.setup_code}
+								<dt class="text-muted-foreground">Setup code</dt>
+								<dd class="text-right font-mono text-base font-semibold">
+									{homeKitAccessory.setup_code}
+								</dd>
+							{/if}
+						</dl>
+						{#if homeKitAccessory.pairing_count > 0}
+							<Button
+								variant="destructive"
+								size="sm"
+								disabled={resettingHomeKit}
+								onclick={() => void resetHomeKitPairing()}
+							>
+								<RotateCcwIcon class={resettingHomeKit ? 'animate-spin' : undefined} />
+								{resettingHomeKit ? 'Resetting pairing' : 'Reset stored pairing'}
+							</Button>
+						{/if}
+					</div>
+					{#if homeKitAccessory.setup_qr_svg_base64}
+						<figure class="justify-self-center sm:justify-self-end">
+							<img
+								class="aspect-square w-40 border border-border bg-white p-2"
+								src={`data:image/svg+xml;base64,${homeKitAccessory.setup_qr_svg_base64}`}
+								alt={`${homeKitAccessory.name} HomeKit setup QR code`}
+								width="160"
+								height="160"
+							/>
+						</figure>
+					{/if}
+				</div>
+				{#if homeKitError}
+					<p class="mt-3 text-xs text-destructive" role="alert">{homeKitError}</p>
+				{/if}
+			</section>
+		{:else if homeKitError}
+			<p class="border-y px-3 py-4 text-sm text-destructive" role="alert">{homeKitError}</p>
+		{/if}
 
 		<section class="border-y py-5" aria-labelledby="profiles-heading">
 			<div class="mb-3 flex flex-wrap items-end justify-between gap-3">

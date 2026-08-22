@@ -5,6 +5,7 @@ pub mod cameras;
 pub mod client;
 pub mod config;
 pub mod health;
+pub mod homekit;
 pub mod keeppeek;
 pub mod logging;
 mod media_time;

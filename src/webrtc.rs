@@ -7,6 +7,10 @@ use crate::{
 };
 use bytes::Bytes;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
+use hap_video::{
+    IceCandidate as HapIceCandidate, OfferDescription as HapOfferDescription,
+    SessionId as HapSessionId, Str0mSession, VideoCodec as HapVideoCodec,
+};
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use polling::{Event as PollEvent, Events, Poller};
 use serde::{Deserialize, Serialize};
@@ -51,6 +55,35 @@ const MAX_TRACKS: usize = 32;
 const MAX_TRACK_ID_BYTES: usize = 64;
 /// Matches str0m's fixed-width SDP media identifier capacity.
 const MAX_MID_BYTES: usize = 16;
+
+fn redacted_sdp(sdp: &str) -> String {
+    let mut redacted = String::with_capacity(sdp.len());
+    for line in sdp.lines() {
+        if line.starts_with("a=ice-pwd:") {
+            redacted.push_str("a=ice-pwd:<redacted>");
+        } else {
+            redacted.push_str(line.trim_end_matches('\r'));
+        }
+        redacted.push('\n');
+    }
+    redacted
+}
+
+fn webrtc_datagram_kind(packet: &[u8]) -> &'static str {
+    if packet.len() >= 8 && packet[0] & 0b1100_0000 == 0 && packet[4..8] == [0x21, 0x12, 0xa4, 0x42]
+    {
+        "stun"
+    } else if packet.first().is_some_and(|byte| (20..=63).contains(byte)) {
+        "dtls"
+    } else if packet
+        .first()
+        .is_some_and(|byte| byte & 0b1100_0000 == 0b1000_0000)
+    {
+        "rtp-or-rtcp"
+    } else {
+        "unknown"
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -268,6 +301,168 @@ enum SessionCommand {
         source: Source,
         frame: MediaFrame,
     },
+}
+
+enum HomeKitCommand {
+    ApplyAnswer {
+        sdp: String,
+        candidates: Vec<HapIceCandidate>,
+        response: Sender<Result<(), String>>,
+    },
+    AcceptReoffer {
+        sdp: String,
+        response: Sender<Result<String, String>>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HomeKitTransportState {
+    AwaitingAnswer,
+    Connecting,
+    Connected,
+    Closed,
+}
+
+impl HomeKitTransportState {
+    const fn as_u8(self) -> u8 {
+        match self {
+            Self::AwaitingAnswer => 0,
+            Self::Connecting => 1,
+            Self::Connected => 2,
+            Self::Closed => 3,
+        }
+    }
+
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Connecting,
+            2 => Self::Connected,
+            3 => Self::Closed,
+            _ => Self::AwaitingAnswer,
+        }
+    }
+}
+
+struct HomeKitSessionControl {
+    session_id: HapSessionId,
+    internal_id: SessionId,
+    source: Source,
+    commands: Sender<HomeKitCommand>,
+    poller: Arc<Poller>,
+    shutdown: Arc<AtomicBool>,
+    state: AtomicU8,
+    completion: SessionCompletion,
+    udp_packets_sent: AtomicU64,
+    udp_bytes_sent: AtomicU64,
+    udp_packets_received: AtomicU64,
+    udp_bytes_received: AtomicU64,
+    video_frames_written: AtomicU64,
+    video_bytes_written: AtomicU64,
+}
+
+impl HomeKitSessionControl {
+    fn state(&self) -> HomeKitTransportState {
+        HomeKitTransportState::from_u8(self.state.load(Ordering::Acquire))
+    }
+
+    fn set_state(&self, state: HomeKitTransportState) {
+        let previous =
+            HomeKitTransportState::from_u8(self.state.swap(state.as_u8(), Ordering::AcqRel));
+        if previous != state {
+            tracing::info!(
+                session_id = ?self.session_id,
+                internal_id = %self.internal_id,
+                source = ?self.source,
+                previous = ?previous,
+                current = ?state,
+                "HomeKit WebRTC transport state changed"
+            );
+        }
+    }
+
+    fn close(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        if let Err(error) = self.poller.notify() {
+            tracing::debug!(%error, "unable to wake HomeKit WebRTC session for shutdown");
+        }
+    }
+
+    fn finish(&self) {
+        self.completion.finish();
+    }
+
+    fn wait_for_finish(&self) -> bool {
+        self.completion.wait_for_finish()
+    }
+
+    fn record_udp_sent(&self, bytes: usize) {
+        self.udp_packets_sent.fetch_add(1, Ordering::Relaxed);
+        self.udp_bytes_sent
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    fn record_udp_received(&self, bytes: usize) {
+        self.udp_packets_received.fetch_add(1, Ordering::Relaxed);
+        self.udp_bytes_received
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    fn record_video_frame(&self, frame: &MediaFrame, origin: FrameOrigin, sequence: Option<u64>) {
+        let frame_number = self.video_frames_written.fetch_add(1, Ordering::Relaxed) + 1;
+        self.video_bytes_written
+            .fetch_add(frame.data.avcc.len() as u64, Ordering::Relaxed);
+        tracing::trace!(
+            session_id = ?self.session_id,
+            internal_id = %self.internal_id,
+            source = ?self.source,
+            frame_number,
+            ?sequence,
+            ?origin,
+            codec = ?frame.codec,
+            keyframe = frame.is_keyframe,
+            bytes = frame.data.avcc.len(),
+            media_timestamp = ?frame.timestamp,
+            queue_age = ?frame.received_at.elapsed(),
+            "HomeKit WebRTC video frame written to str0m"
+        );
+        if frame_number == 1 {
+            tracing::info!(
+                session_id = ?self.session_id,
+                internal_id = %self.internal_id,
+                source = ?self.source,
+                codec = ?frame.codec,
+                keyframe = frame.is_keyframe,
+                bytes = frame.data.avcc.len(),
+                ?origin,
+                "first HomeKit WebRTC video frame written"
+            );
+        } else if frame.is_keyframe {
+            tracing::debug!(
+                session_id = ?self.session_id,
+                internal_id = %self.internal_id,
+                frame_number,
+                bytes = frame.data.avcc.len(),
+                ?origin,
+                "HomeKit WebRTC video keyframe written"
+            );
+        }
+    }
+
+    fn log_summary(&self) {
+        tracing::info!(
+            session_id = ?self.session_id,
+            internal_id = %self.internal_id,
+            source = ?self.source,
+            state = ?self.state(),
+            udp_packets_sent = self.udp_packets_sent.load(Ordering::Relaxed),
+            udp_bytes_sent = self.udp_bytes_sent.load(Ordering::Relaxed),
+            udp_packets_received = self.udp_packets_received.load(Ordering::Relaxed),
+            udp_bytes_received = self.udp_bytes_received.load(Ordering::Relaxed),
+            video_frames_written = self.video_frames_written.load(Ordering::Relaxed),
+            video_bytes_written = self.video_bytes_written.load(Ordering::Relaxed),
+            "HomeKit WebRTC session transport summary"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -609,6 +804,7 @@ struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
     sessions: Mutex<HashMap<SessionId, Arc<SessionControl>>>,
     multi_track_sessions: Mutex<HashMap<SessionId, Arc<MultiTrackControl>>>,
+    homekit_sessions: Mutex<HashMap<HapSessionId, Arc<HomeKitSessionControl>>>,
     threads: Mutex<Vec<SessionThread>>,
     next_session_id: AtomicU64,
     published_frames: AtomicU64,
@@ -1567,6 +1763,339 @@ impl WebRtc {
             .map(|control| control.status())
     }
 
+    pub(crate) fn create_homekit_offer(
+        &self,
+        session_id: HapSessionId,
+        source: Source,
+    ) -> anyhow::Result<HapOfferDescription> {
+        reap_finished_threads(&self.live.inner);
+        if self
+            .live
+            .inner
+            .homekit_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&session_id)
+        {
+            anyhow::bail!("duplicate HomeKit WebRTC session");
+        }
+
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        socket.set_nonblocking(true)?;
+        let local_address = socket.local_addr()?;
+        let candidates = host_candidates(local_address.port())?;
+        tracing::debug!(
+            session_id = ?session_id,
+            ?source,
+            %local_address,
+            candidates = ?candidates,
+            "HomeKit WebRTC UDP socket and host candidates prepared"
+        );
+        let rtc = rtc_config().build(Instant::now());
+        let track_id = homekit_track_id(session_id);
+        let (session, offer) = Str0mSession::create_video_offer(
+            rtc,
+            candidates,
+            Some(track_id.clone()),
+            Some(track_id),
+        )?;
+        tracing::debug!(
+            session_id = ?session_id,
+            ?source,
+            sdp = %redacted_sdp(&offer.sdp),
+            candidates = ?offer.candidates,
+            "HomeKit WebRTC SDP offer"
+        );
+        let poller = Arc::new(Poller::new()?);
+        // SAFETY: The session thread owns the socket and removes it before either resource drops.
+        unsafe {
+            poller.add(&socket, PollEvent::readable(UDP_EVENT_KEY))?;
+        }
+
+        let internal_id = next_session_id(&self.live.inner);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (frame_tx, frame_rx) = bounded(FRAME_QUEUE_CAPACITY);
+        let (command_tx, command_rx) = bounded(8);
+        let sender = SessionSender {
+            id: internal_id,
+            track_id: None,
+            tx: frame_tx,
+            queue_stats: Arc::new(SessionQueueStats::default()),
+            queue_high_water: self.live.inner.queue_high_water.clone(),
+            latest_keyframe: Arc::new(Mutex::new(None)),
+            poller: poller.clone(),
+            shutdown: shutdown.clone(),
+        };
+        let subscription = SourceSubscription::fixed(self.live.inner.clone(), sender, source, None);
+        let control = Arc::new(HomeKitSessionControl {
+            session_id,
+            internal_id,
+            source,
+            commands: command_tx,
+            poller: poller.clone(),
+            shutdown: shutdown.clone(),
+            state: AtomicU8::new(HomeKitTransportState::AwaitingAnswer.as_u8()),
+            completion: SessionCompletion::default(),
+            udp_packets_sent: AtomicU64::new(0),
+            udp_bytes_sent: AtomicU64::new(0),
+            udp_packets_received: AtomicU64::new(0),
+            udp_bytes_received: AtomicU64::new(0),
+            video_frames_written: AtomicU64::new(0),
+            video_bytes_written: AtomicU64::new(0),
+        });
+        let active_sessions = {
+            let mut sessions = self
+                .live
+                .inner
+                .homekit_sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.insert(session_id, control.clone());
+            sessions.len()
+        };
+        tracing::info!(
+            session_id = ?session_id,
+            internal_id = %internal_id,
+            ?source,
+            %local_address,
+            active_sessions,
+            "HomeKit WebRTC transport allocated"
+        );
+
+        let inner = self.live.inner.clone();
+        let thread_inner = inner.clone();
+        let thread_control = control;
+        let thread = match std::thread::Builder::new()
+            .name(format!("webrtc-homekit-{internal_id}"))
+            .spawn(move || {
+                tracing::info!(
+                    session_id = ?thread_control.session_id,
+                    internal_id = %thread_control.internal_id,
+                    source = ?thread_control.source,
+                    "HomeKit WebRTC session thread started"
+                );
+                if let Err(error) = run_homekit_session(HomeKitSessionRuntime {
+                    session,
+                    socket,
+                    poller,
+                    frame_rx,
+                    command_rx,
+                    subscription,
+                    shutdown,
+                    control: thread_control.clone(),
+                }) {
+                    tracing::warn!(
+                        session_id = ?thread_control.session_id,
+                        internal_id = %thread_control.internal_id,
+                        source = ?thread_control.source,
+                        %error,
+                        "HomeKit WebRTC session stopped with error"
+                    );
+                }
+                thread_control.log_summary();
+                thread_control.set_state(HomeKitTransportState::Closed);
+                let remaining_sessions = {
+                    let mut sessions = thread_inner
+                        .homekit_sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    sessions.remove(&session_id);
+                    sessions.len()
+                };
+                tracing::info!(
+                    session_id = ?thread_control.session_id,
+                    internal_id = %thread_control.internal_id,
+                    source = ?thread_control.source,
+                    remaining_sessions,
+                    "HomeKit WebRTC session thread stopped"
+                );
+                thread_control.finish();
+            }) {
+            Ok(thread) => thread,
+            Err(error) => {
+                inner
+                    .homekit_sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&session_id);
+                return Err(error.into());
+            }
+        };
+        self.live
+            .inner
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(SessionThread {
+                session_id: internal_id,
+                handle: thread,
+            });
+        Ok(offer)
+    }
+
+    pub(crate) fn apply_homekit_answer(
+        &self,
+        session_id: HapSessionId,
+        sdp: String,
+        candidates: Vec<HapIceCandidate>,
+    ) -> anyhow::Result<()> {
+        let control = self.homekit_control(session_id)?;
+        tracing::info!(
+            session_id = ?session_id,
+            internal_id = %control.internal_id,
+            source = ?control.source,
+            sdp_bytes = sdp.len(),
+            candidate_count = candidates.len(),
+            "queueing HomeKit controller SDP answer"
+        );
+        tracing::debug!(
+            session_id = ?session_id,
+            internal_id = %control.internal_id,
+            sdp = %redacted_sdp(&sdp),
+            candidates = ?candidates,
+            "HomeKit controller SDP answer"
+        );
+        let (response, result) = bounded(1);
+        control
+            .commands
+            .send(HomeKitCommand::ApplyAnswer {
+                sdp,
+                candidates,
+                response,
+            })
+            .map_err(|_| anyhow::anyhow!("HomeKit WebRTC session ended"))?;
+        control.poller.notify()?;
+        let result = result
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| anyhow::anyhow!("timed out applying HomeKit WebRTC answer"))?;
+        match &result {
+            Ok(()) => tracing::info!(
+                session_id = ?session_id,
+                internal_id = %control.internal_id,
+                "HomeKit controller SDP answer accepted by str0m"
+            ),
+            Err(error) => tracing::warn!(
+                session_id = ?session_id,
+                internal_id = %control.internal_id,
+                %error,
+                "HomeKit controller SDP answer rejected by str0m"
+            ),
+        }
+        result.map_err(anyhow::Error::msg)
+    }
+
+    pub(crate) fn accept_homekit_reoffer(
+        &self,
+        session_id: HapSessionId,
+        sdp: String,
+    ) -> anyhow::Result<String> {
+        let control = self.homekit_control(session_id)?;
+        tracing::info!(
+            session_id = ?session_id,
+            internal_id = %control.internal_id,
+            source = ?control.source,
+            sdp_bytes = sdp.len(),
+            "queueing HomeKit controller SDP reoffer"
+        );
+        tracing::debug!(
+            session_id = ?session_id,
+            internal_id = %control.internal_id,
+            sdp = %redacted_sdp(&sdp),
+            "HomeKit controller SDP reoffer"
+        );
+        let (response, result) = bounded(1);
+        control
+            .commands
+            .send(HomeKitCommand::AcceptReoffer { sdp, response })
+            .map_err(|_| anyhow::anyhow!("HomeKit WebRTC session ended"))?;
+        control.poller.notify()?;
+        let result = result
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| anyhow::anyhow!("timed out accepting HomeKit WebRTC reoffer"))?;
+        match &result {
+            Ok(answer) => {
+                tracing::info!(
+                    session_id = ?session_id,
+                    internal_id = %control.internal_id,
+                    sdp_bytes = answer.len(),
+                    "HomeKit controller SDP reoffer accepted"
+                );
+                tracing::debug!(
+                    session_id = ?session_id,
+                    internal_id = %control.internal_id,
+                    sdp = %redacted_sdp(answer),
+                    "HomeKit WebRTC SDP reoffer answer"
+                );
+            }
+            Err(error) => tracing::warn!(
+                session_id = ?session_id,
+                internal_id = %control.internal_id,
+                %error,
+                "HomeKit controller SDP reoffer rejected"
+            ),
+        }
+        result.map_err(anyhow::Error::msg)
+    }
+
+    pub(crate) fn homekit_transport_state(
+        &self,
+        session_id: HapSessionId,
+    ) -> Option<HomeKitTransportState> {
+        reap_finished_threads(&self.live.inner);
+        self.live
+            .inner
+            .homekit_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .map(|control| control.state())
+    }
+
+    pub(crate) fn close_homekit_session(&self, session_id: HapSessionId) -> bool {
+        reap_finished_threads(&self.live.inner);
+        let control = self
+            .live
+            .inner
+            .homekit_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
+        let Some(control) = control else {
+            tracing::debug!(session_id = ?session_id, "HomeKit WebRTC close requested for unknown session");
+            return false;
+        };
+        tracing::info!(
+            session_id = ?session_id,
+            internal_id = %control.internal_id,
+            source = ?control.source,
+            state = ?control.state(),
+            "closing HomeKit WebRTC transport"
+        );
+        control.close();
+        if !control.wait_for_finish() {
+            tracing::warn!("HomeKit WebRTC session did not finish before close timeout");
+        } else {
+            join_session_thread(&self.live.inner, control.internal_id);
+        }
+        reap_finished_threads(&self.live.inner);
+        true
+    }
+
+    fn homekit_control(
+        &self,
+        session_id: HapSessionId,
+    ) -> anyhow::Result<Arc<HomeKitSessionControl>> {
+        reap_finished_threads(&self.live.inner);
+        self.live
+            .inner
+            .homekit_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown HomeKit WebRTC session"))
+    }
+
     pub(crate) fn health_snapshot(&self) -> WebRtcHealth {
         reap_finished_threads(&self.live.inner);
         let now = Instant::now();
@@ -1881,6 +2410,18 @@ impl WebRtc {
     }
 
     pub fn shutdown(&self) {
+        let homekit_controls = self
+            .live
+            .inner
+            .homekit_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for control in homekit_controls {
+            control.close();
+        }
         let browser_controls = self
             .live
             .inner
@@ -1931,6 +2472,12 @@ impl WebRtc {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.live
+            .inner
+            .homekit_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 }
 
@@ -1946,8 +2493,7 @@ fn accept_session(offer: SdpOffer) -> anyhow::Result<SessionIo> {
     socket.set_nonblocking(true)?;
     let port = socket.local_addr()?.port();
     let mut rtc = rtc_config().build(Instant::now());
-    for ip in candidate_addresses() {
-        let candidate = Candidate::host(SocketAddr::new(IpAddr::V4(ip), port), "udp")?;
+    for candidate in host_candidates(port)? {
         let _ = rtc.add_local_candidate(candidate);
     }
     let answer = rtc.sdp_api().accept_offer(offer)?;
@@ -1962,6 +2508,24 @@ fn accept_session(offer: SdpOffer) -> anyhow::Result<SessionIo> {
         poller,
         answer,
     })
+}
+
+fn host_candidates(port: u16) -> anyhow::Result<Vec<Candidate>> {
+    candidate_addresses()
+        .into_iter()
+        .map(|ip| Candidate::host(SocketAddr::new(IpAddr::V4(ip), port), "udp").map_err(Into::into))
+        .collect()
+}
+
+fn homekit_track_id(session_id: HapSessionId) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut value = String::with_capacity(8 + session_id.as_bytes().len() * 2);
+    value.push_str("homekit-");
+    for byte in session_id.as_bytes() {
+        value.push(char::from(HEX[usize::from(byte >> 4)]));
+        value.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    value
 }
 
 fn next_session_id(inner: &Inner) -> SessionId {
@@ -2022,7 +2586,7 @@ fn bind_mids(plans: &[TrackPlan]) -> BTreeMap<TrackId, Mid> {
         .collect()
 }
 
-fn rtc_config() -> RtcConfig {
+pub(crate) fn rtc_config() -> RtcConfig {
     #[cfg(target_os = "macos")]
     let provider = str0m_apple_crypto::default_provider();
     #[cfg(target_os = "linux")]
@@ -2038,17 +2602,34 @@ fn rtc_config() -> RtcConfig {
         .enable_bwe(Some(INITIAL_EGRESS_BITRATE))
 }
 
+/// Tunnel interfaces carry addresses a HomeKit controller on the LAN cannot
+/// reach, so advertising them only adds ICE checks that time out.
+fn is_tunnel_interface(name: &str) -> bool {
+    const PREFIXES: [&str; 5] = ["utun", "ipsec", "ppp", "tun", "tap"];
+    PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
 fn candidate_addresses() -> Vec<Ipv4Addr> {
     let mut addresses = vec![Ipv4Addr::LOCALHOST];
     if let Ok(interfaces) = NetworkInterface::show() {
-        addresses.extend(interfaces.into_iter().flat_map(|interface| {
-            interface.addr.into_iter().filter_map(|address| {
-                let Addr::V4(address) = address else {
-                    return None;
-                };
-                (!address.ip.is_unspecified() && !address.ip.is_loopback()).then_some(address.ip)
-            })
-        }));
+        addresses.extend(
+            interfaces
+                .into_iter()
+                .filter(|interface| !is_tunnel_interface(&interface.name))
+                .flat_map(|interface| {
+                    interface.addr.into_iter().filter_map(|address| {
+                        let Addr::V4(address) = address else {
+                            return None;
+                        };
+                        // str0m rejects link-local addresses, so a self-assigned
+                        // APIPA interface fails candidate gathering outright.
+                        (!address.ip.is_unspecified()
+                            && !address.ip.is_loopback()
+                            && !address.ip.is_link_local())
+                        .then_some(address.ip)
+                    })
+                }),
+        );
     }
     addresses.sort_unstable();
     addresses.dedup();
@@ -2083,6 +2664,431 @@ fn run_session(
         .fetch_add(abandoned_frames, Ordering::Relaxed);
     let delete_result = poller.delete(&socket);
     result.and_then(|()| delete_result.map_err(Into::into))
+}
+
+struct HomeKitSessionRuntime {
+    session: Str0mSession,
+    socket: UdpSocket,
+    poller: Arc<Poller>,
+    frame_rx: Receiver<SessionCommand>,
+    command_rx: Receiver<HomeKitCommand>,
+    subscription: SourceSubscription,
+    shutdown: Arc<AtomicBool>,
+    control: Arc<HomeKitSessionControl>,
+}
+
+fn run_homekit_session(mut runtime: HomeKitSessionRuntime) -> anyhow::Result<()> {
+    let result = drive_homekit_session(
+        &mut runtime.session,
+        &runtime.socket,
+        &runtime.poller,
+        &runtime.frame_rx,
+        &runtime.command_rx,
+        &runtime.subscription,
+        &runtime.shutdown,
+        &runtime.control,
+    );
+    let queue_stats = runtime.subscription.sender.queue_stats.clone();
+    let inner = runtime.subscription.inner.clone();
+    drop(runtime.subscription);
+    let abandoned_frames = runtime.frame_rx.try_iter().count() as u64;
+    queue_stats
+        .discarded_frames
+        .fetch_add(abandoned_frames, Ordering::Relaxed);
+    inner
+        .queue_discarded_frames
+        .fetch_add(abandoned_frames, Ordering::Relaxed);
+    let delete_result = runtime.poller.delete(&runtime.socket);
+    result.and_then(|()| delete_result.map_err(Into::into))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drive_homekit_session(
+    session: &mut Str0mSession,
+    socket: &UdpSocket,
+    poller: &Poller,
+    frame_rx: &Receiver<SessionCommand>,
+    command_rx: &Receiver<HomeKitCommand>,
+    subscription: &SourceSubscription,
+    shutdown: &AtomicBool,
+    control: &HomeKitSessionControl,
+) -> anyhow::Result<()> {
+    let mut events = Events::new();
+    let mut udp_buffer = vec![0; UDP_PACKET_CAPACITY];
+    let mut keyframe_gate = KeyframeGate::new();
+    let mut media_clock = MediaClock::default();
+    let mut last_frame_sequence = None;
+    let mut recovering_queue_gap = false;
+    let mut keyframe_prepared = false;
+    let mut consecutive_unwritable_frames = 0_u64;
+    let mut next_bitrate_refresh = Instant::now();
+    let mut peer_destinations = HashMap::new();
+    let mut next_timeout = drain_homekit_outputs(session, socket, control, subscription)?;
+
+    'session: loop {
+        if shutdown.load(Ordering::Acquire) {
+            break;
+        }
+
+        loop {
+            match command_rx.try_recv() {
+                Ok(HomeKitCommand::ApplyAnswer {
+                    sdp,
+                    candidates,
+                    response,
+                }) => {
+                    tracing::debug!(
+                        session_id = ?control.session_id,
+                        internal_id = %control.internal_id,
+                        sdp_bytes = sdp.len(),
+                        candidate_count = candidates.len(),
+                        "HomeKit WebRTC session thread applying controller answer"
+                    );
+                    match session.apply_answer(&sdp, &candidates) {
+                        Ok(()) => {
+                            control.set_state(HomeKitTransportState::Connecting);
+                            tracing::info!(
+                                session_id = ?control.session_id,
+                                internal_id = %control.internal_id,
+                                "str0m applied HomeKit controller answer; ICE/DTLS connecting"
+                            );
+                            match drain_homekit_outputs(session, socket, control, subscription) {
+                                Ok(deadline) => {
+                                    next_timeout = deadline;
+                                    let _ = response.send(Ok(()));
+                                }
+                                Err(error) => {
+                                    let message = error.to_string();
+                                    let _ = response.send(Err(message));
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            let _ = response.send(Err(message.clone()));
+                            anyhow::bail!(message);
+                        }
+                    }
+                }
+                Ok(HomeKitCommand::AcceptReoffer { sdp, response }) => {
+                    tracing::debug!(
+                        session_id = ?control.session_id,
+                        internal_id = %control.internal_id,
+                        sdp_bytes = sdp.len(),
+                        "HomeKit WebRTC session thread accepting controller reoffer"
+                    );
+                    match session.accept_reoffer(&sdp) {
+                        Ok(answer) => {
+                            match drain_homekit_outputs(session, socket, control, subscription) {
+                                Ok(deadline) => {
+                                    next_timeout = deadline;
+                                    let _ = response.send(Ok(answer));
+                                }
+                                Err(error) => {
+                                    let message = error.to_string();
+                                    let _ = response.send(Err(message));
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            let _ = response.send(Err(message.clone()));
+                            anyhow::bail!(message);
+                        }
+                    }
+                }
+                Err(TryRecvError::Disconnected) => break 'session,
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+
+        let connected = control.state() == HomeKitTransportState::Connected;
+        let now = Instant::now();
+        if now >= next_bitrate_refresh {
+            session.set_desired_bitrate(subscription.desired_bitrate(StreamQuality::High));
+            next_bitrate_refresh = now + DESIRED_BITRATE_REFRESH;
+        }
+        if connected && !keyframe_prepared {
+            subscription.prepare_keyframe(frame_rx);
+            last_frame_sequence = None;
+            recovering_queue_gap = false;
+            keyframe_prepared = true;
+            tracing::info!(
+                session_id = ?control.session_id,
+                internal_id = %control.internal_id,
+                source = ?control.source,
+                "HomeKit WebRTC transport connected; waiting for video keyframe"
+            );
+        }
+        if connected && keyframe_gate.allows(FrameOrigin::Cached, true) {
+            let keyframe = subscription
+                .sender
+                .latest_keyframe
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(keyframe) = keyframe {
+                subscription.discard_queued_frames(frame_rx);
+                last_frame_sequence = None;
+                recovering_queue_gap = false;
+                if write_homekit_frame(session, &keyframe, &mut media_clock)? {
+                    consecutive_unwritable_frames = 0;
+                    keyframe_gate.mark_written(FrameOrigin::Cached);
+                    control.record_video_frame(&keyframe, FrameOrigin::Cached, None);
+                    next_timeout = drain_homekit_outputs(session, socket, control, subscription)?;
+                } else {
+                    consecutive_unwritable_frames += 1;
+                    tracing::debug!(
+                        session_id = ?control.session_id,
+                        internal_id = %control.internal_id,
+                        source = ?control.source,
+                        codec = ?keyframe.codec,
+                        h264_profile_level_id = ?media_clock.h264_profile_level_id,
+                        "cached HomeKit keyframe had no negotiated str0m payload"
+                    );
+                }
+            }
+        }
+
+        loop {
+            match frame_rx.try_recv() {
+                Ok(SessionCommand::Frame {
+                    sequence,
+                    source,
+                    frame,
+                }) => {
+                    if source != subscription.active_source {
+                        subscription.record_discarded_frames(1);
+                        continue;
+                    }
+                    if !keyframe_gate.observe_sequence(&mut last_frame_sequence, sequence) {
+                        recovering_queue_gap = true;
+                        tracing::debug!(
+                            session_id = ?control.session_id,
+                            internal_id = %control.internal_id,
+                            sequence,
+                            "HomeKit WebRTC frame queue gap; waiting for keyframe"
+                        );
+                    }
+                    let frame_allowed = keyframe_gate.allows(FrameOrigin::Live, frame.is_keyframe);
+                    let wrote = connected
+                        && frame_allowed
+                        && write_homekit_frame(session, &frame, &mut media_clock)?;
+                    if wrote {
+                        consecutive_unwritable_frames = 0;
+                        keyframe_gate.mark_written(FrameOrigin::Live);
+                        recovering_queue_gap = false;
+                        control.record_video_frame(&frame, FrameOrigin::Live, Some(sequence));
+                        subscription.record_written_frame();
+                        next_timeout =
+                            drain_homekit_outputs(session, socket, control, subscription)?;
+                    } else if connected && frame_allowed {
+                        consecutive_unwritable_frames += 1;
+                        if consecutive_unwritable_frames == 1 {
+                            tracing::debug!(
+                                session_id = ?control.session_id,
+                                internal_id = %control.internal_id,
+                                source = ?control.source,
+                                codec = ?frame.codec,
+                                keyframe = frame.is_keyframe,
+                                h264_profile_level_id = ?media_clock.h264_profile_level_id,
+                                "HomeKit video frame had no compatible negotiated payload"
+                            );
+                        } else if consecutive_unwritable_frames == 100 {
+                            tracing::warn!(
+                                session_id = ?control.session_id,
+                                internal_id = %control.internal_id,
+                                source = ?control.source,
+                                codec = ?frame.codec,
+                                h264_profile_level_id = ?media_clock.h264_profile_level_id,
+                                consecutive_unwritable_frames,
+                                "HomeKit WebRTC is connected but cannot write the camera codec to the negotiated video media"
+                            );
+                        }
+                        subscription.record_discarded_frames(1);
+                    } else if connected && recovering_queue_gap && !frame_allowed {
+                        subscription.record_discarded_frames(1);
+                        subscription
+                            .sender
+                            .queue_stats
+                            .recovery_drops
+                            .fetch_add(1, Ordering::Relaxed);
+                        subscription
+                            .inner
+                            .queue_recovery_drops
+                            .fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        subscription.record_discarded_frames(1);
+                    }
+                }
+                Err(TryRecvError::Disconnected) => break 'session,
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+
+        events.clear();
+        poller.wait(
+            &mut events,
+            Some(next_timeout.saturating_duration_since(Instant::now())),
+        )?;
+        if events.iter().any(|event| event.key == UDP_EVENT_KEY) {
+            loop {
+                match socket.recv_from(&mut udp_buffer) {
+                    Ok((length, source)) => {
+                        let destination =
+                            if let Some(destination) = peer_destinations.get(&source.ip()) {
+                                *destination
+                            } else {
+                                let destination =
+                                    route_local_address(source, socket.local_addr()?.port())?;
+                                peer_destinations.insert(source.ip(), destination);
+                                destination
+                            };
+                        let receive = Receive {
+                            proto: Protocol::Udp,
+                            source,
+                            destination,
+                            contents: (&udp_buffer[..length]).try_into()?,
+                        };
+                        control.record_udp_received(length);
+                        tracing::trace!(
+                            session_id = ?control.session_id,
+                            internal_id = %control.internal_id,
+                            packet_kind = webrtc_datagram_kind(&udp_buffer[..length]),
+                            bytes = length,
+                            %source,
+                            %destination,
+                            "HomeKit WebRTC UDP datagram received"
+                        );
+                        session.handle_input(Input::Receive(Instant::now(), receive))?;
+                        next_timeout =
+                            drain_homekit_outputs(session, socket, control, subscription)?;
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            poller.modify(socket, PollEvent::readable(UDP_EVENT_KEY))?;
+        }
+
+        let now = Instant::now();
+        if next_timeout <= now {
+            session.handle_input(Input::Timeout(now))?;
+            next_timeout = drain_homekit_outputs(session, socket, control, subscription)?;
+        }
+    }
+    Ok(())
+}
+
+fn drain_homekit_outputs(
+    session: &mut Str0mSession,
+    socket: &UdpSocket,
+    control: &HomeKitSessionControl,
+    subscription: &SourceSubscription,
+) -> anyhow::Result<Instant> {
+    loop {
+        match session.poll_output()? {
+            Output::Timeout(deadline) => return Ok(deadline),
+            Output::Transmit(transmit) => {
+                socket.send_to(&transmit.contents, transmit.destination)?;
+                control.record_udp_sent(transmit.contents.len());
+                tracing::trace!(
+                    session_id = ?control.session_id,
+                    internal_id = %control.internal_id,
+                    packet_kind = webrtc_datagram_kind(&transmit.contents),
+                    bytes = transmit.contents.len(),
+                    destination = %transmit.destination,
+                    "HomeKit WebRTC UDP datagram sent"
+                );
+            }
+            Output::Event(event) => {
+                tracing::debug!(
+                    session_id = ?control.session_id,
+                    internal_id = %control.internal_id,
+                    ?event,
+                    "HomeKit str0m event"
+                );
+                if terminal_session_event(&event) {
+                    tracing::warn!(
+                        session_id = ?control.session_id,
+                        internal_id = %control.internal_id,
+                        ?event,
+                        "HomeKit WebRTC transport reached terminal state"
+                    );
+                    anyhow::bail!("HomeKit WebRTC transport ended: {event:?}");
+                }
+                match event {
+                    Event::Connected => {
+                        control.set_state(HomeKitTransportState::Connected);
+                        tracing::info!(
+                            session_id = ?control.session_id,
+                            internal_id = %control.internal_id,
+                            source = ?control.source,
+                            "HomeKit WebRTC ICE and DTLS connected"
+                        );
+                    }
+                    Event::IceConnectionStateChange(state) => {
+                        tracing::info!(
+                            session_id = ?control.session_id,
+                            internal_id = %control.internal_id,
+                            ?state,
+                            "HomeKit WebRTC ICE state changed"
+                        );
+                    }
+                    Event::MediaAdded(media) => {
+                        tracing::info!(
+                            session_id = ?control.session_id,
+                            internal_id = %control.internal_id,
+                            ?media,
+                            "HomeKit WebRTC media negotiated"
+                        );
+                    }
+                    Event::EgressBitrateEstimate(estimate) => {
+                        let bitrate = match estimate {
+                            BweKind::Twcc(bitrate) | BweKind::Remb(_, bitrate) => bitrate,
+                            _ => continue,
+                        };
+                        tracing::trace!(
+                            session_id = ?control.session_id,
+                            internal_id = %control.internal_id,
+                            %bitrate,
+                            "HomeKit WebRTC egress bitrate estimate updated"
+                        );
+                        subscription.update_estimate(bitrate);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn write_homekit_frame(
+    session: &mut Str0mSession,
+    frame: &MediaFrame,
+    media_clock: &mut MediaClock,
+) -> anyhow::Result<bool> {
+    if matches!(frame.codec, VideoCodec::H264)
+        && frame.is_keyframe
+        && let Some(profile_level_id) = frame.data.h264_profile_level_id()
+    {
+        media_clock.h264_profile_level_id = Some(profile_level_id);
+    }
+    let media_time = media_clock.media_time(frame);
+    session
+        .write_video(
+            match frame.codec {
+                VideoCodec::H264 => HapVideoCodec::H264,
+                VideoCodec::H265 => HapVideoCodec::H265,
+            },
+            media_clock.h264_profile_level_id,
+            frame.received_at,
+            MediaTime::from_90khz(media_time),
+            frame.data.annexb(),
+        )
+        .map_err(Into::into)
 }
 
 fn run_multi_track_session(
@@ -2749,6 +3755,28 @@ mod tests {
     }
 
     #[test]
+    fn homekit_sdp_diagnostics_redact_ice_passwords() {
+        let sdp = "a=ice-ufrag:visible\r\na=ice-pwd:secret\r\na=candidate:1 1 UDP 1 127.0.0.1 1234 typ host\r\n";
+        let redacted = redacted_sdp(sdp);
+
+        assert!(redacted.contains("a=ice-ufrag:visible"));
+        assert!(redacted.contains("a=ice-pwd:<redacted>"));
+        assert!(redacted.contains("a=candidate:1 1 UDP 1 127.0.0.1 1234 typ host"));
+        assert!(!redacted.contains("secret"));
+    }
+
+    #[test]
+    fn homekit_packet_diagnostics_classify_ice_dtls_and_media() {
+        assert_eq!(
+            webrtc_datagram_kind(&[0, 1, 0, 0, 0x21, 0x12, 0xa4, 0x42]),
+            "stun"
+        );
+        assert_eq!(webrtc_datagram_kind(&[22, 0xfe, 0xfd]), "dtls");
+        assert_eq!(webrtc_datagram_kind(&[0x80, 96]), "rtp-or-rtcp");
+        assert_eq!(webrtc_datagram_kind(&[0xff]), "unknown");
+    }
+
+    #[test]
     fn h264_profile_is_read_from_sps() {
         let frame = MediaFrameData::new(Bytes::from_static(&[0, 0, 0, 4, 0x67, 0x42, 0xc0, 0x1f]));
 
@@ -2815,6 +3843,29 @@ mod tests {
     #[test]
     fn candidate_list_always_supports_local_browser() {
         assert!(candidate_addresses().contains(&Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn candidate_list_excludes_link_local_and_tunnel_addresses() {
+        for address in candidate_addresses() {
+            assert!(
+                !address.is_link_local(),
+                "{address} is link-local and str0m rejects it as a candidate"
+            );
+        }
+    }
+
+    #[test]
+    fn tunnel_interfaces_are_recognised_by_name() {
+        for name in ["utun0", "utun7", "ipsec0", "ppp0", "tun1", "tap0"] {
+            assert!(
+                is_tunnel_interface(name),
+                "{name} should be treated as a tunnel"
+            );
+        }
+        for name in ["en0", "en11", "eth0", "bridge100", "lo0"] {
+            assert!(!is_tunnel_interface(name), "{name} should be kept");
+        }
     }
 
     #[test]
@@ -3473,6 +4524,120 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn homekit_offer_accepts_controller_answer() {
+        let webrtc = WebRtc::new();
+        let session_id = HapSessionId::new([0x42; 16]);
+        let offer = webrtc
+            .create_homekit_offer(session_id, test_source())
+            .unwrap();
+        let controller_socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        controller_socket
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        let controller_address = SocketAddr::from((
+            Ipv4Addr::LOCALHOST,
+            controller_socket.local_addr().unwrap().port(),
+        ));
+        let controller_candidate = Candidate::host(controller_address, "udp").unwrap();
+        let controller_rtc = rtc_config().build(Instant::now());
+        let (mut controller, answer) = Str0mSession::accept_video_offer(
+            controller_rtc,
+            vec![controller_candidate],
+            &offer.sdp,
+        )
+        .unwrap();
+
+        webrtc
+            .apply_homekit_answer(session_id, answer, Vec::new())
+            .unwrap();
+        assert_eq!(
+            webrtc.homekit_transport_state(session_id),
+            Some(HomeKitTransportState::Connecting)
+        );
+
+        let test_deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < test_deadline {
+            let rtc_deadline = loop {
+                match controller.poll_output().unwrap() {
+                    Output::Timeout(deadline) => {
+                        break deadline;
+                    }
+                    Output::Transmit(transmit) => {
+                        controller_socket
+                            .send_to(&transmit.contents, transmit.destination)
+                            .unwrap();
+                    }
+                    Output::Event(_) => {}
+                }
+            };
+
+            if controller.is_connected()
+                && webrtc.homekit_transport_state(session_id)
+                    == Some(HomeKitTransportState::Connected)
+            {
+                break;
+            }
+
+            let mut buffer = [0_u8; UDP_PACKET_CAPACITY];
+            match controller_socket.recv_from(&mut buffer) {
+                Ok((length, source)) => {
+                    controller
+                        .handle_input(Input::Receive(
+                            Instant::now(),
+                            Receive {
+                                proto: Protocol::Udp,
+                                source,
+                                destination: controller_address,
+                                contents: (&buffer[..length]).try_into().unwrap(),
+                            },
+                        ))
+                        .unwrap();
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    let now = Instant::now();
+                    if rtc_deadline <= now {
+                        controller.handle_input(Input::Timeout(now)).unwrap();
+                    }
+                }
+                Err(error) => panic!("controller UDP receive failed: {error}"),
+            }
+        }
+
+        assert!(controller.is_connected());
+        assert_eq!(
+            webrtc.homekit_transport_state(session_id),
+            Some(HomeKitTransportState::Connected)
+        );
+        assert!(webrtc.close_homekit_session(session_id));
+        webrtc.shutdown();
+    }
+
+    #[test]
+    fn homekit_allocates_six_concurrent_transport_sessions() {
+        let webrtc = WebRtc::new();
+        let session_ids = (1..=6)
+            .map(|value| HapSessionId::new([value; 16]))
+            .collect::<Vec<_>>();
+
+        for session_id in &session_ids {
+            webrtc
+                .create_homekit_offer(*session_id, test_source())
+                .unwrap();
+        }
+        assert!(session_ids.iter().all(|session_id| {
+            webrtc.homekit_transport_state(*session_id)
+                == Some(HomeKitTransportState::AwaitingAnswer)
+        }));
+
+        for session_id in session_ids {
+            assert!(webrtc.close_homekit_session(session_id));
+        }
+        webrtc.shutdown();
     }
 
     #[test]

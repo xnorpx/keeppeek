@@ -11,6 +11,7 @@ import type {
 	BrowserLiveTrackOffer,
 	DiscoveredCameraSettings,
 	Health,
+	HomeKitSettings,
 	LiveQuality,
 	LiveSessionResponse,
 	LiveSessionStatus,
@@ -145,6 +146,14 @@ export function updateSettingsConfig(
 
 export function getSettingsCameras(): Promise<CameraSettings[]> {
 	return get('/api/settings/cameras');
+}
+
+export function getHomeKitSettings(signal?: AbortSignal): Promise<HomeKitSettings> {
+	return get('/api/settings/homekit', signal);
+}
+
+export function resetCameraHomeKitPairings(id: string): Promise<void> {
+	return del(`/api/cameras/${encodeURIComponent(id)}/homekit/pairings`);
 }
 
 export function discoverSettingsCameras(subnets: number[]): Promise<DiscoveredCameraSettings[]> {

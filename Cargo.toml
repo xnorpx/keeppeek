@@ -2,6 +2,7 @@
 members = [
   ".",
   "crates/chunked-transfer",
+  "crates/hap-video",
   "crates/mp4",
   "crates/onvif/onvif",
   "crates/onvif/schema",
@@ -64,6 +65,14 @@ path = "src/bin/configure_cameras.rs"
 name = "audit-camera-motion"
 path = "src/bin/audit_camera_motion.rs"
 
+[[bin]]
+name = "homekit-offer-probe"
+path = "src/bin/homekit_offer_probe.rs"
+
+[[bin]]
+name = "homekit-file-stream"
+path = "src/bin/homekit_file_stream.rs"
+
 [dependencies]
 anyhow = { version = "*" }
 base64 = { version = "*" }
@@ -76,8 +85,10 @@ clap = { version = "*", default-features = false, features = [
 crossbeam-channel = "0.5.16"
 ctrlc = { version = "*" }
 hdrhistogram = { version = "7.6.0", default-features = false }
+hap-video = { path = "crates/hap-video" }
 image = { version = "*", default-features = false, features = ["jpeg"] }
 include_dir = "0.7.4"
+mdns-sd = "0.21.0"
 mimalloc = { version = "*" }
 mp4 = { path = "crates/mp4" }
 ipnet = "2.12.1"
@@ -104,6 +115,7 @@ ureq = { version = "3", default-features = false, features = ["native-tls"] }
 url = { version = "*" }
 sysinfo = "0.39.6"
 quick-xml = { version = "0.41.0", features = ["serialize"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 prost = "0.14"
 prost-types = "0.14"
 

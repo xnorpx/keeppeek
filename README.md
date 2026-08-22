@@ -37,6 +37,29 @@ that interoperate with the Media Gateway may be open or closed source.
 KeepPeek is developed with AI assistance through an iterative, human-directed process of
 implementation, validation, review, and refinement.
 
+## HomeKit
+
+HomeKit discovery and pairing are opt-in. Add this to `config.toml` and restart KeepPeek:
+
+```toml
+[homekit]
+enabled = true
+bind = "0.0.0.0"
+port = 32000
+name = "KeepPeek"
+```
+
+KeepPeek exports every configured camera as an independent HomeKit IP camera. `port` is the
+base HAP port, so cameras listen on `32000`, `32001`, and so on. Private state, setup codes, and
+one QR SVG per camera are written under `homekit/` beside the configuration file and are also
+shown on the Settings page. Add each camera separately in Apple Home.
+
+Each camera keeps its own accessory identity and pairing database. A camera supports up to 256
+controller records and concurrent encrypted connections from multiple phones and home hubs.
+KeepPeek provides discovery, pairing, encrypted HAP control, str0m WebRTC negotiation, live
+H.264/H.265 video, and characteristic notifications. Opus audio and SFrame remain unsupported.
+See the [hap-video integration guide](crates/hap-video/README.md) for details.
+
 ## Docker
 
 The image supports both `linux/amd64` and `linux/arm64` when built with Docker Buildx. It runs

@@ -287,7 +287,7 @@
 
 	async function revealCameraEditor(focusId: 'camera-ip' | 'camera-name' | 'camera-username') {
 		await tick();
-		cameraEditor?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		cameraEditor?.scrollIntoView({ block: 'start' });
 		cameraEditor?.querySelector<HTMLInputElement>(`#${focusId}`)?.focus({ preventScroll: true });
 	}
 
@@ -838,7 +838,7 @@
 
 					{#if editorMode}
 						<Separator />
-						<form bind:this={cameraEditor} class="space-y-4" onsubmit={saveCamera}>
+						<form bind:this={cameraEditor} class="scroll-mt-20 space-y-4" onsubmit={saveCamera}>
 							<div class="flex flex-wrap items-center justify-between gap-3">
 								<h2 class="text-sm font-semibold">{isNewCamera ? 'Add camera' : 'Edit camera'}</h2>
 								<Button variant="ghost" size="sm" onclick={closeEditor}>
