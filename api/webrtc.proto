@@ -948,6 +948,8 @@ message QueryStoredMediaTimeline {
   DataChannelKind channel = 7;
   // Presence requests events; omission requests none.
   StoredMediaEventQuery events = 8;
+  // Skips recording availability ranges when the caller needs only events or timed data.
+  bool omit_availability = 9;
 }
 
 message StoredMediaEventQuery {

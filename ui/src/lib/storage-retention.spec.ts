@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { storageRetentionEvidence } from '$lib/storage-retention';
+import {
+	formatStorageBufferDuration,
+	formatStorageDuration,
+	storageRetentionEvidence
+} from '$lib/storage-retention';
 import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
 
 const config = {
@@ -65,6 +69,16 @@ const health = {
 } as ServerHealthResponse;
 
 describe('storage retention evidence', () => {
+	it('formats zero and sub-second durations without rounding them to seconds', () => {
+		expect(formatStorageDuration(0, 'en-US')).toBe('0 milliseconds');
+		expect(formatStorageDuration(0.001, 'en-US')).toBe('1 millisecond');
+		expect(formatStorageDuration(0.25, 'en-US')).toBe('250 milliseconds');
+		expect(formatStorageDuration(1, 'en-US')).toBe('1 second');
+		expect(formatStorageDuration(60, 'en-US')).toBe('1 minute');
+		expect(formatStorageBufferDuration(0, 'en-US')).toBe('0 milliseconds');
+		expect(formatStorageBufferDuration(90, 'en-US')).toBe('90 seconds');
+	});
+
 	it('keeps measured disk and catalog evidence distinct from projected retention', () => {
 		const evidence = storageRetentionEvidence(config, health);
 

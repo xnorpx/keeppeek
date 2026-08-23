@@ -25,6 +25,7 @@
 		compactTimeZone?: string;
 		firstFrameElapsedMsOverride?: number;
 		onfocus: (cameraId: string) => void;
+		onframeactivitychange?: (cameraId: string, active: boolean) => void;
 		onvisibilitychange?: (visibility: GridTileVisibility) => void;
 		onlayoutpointerdown?: (event: PointerEvent) => void;
 		onlayoutpointermove?: (event: PointerEvent) => void;
@@ -49,6 +50,7 @@
 		compactTimeZone,
 		firstFrameElapsedMsOverride,
 		onfocus,
+		onframeactivitychange,
 		onvisibilitychange,
 		onlayoutpointerdown,
 		onlayoutpointermove,
@@ -70,9 +72,16 @@
 	);
 	let firstFrameElapsedMs = $state(0);
 	let effectiveFirstFrameElapsedMs = $derived(firstFrameElapsedMsOverride ?? firstFrameElapsedMs);
+	let visualState = $derived(
+		waitingForFirstFrame
+			? effectiveFirstFrameElapsedMs >= 5_000
+				? 'degraded'
+				: 'reconnecting'
+			: presentation.state
+	);
 	let label = $derived(camera.name ?? camera.id);
 	let rendersVideo = $derived(healthPresentation.state !== 'offline');
-	let canFocus = $derived(presentation.state === 'live' || presentation.state === 'degraded');
+	let canFocus = $derived(visualState === 'live' || visualState === 'degraded');
 	let mobileSizeClass = $derived(
 		compactStatus
 			? 'h-full min-w-0 flex-1 basis-0'
@@ -94,28 +103,28 @@
 		desktopPaperFrame || layoutMode || mobileFeatured ? '' : 'hidden md:block'
 	);
 	let stateColor = $derived(
-		presentation.state === 'live'
+		visualState === 'live'
 			? 'bg-healthy'
-			: presentation.state === 'degraded'
+			: visualState === 'degraded'
 				? 'bg-activity'
-				: presentation.state === 'offline'
+				: visualState === 'offline'
 					? 'bg-live'
 					: 'bg-text-muted'
 	);
 	let borderColor = $derived(
 		layoutMode && layoutSelected
 			? 'border-primary ring-1 ring-primary'
-			: compactStatus && presentation.state === 'degraded'
+			: compactStatus && visualState === 'degraded'
 				? 'border-2 border-activity'
-				: compactStatus && presentation.state === 'offline'
+				: compactStatus && visualState === 'offline'
 					? 'border-2 border-live'
 					: compactStatus
 						? compactLiveBorder === 'hairline'
 							? 'border-hairline'
 							: 'border-hairline-strong'
-						: presentation.state === 'degraded'
+						: visualState === 'degraded'
 							? 'border-activity'
-							: presentation.state === 'offline'
+							: visualState === 'offline'
 								? 'border-hairline-strong border-dashed'
 								: 'border-hairline'
 	);
@@ -183,12 +192,17 @@
 		const minutes = elapsedMinutes % 60;
 		return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 	}
+
+	function handleFrameActivity(active: boolean): void {
+		hasRecentFrames = active;
+		onframeactivitychange?.(camera.id, active);
+	}
 </script>
 
 <article
 	bind:this={tileElement}
 	data-peek-camera={camera.id}
-	data-peek-camera-state={presentation.state}
+	data-peek-camera-state={visualState}
 	data-peek-camera-size={layoutMode ? 'layout' : mobileFeatured ? 'featured' : 'compact'}
 	class="group relative min-w-0 overflow-hidden rounded-lg border md:col-span-1 {tileSurface} {borderColor} {mobileSizeClass}"
 >
@@ -199,7 +213,7 @@
 			showDiagnostics={!compactStatus && !layoutMode}
 			diagnosticsLabel={!compactStatus && !layoutMode ? label : undefined}
 			diagnosticsStatusClass={stateColor}
-			onframeactivitychange={(active) => (hasRecentFrames = active)}
+			onframeactivitychange={handleFrameActivity}
 			class="size-full overflow-hidden rounded-[inherit]"
 		/>
 	{:else}

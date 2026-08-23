@@ -44,10 +44,10 @@ describe('Board 11 Camera fleet story', () => {
 
 		await expect.element(page.getByText('127 OF 127 SOURCES', { exact: true })).toBeVisible();
 		await expect
-			.element(page.getByText('DEGRADED · 14% frames dropped', { exact: true }))
+			.element(page.getByText('DEGRADED · 14% frames dropped', { exact: true }).last())
 			.toBeVisible();
 		await expect
-			.element(page.getByText('OFFLINE · Authentication failed', { exact: true }))
+			.element(page.getByText('OFFLINE · Authentication failed', { exact: true }).last())
 			.toBeVisible();
 		await expect
 			.element(page.getByText('VIRTUALISED · 56PX ROWS · RENDERS 24 AT A TIME', { exact: true }))

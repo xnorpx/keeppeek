@@ -50,8 +50,8 @@ test('Board 11 virtualizes the 127-source Camera fleet into fixed 56px rows', as
 	await page.getByRole('button', { name: /Not healthy/ }).click();
 	await expect(viewport).toHaveAttribute('data-fleet-total', '2');
 	await expect(page.locator('[data-fleet-row]')).toHaveCount(2);
-	await expect(page.getByText('DEGRADED · 14% frames dropped')).toBeVisible();
-	await expect(page.getByText('OFFLINE · Authentication failed')).toBeVisible();
+	await expect(page.getByText('DEGRADED · 14% frames dropped').last()).toBeVisible();
+	await expect(page.getByText('OFFLINE · Authentication failed').last()).toBeVisible();
 
 	await page.getByRole('checkbox', { name: 'Select Porch' }).check();
 	await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
@@ -80,9 +80,29 @@ test('contains the virtualized fleet inside the authored mobile viewport', async
 		.poll(() =>
 			page
 				.locator('[data-fleet-table-scroll]')
-				.evaluate((element) => element.scrollWidth > element.clientWidth)
+				.evaluate((element) => element.scrollWidth === element.clientWidth)
 		)
 		.toBe(true);
+	await expect
+		.poll(() =>
+			page.locator('[data-fleet-row]').evaluateAll((rows) =>
+				rows.every((row) =>
+					[...row.querySelectorAll('a, input')].every((element) => {
+						const bounds = element.getBoundingClientRect();
+						return bounds.left >= 0 && bounds.right <= window.innerWidth;
+					})
+				)
+			)
+		)
+		.toBe(true);
+	const firstSelection = page.getByRole('checkbox', { name: 'Select Porch' });
+	await expect
+		.poll(async () => {
+			const bounds = await firstSelection.boundingBox();
+			return bounds ? [Math.round(bounds.width), Math.round(bounds.height)] : null;
+		})
+		.toEqual([44, 44]);
+	await expect(page.getByRole('link', { name: 'Open Porch' })).toBeVisible();
 });
 
 test('preserves fleet table lanes and row height while health evidence is pending', async ({

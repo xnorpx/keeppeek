@@ -69,6 +69,7 @@ describe('camera fleet presentation', () => {
 			transportDetail: 'Baichuan · TCP',
 			streams: ['MAIN 3840X2160 H265'],
 			recording: 'Continuous',
+			recordingState: 'healthy',
 			throughput: '18.4 Mb/s',
 			gbPerDay: '198.7'
 		});
@@ -79,6 +80,7 @@ describe('camera fleet presentation', () => {
 
 		expect(presentation.statusDetail).toBe('DEGRADED · Packet loss');
 		expect(presentation.recording).toBe('Gaps reported');
+		expect(presentation.recordingState).toBe('degraded');
 	});
 
 	it('does not synthesize metrics when the server omits them', () => {

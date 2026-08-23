@@ -348,16 +348,18 @@
 		cameraEditor?.querySelector<HTMLInputElement>(`#${focusId}`)?.focus({ preventScroll: true });
 	}
 
-	async function openRuntimeSettings() {
+	async function openRuntimeSettings(focusId: 'server-host' | 'medium-term-path' = 'server-host') {
 		if (!config) return;
 		runtimeSettingsForm = runtimeSettingsFormFromConfig(config);
 		runtimeSettingsError = null;
 		editingRuntimeSettings = true;
 		await tick();
-		document.getElementById('runtime-settings-form')?.scrollIntoView({
+		const runtimeForm = document.getElementById('runtime-settings-form');
+		runtimeForm?.scrollIntoView({
 			behavior: 'smooth',
 			block: 'start'
 		});
+		runtimeForm?.querySelector<HTMLInputElement>(`#${focusId}`)?.focus({ preventScroll: true });
 	}
 
 	function closeRuntimeSettings() {
@@ -802,7 +804,7 @@
 					{config}
 					health={serverHealth}
 					healthError={serverHealthError}
-					onedit={() => void openRuntimeSettings()}
+					onedit={() => void openRuntimeSettings('medium-term-path')}
 				/>
 			</div>
 
@@ -1145,7 +1147,7 @@
 
 			<form
 				id="runtime-settings-form"
-				class="hidden scroll-mt-4 space-y-4 md:block"
+				class="scroll-mt-4 space-y-4 {editingRuntimeSettings ? 'block' : 'hidden md:block'}"
 				onsubmit={saveRuntimeSettings}
 			>
 				<fieldset disabled={savingRuntimeSettings} class="contents">
@@ -1155,7 +1157,11 @@
 								<Card.Title>Server</Card.Title>
 								{#if !editingRuntimeSettings}
 									<Card.Action>
-										<Button variant="outline" size="sm" onclick={openRuntimeSettings}>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => void openRuntimeSettings('server-host')}
+										>
 											<PencilIcon />
 											Edit server
 										</Button>
@@ -1209,7 +1215,11 @@
 								<Card.Title>Storage</Card.Title>
 								{#if !editingRuntimeSettings}
 									<Card.Action>
-										<Button variant="outline" size="sm" onclick={openRuntimeSettings}>
+										<Button
+											variant="outline"
+											size="sm"
+											onclick={() => void openRuntimeSettings('medium-term-path')}
+										>
 											<PencilIcon />
 											Edit storage
 										</Button>

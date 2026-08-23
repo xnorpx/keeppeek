@@ -484,6 +484,10 @@ impl KeyframeGate {
         self.cached_preview_written = true;
     }
 
+    const fn has_live_gop(&self) -> bool {
+        !self.waiting
+    }
+
     fn observe_sequence(&mut self, last_sequence: &mut Option<u64>, sequence: u64) -> bool {
         let contiguous = last_sequence.is_none_or(|last| sequence == last.wrapping_add(1));
         *last_sequence = Some(sequence);
@@ -583,7 +587,89 @@ struct ApiSessionControl {
 struct ApiControlRuntime {
     dispatch_tx: Sender<ControlDispatch>,
     dispatch_rx: Receiver<ControlDispatch>,
+    outbound: VecDeque<QueuedControlOutput>,
+    outbound_bytes: usize,
+    outbound_messages: usize,
     after_send: Vec<PostSendAction>,
+}
+
+enum QueuedControlOutput {
+    Payload(Vec<u8>),
+    Data {
+        messages: Vec<OutboundDataMessage>,
+        byte_len: usize,
+    },
+    Action(PostSendAction),
+}
+
+impl ApiControlRuntime {
+    fn enqueue(&mut self, dispatch: EnvelopeDispatch) -> anyhow::Result<()> {
+        let EnvelopeDispatch {
+            envelope,
+            after_send,
+            data_messages,
+            notifications,
+        } = dispatch;
+        let response_payload = envelope.encode_to_vec();
+        let notification_payloads = notifications
+            .into_iter()
+            .map(|notification| {
+                ControlEnvelope {
+                    message: Some(control_envelope::Message::Notification(notification)),
+                }
+                .encode_to_vec()
+            })
+            .collect::<Vec<_>>();
+        let data_bytes = data_messages.iter().try_fold(0usize, |total, message| {
+            total
+                .checked_add(message.message.encoded_len())
+                .ok_or_else(|| anyhow::anyhow!("API control queue byte count overflowed"))
+        })?;
+        let added_bytes = notification_payloads
+            .iter()
+            .try_fold(response_payload.len(), |total, payload| {
+                total
+                    .checked_add(payload.len())
+                    .ok_or_else(|| anyhow::anyhow!("API control queue byte count overflowed"))
+            })?
+            .checked_add(data_bytes)
+            .ok_or_else(|| anyhow::anyhow!("API control queue byte count overflowed"))?;
+        let added_messages = 1usize
+            .checked_add(notification_payloads.len())
+            .and_then(|total| total.checked_add(data_messages.len()))
+            .ok_or_else(|| anyhow::anyhow!("API control queue message count overflowed"))?;
+        let total_bytes = self
+            .outbound_bytes
+            .checked_add(added_bytes)
+            .ok_or_else(|| anyhow::anyhow!("API control queue byte count overflowed"))?;
+        let total_messages = self
+            .outbound_messages
+            .checked_add(added_messages)
+            .ok_or_else(|| anyhow::anyhow!("API control queue message count overflowed"))?;
+        if total_bytes > API_OUTBOUND_MAX_BYTES || total_messages > API_OUTBOUND_MAX_MESSAGES {
+            anyhow::bail!("API control queue limit exceeded");
+        }
+
+        self.outbound_bytes = total_bytes;
+        self.outbound_messages = total_messages;
+        self.outbound
+            .push_back(QueuedControlOutput::Payload(response_payload));
+        if !data_messages.is_empty() {
+            self.outbound.push_back(QueuedControlOutput::Data {
+                messages: data_messages,
+                byte_len: data_bytes,
+            });
+        }
+        self.outbound.extend(
+            notification_payloads
+                .into_iter()
+                .map(QueuedControlOutput::Payload),
+        );
+        if let Some(action) = after_send {
+            self.outbound.push_back(QueuedControlOutput::Action(action));
+        }
+        Ok(())
+    }
 }
 
 struct ApiMediaTrack {
@@ -735,8 +821,7 @@ impl ApiMediaRuntime {
 
     fn flush_control_notifications(
         &mut self,
-        rtc: &mut Rtc,
-        channels: SessionChannels,
+        mut write: impl FnMut(&[u8]) -> anyhow::Result<bool>,
     ) -> anyhow::Result<()> {
         while let Some(notification) = self.control_notifications.pop_front() {
             let payload = ControlEnvelope {
@@ -745,10 +830,7 @@ impl ApiMediaRuntime {
                 )),
             }
             .encode_to_vec();
-            let Some(mut channel) = rtc.channel(channels.control) else {
-                anyhow::bail!("WebRTC control channel disappeared before stream notification");
-            };
-            if !channel.write(true, &payload)? {
+            if !write(&payload)? {
                 self.control_notifications.push_front(notification);
                 break;
             }
@@ -795,19 +877,11 @@ impl ApiMediaRuntime {
             )
         })?;
         let selected_variant_id = plan.selected_variant_id.clone();
-        let control = Arc::new(SessionControl::new(
-            plan.quality,
-            initial_stream(
-                plan.quality,
-                plan.has_sub_stream.then_some(Source {
-                    camera_ip: plan.camera_ip,
-                    stream: StreamKind::Sub,
-                }),
-            ),
-        ));
+        let initial_stream = initial_stream(plan.has_sub_stream);
+        let control = Arc::new(SessionControl::new(plan.quality, initial_stream));
         let runtime = TrackRuntime::new(
             TrackPlan {
-                track_id,
+                track_id: track_id.clone(),
                 camera_ip: plan.camera_ip,
                 has_sub_stream: plan.has_sub_stream,
                 recording_label: plan.recording_label,
@@ -827,6 +901,7 @@ impl ApiMediaRuntime {
             runtime,
         };
         self.tracks.push(track);
+        self.enqueue_stream_state(&track_id, initial_stream);
         Ok(subscription_result(
             request.subscription_id.clone(),
             mid,
@@ -946,6 +1021,11 @@ struct SourceState {
     bitrate: SourceBitrate,
 }
 
+#[derive(Clone)]
+struct CameraPreviewKeyframe {
+    frame: MediaFrame,
+}
+
 impl Default for SourceState {
     fn default() -> Self {
         Self {
@@ -993,6 +1073,7 @@ impl SourceBitrate {
 #[derive(Default)]
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
+    camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     api_sessions: Mutex<HashMap<SessionId, Arc<ApiSessionControl>>>,
     threads: Mutex<Vec<SessionThread>>,
     next_session_id: AtomicU64,
@@ -1132,6 +1213,24 @@ struct SourceSubscription {
 }
 
 impl SourceSubscription {
+    fn preview_keyframe(&self) -> Option<MediaFrame> {
+        if self.control.is_some() {
+            return self
+                .inner
+                .camera_preview_keyframes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&self.high_source.camera_ip)
+                .map(|preview| preview.frame.clone());
+        }
+        self.inner
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&self.active_source)
+            .and_then(|state| state.keyframe.clone())
+    }
+
     fn record_written_frame(&self) {
         self.sender
             .queue_stats
@@ -1195,11 +1294,7 @@ impl SourceSubscription {
         recording_demand: Option<RecordingDemand>,
         recording_label: String,
     ) -> Self {
-        let active_source =
-            match StreamQuality::from_u8(control.requested_quality.load(Ordering::Acquire)) {
-                StreamQuality::High => high_source,
-                StreamQuality::Auto | StreamQuality::Low => low_source.unwrap_or(high_source),
-            };
+        let active_source = low_source.unwrap_or(high_source);
         control
             .active_stream
             .store(stream_as_u8(active_source.stream), Ordering::Release);
@@ -1225,7 +1320,7 @@ impl SourceSubscription {
     }
 
     fn subscribe(&self) {
-        let keyframe = {
+        {
             let mut sources = self
                 .inner
                 .sources
@@ -1233,8 +1328,8 @@ impl SourceSubscription {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let state = sources.entry(self.active_source).or_default();
             state.subscribers.push(self.sender.clone());
-            state.keyframe.clone()
-        };
+        }
+        let keyframe = self.preview_keyframe();
         *self
             .sender
             .latest_keyframe
@@ -1243,18 +1338,8 @@ impl SourceSubscription {
     }
 
     fn prepare_keyframe(&self, rx: &Receiver<SessionCommand>) {
-        let keyframe = {
-            let sources = self
-                .inner
-                .sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.discard_queued_frames(rx);
-            let Some(state) = sources.get(&self.active_source) else {
-                return;
-            };
-            state.keyframe.clone()
-        };
+        self.discard_queued_frames(rx);
+        let keyframe = self.preview_keyframe();
         *self
             .sender
             .latest_keyframe
@@ -1351,6 +1436,21 @@ impl SourceSubscription {
             return;
         }
         self.begin_switch(target);
+    }
+
+    fn arm_startup_fallback(&mut self, rtc: &mut Rtc, video_mid: Option<Mid>) {
+        let active_codec_negotiated = self.codec_is_negotiated(rtc, video_mid, self.active_source);
+        if let Some(target) = self.startup_fallback(active_codec_negotiated) {
+            self.begin_switch(target);
+        }
+    }
+
+    fn startup_fallback(&self, active_codec_negotiated: bool) -> Option<Source> {
+        (self.requested_quality() == Some(StreamQuality::High)
+            && self.active_source != self.high_source
+            && self.source_codec(self.active_source).is_some()
+            && !active_codec_negotiated)
+            .then_some(self.high_source)
     }
 
     fn automatic_source(&mut self, now: Instant) -> Source {
@@ -1630,20 +1730,10 @@ impl Publisher {
         avcc: Bytes,
     ) {
         self.inner.published_frames.fetch_add(1, Ordering::Relaxed);
+        let frame_bytes = avcc.len();
         self.inner
             .published_bytes
-            .fetch_add(avcc.len() as u64, Ordering::Relaxed);
-        let mut sources = self
-            .inner
-            .sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = sources.entry(source).or_default();
-        state.bitrate.observe(received_at, avcc.len());
-        if state.subscribers.is_empty() && !is_keyframe {
-            return;
-        }
-
+            .fetch_add(frame_bytes as u64, Ordering::Relaxed);
         let frame = MediaFrame {
             codec,
             is_keyframe,
@@ -1651,6 +1741,29 @@ impl Publisher {
             timestamp,
             data: Arc::new(MediaFrameData::new(avcc)),
         };
+        if is_keyframe && source.stream == StreamKind::Sub {
+            let mut previews = self
+                .inner
+                .camera_preview_keyframes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            previews.insert(
+                source.camera_ip,
+                CameraPreviewKeyframe {
+                    frame: frame.clone(),
+                },
+            );
+        }
+        let mut sources = self
+            .inner
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = sources.entry(source).or_default();
+        state.bitrate.observe(received_at, frame_bytes);
+        if state.subscribers.is_empty() && !is_keyframe {
+            return;
+        }
         if is_keyframe {
             state.keyframe = Some(frame.clone());
         }
@@ -2244,12 +2357,11 @@ fn next_session_id(inner: &Inner) -> SessionId {
     )
 }
 
-fn initial_stream(quality: StreamQuality, low_source: Option<Source>) -> StreamKind {
-    match quality {
-        StreamQuality::High => StreamKind::Main,
-        StreamQuality::Auto | StreamQuality::Low => {
-            low_source.map_or(StreamKind::Main, |source| source.stream)
-        }
+const fn initial_stream(has_sub_stream: bool) -> StreamKind {
+    if has_sub_stream {
+        StreamKind::Sub
+    } else {
+        StreamKind::Main
     }
 }
 
@@ -2332,6 +2444,9 @@ fn run_api_session(
     let mut control_runtime = ApiControlRuntime {
         dispatch_tx,
         dispatch_rx,
+        outbound: VecDeque::new(),
+        outbound_bytes: 0,
+        outbound_messages: 0,
         after_send: Vec::new(),
     };
     let deps = ApiSessionLoopDeps {
@@ -2397,7 +2512,7 @@ fn drive_api_session(
             break;
         }
         drain_api_session_commands(deps.data_rx, media);
-        if drain_pending_control_dispatches(rtc, deps.channels, media, control_runtime)? {
+        if drain_pending_control_dispatches(control_runtime)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -2437,7 +2552,7 @@ fn drive_api_session(
             &mut events,
             Some(next_timeout.saturating_duration_since(Instant::now())),
         )?;
-        if drain_pending_control_dispatches(rtc, deps.channels, media, control_runtime)? {
+        if drain_pending_control_dispatches(control_runtime)? {
             next_timeout = drain_api_outputs(
                 rtc,
                 socket,
@@ -2534,7 +2649,13 @@ fn drive_track_runtime(
 ) -> anyhow::Result<TrackDriveResult> {
     let mut wrote_media = false;
     let mut applied_stream = None;
-    track.subscription.select_source(rtc, Some(track.mid), now);
+    if track.keyframe_gate.has_live_gop() {
+        track.subscription.select_source(rtc, Some(track.mid), now);
+    } else {
+        track
+            .subscription
+            .arm_startup_fallback(rtc, Some(track.mid));
+    }
     if connected && !track.keyframe_prepared {
         track.subscription.prepare_keyframe(&track.rx);
         track.last_frame_sequence = None;
@@ -2640,7 +2761,12 @@ fn drain_api_outputs(
     control_runtime: &mut ApiControlRuntime,
 ) -> anyhow::Result<Instant> {
     loop {
-        media.flush_control_notifications(rtc, channels)?;
+        flush_control_channel_outputs(control_runtime, media, |payload| {
+            let Some(mut channel) = rtc.channel(channels.control) else {
+                anyhow::bail!("WebRTC control channel disappeared before queued delivery");
+            };
+            Ok(channel.write(true, payload)?)
+        })?;
         media.flush_outbound(rtc, channels)?;
         match rtc.poll_output()? {
             Output::Timeout(deadline) => {
@@ -2697,24 +2823,22 @@ fn drain_api_outputs(
                         .as_deref()
                         .and_then(|handler| handler.initial_capabilities(control.session_id))
                     {
-                        let envelope = ControlEnvelope {
-                            message: Some(control_envelope::Message::Notification(
-                                crate::api::proto::Notification {
-                                    event: Some(
-                                        crate::api::proto::notification::Event::InitialCapabilities(
-                                            capabilities,
+                        control_runtime.enqueue(EnvelopeDispatch {
+                            envelope: ControlEnvelope {
+                                message: Some(control_envelope::Message::Notification(
+                                    crate::api::proto::Notification {
+                                        event: Some(
+                                            crate::api::proto::notification::Event::InitialCapabilities(
+                                                capabilities,
+                                            ),
                                         ),
-                                    ),
-                                },
-                            )),
-                        };
-                        let payload = envelope.encode_to_vec();
-                        let Some(mut channel) = rtc.channel(channels.control) else {
-                            anyhow::bail!("WebRTC control channel disappeared before capabilities");
-                        };
-                        if !channel.write(true, &payload)? {
-                            anyhow::bail!("WebRTC capability response buffer is full");
-                        }
+                                    },
+                                )),
+                            },
+                            after_send: None,
+                            data_messages: Vec::new(),
+                            notifications: Vec::new(),
+                        })?;
                     }
                 }
             }
@@ -2735,15 +2859,12 @@ fn drain_api_outputs(
                         .swap(true, Ordering::AcqRel)
                     {
                         enqueue_control_dispatch(
-                            rtc,
-                            channels,
                             envelope_dispatch(failed_control_dispatch(
                                 request_id,
                                 ErrorCode::Rejected,
                                 "another camera operation is already in progress",
                             )),
-                            media,
-                            &mut control_runtime.after_send,
+                            control_runtime,
                         )?;
                     } else if let Err(error) = spawn_background_camera_operation(
                         request,
@@ -2755,28 +2876,19 @@ fn drain_api_outputs(
                             .camera_operation_in_flight
                             .store(false, Ordering::Release);
                         enqueue_control_dispatch(
-                            rtc,
-                            channels,
                             envelope_dispatch(failed_control_dispatch(
                                 request_id,
                                 ErrorCode::Unavailable,
                                 format!("unable to start camera operation: {error}"),
                             )),
-                            media,
-                            &mut control_runtime.after_send,
+                            control_runtime,
                         )?;
                     }
                     continue;
                 }
                 let reply =
                     api_control_reply(data.binary, &data.data, handler.as_deref(), control, media);
-                enqueue_control_dispatch(
-                    rtc,
-                    channels,
-                    reply,
-                    media,
-                    &mut control_runtime.after_send,
-                )?;
+                enqueue_control_dispatch(reply, control_runtime)?;
             }
             Output::Event(Event::ChannelClose(channel_id)) if channel_id == channels.control => {
                 anyhow::bail!("WebRTC control channel closed")
@@ -2787,54 +2899,65 @@ fn drain_api_outputs(
 }
 
 fn drain_pending_control_dispatches(
-    rtc: &mut Rtc,
-    channels: SessionChannels,
-    media: &mut ApiMediaRuntime,
     control_runtime: &mut ApiControlRuntime,
 ) -> anyhow::Result<bool> {
     let mut dispatched = false;
     while let Ok(dispatch) = control_runtime.dispatch_rx.try_recv() {
-        enqueue_control_dispatch(
-            rtc,
-            channels,
-            envelope_dispatch(dispatch),
-            media,
-            &mut control_runtime.after_send,
-        )?;
+        enqueue_control_dispatch(envelope_dispatch(dispatch), control_runtime)?;
         dispatched = true;
     }
     Ok(dispatched)
 }
 
 fn enqueue_control_dispatch(
-    rtc: &mut Rtc,
-    channels: SessionChannels,
     dispatch: EnvelopeDispatch,
-    media: &mut ApiMediaRuntime,
-    after_send: &mut Vec<PostSendAction>,
+    control_runtime: &mut ApiControlRuntime,
 ) -> anyhow::Result<()> {
-    let payload = dispatch.envelope.encode_to_vec();
-    let Some(mut channel) = rtc.channel(channels.control) else {
-        anyhow::bail!("WebRTC control channel disappeared before response");
-    };
-    if !channel.write(true, &payload)? {
-        anyhow::bail!("WebRTC control response buffer is full");
-    }
-    media.enqueue(dispatch.data_messages)?;
-    for notification in dispatch.notifications {
-        let payload = ControlEnvelope {
-            message: Some(control_envelope::Message::Notification(notification)),
+    control_runtime.enqueue(dispatch)
+}
+
+fn flush_control_outputs(
+    control_runtime: &mut ApiControlRuntime,
+    media: &mut ApiMediaRuntime,
+    mut write: impl FnMut(&[u8]) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    while let Some(output) = control_runtime.outbound.pop_front() {
+        match output {
+            QueuedControlOutput::Payload(payload) => {
+                if !write(&payload)? {
+                    control_runtime
+                        .outbound
+                        .push_front(QueuedControlOutput::Payload(payload));
+                    break;
+                }
+                control_runtime.outbound_bytes =
+                    control_runtime.outbound_bytes.saturating_sub(payload.len());
+                control_runtime.outbound_messages =
+                    control_runtime.outbound_messages.saturating_sub(1);
+            }
+            QueuedControlOutput::Data { messages, byte_len } => {
+                let message_count = messages.len();
+                media.enqueue(messages)?;
+                control_runtime.outbound_bytes =
+                    control_runtime.outbound_bytes.saturating_sub(byte_len);
+                control_runtime.outbound_messages = control_runtime
+                    .outbound_messages
+                    .saturating_sub(message_count);
+            }
+            QueuedControlOutput::Action(action) => control_runtime.after_send.push(action),
         }
-        .encode_to_vec();
-        let Some(mut channel) = rtc.channel(channels.control) else {
-            anyhow::bail!("WebRTC control channel disappeared before notification");
-        };
-        if !channel.write(true, &payload)? {
-            anyhow::bail!("WebRTC control notification buffer is full");
-        }
     }
-    if let Some(action) = dispatch.after_send {
-        after_send.push(action);
+    Ok(())
+}
+
+fn flush_control_channel_outputs(
+    control_runtime: &mut ApiControlRuntime,
+    media: &mut ApiMediaRuntime,
+    mut write: impl FnMut(&[u8]) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    flush_control_outputs(control_runtime, media, &mut write)?;
+    if control_runtime.outbound.is_empty() {
+        media.flush_control_notifications(write)?;
     }
     Ok(())
 }
@@ -2919,7 +3042,9 @@ fn drive_session(
             configured_desired_bitrate = desired_bitrate;
             next_desired_bitrate_refresh = now + DESIRED_BITRATE_REFRESH;
         }
-        subscription.select_source(rtc, video_mid, Instant::now());
+        if keyframe_gate.has_live_gop() {
+            subscription.select_source(rtc, video_mid, Instant::now());
+        }
         if connected && !keyframe_prepared {
             subscription.prepare_keyframe(rx);
             last_frame_sequence = None;
@@ -3898,8 +4023,10 @@ mod tests {
         let live_keyframe = live_frame(true);
         let live_p_frame = live_frame(false);
 
+        assert!(!gate.has_live_gop());
         assert!(gate.allows(FrameOrigin::Cached, cached_keyframe.is_keyframe));
         gate.mark_written(FrameOrigin::Cached);
+        assert!(!gate.has_live_gop());
         assert!(!gate.allows(FrameOrigin::Cached, cached_keyframe.is_keyframe));
         for _ in 0..3 {
             assert!(!gate.allows(FrameOrigin::Live, live_p_frame.is_keyframe));
@@ -3907,9 +4034,126 @@ mod tests {
 
         assert!(gate.allows(FrameOrigin::Live, live_keyframe.is_keyframe));
         gate.mark_written(FrameOrigin::Live);
+        assert!(gate.has_live_gop());
         for _ in 0..3 {
             assert!(gate.allows(FrameOrigin::Live, live_p_frame.is_keyframe));
         }
+    }
+
+    #[test]
+    fn adaptive_startup_prefers_cached_then_live_substream() {
+        let webrtc = WebRtc::default();
+        let camera_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let main_source = Source {
+            camera_ip,
+            stream: StreamKind::Main,
+        };
+        let sub_source = Source {
+            camera_ip,
+            stream: StreamKind::Sub,
+        };
+        for (source, payload) in [
+            (main_source, Bytes::from_static(&[1])),
+            (main_source, Bytes::from_static(&[2])),
+        ] {
+            webrtc.live.publish(
+                source,
+                VideoCodec::H264,
+                true,
+                Instant::now(),
+                None,
+                payload,
+            );
+        }
+        assert!(
+            !webrtc
+                .live
+                .inner
+                .camera_preview_keyframes
+                .lock()
+                .unwrap()
+                .contains_key(&camera_ip)
+        );
+        for (source, payload) in [
+            (sub_source, Bytes::from_static(&[3])),
+            (main_source, Bytes::from_static(&[4])),
+            (sub_source, Bytes::from_static(&[5])),
+        ] {
+            webrtc.live.publish(
+                source,
+                VideoCodec::H264,
+                true,
+                Instant::now(),
+                None,
+                payload,
+            );
+        }
+        {
+            let sources = webrtc.live.inner.sources.lock().unwrap();
+            assert_eq!(
+                sources[&main_source]
+                    .keyframe
+                    .as_ref()
+                    .unwrap()
+                    .data
+                    .avcc
+                    .as_ref(),
+                &[4]
+            );
+            assert_eq!(
+                sources[&sub_source]
+                    .keyframe
+                    .as_ref()
+                    .unwrap()
+                    .data
+                    .avcc
+                    .as_ref(),
+                &[5]
+            );
+        }
+        let preview = webrtc
+            .live
+            .inner
+            .camera_preview_keyframes
+            .lock()
+            .unwrap()
+            .get(&camera_ip)
+            .cloned()
+            .unwrap();
+        assert_eq!(preview.frame.data.avcc.as_ref(), &[5]);
+
+        let (tx, rx) = bounded(4);
+        let prepared_keyframe = Arc::new(Mutex::new(None));
+        let sender = SessionSender {
+            id: SessionId(1),
+            track_id: Some(TrackId::parse("camera-0".to_owned()).unwrap()),
+            tx,
+            queue_stats: Arc::new(SessionQueueStats::default()),
+            queue_high_water: webrtc.live.inner.queue_high_water.clone(),
+            latest_keyframe: prepared_keyframe.clone(),
+            poller: Arc::new(Poller::new().unwrap()),
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+        let subscription = SourceSubscription::adaptive(
+            webrtc.live.inner.clone(),
+            sender,
+            main_source,
+            Some(sub_source),
+            Arc::new(SessionControl::new(StreamQuality::High, StreamKind::Main)),
+            None,
+            "camera".to_owned(),
+        );
+        assert_eq!(subscription.active_source, sub_source);
+        assert_eq!(subscription.startup_fallback(true), None);
+        assert_eq!(subscription.startup_fallback(false), Some(main_source));
+        {
+            let sources = webrtc.live.inner.sources.lock().unwrap();
+            assert_eq!(sources[&sub_source].subscribers.len(), 1);
+            assert!(sources[&main_source].subscribers.is_empty());
+        }
+        subscription.prepare_keyframe(&rx);
+        let prepared = prepared_keyframe.lock().unwrap().clone().unwrap();
+        assert_eq!(prepared.data.avcc.as_ref(), &[5]);
     }
 
     #[test]
@@ -3968,18 +4212,18 @@ mod tests {
                 .sources
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert_eq!(sources[&high_source].subscribers.len(), 1);
+            assert_eq!(sources[&low_source].subscribers.len(), 1);
             assert_eq!(
                 sources
-                    .get(&low_source)
+                    .get(&high_source)
                     .map_or(0, |state| state.subscribers.len()),
                 0
             );
         }
 
-        subscription.begin_switch(low_source);
-        assert_eq!(subscription.active_source, high_source);
-        assert_eq!(subscription.pending_source, Some(low_source));
+        subscription.begin_switch(high_source);
+        assert_eq!(subscription.active_source, low_source);
+        assert_eq!(subscription.pending_source, Some(high_source));
         {
             let sources = inner
                 .sources
@@ -3988,18 +4232,18 @@ mod tests {
             assert_eq!(sources[&high_source].subscribers.len(), 1);
             assert_eq!(sources[&low_source].subscribers.len(), 1);
         }
-        assert!(!subscription.finish_switch_on_frame(low_source, false));
-        assert_eq!(subscription.active_source, high_source);
-        assert!(subscription.finish_switch_on_frame(low_source, true));
+        assert!(!subscription.finish_switch_on_frame(high_source, false));
         assert_eq!(subscription.active_source, low_source);
+        assert!(subscription.finish_switch_on_frame(high_source, true));
+        assert_eq!(subscription.active_source, high_source);
         assert_eq!(subscription.pending_source, None);
 
         let sources = inner
             .sources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(sources[&high_source].subscribers.len(), 0);
-        assert_eq!(sources[&low_source].subscribers.len(), 1);
+        assert_eq!(sources[&high_source].subscribers.len(), 1);
+        assert_eq!(sources[&low_source].subscribers.len(), 0);
         drop(sources);
         drop(subscription);
         let sources = inner
@@ -4238,6 +4482,100 @@ mod tests {
     }
 
     #[test]
+    fn control_output_retries_backpressure_without_losing_dispatch_order() {
+        let action_ran = Arc::new(AtomicBool::new(false));
+        let action_result = action_ran.clone();
+        let mut dispatch = envelope_dispatch(failed_control_dispatch(
+            42,
+            ErrorCode::Rejected,
+            "test response",
+        ));
+        dispatch.data_messages.push(OutboundDataMessage {
+            target: DataChannelTarget::Reliable,
+            group: "test-data".to_owned(),
+            message: crate::api::proto::Message::default(),
+        });
+        dispatch
+            .notifications
+            .push(crate::api::proto::Notification::default());
+        dispatch.after_send = Some(Box::new(move || {
+            action_result.store(true, Ordering::Release);
+        }));
+
+        let (dispatch_tx, dispatch_rx) = bounded(1);
+        let mut control_runtime = ApiControlRuntime {
+            dispatch_tx,
+            dispatch_rx,
+            outbound: VecDeque::new(),
+            outbound_bytes: 0,
+            outbound_messages: 0,
+            after_send: Vec::new(),
+        };
+        let mut media = ApiMediaRuntime::default();
+        media.enqueue_stream_state(
+            &TrackId::parse("camera-0".to_owned()).unwrap(),
+            StreamKind::Sub,
+        );
+        enqueue_control_dispatch(dispatch, &mut control_runtime).unwrap();
+
+        let mut blocked_writes = 0;
+        flush_control_channel_outputs(&mut control_runtime, &mut media, |_| {
+            blocked_writes += 1;
+            Ok(false)
+        })
+        .unwrap();
+        assert_eq!(blocked_writes, 1);
+        assert_eq!(control_runtime.outbound.len(), 4);
+        assert!(media.outbound.is_empty());
+        assert_eq!(media.control_notifications.len(), 1);
+        assert!(control_runtime.after_send.is_empty());
+        assert!(!action_ran.load(Ordering::Acquire));
+
+        let mut envelopes = Vec::new();
+        flush_control_channel_outputs(&mut control_runtime, &mut media, |payload| {
+            envelopes.push(ControlEnvelope::decode(payload).unwrap());
+            Ok(true)
+        })
+        .unwrap();
+
+        assert!(control_runtime.outbound.is_empty());
+        assert_eq!(control_runtime.outbound_bytes, 0);
+        assert_eq!(control_runtime.outbound_messages, 0);
+        assert_eq!(envelopes.len(), 3);
+        assert!(matches!(
+            &envelopes[0].message,
+            Some(control_envelope::Message::Response(response)) if response.request_id == 42
+        ));
+        assert!(matches!(
+            &envelopes[1].message,
+            Some(control_envelope::Message::Notification(_))
+        ));
+        assert!(matches!(
+            &envelopes[2].message,
+            Some(control_envelope::Message::Notification(
+                crate::api::proto::Notification {
+                    event: Some(
+                        crate::api::proto::notification::Event::SubscriptionStreamState(
+                            crate::api::proto::SubscriptionStreamState {
+                                subscription_id,
+                                active_variant_id,
+                            }
+                        )
+                    )
+                }
+            )) if subscription_id == "camera-0" && active_variant_id == "sub"
+        ));
+        assert!(media.control_notifications.is_empty());
+        assert_eq!(media.outbound.len(), 1);
+        assert_eq!(media.outbound[0].group(), "test-data");
+        assert_eq!(control_runtime.after_send.len(), 1);
+        for action in std::mem::take(&mut control_runtime.after_send) {
+            action();
+        }
+        assert!(action_ran.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn api_media_quality_update_reuses_mid_without_dropping_the_active_source() {
         let inner = Arc::new(Inner::default());
         let poller = Arc::new(Poller::new().unwrap());
@@ -4300,6 +4638,19 @@ mod tests {
                 .len(),
             1
         );
+        assert!(matches!(
+            media.control_notifications.pop_front(),
+            Some(crate::api::proto::Notification {
+                event: Some(
+                    crate::api::proto::notification::Event::SubscriptionStreamState(
+                        crate::api::proto::SubscriptionStreamState {
+                            subscription_id,
+                            active_variant_id,
+                        }
+                    )
+                )
+            }) if subscription_id == request.subscription_id && active_variant_id == "sub"
+        ));
 
         let replacement = media
             .subscribe(
@@ -4328,6 +4679,7 @@ mod tests {
             media.tracks[0].runtime.subscription.requested_quality(),
             Some(StreamQuality::High)
         );
+        assert!(media.control_notifications.is_empty());
         assert_eq!(
             inner.sources.lock().unwrap()[&Source {
                 camera_ip,

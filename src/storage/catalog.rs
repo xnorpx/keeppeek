@@ -359,20 +359,13 @@ impl RecordingCatalog {
             })
             .transpose()?;
 
-        let mut catalog = Self {
+        Ok(Self {
             handle,
             thread: Some(thread),
             maintenance_shutdown,
             maintenance,
             search_thread: Some(search_thread),
-        };
-        if let Some(maintenance) = catalog.maintenance.take()
-            && maintenance.join().is_err()
-        {
-            catalog.shutdown_inner();
-            anyhow::bail!("recording catalog reconciliation thread panicked");
-        }
-        Ok(catalog)
+        })
     }
 
     pub fn handle(&self) -> RecordingCatalogHandle {
@@ -3233,7 +3226,8 @@ mod tests {
         drop(handle);
         catalog.shutdown();
 
-        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let mut catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        catalog.wait_for_maintenance();
         let handle = catalog.handle();
         handle
             .backfill_recording_identity("front-door/main", "192.0.2.10", "main")
@@ -3303,7 +3297,8 @@ mod tests {
         drop(handle);
         catalog.shutdown();
 
-        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let mut catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        catalog.wait_for_maintenance();
         let handle = catalog.handle();
         let location = handle
             .resolve_event_keyframe("event-1", "main")

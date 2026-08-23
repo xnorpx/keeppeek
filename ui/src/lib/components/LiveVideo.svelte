@@ -122,6 +122,7 @@
 	let lastPresentedFrameAt = 0;
 	let frameActivityActive = $state(false);
 	let frozenFrameUrl = $state<string | null>(null);
+	let mounted = false;
 	// The compositor discards every frame while the tab is hidden; those are not render drops.
 	let renderDropsNeedRebaseline = false;
 	let status = $derived(track?.status ?? 'connecting');
@@ -148,8 +149,10 @@
 	);
 
 	onMount(() => {
+		mounted = true;
 		const detach = livePeer.attach(cameraId);
 		return () => {
+			mounted = false;
 			detach();
 			if (frozenFrameUrl) URL.revokeObjectURL(frozenFrameUrl);
 		};
@@ -222,6 +225,7 @@
 	});
 
 	async function handlePlaying() {
+		markFrameActivity();
 		refreshVideoAspectRatio();
 		livePeer.markPlaying(cameraId);
 		if (frozenFrameUrl) {
@@ -254,7 +258,7 @@
 		const blob = await new Promise<Blob | null>((resolve) =>
 			canvas.toBlob(resolve, 'image/jpeg', 0.78)
 		);
-		if (!blob || track?.stream) return;
+		if (!blob || !mounted || element.srcObject) return;
 		const url = URL.createObjectURL(blob);
 		if (frozenFrameUrl) URL.revokeObjectURL(frozenFrameUrl);
 		frozenFrameUrl = url;
@@ -281,6 +285,7 @@
 		statsRefreshInFlight = true;
 		try {
 			const stats = await receiver.getStats();
+			if (!mounted) return;
 			const inbound = [...stats.values()].find(
 				(report) => report.type === 'inbound-rtp' && report.kind === 'video'
 			) as ExtendedInboundStats | undefined;
@@ -453,6 +458,7 @@
 		playsinline
 		muted
 		onplaying={handlePlaying}
+		onloadeddata={markFrameActivity}
 		onloadedmetadata={handleVideoResize}
 		onwaiting={handlePlaybackInactive}
 		onstalled={handlePlaybackInactive}

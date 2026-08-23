@@ -8,6 +8,7 @@ export type CameraFleetPresentation = {
 	transportDetail: string;
 	streams: readonly string[];
 	recording: string;
+	recordingState: 'healthy' | 'degraded' | 'unknown';
 	throughput: string | null;
 	gbPerDay: string | null;
 };
@@ -58,11 +59,19 @@ export function presentCameraFleetRow(
 		transportDetail,
 		streams: formatStream(camera),
 		recording:
-			camera.capabilities?.recording !== true || peek.state === 'offline'
-				? 'Not recording'
-				: peek.state === 'degraded'
-					? 'Gaps reported'
-					: 'Continuous',
+			camera.capabilities?.recording !== true
+				? 'Not reported'
+				: peek.state === 'offline'
+					? 'Not recording'
+					: peek.state === 'degraded'
+						? 'Gaps reported'
+						: 'Continuous',
+		recordingState:
+			camera.capabilities?.recording !== true
+				? 'unknown'
+				: peek.state === 'live'
+					? 'healthy'
+					: 'degraded',
 		throughput: formatThroughput(kbps),
 		gbPerDay: formatGbPerDay(kbps)
 	};

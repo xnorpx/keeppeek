@@ -32,7 +32,8 @@ const severityPriority: Record<HealthIssue['severity'], number> = {
 export function rankHealthFindings(snapshot: HealthPresentationSnapshot): RankedHealthFinding[] {
 	return snapshot.issues
 		.map((issue, index) => {
-			const camera = cameraForIssue(snapshot.cameras, issue);
+			const matchedCamera = cameraForIssue(snapshot.cameras, issue);
+			const camera = matchedCamera ? effectiveCameraHealth(matchedCamera, snapshot.issues) : null;
 			return {
 				issue,
 				camera,
@@ -48,7 +49,8 @@ export function cameraDiagnosisEvidence(
 	snapshot: HealthPresentationSnapshot,
 	cameraId: string
 ): CameraDiagnosisEvidence | null {
-	const camera = snapshot.cameras.find((candidate) => candidate.id === cameraId) ?? null;
+	const cameras = snapshot.cameras.map((camera) => effectiveCameraHealth(camera, snapshot.issues));
+	const camera = cameras.find((candidate) => candidate.id === cameraId) ?? null;
 	if (camera === null) return null;
 
 	return {
@@ -67,12 +69,33 @@ export function cameraDiagnosisEvidence(
 		retryEvidence: null,
 		credentialProbeAvailable: false,
 		canSuggestTcp: camera.transport === 'udp',
-		reportingNormally: snapshot.cameras.filter((candidate) => candidate.state === 'online').length,
-		otherUnhealthyCameras: snapshot.cameras.filter(
+		reportingNormally: cameras.filter((candidate) => candidate.state === 'online').length,
+		otherUnhealthyCameras: cameras.filter(
 			(candidate) =>
 				candidate.id !== camera.id && candidate.state !== 'online' && candidate.state !== 'starting'
 		).length
 	};
+}
+
+export function reconcileServerHealth(snapshot: ServerHealthResponse): ServerHealthResponse {
+	return {
+		...snapshot,
+		cameras: snapshot.cameras.map((camera) => effectiveCameraHealth(camera, snapshot.issues))
+	};
+}
+
+export function effectiveCameraHealth(
+	camera: CameraHealth,
+	issues: readonly HealthIssue[]
+): CameraHealth {
+	if (camera.state !== 'online') return camera;
+	const issue = issues.find(
+		(candidate) =>
+			candidate.severity !== 'info' && cameraForIssue([camera], candidate)?.id === camera.id
+	);
+	return issue
+		? { ...camera, state: 'degraded', last_error: camera.last_error ?? issue.message }
+		: camera;
 }
 
 function cameraForIssue(cameras: readonly CameraHealth[], issue: HealthIssue): CameraHealth | null {

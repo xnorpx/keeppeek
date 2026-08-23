@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { capabilityActions } from '$lib/capability-actions';
-	import { storageRetentionEvidence } from '$lib/storage-retention';
+	import {
+		formatStorageBufferDuration,
+		formatStorageDuration,
+		storageRetentionEvidence
+	} from '$lib/storage-retention';
 	import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
 	import CapabilityGate from './CapabilityGate.svelte';
 	import DesktopPaperRail from './DesktopPaperRail.svelte';
@@ -33,16 +37,6 @@
 			unitIndex += 1;
 		}
 		return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: value >= 100 ? 0 : 2 }).format(value)} ${units[unitIndex]}`;
-	}
-
-	function formatDuration(seconds: number): string {
-		if (seconds < 60) return `${seconds} seconds`;
-		if (seconds % 3600 === 0) {
-			const hours = seconds / 3600;
-			return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
-		}
-		if (seconds % 60 === 0) return `${seconds / 60} minutes`;
-		return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 	}
 
 	function formatProjectedDays(days: number | null): string {
@@ -157,9 +151,9 @@
 							<div
 								class="flex h-9 items-center justify-between rounded-sm border border-hairline-strong bg-raised px-3"
 							>
-								<span class="text-sm">{evidence.shortTerm.durationSeconds} seconds</span><span
-									class="font-mono text-2xs text-text-faint">IN MEMORY</span
-								>
+								<span class="text-sm"
+									>{formatStorageBufferDuration(evidence.shortTerm.durationSeconds, 'en-US')}</span
+								><span class="font-mono text-2xs text-text-faint">IN MEMORY</span>
 							</div>
 						</div>
 						<p class="text-[13px] leading-[21px] text-text-muted">
@@ -180,14 +174,15 @@
 							<div
 								class="flex h-9 items-center justify-between rounded-sm border border-primary bg-raised px-3"
 							>
-								<span class="text-sm">{formatDuration(evidence.activeWriter.rolloverSeconds)}</span
+								<span class="text-sm"
+									>{formatStorageDuration(evidence.activeWriter.rolloverSeconds, 'en-US')}</span
 								><span class="font-mono text-2xs text-activity">CONFIGURED</span>
 							</div>
 						</div>
 						<p class="text-[13px] leading-[21px] text-text-muted">
-							Flushes every {formatDuration(evidence.activeWriter.flushSeconds)} with a {formatBytes(
-								evidence.activeWriter.writeBufferBytes
-							)} buffer. This sizes active files, not retention age.
+							Flushes every {formatStorageDuration(evidence.activeWriter.flushSeconds, 'en-US')} with
+							a {formatBytes(evidence.activeWriter.writeBufferBytes)} buffer. This sizes active files,
+							not retention age.
 						</p>
 					</article>
 

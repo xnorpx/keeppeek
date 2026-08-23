@@ -478,6 +478,20 @@ and `low` requests the lowest-ranked variant advertised for that stream. The ser
 manual selection it cannot satisfy with `Error` and a
 `SubscriptionError` using `SUBSCRIPTION_ERROR_CODE_VIDEO_QUALITY_UNAVAILABLE`.
 
+For fast initial paint, KeepPeek continuously caches the latest substream keyframe for each camera.
+Main-stream keyframes are never camera previews. A new RTP video subscription starts on the
+substream when one exists: it first writes the cached substream keyframe when available, waits for
+a live substream keyframe to establish a contiguous GOP, and only then may switch to the requested
+main-stream variant. If a high/main request encounters a known substream codec that was not
+negotiated on the assigned MID, it skips the unusable preview and arms the live main stream instead.
+A camera without a substream starts directly from a live main-stream keyframe. Preview delivery
+does not change `selected_variant_id`. After the subscription response, KeepPeek sends an ordered
+`SubscriptionStreamState` naming the initial active variant, and sends another after every live
+keyframe handoff. Clients use that notification for the currently rendered variant while treating
+`selected_variant_id` as the requested destination. Every source handoff continues on the same
+monotonic RTP presentation timeline and discards delta frames until the new source supplies a
+keyframe.
+
 An empty `MediaSubscriptionRequest.variant_id` lets KeepPeek select a compatible advertised variant
 using negotiated codec support, requested transport, and video quality. A nonempty variant ID
 requests that exact variant and requires `video_quality: AUTO`; KeepPeek never substitutes a
@@ -844,7 +858,8 @@ range, wanted generic payload types, a result channel, and an optional availabil
 duration. An empty source list selects every advertised stored-media source, enabling one unified
 all-camera timeline query. Zero bucket duration requests exact contiguous availability ranges; a
 nonzero duration permits the server to coalesce availability into buckets for a lower-cost
-overview.
+overview. `omit_availability` skips recording-range lookups when a caller needs only events or
+timed data; it defaults to false so existing timeline clients retain availability results.
 
 The `events` submessage is presence-sensitive. Omitting it requests no event records. An empty
 `events` message requests every event that overlaps the time range, while nonempty `event_types`

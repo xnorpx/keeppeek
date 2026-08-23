@@ -1509,7 +1509,6 @@ struct StoredMediaBatchRequest<'a> {
     requested_time_ms: i64,
     end_time_ms: Option<i64>,
     mode: proto::StoredMediaMode,
-    playing: bool,
     media_target: DataChannelTarget,
     max_buffer_ms: u64,
     generation: u64,
@@ -2126,7 +2125,6 @@ fn open_stored_media(
             requested_time_ms,
             end_time_ms,
             mode,
-            playing: open.playing,
             media_target,
             max_buffer_ms,
             generation: 1,
@@ -2170,7 +2168,6 @@ fn seek_stored_media(
         recording_stream_id,
         end_time_ms,
         mode,
-        playing,
         media_target,
         max_buffer_ms,
         previous_generation,
@@ -2204,7 +2201,6 @@ fn seek_stored_media(
             cursor.recording_stream_id.clone(),
             cursor.end_time_ms,
             cursor.mode,
-            cursor.playing,
             cursor.media_target,
             cursor.max_buffer_ms,
             cursor.generation,
@@ -2227,7 +2223,6 @@ fn seek_stored_media(
             requested_time_ms,
             end_time_ms,
             mode,
-            playing,
             media_target,
             max_buffer_ms,
             generation,
@@ -2479,7 +2474,6 @@ fn set_stored_media_playback(
                     requested_time_ms,
                     end_time_ms,
                     mode: next_mode,
-                    playing: next_playing,
                     media_target,
                     max_buffer_ms,
                     generation,
@@ -2568,11 +2562,6 @@ fn stored_media_batch(
     let mut fragments = catalog
         .media_fragments_in_range(request.recording_stream_id, selected.start_ms, delivery_end)
         .map_err(|error| stored_catalog_error("query stored media fragments", error))?;
-    if !request.playing {
-        fragments.retain(|fragment| {
-            fragment.recording_id == selected.recording_id && fragment.sequence == selected.sequence
-        });
-    }
     if fragments.is_empty() {
         fragments.push(selected.clone());
     }
@@ -4210,43 +4199,45 @@ fn query_stored_media_timeline(
     }
 
     let mut ranges = Vec::new();
-    for camera in &cameras {
-        let mut streams = camera
-            .info
-            .profiles
-            .iter()
-            .map(|profile| profile.stream.as_str())
-            .filter(|stream| matches!(*stream, "main" | "sub"))
-            .collect::<Vec<_>>();
-        streams.sort_unstable();
-        streams.dedup();
-        for stream in streams {
-            let stream_id = format!("{}/{stream}", camera.recording_label);
-            let fragments = catalog
-                .media_fragments_in_range(&stream_id, start_ms, end_ms)
-                .map_err(|error| {
-                    ControlCommandError::new(
-                        proto::ErrorCode::Internal,
-                        500,
-                        format!("unable to query recording availability: {error}"),
-                    )
-                })?;
-            ranges.extend(fragments.into_iter().map(|fragment| {
-                let fragment_end = fragment
-                    .start_ms
-                    .saturating_add(i64::try_from(fragment.duration_ms).unwrap_or(i64::MAX));
-                let (range_start, range_end) = bucket_range(
-                    fragment.start_ms.max(start_ms),
-                    fragment_end.min(end_ms),
-                    bucket_ms,
-                );
-                StoredTimelineRange {
-                    source_id: camera.info.id.clone(),
-                    stream_id: stream.to_owned(),
-                    start_ms: range_start,
-                    end_ms: range_end,
-                }
-            }));
+    if !query.omit_availability {
+        for camera in &cameras {
+            let mut streams = camera
+                .info
+                .profiles
+                .iter()
+                .map(|profile| profile.stream.as_str())
+                .filter(|stream| matches!(*stream, "main" | "sub"))
+                .collect::<Vec<_>>();
+            streams.sort_unstable();
+            streams.dedup();
+            for stream in streams {
+                let stream_id = format!("{}/{stream}", camera.recording_label);
+                let fragments = catalog
+                    .media_fragments_in_range(&stream_id, start_ms, end_ms)
+                    .map_err(|error| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::Internal,
+                            500,
+                            format!("unable to query recording availability: {error}"),
+                        )
+                    })?;
+                ranges.extend(fragments.into_iter().map(|fragment| {
+                    let fragment_end = fragment
+                        .start_ms
+                        .saturating_add(i64::try_from(fragment.duration_ms).unwrap_or(i64::MAX));
+                    let (range_start, range_end) = bucket_range(
+                        fragment.start_ms.max(start_ms),
+                        fragment_end.min(end_ms),
+                        bucket_ms,
+                    );
+                    StoredTimelineRange {
+                        source_id: camera.info.id.clone(),
+                        stream_id: stream.to_owned(),
+                        start_ms: range_start,
+                        end_ms: range_end,
+                    }
+                }));
+            }
         }
     }
     ranges.sort_unstable_by(|left, right| {
@@ -6071,19 +6062,19 @@ fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrin
             .api_session_owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if owners.get(&session_id) == Some(&principal) {
-            owners.remove(&session_id);
-            true
-        } else {
-            false
+        match owners.get(&session_id) {
+            None => return Response::empty_204(),
+            Some(owner) if owner != &principal => false,
+            Some(_) => {
+                owners.remove(&session_id);
+                true
+            }
         }
     };
     if !owns_session {
         return api_status(404, "WebRTC session not found");
     }
-    if !state.webrtc.close_api_session(session_id) {
-        return api_status(404, "WebRTC session not found");
-    }
+    state.webrtc.close_api_session(session_id);
     Response::empty_204()
 }
 
@@ -7625,7 +7616,7 @@ mod tests {
             &router_tx,
             &state,
         );
-        assert_eq!(repeated.status_code, 404);
+        assert_eq!(repeated.status_code, 204);
         state.webrtc.shutdown();
     }
 
@@ -8324,6 +8315,7 @@ mod tests {
                                 event_types: Vec::new(),
                                 include_attachments: false,
                             }),
+                            ..Default::default()
                         },
                     )),
                 },
@@ -8369,6 +8361,43 @@ mod tests {
         };
         assert_eq!(end.page_count, 1);
         assert_eq!(end.attachment_count, 0);
+
+        let mut event_only_query = proto::QueryStoredMediaTimeline {
+            query_id: "timeline-events".to_owned(),
+            source_ids: vec!["127.0.0.1".to_owned()],
+            start_time: Some(millis_timestamp(0)),
+            end_time: Some(millis_timestamp(5_000)),
+            payload_types: Vec::new(),
+            availability_bucket: None,
+            channel: proto::DataChannelKind::ReliableData as i32,
+            events: Some(proto::StoredMediaEventQuery {
+                event_types: Vec::new(),
+                include_attachments: false,
+            }),
+            ..Default::default()
+        };
+        event_only_query.omit_availability = true;
+        let event_only = handler.handle(proto::Request {
+            request_id: 92,
+            command: Some(control_request::Command::StoredMediaCommand(
+                proto::StoredMediaCommand {
+                    action: Some(stored_media_command::Action::QueryTimeline(
+                        event_only_query,
+                    )),
+                },
+            )),
+        });
+        let Some(proto::message::Message::StoredMediaQuery(query_message)) =
+            &event_only.data_messages[0].message.message
+        else {
+            panic!("event-only timeline query must emit a query page");
+        };
+        let Some(proto::stored_media_query_message::Message::Page(page)) = &query_message.message
+        else {
+            panic!("event-only timeline query must emit a page");
+        };
+        assert!(page.availability.is_empty());
+        assert_eq!(page.events.len(), 1);
 
         drop(handler);
         catalog.shutdown();
@@ -8818,13 +8847,47 @@ mod tests {
         assert_eq!(fragments.len(), 2);
         let mut state = media_test_state();
         state.catalog = Some(handle);
-        let handler = test_control_handler(state.clone());
-        let session_id = SessionId::from_u64(77);
-        let cursor_id = "review-1";
         let open_time = fragments[0].start_ms + 100;
         let end_time = fragments[1]
             .start_ms
             .saturating_add(i64::try_from(fragments[1].duration_ms).unwrap());
+        let (_, paused_playback_state, paused_playback_messages) = open_stored_media(
+            &state,
+            proto::OpenStoredMedia {
+                stored_media_id: "paused-prebuffer".to_owned(),
+                source_id: "127.0.0.1".to_owned(),
+                stream_id: "main".to_owned(),
+                timestamp: Some(millis_timestamp(open_time)),
+                end_time: Some(millis_timestamp(end_time)),
+                mode: proto::StoredMediaMode::Playback as i32,
+                playing: false,
+                playback_rate: 1.0,
+                media_channel: proto::DataChannelKind::ReliableData as i32,
+                data_payload_routes: Vec::new(),
+                max_buffer_duration: Some(millis_duration(3_000)),
+            },
+        )
+        .unwrap();
+        assert!(!paused_playback_state.playing);
+        assert_eq!(
+            paused_playback_messages
+                .iter()
+                .filter(|message| {
+                    matches!(
+                        &message.message.message,
+                        Some(proto::message::Message::StoredMedia(message))
+                            if matches!(
+                                message.message,
+                                Some(proto::stored_media_message::Message::Fragment(_))
+                            )
+                    )
+                })
+                .count(),
+            2
+        );
+        let handler = test_control_handler(state.clone());
+        let session_id = SessionId::from_u64(77);
+        let cursor_id = "review-1";
 
         let open = handler.handle_for_session(
             session_id,

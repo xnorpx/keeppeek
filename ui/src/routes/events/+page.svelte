@@ -8,12 +8,16 @@
 	import EventNoResultsState from '$lib/components/EventNoResultsState.svelte';
 	import EventResultCard from '$lib/components/EventResultCard.svelte';
 	import {
+		EVENT_BROWSER_INITIAL_WINDOW_MS,
+		EVENT_BROWSER_PAGE_SIZE,
+		eventBrowserDayBounds,
 		eventBrowserRecordKey,
 		eventBrowserSearchParams,
 		eventFilterSummary,
 		eventNoResultsSuggestion,
 		filterEventBrowserRecords,
 		parseEventBrowserFilters,
+		previousEventBrowserWindow,
 		type EventBrowserFilters,
 		type EventBrowserRecord,
 		type EventImageFilter
@@ -41,7 +45,30 @@
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let requestVersion = 0;
+	let loadController: AbortController | null = null;
+	let previewQueue: EventBrowserRecord[] = [];
+	let activePreviewCount = 0;
+	const previewKeys = new Set<string>();
+	const previewControllers = new Map<string, AbortController>();
+	const maxConcurrentPreviews = 2;
+	let dayStartMs = $state(0);
+	let loadedStartMs = $state(0);
+	let nextWindowDurationMs = $state(EVENT_BROWSER_INITIAL_WINDOW_MS);
+	let resultPage = $state(0);
+	let loadingEarlier = $state(false);
 	let filteredRecords = $derived(filterEventBrowserRecords(records, filters));
+	let visibleRecords = $derived(
+		filteredRecords.slice(
+			resultPage * EVENT_BROWSER_PAGE_SIZE,
+			(resultPage + 1) * EVENT_BROWSER_PAGE_SIZE
+		)
+	);
+	let visibleResultStart = $derived(
+		filteredRecords.length === 0 ? 0 : resultPage * EVENT_BROWSER_PAGE_SIZE + 1
+	);
+	let visibleResultEnd = $derived(
+		Math.min((resultPage + 1) * EVENT_BROWSER_PAGE_SIZE, filteredRecords.length)
+	);
 	let selectedRecord = $derived(
 		selectedKey === null
 			? null
@@ -88,13 +115,21 @@
 			selectedKey = `${encodeURIComponent(requestedEventCamera)}:${encodeURIComponent(requestedEventId)}`;
 		}
 		void initialize();
+		return () => {
+			loadController?.abort();
+			cancelPreviews();
+			releaseRecordPreviews(records);
+		};
 	});
 
 	async function initialize(): Promise<void> {
 		try {
-			cameras = await controlClient.getCameras();
-			await loadEvents(filters.date);
+			const camerasRequest = controlClient.getCameras().then((nextCameras) => {
+				cameras = nextCameras;
+			});
+			await Promise.all([camerasRequest, loadEvents(filters.date)]);
 		} catch (cause) {
+			loadController?.abort();
 			error = cause instanceof Error ? cause.message : 'Failed to load events';
 		} finally {
 			loading = false;
@@ -102,35 +137,237 @@
 	}
 
 	async function loadEvents(date: string): Promise<void> {
+		loadController?.abort();
+		cancelPreviews();
+		const controller = new AbortController();
+		loadController = controller;
 		const version = ++requestVersion;
 		loading = true;
 		error = null;
-		const results = await Promise.all(
-			cameras.map(async (camera): Promise<EventBrowserRecord[]> => {
-				try {
-					const response = await controlClient.getRecordingEvents(camera.id, date);
-					return response.events.map((event) => ({ camera, event }));
-				} catch {
-					return [];
-				}
-			})
-		);
-		if (version !== requestVersion) return;
-		records = results.flat();
-		if (
-			selectedKey !== null &&
-			!records.some((record) => eventBrowserRecordKey(record) === selectedKey)
-		) {
-			selectedKey = null;
+		releaseRecordPreviews(records);
+		records = [];
+		resultPage = 0;
+		const day = eventBrowserDayBounds(date);
+		dayStartMs = day.startMs;
+		loadedStartMs = day.endMs;
+		nextWindowDurationMs = EVENT_BROWSER_INITIAL_WINDOW_MS;
+		try {
+			do {
+				await loadPreviousWindow(controller, version);
+			} while (
+				loadedStartMs > dayStartMs &&
+				(records.length < EVENT_BROWSER_PAGE_SIZE ||
+					(selectedKey !== null &&
+						!records.some((record) => eventBrowserRecordKey(record) === selectedKey)))
+			);
+			if (version !== requestVersion) return;
+			if (
+				selectedKey !== null &&
+				!records.some((record) => eventBrowserRecordKey(record) === selectedKey)
+			) {
+				selectedKey = null;
+			}
+			syncUrl();
+		} catch (cause) {
+			if (controller.signal.aborted || version !== requestVersion) return;
+			error = cause instanceof Error ? cause.message : 'Failed to load events';
+		} finally {
+			if (version === requestVersion) loading = false;
 		}
-		loading = false;
-		syncUrl();
+	}
+
+	async function loadPreviousWindow(controller: AbortController, version: number): Promise<void> {
+		const window = previousEventBrowserWindow(dayStartMs, loadedStartMs, nextWindowDurationMs);
+		if (!window) return;
+		const result = await controlClient.queryStoredTimeline({
+			sourceIds: cameras.map((camera) => camera.id),
+			startMs: window.startMs,
+			endMs: window.endMs,
+			includeEvents: true,
+			includeAttachments: false,
+			includeAvailability: false,
+			signal: controller.signal,
+			onPage: (page) => {
+				if (version !== requestVersion) return;
+				records = mergeEventRecords(records, eventRecords(page.events));
+			}
+		});
+		if (version !== requestVersion) return;
+		records = mergeEventRecords(records, eventRecords(result.events));
+		loadedStartMs = window.startMs;
+		nextWindowDurationMs = window.nextDurationMs;
+	}
+
+	async function showEarlierEvents(): Promise<void> {
+		const nextPageStart = (resultPage + 1) * EVENT_BROWSER_PAGE_SIZE;
+		if (nextPageStart < filteredRecords.length) {
+			resultPage += 1;
+			eventuallyEvictDistantPreviews();
+			return;
+		}
+		if (loadedStartMs <= dayStartMs || !loadController || loadingEarlier) return;
+		const controller = loadController;
+		const version = requestVersion;
+		loadingEarlier = true;
+		try {
+			const previousCount = filteredRecords.length;
+			await loadPreviousWindow(controller, version);
+			if (version !== requestVersion) return;
+			if (filteredRecords.length > previousCount) {
+				resultPage = Math.floor(previousCount / EVENT_BROWSER_PAGE_SIZE);
+				eventuallyEvictDistantPreviews();
+			}
+		} catch (cause) {
+			if (!controller.signal.aborted && version === requestVersion) {
+				error = cause instanceof Error ? cause.message : 'Failed to load earlier events';
+			}
+		} finally {
+			loadingEarlier = false;
+		}
+	}
+
+	function showNewerEvents(): void {
+		resultPage = Math.max(0, resultPage - 1);
+		eventuallyEvictDistantPreviews();
+	}
+
+	function eventRecords(events: readonly RecordingEvent[]): EventBrowserRecord[] {
+		const camerasById = new Map(cameras.map((camera) => [camera.id, camera]));
+		return events.flatMap((event) => {
+			const camera = event.source_id ? camerasById.get(event.source_id) : undefined;
+			return camera ? [{ camera, event }] : [];
+		});
+	}
+
+	function mergeEventRecords(
+		current: readonly EventBrowserRecord[],
+		incoming: readonly EventBrowserRecord[]
+	): EventBrowserRecord[] {
+		const merged = new Map(current.map((record) => [eventBrowserRecordKey(record), record]));
+		for (const record of incoming) {
+			const key = eventBrowserRecordKey(record);
+			const existing = merged.get(key);
+			merged.set(
+				key,
+				existing?.event.thumbnail_url && !record.event.thumbnail_url ? existing : record
+			);
+		}
+		return [...merged.values()];
+	}
+
+	function requestEventPreview(record: EventBrowserRecord): void {
+		const key = eventBrowserRecordKey(record);
+		if (record.event.thumbnail_url || previewKeys.has(key)) return;
+		if (!record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')) return;
+		previewKeys.add(key);
+		previewQueue.push(record);
+		startQueuedPreviews();
+	}
+
+	function startQueuedPreviews(): void {
+		while (activePreviewCount < maxConcurrentPreviews) {
+			const record = previewQueue.shift();
+			if (!record) return;
+			activePreviewCount += 1;
+			void loadEventPreview(record).finally(() => {
+				activePreviewCount -= 1;
+				startQueuedPreviews();
+			});
+		}
+	}
+
+	async function loadEventPreview(record: EventBrowserRecord): Promise<void> {
+		const key = eventBrowserRecordKey(record);
+		const controller = new AbortController();
+		previewControllers.set(key, controller);
+		try {
+			const result = await controlClient.queryStoredTimeline({
+				sourceIds: [record.camera.id],
+				startMs: record.event.start_time_ms,
+				endMs: Math.max(
+					record.event.end_time_ms ?? record.event.start_time_ms + 1,
+					record.event.start_time_ms + 1
+				),
+				includeEvents: true,
+				includeAttachments: true,
+				includeAvailability: false,
+				signal: controller.signal
+			});
+			const event = result.events.find((candidate) => candidate.id === record.event.id);
+			if (!event?.thumbnail_url) return;
+			const shouldKeep =
+				selectedKey === key ||
+				visibleRecords.some((candidate) => eventBrowserRecordKey(candidate) === key);
+			if (!shouldKeep) {
+				releaseEventPreview(event);
+				previewKeys.delete(key);
+				return;
+			}
+			records = records.map((candidate) =>
+				eventBrowserRecordKey(candidate) === key ? { ...candidate, event } : candidate
+			);
+		} catch (cause) {
+			if (!controller.signal.aborted) {
+				console.warn('Failed to load event preview', cause);
+			}
+		} finally {
+			if (previewControllers.get(key) === controller) previewControllers.delete(key);
+		}
+	}
+
+	function cancelPreviews(retainedKeys: ReadonlySet<string> = new Set()): void {
+		previewQueue = previewQueue.filter((record) => retainedKeys.has(eventBrowserRecordKey(record)));
+		for (const key of previewKeys) {
+			if (!retainedKeys.has(key)) previewKeys.delete(key);
+		}
+		for (const [key, controller] of previewControllers) {
+			if (retainedKeys.has(key)) continue;
+			controller.abort();
+			previewControllers.delete(key);
+		}
+	}
+
+	function eventuallyEvictDistantPreviews(): void {
+		queueMicrotask(evictDistantPreviews);
+	}
+
+	function evictDistantPreviews(): void {
+		const retainedKeys = new Set(visibleRecords.map(eventBrowserRecordKey));
+		if (selectedKey) retainedKeys.add(selectedKey);
+		records = records.map((record) => {
+			const key = eventBrowserRecordKey(record);
+			if (retainedKeys.has(key) || !record.event.thumbnail_blob) return record;
+			releaseEventPreview(record.event);
+			previewKeys.delete(key);
+			return {
+				...record,
+				event: { ...record.event, thumbnail_url: null, thumbnail_blob: undefined }
+			};
+		});
+	}
+
+	function releaseRecordPreviews(current: readonly EventBrowserRecord[]): void {
+		for (const record of current) releaseEventPreview(record.event);
+	}
+
+	function releaseEventPreview(event: RecordingEvent): void {
+		if (event.thumbnail_blob && event.thumbnail_url?.startsWith('blob:')) {
+			URL.revokeObjectURL(event.thumbnail_url);
+		}
 	}
 
 	function updateFilters(update: Partial<EventBrowserFilters>): void {
 		const next = { ...filters, ...update };
 		const dateChanged = next.date !== filters.date;
+		const retainedPreviewKeys = new Set(
+			filterEventBrowserRecords(records, next)
+				.slice(0, EVENT_BROWSER_PAGE_SIZE)
+				.map(eventBrowserRecordKey)
+		);
+		cancelPreviews(dateChanged ? undefined : retainedPreviewKeys);
 		filters = next;
+		resultPage = 0;
+		eventuallyEvictDistantPreviews();
 		selectedKey = null;
 		focusedKey = null;
 		if (dateChanged) void loadEvents(next.date);
@@ -154,14 +391,14 @@
 	async function moveEventFocus(event: KeyboardEvent, record: EventBrowserRecord): Promise<void> {
 		if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
 		event.preventDefault();
-		const currentIndex = filteredRecords.findIndex(
+		const currentIndex = visibleRecords.findIndex(
 			(candidate) => eventBrowserRecordKey(candidate) === eventBrowserRecordKey(record)
 		);
 		const nextIndex = Math.max(
 			0,
-			Math.min(filteredRecords.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1))
+			Math.min(visibleRecords.length - 1, currentIndex + (event.key === 'ArrowDown' ? 1 : -1))
 		);
-		const next = filteredRecords[nextIndex];
+		const next = visibleRecords[nextIndex];
 		if (!next) return;
 		focusedKey = eventBrowserRecordKey(next);
 		await tick();
@@ -337,21 +574,41 @@
 			Loading events…
 		</div>
 	{:else if filteredRecords.length === 0}
-		<EventNoResultsState
-			clauses={noResultsClauses}
-			title="No events found."
-			description={`No events found for ${eventFilterSummary(filters)}.`}
-			suggestionLabel={noResultsSuggestion?.label}
-			onloosen={noResultsSuggestion ? () => updateFilters(noResultsSuggestion!.update) : undefined}
-			onclear={clearFilters}
-			class="min-h-64 rounded-md border border-dashed border-hairline-strong"
-		/>
+		<div class="space-y-3">
+			<EventNoResultsState
+				clauses={noResultsClauses}
+				title={loadedStartMs > dayStartMs
+					? 'No matching events in the loaded window.'
+					: 'No events found.'}
+				description={loadedStartMs > dayStartMs
+					? `No loaded events match ${eventFilterSummary(filters)}.`
+					: `No events found for ${eventFilterSummary(filters)}.`}
+				suggestionLabel={noResultsSuggestion?.label}
+				onloosen={noResultsSuggestion
+					? () => updateFilters(noResultsSuggestion!.update)
+					: undefined}
+				onclear={clearFilters}
+				class="min-h-64 rounded-md border border-dashed border-hairline-strong"
+			/>
+			{#if loadedStartMs > dayStartMs}
+				<div class="flex justify-center">
+					<button
+						type="button"
+						class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
+						disabled={loadingEarlier}
+						onclick={() => void showEarlierEvents()}
+					>
+						{loadingEarlier ? 'Searching earlier...' : 'Search earlier events'}
+					</button>
+				</div>
+			{/if}
+		</div>
 	{:else}
 		<div
 			class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,14rem),1fr))] gap-3"
 			aria-label="Event results"
 		>
-			{#each filteredRecords as record, index (eventBrowserRecordKey(record))}
+			{#each visibleRecords as record, index (eventBrowserRecordKey(record))}
 				<EventResultCard
 					{record}
 					selected={selectedKey === eventBrowserRecordKey(record)}
@@ -363,9 +620,35 @@
 					onfocus={() => (focusedKey = eventBrowserRecordKey(record))}
 					onkeydown={(event) => void moveEventFocus(event, record)}
 					onclick={() => selectRecord(record)}
+					onpreviewrequest={() => requestEventPreview(record)}
 				/>
 			{/each}
 		</div>
+		{#if filteredRecords.length > EVENT_BROWSER_PAGE_SIZE || loadedStartMs > dayStartMs}
+			<nav class="flex items-center justify-center gap-3 py-2" aria-label="Event result pages">
+				<button
+					type="button"
+					class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
+					disabled={resultPage === 0}
+					onclick={showNewerEvents}
+				>
+					Newer events
+				</button>
+				<span class="font-mono text-2xs text-text-faint">
+					{visibleResultStart}-{visibleResultEnd} of {filteredRecords.length} loaded
+				</span>
+				<button
+					type="button"
+					class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
+					disabled={loadingEarlier ||
+						((resultPage + 1) * EVENT_BROWSER_PAGE_SIZE >= filteredRecords.length &&
+							loadedStartMs <= dayStartMs)}
+					onclick={() => void showEarlierEvents()}
+				>
+					{loadingEarlier ? 'Loading earlier...' : 'Earlier events'}
+				</button>
+			</nav>
+		{/if}
 	{/if}
 </div>
 

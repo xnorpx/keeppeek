@@ -290,14 +290,18 @@ export class LivePeer {
 			});
 			if (controlChannel.readyState !== 'open') await controlOpened;
 			await this.waitForCapabilities();
-			for (const track of localTracks.filter((track) => track.active)) {
-				await this.subscribeTrack(
-					track.cameraId,
-					track.trackId,
-					track.quality,
-					track.variantId ?? null
-				);
-			}
+			await Promise.all(
+				localTracks
+					.filter((track) => track.active)
+					.map((track) =>
+						this.subscribeTrack(
+							track.cameraId,
+							track.trackId,
+							track.quality,
+							track.variantId ?? null
+						)
+					)
+			);
 		} catch (error) {
 			if (peer === this.#peer) {
 				const sessionToken = this.releaseLocalResources();
@@ -332,7 +336,7 @@ export class LivePeer {
 	): Promise<void> {
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		if (!sourceSessionId) throw new Error(`Camera ${cameraId} has no live source session.`);
-		this.replaceTrack(cameraId, { status: 'connecting' });
+		if (!replacement) this.replaceTrack(cameraId, { status: 'connecting' });
 		const subscribe = create(SubscribeMediaSchema, {
 			subscriptionId,
 			sourceSessionId,
@@ -349,7 +353,9 @@ export class LivePeer {
 		const selectedStream = result.value.selectedVariantId === 'main' ? 'main' : 'sub';
 		const current = this.track(cameraId);
 		const pendingStream =
-			replacement && current !== null && current.activeStream !== selectedStream
+			current !== null &&
+			(replacement || !current.subscribed) &&
+			current.activeStream !== selectedStream
 				? selectedStream
 				: null;
 		this.#cameraByMid[mid] = cameraId;
@@ -449,7 +455,11 @@ export class LivePeer {
 					(track) => track.trackId === event.value.subscriptionId
 				)?.cameraId;
 				if (cameraId !== undefined) {
-					this.replaceTrack(cameraId, { activeStream: stream, pendingStream: null });
+					const track = this.track(cameraId);
+					this.replaceTrack(cameraId, {
+						activeStream: stream,
+						pendingStream: track?.pendingStream === stream ? null : (track?.pendingStream ?? null)
+					});
 				}
 			}
 			return;

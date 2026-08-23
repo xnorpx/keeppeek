@@ -223,8 +223,8 @@ test('moves through the virtualized fleet and toggles bulk selection with Space'
 	await page.goto('/cameras');
 	await waitForKeyboard(page);
 
-	const frontDoor = page.locator('[data-fleet-focus="front-door"]');
-	const porch = page.locator('[data-fleet-focus="porch"]');
+	const frontDoor = page.locator('[data-fleet-focus="front-door"]').last();
+	const porch = page.locator('[data-fleet-focus="porch"]').last();
 	await frontDoor.focus();
 	await page.keyboard.press('ArrowDown');
 	await expect(porch).toBeFocused();
