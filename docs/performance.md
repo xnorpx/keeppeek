@@ -5,6 +5,9 @@
 The `event_keyframe_lookup` benchmark measures the storage API path from an event ID and logical
 stream to owned encoded keyframe bytes:
 
+The target requires the opt-in `event-keyframe-benchmark` Cargo feature. Normal CI test and
+coverage jobs do not enable it, so they never generate or execute the benchmark corpus.
+
 1. Resolve the event-to-keyframe link through `RecordingCatalog`.
 2. Resolve the recording path and exact keyframe byte range.
 3. Open the MP4, seek to the indexed offset, allocate the result, and read the encoded bytes.
@@ -23,7 +26,7 @@ The fragment/keyframe indexes impose a corpus floor of roughly 200 MiB even when
 requests a smaller smoke corpus; the target controls the minimum rather than an exact size.
 
 ```sh
-cargo bench --bench event_keyframe_lookup -- --rebuild --prepare-only
+cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup -- --rebuild --prepare-only
 ```
 
 Generated state is stored under `target/perf/event-keyframe-lookup/corpus/` and is not checked in.
@@ -33,7 +36,7 @@ still match. Use `--rebuild` to replace it explicitly.
 A smaller corpus is useful while changing the benchmark:
 
 ```sh
-cargo bench --bench event_keyframe_lookup -- \
+cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup -- \
   --rebuild \
   --prepare-only \
   --target-mib 16
@@ -42,7 +45,7 @@ cargo bench --bench event_keyframe_lookup -- \
 ### Run measurements
 
 ```sh
-cargo bench --bench event_keyframe_lookup
+cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup
 ```
 
 The runner validates 10,000 exact recording IDs, fragment sequences, timestamps, byte ranges, and
@@ -55,7 +58,7 @@ measures for 20 seconds at concurrency 1, 8, and 32. It measures both:
 Short local runs can override durations:
 
 ```sh
-cargo bench --bench event_keyframe_lookup -- \
+cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup -- \
   --target-mib 16 \
   --warmup-secs 1 \
   --measurement-secs 2 \
