@@ -25,6 +25,7 @@ export type SwimlaneWindow = {
 	}[];
 };
 
+export const MAX_EXPORT_DURATION_MS = 2 * 60_000;
 const SWIMLANE_WINDOW_MS = 60 * 60_000;
 
 export function parseKeepMode(value: string | null): KeepMode {
@@ -42,10 +43,11 @@ export function createExportRange(
 	bitrateKbps: number | null
 ): ExportRange | null {
 	if (segment === null || segment.end_time_ms <= segment.start_time_ms) return null;
-	const durationMs = segment.end_time_ms - segment.start_time_ms;
+	const endMs = Math.min(segment.end_time_ms, segment.start_time_ms + MAX_EXPORT_DURATION_MS);
+	const durationMs = endMs - segment.start_time_ms;
 	return {
 		startMs: segment.start_time_ms,
-		endMs: segment.end_time_ms,
+		endMs,
 		durationMs,
 		estimatedBytes:
 			bitrateKbps === null || bitrateKbps <= 0
@@ -60,8 +62,22 @@ export function updateExportRange(
 	endMs: number,
 	bitrateKbps: number | null
 ): ExportRange {
-	const orderedStartMs = Math.min(startMs, endMs);
-	const orderedEndMs = Math.max(startMs, endMs);
+	let orderedStartMs = Math.min(startMs, endMs);
+	let orderedEndMs = Math.max(startMs, endMs);
+	if (orderedEndMs - orderedStartMs > MAX_EXPORT_DURATION_MS) {
+		const startChanged = startMs !== range.startMs;
+		const endChanged = endMs !== range.endMs;
+		if (startChanged !== endChanged) {
+			const changedEndpoint = startChanged ? startMs : endMs;
+			if (changedEndpoint === orderedStartMs) {
+				orderedEndMs = orderedStartMs + MAX_EXPORT_DURATION_MS;
+			} else {
+				orderedStartMs = orderedEndMs - MAX_EXPORT_DURATION_MS;
+			}
+		} else {
+			orderedEndMs = orderedStartMs + MAX_EXPORT_DURATION_MS;
+		}
+	}
 	const durationMs = orderedEndMs - orderedStartMs;
 	return {
 		startMs: orderedStartMs,

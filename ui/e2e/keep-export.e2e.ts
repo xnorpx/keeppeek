@@ -6,7 +6,7 @@ import { keepModeDate, keepModeDayStartMs, mockKeepModes } from './fixtures/keep
 
 const mediaExportCapability = 'keeppeek.media-export.v1';
 const selectedStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 20 * 60_000;
-const selectedEndMs = keepModeDayStartMs + 6 * 60 * 60_000 + 30 * 60_000;
+const selectedEndMs = keepModeDayStartMs + 6 * 60 * 60_000 + 22 * 60_000;
 
 function observeNoncanonicalControlRequests(page: Page): string[] {
 	const requests: string[] = [];
@@ -33,13 +33,13 @@ async function openSupportedExport(page: Page, options: MockControlPeerOptions =
 	};
 }
 
-async function selectTenMinuteRange(page: Page): Promise<void> {
+async function selectTwoMinuteRange(page: Page): Promise<void> {
 	const panel = page.locator('[data-keep-export]');
 	const fromInput = panel.getByRole('textbox', { name: 'FROM', exact: true });
 	const toInput = panel.getByRole('textbox', { name: 'TO', exact: true });
 	await fromInput.fill('06:20:00');
 	await fromInput.press('Tab');
-	await toInput.fill('06:30:00');
+	await toInput.fill('06:22:00');
 	await toInput.press('Tab');
 	await expect(panel).toHaveAttribute('data-export-start-ms', String(selectedStartMs));
 	await expect(panel).toHaveAttribute('data-export-end-ms', String(selectedEndMs));
@@ -59,19 +59,19 @@ test('preserves an export range while job creation fails closed', async ({ page 
 		'data-export-start-ms',
 		String(keepModeDayStartMs + 6 * 60 * 60_000 + 15 * 60_000)
 	);
-	await expect(page.getByText('1.2 GB', { exact: true })).toBeVisible();
+	await expect(page.getByText('120.0 MB', { exact: true })).toBeVisible();
 
 	const fromInput = panel.getByRole('textbox', { name: 'FROM', exact: true });
 	const toInput = panel.getByRole('textbox', { name: 'TO', exact: true });
 	await fromInput.fill('06:20:00');
 	await fromInput.press('Tab');
-	await toInput.fill('06:30:00');
+	await toInput.fill('06:22:00');
 	await toInput.press('Tab');
 	await expect(panel).toHaveAttribute(
 		'data-export-start-ms',
 		String(keepModeDayStartMs + 6 * 60 * 60_000 + 20 * 60_000)
 	);
-	await expect(page.getByText('600.0 MB', { exact: true })).toBeVisible();
+	await expect(page.getByText('120.0 MB', { exact: true })).toBeVisible();
 	await page.getByRole('checkbox', { name: /burn in timestamp/i }).check();
 
 	const gate = page
@@ -96,7 +96,7 @@ test('shows Board 29 running progress and cancels without offering a partial fil
 			}
 		]
 	});
-	await selectTenMinuteRange(page);
+	await selectTwoMinuteRange(page);
 	await page.getByRole('button', { name: 'Create export' }).click();
 
 	await expect(panel).toHaveAttribute('data-export-status', 'running');
@@ -128,11 +128,11 @@ test('polls a running export to ready and downloads checksum-verified WebRTC byt
 				bytesWritten: exportFile.byteLength,
 				estimatedBytes: exportFile.byteLength,
 				alignedStartMs: selectedStartMs - 1_000,
-				fileName: 'front-door_2026-08-18T06-20-00Z_600s.mp4'
+				fileName: 'Front-Door_2026-08-18T06-20-00-000Z_to_2026-08-18T06-22-00-000Z.mp4'
 			}
 		]
 	});
-	await selectTenMinuteRange(page);
+	await selectTwoMinuteRange(page);
 	await page.getByRole('button', { name: 'Create export' }).click();
 	await expect(panel).toHaveAttribute('data-export-status', 'running');
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
@@ -143,7 +143,9 @@ test('polls a running export to ready and downloads checksum-verified WebRTC byt
 	const downloadPromise = page.waitForEvent('download');
 	await page.getByRole('button', { name: 'Download', exact: true }).click();
 	const download = await downloadPromise;
-	expect(download.suggestedFilename()).toBe('front-door_2026-08-18T06-20-00Z_600s.mp4');
+	expect(download.suggestedFilename()).toBe(
+		'Front-Door_2026-08-18T06-20-00-000Z_to_2026-08-18T06-22-00-000Z.mp4'
+	);
 	const downloadPath = await download.path();
 	expect(downloadPath).not.toBeNull();
 	expect(new Uint8Array(await readFile(downloadPath!))).toEqual(exportFile);
@@ -154,8 +156,8 @@ test('polls a running export to ready and downloads checksum-verified WebRTC byt
 });
 
 test('names every missing range before exporting what exists', async ({ page }) => {
-	const missingStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 25 * 60_000;
-	const missingEndMs = keepModeDayStartMs + 6 * 60 * 60_000 + 27 * 60_000;
+	const missingStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 21 * 60_000;
+	const missingEndMs = missingStartMs + 30_000;
 	const { controls, noncanonicalRequests, panel } = await openSupportedExport(page, {
 		exportCreateResults: [
 			{
@@ -170,13 +172,13 @@ test('names every missing range before exporting what exists', async ({ page }) 
 			}
 		]
 	});
-	await selectTenMinuteRange(page);
+	await selectTwoMinuteRange(page);
 	await page.getByRole('button', { name: 'Create export' }).click();
 
 	await expect(panel).toHaveAttribute('data-export-status', 'partial');
-	await expect(page.getByText('8m 0s of 10m 0s you asked for')).toBeVisible();
+	await expect(page.getByText('1m 30s of 2m 0s you asked for')).toBeVisible();
 	await expect(page.locator('[data-export-missing-range]')).toHaveText(
-		'NOTHING WAS RECORDED 06:25:00 → 06:27:00'
+		'NOTHING WAS RECORDED 06:21:00 → 06:21:30'
 	);
 	await page.getByRole('button', { name: 'Export what exists' }).click();
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
@@ -189,8 +191,8 @@ test('names every missing range before exporting what exists', async ({ page }) 
 test('trims a partial export to the named gap boundary and preserves the draft', async ({
 	page
 }) => {
-	const missingStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 25 * 60_000;
-	const missingEndMs = keepModeDayStartMs + 6 * 60 * 60_000 + 27 * 60_000;
+	const missingStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 21 * 60_000;
+	const missingEndMs = missingStartMs + 30_000;
 	const { controls, noncanonicalRequests, panel } = await openSupportedExport(page, {
 		exportCreateResults: [
 			{
@@ -199,13 +201,13 @@ test('trims a partial export to the named gap boundary and preserves the draft',
 			}
 		]
 	});
-	await selectTenMinuteRange(page);
+	await selectTwoMinuteRange(page);
 	await page.getByRole('button', { name: 'Create export' }).click();
-	await page.getByRole('button', { name: 'Trim to 06:27:00' }).click();
+	await page.getByRole('button', { name: 'Trim to 06:21:30' }).click();
 
 	await expect(panel).toHaveAttribute('data-export-status', 'draft');
 	await expect(panel).toHaveAttribute('data-export-start-ms', String(missingEndMs));
-	await expect(panel.getByRole('textbox', { name: 'FROM', exact: true })).toHaveValue('06:27:00');
+	await expect(panel.getByRole('textbox', { name: 'FROM', exact: true })).toHaveValue('06:21:30');
 	expect(controls.exportJobs.filter((request) => request.action === 'create')).toHaveLength(1);
 	expect(noncanonicalRequests).toEqual([]);
 });
@@ -222,7 +224,7 @@ test('keeps a failed export range and retries the same server job', async ({ pag
 		],
 		exportRetryResult: { status: 'running', progress: 0, estimatedBytes: 200_000_000 }
 	});
-	await selectTenMinuteRange(page);
+	await selectTwoMinuteRange(page);
 	await page.getByRole('button', { name: 'Create export' }).click();
 
 	await expect(panel).toHaveAttribute('data-export-status', 'failed');
@@ -242,7 +244,7 @@ test('keeps a failed export range and retries the same server job', async ({ pag
 
 test('reports timestamp burn-in as an explicit no-reencode failure', async ({ page }) => {
 	const { controls, noncanonicalRequests, panel } = await openSupportedExport(page);
-	await selectTenMinuteRange(page);
+	await selectTwoMinuteRange(page);
 	await page.getByRole('checkbox', { name: /burn in timestamp/i }).check();
 	await page.getByRole('button', { name: 'Create export' }).click();
 
@@ -266,7 +268,7 @@ test('restores a ready server job without horizontal drift at the Paper mobile w
 				status: 'ready',
 				bytesWritten: 118_000_000,
 				estimatedBytes: 118_000_000,
-				fileName: 'front-door_2026-08-18T06-11-48Z_152-second-evidence-export.mp4'
+				fileName: 'Front-Door_2026-08-18T06-11-48-000Z_to_2026-08-18T06-13-48-000Z.mp4'
 			}
 		]
 	});

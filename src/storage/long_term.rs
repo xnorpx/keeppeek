@@ -66,16 +66,20 @@ impl LongTermStore {
     }
 
     pub fn enforce_limit(&self, max_bytes: u64) {
+        let _ = self.enforce_limit_with_removed(max_bytes);
+    }
+
+    pub(crate) fn enforce_limit_with_removed(&self, max_bytes: u64) -> Vec<PathBuf> {
         let total = match dir_size(&self.root) {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to compute long-term storage size");
-                return;
+                return Vec::new();
             }
         };
 
         if total <= max_bytes {
-            return;
+            return Vec::new();
         }
 
         tracing::info!(
@@ -85,6 +89,7 @@ impl LongTermStore {
         );
 
         let mut remaining = total;
+        let mut removed_files = Vec::new();
         while remaining > max_bytes {
             let oldest = match self.find_oldest_date_dir() {
                 Some(entry) => entry,
@@ -92,6 +97,7 @@ impl LongTermStore {
             };
 
             let freed = dir_size(&oldest).unwrap_or_default();
+            let files = collect_finalized(&oldest).unwrap_or_default();
 
             if let Err(e) = std::fs::remove_dir_all(&oldest) {
                 tracing::error!(path = %oldest.display(), error = %e, "failed to remove old date dir");
@@ -99,6 +105,7 @@ impl LongTermStore {
             }
 
             remaining = remaining.saturating_sub(freed);
+            removed_files.extend(files);
             tracing::info!(
                 removed = %oldest.display(),
                 freed_mb = freed / (1024 * 1024),
@@ -110,6 +117,7 @@ impl LongTermStore {
                 let _ = remove_empty_parents(parent, &self.root);
             }
         }
+        removed_files
     }
 
     fn find_oldest_date_dir(&self) -> Option<PathBuf> {

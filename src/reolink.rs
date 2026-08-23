@@ -11,8 +11,8 @@ use crate::{
         log_camera_report, video_report,
     },
     storage::{
-        AudioCodec, AudioFrame, MediaFrame, RecordingFrame, StorageHandle, VideoCodec, VideoFrame,
-        nal,
+        AudioCodec, AudioFrame, MediaFrame, RecordingFrame, RecordingStreamIdentity, StorageHandle,
+        VideoCodec, VideoFrame, nal,
     },
     webrtc::{Publisher, Source},
 };
@@ -859,9 +859,12 @@ impl ReolinkLoop {
                                 data: avcc,
                             });
                             if let Some(ref storage) = self.storage {
-                                let camera_id = format!("{}/{}", self.storage_label(), entry.kind);
-                                storage.ingest(
-                                    &camera_id,
+                                storage.ingest_stream(
+                                    RecordingStreamIdentity::new(
+                                        self.camera_ip.to_string(),
+                                        entry.kind.to_string(),
+                                        &self.storage_label(),
+                                    ),
                                     RecordingFrame {
                                         received_at,
                                         timestamp: Some(timestamp),
@@ -926,9 +929,12 @@ impl ReolinkLoop {
                                         duration,
                                         data: data.to_vec(),
                                     });
-                                    let camera_id = format!("{}/{}", self.storage_label(), kind);
-                                    storage.ingest(
-                                        &camera_id,
+                                    storage.ingest_stream(
+                                        RecordingStreamIdentity::new(
+                                            self.camera_ip.to_string(),
+                                            kind.to_string(),
+                                            &self.storage_label(),
+                                        ),
                                         RecordingFrame {
                                             received_at: Instant::now(),
                                             timestamp: None,

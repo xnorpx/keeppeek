@@ -439,7 +439,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p target/ci-coverage/rust
-          cargo llvm-cov --workspace --all-targets --lcov --output-path target/ci-coverage/rust/lcov.info
+          cargo llvm-cov --workspace --lib --bins --tests --lcov --output-path target/ci-coverage/rust/lcov.info
           cargo llvm-cov report --json --output-path target/ci-coverage/rust/coverage.json
           cargo llvm-cov report --html --output-dir target/ci-coverage/rust
       - name: Install Vitest coverage provider

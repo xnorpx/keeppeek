@@ -38,6 +38,7 @@ authors = ["xnorpx <xnorpx@outlook.com>"]
 ignored = ["prost", "prost-types"]
 
 [features]
+event-keyframe-benchmark = []
 macos-test-aws-crypto = ["dep:str0m-aws-lc-rs"]
 
 [[bin]]
@@ -58,6 +59,12 @@ test = false
 [[bin]]
 name = "keeppeek-camera"
 path = "src/bin/keeppeek_camera/main.rs"
+
+[[bench]]
+name = "event_keyframe_lookup"
+harness = false
+required-features = ["event-keyframe-benchmark"]
+test = false
 
 [dependencies]
 anyhow = { version = "*" }

@@ -34,6 +34,11 @@ impl Default for Hev1Box {
 
 impl Hev1Box {
     pub fn new(config: &HevcConfig) -> Self {
+        let hvcc = if config.decoder_config.is_empty() {
+            HvcCBox::from_nalus(&config.vps, &config.sps, &config.pps)
+        } else {
+            HvcCBox::from_record_data(config.decoder_config.clone())
+        };
         Self {
             data_reference_index: 1,
             width: config.width,
@@ -42,7 +47,7 @@ impl Hev1Box {
             vertresolution: FixedPointU16::new(0x48),
             frame_count: 1,
             depth: 0x0018,
-            hvcc: HvcCBox::from_nalus(&config.vps, &config.sps, &config.pps),
+            hvcc,
         }
     }
 
@@ -199,6 +204,13 @@ impl HvcCBox {
         let record_data = build_hvcc_record(vps, sps, pps);
         Self {
             configuration_version: 1,
+            record_data,
+        }
+    }
+
+    pub fn from_record_data(record_data: Vec<u8>) -> Self {
+        Self {
+            configuration_version: record_data.first().copied().unwrap_or(1),
             record_data,
         }
     }

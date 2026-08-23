@@ -1,8 +1,8 @@
 use crate::api::proto::{
-    self, camera_configuration_command, camera_control_command, health_command, logging_command,
-    ok as control_ok, optional_string_update, request as control_request,
-    response as control_response, runtime_configuration_command, server_command,
-    stored_media_command,
+    self, camera_configuration_command, camera_control_command, event_search_command,
+    health_command, logging_command, ok as control_ok, optional_string_update,
+    request as control_request, response as control_response, runtime_configuration_command,
+    server_command, stored_media_command,
 };
 use crate::{
     access::{AccessKey, AccessKeyFingerprint},
@@ -27,8 +27,10 @@ use crate::{
     shutdown::{Restart, Shutdown},
     stats::{HealthRegistry, REPORT_INTERVAL},
     storage::{
-        CatalogMediaFragment, EventStore, RecordingCatalogHandle, RecordingDemand,
-        RecordingDemandGuard, StorageConfig,
+        CatalogMediaFragment, DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EventEmbedding,
+        EventSearch, EventSearchField, EventSearchTerm, EventSemanticSearchQuery, EventStore,
+        EventTextSearchQuery, RecordingCatalogHandle, RecordingDemand, RecordingDemandGuard,
+        StorageConfig,
     },
     webrtc::{
         ControlDispatch, ControlHandlerError, ControlRequestHandler, DataChannelTarget,
@@ -71,9 +73,15 @@ const DATA_MESSAGE_CHUNK_BYTES: usize = 32 * 1_024;
 const DEFAULT_STORED_MEDIA_BUFFER: Duration = Duration::from_secs(120);
 const MAX_STORED_MEDIA_BUFFER: Duration = Duration::from_secs(300);
 const MAX_STORED_OBJECT_BYTES: u64 = 256 * 1_024 * 1_024;
+const MAX_EVENT_SEARCH_MEDIA_OBJECTS: usize = 64;
+const MAX_EVENT_SEARCH_MEDIA_BYTES: u64 = 32 * 1_024 * 1_024;
+const MAX_EVENT_SEARCH_TASKS_PER_SESSION: usize = 4;
+const MAX_EVENT_SEARCH_TASKS: usize = 64;
+type EventSearchTaskKey = (SessionId, String);
+type EventSearchTasks = Arc<Mutex<HashMap<EventSearchTaskKey, Arc<AtomicBool>>>>;
 const PTZ_STOP_SPEED: u32 = 32;
 const EXPORT_JOB_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
-const MAX_EXPORT_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_EXPORT_DURATION: Duration = Duration::from_secs(2 * 60);
 const MAX_EXPORT_DOWNLOAD_BYTES: u64 = 512 * 1_024 * 1_024;
 
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
@@ -254,6 +262,15 @@ impl ControlRequestHandler for ServerControlHandler {
                     Err(error) => Err(error),
                 }
             }
+            Some(control_request::Command::EventSearchCommand(command)) => {
+                match self.handle_event_search(session_id, command) {
+                    Ok((result, messages)) => {
+                        data_messages = messages;
+                        Ok(result)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             Some(control_request::Command::StoredMediaCommand(command)) => {
                 match self.handle_stored_media(session_id, command) {
                     Ok(dispatch) => {
@@ -294,6 +311,18 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 
     fn session_closed(&self, session_id: SessionId) {
+        let cancelled = self
+            .state
+            .event_search_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|((owner_session_id, _), _)| *owner_session_id == session_id)
+            .map(|(_, cancelled)| cancelled.clone())
+            .collect::<Vec<_>>();
+        for token in cancelled {
+            token.store(true, Ordering::Release);
+        }
         self.state
             .stored_media_cursors
             .lock()
@@ -361,7 +390,10 @@ impl ControlRequestHandler for ServerControlHandler {
             source_sessions,
             stored_media_sources,
             self_source_session_id,
-            capability_ids: vec!["keeppeek.media-export.v1".to_owned()],
+            capability_ids: vec![
+                "keeppeek.media-export.v1".to_owned(),
+                "keeppeek.event-search".to_owned(),
+            ],
         })
     }
 
@@ -1118,6 +1150,88 @@ impl ServerControlHandler {
         }
     }
 
+    fn handle_event_search(
+        &self,
+        session_id: SessionId,
+        command: proto::EventSearchCommand,
+    ) -> Result<(Option<control_ok::Result>, Vec<OutboundDataMessage>), ControlCommandError> {
+        match command.action {
+            Some(event_search_command::Action::ReplaceTerms(request)) => {
+                replace_event_search_terms(&self.state, &request)?;
+                Ok((
+                    Some(control_ok::Result::EventSearchMutation(
+                        proto::EventSearchMutationResult {
+                            event_id: request.event_id,
+                        },
+                    )),
+                    Vec::new(),
+                ))
+            }
+            Some(event_search_command::Action::SetEmbedding(request)) => {
+                set_event_search_embedding(&self.state, &request)?;
+                Ok((
+                    Some(control_ok::Result::EventSearchMutation(
+                        proto::EventSearchMutationResult {
+                            event_id: request.event_id,
+                        },
+                    )),
+                    Vec::new(),
+                ))
+            }
+            Some(event_search_command::Action::Query(request)) => {
+                if self.state.webrtc.has_api_session(session_id) {
+                    let delivery = start_event_search_query(&self.state, session_id, request)?;
+                    return Ok((
+                        Some(control_ok::Result::EventSearchDelivery(delivery)),
+                        Vec::new(),
+                    ));
+                }
+                let (delivery, messages) = query_events(&self.state, request)?;
+                Ok((
+                    Some(control_ok::Result::EventSearchDelivery(delivery)),
+                    messages,
+                ))
+            }
+            Some(event_search_command::Action::FetchMedia(request)) => {
+                if self.state.webrtc.has_api_session(session_id) {
+                    let delivery = start_event_search_media(&self.state, session_id, request)?;
+                    return Ok((
+                        Some(control_ok::Result::EventSearchMediaDelivery(delivery)),
+                        Vec::new(),
+                    ));
+                }
+                let (delivery, messages) = fetch_event_search_media(&self.state, request)?;
+                Ok((
+                    Some(control_ok::Result::EventSearchMediaDelivery(delivery)),
+                    messages,
+                ))
+            }
+            Some(event_search_command::Action::CancelQuery(request)) => {
+                validate_client_id(&request.query_id, "event search query ID")?;
+                cancel_event_search_task(
+                    &self.state,
+                    session_id,
+                    &format!("event-search-query:{}", request.query_id),
+                );
+                Ok((None, Vec::new()))
+            }
+            Some(event_search_command::Action::CancelMedia(request)) => {
+                validate_client_id(&request.transfer_id, "event search transfer ID")?;
+                cancel_event_search_task(
+                    &self.state,
+                    session_id,
+                    &format!("event-search-media:{}", request.transfer_id),
+                );
+                Ok((None, Vec::new()))
+            }
+            None => Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event search command has no action",
+            )),
+        }
+    }
+
     fn handle_stored_media(
         &self,
         session_id: SessionId,
@@ -1299,7 +1413,7 @@ fn create_export_job(
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
-            "export range exceeds 24 hours",
+            "export range exceeds 2 minutes",
         ));
     }
     {
@@ -1329,6 +1443,17 @@ fn create_export_job(
     let missing_ranges = export_missing_ranges(&fragments, start_ms, end_ms);
     let estimated_bytes = export_estimated_bytes(&fragments);
     let aligned_start_ms = fragments.first().map(|fragment| fragment.start_ms);
+    let file_name = export_file_name(
+        camera
+            .info
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&camera.recording_label),
+        start_ms,
+        end_ms,
+    );
     let cancel = Arc::new(AtomicBool::new(false));
     let status = if request.burn_in_timestamp {
         proto::ExportJobStatus::Failed
@@ -1379,7 +1504,7 @@ fn create_export_job(
             },
         );
     if status == proto::ExportJobStatus::Running {
-        spawn_export_worker(state.clone(), request, fragments, cancel, start_ms, end_ms);
+        spawn_export_worker(state.clone(), request, fragments, cancel, end_ms, file_name);
     }
     Ok(job)
 }
@@ -1389,12 +1514,11 @@ fn spawn_export_worker(
     request: proto::CreateExportJob,
     fragments: Vec<CatalogMediaFragment>,
     cancel: Arc<AtomicBool>,
-    start_ms: i64,
     end_ms: i64,
+    file_name: String,
 ) {
     std::thread::spawn(move || {
         let directory = state.storage_config.long_term_path.join(".exports");
-        let file_name = export_file_name(&request.source_id, start_ms, end_ms);
         let path = directory.join(&request.job_id).join(&file_name);
         let result =
             crate::storage::playback::export_fragment_ranges(&fragments, end_ms, &path, || {
@@ -1684,29 +1808,53 @@ fn export_estimated_bytes(fragments: &[CatalogMediaFragment]) -> u64 {
     })
 }
 
-fn export_file_name(source_id: &str, start_ms: i64, end_ms: i64) -> String {
-    let source = source_id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>();
-    let timestamp =
-        time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(start_ms) * 1_000_000)
-            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
-    let duration_seconds = end_ms.saturating_sub(start_ms).div_euclid(1_000);
+fn export_file_name(camera_name: &str, start_ms: i64, end_ms: i64) -> String {
+    let camera_name = export_file_component(camera_name);
     format!(
-        "{source}_{:04}-{:02}-{:02}T{:02}-{:02}-{:02}Z_{duration_seconds}s.mp4",
+        "{camera_name}_{}_to_{}.mp4",
+        export_file_timestamp(start_ms),
+        export_file_timestamp(end_ms),
+    )
+}
+
+fn export_file_component(value: &str) -> String {
+    let mut output = String::with_capacity(value.len().min(64));
+    let mut separator = false;
+    for character in value.trim().chars() {
+        if character.is_alphanumeric() {
+            if output.len().saturating_add(character.len_utf8()) > 64 {
+                break;
+            }
+            output.push(character);
+            separator = false;
+        } else if !output.is_empty() && !separator && output.len() < 64 {
+            output.push('-');
+            separator = true;
+        }
+    }
+    while output.ends_with('-') {
+        output.pop();
+    }
+    if output.is_empty() {
+        "camera".to_owned()
+    } else {
+        output
+    }
+}
+
+fn export_file_timestamp(timestamp_ms: i64) -> String {
+    let timestamp =
+        time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(timestamp_ms) * 1_000_000)
+            .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}-{:03}Z",
         timestamp.year(),
         timestamp.month() as u8,
         timestamp.day(),
         timestamp.hour(),
         timestamp.minute(),
         timestamp.second(),
+        timestamp.millisecond(),
     )
 }
 
@@ -2565,6 +2713,1099 @@ fn stored_catalog_error(context: &str, error: anyhow::Error) -> ControlCommandEr
         proto::ErrorCode::Internal,
         500,
         format!("unable to {context}: {error}"),
+    )
+}
+
+fn start_event_search_query(
+    state: &ServerState,
+    session_id: SessionId,
+    request: proto::QueryEvents,
+) -> Result<proto::EventSearchDelivery, ControlCommandError> {
+    validate_client_id(&request.query_id, "event search query ID")?;
+    let (_, channel) = data_channel_target(request.channel)?;
+    if channel != proto::DataChannelKind::ReliableData {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search results require reliable-data",
+        ));
+    }
+    event_search_catalog(state)?;
+    let group = format!("event-search-query:{}", request.query_id);
+    let cancelled = register_event_search_task(state, session_id, &group)?;
+    let worker_state = state.clone();
+    let query_id = request.query_id.clone();
+    let delivery = proto::EventSearchDelivery {
+        query_id: query_id.clone(),
+        channel: channel as i32,
+    };
+    let worker_group = group.clone();
+    let worker_cancelled = cancelled.clone();
+    let spawn = std::thread::Builder::new()
+        .name("event-search-query".to_owned())
+        .spawn(move || {
+            let result = query_events(&worker_state, request).map(|(_, messages)| messages);
+            deliver_event_search_task(
+                &worker_state,
+                session_id,
+                &worker_group,
+                &worker_cancelled,
+                result,
+                Some(query_id),
+                None,
+            );
+        });
+    if let Err(error) = spawn {
+        finish_event_search_task(state, session_id, &group, &cancelled);
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("unable to start event search query: {error}"),
+        ));
+    }
+    Ok(delivery)
+}
+
+fn start_event_search_media(
+    state: &ServerState,
+    session_id: SessionId,
+    request: proto::FetchEventSearchMedia,
+) -> Result<proto::EventSearchMediaDelivery, ControlCommandError> {
+    validate_client_id(&request.transfer_id, "event search transfer ID")?;
+    if request.objects.is_empty() || request.objects.len() > MAX_EVENT_SEARCH_MEDIA_OBJECTS {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search media transfer requires 1 to 64 objects",
+        ));
+    }
+    let (_, channel) = data_channel_target(request.channel)?;
+    event_search_catalog(state)?;
+    let object_count = u32::try_from(request.objects.len()).unwrap_or(u32::MAX);
+    let group = format!("event-search-media:{}", request.transfer_id);
+    let cancelled = register_event_search_task(state, session_id, &group)?;
+    let worker_state = state.clone();
+    let transfer_id = request.transfer_id.clone();
+    let delivery = proto::EventSearchMediaDelivery {
+        transfer_id: transfer_id.clone(),
+        channel: channel as i32,
+        object_count,
+    };
+    let worker_group = group.clone();
+    let worker_cancelled = cancelled.clone();
+    let spawn = std::thread::Builder::new()
+        .name("event-search-media".to_owned())
+        .spawn(move || {
+            let result =
+                stream_event_search_media(&worker_state, &request, &worker_cancelled, |message| {
+                    worker_state
+                        .webrtc
+                        .enqueue_api_data(session_id, message, worker_cancelled.clone())
+                        .map_err(|error| {
+                            ControlCommandError::new(
+                                proto::ErrorCode::Unavailable,
+                                503,
+                                format!("event search media delivery stopped: {error}"),
+                            )
+                        })
+                });
+            if let Err(error) = result
+                && !worker_cancelled.load(Ordering::Acquire)
+            {
+                let message = event_search_message(
+                    DataChannelTarget::Reliable,
+                    &worker_group,
+                    proto::event_search_message::Message::Error(proto::EventSearchError {
+                        context: Some(proto::event_search_error::Context::TransferId(transfer_id)),
+                        code: error.code as i32,
+                        message: error.message,
+                    }),
+                );
+                let _ = worker_state.webrtc.enqueue_api_data(
+                    session_id,
+                    message,
+                    worker_cancelled.clone(),
+                );
+            }
+            let completion_state = worker_state.clone();
+            let completion_group = worker_group.clone();
+            let completion_cancelled = worker_cancelled.clone();
+            let _ = worker_state.webrtc.complete_api_data_group(
+                session_id,
+                worker_group,
+                Box::new(move || {
+                    finish_event_search_task(
+                        &completion_state,
+                        session_id,
+                        &completion_group,
+                        &completion_cancelled,
+                    );
+                }),
+            );
+        });
+    if let Err(error) = spawn {
+        finish_event_search_task(state, session_id, &group, &cancelled);
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("unable to start event search media transfer: {error}"),
+        ));
+    }
+    Ok(delivery)
+}
+
+fn register_event_search_task(
+    state: &ServerState,
+    session_id: SessionId,
+    group: &str,
+) -> Result<Arc<AtomicBool>, ControlCommandError> {
+    let mut tasks = state
+        .event_search_tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (session_id, group.to_owned());
+    if tasks.contains_key(&key) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "event search query or transfer ID is already active",
+        ));
+    }
+    if tasks.len() >= MAX_EVENT_SEARCH_TASKS
+        || tasks
+            .keys()
+            .filter(|(owner_session_id, _)| *owner_session_id == session_id)
+            .count()
+            >= MAX_EVENT_SEARCH_TASKS_PER_SESSION
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            429,
+            "event search task limit is reached",
+        ));
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    tasks.insert(key, cancelled.clone());
+    Ok(cancelled)
+}
+
+fn cancel_event_search_task(state: &ServerState, session_id: SessionId, group: &str) {
+    let cancelled = state
+        .event_search_tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(session_id, group.to_owned()))
+        .cloned();
+    if let Some(cancelled) = cancelled {
+        cancelled.store(true, Ordering::Release);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn deliver_event_search_task(
+    state: &ServerState,
+    session_id: SessionId,
+    group: &str,
+    cancelled: &Arc<AtomicBool>,
+    result: Result<Vec<OutboundDataMessage>, ControlCommandError>,
+    query_id: Option<String>,
+    transfer_id: Option<String>,
+) {
+    let messages = match result {
+        Ok(messages) => messages,
+        Err(error) if !cancelled.load(Ordering::Acquire) => vec![event_search_message(
+            DataChannelTarget::Reliable,
+            group,
+            proto::event_search_message::Message::Error(proto::EventSearchError {
+                context: query_id
+                    .map(proto::event_search_error::Context::QueryId)
+                    .or_else(|| transfer_id.map(proto::event_search_error::Context::TransferId)),
+                code: error.code as i32,
+                message: error.message,
+            }),
+        )],
+        Err(_) => Vec::new(),
+    };
+    for message in messages {
+        if cancelled.load(Ordering::Acquire)
+            || state
+                .webrtc
+                .enqueue_api_data(session_id, message, cancelled.clone())
+                .is_err()
+        {
+            break;
+        }
+    }
+    let completion_state = state.clone();
+    let completion_group = group.to_owned();
+    let completion_cancelled = cancelled.clone();
+    let _ = state.webrtc.complete_api_data_group(
+        session_id,
+        group.to_owned(),
+        Box::new(move || {
+            finish_event_search_task(
+                &completion_state,
+                session_id,
+                &completion_group,
+                &completion_cancelled,
+            );
+        }),
+    );
+}
+
+fn finish_event_search_task(
+    state: &ServerState,
+    session_id: SessionId,
+    group: &str,
+    cancelled: &Arc<AtomicBool>,
+) {
+    let mut tasks = state
+        .event_search_tasks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (session_id, group.to_owned());
+    if tasks
+        .get(&key)
+        .is_some_and(|active| Arc::ptr_eq(active, cancelled))
+    {
+        tasks.remove(&key);
+    }
+}
+
+fn replace_event_search_terms(
+    state: &ServerState,
+    request: &proto::ReplaceEventSearchTerms,
+) -> Result<(), ControlCommandError> {
+    validate_client_id(&request.event_id, "event ID")?;
+    validate_client_id(&request.source_id, "event source ID")?;
+    if request.terms.len() > 64 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search term count exceeds 64",
+        ));
+    }
+    let catalog = event_search_catalog(state)?;
+    require_stored_event(catalog, &request.event_id, &request.source_id)?;
+    let terms = request
+        .terms
+        .iter()
+        .map(|term| {
+            let field = storage_event_search_field(term.field)?;
+            if field == EventSearchField::EventType {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "event type search terms are catalog-owned",
+                ));
+            }
+            let value = term.value.split_whitespace().collect::<Vec<_>>().join(" ");
+            if value.is_empty() || value.len() > 256 {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "event search terms must contain 1 to 256 UTF-8 bytes",
+                ));
+            }
+            Ok(EventSearchTerm { field, value })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    EventSearch::new(catalog.clone())
+        .replace_terms(&request.event_id, &terms)
+        .map_err(|error| stored_catalog_error("replace event search terms", error))
+}
+
+fn set_event_search_embedding(
+    state: &ServerState,
+    request: &proto::SetEventSearchEmbedding,
+) -> Result<(), ControlCommandError> {
+    validate_client_id(&request.event_id, "event ID")?;
+    validate_client_id(&request.source_id, "event source ID")?;
+    let catalog = event_search_catalog(state)?;
+    require_stored_event(catalog, &request.event_id, &request.source_id)?;
+    let embedding = proto_event_embedding(request.embedding.as_ref())?;
+    EventSearch::new(catalog.clone())
+        .set_embedding(&request.event_id, embedding)
+        .map_err(|error| stored_catalog_error("set event search embedding", error))
+}
+
+fn query_events(
+    state: &ServerState,
+    request: proto::QueryEvents,
+) -> Result<(proto::EventSearchDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
+    validate_client_id(&request.query_id, "event search query ID")?;
+    let (target, channel) = data_channel_target(request.channel)?;
+    if target != DataChannelTarget::Reliable {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search results require reliable-data",
+        ));
+    }
+    validate_event_search_stream(&request.stream_id)?;
+    if let Some(source_id) = request.source_id.as_deref() {
+        validate_client_id(source_id, "event search source ID")?;
+        let camera = state.camera(source_id).ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "event search source was not found",
+            )
+        })?;
+        if !camera
+            .info
+            .profiles
+            .iter()
+            .any(|profile| profile.stream == request.stream_id)
+        {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "event search stream was not found",
+            ));
+        }
+    }
+    let start_ms = required_timestamp_ms(request.start_time.as_ref(), "event search start time")?;
+    let end_ms = required_timestamp_ms(request.end_time.as_ref(), "event search end time")?;
+    if start_ms >= end_ms {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search start must precede its end",
+        ));
+    }
+    if end_ms.saturating_sub(start_ms) > 31 * 86_400_000 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search window exceeds 31 days",
+        ));
+    }
+    let preview_before_ms =
+        event_search_preview_ms(request.preview_before.as_ref(), DEFAULT_PREVIEW_BEFORE_MS)?;
+    let preview_after_ms =
+        event_search_preview_ms(request.preview_after.as_ref(), DEFAULT_PREVIEW_AFTER_MS)?;
+    if preview_before_ms.saturating_add(preview_after_ms) > 60_000 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event preview window exceeds 60 seconds",
+        ));
+    }
+    let page_size = if request.page_size == 0 {
+        50
+    } else {
+        request.page_size
+    };
+    if page_size > 128 || request.offset != 0 || request.page_token.len() > 4_096 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search page size, offset, or page token is invalid",
+        ));
+    }
+
+    let catalog = event_search_catalog(state)?;
+    let search = EventSearch::new(catalog.clone());
+    let mut page = match request.search {
+        Some(proto::query_events::Search::Text(text)) => {
+            let query_text = text.query.trim();
+            if query_text.is_empty() || query_text.len() > 256 {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "event text search must contain 1 to 256 UTF-8 bytes",
+                ));
+            }
+            let field = text.field.map(storage_event_search_field).transpose()?;
+            search
+                .search_text(EventTextSearchQuery {
+                    query: query_text.to_owned(),
+                    field,
+                    source_id: request.source_id.clone(),
+                    stream_id: request.stream_id.clone(),
+                    start_time_ms: start_ms,
+                    end_time_ms: end_ms,
+                    preview_before_ms,
+                    preview_after_ms,
+                    page_size,
+                    page_token: (!request.page_token.is_empty())
+                        .then(|| request.page_token.clone()),
+                })
+                .map_err(|error| event_search_error("search event metadata", error))?
+        }
+        Some(proto::query_events::Search::Semantic(semantic)) => search
+            .search_semantic(EventSemanticSearchQuery {
+                embedding: proto_event_embedding(semantic.embedding.as_ref())?,
+                source_id: request.source_id.clone(),
+                stream_id: request.stream_id.clone(),
+                start_time_ms: start_ms,
+                end_time_ms: end_ms,
+                preview_before_ms,
+                preview_after_ms,
+                page_size,
+                page_token: (!request.page_token.is_empty()).then(|| request.page_token.clone()),
+            })
+            .map_err(|error| event_search_error("search event embeddings", error))?,
+        None => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event search criterion is required",
+            ));
+        }
+    };
+    remap_event_search_keyframes(state, catalog, &request.stream_id, &mut page.hits)?;
+
+    let group = format!("event-search-query:{}", request.query_id);
+    let mut messages = page
+        .hits
+        .into_iter()
+        .enumerate()
+        .map(|(index, hit)| {
+            event_search_message(
+                DataChannelTarget::Reliable,
+                &group,
+                proto::event_search_message::Message::Result(proto::EventSearchResult {
+                    query_id: request.query_id.clone(),
+                    sequence: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+                    hit: Some(proto_event_search_hit(hit)),
+                }),
+            )
+        })
+        .collect::<Vec<_>>();
+    let result_count = u64::try_from(messages.len()).unwrap_or(u64::MAX);
+    messages.push(event_search_message(
+        DataChannelTarget::Reliable,
+        &group,
+        proto::event_search_message::Message::QueryEnd(proto::EventSearchQueryEnd {
+            query_id: request.query_id.clone(),
+            result_count,
+            next_offset: None,
+            next_page_token: page.next_page_token.unwrap_or_default(),
+            candidates_truncated: page.candidates_truncated,
+        }),
+    ));
+    Ok((
+        proto::EventSearchDelivery {
+            query_id: request.query_id,
+            channel: channel as i32,
+        },
+        messages,
+    ))
+}
+
+fn fetch_event_search_media(
+    state: &ServerState,
+    request: proto::FetchEventSearchMedia,
+) -> Result<(proto::EventSearchMediaDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let mut messages = Vec::new();
+    let delivery = stream_event_search_media(state, &request, &cancelled, |message| {
+        messages.push(message);
+        Ok(())
+    })?;
+    Ok((delivery, messages))
+}
+
+struct ResolvedEventSearchMediaObject {
+    object_id: String,
+    recording_id: String,
+    fragment_sequence: u64,
+    representation: proto::StoredMediaObjectRepresentation,
+    content_type: String,
+    path: PathBuf,
+    offset: u64,
+    length: u64,
+    codec: String,
+    width: u32,
+    height: u32,
+    decoder_config: Vec<u8>,
+    nal_length_size: u32,
+}
+
+fn stream_event_search_media(
+    state: &ServerState,
+    request: &proto::FetchEventSearchMedia,
+    cancelled: &AtomicBool,
+    mut emit: impl FnMut(OutboundDataMessage) -> Result<(), ControlCommandError>,
+) -> Result<proto::EventSearchMediaDelivery, ControlCommandError> {
+    validate_client_id(&request.transfer_id, "event search transfer ID")?;
+    if request.objects.is_empty() || request.objects.len() > MAX_EVENT_SEARCH_MEDIA_OBJECTS {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search media transfer requires 1 to 64 objects",
+        ));
+    }
+    let (target, channel) = data_channel_target(request.channel)?;
+    let catalog = event_search_catalog(state)?;
+    let mut object_ids = HashSet::new();
+    let mut total_bytes = 0u64;
+    let group = format!("event-search-media:{}", request.transfer_id);
+    let mut objects = Vec::with_capacity(request.objects.len());
+    for object in &request.objects {
+        validate_client_id(&object.object_id, "event search object ID")?;
+        validate_client_id(&object.source_id, "event search media source ID")?;
+        validate_client_id(&object.recording_id, "event search recording ID")?;
+        if object.fragment_sequence == 0 {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event search fragment sequence must be positive",
+            ));
+        }
+        if !object_ids.insert(object.object_id.clone()) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event search object IDs must be unique within a transfer",
+            ));
+        }
+        validate_event_search_stream(&object.stream_id)?;
+        let legacy_recording_stream_id = state
+            .camera(&object.source_id)
+            .map(|camera| format!("{}/{}", camera.recording_label, object.stream_id));
+        let location = catalog
+            .resolve_media_object(
+                &object.source_id,
+                &object.stream_id,
+                legacy_recording_stream_id.as_deref(),
+                &object.recording_id,
+                object.fragment_sequence,
+            )
+            .map_err(|error| stored_catalog_error("resolve event search media", error))?
+            .ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::NotFound,
+                    404,
+                    "event search media object was not found",
+                )
+            })?;
+        let initialization = read_stored_range(
+            Path::new(&location.path),
+            location.initialization_offset,
+            location.initialization_len,
+        )?;
+        let video_format = indexed_video_format(&initialization)?;
+        let representation = proto::StoredMediaObjectRepresentation::try_from(
+            object.representation,
+        )
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "stored media object representation is invalid",
+            )
+        })?;
+        let (offset, length, content_type) = match representation {
+            proto::StoredMediaObjectRepresentation::EncodedKeyframe => (
+                location.keyframe_offset,
+                location.keyframe_len,
+                video_format.keyframe_content_type.clone(),
+            ),
+            proto::StoredMediaObjectRepresentation::Fmp4Initialization => (
+                location.initialization_offset,
+                location.initialization_len,
+                video_format.mp4_content_type.clone(),
+            ),
+            proto::StoredMediaObjectRepresentation::Fmp4Gop => (
+                location.fragment_offset,
+                location.fragment_len,
+                video_format.mp4_content_type.clone(),
+            ),
+            proto::StoredMediaObjectRepresentation::Unspecified => {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "stored media object representation is required",
+                ));
+            }
+        };
+        total_bytes = total_bytes.checked_add(length).ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                413,
+                "event search media transfer size overflowed",
+            )
+        })?;
+        if total_bytes > MAX_EVENT_SEARCH_MEDIA_BYTES {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                413,
+                "event search media transfer exceeds 32 MiB",
+            ));
+        }
+        objects.push(ResolvedEventSearchMediaObject {
+            object_id: object.object_id.clone(),
+            recording_id: location.recording_id,
+            fragment_sequence: location.fragment_sequence,
+            representation,
+            content_type,
+            path: PathBuf::from(location.path),
+            offset,
+            length,
+            codec: video_format.decoder.codec,
+            width: u32::from(video_format.decoder.width),
+            height: u32::from(video_format.decoder.height),
+            decoder_config: video_format.decoder.description,
+            nal_length_size: u32::from(video_format.decoder.nal_length_size),
+        });
+    }
+    objects.sort_by_key(|object| match object.representation {
+        proto::StoredMediaObjectRepresentation::Fmp4Initialization => 0,
+        proto::StoredMediaObjectRepresentation::EncodedKeyframe => 1,
+        proto::StoredMediaObjectRepresentation::Fmp4Gop => 2,
+        proto::StoredMediaObjectRepresentation::Unspecified => 3,
+    });
+    for object in objects {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        let object_target = if object.representation
+            == proto::StoredMediaObjectRepresentation::Fmp4Initialization
+        {
+            DataChannelTarget::Reliable
+        } else {
+            target
+        };
+        stream_event_search_object(
+            request,
+            object_target,
+            &group,
+            &object,
+            cancelled,
+            &mut emit,
+        )?;
+    }
+    if !cancelled.load(Ordering::Acquire) {
+        emit(event_search_message(
+            DataChannelTarget::Reliable,
+            &group,
+            proto::event_search_message::Message::MediaEnd(proto::EventSearchMediaEnd {
+                transfer_id: request.transfer_id.clone(),
+                object_count: u32::try_from(request.objects.len()).unwrap_or(u32::MAX),
+            }),
+        ))?;
+    }
+    Ok(proto::EventSearchMediaDelivery {
+        transfer_id: request.transfer_id.clone(),
+        channel: channel as i32,
+        object_count: u32::try_from(request.objects.len()).unwrap_or(u32::MAX),
+    })
+}
+
+fn stream_event_search_object(
+    request: &proto::FetchEventSearchMedia,
+    target: DataChannelTarget,
+    group: &str,
+    object: &ResolvedEventSearchMediaObject,
+    cancelled: &AtomicBool,
+    emit: &mut impl FnMut(OutboundDataMessage) -> Result<(), ControlCommandError>,
+) -> Result<(), ControlCommandError> {
+    let chunk_count = protobuf_chunk_count(usize::try_from(object.length).map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            "event search media length does not fit this platform",
+        )
+    })?)?;
+    let mut file = File::open(&object.path).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("event search media file is unavailable: {error}"),
+        )
+    })?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                format!("event search media file cannot be inspected: {error}"),
+            )
+        })?
+        .len();
+    if object
+        .offset
+        .checked_add(object.length)
+        .is_none_or(|end| end > file_len)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "event search media range is no longer available",
+        ));
+    }
+    file.seek(SeekFrom::Start(object.offset)).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            format!("event search media range cannot be opened: {error}"),
+        )
+    })?;
+    let mut remaining = object.length;
+    let mut chunk_index = 0u32;
+    let mut buffer = vec![0; DATA_MESSAGE_CHUNK_BYTES];
+    while remaining > 0 && !cancelled.load(Ordering::Acquire) {
+        let length = usize::try_from(remaining.min(DATA_MESSAGE_CHUNK_BYTES as u64)).unwrap();
+        file.read_exact(&mut buffer[..length]).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                format!("event search media range was truncated: {error}"),
+            )
+        })?;
+        emit(event_search_message(
+            target,
+            group,
+            proto::event_search_message::Message::MediaChunk(proto::EventSearchMediaChunk {
+                transfer_id: request.transfer_id.clone(),
+                object_id: object.object_id.clone(),
+                representation: object.representation as i32,
+                content_type: object.content_type.clone(),
+                byte_len: object.length,
+                chunk_index,
+                chunk_count,
+                payload: buffer[..length].to_vec(),
+                recording_id: object.recording_id.clone(),
+                fragment_sequence: object.fragment_sequence,
+                codec: object.codec.clone(),
+                width: object.width,
+                height: object.height,
+                decoder_config: object.decoder_config.clone(),
+                nal_length_size: object.nal_length_size,
+            }),
+        ))?;
+        remaining -= length as u64;
+        chunk_index = chunk_index.saturating_add(1);
+    }
+    Ok(())
+}
+
+fn event_search_catalog(
+    state: &ServerState,
+) -> Result<&RecordingCatalogHandle, ControlCommandError> {
+    state.catalog.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "recording catalog is unavailable",
+        )
+    })
+}
+
+fn event_search_error(context: &str, error: anyhow::Error) -> ControlCommandError {
+    if error.to_string().contains("event search page token") {
+        return ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, error.to_string());
+    }
+    if error.to_string().contains("event search snapshot changed") {
+        return ControlCommandError::new(proto::ErrorCode::Rejected, 409, error.to_string());
+    }
+    stored_catalog_error(context, error)
+}
+
+fn require_stored_event(
+    catalog: &RecordingCatalogHandle,
+    event_id: &str,
+    source_id: &str,
+) -> Result<(), ControlCommandError> {
+    let event = catalog
+        .event_by_id(event_id)
+        .map_err(|error| stored_catalog_error("locate stored event", error))?;
+    if event
+        .as_ref()
+        .is_none_or(|event| event.camera_id != source_id)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "stored event was not found for the requested source",
+        ));
+    }
+    Ok(())
+}
+
+fn storage_event_search_field(value: i32) -> Result<EventSearchField, ControlCommandError> {
+    match proto::EventSearchField::try_from(value) {
+        Ok(proto::EventSearchField::EventType) => Ok(EventSearchField::EventType),
+        Ok(proto::EventSearchField::FaceName) => Ok(EventSearchField::FaceName),
+        Ok(proto::EventSearchField::ObjectClass) => Ok(EventSearchField::ObjectClass),
+        Ok(proto::EventSearchField::Text) => Ok(EventSearchField::Text),
+        _ => Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search field is invalid",
+        )),
+    }
+}
+
+fn proto_event_embedding(
+    embedding: Option<&proto::EventSearchEmbedding>,
+) -> Result<EventEmbedding, ControlCommandError> {
+    let embedding = embedding.ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search embedding is required",
+        )
+    })?;
+    let model_id = embedding.model_id.trim();
+    if model_id.is_empty() || model_id.len() > 128 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "embedding model ID must contain 1 to 128 UTF-8 bytes",
+        ));
+    }
+    if embedding.values.is_empty()
+        || embedding.values.len() > 4_096
+        || embedding.values.iter().any(|value| !value.is_finite())
+        || embedding
+            .values
+            .iter()
+            .map(|value| f64::from(*value) * f64::from(*value))
+            .sum::<f64>()
+            <= f64::EPSILON
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "embedding must contain 1 to 4096 finite, non-zero dimensions",
+        ));
+    }
+    Ok(EventEmbedding {
+        model_id: model_id.to_owned(),
+        values: embedding.values.clone(),
+    })
+}
+
+fn event_search_preview_ms(
+    duration: Option<&prost_types::Duration>,
+    default_ms: u64,
+) -> Result<u64, ControlCommandError> {
+    duration.map_or(Ok(default_ms), |duration| {
+        optional_duration_ms(Some(duration))
+    })
+}
+
+fn validate_event_search_stream(stream_id: &str) -> Result<(), ControlCommandError> {
+    if !matches!(stream_id, "main" | "sub") {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search stream must be main or sub",
+        ));
+    }
+    Ok(())
+}
+
+fn remap_event_search_keyframes(
+    state: &ServerState,
+    catalog: &RecordingCatalogHandle,
+    stream_id: &str,
+    hits: &mut [crate::storage::EventSearchHit],
+) -> Result<(), ControlCommandError> {
+    let mut hit_indexes = Vec::new();
+    let mut requests = Vec::new();
+    for (hit_index, hit) in hits.iter().enumerate() {
+        if !hit.keyframes.is_empty() {
+            continue;
+        }
+        let Some(camera) = state.camera(&hit.source_id) else {
+            continue;
+        };
+        hit_indexes.push(hit_index);
+        requests.push(crate::storage::catalog::EventPreviewRequest {
+            event_id: hit.event_id.clone(),
+            source_id: hit.source_id.clone(),
+            stream_id: stream_id.to_owned(),
+            recording_stream_id: format!("{}/{}", camera.recording_label, stream_id),
+            event_time_ms: hit.start_time_ms,
+            start_time_ms: hit.preview_start_ms,
+            end_time_ms: hit.preview_end_ms,
+        });
+    }
+    let resolutions = catalog
+        .resolve_event_preview_keyframes(requests)
+        .map_err(|error| stored_catalog_error("resolve event preview keyframes", error))?;
+    for (hit_index, resolution) in hit_indexes.into_iter().zip(resolutions) {
+        let hit = &mut hits[hit_index];
+        if hit.event_id != resolution.event_id {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                "event preview resolution order changed",
+            ));
+        }
+        hit.keyframes = resolution.keyframes;
+        hit.keyframes_truncated |= resolution.truncated;
+    }
+    Ok(())
+}
+
+fn proto_event_search_hit(hit: crate::storage::EventSearchHit) -> proto::EventSearchHit {
+    let source_id = hit.source_id.clone();
+    proto::EventSearchHit {
+        event_id: hit.event_id,
+        source_id: source_id.clone(),
+        event_type: hit.event_type,
+        start_time: Some(millis_timestamp(hit.start_time_ms)),
+        end_time: hit.end_time_ms.map(millis_timestamp),
+        score: hit.score,
+        preview_start_time: Some(millis_timestamp(hit.preview_start_ms)),
+        preview_end_time: Some(millis_timestamp(hit.preview_end_ms)),
+        keyframes: hit
+            .keyframes
+            .into_iter()
+            .map(|keyframe| proto::EventSearchKeyframe {
+                source_id: source_id.clone(),
+                stream_id: keyframe.stream_id,
+                recording_id: keyframe.recording_id,
+                fragment_sequence: keyframe.fragment_sequence,
+                event_time: Some(millis_timestamp(keyframe.event_time_ms)),
+                fragment_start_time: Some(millis_timestamp(keyframe.fragment_start_ms)),
+                byte_len: keyframe.byte_len,
+            })
+            .collect(),
+        keyframes_truncated: hit.keyframes_truncated,
+    }
+}
+
+fn event_search_message(
+    target: DataChannelTarget,
+    group: &str,
+    message: proto::event_search_message::Message,
+) -> OutboundDataMessage {
+    OutboundDataMessage {
+        target,
+        group: group.to_owned(),
+        message: proto::Message {
+            message: Some(proto::message::Message::EventSearch(
+                proto::EventSearchMessage {
+                    message: Some(message),
+                },
+            )),
+        },
+    }
+}
+
+struct IndexedVideoFormat {
+    mp4_content_type: String,
+    keyframe_content_type: String,
+    decoder: mp4::Mp4VideoDecoderConfig,
+}
+
+fn indexed_video_format(initialization: &[u8]) -> Result<IndexedVideoFormat, ControlCommandError> {
+    let reader = mp4::Mp4Reader::read_header(
+        Cursor::new(initialization),
+        initialization.len().try_into().unwrap_or(u64::MAX),
+    )
+    .map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            format!("unable to parse indexed MP4 initialization: {error}"),
+        )
+    })?;
+    for track in reader.tracks().values() {
+        let decoder = track.video_decoder_config().map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to read indexed video decoder configuration: {error}"),
+            )
+        })?;
+        if let Some(mut decoder) = decoder {
+            let (coded_width, coded_height) = indexed_video_coded_dimensions(track)?;
+            decoder.width = coded_width;
+            decoder.height = coded_height;
+            let keyframe_content_type = if decoder.codec.starts_with("avc1") {
+                "video/h264; format=avcc"
+            } else {
+                "video/h265; format=hvcc"
+            };
+            return Ok(IndexedVideoFormat {
+                mp4_content_type: fragmented_mp4_content_type(initialization)?,
+                keyframe_content_type: keyframe_content_type.to_owned(),
+                decoder,
+            });
+        }
+    }
+    Err(ControlCommandError::new(
+        proto::ErrorCode::Internal,
+        500,
+        "indexed MP4 initialization has no supported video track",
+    ))
+}
+
+fn indexed_video_coded_dimensions(
+    track: &mp4::Mp4Track,
+) -> Result<(u16, u16), ControlCommandError> {
+    let dimensions = match track.media_type() {
+        Ok(mp4::MediaType::H264) => {
+            let parameters = retina::codec::h264::parameters_from_sps_and_pps(
+                track
+                    .sequence_parameter_set()
+                    .map_err(indexed_video_config_error)?,
+                track
+                    .picture_parameter_set()
+                    .map_err(indexed_video_config_error)?,
+                retina::codec::h26x::Framing::FourByteLength,
+            )
+            .map_err(indexed_video_config_error)?;
+            parameters.coded_pixel_dimensions()
+        }
+        Ok(mp4::MediaType::H265) => {
+            let sample_entry = track
+                .trak
+                .mdia
+                .minf
+                .stbl
+                .stsd
+                .hvc1
+                .as_ref()
+                .or(track.trak.mdia.minf.stbl.stsd.hev1.as_ref())
+                .ok_or_else(|| indexed_video_config_error("HEVC sample entry is missing"))?;
+            let configuration = sample_entry
+                .hvcc
+                .configuration()
+                .map_err(indexed_video_config_error)?;
+            let parameters = retina::codec::h265::parameters_from_vps_sps_pps(
+                configuration
+                    .vps
+                    .first()
+                    .ok_or_else(|| indexed_video_config_error("HEVC VPS is missing"))?,
+                configuration
+                    .sps
+                    .first()
+                    .ok_or_else(|| indexed_video_config_error("HEVC SPS is missing"))?,
+                configuration
+                    .pps
+                    .first()
+                    .ok_or_else(|| indexed_video_config_error("HEVC PPS is missing"))?,
+                retina::codec::h26x::Framing::FourByteLength,
+            )
+            .map_err(indexed_video_config_error)?;
+            parameters.coded_pixel_dimensions()
+        }
+        Ok(_) => return Err(indexed_video_config_error("unsupported video codec")),
+        Err(error) => return Err(indexed_video_config_error(error)),
+    };
+    Ok((
+        u16::try_from(dimensions.0)
+            .map_err(|_| indexed_video_config_error("coded video width exceeds u16"))?,
+        u16::try_from(dimensions.1)
+            .map_err(|_| indexed_video_config_error("coded video height exceeds u16"))?,
+    ))
+}
+
+fn indexed_video_config_error(error: impl std::fmt::Display) -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::Internal,
+        500,
+        format!("indexed video decoder configuration is invalid: {error}"),
     )
 }
 
@@ -3833,6 +5074,7 @@ pub struct ServerState {
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     ptz_owners: Arc<Mutex<HashMap<String, SessionId>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
+    event_search_tasks: EventSearchTasks,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
@@ -3887,6 +5129,7 @@ impl ServerState {
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(HashMap::new())),
+            event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
             recording_demand,
@@ -5772,6 +7015,19 @@ fn service_error(status: u16, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn indexed_video_format_reports_coded_dimensions() {
+        let initialization = std::fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/test-camera/testdata/cc-4k-640x360-h264.mp4"),
+        )
+        .unwrap();
+
+        let format = indexed_video_format(&initialization).unwrap();
+
+        assert_eq!((format.decoder.width, format.decoder.height), (640, 368));
+    }
+
     use crate::logging::LogFilterFile;
     use crate::storage::{
         RecordingCatalog,
@@ -6383,7 +7639,10 @@ mod tests {
             capabilities.source_sessions[0].source_session_id,
             capabilities.self_source_session_id
         );
-        assert_eq!(capabilities.capability_ids, ["keeppeek.media-export.v1"]);
+        assert_eq!(
+            capabilities.capability_ids,
+            ["keeppeek.media-export.v1", "keeppeek.event-search"]
+        );
     }
 
     #[test]
@@ -6541,6 +7800,8 @@ mod tests {
             .upsert_recording(crate::storage::CatalogRecording {
                 id: "recording-1".to_owned(),
                 stream_id: "front-door/main".to_owned(),
+                source_id: Some("127.0.0.1".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
                 started_at_ms: 1_000,
                 ended_at_ms: Some(3_000),
                 path: directory
@@ -6651,6 +7912,407 @@ mod tests {
         drop(handler);
         catalog.shutdown();
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn event_search_queries_and_fetches_encoded_media_objects() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-event-search-{}", rand::random::<u64>()));
+        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let started_at = Instant::now();
+        let mut writer =
+            crate::storage::medium_term::MediumTermWriter::create_with_catalog_identity(
+                &directory,
+                crate::storage::RecordingStreamIdentity::new(
+                    "127.0.0.1",
+                    "main",
+                    "archived-front-door",
+                ),
+                started_at,
+                8 * 1024,
+                handle.clone(),
+            )
+            .unwrap();
+        let frame_payload = bytes::Bytes::from_static(&[
+            0, 0, 0, 8, 0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce,
+            0x3c, 0x80, 0, 0, 0, 1, 0x65,
+        ]);
+        for offset_ms in [0, 1_000] {
+            writer
+                .append_one(crate::storage::RecordingFrame {
+                    received_at: started_at + Duration::from_millis(offset_ms),
+                    timestamp: Some(Duration::from_millis(offset_ms)),
+                    frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
+                        codec: crate::storage::VideoCodec::H264,
+                        is_keyframe: true,
+                        width: 640,
+                        height: 360,
+                        data: frame_payload.clone(),
+                    }),
+                })
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+        let fragments = handle
+            .media_fragments_in_range("archived-front-door/main", 0, i64::MAX)
+            .unwrap();
+        let event_time_ms = fragments[0].start_ms + 100;
+        handle
+            .insert_event(TimelineEvent {
+                id: "face-1".to_owned(),
+                camera_id: "127.0.0.1".to_owned(),
+                stream: Some("main".to_owned()),
+                source: EventSource::KeepPeek,
+                kind: "face".to_owned(),
+                start_time_ms: event_time_ms,
+                end_time_ms: Some(event_time_ms + 200),
+                confidence: Some(0.98),
+                bbox: None,
+                zone: None,
+                thumbnail_filename: None,
+            })
+            .unwrap();
+
+        let mut state = media_test_state();
+        state.catalog = Some(handle);
+        let handler = test_control_handler(state);
+        let wrong_source = handler.handle(proto::Request {
+            request_id: 199,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::ReplaceTerms(
+                        proto::ReplaceEventSearchTerms {
+                            event_id: "face-1".to_owned(),
+                            source_id: "192.0.2.99".to_owned(),
+                            terms: vec![proto::EventSearchTerm {
+                                field: proto::EventSearchField::FaceName as i32,
+                                value: "Mallory".to_owned(),
+                            }],
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            wrong_source.response.result,
+            Some(control_response::Result::Error(proto::Error {
+                code,
+                ..
+            })) if code == proto::ErrorCode::NotFound as i32
+        ));
+        let event_type_mutation = handler.handle(proto::Request {
+            request_id: 200,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::ReplaceTerms(
+                        proto::ReplaceEventSearchTerms {
+                            event_id: "face-1".to_owned(),
+                            source_id: "127.0.0.1".to_owned(),
+                            terms: vec![proto::EventSearchTerm {
+                                field: proto::EventSearchField::EventType as i32,
+                                value: "vehicle".to_owned(),
+                            }],
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            event_type_mutation.response.result,
+            Some(control_response::Result::Error(proto::Error {
+                code,
+                ..
+            })) if code == proto::ErrorCode::InvalidRequest as i32
+        ));
+        let replace = handler.handle(proto::Request {
+            request_id: 201,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::ReplaceTerms(
+                        proto::ReplaceEventSearchTerms {
+                            event_id: "face-1".to_owned(),
+                            source_id: "127.0.0.1".to_owned(),
+                            terms: vec![proto::EventSearchTerm {
+                                field: proto::EventSearchField::FaceName as i32,
+                                value: "Alice Example".to_owned(),
+                            }],
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            replace.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::EventSearchMutation(_))
+            }))
+        ));
+
+        let embedding = proto::EventSearchEmbedding {
+            model_id: "vision-embedding".to_owned(),
+            values: vec![1.0, 0.0, 0.0],
+        };
+        let set_embedding = handler.handle(proto::Request {
+            request_id: 203,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::SetEmbedding(
+                        proto::SetEventSearchEmbedding {
+                            event_id: "face-1".to_owned(),
+                            embedding: Some(embedding.clone()),
+                            source_id: "127.0.0.1".to_owned(),
+                        },
+                    )),
+                },
+            )),
+        });
+        assert!(matches!(
+            set_embedding.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::EventSearchMutation(_))
+            }))
+        ));
+
+        let query = handler.handle(proto::Request {
+            request_id: 205,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::Query(proto::QueryEvents {
+                        query_id: "event-query-1".to_owned(),
+                        search: Some(proto::query_events::Search::Text(proto::EventTextSearch {
+                            query: "ali".to_owned(),
+                            field: Some(proto::EventSearchField::FaceName as i32),
+                        })),
+                        source_id: Some("127.0.0.1".to_owned()),
+                        stream_id: "main".to_owned(),
+                        start_time: Some(millis_timestamp(fragments[0].start_ms - 1_000)),
+                        end_time: Some(millis_timestamp(
+                            fragments[1]
+                                .start_ms
+                                .saturating_add(i64::try_from(fragments[1].duration_ms).unwrap()),
+                        )),
+                        preview_before: Some(millis_duration(500)),
+                        preview_after: Some(millis_duration(1_500)),
+                        page_size: 10,
+                        offset: 0,
+                        channel: proto::DataChannelKind::ReliableData as i32,
+                        page_token: String::new(),
+                    })),
+                },
+            )),
+        });
+        let Some(control_response::Result::Ok(proto::Ok {
+            result: Some(control_ok::Result::EventSearchDelivery(delivery)),
+        })) = query.response.result
+        else {
+            panic!("event search query must return delivery metadata");
+        };
+        assert_eq!(delivery.query_id, "event-query-1");
+        assert_eq!(query.data_messages.len(), 2);
+        let Some(proto::message::Message::EventSearch(search_message)) =
+            &query.data_messages[0].message.message
+        else {
+            panic!("event search result must use its binary message family");
+        };
+        let Some(proto::event_search_message::Message::Result(result)) = &search_message.message
+        else {
+            panic!("first event search message must contain a result");
+        };
+        let hit = result.hit.as_ref().unwrap();
+        assert_eq!(hit.event_id, "face-1");
+        assert_eq!(hit.keyframes.len(), 2);
+        assert_eq!(hit.keyframes[0].source_id, "127.0.0.1");
+        assert_eq!(hit.keyframes[0].stream_id, "main");
+
+        let semantic = handler.handle(proto::Request {
+            request_id: 207,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::Query(proto::QueryEvents {
+                        query_id: "semantic-query-1".to_owned(),
+                        search: Some(proto::query_events::Search::Semantic(
+                            proto::EventSemanticSearch {
+                                embedding: Some(embedding),
+                            },
+                        )),
+                        source_id: Some("127.0.0.1".to_owned()),
+                        stream_id: "main".to_owned(),
+                        start_time: Some(millis_timestamp(fragments[0].start_ms - 1_000)),
+                        end_time: Some(millis_timestamp(fragments[1].start_ms + 2_000)),
+                        preview_before: None,
+                        preview_after: None,
+                        page_size: 10,
+                        offset: 0,
+                        channel: proto::DataChannelKind::ReliableData as i32,
+                        page_token: String::new(),
+                    })),
+                },
+            )),
+        });
+        assert_eq!(semantic.data_messages.len(), 2);
+
+        let keyframe = &hit.keyframes[0];
+        let objects: Vec<proto::EventSearchMediaObject> = [
+            (
+                "keyframe",
+                proto::StoredMediaObjectRepresentation::EncodedKeyframe,
+            ),
+            (
+                "initialization",
+                proto::StoredMediaObjectRepresentation::Fmp4Initialization,
+            ),
+            ("gop", proto::StoredMediaObjectRepresentation::Fmp4Gop),
+        ]
+        .into_iter()
+        .map(
+            |(object_id, representation)| proto::EventSearchMediaObject {
+                object_id: object_id.to_owned(),
+                source_id: keyframe.source_id.clone(),
+                stream_id: keyframe.stream_id.clone(),
+                recording_id: keyframe.recording_id.clone(),
+                fragment_sequence: keyframe.fragment_sequence,
+                representation: representation as i32,
+            },
+        )
+        .collect();
+        let fetch = handler.handle(proto::Request {
+            request_id: 209,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::FetchMedia(
+                        proto::FetchEventSearchMedia {
+                            transfer_id: "event-media-1".to_owned(),
+                            objects: objects.clone(),
+                            channel: proto::DataChannelKind::ReliableData as i32,
+                        },
+                    )),
+                },
+            )),
+        });
+        let Some(control_response::Result::Ok(proto::Ok {
+            result: Some(control_ok::Result::EventSearchMediaDelivery(media_delivery)),
+        })) = fetch.response.result
+        else {
+            panic!("event search media fetch must return delivery metadata");
+        };
+        assert_eq!(media_delivery.object_count, 3);
+        let chunks = fetch
+            .data_messages
+            .iter()
+            .filter_map(|message| {
+                let Some(proto::message::Message::EventSearch(search)) = &message.message.message
+                else {
+                    return None;
+                };
+                let Some(proto::event_search_message::Message::MediaChunk(chunk)) = &search.message
+                else {
+                    return None;
+                };
+                Some(chunk)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 3);
+        let keyframe_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.object_id == "keyframe")
+            .unwrap();
+        let initialization_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.object_id == "initialization")
+            .unwrap();
+        let gop_chunk = chunks
+            .iter()
+            .find(|chunk| chunk.object_id == "gop")
+            .unwrap();
+        assert_eq!(chunks[0].object_id, "initialization");
+        assert_eq!(keyframe_chunk.content_type, "video/h264; format=avcc");
+        assert_eq!(keyframe_chunk.payload, frame_payload.as_ref());
+        assert_eq!(keyframe_chunk.codec, "avc1.42001F");
+        assert_eq!((keyframe_chunk.width, keyframe_chunk.height), (64, 96));
+        assert_eq!(keyframe_chunk.nal_length_size, 4);
+        assert!(!keyframe_chunk.decoder_config.is_empty());
+        assert_eq!(&initialization_chunk.payload[4..8], b"ftyp");
+        assert_eq!(&gop_chunk.payload[4..8], b"moof");
+        assert_eq!(gop_chunk.recording_id, keyframe.recording_id);
+        assert_eq!(gop_chunk.fragment_sequence, keyframe.fragment_sequence);
+        assert!(matches!(
+            fetch.data_messages.last().unwrap().message.message,
+            Some(proto::message::Message::EventSearch(
+                proto::EventSearchMessage {
+                    message: Some(proto::event_search_message::Message::MediaEnd(_))
+                }
+            ))
+        ));
+
+        let cancelled = AtomicBool::new(false);
+        let mut cancelled_messages = Vec::new();
+        stream_event_search_media(
+            &handler.state,
+            &proto::FetchEventSearchMedia {
+                transfer_id: "event-media-cancelled".to_owned(),
+                objects,
+                channel: proto::DataChannelKind::ReliableData as i32,
+            },
+            &cancelled,
+            |message| {
+                cancelled_messages.push(message);
+                cancelled.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(cancelled_messages.len(), 1);
+        assert!(matches!(
+            cancelled_messages[0].message.message,
+            Some(proto::message::Message::EventSearch(
+                proto::EventSearchMessage {
+                    message: Some(proto::event_search_message::Message::MediaChunk(_))
+                }
+            ))
+        ));
+
+        drop(handler);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn event_search_tasks_are_bounded_per_session() {
+        let state = ServerState::empty();
+        let session_id = SessionId::from_u64(91);
+        let mut tokens = Vec::new();
+        for index in 0..MAX_EVENT_SEARCH_TASKS_PER_SESSION {
+            tokens.push(
+                register_event_search_task(
+                    &state,
+                    session_id,
+                    &format!("event-search-query:{index}"),
+                )
+                .unwrap(),
+            );
+        }
+        let error = register_event_search_task(&state, session_id, "event-search-query:overflow")
+            .unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        for (index, token) in tokens.iter().enumerate() {
+            cancel_event_search_task(&state, session_id, &format!("event-search-query:{index}"));
+            assert!(token.load(Ordering::Acquire));
+        }
+        let cancelled_error =
+            register_event_search_task(&state, session_id, "event-search-query:0").unwrap_err();
+        assert_eq!(cancelled_error.code, proto::ErrorCode::Rejected);
+        for (index, token) in tokens.iter().enumerate() {
+            finish_event_search_task(
+                &state,
+                session_id,
+                &format!("event-search-query:{index}"),
+                token,
+            );
+        }
+        let reused =
+            register_event_search_task(&state, session_id, "event-search-query:0").unwrap();
+        finish_event_search_task(&state, session_id, "event-search-query:0", &reused);
     }
 
     #[test]
@@ -6997,11 +8659,9 @@ mod tests {
         assert!(ready.bytes_written > 0);
         assert_eq!(ready.sha256.as_deref().map(str::len), Some(64));
         assert!(ready.expires_at.is_some());
-        assert!(
-            ready
-                .file_name
-                .as_deref()
-                .is_some_and(|name| name.ends_with(".mp4"))
+        assert_eq!(
+            ready.file_name.as_deref(),
+            Some(export_file_name("Front Door", start_ms, end_ms).as_str())
         );
 
         let download = handler.handle(proto::Request {
@@ -7086,6 +8746,59 @@ mod tests {
         );
 
         drop(handler);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn export_range_is_limited_to_two_minutes_and_named_for_the_camera() {
+        assert_eq!(
+            export_file_name(" Front / Dør ", 0, 120_000),
+            "Front-Dør_1970-01-01T00-00-00-000Z_to_1970-01-01T00-02-00-000Z.mp4"
+        );
+        assert_eq!(
+            export_file_name("///", 0, 1),
+            "camera_1970-01-01T00-00-00-000Z_to_1970-01-01T00-00-00-001Z.mp4"
+        );
+
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-export-duration-{}",
+            rand::random::<u64>()
+        ));
+        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let mut state = media_test_state();
+        state.catalog = Some(catalog.handle());
+        let allowed = create_export_job(
+            &state,
+            proto::CreateExportJob {
+                job_id: "export-two-minutes".to_owned(),
+                source_id: "127.0.0.1".to_owned(),
+                stream_id: "main".to_owned(),
+                start_time: Some(millis_timestamp(0)),
+                end_time: Some(millis_timestamp(120_000)),
+                allow_partial: false,
+                burn_in_timestamp: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(allowed.status, proto::ExportJobStatus::Partial as i32);
+
+        let error = create_export_job(
+            &state,
+            proto::CreateExportJob {
+                job_id: "export-too-long".to_owned(),
+                source_id: "127.0.0.1".to_owned(),
+                stream_id: "main".to_owned(),
+                start_time: Some(millis_timestamp(0)),
+                end_time: Some(millis_timestamp(120_001)),
+                allow_partial: false,
+                burn_in_timestamp: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "export range exceeds 2 minutes");
+
         catalog.shutdown();
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -7376,7 +9089,18 @@ mod tests {
         let Some(control_ok::Result::HealthResult(health)) = ok.result else {
             panic!("health get must return a typed snapshot");
         };
-        assert_eq!(health.status, "healthy");
+        let has_degrading_issue = health
+            .issues
+            .iter()
+            .any(|issue| matches!(issue.severity.as_str(), "critical" | "warning"));
+        assert_eq!(
+            health.status,
+            if has_degrading_issue {
+                "degraded"
+            } else {
+                "healthy"
+            }
+        );
         assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
         assert!(health.generated_at_ms > 0);
         assert_eq!(
@@ -7403,7 +9127,6 @@ mod tests {
         );
         assert!(health.webrtc.is_some());
         assert!(health.cameras.is_empty());
-        assert!(health.issues.is_empty());
     }
 
     #[test]

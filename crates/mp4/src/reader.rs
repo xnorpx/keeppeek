@@ -203,6 +203,61 @@ impl<R: Read + Seek> Mp4Reader<R> {
             })
     }
 
+    pub fn sample_location(
+        &self,
+        track_id: u32,
+        sample_id: u32,
+    ) -> Result<Option<Mp4SampleLocation>> {
+        self.tracks
+            .get(&track_id)
+            .map_or(Err(Error::TrakNotFound(track_id)), |track| {
+                track.sample_location(sample_id)
+            })
+    }
+
+    /// Returns the first sample location for each fragment containing the selected track.
+    pub fn fragment_first_sample_locations(
+        &self,
+        track_id: u32,
+    ) -> Result<Vec<Mp4FragmentSampleLocation>> {
+        let track = self
+            .tracks
+            .get(&track_id)
+            .ok_or(Error::TrakNotFound(track_id))?;
+        let mut sample_id = 1u32;
+        let mut locations = Vec::new();
+        for moof in &self.moofs {
+            let Some(traf) = moof
+                .trafs
+                .iter()
+                .find(|traf| traf.tfhd.track_id == track_id)
+            else {
+                continue;
+            };
+            let sample_count = traf.trun.as_ref().map_or(0, |trun| trun.sample_count);
+            if sample_count == 0 {
+                continue;
+            }
+            let location = track
+                .sample_location(sample_id)?
+                .ok_or(Error::EntryInTrunNotFound(
+                    track_id,
+                    BoxType::TrunBox,
+                    sample_id,
+                ))?;
+            locations.push(Mp4FragmentSampleLocation {
+                sequence_number: moof.mfhd.sequence_number,
+                sample_id,
+                location,
+                is_sync: track.is_sync_sample(sample_id),
+            });
+            sample_id = sample_id
+                .checked_add(sample_count)
+                .ok_or(Error::InvalidData("fragment sample ID overflow"))?;
+        }
+        Ok(locations)
+    }
+
     pub fn read_sample(&mut self, track_id: u32, sample_id: u32) -> Result<Option<Mp4Sample>> {
         if let Some(track) = self.tracks.get(&track_id) {
             track.read_sample(&mut self.reader, sample_id)

@@ -9,8 +9,9 @@ pub mod nal;
 
 mod record;
 
-use super::VideoFrame;
+use super::{VideoFrame, VideoParameters};
 use crate::{
+    Error,
     codec::{CodecItem, DepacketizeError, h26x::TolerantBitReader},
     rtp::ReceivedPacket,
 };
@@ -18,6 +19,18 @@ use base64::Engine as _;
 use bytes::{Buf, Bytes};
 use log::{debug, log_enabled, trace};
 use std::{collections::VecDeque, fmt::Write};
+
+/// Produces video parameters from VPS, SPS, and PPS NAL units.
+pub fn parameters_from_vps_sps_pps(
+    vps_nal: &[u8],
+    sps_nal: &[u8],
+    pps_nal: &[u8],
+    framing: super::h26x::Framing,
+) -> Result<VideoParameters, Error> {
+    InternalParameters::parse_vps_sps_pps(vps_nal, sps_nal, pps_nal, true, framing)
+        .map(|parameters| parameters.generic_parameters)
+        .map_err(|error| wrap!(crate::error::ErrorInt::InvalidArgument(error)))
+}
 
 /// A [super::Depacketizer] implementation which finds access unit boundaries
 /// and produces unfragmented NAL units as specified in [RFC

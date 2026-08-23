@@ -37,6 +37,11 @@ use str0m::{
 };
 
 const FRAME_QUEUE_CAPACITY: usize = 1_000;
+const API_DATA_QUEUE_CAPACITY: usize = 64;
+const API_BACKGROUND_OUTBOUND_MAX_BYTES: usize = 8 * 1_024 * 1_024;
+const API_BACKGROUND_OUTBOUND_MAX_MESSAGES: usize = 512;
+const API_OUTBOUND_MAX_BYTES: usize = 520 * 1_024 * 1_024;
+const API_OUTBOUND_MAX_MESSAGES: usize = 20_000;
 const UDP_EVENT_KEY: usize = 1;
 const UDP_PACKET_CAPACITY: usize = 2_048;
 const DEFAULT_FRAME_TICKS: u64 = 3_000;
@@ -184,6 +189,7 @@ pub(crate) enum DataChannelTarget {
     Unreliable,
 }
 
+#[derive(Debug)]
 pub(crate) struct OutboundDataMessage {
     pub(crate) target: DataChannelTarget,
     pub(crate) group: String,
@@ -401,6 +407,39 @@ enum SessionCommand {
     },
 }
 
+enum ApiSessionCommand {
+    Data {
+        message: Box<OutboundDataMessage>,
+        cancelled: Arc<AtomicBool>,
+    },
+    Complete {
+        group: String,
+        completion: ApiDataCompletion,
+    },
+}
+
+struct ApiDataCompletion(Option<PostSendAction>);
+
+impl ApiDataCompletion {
+    const fn new(action: PostSendAction) -> Self {
+        Self(Some(action))
+    }
+
+    fn finish(mut self) {
+        if let Some(action) = self.0.take() {
+            action();
+        }
+    }
+}
+
+impl Drop for ApiDataCompletion {
+    fn drop(&mut self) {
+        if let Some(action) = self.0.take() {
+            action();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameOrigin {
     Cached,
@@ -537,6 +576,7 @@ struct ApiSessionControl {
     shutdown: Arc<AtomicBool>,
     completion: SessionCompletion,
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
+    data_tx: Sender<ApiSessionCommand>,
 }
 
 struct ApiMediaTrack {
@@ -548,7 +588,32 @@ struct ApiMediaTrack {
 struct ApiMediaRuntime {
     available_video_mids: Vec<Mid>,
     tracks: Vec<ApiMediaTrack>,
-    outbound: VecDeque<QueuedDataMessage>,
+    outbound: VecDeque<QueuedApiData>,
+    outbound_bytes: usize,
+}
+
+enum QueuedApiData {
+    Message(QueuedDataMessage),
+    Complete {
+        group: String,
+        completion: ApiDataCompletion,
+    },
+}
+
+impl QueuedApiData {
+    fn group(&self) -> &str {
+        match self {
+            Self::Message(message) => &message.group,
+            Self::Complete { group, .. } => group,
+        }
+    }
+
+    const fn byte_len(&self) -> usize {
+        match self {
+            Self::Message(message) => message.payload.len(),
+            Self::Complete { .. } => 0,
+        }
+    }
 }
 
 struct QueuedDataMessage {
@@ -558,21 +623,78 @@ struct QueuedDataMessage {
 }
 
 impl ApiMediaRuntime {
-    fn enqueue(&mut self, messages: Vec<OutboundDataMessage>) {
-        self.outbound
-            .extend(messages.into_iter().map(|message| QueuedDataMessage {
+    fn enqueue(&mut self, messages: Vec<OutboundDataMessage>) -> anyhow::Result<()> {
+        let mut queued = Vec::with_capacity(messages.len());
+        let mut added_bytes = 0usize;
+        for message in messages {
+            let payload = message.message.encode_to_vec();
+            added_bytes = added_bytes
+                .checked_add(payload.len())
+                .ok_or_else(|| anyhow::anyhow!("API data queue byte count overflowed"))?;
+            queued.push(QueuedApiData::Message(QueuedDataMessage {
                 target: message.target,
                 group: message.group,
-                payload: message.message.encode_to_vec(),
+                payload,
+            }));
+        }
+        let total_bytes = self
+            .outbound_bytes
+            .checked_add(added_bytes)
+            .ok_or_else(|| anyhow::anyhow!("API data queue byte count overflowed"))?;
+        let total_messages = self
+            .outbound
+            .len()
+            .checked_add(queued.len())
+            .ok_or_else(|| anyhow::anyhow!("API data queue message count overflowed"))?;
+        if total_bytes > API_OUTBOUND_MAX_BYTES || total_messages > API_OUTBOUND_MAX_MESSAGES {
+            anyhow::bail!("API data queue limit exceeded");
+        }
+        self.outbound_bytes = total_bytes;
+        self.outbound.extend(queued);
+        Ok(())
+    }
+
+    fn enqueue_background(&mut self, message: OutboundDataMessage) {
+        let payload = message.message.encode_to_vec();
+        self.outbound_bytes = self.outbound_bytes.saturating_add(payload.len());
+        self.outbound
+            .push_back(QueuedApiData::Message(QueuedDataMessage {
+                target: message.target,
+                group: message.group,
+                payload,
             }));
     }
 
+    fn can_drain_background(&self) -> bool {
+        self.outbound_bytes < API_BACKGROUND_OUTBOUND_MAX_BYTES
+            && self.outbound.len() < API_BACKGROUND_OUTBOUND_MAX_MESSAGES
+    }
+
     fn cancel_group(&mut self, group: &str) {
-        self.outbound.retain(|message| message.group != group);
+        let mut removed_bytes = 0usize;
+        self.outbound.retain(|message| {
+            if message.group() == group {
+                removed_bytes = removed_bytes.saturating_add(message.byte_len());
+                false
+            } else {
+                true
+            }
+        });
+        self.outbound_bytes = self.outbound_bytes.saturating_sub(removed_bytes);
     }
 
     fn flush_outbound(&mut self, rtc: &mut Rtc, channels: SessionChannels) -> anyhow::Result<()> {
-        while let Some(message) = self.outbound.pop_front() {
+        while let Some(queued) = self.outbound.pop_front() {
+            let message = match queued {
+                QueuedApiData::Complete {
+                    group: _,
+                    completion,
+                } => {
+                    completion.finish();
+                    continue;
+                }
+                QueuedApiData::Message(message) => message,
+            };
             let channel_id = match message.target {
                 DataChannelTarget::Reliable => channels.reliable_data,
                 DataChannelTarget::Unreliable => channels.unreliable_data,
@@ -581,9 +703,10 @@ impl ApiMediaRuntime {
                 anyhow::bail!("WebRTC data channel disappeared before queued delivery");
             };
             if !channel.write(true, &message.payload)? {
-                self.outbound.push_front(message);
+                self.outbound.push_front(QueuedApiData::Message(message));
                 break;
             }
+            self.outbound_bytes = self.outbound_bytes.saturating_sub(message.payload.len());
         }
         Ok(())
     }
@@ -1499,6 +1622,65 @@ impl WebRtc {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
     }
 
+    pub(crate) fn has_api_session(&self, session_id: SessionId) -> bool {
+        self.live
+            .inner
+            .api_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&session_id)
+    }
+
+    pub(crate) fn enqueue_api_data(
+        &self,
+        session_id: SessionId,
+        message: OutboundDataMessage,
+        cancelled: Arc<AtomicBool>,
+    ) -> anyhow::Result<()> {
+        let control = self
+            .live
+            .inner
+            .api_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
+        control
+            .data_tx
+            .send(ApiSessionCommand::Data {
+                message: Box::new(message),
+                cancelled,
+            })
+            .map_err(|_| anyhow::anyhow!("API WebRTC session data queue is closed"))?;
+        control.poller.notify()?;
+        Ok(())
+    }
+
+    pub(crate) fn complete_api_data_group(
+        &self,
+        session_id: SessionId,
+        group: String,
+        completion: PostSendAction,
+    ) -> anyhow::Result<()> {
+        let completion = ApiDataCompletion::new(completion);
+        let control = self
+            .live
+            .inner
+            .api_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
+        control
+            .data_tx
+            .send(ApiSessionCommand::Complete { group, completion })
+            .map_err(|_| anyhow::anyhow!("API WebRTC session data queue is closed"))?;
+        control.poller.notify()?;
+        Ok(())
+    }
+
     pub(crate) fn accept_api_offer(&self, offer: SdpOffer) -> anyhow::Result<Session> {
         reap_finished_threads(&self.live.inner);
         let (
@@ -1512,6 +1694,7 @@ impl WebRtc {
         ) = accept_api_session(offer)?;
         let session_id = next_session_id(&self.live.inner);
         let shutdown = Arc::new(AtomicBool::new(false));
+        let (data_tx, data_rx) = bounded(API_DATA_QUEUE_CAPACITY);
         let control = Arc::new(ApiSessionControl {
             session_id,
             inner: self.live.inner.clone(),
@@ -1520,6 +1703,7 @@ impl WebRtc {
             shutdown: shutdown.clone(),
             completion: SessionCompletion::default(),
             control_handler: self.live.inner.control_handler.clone(),
+            data_tx,
         });
         self.live
             .inner
@@ -1539,6 +1723,7 @@ impl WebRtc {
                     channels,
                     thread_control.clone(),
                     shutdown,
+                    data_rx,
                 ) {
                     tracing::debug!(%error, "API WebRTC session stopped with error");
                 }
@@ -2068,11 +2253,16 @@ fn run_api_session(
     channels: SessionChannels,
     control: Arc<ApiSessionControl>,
     shutdown: Arc<AtomicBool>,
+    data_rx: Receiver<ApiSessionCommand>,
 ) -> anyhow::Result<()> {
     let mut media = ApiMediaRuntime::default();
-    let result = drive_api_session(
-        &mut rtc, &socket, &poller, channels, &control, &shutdown, &mut media,
-    );
+    let deps = ApiSessionLoopDeps {
+        channels,
+        control: &control,
+        shutdown: &shutdown,
+        data_rx: &data_rx,
+    };
+    let result = drive_api_session(&mut rtc, &socket, &poller, deps, &mut media);
     for track in media.tracks {
         let queue_stats = track.runtime.subscription.sender.queue_stats.clone();
         let inner = track.runtime.subscription.inner.clone();
@@ -2088,34 +2278,52 @@ fn run_api_session(
     result.and_then(|()| delete_result.map_err(Into::into))
 }
 
+struct ApiSessionLoopDeps<'a> {
+    channels: SessionChannels,
+    control: &'a ApiSessionControl,
+    shutdown: &'a AtomicBool,
+    data_rx: &'a Receiver<ApiSessionCommand>,
+}
+
 fn drive_api_session(
     rtc: &mut Rtc,
     socket: &UdpSocket,
     poller: &Poller,
-    channels: SessionChannels,
-    control: &ApiSessionControl,
-    shutdown: &AtomicBool,
+    deps: ApiSessionLoopDeps<'_>,
     media: &mut ApiMediaRuntime,
 ) -> anyhow::Result<()> {
     let mut events = Events::new();
     let mut udp_buffer = vec![0; UDP_PACKET_CAPACITY];
     let mut peer_destinations = HashMap::new();
     let mut connected = false;
-    let mut next_timeout =
-        drain_api_outputs(rtc, socket, channels, control, media, &mut connected)?;
+    let mut next_timeout = drain_api_outputs(
+        rtc,
+        socket,
+        deps.channels,
+        deps.control,
+        media,
+        &mut connected,
+    )?;
 
     loop {
-        if shutdown.load(Ordering::Acquire) {
+        if deps.shutdown.load(Ordering::Acquire) {
             break;
         }
+        drain_api_session_commands(deps.data_rx, media);
         let now = Instant::now();
         let mut wrote_media = false;
         for track in &mut media.tracks {
             wrote_media |= drive_track_runtime(rtc, &mut track.runtime, connected, now)?;
         }
         if wrote_media {
-            next_timeout =
-                drain_api_outputs(rtc, socket, channels, control, media, &mut connected)?;
+            next_timeout = drain_api_outputs(
+                rtc,
+                socket,
+                deps.channels,
+                deps.control,
+                media,
+                &mut connected,
+            )?;
         }
         events.clear();
         poller.wait(
@@ -2145,8 +2353,8 @@ fn drive_api_session(
                         next_timeout = drain_api_outputs(
                             rtc,
                             socket,
-                            channels,
-                            control,
+                            deps.channels,
+                            deps.control,
                             media,
                             &mut connected,
                         )?;
@@ -2161,12 +2369,36 @@ fn drive_api_session(
         let now = Instant::now();
         if next_timeout <= now {
             rtc.handle_input(Input::Timeout(now))?;
-            next_timeout =
-                drain_api_outputs(rtc, socket, channels, control, media, &mut connected)?;
+            next_timeout = drain_api_outputs(
+                rtc,
+                socket,
+                deps.channels,
+                deps.control,
+                media,
+                &mut connected,
+            )?;
         }
     }
 
     Ok(())
+}
+
+fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut ApiMediaRuntime) {
+    while media.can_drain_background() {
+        let Ok(command) = data_rx.try_recv() else {
+            break;
+        };
+        match command {
+            ApiSessionCommand::Data { message, cancelled } => {
+                if !cancelled.load(Ordering::Acquire) {
+                    media.enqueue_background(*message);
+                }
+            }
+            ApiSessionCommand::Complete { group, completion } => media
+                .outbound
+                .push_back(QueuedApiData::Complete { group, completion }),
+        }
+    }
 }
 
 fn drive_track_runtime(
@@ -2361,6 +2593,7 @@ fn drain_api_outputs(
                     .and_then(Weak::upgrade);
                 let reply =
                     api_control_reply(data.binary, &data.data, handler.as_deref(), control, media);
+                media.enqueue(reply.data_messages)?;
                 let payload = reply.envelope.encode_to_vec();
                 let Some(mut channel) = rtc.channel(channels.control) else {
                     anyhow::bail!("WebRTC control channel disappeared before response");
@@ -2368,7 +2601,6 @@ fn drain_api_outputs(
                 if !channel.write(true, &payload)? {
                     anyhow::bail!("WebRTC control response buffer is full");
                 }
-                media.enqueue(reply.data_messages);
                 for notification in reply.notifications {
                     let payload = ControlEnvelope {
                         message: Some(control_envelope::Message::Notification(notification)),
@@ -2750,6 +2982,22 @@ fn control_data_group(command: Option<&crate::api::proto::request::Command>) -> 
                 _ => None,
             }
         }
+        crate::api::proto::request::Command::EventSearchCommand(command) => {
+            use crate::api::proto::event_search_command::Action;
+            match command.action.as_ref()? {
+                Action::Query(query) => Some(format!("event-search-query:{}", query.query_id)),
+                Action::CancelQuery(cancel) => {
+                    Some(format!("event-search-query:{}", cancel.query_id))
+                }
+                Action::FetchMedia(fetch) => {
+                    Some(format!("event-search-media:{}", fetch.transfer_id))
+                }
+                Action::CancelMedia(cancel) => {
+                    Some(format!("event-search-media:{}", cancel.transfer_id))
+                }
+                Action::ReplaceTerms(_) | Action::SetEmbedding(_) => None,
+            }
+        }
         _ => None,
     }
 }
@@ -3009,6 +3257,139 @@ mod tests {
             desired_egress_bitrate(8_000_000, 2 * 1024 * 1024),
             MAX_DESIRED_BITRATE
         );
+    }
+
+    #[test]
+    fn event_search_cancellation_targets_the_matching_outbound_group() {
+        use crate::api::proto::{event_search_command, request};
+
+        let group = |action| {
+            control_data_group(Some(&request::Command::EventSearchCommand(
+                crate::api::proto::EventSearchCommand {
+                    action: Some(action),
+                },
+            )))
+        };
+        assert_eq!(
+            group(event_search_command::Action::Query(
+                crate::api::proto::QueryEvents {
+                    query_id: "query-1".to_owned(),
+                    ..Default::default()
+                },
+            )),
+            Some("event-search-query:query-1".to_owned())
+        );
+        assert_eq!(
+            group(event_search_command::Action::CancelQuery(
+                crate::api::proto::CancelEventSearchQuery {
+                    query_id: "query-1".to_owned(),
+                },
+            )),
+            Some("event-search-query:query-1".to_owned())
+        );
+        assert_eq!(
+            group(event_search_command::Action::FetchMedia(
+                crate::api::proto::FetchEventSearchMedia {
+                    transfer_id: "media-1".to_owned(),
+                    ..Default::default()
+                },
+            )),
+            Some("event-search-media:media-1".to_owned())
+        );
+        assert_eq!(
+            group(event_search_command::Action::CancelMedia(
+                crate::api::proto::CancelEventSearchMedia {
+                    transfer_id: "media-1".to_owned(),
+                },
+            )),
+            Some("event-search-media:media-1".to_owned())
+        );
+    }
+
+    #[test]
+    fn cancelled_background_data_never_enters_the_outbound_queue() {
+        let (tx, rx) = bounded(4);
+        let active = Arc::new(AtomicBool::new(false));
+        let cancelled = Arc::new(AtomicBool::new(true));
+        for (group, token) in [
+            ("event-search-query:active", active.clone()),
+            ("event-search-query:cancelled", cancelled),
+        ] {
+            tx.send(ApiSessionCommand::Data {
+                message: Box::new(OutboundDataMessage {
+                    target: DataChannelTarget::Reliable,
+                    group: group.to_owned(),
+                    message: crate::api::proto::Message::default(),
+                }),
+                cancelled: token,
+            })
+            .unwrap();
+        }
+        let mut media = ApiMediaRuntime::default();
+        drain_api_session_commands(&rx, &mut media);
+        assert_eq!(media.outbound.len(), 1);
+        assert_eq!(media.outbound[0].group(), "event-search-query:active");
+        active.store(true, Ordering::Release);
+        media.cancel_group("event-search-query:active");
+        assert!(media.outbound.is_empty());
+        tx.send(ApiSessionCommand::Data {
+            message: Box::new(OutboundDataMessage {
+                target: DataChannelTarget::Reliable,
+                group: "event-search-query:active".to_owned(),
+                message: crate::api::proto::Message::default(),
+            }),
+            cancelled: active,
+        })
+        .unwrap();
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_from_queue = completed.clone();
+        tx.send(ApiSessionCommand::Complete {
+            group: "event-search-query:active".to_owned(),
+            completion: ApiDataCompletion::new(Box::new(move || {
+                completed_from_queue.store(true, Ordering::Release);
+            })),
+        })
+        .unwrap();
+        drain_api_session_commands(&rx, &mut media);
+        assert_eq!(media.outbound.len(), 1);
+        let QueuedApiData::Complete { group, completion } = media.outbound.pop_front().unwrap()
+        else {
+            panic!("completion marker must follow cancelled data");
+        };
+        assert_eq!(group, "event-search-query:active");
+        completion.finish();
+        assert!(completed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn background_data_waits_at_the_outbound_byte_limit() {
+        let (tx, rx) = bounded(2);
+        tx.send(ApiSessionCommand::Data {
+            message: Box::new(OutboundDataMessage {
+                target: DataChannelTarget::Reliable,
+                group: "event-search-media:waiting".to_owned(),
+                message: crate::api::proto::Message::default(),
+            }),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        })
+        .unwrap();
+        let mut media = ApiMediaRuntime::default();
+        media
+            .outbound
+            .push_back(QueuedApiData::Message(QueuedDataMessage {
+                target: DataChannelTarget::Reliable,
+                group: "full".to_owned(),
+                payload: vec![0; API_BACKGROUND_OUTBOUND_MAX_BYTES],
+            }));
+        media.outbound_bytes = API_BACKGROUND_OUTBOUND_MAX_BYTES;
+
+        drain_api_session_commands(&rx, &mut media);
+        assert_eq!(rx.len(), 1);
+        media.cancel_group("full");
+        drain_api_session_commands(&rx, &mut media);
+        assert!(rx.is_empty());
+        assert_eq!(media.outbound.len(), 1);
+        assert_eq!(media.outbound[0].group(), "event-search-media:waiting");
     }
 
     #[test]
@@ -3507,11 +3888,13 @@ mod tests {
             shutdown,
             completion: SessionCompletion::default(),
             control_handler: Arc::new(RwLock::new(None)),
+            data_tx: bounded(1).0,
         };
         let mut media = ApiMediaRuntime {
             available_video_mids: vec![Mid::from("video_0")],
             tracks: Vec::new(),
             outbound: VecDeque::new(),
+            outbound_bytes: 0,
         };
         let request = crate::api::proto::SubscribeMedia {
             subscription_id: "front-door".to_owned(),

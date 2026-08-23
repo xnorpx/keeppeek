@@ -1,8 +1,9 @@
 use crate::{
     config::StorageToml,
     storage::{
-        catalog::RecordingCatalogHandle, demand::RecordingDemand, long_term::LongTermStore,
-        medium_term::MediumTermWriter, segment::RecordingFrame, short_term::ShortTermBuffer,
+        catalog::RecordingCatalogHandle, demand::RecordingDemand,
+        identity::RecordingStreamIdentity, long_term::LongTermStore, medium_term::MediumTermWriter,
+        segment::RecordingFrame, short_term::ShortTermBuffer,
     },
 };
 use std::{
@@ -80,7 +81,7 @@ impl StorageConfig {
 
 enum Command {
     Ingest {
-        camera_id: String,
+        identity: RecordingStreamIdentity,
         frame: RecordingFrame,
     },
     FlushAll,
@@ -88,6 +89,7 @@ enum Command {
 }
 
 struct CameraPipeline {
+    identity: RecordingStreamIdentity,
     short_term: ShortTermBuffer,
     medium_term: Option<MediumTermWriter>,
     last_flush: Instant,
@@ -100,10 +102,11 @@ pub struct StorageHandle {
 
 impl StorageHandle {
     pub fn ingest(&self, camera_id: &str, frame: RecordingFrame) {
-        let _ = self.tx.send(Command::Ingest {
-            camera_id: camera_id.to_owned(),
-            frame,
-        });
+        self.ingest_stream(RecordingStreamIdentity::legacy(camera_id), frame);
+    }
+
+    pub fn ingest_stream(&self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
+        let _ = self.tx.send(Command::Ingest { identity, frame });
     }
 }
 
@@ -123,9 +126,14 @@ impl StorageEngine {
     }
 
     fn start_inner(config: StorageConfig, catalog: Option<RecordingCatalogHandle>) -> Self {
-        cleanup_stale_active_files(&config.medium_term_path);
+        let mut removed_active = cleanup_stale_active_files(&config.medium_term_path);
         if config.medium_term_path != config.long_term_path {
-            cleanup_stale_active_files(&config.long_term_path);
+            removed_active.extend(cleanup_stale_active_files(&config.long_term_path));
+        }
+        if let Some(catalog) = &catalog
+            && let Err(error) = catalog.delete_recordings_by_path(&removed_active)
+        {
+            tracing::warn!(%error, "unable to remove stale active recording catalog rows");
         }
 
         tracing::info!(
@@ -172,10 +180,11 @@ impl StorageEngine {
     }
 
     pub fn ingest(&self, camera_id: &str, frame: RecordingFrame) {
-        let _ = self.tx.send(Command::Ingest {
-            camera_id: camera_id.to_owned(),
-            frame,
-        });
+        self.ingest_stream(RecordingStreamIdentity::legacy(camera_id), frame);
+    }
+
+    pub fn ingest_stream(&self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
+        let _ = self.tx.send(Command::Ingest { identity, frame });
     }
 
     pub fn flush_all(&self) {
@@ -249,8 +258,8 @@ impl WriterWorker {
 
             if let Some(cmd) = cmd {
                 match cmd {
-                    Command::Ingest { camera_id, frame } => {
-                        self.ingest(&camera_id, frame);
+                    Command::Ingest { identity, frame } => {
+                        self.ingest(identity, frame);
                     }
                     Command::FlushAll => {
                         self.flush_all();
@@ -268,29 +277,36 @@ impl WriterWorker {
 
             if self.config.long_term_max_bytes > 0 && last_reap.elapsed() >= reap_interval {
                 last_reap = Instant::now();
-                self.long_term
-                    .enforce_limit(self.config.long_term_max_bytes);
+                let removed = self
+                    .long_term
+                    .enforce_limit_with_removed(self.config.long_term_max_bytes);
+                if let Some(catalog) = &self.catalog
+                    && let Err(error) = catalog.delete_recordings_by_path(&removed)
+                {
+                    tracing::warn!(%error, "unable to remove retained recording catalog rows");
+                }
             }
         }
     }
 
-    fn ingest(&mut self, camera_id: &str, frame: RecordingFrame) {
-        self.pipeline_for(camera_id);
+    fn ingest(&mut self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
+        let storage_key = identity.storage_key.clone();
+        self.pipeline_for(identity);
 
         if self.config.is_direct_write() {
-            if let Err(e) = self.direct_write(camera_id, frame) {
-                tracing::error!(camera = camera_id, error = %e, "direct write failed");
+            if let Err(e) = self.direct_write(&storage_key, frame) {
+                tracing::error!(camera = storage_key, error = %e, "direct write failed");
             }
             return;
         }
 
-        let active = self.demand.is_active(camera_id);
-        let pipeline = self.pipelines.get_mut(camera_id).unwrap();
+        let active = self.demand.is_active(&storage_key);
+        let pipeline = self.pipelines.get_mut(&storage_key).unwrap();
         pipeline.short_term.push(frame);
         let needs_flush = active || pipeline.last_flush.elapsed() >= self.config.flush_interval;
 
-        if needs_flush && let Err(e) = self.flush_camera(camera_id, active) {
-            tracing::error!(camera = camera_id, error = %e, "flush to medium-term failed");
+        if needs_flush && let Err(e) = self.flush_camera(&storage_key, active) {
+            tracing::error!(camera = storage_key, error = %e, "flush to medium-term failed");
         }
     }
 
@@ -317,7 +333,7 @@ impl WriterWorker {
             let writer = create_medium_term_writer(
                 &self.config,
                 self.catalog.as_ref(),
-                camera_id,
+                &pipeline.identity,
                 started_at,
             )?;
             tracing::info!(
@@ -393,7 +409,7 @@ impl WriterWorker {
                 let writer = create_medium_term_writer(
                     &self.config,
                     self.catalog.as_ref(),
-                    camera_id,
+                    &pipeline.identity,
                     started_at,
                 )?;
                 tracing::info!(
@@ -451,8 +467,12 @@ impl WriterWorker {
                     frames = frames.split_off(keyframe_index);
                 }
                 let started_at = frames[0].received_at;
-                match create_medium_term_writer(&self.config, self.catalog.as_ref(), id, started_at)
-                {
+                match create_medium_term_writer(
+                    &self.config,
+                    self.catalog.as_ref(),
+                    &pipeline.identity,
+                    started_at,
+                ) {
                     Ok(writer) => pipeline.medium_term = Some(writer),
                     Err(e) => {
                         tracing::error!(camera = %id, error = %e, "failed to create segment on shutdown");
@@ -534,11 +554,12 @@ impl WriterWorker {
         Ok(destination)
     }
 
-    fn pipeline_for(&mut self, camera_id: &str) -> &mut CameraPipeline {
+    fn pipeline_for(&mut self, identity: RecordingStreamIdentity) -> &mut CameraPipeline {
         let buffer_window = self.config.short_term_duration + self.config.flush_interval;
         self.pipelines
-            .entry(camera_id.to_owned())
+            .entry(identity.storage_key.clone())
             .or_insert_with(|| CameraPipeline {
+                identity,
                 short_term: ShortTermBuffer::new(buffer_window),
                 medium_term: None,
                 last_flush: Instant::now(),
@@ -549,22 +570,22 @@ impl WriterWorker {
 fn create_medium_term_writer(
     config: &StorageConfig,
     catalog: Option<&RecordingCatalogHandle>,
-    camera_id: &str,
+    identity: &RecordingStreamIdentity,
     started_at: Instant,
 ) -> std::io::Result<MediumTermWriter> {
     catalog.map_or_else(
         || {
             MediumTermWriter::create(
                 &config.medium_term_path,
-                camera_id,
+                &identity.storage_key,
                 started_at,
                 config.write_buffer_bytes,
             )
         },
         |catalog| {
-            MediumTermWriter::create_with_catalog(
+            MediumTermWriter::create_with_catalog_identity(
                 &config.medium_term_path,
-                camera_id,
+                identity.clone(),
                 started_at,
                 config.write_buffer_bytes,
                 catalog.clone(),
@@ -579,25 +600,29 @@ pub struct ShortTermStats {
     pub duration: Duration,
 }
 
-fn cleanup_stale_active_files(root: &Path) {
+fn cleanup_stale_active_files(root: &Path) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
     let walker = match std::fs::read_dir(root) {
         Ok(w) => w,
-        Err(_) => return,
+        Err(_) => return removed,
     };
-    fn walk(dir: std::fs::ReadDir) {
+    fn walk(dir: std::fs::ReadDir, removed: &mut Vec<PathBuf>) {
         for entry in dir.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 if let Ok(sub) = std::fs::read_dir(&path) {
-                    walk(sub);
+                    walk(sub, removed);
                 }
             } else if path.extension().and_then(|e| e.to_str()) == Some("active") {
                 tracing::warn!(path = %path.display(), "removing stale active segment from previous run");
-                let _ = std::fs::remove_file(&path);
+                if std::fs::remove_file(&path).is_ok() {
+                    removed.push(path);
+                }
             }
         }
     }
-    walk(walker);
+    walk(walker, &mut removed);
+    removed
 }
 
 #[cfg(test)]
@@ -663,15 +688,15 @@ mod tests {
         let demand = RecordingDemand::new(Duration::ZERO);
         let mut worker = WriterWorker::new(storage_config("adaptive-demand"), demand.clone(), None);
 
-        worker.ingest(STREAM, inter_frame());
+        worker.ingest(RecordingStreamIdentity::legacy(STREAM), inter_frame());
         assert_eq!(worker.pipelines[STREAM].short_term.len(), 1);
 
         let guard = demand.acquire(STREAM);
-        worker.ingest(STREAM, inter_frame());
+        worker.ingest(RecordingStreamIdentity::legacy(STREAM), inter_frame());
         assert!(worker.pipelines[STREAM].short_term.is_empty());
 
         drop(guard);
-        worker.ingest(STREAM, inter_frame());
+        worker.ingest(RecordingStreamIdentity::legacy(STREAM), inter_frame());
         assert_eq!(worker.pipelines[STREAM].short_term.len(), 1);
     }
 
@@ -684,7 +709,7 @@ mod tests {
         config.flush_interval = Duration::ZERO;
         let mut worker = WriterWorker::new(config, demand, None);
 
-        worker.ingest(STREAM, inter_frame());
+        worker.ingest(RecordingStreamIdentity::legacy(STREAM), inter_frame());
 
         assert!(worker.pipelines[STREAM].medium_term.is_none());
     }

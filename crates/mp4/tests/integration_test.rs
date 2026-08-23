@@ -86,6 +86,7 @@ fn test_mp4_write_and_read() {
     writer.write_end().unwrap();
 
     // Read MP4
+    let file_bytes = buffer.get_ref().clone();
     buffer.set_position(0);
     let size = buffer.get_ref().len() as u64;
     let mut reader = Mp4Reader::read_header(buffer, size).unwrap();
@@ -103,6 +104,7 @@ fn test_mp4_write_and_read() {
     for i in 0..sample_count as usize {
         let frame = &frames[i];
         let sample_id = i as u32 + 1;
+        let location = reader.sample_location(1, sample_id).unwrap().unwrap();
         let sample = reader.read_sample(1, sample_id).unwrap().unwrap();
 
         assert_eq!(sample.is_sync, frame.is_keyframe);
@@ -110,5 +112,8 @@ fn test_mp4_write_and_read() {
         // Let's just check the duration and bytes
         assert_eq!(sample.bytes.len(), frame.data.len());
         assert_eq!(&sample.bytes[..], &frame.data[..]);
+        let start = usize::try_from(location.offset).unwrap();
+        let end = start + location.size as usize;
+        assert_eq!(&file_bytes[start..end], sample.bytes.as_ref());
     }
 }
