@@ -68,11 +68,17 @@ message Notification {
     StateStoreWatchUpdate state_store_watch_update = 9;
 
     PublicationControl publication_control = 15;
+    SubscriptionStreamState subscription_stream_state = 16;
     CameraUpdated camera_updated = 11;
     SourceSessionAdded source_session_added = 12;
     SourceSessionRemoved source_session_removed = 13;
     GroupMemberChanged group_member_changed = 14;
   }
+}
+
+message SubscriptionStreamState {
+  string subscription_id = 1;
+  string active_variant_id = 2;
 }
 
 message CameraUpdated {
@@ -231,10 +237,28 @@ message CameraConfigurationCommand {
     UpdateCameraConfiguration update = 2;
     RemoveCameraConfiguration remove = 3;
     GetCameraConfigurations get = 4;
+    GetCameraCatalog get_catalog = 5;
+    SearchCameraCatalog search_catalog = 6;
+    ProbeCameraStreams probe_streams = 7;
   }
 }
 
 message GetCameraConfigurations {}
+
+message GetCameraCatalog {}
+
+message SearchCameraCatalog {
+  string query = 1;
+  optional uint32 limit = 2;
+  optional string ip = 3;
+}
+
+message ProbeCameraStreams {
+  string ip = 1;
+  string username = 2;
+  string password = 3;
+  optional uint32 onvif_port = 4;
+}
 
 message DiscoverCameras {
   repeated uint32 subnets = 1;
@@ -1371,6 +1395,9 @@ message Ok {
     EventSearchDelivery event_search_delivery = 23;
     EventSearchMutationResult event_search_mutation = 24;
     EventSearchMediaDelivery event_search_media_delivery = 25;
+    CameraCatalogInfo camera_catalog_info = 26;
+    CameraCatalogSearchResult camera_catalog_search_result = 27;
+    CameraStreamProbeResult camera_stream_probe_result = 28;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -1401,6 +1428,60 @@ message DiscoveredCamera {
   repeated string sources = 6;
   bool configured = 7;
   optional string health = 8;
+  optional CameraCatalogCamera catalog = 9;
+}
+
+message CameraCatalogInfo {
+  string version = 1;
+  string tag = 2;
+  string generated_at = 3;
+  uint32 camera_count = 4;
+  string website_url = 5;
+}
+
+message CameraCatalogSearchResult {
+  repeated CameraCatalogCamera cameras = 1;
+}
+
+message CameraCatalogCamera {
+  string id = 1;
+  string brand = 2;
+  string model = 3;
+  repeated string aliases = 4;
+  string camera_type = 5;
+  optional string resolution_label = 6;
+  optional double megapixels = 7;
+  optional string sensor = 8;
+  optional string field_of_view = 9;
+  optional string night_vision = 10;
+  optional string ip_rating = 11;
+  optional string ik_rating = 12;
+  optional bool two_way_audio = 13;
+  optional uint32 release_year = 14;
+  uint32 community_notes_count = 15;
+  repeated string protocols = 16;
+  repeated string codecs = 17;
+  repeated CameraCatalogStream streams = 18;
+  repeated string sources = 19;
+  optional CameraCatalogStreamHints stream_hints = 20;
+}
+
+message CameraCatalogStream {
+  string name = 1;
+  optional string resolution = 2;
+  optional uint32 fps = 3;
+  optional string codec = 4;
+}
+
+message CameraCatalogStreamHints {
+  optional string main_rtsp_url = 1;
+  optional string sub_rtsp_url = 2;
+}
+
+message CameraStreamProbeResult {
+  optional string main_rtsp_url = 1;
+  optional string sub_rtsp_url = 2;
+  optional uint32 onvif_port = 3;
 }
 
 message CameraConfigurationResult {

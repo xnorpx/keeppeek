@@ -1,5 +1,5 @@
 (
-    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '48px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '48px', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
       <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '40px', justifyContent: 'space-between', width: '1440px' }}>
         <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '700px' }}>
           <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
@@ -14,7 +14,7 @@
         </div>
         <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingTop: '44px', width: '700px' }}>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '155%' }}>
-            The desktop wizard becomes three mobile stages: find and connect, prove both streams, then review the exact recording cost before the first configuration write.
+            The desktop wizard becomes three mobile stages: find and connect, assign declared streams, then review the first configuration write.
           </div>
         </div>
       </div>
@@ -75,18 +75,28 @@
             <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
               2 FOUND
             </div>
-            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', padding: '12px' }}>
-              <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
-              <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '2px' }}>
-                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                  192.168.1.71
+            <div style={{ backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-sans)', gap: '6px', height: '82px', paddingBlock: '10px', paddingInline: '12px', width: '356px' }}>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
+                <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
+                  <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+                    192.168.1.71
+                  </div>
                 </div>
-                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-                  ONVIF · DS-2CD2387G2
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '16px' }}>
+                  Selected
                 </div>
               </div>
-              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                Selected
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
+                  NETWORK · CATALOG
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '10px', lineHeight: '12px' }}>
+                  RLC-811A · 4K · 8 MP
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '10px', lineHeight: '12px' }}>
+                ONVIF · RTSP · DECLARED STREAMS
               </div>
             </div>
             <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', padding: '12px' }}>
@@ -106,7 +116,7 @@
                   Sign-in
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
-                  SHARED LOGIN
+                  WRITE-ONLY DRAFT
                 </div>
               </div>
               <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'dashed', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '10px', height: '36px', paddingInline: '10px' }}>
@@ -123,12 +133,18 @@
               </div>
             </div>
           </div>
-          <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '68px', justifyContent: 'space-between', paddingBottom: '20px', paddingInline: '16px', paddingTop: '10px' }}>
-            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-              Enter an address
+          <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '8px', height: '68px', justifyContent: 'space-between', paddingBottom: '20px', paddingInline: '16px', paddingTop: '10px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '16px' }}>
+              IP or rtsp://
             </div>
-            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', height: '36px', paddingInline: '18px' }}>
-              <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', justifyContent: 'center', width: '36px' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                <circle cx="11" cy="11" r="6" fill="none" stroke="#000000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="m20 20-3.5-3.5" fill="none" stroke="#000000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', fontFamily: 'var(--font-sans)', height: '36px', paddingInline: '18px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
                 Connect
               </div>
             </div>
@@ -158,7 +174,7 @@
                 <polyline points="12 19 5 12 12 5" fill="none" stroke="var(--color-text)" strokeWidth="2" />
               </svg>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
-                Prove the streams
+                Assign streams
               </div>
             </div>
             <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
@@ -167,20 +183,20 @@
           </div>
           <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '12px', padding: '16px' }}>
             <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
-              Both streams decoded in this browser. Assign roles before continuing.
+              Candidate stream probing is unavailable before save. Assign declared roles before review.
             </div>
             <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', overflow: 'clip' }}>
               <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(30.5% -0.006 -0.015) 0%, oklab(21.1% -0.004 -0.009) 100%)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '170px', justifyContent: 'space-between', padding: '9px', width: '356px' }}>
                 <div style={{ boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
-                    DECODING
+                    UNPROBED
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
                     3840×2160 · H.265
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
-                  KEYFRAME 0.7s · 18.4 Mb/s
+                  NO PRE-SAVE PROBE
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' }}>
@@ -188,8 +204,8 @@
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', fontWeight: 600, lineHeight: '18px' }}>
                     Main stream
                   </div>
-                  <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-                    TESTED
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '8px', lineHeight: '10px' }}>
+                    UNPROBED
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', display: 'flex', gap: '7px' }}>
@@ -218,12 +234,12 @@
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
                     Sub stream
                   </div>
-                  <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
-                    TESTED
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '8px', lineHeight: '10px' }}>
+                    UNPROBED
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-                  640×360 · H.264 · 0.6 Mb/s
+                  DECLARED · H.264
                 </div>
                 <div style={{ boxSizing: 'border-box', display: 'flex', gap: '6px' }}>
                   <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
@@ -244,13 +260,13 @@
                 AUDIO
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '145%' }}>
-                G.711 works here, but AAC travels better in exported files.
+                Codec evidence is unavailable before save.
               </div>
             </div>
           </div>
           <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '68px', justifyContent: 'space-between', paddingBottom: '20px', paddingInline: '16px', paddingTop: '10px' }}>
             <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-              Re-probe
+              Use catalog streams
             </div>
             <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', height: '36px', paddingInline: '18px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
@@ -287,7 +303,7 @@
               </div>
             </div>
             <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-              SHIPS · CAMERA WRITE
+              SAVE · CAMERA WRITE
             </div>
           </div>
           <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '14px', padding: '16px' }}>
@@ -342,37 +358,37 @@
                   Retention
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                  14d / 2 TB
+                  Server default
                 </div>
               </div>
             </div>
             <div style={{ backgroundColor: 'var(--color-raised)', borderLeftColor: 'var(--color-primary)', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', padding: '14px' }}>
               <div style={{ boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                  ≈ 190 GB per day
+                  Retention impact unavailable
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-                  12d → 9d
+                  NO API
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-                Projected server retention after adding this camera.
+                The server does not estimate this unsaved camera's recording cost.
               </div>
             </div>
-            <div style={{ alignItems: 'center', backgroundColor: '#3FA37A1A', borderColor: '#3FA37A52', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', padding: '12px' }}>
-              <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
+            <div style={{ alignItems: 'center', backgroundColor: '#E8A33D1A', borderColor: '#E8A33D52', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', padding: '12px' }}>
+              <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                Connection and both streams passed.
+                No stream proof before save.
               </div>
             </div>
             <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-              Saving is the first configuration write. Recording starts immediately.
+              Saving is the first configuration write.
             </div>
           </div>
           <div style={{ alignItems: 'center', backgroundColor: 'var(--color-surface)', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '68px', justifyContent: 'center', paddingBottom: '20px', paddingInline: '16px', paddingTop: '10px' }}>
             <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', justifyContent: 'center', width: '358px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                Save and start recording
+                Save camera
               </div>
             </div>
           </div>

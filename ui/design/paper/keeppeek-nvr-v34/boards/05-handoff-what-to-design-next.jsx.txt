@@ -14,7 +14,7 @@
         </div>
         <div style={{ boxSizing: 'border-box', display: 'inline-block', flexBasis: '0%', flexGrow: '1', paddingBottom: '6px' }}>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-base)', lineHeight: '26px' }}>
-            The original queue is complete and the design now extends through board 34: desktop product flows, mobile review and administration, exact-version capability gates, the export job lifecycle that ends the evidence workflow (29), the single desktop destination every Diagnose points at (30), the Peek-to-Keep rewind (31), the keyboard and focus model (32), every waiting and nothing-found state (33), and the light theme (34). Reference sets: ref-a production, ref-b settings, ref-c layout editor.
+            The original queue is complete and the design now extends through board 34: desktop product flows, mobile review and administration, exact-version capability gates, the export job lifecycle that ends the evidence workflow (29), the single desktop destination every Diagnose points at (30), Focus-to-Keep history (31), the keyboard and focus model (32), every waiting and nothing-found state (33), and the light theme (34). Reference sets: ref-a production, ref-b settings, ref-c layout editor.
           </div>
         </div>
       </div>
@@ -386,7 +386,7 @@
               <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '7px', paddingInline: '12px' }}>
                 <div style={{ backgroundColor: 'var(--color-text-muted)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '7px', width: '7px' }} />
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Reconnecting — attempt count, age of last frame
+                  Reconnecting: attempt count and recovery state
                 </div>
               </div>
               <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '7px', paddingInline: '12px' }}>

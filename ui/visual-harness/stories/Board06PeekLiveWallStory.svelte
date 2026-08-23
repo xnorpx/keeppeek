@@ -93,7 +93,31 @@
 					class="size-3 rotate-90 text-text-faint"
 				/>
 			</button>
-			<span class="flex-1"></span>
+			<div
+				data-peek-paper-fleet-runtime
+				class="ml-auto flex min-w-0 items-center justify-end gap-3 whitespace-nowrap"
+			>
+				<span
+					class="flex items-center gap-[7px] text-[11px] leading-[14px] font-semibold tracking-[0.04em]"
+					><span class="size-1.5 rounded-full bg-activity"></span>5 / 6 REPORTING</span
+				>
+				<span class="h-3.5 w-px bg-hairline"></span>
+				<span class="flex items-baseline gap-1.5"
+					><span class="font-mono text-[10px] leading-[14px] tracking-[0.08em] text-text-faint"
+						>HOST</span
+					><span class="font-mono text-[11px] leading-[14px] text-text-muted"
+						>CPU 34% RAM 6.1/32 GB</span
+					></span
+				>
+				<span class="h-3.5 w-px bg-hairline"></span>
+				<span class="flex items-baseline gap-1.5"
+					><span class="font-mono text-[10px] leading-[14px] tracking-[0.08em] text-text-faint"
+						>KEEPPEEK</span
+					><span class="font-mono text-[11px] leading-[14px] text-text-muted"
+						>CPU 4% RAM 0.3 GB</span
+					></span
+				>
+			</div>
 			<label
 				class="flex h-[34px] w-[210px] items-center gap-2 rounded-sm border border-hairline bg-raised px-[11px] text-text-faint"
 			>
@@ -163,10 +187,7 @@
 				><span class="size-1.5 rounded-full bg-activity"></span>1 camera offline · 1 degraded</span
 			>
 			<span class="h-3.5 w-px bg-hairline"></span>
-			<span class="font-mono text-[11px] text-text-muted">CPU 34%</span>
-			<span class="font-mono text-[11px] text-text-muted">RAM 6.1/32 GB</span>
-			<span class="h-3.5 w-px bg-hairline"></span>
-			<span class="font-mono text-[11px] text-text-muted">STORAGE 71% · 12d PROJECTED</span>
+			<span class="font-mono text-[11px] text-text-muted">STORAGE 71% · 12D PROJECTED</span>
 			<span class="flex-1"></span>
 			<span class="font-mono text-[11px] text-text-muted">RX 18.4 Mb/s</span>
 			<span class="flex items-center gap-[7px] text-[13px] text-text-muted"

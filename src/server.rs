@@ -11,8 +11,9 @@ use crate::{
         MotionDetection, ProfileSummary, RecordingCapacityEstimate, SanitizedConfig,
         SanitizedStorage, SdpAnswer as ApiSdpAnswer, Status,
     },
+    camera_database::{CameraDatabase, CameraMatch, CatalogCamera, StreamHints},
     cameras::{
-        Camera, CameraBackend, CameraConfig, CameraPorts, CameraTransport,
+        Camera, CameraBackend, CameraConfig, CameraPorts, CameraTransport, probe_onvif_streams,
         reolink::{PtzOp, ReolinkClient},
     },
     config::{self, Config, StorageMigration, StorageMigrationPaths, StorageToml},
@@ -83,6 +84,10 @@ const PTZ_STOP_SPEED: u32 = 32;
 const EXPORT_JOB_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_EXPORT_DURATION: Duration = Duration::from_secs(2 * 60);
 const MAX_EXPORT_DOWNLOAD_BYTES: u64 = 512 * 1_024 * 1_024;
+const CAMERA_CATALOG_WEBSITE: &str = "https://www.cctv-database.com/";
+const DEFAULT_CAMERA_CATALOG_SEARCH_LIMIT: usize = 20;
+// Limits user-provided search text before it becomes part of in-memory matching work.
+const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
 
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
 
@@ -145,7 +150,6 @@ struct CameraSettings {
     model: Option<String>,
 }
 
-#[derive(Serialize)]
 struct DiscoveredCameraSettings {
     ip: String,
     brand: String,
@@ -155,6 +159,12 @@ struct DiscoveredCameraSettings {
     sources: Vec<String>,
     configured: bool,
     health: Option<String>,
+    catalog: Option<DiscoveredCameraCatalog>,
+}
+
+struct DiscoveredCameraCatalog {
+    camera: CatalogCamera,
+    stream_hints: Option<StreamHints>,
 }
 
 #[derive(Serialize)]
@@ -662,6 +672,16 @@ impl ServerControlHandler {
         Self { state, router_tx }
     }
 
+    fn camera_database(&self) -> Result<&CameraDatabase, ControlCommandError> {
+        self.state.camera_database.as_deref().ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "camera catalog is unavailable",
+            )
+        })
+    }
+
     fn handle_camera_control(
         &self,
         session_id: SessionId,
@@ -952,6 +972,53 @@ impl ServerControlHandler {
                     },
                 ))
             }
+            Some(camera_configuration_command::Action::ProbeStreams(request)) => {
+                self.handle_camera_stream_probe(request)
+            }
+            Some(camera_configuration_command::Action::GetCatalog(_)) => {
+                Ok(control_ok::Result::CameraCatalogInfo(
+                    proto_camera_catalog_info(self.camera_database()?),
+                ))
+            }
+            Some(camera_configuration_command::Action::SearchCatalog(request)) => {
+                let query = request.query.trim();
+                if query.is_empty() || query.chars().count() > MAX_CAMERA_CATALOG_QUERY_CHARS {
+                    return Err(ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        "camera catalog search query must be between 1 and 128 characters",
+                    ));
+                }
+                let ip = request
+                    .ip
+                    .as_deref()
+                    .map(|value| {
+                        value.parse::<IpAddr>().map_err(|_| {
+                            ControlCommandError::new(
+                                proto::ErrorCode::InvalidRequest,
+                                400,
+                                "camera catalog stream hints require a valid IP address",
+                            )
+                        })
+                    })
+                    .transpose()?;
+                let limit = request
+                    .limit
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or(DEFAULT_CAMERA_CATALOG_SEARCH_LIMIT);
+                let database = self.camera_database()?;
+                let cameras = database
+                    .search(query, limit)
+                    .into_iter()
+                    .map(|camera| {
+                        let stream_hints = ip.and_then(|ip| database.stream_hints(&camera.id, ip));
+                        proto_camera_catalog_camera(camera, stream_hints)
+                    })
+                    .collect();
+                Ok(control_ok::Result::CameraCatalogSearchResult(
+                    proto::CameraCatalogSearchResult { cameras },
+                ))
+            }
             Some(camera_configuration_command::Action::Update(request)) => {
                 let camera_id = request.ip.clone();
                 let update = camera_settings_update_from_proto(request)?;
@@ -983,6 +1050,76 @@ impl ServerControlHandler {
                 "camera configuration command has no action",
             )),
         }
+    }
+
+    fn handle_camera_stream_probe(
+        &self,
+        request: proto::ProbeCameraStreams,
+    ) -> Result<control_ok::Result, ControlCommandError> {
+        let ip = request.ip.parse::<IpAddr>().map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "camera stream probe requires a valid IP address",
+            )
+        })?;
+        if request.username.trim().is_empty() || request.password.is_empty() {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "camera stream probe requires a username and password",
+            ));
+        }
+        let onvif_port = request
+            .onvif_port
+            .map(|port| {
+                let port = u16::try_from(port).map_err(|_| {
+                    ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        "ONVIF port must be between 1 and 65535",
+                    )
+                })?;
+                if port == 0 {
+                    return Err(ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        "ONVIF port must be between 1 and 65535",
+                    ));
+                }
+                Ok(port)
+            })
+            .transpose()?;
+        let config = CameraConfig {
+            ip,
+            name: None,
+            display_name: None,
+            manufacturer: None,
+            username: request.username,
+            password: request.password,
+            onvif_port,
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: CameraBackend::Retina,
+            transport: CameraTransport::Tcp,
+        };
+        let streams = probe_onvif_streams(&config).map_err(|error| {
+            tracing::debug!(%error, %ip, "candidate ONVIF stream probe failed");
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                502,
+                "ONVIF could not retrieve stream endpoints for these credentials",
+            )
+        })?;
+        Ok(control_ok::Result::CameraStreamProbeResult(
+            proto::CameraStreamProbeResult {
+                main_rtsp_url: streams.main_rtsp_url,
+                sub_rtsp_url: streams.sub_rtsp_url,
+                onvif_port: streams.onvif_port.map(u32::from),
+            },
+        ))
     }
 
     fn handle_server(
@@ -4662,6 +4799,61 @@ fn proto_discovered_camera(camera: DiscoveredCameraSettings) -> proto::Discovere
         sources: camera.sources,
         configured: camera.configured,
         health: camera.health,
+        catalog: camera
+            .catalog
+            .map(|catalog| proto_camera_catalog_camera(catalog.camera, catalog.stream_hints)),
+    }
+}
+
+fn proto_camera_catalog_info(database: &CameraDatabase) -> proto::CameraCatalogInfo {
+    let metadata = database.metadata();
+    proto::CameraCatalogInfo {
+        version: metadata.version.clone(),
+        tag: metadata.tag.clone(),
+        generated_at: metadata.generated_at.clone(),
+        camera_count: u32::try_from(metadata.camera_count).unwrap_or(u32::MAX),
+        website_url: CAMERA_CATALOG_WEBSITE.to_owned(),
+    }
+}
+
+fn proto_camera_catalog_camera(
+    camera: CatalogCamera,
+    stream_hints: Option<StreamHints>,
+) -> proto::CameraCatalogCamera {
+    proto::CameraCatalogCamera {
+        id: camera.id,
+        brand: camera.brand,
+        model: camera.model,
+        aliases: camera.aliases.into_vec(),
+        camera_type: camera.camera_type,
+        resolution_label: camera.resolution_label,
+        megapixels: camera.megapixels,
+        sensor: camera.sensor,
+        field_of_view: camera.field_of_view,
+        night_vision: camera.night_vision,
+        ip_rating: camera.ip_rating,
+        ik_rating: camera.ik_rating,
+        two_way_audio: camera.two_way_audio,
+        release_year: camera.release_year.map(u32::from),
+        community_notes_count: camera.community_notes_count,
+        protocols: camera.protocols.into_vec(),
+        codecs: camera.codecs.into_vec(),
+        streams: camera
+            .streams
+            .into_vec()
+            .into_iter()
+            .map(|stream| proto::CameraCatalogStream {
+                name: stream.name,
+                resolution: stream.resolution,
+                fps: stream.fps.map(u32::from),
+                codec: stream.codec,
+            })
+            .collect(),
+        sources: camera.sources.into_vec(),
+        stream_hints: stream_hints.map(|hints| proto::CameraCatalogStreamHints {
+            main_rtsp_url: hints.main,
+            sub_rtsp_url: hints.sub,
+        }),
     }
 }
 
@@ -5088,6 +5280,7 @@ pub struct ServerState {
     health: HealthRegistry,
     system: Arc<Mutex<SystemMonitor>>,
     storage_config: StorageConfig,
+    camera_database: Option<Arc<CameraDatabase>>,
     catalog: Option<RecordingCatalogHandle>,
     logging: Option<LoggingService>,
     started_at: Instant,
@@ -5143,6 +5336,7 @@ impl ServerState {
             health: HealthRegistry::new(),
             system: Arc::new(Mutex::new(SystemMonitor::new())),
             storage_config: storage.clone(),
+            camera_database: None,
             catalog: None,
             logging: None,
             started_at: Instant::now(),
@@ -5160,6 +5354,11 @@ impl ServerState {
             RecordingDemand::new(TEST_RECORDING_DEMAND_GRACE),
             WebRtc::new(),
         )
+    }
+
+    #[doc(hidden)]
+    pub fn for_test() -> Self {
+        Self::empty()
     }
 
     fn camera_entries(&self) -> Vec<CameraEntry> {
@@ -5208,6 +5407,20 @@ impl ServerState {
 
     pub fn with_camera_config_path(mut self, config_path: PathBuf) -> Self {
         self.camera_config_path = Some(config_path);
+        self
+    }
+
+    pub(crate) fn with_camera_database(mut self, camera_database: Arc<CameraDatabase>) -> Self {
+        self.camera_database = Some(camera_database);
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_test_camera_catalog(
+        mut self,
+        catalog: crate::test_support::TestCameraCatalog,
+    ) -> Self {
+        self.camera_database = Some(Arc::new(catalog.into_database()));
         self
     }
 
@@ -6224,6 +6437,19 @@ fn discover_camera_settings(
     let cameras = discovered
         .into_iter()
         .map(|camera| {
+            let catalog = camera.model.as_deref().and_then(|model| {
+                let database = state.camera_database.as_deref()?;
+                match database.match_camera(camera.brand, model) {
+                    CameraMatch::Exact(catalog_camera) => {
+                        let catalog_camera = *catalog_camera;
+                        Some(DiscoveredCameraCatalog {
+                            stream_hints: database.stream_hints(&catalog_camera.id, camera.ip),
+                            camera: catalog_camera,
+                        })
+                    }
+                    CameraMatch::Ambiguous | CameraMatch::Missing => None,
+                }
+            });
             let ip = camera.ip.to_string();
             DiscoveredCameraSettings {
                 onvif_port: camera.onvif_urls.iter().find_map(|url| {
@@ -6238,6 +6464,7 @@ fn discover_camera_settings(
                 configured: configured.contains(&ip),
                 health: health.get(&ip).cloned(),
                 ip,
+                catalog,
             }
         })
         .collect::<Vec<_>>();
@@ -7033,6 +7260,7 @@ mod tests {
         RecordingCatalog,
         metadata::{EventSource, TimelineEvent},
     };
+    use crate::test_support::TestCameraCatalog;
     use std::{
         io,
         net::{Ipv4Addr, SocketAddr},
@@ -8895,6 +9123,102 @@ mod tests {
         };
         assert_eq!(error.code, proto::ErrorCode::InvalidRequest as i32);
         assert!(error.message.contains("0 and 255"));
+    }
+
+    #[test]
+    fn data_channel_camera_stream_probe_requires_credentials() {
+        let handler = test_control_handler(ServerState::empty());
+        let response = handler
+            .handle(proto::Request {
+                request_id: 80,
+                command: Some(control_request::Command::CameraConfigurationCommand(
+                    proto::CameraConfigurationCommand {
+                        action: Some(camera_configuration_command::Action::ProbeStreams(
+                            proto::ProbeCameraStreams {
+                                ip: "192.0.2.50".to_owned(),
+                                username: String::new(),
+                                password: String::new(),
+                                onvif_port: Some(8000),
+                            },
+                        )),
+                    },
+                )),
+            })
+            .response;
+
+        assert_eq!(response.request_id, 80);
+        let Some(control_response::Result::Error(error)) = response.result else {
+            panic!("probe without credentials must return an error");
+        };
+        assert_eq!(error.code, proto::ErrorCode::InvalidRequest as i32);
+        assert!(error.message.contains("username and password"));
+    }
+
+    #[test]
+    fn data_channel_camera_catalog_uses_injected_test_cameras() {
+        let handler = test_control_handler(
+            ServerState::for_test().with_test_camera_catalog(TestCameraCatalog::standard()),
+        );
+        let metadata = handler
+            .handle(proto::Request {
+                request_id: 80,
+                command: Some(control_request::Command::CameraConfigurationCommand(
+                    proto::CameraConfigurationCommand {
+                        action: Some(camera_configuration_command::Action::GetCatalog(
+                            proto::GetCameraCatalog {},
+                        )),
+                    },
+                )),
+            })
+            .response;
+
+        let Some(control_response::Result::Ok(ok)) = metadata.result else {
+            panic!("test catalog metadata must succeed");
+        };
+        let Some(control_ok::Result::CameraCatalogInfo(info)) = ok.result else {
+            panic!("test catalog must return metadata");
+        };
+        assert_eq!(info.version, "test");
+        assert_eq!(info.camera_count, 3);
+
+        let search = handler
+            .handle(proto::Request {
+                request_id: 81,
+                command: Some(control_request::Command::CameraConfigurationCommand(
+                    proto::CameraConfigurationCommand {
+                        action: Some(camera_configuration_command::Action::SearchCatalog(
+                            proto::SearchCameraCatalog {
+                                query: "RLC-Test".to_owned(),
+                                limit: Some(1),
+                                ip: Some("192.0.2.77".to_owned()),
+                            },
+                        )),
+                    },
+                )),
+            })
+            .response;
+
+        let Some(control_response::Result::Ok(ok)) = search.result else {
+            panic!("test catalog search must succeed");
+        };
+        let Some(control_ok::Result::CameraCatalogSearchResult(result)) = ok.result else {
+            panic!("test catalog search must return matching cameras");
+        };
+        let [camera] = result.cameras.as_slice() else {
+            panic!("test catalog search must return one camera");
+        };
+        assert_eq!(camera.id, "keeppeek-test-reolink");
+        assert_eq!(camera.brand, "Reolink");
+        assert_eq!(camera.model, "RLC-Test");
+        let hints = camera
+            .stream_hints
+            .as_ref()
+            .expect("test catalog camera must include stream hints");
+        assert_eq!(
+            hints.main_rtsp_url.as_deref(),
+            Some("rtsp://192.0.2.77/main")
+        );
+        assert_eq!(hints.sub_rtsp_url.as_deref(), Some("rtsp://192.0.2.77/sub"));
     }
 
     #[test]

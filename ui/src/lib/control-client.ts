@@ -16,6 +16,7 @@ import {
 	ExportCommandSchema,
 	ExportJobStatus,
 	GetExportJobSchema,
+	GetCameraCatalogSchema,
 	GetCameraConfigurationsSchema,
 	GetHealthSchema,
 	GetLoggingSettingsSchema,
@@ -35,11 +36,13 @@ import {
 	PtzPresetGotoSchema,
 	PtzPresetListSchema,
 	PtzStopSchema,
+	ProbeCameraStreamsSchema,
 	RemoveCameraConfigurationSchema,
 	RuntimeConfigurationCommandSchema,
 	RuntimeStorageConfigurationSchema,
 	RequestSchema,
 	RestartServerSchema,
+	SearchCameraCatalogSchema,
 	ServerCommandSchema,
 	SetCameraManufacturerSchema,
 	SetLoggingFilterSchema,
@@ -75,7 +78,12 @@ import type {
 	RecordingsResponse
 } from './types';
 import type { LoggingSettings } from './types';
-import type { DiscoveredCameraSettings } from './types';
+import type {
+	CameraCatalogCamera,
+	CameraCatalogInfo,
+	CameraStreamProbeResult,
+	DiscoveredCameraSettings
+} from './types';
 import type {
 	CameraBackend,
 	CameraDetailsResponse,
@@ -89,6 +97,8 @@ import type { SanitizedConfig, SettingsConfigUpdate, SettingsConfigUpdateRespons
 import type { CameraHealth, ProfileSummary, ServerHealthResponse, StreamHealth } from './types';
 
 const controlTimeoutMs = 10_000;
+const discoveryTimeoutMs = 8 * 60_000;
+const streamProbeTimeoutMs = 30_000;
 
 type PendingRequest = {
 	resolve: (response: ControlResponse) => void;
@@ -623,6 +633,38 @@ export class ControlClient {
 		}
 	}
 
+	async getCameraCatalog(): Promise<CameraCatalogInfo> {
+		const command = create(CameraConfigurationCommandSchema, {
+			action: { case: 'getCatalog', value: create(GetCameraCatalogSchema) }
+		});
+		const result = await this.request({ case: 'cameraConfigurationCommand', value: command });
+		if (result.case !== 'cameraCatalogInfo') {
+			throw new Error('Server returned an unexpected camera catalog response.');
+		}
+		return cameraCatalogInfo(result.value);
+	}
+
+	async searchCameraCatalog(
+		query: string,
+		options: { limit?: number; ip?: string } = {}
+	): Promise<CameraCatalogCamera[]> {
+		const command = create(CameraConfigurationCommandSchema, {
+			action: {
+				case: 'searchCatalog',
+				value: create(SearchCameraCatalogSchema, {
+					query,
+					limit: options.limit,
+					ip: options.ip
+				})
+			}
+		});
+		const result = await this.request({ case: 'cameraConfigurationCommand', value: command });
+		if (result.case !== 'cameraCatalogSearchResult') {
+			throw new Error('Server returned an unexpected camera catalog search response.');
+		}
+		return result.value.cameras.map(cameraCatalogCamera);
+	}
+
 	async discoverCameras(subnets: number[]): Promise<DiscoveredCameraSettings[]> {
 		const command = create(CameraConfigurationCommandSchema, {
 			action: {
@@ -630,7 +672,10 @@ export class ControlClient {
 				value: create(DiscoverCamerasSchema, { subnets })
 			}
 		});
-		const result = await this.request({ case: 'cameraConfigurationCommand', value: command });
+		const result = await this.request(
+			{ case: 'cameraConfigurationCommand', value: command },
+			discoveryTimeoutMs
+		);
 		if (result.case !== 'cameraDiscoveryResult') {
 			throw new Error('Server returned an unexpected camera discovery response.');
 		}
@@ -642,8 +687,40 @@ export class ControlClient {
 			onvif_port: camera.onvifPort ?? null,
 			sources: camera.sources,
 			configured: camera.configured,
-			health: (camera.health ?? null) as DiscoveredCameraSettings['health']
+			health: (camera.health ?? null) as DiscoveredCameraSettings['health'],
+			catalog: camera.catalog ? cameraCatalogCamera(camera.catalog) : null
 		}));
+	}
+
+	async probeCameraStreams(input: {
+		ip: string;
+		username: string;
+		password: string;
+		onvif_port: number | null;
+	}): Promise<CameraStreamProbeResult> {
+		const command = create(CameraConfigurationCommandSchema, {
+			action: {
+				case: 'probeStreams',
+				value: create(ProbeCameraStreamsSchema, {
+					ip: input.ip,
+					username: input.username,
+					password: input.password,
+					onvifPort: input.onvif_port ?? undefined
+				})
+			}
+		});
+		const result = await this.request(
+			{ case: 'cameraConfigurationCommand', value: command },
+			streamProbeTimeoutMs
+		);
+		if (result.case !== 'cameraStreamProbeResult') {
+			throw new Error('Server returned an unexpected camera stream probe response.');
+		}
+		return {
+			main_rtsp_url: result.value.mainRtspUrl ?? null,
+			sub_rtsp_url: result.value.subRtspUrl ?? null,
+			onvif_port: result.value.onvifPort ?? null
+		};
 	}
 
 	async getCameraSettings(): Promise<CameraSettings[]> {
@@ -910,7 +987,7 @@ export class ControlClient {
 		}
 	}
 
-	private async request(command: Request['command']) {
+	private async request(command: Request['command'], timeoutMs = controlTimeoutMs) {
 		await this.connect();
 		const channel = this.#controlChannel;
 		if (!channel || channel.readyState !== 'open') {
@@ -922,7 +999,7 @@ export class ControlClient {
 			const timeout = setTimeout(() => {
 				this.#pending.delete(requestId);
 				reject(new Error('WebRTC control request timed out.'));
-			}, controlTimeoutMs);
+			}, timeoutMs);
 			this.#pending.set(requestId, { resolve, reject, timeout });
 		});
 		const envelope = create(ControlEnvelopeSchema, {
@@ -1871,6 +1948,55 @@ function cameraSettings(camera: import('./proto/webrtc_pb').CameraSettings): Cam
 		transport: camera.transport === ProtoCameraTransport.UDP ? 'udp' : 'tcp',
 		health: (camera.health ?? null) as CameraSettings['health'],
 		model: camera.model ?? null
+	};
+}
+
+function cameraCatalogInfo(
+	catalog: import('./proto/webrtc_pb').CameraCatalogInfo
+): CameraCatalogInfo {
+	return {
+		version: catalog.version,
+		tag: catalog.tag,
+		generated_at: catalog.generatedAt,
+		camera_count: catalog.cameraCount,
+		website_url: catalog.websiteUrl
+	};
+}
+
+function cameraCatalogCamera(
+	camera: import('./proto/webrtc_pb').CameraCatalogCamera
+): CameraCatalogCamera {
+	return {
+		id: camera.id,
+		brand: camera.brand,
+		model: camera.model,
+		aliases: [...camera.aliases],
+		camera_type: camera.cameraType,
+		resolution_label: camera.resolutionLabel ?? null,
+		megapixels: camera.megapixels ?? null,
+		sensor: camera.sensor ?? null,
+		field_of_view: camera.fieldOfView ?? null,
+		night_vision: camera.nightVision ?? null,
+		ip_rating: camera.ipRating ?? null,
+		ik_rating: camera.ikRating ?? null,
+		two_way_audio: camera.twoWayAudio ?? null,
+		release_year: camera.releaseYear ?? null,
+		community_notes_count: camera.communityNotesCount,
+		protocols: [...camera.protocols],
+		codecs: [...camera.codecs],
+		streams: camera.streams.map((stream) => ({
+			name: stream.name,
+			resolution: stream.resolution ?? null,
+			fps: stream.fps ?? null,
+			codec: stream.codec ?? null
+		})),
+		sources: [...camera.sources],
+		stream_hints: camera.streamHints
+			? {
+					main_rtsp_url: camera.streamHints.mainRtspUrl ?? null,
+					sub_rtsp_url: camera.streamHints.subRtspUrl ?? null
+				}
+			: null
 	};
 }
 

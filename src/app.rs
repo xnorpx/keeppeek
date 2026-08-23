@@ -1,10 +1,11 @@
 //! Runs the shared KeepPeek application lifecycle.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use crate::{
     api::{CameraId, CameraLifecycle, CameraStatus},
     battery_wake::BatteryWakeService,
+    camera_database::CameraDatabase,
     cameras,
     config::{self, Config},
     keeppeek::KeepPeekLoop,
@@ -57,6 +58,16 @@ pub fn run(
 ) -> anyhow::Result<bool> {
     #[cfg(windows)]
     let _timer_resolution = WindowsTimerResolution::request(1);
+
+    let camera_database = Arc::new(CameraDatabase::load_embedded()?);
+    let metadata = camera_database.metadata();
+    tracing::info!(
+        version = %metadata.version,
+        tag = %metadata.tag,
+        generated_at = %metadata.generated_at,
+        camera_count = metadata.camera_count,
+        "loaded CCTV camera database"
+    );
 
     let camera_configs = config::load_cameras(config_path)?;
     tracing::info!(
@@ -138,6 +149,7 @@ pub fn run(
         webrtc.clone(),
     )
     .with_camera_config_path(config_path.to_path_buf())
+    .with_camera_database(camera_database)
     .with_logging(logging)
     .with_restart_control(shutdown.clone(), restart.clone())
     .with_event_store(event_store.clone())

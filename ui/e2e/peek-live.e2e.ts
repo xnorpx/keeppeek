@@ -65,7 +65,7 @@ test('Peek diagnostics stays open without interrupting live playback', async ({ 
 	const sessionId = await liveView.getAttribute('data-session-id');
 	expect(sessionId).not.toBeNull();
 
-	const trigger = liveView.getByRole('button', { name: 'WebRTC stream diagnostics' });
+	const trigger = liveView.getByRole('button', { name: /WebRTC stream diagnostics/ });
 	await trigger.click();
 	const diagnostics = page.locator(`[data-web-rtc-diagnostics="${stream.cameraId}"]`);
 	await expect(diagnostics).toBeVisible();
@@ -80,4 +80,64 @@ test('Peek diagnostics stays open without interrupting live playback', async ({ 
 	await expect(diagnostics).toBeVisible();
 	await expect(liveView).toHaveAttribute('data-status', 'live');
 	await expect(liveView).toHaveAttribute('data-session-id', sessionId ?? '');
+});
+
+test('Peek focus automatic quality starts on the main stream and preserves explicit switches', async ({
+	page
+}) => {
+	test.skip(
+		skipsRealWebRtcOnWindowsCi,
+		'Windows CI does not establish the real WebRTC control channel used by this full-stack test.'
+	);
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await page.goto('/');
+
+	const tile = page.locator(`[data-peek-camera="${streams[0].cameraId}"]`);
+	await tile.getByRole('button', { name: /^Focus .* live view$/ }).click();
+	const focus = page.getByRole('region', { name: /focus$/ });
+	const liveView = focus.locator(`[data-camera-id="${streams[0].cameraId}"]`);
+	const video = liveView.locator('video');
+	await expect(liveView).toHaveAttribute('data-requested-quality', 'auto');
+	await expect(liveView).toHaveAttribute('data-stream', 'main');
+	await expect(liveView).not.toHaveAttribute('data-pending-stream');
+	await expect
+		.poll(() =>
+			video.evaluate((element) => {
+				const media = element as HTMLVideoElement;
+				return `${media.videoWidth}x${media.videoHeight}:${media.getVideoPlaybackQuality().totalVideoFrames}`;
+			})
+		)
+		.toMatch(/^640x360:[1-9]\d*$/);
+	await expect
+		.poll(() =>
+			liveView.evaluate((element) => Number.parseFloat((element as HTMLElement).style.aspectRatio))
+		)
+		.toBeCloseTo(640 / 360, 5);
+
+	await focus.getByRole('button', { name: 'low', exact: true }).click();
+	await expect(liveView).toHaveAttribute('data-requested-quality', 'low');
+	await expect(liveView).toHaveAttribute('data-stream', 'main');
+	await expect(liveView).toHaveAttribute('data-pending-stream', 'sub');
+	await expect(focus.locator('[data-peek-quality-switch]')).toContainText(
+		'Switching to low stream…'
+	);
+	await expect(focus.getByRole('button', { name: 'high', exact: true })).toBeEnabled();
+	await expect(liveView).toHaveAttribute('data-stream', 'sub');
+	await expect(liveView).not.toHaveAttribute('data-pending-stream');
+	await expect(focus.locator('[data-peek-quality-switch]')).toHaveCount(0);
+
+	await focus.getByRole('button', { name: 'high', exact: true }).click();
+	await expect(liveView).toHaveAttribute('data-requested-quality', 'high');
+	await expect(liveView).toHaveAttribute('data-stream', 'main');
+	await focus.getByRole('button', { name: 'low', exact: true }).click();
+	await expect(liveView).toHaveAttribute('data-requested-quality', 'low');
+	await expect(liveView).toHaveAttribute('data-stream', 'main');
+	await expect(liveView).toHaveAttribute('data-pending-stream', 'sub');
+	await expect(focus.locator('[data-peek-quality-switch]')).toContainText(
+		'Switching to low stream…'
+	);
+	await expect(focus.getByRole('button', { name: 'high', exact: true })).toBeEnabled();
+	await expect(liveView).toHaveAttribute('data-stream', 'sub');
+	await expect(liveView).not.toHaveAttribute('data-pending-stream');
+	await expect(focus.locator('[data-peek-quality-switch]')).toHaveCount(0);
 });

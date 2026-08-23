@@ -105,8 +105,8 @@
 			"worldX": 5390,
 			"worldY": -242,
 			"source": "boards/05-handoff-what-to-design-next.jsx.txt",
-			"bytes": 47513,
-			"sha256": "7d3017b59ae1db79633144e8d628e11a6a96cede44f9d698974c05f89b632cb9"
+			"bytes": 47508,
+			"sha256": "e96247cd5912e6954d894b108bc287f7db1c982224b53113a8ea89b695842fb5"
 		},
 		{
 			"index": 6,
@@ -118,8 +118,8 @@
 			"worldX": 6910.001,
 			"worldY": -242,
 			"source": "boards/06-app-shell-amp-peek-live.jsx.txt",
-			"bytes": 43901,
-			"sha256": "84a330258386ffeb252714b6a19713f3c734ffe958d0d2006df63fdc01e808ea",
+			"bytes": 50547,
+			"sha256": "65f84ca7c53a03994a15d10a00b5dbba2095a834514079fb0daefdb5de36bcf8",
 			"references": [
 				{
 					"nodeId": "N7-0",
@@ -130,26 +130,26 @@
 					"height": 860,
 					"theme": "dark",
 					"fixture": "fleet.mixed-health",
-					"bytes": 101136,
-					"sha256": "4df6252215d92a3b624efb76ce316581310340f10419cfe231574f6afa2ce076",
+					"bytes": 103261,
+					"sha256": "669b362c076ac057a5bc625bd52170058104936e9f0a835c65245b8ab4e2342f",
 					"paperOverlay": {
 						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-22",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 30263,
+						"mismatchPixels": 33203,
 						"totalPixels": 1238400,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 16138,
-						"varianceReason": "The 1440x860 shell, 64/1374px columns, 52/774/32px main lanes, two 1342x340 rows, and six 439x340 shared tiles match exactly. Residual text pixels come from reporting the six fixture cameras as 6 OF 6 instead of inventing Paper's 127-source total, runtime-derived reconnect/offline evidence, and Paper/Chromium font rasterization; both references use neutral video surfaces."
+						"highContrastMismatchPixels": 16248,
+						"varianceReason": "The 1440x860 shell, 64/1374px columns, 52/774/32px main lanes, two 1342x340 rows, and six 439x340 shared tiles match exactly. Residual text and control pixels come from reporting the six fixture cameras as 6 OF 6 instead of inventing Paper's 127-source total, deterministic fleet/runtime telemetry and compound tile diagnostics triggers, runtime-derived reconnect/offline evidence, and Paper/Chromium font rasterization; both references use neutral video surfaces."
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png",
-						"bytes": 64401,
-						"sha256": "3d8981d83cf3f524dc76af02102edb5b4a7ea7095fe650677d189016ae8433c3",
-						"approvedAt": "2026-08-21",
+						"bytes": 66009,
+						"sha256": "10c96180b89450f986bd8fd75d85d32d865c1addfaa9aac2facfca87320c262c",
+						"approvedAt": "2026-08-22",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
-						"paperReferenceSha256": "4df6252215d92a3b624efb76ce316581310340f10419cfe231574f6afa2ce076",
+						"paperReferenceSha256": "669b362c076ac057a5bc625bd52170058104936e9f0a835c65245b8ab4e2342f",
 						"storybookStoryId": "peek.desktop.live-wall"
 					}
 				}
@@ -502,12 +502,12 @@
 			"name": "12 — Add camera wizard",
 			"childCount": 3,
 			"width": 1600,
-			"height": 1588,
+			"height": 1548,
 			"worldX": 5630,
 			"worldY": 2320,
 			"source": "boards/12-add-camera-wizard.jsx.txt",
-			"bytes": 58430,
-			"sha256": "c7b75db1eaaec3627d8088d319259d6202b93e66eb11007dab32cd4dd3c5814b",
+			"bytes": 59855,
+			"sha256": "3cef52513626db4a0eb95517ccfa38080fb3cefe495bc6bd27dc119afd8eb0c6",
 			"references": [
 				{
 					"nodeId": "1VQ-0",
@@ -515,21 +515,21 @@
 					"storySource": "visual-harness/stories/Board12AddCamera.stories.ts",
 					"source": "references/12-add-camera-stream-evidence.png",
 					"width": 1440,
-					"height": 685,
+					"height": 663,
 					"theme": "dark",
 					"fixture": "camera.discovery-results",
-					"bytes": 317380,
-					"sha256": "55b57aad24ed47de14f0fd0e86ea5dc525a6d26baf10c55ab0dc68c0a6168e6c",
+					"bytes": 299583,
+					"sha256": "55a3d3392d9ee75eb3a078209f4b83366f4cdc73046566f580ef39a2327350a7",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-22",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 68168,
-						"totalPixels": 986400,
+						"mismatchPixels": 68986,
+						"totalPixels": 954720,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 39589,
+						"highContrastMismatchPixels": 40915,
 						"blockers": [
-							"The server has no candidate-camera authentication or stream-probe command, so declared RTSP URLs cannot be presented as decoded proof before save.",
+							"Authenticated ONVIF now yields candidate endpoints before save, but decoded media evidence remains unavailable until the saved camera publishes a stream.",
 							"Audio codec, first-keyframe timing, frame count, bitrate, recording mode, retention impact, and group assignment are unavailable before the final write.",
 							"A permanent source ID exists only after save, and credentials remain write-only browser draft data until the final configuration command."
 						]
@@ -858,8 +858,8 @@
 			"worldX": 4350,
 			"worldY": 5200,
 			"source": "boards/20-settings-appearance-system-logs.jsx.txt",
-			"bytes": 27331,
-			"sha256": "827a228ec5a9eceeada684c62850b5db5f8f3a91ae877bf2d4c1e3e01222e46b",
+			"bytes": 28006,
+			"sha256": "e3cdb98f0e01e0854dc9e0aeb0cc2aebb12a0652e39de54480bc1fa8a22101af",
 			"references": [
 				{
 					"nodeId": "3A1-0",
@@ -1163,8 +1163,8 @@
 			"worldX": 990,
 			"worldY": 6800,
 			"source": "boards/25-mobile-add-camera.jsx.txt",
-			"bytes": 41529,
-			"sha256": "9715882109138289f732e687f1faa78d23ff5d2ec03f5b65d8f975ca5fb90796",
+			"bytes": 43279,
+			"sha256": "bb74295c6d09e9efd4c0e6c7d18580137fa82af513b7cbe71aa679b8c2e9ee99",
 			"references": [
 				{
 					"nodeId": "481-0",
@@ -1538,76 +1538,76 @@
 		{
 			"index": 31,
 			"id": "5GD-0",
-			"name": "31 — Peek → Keep: the rewind gesture",
+			"name": "31 — Peek → Keep: focused history",
 			"childCount": 3,
 			"width": 1600,
-			"height": 1105,
+			"height": 981,
 			"worldX": 11070,
 			"worldY": 6800,
-			"source": "boards/31-peek-keep-the-rewind-gesture.jsx.txt",
-			"bytes": 26366,
-			"sha256": "f69fa234113c378ee9ac7be39a44a9dc4ecb24fbefcd6e9bb2b459a832e7cf50",
+			"source": "boards/31-peek-keep-focused-history.jsx.txt",
+			"bytes": 24438,
+			"sha256": "445da8af68e38c9899408bc484e307f33d60002d71edc7fffd3219a2ff3c1f1c",
 			"references": [
 				{
 					"nodeId": "5GV-0",
-					"scenarioId": "peek.desktop.rewind-ready",
-					"storySource": "visual-harness/stories/Board31Rewind.stories.ts",
-					"source": "references/31-rewind-ready.png",
+					"scenarioId": "peek.desktop.focus-history",
+					"storySource": "visual-harness/stories/Board31History.stories.ts",
+					"source": "references/31-focus-history.png",
 					"width": 464,
 					"height": 262,
 					"theme": "dark",
-					"fixture": "fleet.rewind",
-					"bytes": 11195,
-					"sha256": "e52c222cace55ecfdea6a9d67d5781fd7a2acd4696fb2372b5ca1255ae993f5b",
+					"fixture": "fleet.focus-history",
+					"bytes": 11309,
+					"sha256": "c74c9dbaa63ac13c1434ccba12ec88486155b9c923312d4705594d87a93627fb",
 					"paperOverlay": {
 						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-22",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 957,
+						"mismatchPixels": 1356,
 						"totalPixels": 121568,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 245
+						"highContrastMismatchPixels": 683
 					},
 					"lokiReference": {
-						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-ready.png",
-						"bytes": 8379,
-						"sha256": "cd07cb96c229d275657cbbdb3ec3f339f5e7dc819f58aab43be4c6788f843d57",
-						"approvedAt": "2026-08-21",
+						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png",
+						"bytes": 7382,
+						"sha256": "98b56171d3a75336894406ec56709479c1848ee5f90320780cdf5e8f148e2f92",
+						"approvedAt": "2026-08-22",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
-						"paperReferenceSha256": "e52c222cace55ecfdea6a9d67d5781fd7a2acd4696fb2372b5ca1255ae993f5b",
-						"storybookStoryId": "peek.desktop.rewind-ready"
+						"paperReferenceSha256": "c74c9dbaa63ac13c1434ccba12ec88486155b9c923312d4705594d87a93627fb",
+						"storybookStoryId": "peek.desktop.focus-history"
 					}
 				},
 				{
-					"nodeId": "5HF-0",
-					"scenarioId": "peek.desktop.rewind-to-keep",
-					"storySource": "visual-harness/stories/Board31Rewind.stories.ts",
-					"source": "references/31-rewind-scrubbing.png",
+					"nodeId": "5I0-0",
+					"scenarioId": "peek.desktop.history-keep",
+					"storySource": "visual-harness/stories/Board31History.stories.ts",
+					"source": "references/31-history-keep.png",
 					"width": 464,
 					"height": 262,
 					"theme": "dark",
-					"fixture": "fleet.rewind",
-					"bytes": 12710,
-					"sha256": "3e59cbc4a91f865e07fc75b741703b4e1df88926c06a73bdf60be038ae0e13ad",
+					"fixture": "fleet.focus-history",
+					"bytes": 10093,
+					"sha256": "35e508cdec62a71892a6dc84aed516c9889a40bda39b4f97965dbd56dd4b9092",
 					"paperOverlay": {
 						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-22",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 1924,
+						"mismatchPixels": 1696,
 						"totalPixels": 121568,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 341
+						"highContrastMismatchPixels": 979
 					},
 					"lokiReference": {
-						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.rewind-to-keep.png",
-						"bytes": 8748,
-						"sha256": "9b6cc450ed24dda8bb5b73908026d9586a01c41cfe81bc1f68874130bad074b5",
-						"approvedAt": "2026-08-21",
+						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png",
+						"bytes": 6636,
+						"sha256": "e5d9782e69c1d66d67422a4677f719e28dd6ebbb71aa58965a401f9197d7233a",
+						"approvedAt": "2026-08-22",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
-						"paperReferenceSha256": "3e59cbc4a91f865e07fc75b741703b4e1df88926c06a73bdf60be038ae0e13ad",
-						"storybookStoryId": "peek.desktop.rewind-to-keep"
+						"paperReferenceSha256": "35e508cdec62a71892a6dc84aed516c9889a40bda39b4f97965dbd56dd4b9092",
+						"storybookStoryId": "peek.desktop.history-keep"
 					}
 				}
 			]
@@ -1622,8 +1622,8 @@
 			"worldX": 12750,
 			"worldY": 6800,
 			"source": "boards/32-keyboard-the-whole-model.jsx.txt",
-			"bytes": 48909,
-			"sha256": "29eaaba4c711a20eda1c72df269ebd900dd8088fc0c1167f0092a505ccd3a57d"
+			"bytes": 47606,
+			"sha256": "2726161fa6a4fe67a31a8578608a15b313d007193efe1caef35e94073ed6247e"
 		},
 		{
 			"index": 33,

@@ -50,7 +50,8 @@ test('opens Board 32 keyboard help and returns focus to its invoker', async ({ p
 	await expect(dialog.getByText('This screen', { exact: true })).toBeVisible();
 	await expect(dialog).toContainText('Move focus across the camera grid');
 	await expect(dialog).toContainText('Focus the selected camera or return to the grid');
-	await expect(dialog).toContainText('Rewind from the focused camera control');
+	await expect(dialog).toContainText('Open the focused camera');
+	await expect(dialog).not.toContainText('Rewind from the focused live view control');
 	await expect(dialog).not.toContainText('Switch to a saved layout');
 	await expect
 		.poll(() => page.evaluate(() => document.activeElement?.closest('dialog') !== null))
@@ -119,7 +120,23 @@ test('moves Peek focus spatially and keeps Enter distinct from fullscreen', asyn
 	await waitForKeyboard(page);
 	await page.locator('[data-peek-focus="front-door"]').focus();
 	await page.keyboard.press('f');
-	await expect(page.getByRole('region', { name: 'Front Door focus' })).toBeVisible();
+	const focus = page.getByRole('region', { name: 'Front Door focus' });
+	await expect(focus).toBeVisible();
+	const primaryView = focus.locator('[data-peek-focus-history]');
+	const filmstrip = focus.getByLabel('Other cameras');
+	await expect(filmstrip).toBeVisible();
+	const firstFilmstripItem = filmstrip.locator('article').first();
+	const [primaryBox, filmstripBox, firstFilmstripItemBox] = await Promise.all([
+		primaryView.boundingBox(),
+		filmstrip.boundingBox(),
+		firstFilmstripItem.boundingBox()
+	]);
+	expect(primaryBox).not.toBeNull();
+	expect(filmstripBox).not.toBeNull();
+	expect(firstFilmstripItemBox).not.toBeNull();
+	expect(filmstripBox!.y).toBeGreaterThan(primaryBox!.y + primaryBox!.height - 1);
+	expect(firstFilmstripItemBox!.width).toBeLessThan(primaryBox!.width / 2);
+	expect(firstFilmstripItemBox!.height).toBeLessThan(primaryBox!.height / 2);
 	await page.keyboard.press('f');
 	await expect(page.locator('[data-peek-focus="front-door"]')).toBeFocused();
 });

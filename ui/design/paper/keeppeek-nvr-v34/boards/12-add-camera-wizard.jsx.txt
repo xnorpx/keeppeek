@@ -1,5 +1,5 @@
 (
-    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '48px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '48px', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
       <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '40px', justifyContent: 'space-between', width: '1440px' }}>
         <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '700px' }}>
           <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
@@ -9,12 +9,12 @@
             </div>
           </div>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '56px', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '105%' }}>
-            Prove it works before you save it.
+            Configure it before you save it.
           </div>
         </div>
         <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingTop: '44px', width: '700px' }}>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '155%' }}>
-            Every step ends in evidence, not a claim: a device that answered, a stream that decoded, a frame on screen. Nothing is written to config until step five. A mixed fleet is the assumption — Reolink, ONVIF and a bare RTSP URL all finish in the same place.
+            Every step names its evidence: discovery answers and catalog references remain distinct from saved runtime proof. Nothing is written to config until step five.
           </div>
         </div>
       </div>
@@ -36,7 +36,7 @@
             </div>
             <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '2px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '18px' }}>
-                1 · Find
+                1 · Find & connect
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
                 192.168.1.71 · ONVIF
@@ -51,10 +51,10 @@
             </div>
             <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '2px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 500, lineHeight: '18px' }}>
-                2 · Connect
+                2 · Options
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
-                AUTHENTICATED · RTSP/TCP
+                AUTO-PROBE · RTSP/TCP
               </div>
             </div>
           </div>
@@ -69,7 +69,7 @@
                 3 · Streams
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
-                TESTING 2 OF 2
+                2 DECLARED
               </div>
             </div>
           </div>
@@ -102,10 +102,10 @@
           <div style={{ alignItems: 'flex-end', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', justifyContent: 'space-between', paddingBottom: '18px', paddingInline: '28px', paddingTop: '26px', width: '1140px' }}>
             <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '6px', width: '760px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '34px' }}>
-                Two streams answered
+                Candidate streams
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '155%' }}>
-                Both decoded here in the browser before anything was written down. Give each one a role — a camera needs exactly one recording stream and one live stream, and they may be the same.
+                Catalog stream references are optional and remain untested until save. Assign declared roles before continuing.
               </div>
             </div>
             <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '8px', height: '30px', paddingInline: '12px' }}>
@@ -114,7 +114,7 @@
                 <polyline points="21 4 21 10 15 10" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" />
               </svg>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                Re-probe
+                No probe
               </div>
             </div>
           </div>
@@ -125,7 +125,7 @@
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', gap: '7px', height: '22px', paddingInline: '9px' }}>
                     <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
                     <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
-                      DECODING
+                      UNPROBED
                     </div>
                   </div>
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', height: '22px', paddingInline: '9px' }}>
@@ -136,7 +136,7 @@
                 </div>
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
-                    FIRST KEYFRAME 0.7s · 43 FRAMES IN 1.8s
+                    NO PRE-SAVE PROBE
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
                     18.4 Mb/s
@@ -157,7 +157,7 @@
                     <polyline points="20 6 9 17 4 12" fill="none" stroke="var(--color-healthy)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
-                    Tested
+                    UNPROBED
                   </div>
                 </div>
               </div>
@@ -193,7 +193,7 @@
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', gap: '7px', height: '22px', paddingInline: '9px' }}>
                     <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
                     <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
-                      DECODING
+                      UNPROBED
                     </div>
                   </div>
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', height: '22px', paddingInline: '9px' }}>
@@ -204,7 +204,7 @@
                 </div>
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
-                    FIRST KEYFRAME 0.3s · 44 FRAMES IN 1.8s
+                    NO PRE-SAVE PROBE
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
                     0.6 Mb/s
@@ -225,7 +225,7 @@
                     <polyline points="20 6 9 17 4 12" fill="none" stroke="var(--color-healthy)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
-                    Tested
+                    UNPROBED
                   </div>
                 </div>
               </div>
@@ -268,10 +268,10 @@
               </svg>
               <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                  Audio is G.711 µ-law on both streams
+                  Audio evidence unavailable before save
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '155%' }}>
-                  Recorded as-is with no re-encoding, and playable in the browser. Some players outside KeepPeek will not open it. Change the codec on the camera to AAC if exports need to travel.
+                  Codec evidence is unavailable until the saved camera publishes a stream.
                 </div>
               </div>
             </div>
@@ -354,11 +354,27 @@
               </div>
               <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'dashed', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '36px', justifyContent: 'center' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Enter an address or RTSP URL
+                  Address, sign-in, and model
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-                Five-second window, up to 200 parallel probes. A camera that stays quiet can still be typed in by hand.
+                Valid address and sign-in trigger ONVIF immediately. Model context stays optional.
+              </div>
+              <div style={{ backgroundColor: 'var(--color-raised)', borderLeftColor: 'var(--color-primary)', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-sans)', gap: '4px', height: '64px', paddingBlock: '9px', paddingInline: '10px', width: '311px' }}>
+                <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px', justifyContent: 'space-between' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
+                    NETWORK · CATALOG
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-sans)', fontSize: '12px', fontWeight: 600, lineHeight: '14px' }}>
+                    RLC-811A
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '14px' }}>
+                  Reolink · bullet · 4K · 8 MP
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: 'var(--font-mono)', fontSize: '10px', lineHeight: '12px' }}>
+                  ONVIF · RTSP · DECLARED STREAMS
+                </div>
               </div>
             </div>
           </div>
@@ -370,13 +386,13 @@
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
-                Connect
+                Options
               </div>
             </div>
             <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '14px', padding: '16px' }}>
               <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.12em', lineHeight: '14px' }}>
-                  SIGN-IN
+                  AUTO-PROBE
                 </div>
                 <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'dashed', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '9px', height: '34px', paddingInline: '10px' }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
@@ -391,10 +407,10 @@
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-                  Filled from the shared camera login. Most fleets use one password everywhere, so this step is usually already done.
+                  Credentials start in step one. Use this step for ONVIF retry and protocol tuning.
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                  This camera needs a different login
+                  Retry after changing address or sign-in
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -426,12 +442,13 @@
                   </div>
                 </div>
               </div>
-              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingTop: '2px' }}>
+              <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '8px', height: '18px', paddingTop: '2px', width: '311px' }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
-                  <polyline points="20 6 9 17 4 12" fill="none" stroke="var(--color-healthy)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+                  <rect x="4" y="11" width="16" height="9" rx="2" fill="none" stroke="var(--color-activity)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M8 11V7a4 4 0 0 1 8 0v4" fill="none" stroke="var(--color-activity)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Authenticated in 240 ms
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '16px' }}>
+                  WRITE-ONLY DRAFT · FIRST SCREEN
                 </div>
               </div>
             </div>
@@ -499,10 +516,10 @@
               </div>
               <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', padding: '12px' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '16px' }}>
-                  ≈ 190 GB per day
+                  Retention impact unavailable
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-                  Adding this camera moves the projected retention window from 12 days to 9.
+                  The server does not estimate this unsaved camera's recording cost.
                 </div>
               </div>
             </div>
@@ -570,17 +587,17 @@
                     Retention
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                    14d / 2 TB
+                    Server default
                   </div>
                 </div>
               </div>
               <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', justifyContent: 'center' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                  Save and start recording
+                  Save camera
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-                This is the first write to configuration. Recording begins immediately and the camera appears in Peek within a second.
+                Saving is the first configuration write. The server may require a restart before recording begins.
               </div>
             </div>
           </div>

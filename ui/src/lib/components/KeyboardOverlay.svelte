@@ -172,8 +172,7 @@
 			? [
 					{ keys: ['←', '→', '↑', '↓'], label: 'Move focus across the camera grid' },
 					{ keys: ['F'], label: 'Focus the selected camera or return to the grid' },
-					{ keys: ['↓'], label: 'Rewind from the focused camera control' },
-					{ keys: ['Enter'], label: 'Open the focused camera or selected rewind point' }
+					{ keys: ['Enter'], label: 'Open the focused camera' }
 				]
 			: pathname.startsWith('/keep')
 				? [

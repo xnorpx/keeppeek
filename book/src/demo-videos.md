@@ -20,12 +20,12 @@ The virtual-camera source is _Big Buck Bunny_, © 2008 Blender Foundation,
 
 ## Review what just happened
 
-Drag down on one live camera to rewind, then open the selected moment in Keep.
+Focus a live camera, then use History to open its timeline in Keep.
 
 <video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.rewind-to-keep.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.rewind-to-keep.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.rewind-to-keep.mp4">Download the Peek rewind demo</a>.
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4">Download the Peek history demo</a>.
 </video>
 
 ## Delete and re-add a camera
@@ -37,6 +37,17 @@ Settings UI.
   <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4" type="video/mp4">
   <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.vtt" kind="captions" srclang="en" label="English">
   <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4">Download the camera lifecycle demo</a>.
+</video>
+
+## Set up a camera with catalog context
+
+Discover a model, review the embedded catalog facts, open CCTV Database for deeper manual research,
+then apply only the stream declarations you choose before the first configuration write.
+
+<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
+  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4" type="video/mp4">
+  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.vtt" kind="captions" srclang="en" label="English">
+  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4">Download the catalog-guided camera setup demo</a>.
 </video>
 
 The [published manifest](https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/manifest.json)

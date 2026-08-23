@@ -1,6 +1,7 @@
 use base64::Engine;
 use clap::Args;
 use keeppeek::{
+    camera_catalog::common_onvif_probe_ports,
     cameras,
     cameras::{
         CameraBackend, CameraCapabilities, CameraConfig, CameraPorts, CameraTransport, DeviceInfo,
@@ -59,10 +60,6 @@ pub struct Cli {
     #[arg(long = "onvif-ports", value_delimiter = ',')]
     onvif_ports: Vec<u16>,
 }
-
-const DEFAULT_ONVIF_PORTS: &[u16] = &[
-    80, 443, 554, 2020, 5000, 8000, 8080, 8443, 8554, 8899, 10080,
-];
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -629,7 +626,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         credential_candidates(&cli.usernames, &cli.passwords, &cli.credentials_from)?;
 
     let onvif_ports = if cli.onvif_ports.is_empty() {
-        DEFAULT_ONVIF_PORTS.to_vec()
+        common_onvif_probe_ports().to_vec()
     } else {
         cli.onvif_ports.clone()
     };

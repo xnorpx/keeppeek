@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { StoryScenarioMetadata } from '$lib/storybook/demo';
 import { createDemoVideoManifest, type DemoPublishEntry } from './video-publish';
 
-function entry(scenarioId: string, videoContents: string): DemoPublishEntry {
+function entry(scenarioId: string, videoContents: string, assetId?: string): DemoPublishEntry {
 	const metadata: StoryScenarioMetadata = {
 		storyId: scenarioId,
 		paper: {
@@ -13,6 +13,7 @@ function entry(scenarioId: string, videoContents: string): DemoPublishEntry {
 			scenarioId
 		},
 		demo: {
+			...(assetId === undefined ? {} : { assetId }),
 			title: `Demo ${scenarioId}`,
 			purpose: 'Verify automatic publishing.',
 			durationMs: 1_000,
@@ -42,6 +43,10 @@ describe('demo video publishing manifest', () => {
 			entries: [entry('peek.mobile.live', 'mobile'), entry('peek.desktop.live', 'desktop')]
 		});
 
+		expect(manifest.videos.map((video) => video.assetId)).toEqual([
+			'peek.desktop.live',
+			'peek.mobile.live'
+		]);
 		expect(manifest.videos.map((video) => video.scenarioId)).toEqual([
 			'peek.desktop.live',
 			'peek.mobile.live'
@@ -53,7 +58,7 @@ describe('demo video publishing manifest', () => {
 		expect(manifest.commitSha).toBe('abc123');
 	});
 
-	it('rejects insecure URLs, duplicate scenarios, and nested asset paths', () => {
+	it('rejects insecure URLs, duplicate assets, and nested asset paths', () => {
 		expect(() =>
 			createDemoVideoManifest({
 				baseUrl: 'http://media.example/demos',
@@ -71,7 +76,26 @@ describe('demo video publishing manifest', () => {
 				generatedAt: '2026-08-19T00:00:00.000Z',
 				entries: [duplicate, duplicate]
 			})
-		).toThrow('Duplicate demo scenario');
+		).toThrow('Duplicate demo asset');
+
+		const catalog = entry(
+			'cameras.desktop.add-wizard',
+			'catalog',
+			'cameras.desktop.catalog-guided-setup'
+		);
+		const lifecycle = entry(
+			'cameras.desktop.add-wizard',
+			'lifecycle',
+			'cameras.desktop.camera-lifecycle'
+		);
+		expect(
+			createDemoVideoManifest({
+				baseUrl: 'https://media.example/demos',
+				commitSha: 'abc123',
+				generatedAt: '2026-08-19T00:00:00.000Z',
+				entries: [catalog, lifecycle]
+			}).videos
+		).toHaveLength(2);
 
 		const nested = entry('peek.desktop.live', 'video');
 		nested.video.fileName = '../video.mp4';

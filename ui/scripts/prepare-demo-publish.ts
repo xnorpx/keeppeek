@@ -6,6 +6,7 @@ import {
 	type DemoPublishEntry
 } from '../src/lib/server/storybook/video-publish';
 import {
+	demoAssetId,
 	type StoryScenarioMetadata,
 	validateStoryScenarioMetadata
 } from '../src/lib/storybook/demo';
@@ -28,7 +29,7 @@ async function asset(fileName: string): Promise<DemoPublishAsset> {
 
 const entries: DemoPublishEntry[] = [];
 for (const metadataFile of metadataFiles) {
-	const scenarioStem = basename(metadataFile, '.json');
+	const assetStem = basename(metadataFile, '.json');
 	const metadata = JSON.parse(
 		await readFile(join(assetsDirectory, metadataFile), 'utf8')
 	) as StoryScenarioMetadata;
@@ -36,13 +37,13 @@ for (const metadataFile of metadataFiles) {
 	if (issues.length > 0) {
 		throw new Error(issues.map((issue) => `${issue.path} ${issue.message}`).join('; '));
 	}
-	if (metadata.paper.scenarioId !== scenarioStem) {
-		throw new Error(`Metadata scenario ID does not match filename: ${metadataFile}`);
+	if (demoAssetId(metadata) !== assetStem) {
+		throw new Error(`Metadata demo asset ID does not match filename: ${metadataFile}`);
 	}
 	entries.push({
 		metadata,
-		video: await asset(`${scenarioStem}.mp4`),
-		captions: await asset(`${scenarioStem}.vtt`),
+		video: await asset(`${assetStem}.mp4`),
+		captions: await asset(`${assetStem}.vtt`),
 		metadataAsset: await asset(metadataFile)
 	});
 }

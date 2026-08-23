@@ -63,7 +63,7 @@ try {
 	testCameras.push(
 		await startTestCamera(
 			'e2e-h264',
-			path.join(testdataRoot, 'cc-4k-3840x2160-h264.mp4'),
+			path.join(testdataRoot, 'cc-4k-640x360-h264.mp4'),
 			path.join(testdataRoot, 'cc-4k-640x360-h264.mp4')
 		)
 	);

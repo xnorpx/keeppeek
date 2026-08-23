@@ -1,16 +1,16 @@
 import type { Meta, StoryObj } from '@storybook/svelte';
-import { board31RewindDemo } from '../demo-scenarios';
+import { board31HistoryDemo } from '../demo-scenarios';
 import DemoRewindStory from './DemoRewindStory.svelte';
 
 const meta = {
-	title: 'Demos/Peek Rewind',
+	title: 'Demos/Peek History',
 	component: DemoRewindStory,
 	parameters: {
 		layout: 'fullscreen',
 		docs: {
 			description: {
 				component:
-					'Playwright records the production rewind control and its deterministic Keep landing using the typed demo action timeline.'
+					'Playwright records the focused History action and its deterministic Keep landing using the typed demo action timeline.'
 			}
 		}
 	}
@@ -19,9 +19,9 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const RewindOneCamera: Story = {
+export const OpenKeepHistory: Story = {
 	parameters: {
-		paper: board31RewindDemo.metadata.paper,
-		demo: board31RewindDemo.metadata.demo
+		paper: board31HistoryDemo.metadata.paper,
+		demo: board31HistoryDemo.metadata.demo
 	}
 };

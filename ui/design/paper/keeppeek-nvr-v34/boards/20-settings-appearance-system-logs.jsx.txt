@@ -113,12 +113,20 @@
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '20px', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '24px' }}>
             System & updates
           </div>
-          <div style={{ backgroundColor: '#E8A33D17', borderColor: '#E8A33D57', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '6px', padding: '14px' }}>
-            <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-              This is a proof of concept
+          <div style={{ backgroundColor: 'var(--color-raised)', borderLeftColor: 'var(--color-primary)', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-sans)', gap: '6px', height: '90px', padding: '12px', width: '420px' }}>
+            <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px', justifyContent: 'space-between' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '10px', letterSpacing: '0.12em', lineHeight: '12px' }}>
+                CAMERA CATALOG
+              </div>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'inline-block', fontFamily: 'var(--font-mono)', fontSize: '11px', lineHeight: '14px' }}>
+                v2.1.0
+              </div>
             </div>
-            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-              Not production ready. The version string says so and no screen in the product implies otherwise.
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '16px' }}>
+              3,433 models · generated 2026-08-22
+            </div>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', display: 'inline-block', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '14px' }}>
+              CCTV Database · cctv-database.com
             </div>
           </div>
           <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
@@ -151,7 +159,7 @@
                 Update channel
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                Stable
+                Unavailable
               </div>
             </div>
             <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '40px', justifyContent: 'space-between' }}>
@@ -159,26 +167,26 @@
                 Config file
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                ~/.config/keeppeek.toml
+                Path unavailable
               </div>
             </div>
           </div>
-          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
-            <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '34px', paddingInline: '14px' }}>
-              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                Check for updates
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '10px', height: '34px', width: '420px' }}>
+            <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '205px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '16px' }}>
+                Update check unavailable
               </div>
             </div>
-            <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '34px', paddingInline: '14px' }}>
-              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                Back up config
+            <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '205px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '16px' }}>
+                Config backup unavailable
               </div>
             </div>
           </div>
           <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '10px', paddingTop: '6px' }}>
             <div style={{ boxSizing: 'border-box', paddingTop: '10px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-live-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.12em', lineHeight: '14px' }}>
-                DESTRUCTIVE
+                RUNTIME COMMAND
               </div>
             </div>
             <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
@@ -202,12 +210,12 @@
                   Erase all recordings
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                  Requires typing the server name to confirm.
+                  No destructive erase endpoint exists.
                 </div>
               </div>
-              <div style={{ alignItems: 'center', borderColor: 'var(--color-live)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '30px', paddingInline: '12px' }}>
-                <div style={{ boxSizing: 'border-box', color: 'var(--color-live-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Erase
+              <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '30px', justifyContent: 'center', width: '132px' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '16px' }}>
+                  Erase unavailable
                 </div>
               </div>
             </div>
@@ -258,17 +266,17 @@
           <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
             <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', height: '34px', paddingInline: '14px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 600, lineHeight: '16px' }}>
-                Download diagnostics
+                Open logs
               </div>
             </div>
             <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', height: '34px', paddingInline: '14px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                Copy last 200 lines
+                Open health
               </div>
             </div>
           </div>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-            The bundle carries versions, config with credentials removed, the health document and the last hour of logs. It is the one thing to attach to a bug report.
+            Diagnostics bundle unavailable. The dedicated log viewer supports replay, streaming, filters, and redacted JSONL export.
           </div>
         </div>
       </div>

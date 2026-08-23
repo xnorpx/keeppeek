@@ -25,6 +25,15 @@ test('Board 6 renders live, degraded, reconnecting, and offline Paper tile state
 	await mockMixedHealth(page);
 	await page.goto('/');
 
+	const fleetStatus = page.locator('[data-peek-fleet-status]');
+	await expect(fleetStatus).toContainText('3 / 4 cameras reporting');
+	await expect(fleetStatus.locator('span').first()).toHaveClass(/bg-amber-500/);
+	const runtimeTelemetry = page.locator('[data-peek-runtime-telemetry]');
+	await expect(runtimeTelemetry).toBeVisible();
+	await expect(runtimeTelemetry).toContainText(
+		'HOST CPU 25% RAM 6.1/32 GB KEEPPEEK CPU 3.7% RAM 286 MB'
+	);
+
 	await expect(page.locator('[data-peek-camera="front-door"]')).toHaveAttribute(
 		'data-peek-camera-state',
 		'live'
@@ -49,10 +58,32 @@ test('Board 6 renders live, degraded, reconnecting, and offline Paper tile state
 	await expect(page.getByRole('link', { name: 'Diagnose' })).toBeVisible();
 	await expect(page.locator('[data-peek-camera="front-door"]')).toContainText('REC');
 	await expect(page.locator('[data-peek-camera="back-yard"]')).not.toContainText('REC');
+	await expect(page.getByText(/last frame/i)).toHaveCount(0);
+	await expect(page.getByText(/SUB ·/i)).toHaveCount(0);
+	const frontDoor = page.locator('[data-peek-camera="front-door"]');
+	const frontDoorLabel = frontDoor.locator('[data-peek-camera-label]');
+	const frontDoorDiagnostics = frontDoor.getByRole('button', {
+		name: 'Front Door WebRTC stream diagnostics'
+	});
+	await expect(frontDoorLabel).toBeVisible();
+	await expect(frontDoorDiagnostics).toBeVisible();
+	const [frontDoorBounds, labelBounds, diagnosticsBounds] = await Promise.all([
+		frontDoor.boundingBox(),
+		frontDoorLabel.boundingBox(),
+		frontDoorDiagnostics.boundingBox()
+	]);
+	expect(frontDoorBounds).not.toBeNull();
+	expect(labelBounds).not.toBeNull();
+	expect(diagnosticsBounds).not.toBeNull();
+	if (!frontDoorBounds || !labelBounds || !diagnosticsBounds) {
+		throw new Error('Peek camera header geometry is unavailable');
+	}
+	expect(labelBounds.x).toBeGreaterThan(frontDoorBounds.x + frontDoorBounds.width / 2);
+	expect(labelBounds).toEqual(diagnosticsBounds);
 	await page.locator('[data-peek-camera="porch"]').hover();
-	await expect(page.getByRole('button', { name: 'Rewind Porch' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Rewind Porch' })).toHaveCount(0);
 	await page.locator('[data-peek-camera="back-yard"]').hover();
-	await expect(page.getByRole('button', { name: 'Rewind Back Yard' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Rewind Back Yard' })).toHaveCount(0);
 	expect(browserErrors).toEqual([]);
 });
 
@@ -63,16 +94,7 @@ test('keeps mixed Peek states usable at the authored mobile viewport', async ({ 
 
 	await expect(page.locator('[data-peek-camera]')).toHaveCount(4);
 	await expect(page.locator('[data-peek-camera="back-yard"]')).toBeVisible();
-	const mobileRewind = page.getByRole('button', { name: 'Rewind Front Door' });
-	await mobileRewind.focus();
-	await expect(mobileRewind).toBeVisible();
-	await page.keyboard.press('ArrowDown');
-	await expect(page.locator('[data-peek-camera="front-door"] [data-peek-rewind]')).toHaveAttribute(
-		'data-peek-rewind-seconds',
-		'5'
-	);
-	await page.keyboard.press('Escape');
-	await expect(page.locator('[data-peek-rewind]')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: /^Rewind / })).toHaveCount(0);
 	await expect
 		.poll(() =>
 			page.locator('[data-peek-camera="front-door"]').evaluate((element) => {

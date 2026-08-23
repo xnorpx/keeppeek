@@ -4,6 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	CameraManufacturerResultSchema,
 	CameraDiscoveryResultSchema,
+	CameraCatalogCameraSchema,
+	CameraCatalogInfoSchema,
+	CameraCatalogSearchResultSchema,
+	CameraCatalogStreamHintsSchema,
+	CameraCatalogStreamSchema,
+	CameraStreamProbeResultSchema,
 	CameraDeviceCapabilitiesSchema,
 	CameraInfoSchema,
 	CameraConfigurationResultSchema,
@@ -77,6 +83,34 @@ const api = vi.hoisted(() => ({
 vi.mock('./api', () => api);
 
 import { ControlClient, StoredMediaPlayback } from './control-client';
+
+function catalogCamera() {
+	return create(CameraCatalogCameraSchema, {
+		id: 'reolink-rlc-811a',
+		brand: 'Reolink',
+		model: 'RLC-811A',
+		aliases: ['RLC 811 A'],
+		cameraType: 'bullet',
+		resolutionLabel: '4K',
+		megapixels: 8,
+		twoWayAudio: true,
+		protocols: ['onvif', 'rtsp'],
+		codecs: ['H.265', 'H.264'],
+		streams: [
+			create(CameraCatalogStreamSchema, {
+				name: 'main',
+				resolution: '3840x2160',
+				fps: 25,
+				codec: 'H.265'
+			})
+		],
+		sources: ['https://example.com/rlc-811a'],
+		streamHints: create(CameraCatalogStreamHintsSchema, {
+			mainRtspUrl: 'rtsp://192.0.2.50/main',
+			subRtspUrl: 'rtsp://192.0.2.50/sub'
+		})
+	});
+}
 
 class FakeDataChannel {
 	readyState: RTCDataChannelState = 'connecting';
@@ -466,99 +500,136 @@ class FakeDataChannel {
 											})
 										}
 									: command.case === 'cameraConfigurationCommand' &&
-										  command.value.action.case === 'discover'
+										  command.value.action.case === 'getCatalog'
 										? {
-												case: 'cameraDiscoveryResult' as const,
-												value: create(CameraDiscoveryResultSchema, {
-													cameras: [
-														create(DiscoveredCameraSchema, {
-															ip: '192.0.2.50',
-															brand: 'reolink',
-															name: 'Gate',
-															onvifPort: 8000,
-															sources: ['onvif'],
-															configured: false
-														})
-													]
+												case: 'cameraCatalogInfo' as const,
+												value: create(CameraCatalogInfoSchema, {
+													version: '2.1.0',
+													tag: 'v2.1.0',
+													generatedAt: '2026-08-22T06:13:00Z',
+													cameraCount: 3433,
+													websiteUrl: 'https://www.cctv-database.com/'
 												})
 											}
 										: command.case === 'cameraConfigurationCommand' &&
-											  command.value.action.case === 'update'
-											? (() => {
-													const update = command.value.action.value;
-													if (update.username !== undefined || update.password !== undefined) {
-														throw new Error('omitted credentials must remain absent');
-													}
-													if (update.mainRtspUrl?.value.case !== 'clear') {
-														throw new Error('null RTSP URL must encode as clear');
-													}
-													return {
-														case: 'cameraConfigurationResult' as const,
-														value: create(CameraConfigurationResultSchema, {
-															camera: create(CameraSettingsSchema, {
-																id: update.ip,
-																ip: update.ip,
-																displayName:
-																	update.displayName?.value.case === 'set'
-																		? update.displayName.value.value
-																		: undefined,
-																usernameConfigured: true,
-																passwordConfigured: true,
-																backend: update.backend,
-																transport: update.transport
-															}),
-															restartRequired: true
-														})
-													};
-												})()
+											  command.value.action.case === 'searchCatalog'
+											? {
+													case: 'cameraCatalogSearchResult' as const,
+													value: create(CameraCatalogSearchResultSchema, {
+														cameras: [catalogCamera()]
+													})
+												}
 											: command.case === 'cameraConfigurationCommand' &&
-												  command.value.action.case === 'remove'
+												  command.value.action.case === 'discover'
 												? {
-														case: 'cameraConfigurationResult' as const,
-														value: create(CameraConfigurationResultSchema, { removed: true })
-													}
-												: command.case === 'runtimeConfigurationCommand' &&
-													  command.value.action.case === 'get'
-													? {
-															case: 'runtimeConfigurationResult' as const,
-															value: create(RuntimeConfigurationResultSchema, {
-																config: create(SanitizedRuntimeConfigurationSchema, {
-																	host: '0.0.0.0',
-																	port: 3000,
-																	storage: create(RuntimeStorageConfigurationSchema, {
-																		mediumTermPath: '/recordings/medium',
-																		longTermPath: '/recordings/long',
-																		recordingCatalogPath: '/metadata/recordings.db',
-																		eventThumbnailPath: '/metadata/thumbnails'
-																	}),
-																	cameraCount: 1n,
-																	recordingEstimate: create(RecordingCapacityEstimateSchema)
+														case: 'cameraDiscoveryResult' as const,
+														value: create(CameraDiscoveryResultSchema, {
+															cameras: [
+																create(DiscoveredCameraSchema, {
+																	ip: '192.0.2.50',
+																	brand: 'reolink',
+																	name: 'Gate',
+																	onvifPort: 8000,
+																	sources: ['onvif'],
+																	configured: false,
+																	catalog: catalogCamera()
 																})
+															]
+														})
+													}
+												: command.case === 'cameraConfigurationCommand' &&
+													  command.value.action.case === 'probeStreams'
+													? {
+															case: 'cameraStreamProbeResult' as const,
+															value: create(CameraStreamProbeResultSchema, {
+																mainRtspUrl: 'rtsp://192.0.2.50/main',
+																subRtspUrl: 'rtsp://192.0.2.50/sub',
+																onvifPort: 8000
 															})
 														}
-													: command.case === 'runtimeConfigurationCommand' &&
+													: command.case === 'cameraConfigurationCommand' &&
 														  command.value.action.case === 'update'
-														? {
-																case: 'runtimeConfigurationResult' as const,
-																value: create(RuntimeConfigurationResultSchema, {
-																	config: create(SanitizedRuntimeConfigurationSchema, {
-																		host: command.value.action.value.host,
-																		port: command.value.action.value.port,
-																		storage: command.value.action.value.storage,
-																		cameraCount: 2n,
-																		recordingEstimate: create(RecordingCapacityEstimateSchema, {
-																			estimatedBitrateBps: 8_000_000n,
-																			bytesPerDay: 86_400_000_000n,
-																			knownStreams: 2n,
-																			estimatedRetentionDays: 2.5
+														? (() => {
+																const update = command.value.action.value;
+																if (
+																	update.username !== undefined ||
+																	update.password !== undefined
+																) {
+																	throw new Error('omitted credentials must remain absent');
+																}
+																if (update.mainRtspUrl?.value.case !== 'clear') {
+																	throw new Error('null RTSP URL must encode as clear');
+																}
+																return {
+																	case: 'cameraConfigurationResult' as const,
+																	value: create(CameraConfigurationResultSchema, {
+																		camera: create(CameraSettingsSchema, {
+																			id: update.ip,
+																			ip: update.ip,
+																			displayName:
+																				update.displayName?.value.case === 'set'
+																					? update.displayName.value.value
+																					: undefined,
+																			usernameConfigured: true,
+																			passwordConfigured: true,
+																			backend: update.backend,
+																			transport: update.transport
+																		}),
+																		restartRequired: true
+																	})
+																};
+															})()
+														: command.case === 'cameraConfigurationCommand' &&
+															  command.value.action.case === 'remove'
+															? {
+																	case: 'cameraConfigurationResult' as const,
+																	value: create(CameraConfigurationResultSchema, { removed: true })
+																}
+															: command.case === 'runtimeConfigurationCommand' &&
+																  command.value.action.case === 'get'
+																? {
+																		case: 'runtimeConfigurationResult' as const,
+																		value: create(RuntimeConfigurationResultSchema, {
+																			config: create(SanitizedRuntimeConfigurationSchema, {
+																				host: '0.0.0.0',
+																				port: 3000,
+																				storage: create(RuntimeStorageConfigurationSchema, {
+																					mediumTermPath: '/recordings/medium',
+																					longTermPath: '/recordings/long',
+																					recordingCatalogPath: '/metadata/recordings.db',
+																					eventThumbnailPath: '/metadata/thumbnails'
+																				}),
+																				cameraCount: 1n,
+																				recordingEstimate: create(RecordingCapacityEstimateSchema)
+																			})
 																		})
-																	}),
-																	restartRequired: true
-																})
-															}
-														: (() => {
-																throw new Error('unexpected control command');
-															})();
+																	}
+																: command.case === 'runtimeConfigurationCommand' &&
+																	  command.value.action.case === 'update'
+																	? {
+																			case: 'runtimeConfigurationResult' as const,
+																			value: create(RuntimeConfigurationResultSchema, {
+																				config: create(SanitizedRuntimeConfigurationSchema, {
+																					host: command.value.action.value.host,
+																					port: command.value.action.value.port,
+																					storage: command.value.action.value.storage,
+																					cameraCount: 2n,
+																					recordingEstimate: create(
+																						RecordingCapacityEstimateSchema,
+																						{
+																							estimatedBitrateBps: 8_000_000n,
+																							bytesPerDay: 86_400_000_000n,
+																							knownStreams: 2n,
+																							estimatedRetentionDays: 2.5
+																						}
+																					)
+																				}),
+																				restartRequired: true
+																			})
+																		}
+																	: (() => {
+																			throw new Error('unexpected control command');
+																		})();
 		const response = create(ControlEnvelopeSchema, {
 			message: {
 				case: 'response',
@@ -880,6 +951,27 @@ describe('ControlClient', () => {
 			buffer: { entry_count: 4, byte_count: 512 }
 		});
 		await expect(client.restartServer()).resolves.toBeUndefined();
+		await expect(client.getCameraCatalog()).resolves.toEqual({
+			version: '2.1.0',
+			tag: 'v2.1.0',
+			generated_at: '2026-08-22T06:13:00Z',
+			camera_count: 3433,
+			website_url: 'https://www.cctv-database.com/'
+		});
+		await expect(
+			client.searchCameraCatalog('RLC-811A', { limit: 5, ip: '192.0.2.50' })
+		).resolves.toMatchObject([
+			{
+				id: 'reolink-rlc-811a',
+				brand: 'Reolink',
+				model: 'RLC-811A',
+				streams: [{ name: 'main', resolution: '3840x2160', fps: 25, codec: 'H.265' }],
+				stream_hints: {
+					main_rtsp_url: 'rtsp://192.0.2.50/main',
+					sub_rtsp_url: 'rtsp://192.0.2.50/sub'
+				}
+			}
+		]);
 		await expect(client.discoverCameras([137])).resolves.toEqual([
 			{
 				ip: '192.0.2.50',
@@ -889,9 +981,46 @@ describe('ControlClient', () => {
 				onvif_port: 8000,
 				sources: ['onvif'],
 				configured: false,
-				health: null
+				health: null,
+				catalog: {
+					id: 'reolink-rlc-811a',
+					brand: 'Reolink',
+					model: 'RLC-811A',
+					aliases: ['RLC 811 A'],
+					camera_type: 'bullet',
+					resolution_label: '4K',
+					megapixels: 8,
+					sensor: null,
+					field_of_view: null,
+					night_vision: null,
+					ip_rating: null,
+					ik_rating: null,
+					two_way_audio: true,
+					release_year: null,
+					community_notes_count: 0,
+					protocols: ['onvif', 'rtsp'],
+					codecs: ['H.265', 'H.264'],
+					streams: [{ name: 'main', resolution: '3840x2160', fps: 25, codec: 'H.265' }],
+					sources: ['https://example.com/rlc-811a'],
+					stream_hints: {
+						main_rtsp_url: 'rtsp://192.0.2.50/main',
+						sub_rtsp_url: 'rtsp://192.0.2.50/sub'
+					}
+				}
 			}
 		]);
+		await expect(
+			client.probeCameraStreams({
+				ip: '192.0.2.50',
+				username: 'operator',
+				password: 'secret',
+				onvif_port: 8000
+			})
+		).resolves.toEqual({
+			main_rtsp_url: 'rtsp://192.0.2.50/main',
+			sub_rtsp_url: 'rtsp://192.0.2.50/sub',
+			onvif_port: 8000
+		});
 		await expect(client.getCameraSettings()).resolves.toEqual([
 			{
 				id: '192.0.2.50',

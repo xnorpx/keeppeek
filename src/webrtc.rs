@@ -577,6 +577,13 @@ struct ApiSessionControl {
     completion: SessionCompletion,
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
     data_tx: Sender<ApiSessionCommand>,
+    camera_operation_in_flight: Arc<AtomicBool>,
+}
+
+struct ApiControlRuntime {
+    dispatch_tx: Sender<ControlDispatch>,
+    dispatch_rx: Receiver<ControlDispatch>,
+    after_send: Vec<PostSendAction>,
 }
 
 struct ApiMediaTrack {
@@ -590,6 +597,7 @@ struct ApiMediaRuntime {
     tracks: Vec<ApiMediaTrack>,
     outbound: VecDeque<QueuedApiData>,
     outbound_bytes: usize,
+    control_notifications: VecDeque<crate::api::proto::Notification>,
 }
 
 enum QueuedApiData {
@@ -711,6 +719,43 @@ impl ApiMediaRuntime {
         Ok(())
     }
 
+    fn enqueue_stream_state(&mut self, track_id: &TrackId, stream: StreamKind) {
+        self.control_notifications
+            .push_back(crate::api::proto::Notification {
+                event: Some(
+                    crate::api::proto::notification::Event::SubscriptionStreamState(
+                        crate::api::proto::SubscriptionStreamState {
+                            subscription_id: track_id.0.clone(),
+                            active_variant_id: stream.to_string(),
+                        },
+                    ),
+                ),
+            });
+    }
+
+    fn flush_control_notifications(
+        &mut self,
+        rtc: &mut Rtc,
+        channels: SessionChannels,
+    ) -> anyhow::Result<()> {
+        while let Some(notification) = self.control_notifications.pop_front() {
+            let payload = ControlEnvelope {
+                message: Some(control_envelope::Message::Notification(
+                    notification.clone(),
+                )),
+            }
+            .encode_to_vec();
+            let Some(mut channel) = rtc.channel(channels.control) else {
+                anyhow::bail!("WebRTC control channel disappeared before stream notification");
+            };
+            if !channel.write(true, &payload)? {
+                self.control_notifications.push_front(notification);
+                break;
+            }
+        }
+        Ok(())
+    }
+
     fn subscribe(
         &mut self,
         session: &ApiSessionControl,
@@ -724,22 +769,32 @@ impl ApiMediaRuntime {
             .tracks
             .iter()
             .position(|track| track.runtime.track_id == track_id);
-        let mid = if let Some(index) = existing_index {
+        if let Some(index) = existing_index {
             if self.tracks[index].source_session_id != plan.source_session_id {
                 return Err(ControlHandlerError::new(
                     ErrorCode::InvalidRequest,
                     "a media subscription replacement must keep the same source session",
                 ));
             }
-            self.tracks[index].runtime.mid
-        } else {
-            self.available_video_mids.pop().ok_or_else(|| {
-                ControlHandlerError::new(
-                    ErrorCode::Unavailable,
-                    "no negotiated video MID is available",
-                )
-            })?
-        };
+            let mid = self.tracks[index].runtime.mid;
+            self.tracks[index]
+                .runtime
+                .subscription
+                .set_requested_quality(plan.quality);
+            return Ok(subscription_result(
+                request.subscription_id.clone(),
+                mid,
+                plan.selected_variant_id,
+            ));
+        }
+
+        let mid = self.available_video_mids.pop().ok_or_else(|| {
+            ControlHandlerError::new(
+                ErrorCode::Unavailable,
+                "no negotiated video MID is available",
+            )
+        })?;
+        let selected_variant_id = plan.selected_variant_id.clone();
         let control = Arc::new(SessionControl::new(
             plan.quality,
             initial_stream(
@@ -771,21 +826,12 @@ impl ApiMediaRuntime {
             source_session_id: plan.source_session_id,
             runtime,
         };
-        if let Some(index) = existing_index {
-            self.tracks[index] = track;
-        } else {
-            self.tracks.push(track);
-        }
-        Ok(crate::api::proto::SubscriptionResult {
-            subscription_id: request.subscription_id.clone(),
-            delivery: Some(crate::api::proto::subscription_result::Delivery::Rtp(
-                crate::api::proto::RtpDelivery {
-                    mid: mid.to_string(),
-                },
-            )),
-            selected_variant_id: plan.selected_variant_id,
-            selected_lineage: Vec::new(),
-        })
+        self.tracks.push(track);
+        Ok(subscription_result(
+            request.subscription_id.clone(),
+            mid,
+            selected_variant_id,
+        ))
     }
 
     fn unsubscribe(&mut self, subscription_ids: &[String]) {
@@ -799,6 +845,23 @@ impl ApiMediaRuntime {
                 self.available_video_mids.push(track.runtime.mid);
             }
         }
+    }
+}
+
+fn subscription_result(
+    subscription_id: String,
+    mid: Mid,
+    selected_variant_id: String,
+) -> crate::api::proto::SubscriptionResult {
+    crate::api::proto::SubscriptionResult {
+        subscription_id,
+        delivery: Some(crate::api::proto::subscription_result::Delivery::Rtp(
+            crate::api::proto::RtpDelivery {
+                mid: mid.to_string(),
+            },
+        )),
+        selected_variant_id,
+        selected_lineage: Vec::new(),
     }
 }
 
@@ -1203,6 +1266,14 @@ impl SourceSubscription {
         self.control.as_ref().map(|control| {
             StreamQuality::from_u8(control.requested_quality.load(Ordering::Acquire))
         })
+    }
+
+    fn set_requested_quality(&self, quality: StreamQuality) {
+        if let Some(control) = &self.control {
+            control
+                .requested_quality
+                .store(quality.as_u8(), Ordering::Release);
+        }
     }
 
     fn desired_bitrate(&self, quality: StreamQuality) -> Bitrate {
@@ -1704,6 +1775,7 @@ impl WebRtc {
             completion: SessionCompletion::default(),
             control_handler: self.live.inner.control_handler.clone(),
             data_tx,
+            camera_operation_in_flight: Arc::new(AtomicBool::new(false)),
         });
         self.live
             .inner
@@ -2256,13 +2328,26 @@ fn run_api_session(
     data_rx: Receiver<ApiSessionCommand>,
 ) -> anyhow::Result<()> {
     let mut media = ApiMediaRuntime::default();
+    let (dispatch_tx, dispatch_rx) = bounded(1);
+    let mut control_runtime = ApiControlRuntime {
+        dispatch_tx,
+        dispatch_rx,
+        after_send: Vec::new(),
+    };
     let deps = ApiSessionLoopDeps {
         channels,
         control: &control,
         shutdown: &shutdown,
         data_rx: &data_rx,
     };
-    let result = drive_api_session(&mut rtc, &socket, &poller, deps, &mut media);
+    let result = drive_api_session(
+        &mut rtc,
+        &socket,
+        &poller,
+        deps,
+        &mut media,
+        &mut control_runtime,
+    );
     for track in media.tracks {
         let queue_stats = track.runtime.subscription.sender.queue_stats.clone();
         let inner = track.runtime.subscription.inner.clone();
@@ -2291,6 +2376,7 @@ fn drive_api_session(
     poller: &Poller,
     deps: ApiSessionLoopDeps<'_>,
     media: &mut ApiMediaRuntime,
+    control_runtime: &mut ApiControlRuntime,
 ) -> anyhow::Result<()> {
     let mut events = Events::new();
     let mut udp_buffer = vec![0; UDP_PACKET_CAPACITY];
@@ -2303,6 +2389,7 @@ fn drive_api_session(
         deps.control,
         media,
         &mut connected,
+        control_runtime,
     )?;
 
     loop {
@@ -2310,10 +2397,29 @@ fn drive_api_session(
             break;
         }
         drain_api_session_commands(deps.data_rx, media);
+        if drain_pending_control_dispatches(rtc, deps.channels, media, control_runtime)? {
+            next_timeout = drain_api_outputs(
+                rtc,
+                socket,
+                deps.channels,
+                deps.control,
+                media,
+                &mut connected,
+                control_runtime,
+            )?;
+        }
         let now = Instant::now();
         let mut wrote_media = false;
+        let mut applied_streams = Vec::new();
         for track in &mut media.tracks {
-            wrote_media |= drive_track_runtime(rtc, &mut track.runtime, connected, now)?;
+            let result = drive_track_runtime(rtc, &mut track.runtime, connected, now)?;
+            wrote_media |= result.wrote_media;
+            if let Some(stream) = result.applied_stream {
+                applied_streams.push((track.runtime.track_id.clone(), stream));
+            }
+        }
+        for (track_id, stream) in applied_streams {
+            media.enqueue_stream_state(&track_id, stream);
         }
         if wrote_media {
             next_timeout = drain_api_outputs(
@@ -2323,6 +2429,7 @@ fn drive_api_session(
                 deps.control,
                 media,
                 &mut connected,
+                control_runtime,
             )?;
         }
         events.clear();
@@ -2330,6 +2437,17 @@ fn drive_api_session(
             &mut events,
             Some(next_timeout.saturating_duration_since(Instant::now())),
         )?;
+        if drain_pending_control_dispatches(rtc, deps.channels, media, control_runtime)? {
+            next_timeout = drain_api_outputs(
+                rtc,
+                socket,
+                deps.channels,
+                deps.control,
+                media,
+                &mut connected,
+                control_runtime,
+            )?;
+        }
         if events.iter().any(|event| event.key == UDP_EVENT_KEY) {
             loop {
                 match socket.recv_from(&mut udp_buffer) {
@@ -2357,6 +2475,7 @@ fn drive_api_session(
                             deps.control,
                             media,
                             &mut connected,
+                            control_runtime,
                         )?;
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => break,
@@ -2376,6 +2495,7 @@ fn drive_api_session(
                 deps.control,
                 media,
                 &mut connected,
+                control_runtime,
             )?;
         }
     }
@@ -2401,13 +2521,19 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
     }
 }
 
+struct TrackDriveResult {
+    wrote_media: bool,
+    applied_stream: Option<StreamKind>,
+}
+
 fn drive_track_runtime(
     rtc: &mut Rtc,
     track: &mut TrackRuntime,
     connected: bool,
     now: Instant,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<TrackDriveResult> {
     let mut wrote_media = false;
+    let mut applied_stream = None;
     track.subscription.select_source(rtc, Some(track.mid), now);
     if connected && !track.keyframe_prepared {
         track.subscription.prepare_keyframe(&track.rx);
@@ -2440,12 +2566,15 @@ fn drive_track_runtime(
         frame,
     }) = track.rx.try_recv()
     {
-        if track
+        let switched_stream = if track
             .subscription
             .finish_switch_on_frame(source, frame.is_keyframe)
         {
             track.reset_source_state();
-        }
+            Some(source.stream)
+        } else {
+            None
+        };
         if source != track.subscription.active_source {
             track.subscription.record_discarded_frames(1);
             continue;
@@ -2477,6 +2606,7 @@ fn drive_track_runtime(
             track.recovering_queue_gap = false;
             track.subscription.record_written_frame();
             wrote_media = true;
+            applied_stream = applied_stream.or(switched_stream);
         } else if connected && track.recovering_queue_gap && !frame_allowed {
             track.subscription.record_discarded_frames(1);
             track
@@ -2494,7 +2624,10 @@ fn drive_track_runtime(
             track.subscription.record_discarded_frames(1);
         }
     }
-    Ok(wrote_media)
+    Ok(TrackDriveResult {
+        wrote_media,
+        applied_stream,
+    })
 }
 
 fn drain_api_outputs(
@@ -2504,13 +2637,14 @@ fn drain_api_outputs(
     control: &ApiSessionControl,
     media: &mut ApiMediaRuntime,
     connected: &mut bool,
+    control_runtime: &mut ApiControlRuntime,
 ) -> anyhow::Result<Instant> {
-    let mut after_send: Vec<PostSendAction> = Vec::new();
     loop {
+        media.flush_control_notifications(rtc, channels)?;
         media.flush_outbound(rtc, channels)?;
         match rtc.poll_output()? {
             Output::Timeout(deadline) => {
-                for action in after_send {
+                for action in std::mem::take(&mut control_runtime.after_send) {
                     action();
                 }
                 return Ok(deadline);
@@ -2591,31 +2725,58 @@ fn drain_api_outputs(
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_ref()
                     .and_then(Weak::upgrade);
+                if let Ok(request) = decode_control_request(data.binary, &data.data)
+                    && is_background_camera_configuration_request(&request)
+                    && let Some(handler) = handler.clone()
+                {
+                    let request_id = request.request_id;
+                    if control
+                        .camera_operation_in_flight
+                        .swap(true, Ordering::AcqRel)
+                    {
+                        enqueue_control_dispatch(
+                            rtc,
+                            channels,
+                            envelope_dispatch(failed_control_dispatch(
+                                request_id,
+                                ErrorCode::Rejected,
+                                "another camera operation is already in progress",
+                            )),
+                            media,
+                            &mut control_runtime.after_send,
+                        )?;
+                    } else if let Err(error) = spawn_background_camera_operation(
+                        request,
+                        handler,
+                        control,
+                        control_runtime.dispatch_tx.clone(),
+                    ) {
+                        control
+                            .camera_operation_in_flight
+                            .store(false, Ordering::Release);
+                        enqueue_control_dispatch(
+                            rtc,
+                            channels,
+                            envelope_dispatch(failed_control_dispatch(
+                                request_id,
+                                ErrorCode::Unavailable,
+                                format!("unable to start camera operation: {error}"),
+                            )),
+                            media,
+                            &mut control_runtime.after_send,
+                        )?;
+                    }
+                    continue;
+                }
                 let reply =
                     api_control_reply(data.binary, &data.data, handler.as_deref(), control, media);
-                media.enqueue(reply.data_messages)?;
-                let payload = reply.envelope.encode_to_vec();
-                let Some(mut channel) = rtc.channel(channels.control) else {
-                    anyhow::bail!("WebRTC control channel disappeared before response");
-                };
-                if !channel.write(true, &payload)? {
-                    anyhow::bail!("WebRTC control response buffer is full");
-                }
-                for notification in reply.notifications {
-                    let payload = ControlEnvelope {
-                        message: Some(control_envelope::Message::Notification(notification)),
-                    }
-                    .encode_to_vec();
-                    let Some(mut channel) = rtc.channel(channels.control) else {
-                        anyhow::bail!("WebRTC control channel disappeared before notification");
-                    };
-                    if !channel.write(true, &payload)? {
-                        anyhow::bail!("WebRTC control notification buffer is full");
-                    }
-                }
-                if let Some(action) = reply.after_send {
-                    after_send.push(action);
-                }
+                enqueue_control_dispatch(
+                    rtc,
+                    channels,
+                    reply,
+                    media,
+                    &mut control_runtime.after_send,
+                )?;
             }
             Output::Event(Event::ChannelClose(channel_id)) if channel_id == channels.control => {
                 anyhow::bail!("WebRTC control channel closed")
@@ -2623,6 +2784,94 @@ fn drain_api_outputs(
             Output::Event(_) => {}
         }
     }
+}
+
+fn drain_pending_control_dispatches(
+    rtc: &mut Rtc,
+    channels: SessionChannels,
+    media: &mut ApiMediaRuntime,
+    control_runtime: &mut ApiControlRuntime,
+) -> anyhow::Result<bool> {
+    let mut dispatched = false;
+    while let Ok(dispatch) = control_runtime.dispatch_rx.try_recv() {
+        enqueue_control_dispatch(
+            rtc,
+            channels,
+            envelope_dispatch(dispatch),
+            media,
+            &mut control_runtime.after_send,
+        )?;
+        dispatched = true;
+    }
+    Ok(dispatched)
+}
+
+fn enqueue_control_dispatch(
+    rtc: &mut Rtc,
+    channels: SessionChannels,
+    dispatch: EnvelopeDispatch,
+    media: &mut ApiMediaRuntime,
+    after_send: &mut Vec<PostSendAction>,
+) -> anyhow::Result<()> {
+    let payload = dispatch.envelope.encode_to_vec();
+    let Some(mut channel) = rtc.channel(channels.control) else {
+        anyhow::bail!("WebRTC control channel disappeared before response");
+    };
+    if !channel.write(true, &payload)? {
+        anyhow::bail!("WebRTC control response buffer is full");
+    }
+    media.enqueue(dispatch.data_messages)?;
+    for notification in dispatch.notifications {
+        let payload = ControlEnvelope {
+            message: Some(control_envelope::Message::Notification(notification)),
+        }
+        .encode_to_vec();
+        let Some(mut channel) = rtc.channel(channels.control) else {
+            anyhow::bail!("WebRTC control channel disappeared before notification");
+        };
+        if !channel.write(true, &payload)? {
+            anyhow::bail!("WebRTC control notification buffer is full");
+        }
+    }
+    if let Some(action) = dispatch.after_send {
+        after_send.push(action);
+    }
+    Ok(())
+}
+
+const fn is_background_camera_configuration_request(request: &crate::api::proto::Request) -> bool {
+    matches!(
+        request.command.as_ref(),
+        Some(crate::api::proto::request::Command::CameraConfigurationCommand(command))
+            if matches!(
+                command.action.as_ref(),
+                Some(
+                    crate::api::proto::camera_configuration_command::Action::Discover(_)
+                        | crate::api::proto::camera_configuration_command::Action::ProbeStreams(_)
+                )
+            )
+    )
+}
+
+fn spawn_background_camera_operation(
+    request: crate::api::proto::Request,
+    handler: Arc<dyn ControlRequestHandler>,
+    control: &ApiSessionControl,
+    dispatch_tx: Sender<ControlDispatch>,
+) -> std::io::Result<()> {
+    let session_id = control.session_id;
+    let poller = control.poller.clone();
+    let camera_operation_in_flight = control.camera_operation_in_flight.clone();
+    std::thread::Builder::new()
+        .name(format!("webrtc-camera-operation-{session_id}"))
+        .spawn(move || {
+            let dispatch = handler.handle_for_session(session_id, request);
+            camera_operation_in_flight.store(false, Ordering::Release);
+            if dispatch_tx.try_send(dispatch).is_ok() {
+                let _ = poller.notify();
+            }
+        })
+        .map(|_| ())
 }
 
 fn drive_session(
@@ -3831,6 +4080,95 @@ mod tests {
     }
 
     #[test]
+    fn background_camera_operations_dispatch_without_blocking_the_api_session() {
+        use crate::api::proto::{
+            CameraConfigurationCommand, DiscoverCameras, ProbeCameraStreams, Request,
+            camera_configuration_command, request,
+        };
+
+        struct DiscoveryHandler {
+            started: Sender<()>,
+            release: Receiver<()>,
+        }
+
+        impl ControlRequestHandler for DiscoveryHandler {
+            fn handle(&self, request: Request) -> ControlDispatch {
+                self.started.send(()).unwrap();
+                self.release.recv().unwrap();
+                failed_control_dispatch(
+                    request.request_id,
+                    ErrorCode::UnsupportedRequest,
+                    "test discovery response",
+                )
+            }
+        }
+
+        let inner = Arc::new(Inner::default());
+        let poller = Arc::new(Poller::new().unwrap());
+        let discovery_in_flight = Arc::new(AtomicBool::new(true));
+        let control = ApiSessionControl {
+            session_id: SessionId(1),
+            inner,
+            recording_demand: None,
+            poller,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            completion: SessionCompletion::default(),
+            control_handler: Arc::new(RwLock::new(None)),
+            data_tx: bounded(1).0,
+            camera_operation_in_flight: discovery_in_flight.clone(),
+        };
+        let request = Request {
+            request_id: 42,
+            command: Some(request::Command::CameraConfigurationCommand(
+                CameraConfigurationCommand {
+                    action: Some(camera_configuration_command::Action::Discover(
+                        DiscoverCameras { subnets: vec![137] },
+                    )),
+                },
+            )),
+        };
+        assert!(is_background_camera_configuration_request(&request));
+        let probe_request = Request {
+            request_id: 43,
+            command: Some(request::Command::CameraConfigurationCommand(
+                CameraConfigurationCommand {
+                    action: Some(camera_configuration_command::Action::ProbeStreams(
+                        ProbeCameraStreams {
+                            ip: "192.0.2.50".to_owned(),
+                            username: "operator".to_owned(),
+                            password: "secret".to_owned(),
+                            onvif_port: Some(8000),
+                        },
+                    )),
+                },
+            )),
+        };
+        assert!(is_background_camera_configuration_request(&probe_request));
+
+        let (started_tx, started_rx) = bounded(1);
+        let (release_tx, release_rx) = bounded(0);
+        let (dispatch_tx, dispatch_rx) = bounded(1);
+        spawn_background_camera_operation(
+            request,
+            Arc::new(DiscoveryHandler {
+                started: started_tx,
+                release: release_rx,
+            }),
+            &control,
+            dispatch_tx,
+        )
+        .unwrap();
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(dispatch_rx.try_recv().is_err());
+        release_tx.send(()).unwrap();
+
+        let dispatch = dispatch_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(dispatch.response.request_id, 42);
+        assert!(!discovery_in_flight.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn control_requests_receive_correlated_fail_closed_responses() {
         use crate::api::proto::{CameraControlCommand, Request, request};
 
@@ -3875,7 +4213,7 @@ mod tests {
     }
 
     #[test]
-    fn api_media_subscription_reuses_mid_and_releases_source_on_unsubscribe() {
+    fn api_media_quality_update_reuses_mid_without_dropping_the_active_source() {
         let inner = Arc::new(Inner::default());
         let poller = Arc::new(Poller::new().unwrap());
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -3889,12 +4227,14 @@ mod tests {
             completion: SessionCompletion::default(),
             control_handler: Arc::new(RwLock::new(None)),
             data_tx: bounded(1).0,
+            camera_operation_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime {
             available_video_mids: vec![Mid::from("video_0")],
             tracks: Vec::new(),
             outbound: VecDeque::new(),
             outbound_bytes: 0,
+            control_notifications: VecDeque::new(),
         };
         let request = crate::api::proto::SubscribeMedia {
             subscription_id: "front-door".to_owned(),
@@ -3960,22 +4300,29 @@ mod tests {
             )) if mid == "video_0"
         ));
         assert_eq!(
+            media.tracks[0].runtime.subscription.requested_quality(),
+            Some(StreamQuality::High)
+        );
+        assert_eq!(
             inner.sources.lock().unwrap()[&Source {
                 camera_ip,
                 stream: StreamKind::Sub
             }]
                 .subscribers
                 .len(),
-            0
+            1
         );
         assert_eq!(
-            inner.sources.lock().unwrap()[&Source {
-                camera_ip,
-                stream: StreamKind::Main
-            }]
-                .subscribers
-                .len(),
-            1
+            inner
+                .sources
+                .lock()
+                .unwrap()
+                .get(&Source {
+                    camera_ip,
+                    stream: StreamKind::Main
+                })
+                .map_or(0, |source| source.subscribers.len()),
+            0
         );
 
         media.unsubscribe(&[request.subscription_id]);

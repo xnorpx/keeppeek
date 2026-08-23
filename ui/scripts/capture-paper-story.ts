@@ -133,7 +133,7 @@ const captures: Record<string, CaptureConfig> = {
 	},
 	'cameras.desktop.add-wizard': {
 		width: 1440,
-		height: 685,
+		height: 663,
 		theme: 'dark',
 		candidatePath: 'test-results/board-12-add-camera-candidate.png',
 		referencePath: 'design/paper/keeppeek-nvr-v34/references/12-add-camera-stream-evidence.png'
@@ -327,19 +327,19 @@ const captures: Record<string, CaptureConfig> = {
 		candidatePath: 'test-results/board-30-camera-diagnosis-candidate.png',
 		referencePath: 'design/paper/keeppeek-nvr-v34/references/30-camera-diagnosis.png'
 	},
-	'peek.desktop.rewind-ready': {
+	'peek.desktop.focus-history': {
 		width: 464,
 		height: 262,
 		theme: 'dark',
-		candidatePath: 'test-results/board-31-rewind-ready-candidate.png',
-		referencePath: 'design/paper/keeppeek-nvr-v34/references/31-rewind-ready.png'
+		candidatePath: 'test-results/board-31-focus-history-candidate.png',
+		referencePath: 'design/paper/keeppeek-nvr-v34/references/31-focus-history.png'
 	},
-	'peek.desktop.rewind-to-keep': {
+	'peek.desktop.history-keep': {
 		width: 464,
 		height: 262,
 		theme: 'dark',
-		candidatePath: 'test-results/board-31-rewind-scrubbing-candidate.png',
-		referencePath: 'design/paper/keeppeek-nvr-v34/references/31-rewind-scrubbing.png'
+		candidatePath: 'test-results/board-31-history-keep-candidate.png',
+		referencePath: 'design/paper/keeppeek-nvr-v34/references/31-history-keep.png'
 	},
 	'peek.waiting.first-keyframe': {
 		width: 462,

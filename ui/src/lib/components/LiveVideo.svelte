@@ -79,7 +79,10 @@
 		cameraId: string;
 		stream: 'main' | 'sub';
 		quality?: LiveQuality;
+		matchVideoAspectRatio?: boolean;
 		showDiagnostics?: boolean;
+		diagnosticsLabel?: string;
+		diagnosticsStatusClass?: string;
 		onframeactivitychange?: (active: boolean) => void;
 		class?: string;
 	};
@@ -88,7 +91,10 @@
 		cameraId,
 		stream,
 		quality,
+		matchVideoAspectRatio = false,
 		showDiagnostics = true,
+		diagnosticsLabel,
+		diagnosticsStatusClass = 'bg-white/65',
 		onframeactivitychange,
 		class: className = ''
 	}: Props = $props();
@@ -96,6 +102,7 @@
 	const livePeer = useLivePeer();
 	let track = $derived(livePeer.track(cameraId));
 	let video = $state<HTMLVideoElement | null>(null);
+	let videoAspectRatio = $state<number | null>(null);
 	let negotiatedCodec = $state<string | null>(null);
 	let diagnosticsOpen = $state(false);
 	let diagnostics = $state.raw<VideoDiagnostics>(EMPTY_DIAGNOSTICS);
@@ -197,7 +204,19 @@
 	});
 
 	async function handlePlaying() {
+		refreshVideoAspectRatio();
 		livePeer.markPlaying(cameraId);
+		void refreshReceiverStats(false);
+	}
+
+	function refreshVideoAspectRatio() {
+		const width = video?.videoWidth ?? 0;
+		const height = video?.videoHeight ?? 0;
+		videoAspectRatio = width > 0 && height > 0 ? width / height : null;
+	}
+
+	function handleVideoResize() {
+		refreshVideoAspectRatio();
 		void refreshReceiverStats(false);
 	}
 
@@ -372,10 +391,14 @@
 
 <div
 	class="relative bg-video {className}"
+	style={matchVideoAspectRatio && videoAspectRatio !== null
+		? `aspect-ratio: ${videoAspectRatio}`
+		: undefined}
 	data-status={status}
 	data-camera-id={cameraId}
 	data-session-id={sessionId}
 	data-stream={activeStream}
+	data-pending-stream={track?.pendingStream ?? undefined}
 	data-requested-quality={requestedQuality}
 	data-estimated-bitrate-bps={estimatedBitrateBps}
 	data-decoder="browser"
@@ -388,6 +411,7 @@
 		playsinline
 		muted
 		onplaying={handlePlaying}
+		onloadedmetadata={handleVideoResize}
 		onwaiting={handlePlaybackInactive}
 		onstalled={handlePlaybackInactive}
 		onpause={handlePlaybackInactive}
@@ -395,7 +419,7 @@
 		ontimeupdate={() => {
 			if (typeof video?.requestVideoFrameCallback !== 'function') markFrameActivity();
 		}}
-		onresize={() => void refreshReceiverStats(false)}
+		onresize={handleVideoResize}
 		onerror={() => {
 			handlePlaybackInactive();
 			livePeer.markUnavailable(cameraId);
@@ -404,12 +428,22 @@
 	></video>
 	<Popover.Root bind:open={diagnosticsOpen}>
 		<Popover.Trigger
-			class="absolute top-2 right-2 z-30 size-6 place-items-center rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {showDiagnostics
-				? 'grid'
-				: 'hidden'} {diagnosticsOpen ? 'bg-black/90 text-white ring-1 ring-white/35' : ''}"
-			aria-label="WebRTC stream diagnostics"
+			data-peek-camera-label={diagnosticsLabel ?? undefined}
+			class="absolute top-2 right-2 z-30 rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {diagnosticsLabel
+				? 'inline-flex h-[26px] max-w-[calc(100%-1rem)] items-center gap-2 px-2'
+				: 'grid size-6 place-items-center'} {showDiagnostics ? '' : 'hidden'} {diagnosticsOpen
+				? 'bg-black/90 text-white ring-1 ring-white/35'
+				: ''}"
+			aria-label={diagnosticsLabel
+				? `${diagnosticsLabel} WebRTC stream diagnostics`
+				: 'WebRTC stream diagnostics'}
 		>
-			<InfoIcon class="size-3.5" />
+			{#if diagnosticsLabel}
+				<span class="size-1.5 shrink-0 rounded-full {diagnosticsStatusClass}"></span>
+				<span class="max-w-36 truncate text-xs font-medium">{diagnosticsLabel}</span>
+				<span class="h-3.5 w-px shrink-0 bg-white/15"></span>
+			{/if}
+			<InfoIcon class="size-3.5 shrink-0" />
 		</Popover.Trigger>
 		<Popover.Portal>
 			<Popover.Content

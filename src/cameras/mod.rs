@@ -2,6 +2,7 @@ mod hikvision;
 mod network;
 pub mod reolink;
 
+use crate::camera_catalog::common_onvif_probe_ports;
 use onvif::{
     discovery,
     soap::client::{AuthType, ClientBuilder, Credentials},
@@ -18,6 +19,8 @@ use std::{
 use url::Url;
 
 const DEFAULT_DISCOVERY_DURATION: Duration = Duration::from_secs(5);
+const CANDIDATE_STREAM_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_CONCURRENT_CANDIDATE_STREAM_PROBES: usize = 4;
 pub(crate) const BAICHUAN_PORT: u16 = 9000;
 const RTSP_PORT: u16 = 554;
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -267,6 +270,13 @@ pub struct MediaProfile {
     pub snapshot_uri: Option<String>,
     pub video: Option<VideoConfig>,
     pub audio: Option<AudioConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProbedStreamUrls {
+    pub(crate) onvif_port: Option<u16>,
+    pub(crate) main_rtsp_url: Option<String>,
+    pub(crate) sub_rtsp_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -964,33 +974,197 @@ fn apply_configured_rtsp_urls(camera: &mut Camera) {
 }
 
 fn retain_discovered_rtsp_urls(camera: &mut Camera) {
-    fn endpoint(profile: &MediaProfile) -> Option<String> {
-        let mut url = Url::parse(profile.stream_uri.as_deref()?).ok()?;
-        if !matches!(url.scheme(), "rtsp" | "rtsps") || url.host_str().is_none() {
-            return None;
-        }
-        url.set_username("").ok()?;
-        url.set_password(None).ok()?;
-        Some(url.into())
-    }
-
-    let main = camera
-        .profiles
-        .iter()
-        .find(|profile| profile_stream(profile) == Some(ProfileStream::Main))
-        .or_else(|| camera.profiles.first())
-        .and_then(endpoint);
-    let sub = camera
-        .profiles
-        .iter()
-        .find(|profile| profile_stream(profile) == Some(ProfileStream::Sub))
-        .or_else(|| camera.profiles.get(1))
-        .and_then(endpoint);
+    let streams = probed_stream_urls(&camera.profiles);
     if camera.config.main_rtsp_url.is_none() {
-        camera.config.main_rtsp_url = main;
+        camera.config.main_rtsp_url = streams.main_rtsp_url;
     }
     if camera.config.sub_rtsp_url.is_none() {
-        camera.config.sub_rtsp_url = sub;
+        camera.config.sub_rtsp_url = streams.sub_rtsp_url;
+    }
+}
+
+pub(crate) fn probe_onvif_streams(config: &CameraConfig) -> anyhow::Result<ProbedStreamUrls> {
+    let candidate_ports = candidate_stream_probe_ports(config.onvif_port);
+    if let [port] = candidate_ports.as_slice() {
+        return probe_onvif_streams_on_port(config, *port);
+    }
+
+    tracing::debug!(
+        ip = %config.ip,
+        ports = ?candidate_ports,
+        "probing candidate ONVIF service ports"
+    );
+    let worker_count = candidate_ports
+        .len()
+        .min(MAX_CONCURRENT_CANDIDATE_STREAM_PROBES);
+    let ports = Mutex::new(VecDeque::from(candidate_ports));
+    let result = Mutex::new(None);
+    let failed_ports = Mutex::new(Vec::new());
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let ports = &ports;
+            let result = &result;
+            let failed_ports = &failed_ports;
+            scope.spawn(|| {
+                loop {
+                    if result
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_some()
+                    {
+                        return;
+                    }
+                    let Some(port) = ports
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .pop_front()
+                    else {
+                        return;
+                    };
+
+                    match probe_onvif_streams_on_port(config, port) {
+                        Ok(streams) => {
+                            let mut result = result
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if result.is_none() {
+                                tracing::debug!(
+                                    ip = %config.ip,
+                                    onvif_port = port,
+                                    "candidate ONVIF service responded"
+                                );
+                                *result = Some(streams);
+                            }
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::debug!(
+                                ip = %config.ip,
+                                onvif_port = port,
+                                %error,
+                                "candidate ONVIF service probe failed"
+                            );
+                            failed_ports
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .push(port);
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    let result = result
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    result.ok_or_else(|| {
+        let failed_ports = failed_ports
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::anyhow!(
+            "ONVIF service did not respond on candidate ports {}",
+            failed_ports
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
+fn candidate_stream_probe_ports(onvif_port: Option<u16>) -> Vec<u16> {
+    onvif_port.map_or_else(|| common_onvif_probe_ports().to_vec(), |port| vec![port])
+}
+
+fn probe_onvif_streams_on_port(
+    config: &CameraConfig,
+    port: u16,
+) -> anyhow::Result<ProbedStreamUrls> {
+    let url = Url::parse(&format!("http://{}:{port}/onvif/device_service", config.ip))?;
+    let credentials = Some(Credentials {
+        username: config.username.clone(),
+        password: config.password.clone(),
+    });
+    let client = ClientBuilder::new(&url)
+        .credentials(credentials.clone())
+        .auth_type(AuthType::Any)
+        .timeout(CANDIDATE_STREAM_PROBE_TIMEOUT)
+        .build();
+    let services = devicemgmt::get_services(
+        &client,
+        &devicemgmt::GetServices {
+            include_capability: false,
+        },
+    )
+    .map_err(|error| anyhow::anyhow!("ONVIF get_services: {error}"))?;
+    let media_url = services
+        .service
+        .iter()
+        .find(|service| service.namespace.contains("media/wsdl"))
+        .map(|service| service.x_addr.as_str())
+        .ok_or_else(|| anyhow::anyhow!("ONVIF media service is unavailable"))?;
+    let media_url = Url::parse(media_url)?;
+    let media_client = ClientBuilder::new(&media_url)
+        .credentials(credentials)
+        .auth_type(AuthType::Any)
+        .timeout(CANDIDATE_STREAM_PROBE_TIMEOUT)
+        .build();
+    let profiles = onvif_media::get_profiles(&media_client, &onvif_media::GetProfiles {})
+        .map_err(|error| anyhow::anyhow!("ONVIF get_profiles: {error}"))?;
+    let profiles = profiles
+        .profiles
+        .iter()
+        .map(|profile| (profile.token.0.as_str(), profile.name.0.as_str()))
+        .collect::<Vec<_>>();
+    let main = profiles
+        .iter()
+        .find(|(token, name)| profile_stream_from_name(name, token) == Some(ProfileStream::Main))
+        .or_else(|| profiles.first());
+    let sub = profiles
+        .iter()
+        .find(|(token, name)| profile_stream_from_name(name, token) == Some(ProfileStream::Sub))
+        .or_else(|| profiles.get(1));
+    let stream_uri = |token: &str| {
+        onvif_media::get_stream_uri(
+            &media_client,
+            &onvif_media::GetStreamUri {
+                stream_setup: onvif_xsd::StreamSetup {
+                    stream: onvif_xsd::StreamType::RtpUnicast,
+                    transport: onvif_xsd::Transport {
+                        protocol: onvif_xsd::TransportProtocol::Rtsp,
+                        tunnel: vec![],
+                    },
+                },
+                profile_token: onvif_xsd::ReferenceToken(token.to_owned()),
+            },
+        )
+        .ok()
+        .and_then(|response| credential_free_rtsp_url(&response.media_uri.uri))
+    };
+    Ok(ProbedStreamUrls {
+        onvif_port: Some(port),
+        main_rtsp_url: main.and_then(|(token, _)| stream_uri(token)),
+        sub_rtsp_url: sub.and_then(|(token, _)| stream_uri(token)),
+    })
+}
+
+fn probed_stream_urls(profiles: &[MediaProfile]) -> ProbedStreamUrls {
+    let main_rtsp_url = profiles
+        .iter()
+        .find(|profile| profile_stream(profile) == Some(ProfileStream::Main))
+        .or_else(|| profiles.first())
+        .and_then(|profile| credential_free_rtsp_url(profile.stream_uri.as_deref()?));
+    let sub_rtsp_url = profiles
+        .iter()
+        .find(|profile| profile_stream(profile) == Some(ProfileStream::Sub))
+        .or_else(|| profiles.get(1))
+        .and_then(|profile| credential_free_rtsp_url(profile.stream_uri.as_deref()?));
+    ProbedStreamUrls {
+        onvif_port: None,
+        main_rtsp_url,
+        sub_rtsp_url,
     }
 }
 
@@ -1151,8 +1325,12 @@ enum ProfileStream {
 }
 
 fn profile_stream(profile: &MediaProfile) -> Option<ProfileStream> {
-    let name = profile.name.to_ascii_lowercase();
-    let token = profile.token.to_ascii_lowercase();
+    profile_stream_from_name(&profile.name, &profile.token)
+}
+
+fn profile_stream_from_name(name: &str, token: &str) -> Option<ProfileStream> {
+    let name = name.to_ascii_lowercase();
+    let token = token.to_ascii_lowercase();
 
     if name.contains("main") || token.ends_with("_main") {
         Some(ProfileStream::Main)
@@ -1161,6 +1339,16 @@ fn profile_stream(profile: &MediaProfile) -> Option<ProfileStream> {
     } else {
         None
     }
+}
+
+fn credential_free_rtsp_url(value: &str) -> Option<String> {
+    let mut url = Url::parse(value).ok()?;
+    if !matches!(url.scheme(), "rtsp" | "rtsps") || url.host_str().is_none() {
+        return None;
+    }
+    url.set_username("").ok()?;
+    url.set_password(None).ok()?;
+    Some(url.into())
 }
 
 fn merge_reolink_profiles(
@@ -1205,6 +1393,14 @@ fn merge_reolink_profiles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_stream_probe_ports_prioritize_common_http_and_preserve_overrides() {
+        let automatic = candidate_stream_probe_ports(None);
+        assert_eq!(automatic.first(), Some(&80));
+        assert!(automatic.contains(&8000));
+        assert_eq!(candidate_stream_probe_ports(Some(8899)), vec![8899]);
+    }
 
     #[test]
     fn session_timestamps_start_at_zero_and_join_reconnects() {
@@ -1435,6 +1631,16 @@ mod tests {
             ptz: None,
             imaging: None,
         };
+
+        let streams = probed_stream_urls(&camera.profiles);
+        assert_eq!(
+            streams.main_rtsp_url.as_deref(),
+            Some("rtsp://192.0.2.79/main")
+        );
+        assert_eq!(
+            streams.sub_rtsp_url.as_deref(),
+            Some("rtsp://192.0.2.79/sub")
+        );
 
         retain_discovered_rtsp_urls(&mut camera);
 

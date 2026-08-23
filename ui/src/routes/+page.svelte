@@ -3,13 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
-	import type {
-		CameraHealth,
-		CameraListItem,
-		Health,
-		LiveQuality,
-		ServerHealthResponse
-	} from '$lib/types';
+	import type { CameraHealth, CameraListItem, LiveQuality, ServerHealthResponse } from '$lib/types';
 	import { useControlClient } from '$lib/control-context';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import LiveVideo from '$lib/components/LiveVideo.svelte';
@@ -29,7 +23,6 @@
 	const controlClient = useControlClient();
 	const livePeer = useLivePeer();
 
-	let health = $state.raw<Health | null>(null);
 	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
 	let cameras = $state.raw<CameraListItem[]>([]);
 	let error: string | null = $state(null);
@@ -43,12 +36,62 @@
 			? null
 			: (cameras.find((camera) => camera.id === focusedCameraId) ?? null)
 	);
+	let focusedTrack = $derived(focusedCameraId === null ? null : livePeer.track(focusedCameraId));
+	let pendingFocusStream = $derived(focusedTrack?.pendingStream ?? null);
+	let focusQualitySwitching = $derived(pendingFocusStream !== null);
 	let filmstripCameras = $derived(
 		focusedCameraId === null ? [] : cameras.filter((camera) => camera.id !== focusedCameraId)
 	);
 	let cameraHealthById = $derived(
 		new Map((serverHealth?.cameras ?? []).map((camera) => [camera.id, camera]))
 	);
+	let reportingCameraCount = $derived(
+		(serverHealth?.cameras ?? []).filter(
+			(camera) => camera.state !== 'offline' && camera.state !== 'starting'
+		).length
+	);
+	let fleetStatus = $derived.by(() => {
+		if (serverHealth?.status === 'healthy') {
+			return {
+				colorClass: 'bg-emerald-500',
+				label: 'System online',
+				showCameraCount: true
+			};
+		}
+
+		if (reportingCameraCount > 0) {
+			return {
+				colorClass: 'bg-amber-500',
+				label: `${reportingCameraCount} / ${cameras.length} cameras reporting`,
+				showCameraCount: false
+			};
+		}
+
+		return {
+			colorClass: 'bg-destructive',
+			label: 'System unavailable',
+			showCameraCount: true
+		};
+	});
+	let runtimeTelemetry = $derived.by(() => {
+		if (
+			serverHealth === null ||
+			(serverHealth.system.memory.total_bytes === 0 &&
+				serverHealth.system.process.cpu_capacity_percent === null &&
+				serverHealth.system.process.resident_memory_bytes === null)
+		) {
+			return null;
+		}
+		return {
+			hostCpu: formatPercent(serverHealth.system.system_cpu_percent),
+			hostMemory: formatMemoryUsage(
+				serverHealth.system.memory.used_bytes,
+				serverHealth.system.memory.total_bytes
+			),
+			processCpu: formatPercent(serverHealth.system.process.cpu_capacity_percent),
+			processMemory: formatBytes(serverHealth.system.process.resident_memory_bytes)
+		};
+	});
 	let livePlans = $derived(
 		cameras
 			.filter(
@@ -58,7 +101,9 @@
 			)
 			.map((camera) => ({
 				cameraId: camera.id,
-				quality: focusedCameraId === camera.id ? focusQuality : ('low' as const)
+				quality: focusedCameraId === camera.id ? focusQuality : ('low' as const),
+				variantId:
+					focusedCameraId === camera.id && focusQuality === 'auto' ? ('main' as const) : undefined
 			}))
 	);
 
@@ -99,15 +144,12 @@
 				controlClient.getCameras(),
 				controlClient.getHealth()
 			]);
-			health = { status: nextServerHealth.status === 'healthy' ? 'ok' : 'degraded' };
 			cameras = nextCameras;
 			serverHealth = nextServerHealth;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load dashboard';
 		} finally {
 			loading = false;
-			await tick();
-			if (livePeer.peekReviewTransitionActive) livePeer.finishPeekReviewTransition();
 		}
 	}
 
@@ -119,9 +161,45 @@
 		return cameraHealthById.get(cameraId) ?? null;
 	}
 
+	function formatPercent(value: number | null): string {
+		if (value === null) return '—';
+		return `${value.toFixed(value >= 10 || value === 0 ? 0 : 1)}%`;
+	}
+
+	function formatBytes(bytes: number | null): string {
+		if (bytes === null) return '—';
+		if (bytes < 1_000) return `${bytes} B`;
+		const units = ['kB', 'MB', 'GB', 'TB'];
+		let value = bytes / 1_000;
+		let unitIndex = 0;
+		while (value >= 1_000 && unitIndex < units.length - 1) {
+			value /= 1_000;
+			unitIndex += 1;
+		}
+		return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+	}
+
+	function formatMemoryUsage(usedBytes: number, totalBytes: number): string {
+		if (totalBytes <= 0) return '—';
+		const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+		let divisor = 1;
+		let unitIndex = 0;
+		while (totalBytes / divisor >= 1_000 && unitIndex < units.length - 1) {
+			divisor *= 1_000;
+			unitIndex += 1;
+		}
+		const formatValue = (value: number) => value.toFixed(value >= 10 || value === 0 ? 0 : 1);
+		return `${formatValue(usedBytes / divisor)}/${formatValue(totalBytes / divisor)} ${units[unitIndex]}`;
+	}
+
 	function openFocus(cameraId: string) {
 		focusedCameraId = cameraId;
 		focusQuality = 'auto';
+	}
+
+	function setFocusQuality(quality: LiveQuality) {
+		if (focusQuality === quality) return;
+		focusQuality = quality;
 	}
 
 	function closeFocus() {
@@ -151,25 +229,6 @@
 
 	function closeLayoutEditor(): void {
 		void goto(resolve('/'));
-	}
-
-	async function openRewind(cameraId: string, targetTimestampMs: number): Promise<void> {
-		const targetDate = new Date(targetTimestampMs).toISOString().slice(0, 10);
-		const search = new URLSearchParams({
-			camera: cameraId,
-			stream: 'main',
-			date: targetDate,
-			at: String(Math.round(targetTimestampMs)),
-			from: 'peek'
-		});
-		livePeer.beginPeekReviewTransition();
-		await tick();
-		try {
-			await goto(`${resolve('/keep')}?${search}`);
-		} catch (cause) {
-			livePeer.finishPeekReviewTransition();
-			throw cause;
-		}
 	}
 
 	function moveGridFocus(event: KeyboardEvent): void {
@@ -254,13 +313,13 @@
 
 <div class="mx-auto max-w-[120rem] space-y-3 px-4 py-3 md:p-4">
 	{#if !isLayoutEditing}
-		<header class="flex min-h-10 items-center justify-between gap-3">
+		<header class="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1">
 			<h1 class="text-xl font-semibold">Peek</h1>
-			<div class="flex items-center gap-3">
+			<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
 				{#if !loading && error === null && cameras.length > 0}
 					<button
 						type="button"
-						class="hidden h-8 items-center gap-1.5 rounded-sm border border-hairline bg-raised px-2.5 text-xs font-medium text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:inline-flex"
+						class="hidden h-8 items-center gap-1.5 rounded-sm border border-hairline bg-raised px-2.5 text-xs font-medium text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none xl:inline-flex"
 						onclick={openLayoutEditor}
 					>
 						<PencilIcon class="size-3.5" />
@@ -268,18 +327,31 @@
 					</button>
 				{/if}
 				<div
-					class="flex items-center gap-2 text-xs font-medium text-muted-foreground"
+					data-peek-fleet-status
+					class="flex shrink-0 items-center gap-2 text-xs font-medium text-muted-foreground"
 					role="status"
 				>
-					<span
-						class="size-1.5 rounded-full {health?.status === 'ok'
-							? 'bg-emerald-500'
-							: 'bg-destructive'}"
-					></span>
-					<span>{health?.status === 'ok' ? 'System online' : 'System unavailable'}</span>
-					<span aria-hidden="true" class="text-border">/</span>
-					<span>{cameras.length} {cameras.length === 1 ? 'camera' : 'cameras'}</span>
+					<span class="size-1.5 rounded-full {fleetStatus.colorClass}"></span>
+					<span>{fleetStatus.label}</span>
+					{#if fleetStatus.showCameraCount}
+						<span aria-hidden="true" class="text-border">/</span>
+						<span>{cameras.length} {cameras.length === 1 ? 'camera' : 'cameras'}</span>
+					{/if}
 				</div>
+				{#if runtimeTelemetry}
+					<div
+						data-peek-runtime-telemetry
+						class="hidden shrink-0 items-center gap-2 border-l border-hairline pl-3 font-mono text-[10px] leading-4 text-muted-foreground sm:flex"
+					>
+						<span class="text-text-faint">HOST</span>
+						<span>CPU {runtimeTelemetry.hostCpu}</span>
+						<span>RAM {runtimeTelemetry.hostMemory}</span>
+						<span aria-hidden="true" class="h-3 w-px bg-hairline"></span>
+						<span class="text-text-faint">KEEPPEEK</span>
+						<span>CPU {runtimeTelemetry.processCpu}</span>
+						<span>RAM {runtimeTelemetry.processMemory}</span>
+					</div>
+				{/if}
 			</div>
 		</header>
 	{/if}
@@ -356,12 +428,17 @@
 								? 'bg-foreground text-background'
 								: 'text-muted-foreground hover:text-foreground'}"
 							aria-pressed={focusQuality === quality}
-							onclick={() => (focusQuality = quality)}
+							onclick={() => setFocusQuality(quality)}
 						>
 							{quality}
 						</button>
 					{/each}
 				</div>
+				{#if focusQualitySwitching}
+					<span data-peek-quality-switch class="font-mono text-2xs text-primary-soft" role="status">
+						Switching to {pendingFocusStream === 'main' ? 'high' : 'low'} stream…
+					</span>
+				{/if}
 				<!-- eslint-disable svelte/no-navigation-without-resolve -->
 				<a
 					href={cameraHref(focusedCamera.id)}
@@ -374,13 +451,14 @@
 				<!-- eslint-enable svelte/no-navigation-without-resolve -->
 			</header>
 
-			<div class="grid min-h-0 gap-2 lg:grid-cols-[minmax(0,1fr)_15rem]">
-				<div class="relative min-w-0 self-start">
+			<div class="space-y-2">
+				<div data-peek-focus-history class="group relative min-w-0 self-start">
 					{#key focusedCamera.id}
 						<LiveVideo
 							cameraId={focusedCamera.id}
 							stream="main"
 							quality={focusQuality}
+							matchVideoAspectRatio
 							class="aspect-video overflow-hidden rounded-md ring-1 ring-white/10"
 						/>
 					{/key}
@@ -391,17 +469,12 @@
 					</span>
 				</div>
 
-				<aside
-					class="flex min-w-0 gap-2 overflow-x-auto pb-1 lg:max-h-[calc(100svh-9.5rem)] lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto lg:pr-1 lg:pb-0"
-					aria-label="Other cameras"
-				>
+				<aside class="flex min-w-0 gap-2 overflow-x-auto pb-1" aria-label="Other cameras">
 					{#each filmstripCameras as camera (camera.id)}
-						<article
-							class="relative aspect-video w-40 shrink-0 overflow-hidden rounded-md lg:w-full"
-						>
+						<article class="relative aspect-video w-40 shrink-0 overflow-hidden rounded-md">
 							<LiveVideo
 								cameraId={camera.id}
-								stream={previewStream(camera)}
+								stream="sub"
 								class="size-full overflow-hidden ring-1 ring-white/10"
 							/>
 							<button
@@ -429,7 +502,6 @@
 					stream={previewStream(camera)}
 					mobileFeatured={cameraIndex === 0}
 					onfocus={openFocus}
-					onrewind={openRewind}
 				/>
 			{/each}
 		</div>

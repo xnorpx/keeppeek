@@ -14,6 +14,7 @@ import {
 } from '../src/lib/server/storybook/demo-video';
 import {
 	createDemoWebVtt,
+	demoAssetId,
 	type DemoAction,
 	type DemoScenarioDefinition,
 	validateStoryScenarioMetadata
@@ -38,12 +39,15 @@ const requestedScenarioIds = process.argv.slice(2);
 const selectedScenarios =
 	requestedScenarioIds.length === 0
 		? [...demoScenarios]
-		: requestedScenarioIds.map((scenarioId) => {
-				const scenario = demoScenarios.find(
-					(candidate) => candidate.metadata.paper.scenarioId === scenarioId
+		: requestedScenarioIds.map((requestedId) => {
+				const matches = demoScenarios.filter(
+					(candidate) =>
+						candidate.metadata.paper.scenarioId === requestedId ||
+						demoAssetId(candidate.metadata) === requestedId
 				);
-				if (!scenario) throw new Error(`Unknown demo scenario: ${scenarioId}`);
-				return scenario;
+				if (matches.length === 0) throw new Error(`Unknown demo scenario: ${requestedId}`);
+				if (matches.length > 1) throw new Error(`Ambiguous demo scenario: ${requestedId}`);
+				return matches[0];
 			});
 
 const outputDirectory = resolve(process.env.DEMO_OUTPUT_DIR ?? 'test-results/demo-videos/assets');
@@ -87,7 +91,8 @@ async function renderScenario(
 	if (!demo) throw new Error(`Scenario ${scenario.metadata.storyId} has no demo metadata`);
 
 	const scenarioId = scenario.metadata.paper.scenarioId;
-	const stem = join(outputDirectory, scenarioId);
+	const assetId = demoAssetId(scenario.metadata);
+	const stem = join(outputDirectory, assetId);
 	const mp4Path = `${stem}.mp4`;
 	const captionsPath = `${stem}.vtt`;
 	const metadataPath = `${stem}.json`;
@@ -115,6 +120,7 @@ async function renderScenario(
 	const previewUrl = new URL('local-preview.html', baseUrl);
 	previewUrl.searchParams.set('scenario', scenario.previewScenarioId);
 	previewUrl.searchParams.set('demo', 'true');
+	previewUrl.searchParams.set('demoAsset', assetId);
 	await page.goto(previewUrl.href);
 	const demoStartAt = await withTimeout(
 		demoStarted,
@@ -190,6 +196,7 @@ async function renderScenario(
 	console.log(
 		JSON.stringify({
 			scenarioId,
+			assetId,
 			videoDurationMs,
 			recordingPreRollMs,
 			mp4DurationMs,

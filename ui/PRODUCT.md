@@ -193,7 +193,7 @@ Real, and usable:
   including its layout editor and timeline.
 - A Paper design file, "KeepPeek — NVR Design System & Spec", holding 80 registered design tokens
   and 34 in-scope boards covering desktop, mobile web, empty, degraded, capability-gated, export,
-  diagnosis, keyboard, waiting, rewind, and light-theme states. Its versioned source snapshot and
+  diagnosis, keyboard, waiting, focused history, and light-theme states. Its versioned source snapshot and
   reviewed references are stored in `ui/design/paper/keeppeek-nvr-v34/`. Native iOS and Android
   viewer boards are intentionally outside this Svelte implementation scope.
 - `docs/` — written design documents for the state store, groups, transcoding, event forwarding,

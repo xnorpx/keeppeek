@@ -1,15 +1,31 @@
 <script lang="ts">
 	import type { CameraWizardDraft } from '$lib/camera-wizard';
+	import type { CameraCatalogStreamHints } from '$lib/types';
+	import CheckIcon from '@lucide/svelte/icons/check';
 	import RadioIcon from '@lucide/svelte/icons/radio';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 
 	type Props = {
 		draft: CameraWizardDraft;
+		streamHints?: CameraCatalogStreamHints | null;
+		catalogStreamsApplied?: boolean;
+		streamResolution?: 'unresolved' | 'catalog' | 'probing' | 'onvif' | 'manual';
+		streamProbeMessage?: string | null;
 		paperFrame?: boolean;
+		onapplycatalogstreams?: () => void;
 		onupdate?: (update: Partial<CameraWizardDraft>) => void;
 	};
 
-	let { draft, paperFrame = false, onupdate }: Props = $props();
+	let {
+		draft,
+		streamHints = null,
+		catalogStreamsApplied = false,
+		streamResolution = 'unresolved',
+		streamProbeMessage = null,
+		paperFrame = false,
+		onapplycatalogstreams,
+		onupdate
+	}: Props = $props();
 	const streams = [
 		{ key: 'mainRtspUrl', label: 'Main stream', purpose: 'Recording stream', role: 'Main' },
 		{ key: 'subRtspUrl', label: 'Sub stream', purpose: 'Live stream', role: 'Sub' }
@@ -28,7 +44,7 @@
 						<span
 							class="inline-flex h-[22px] items-center gap-[7px] rounded-xs bg-ground/75 px-[9px] font-mono text-[10px] leading-3 tracking-[0.1em] text-text-muted"
 						>
-							<span class="size-1.5 rounded-full bg-activity"></span> PROBE UNAVAILABLE
+							<span class="size-1.5 rounded-full bg-activity"></span> ENDPOINT DECLARATION
 						</span>
 						<span
 							class="inline-flex h-[22px] items-center rounded-xs bg-ground/75 px-[9px] font-mono text-[10px] leading-3 tracking-[0.08em] text-text-faint"
@@ -42,7 +58,7 @@
 					<div
 						class="flex items-center justify-between font-mono text-[10px] leading-3 tracking-[0.08em] text-text-faint"
 					>
-						<span>NO FIRST-KEYFRAME OR DECODE TIMING</span><span>DECLARATION ONLY</span>
+						<span>NO FIRST-KEYFRAME OR DECODE TIMING</span><span>NOT DECODED</span>
 					</div>
 				</div>
 
@@ -53,7 +69,9 @@
 							{draft[stream.key] || 'No explicit RTSP URL'}
 						</p>
 					</div>
-					<span class="font-mono text-2xs leading-[14px] text-activity">NOT TESTED</span>
+					<span class="font-mono text-2xs leading-[14px] text-activity"
+						>{streamResolution === 'onvif' ? 'ONVIF REPORTED' : 'NOT TESTED'}</span
+					>
 				</div>
 
 				<div class="flex h-[67px] shrink-0 flex-col gap-2 px-4 pt-1.5 pb-4">
@@ -85,8 +103,8 @@
 					Decoded stream evidence is unavailable before save
 				</p>
 				<p class="text-[13px] leading-[21px] text-text-muted">
-					The server has no candidate-camera authentication or stream-probe command. URLs remain
-					declarations, not proof.
+					Candidate endpoints can come from ONVIF or the catalog. URLs remain declarations until
+					KeepPeek decodes the saved camera stream.
 				</p>
 			</div>
 		</div>
@@ -99,6 +117,25 @@
 				Explicit URLs are optional when the server can derive streams after saving.
 			</p>
 		</div>
+		{#if streamHints && (streamHints.main_rtsp_url || streamHints.sub_rtsp_url)}
+			<div
+				class="flex flex-wrap items-center justify-between gap-3 rounded-sm border border-primary/35 bg-primary/5 px-3 py-2.5"
+			>
+				<p class="text-xs leading-5 text-text-muted">
+					Catalog stream references are credential-free, editable, and apply automatically. You can
+					restore them after an ONVIF lookup.
+				</p>
+				<button
+					type="button"
+					class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-sm border border-primary/60 px-3 text-xs font-medium text-primary-soft"
+					aria-pressed={catalogStreamsApplied}
+					onclick={onapplycatalogstreams}
+				>
+					{#if catalogStreamsApplied}<CheckIcon class="size-3.5" />{/if}
+					{catalogStreamsApplied ? 'Catalog streams applied' : 'Restore catalog streams'}</button
+				>
+			</div>
+		{/if}
 		<div class="grid gap-3 md:grid-cols-2">
 			{#each streams as stream (stream.key)}
 				<label class="overflow-hidden rounded-md border border-hairline bg-raised">
@@ -125,9 +162,18 @@
 		>
 			<TriangleAlertIcon class="mt-0.5 size-4 shrink-0 text-activity" />
 			<span>
-				<strong class="text-foreground">Decoded stream evidence is unavailable before save.</strong
-				><br />The server has no candidate-camera authentication or stream-probe endpoint. URLs
-				remain declarations, not proof.
+				<strong class="text-foreground"
+					>{streamResolution === 'probing'
+						? 'ONVIF lookup is in progress.'
+						: streamResolution === 'onvif'
+							? 'ONVIF reported candidate RTSP endpoints.'
+							: streamResolution === 'catalog'
+								? 'Catalog candidate RTSP endpoints are applied.'
+								: 'No candidate RTSP endpoint is available yet.'}</strong
+				><br />{streamProbeMessage ??
+					(streamResolution === 'probing'
+						? 'You can enter URLs manually now. Any ONVIF result will fill the remaining fields when it arrives.'
+						: 'Both URL fields remain editable. KeepPeek validates decoded media only after the camera is saved.')}
 			</span>
 		</p>
 	</div>

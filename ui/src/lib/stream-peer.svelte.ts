@@ -26,6 +26,7 @@ type PendingRequest = {
 export type LivePeerPlan = {
 	cameraId: string;
 	quality: LiveQuality;
+	variantId?: 'main' | 'sub';
 };
 
 export type LivePeerTrack = {
@@ -35,7 +36,9 @@ export type LivePeerTrack = {
 	stream: MediaStream | null;
 	status: 'connecting' | 'live' | 'unavailable';
 	requestedQuality: LiveQuality;
+	requestedVariantId: 'main' | 'sub' | null;
 	activeStream: 'main' | 'sub';
+	pendingStream: 'main' | 'sub' | null;
 	estimatedBitrateBps: number | null;
 };
 
@@ -46,7 +49,6 @@ export class LivePeer {
 	estimatedBitrateBps = $state<number | null>(null);
 	error = $state<string | null>(null);
 	tracks = $state.raw<Record<string, LivePeerTrack>>({});
-	peekReviewTransitionActive = $state(false);
 
 	#peer: RTCPeerConnection | null = null;
 	#sessionToken: string | null = null;
@@ -88,14 +90,6 @@ export class LivePeer {
 			this.#holds -= 1;
 			if (this.#viewers.length === 0 && this.#holds === 0) this.scheduleClose();
 		};
-	}
-
-	beginPeekReviewTransition(): void {
-		this.peekReviewTransitionActive = true;
-	}
-
-	finishPeekReviewTransition(): void {
-		this.peekReviewTransitionActive = false;
 	}
 
 	configure(plans: LivePeerPlan[]): Promise<void> {
@@ -152,8 +146,14 @@ export class LivePeer {
 		}
 		await Promise.all(
 			plans
-				.filter((plan) => this.track(plan.cameraId)?.requestedQuality !== plan.quality)
-				.map((plan) => this.setQuality(plan.cameraId, plan.quality))
+				.filter((plan) => {
+					const track = this.track(plan.cameraId);
+					return (
+						track?.requestedQuality !== plan.quality ||
+						track?.requestedVariantId !== (plan.variantId ?? null)
+					);
+				})
+				.map((plan) => this.setQuality(plan.cameraId, plan.quality, plan.variantId ?? null))
 		);
 	}
 
@@ -211,7 +211,9 @@ export class LivePeer {
 					stream: null,
 					status: 'connecting',
 					requestedQuality: track.quality,
+					requestedVariantId: track.variantId ?? null,
 					activeStream: 'sub',
+					pendingStream: null,
 					estimatedBitrateBps: null
 				} satisfies LivePeerTrack
 			])
@@ -270,7 +272,12 @@ export class LivePeer {
 			if (controlChannel.readyState !== 'open') await controlOpened;
 			await this.waitForCapabilities();
 			for (const track of localTracks) {
-				await this.subscribeTrack(track.cameraId, track.trackId, track.quality);
+				await this.subscribeTrack(
+					track.cameraId,
+					track.trackId,
+					track.quality,
+					track.variantId ?? null
+				);
 			}
 		} catch (error) {
 			if (peer === this.#peer) {
@@ -287,16 +294,22 @@ export class LivePeer {
 			throw error;
 		}
 	}
-	private async setQuality(cameraId: string, quality: LiveQuality): Promise<void> {
+	private async setQuality(
+		cameraId: string,
+		quality: LiveQuality,
+		variantId: 'main' | 'sub' | null
+	): Promise<void> {
 		const track = this.tracks[cameraId];
 		if (!track) return;
-		await this.subscribeTrack(cameraId, track.trackId, quality);
+		await this.subscribeTrack(cameraId, track.trackId, quality, variantId, true);
 	}
 
 	private async subscribeTrack(
 		cameraId: string,
 		subscriptionId: string,
-		quality: LiveQuality
+		quality: LiveQuality,
+		variantId: 'main' | 'sub' | null = null,
+		replacement = false
 	): Promise<void> {
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		if (!sourceSessionId) throw new Error(`Camera ${cameraId} has no live source session.`);
@@ -306,17 +319,25 @@ export class LivePeer {
 			kind: MediaKind.VIDEO,
 			requestedDeliveryTransport: DeliveryTransport.RTP,
 			videoQuality: protoQuality(quality),
-			variantId: ''
+			variantId: variantId ?? ''
 		});
 		const result = await this.request({ case: 'subscribeMedia', value: subscribe });
 		if (result.case !== 'subscriptionResult' || result.value.delivery.case !== 'rtp') {
 			throw new Error('Server returned an unexpected media subscription response.');
 		}
 		const mid = result.value.delivery.value.mid;
+		const selectedStream = result.value.selectedVariantId === 'main' ? 'main' : 'sub';
+		const current = this.track(cameraId);
+		const pendingStream =
+			replacement && current !== null && current.activeStream !== selectedStream
+				? selectedStream
+				: null;
 		this.#cameraByMid[mid] = cameraId;
 		this.replaceTrack(cameraId, {
 			requestedQuality: quality,
-			activeStream: result.value.selectedVariantId === 'main' ? 'main' : 'sub'
+			requestedVariantId: variantId,
+			activeStream: pendingStream === null ? selectedStream : current!.activeStream,
+			pendingStream
 		});
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
@@ -370,19 +391,31 @@ export class LivePeer {
 			return;
 		}
 		if (envelope.message.case === 'notification') {
-			if (envelope.message.value.event.case !== 'initialCapabilities') return;
-			const capabilities = envelope.message.value.event.value;
-			this.#capabilities = capabilities;
-			this.#sourceSessionByCamera = Object.fromEntries(
-				capabilities.sourceSessions
-					.filter((source) => source.sourceId.length > 0 && source.video !== undefined)
-					.map((source) => [source.sourceId, source.sourceSessionId])
-			);
-			for (const waiter of this.#capabilitiesWaiters) {
-				clearTimeout(waiter.timeout);
-				waiter.resolve(capabilities);
+			const event = envelope.message.value.event;
+			if (event.case === 'initialCapabilities') {
+				const capabilities = event.value;
+				this.#capabilities = capabilities;
+				this.#sourceSessionByCamera = Object.fromEntries(
+					capabilities.sourceSessions
+						.filter((source) => source.sourceId.length > 0 && source.video !== undefined)
+						.map((source) => [source.sourceId, source.sourceSessionId])
+				);
+				for (const waiter of this.#capabilitiesWaiters) {
+					clearTimeout(waiter.timeout);
+					waiter.resolve(capabilities);
+				}
+				this.#capabilitiesWaiters = [];
 			}
-			this.#capabilitiesWaiters = [];
+			if (event.case === 'subscriptionStreamState') {
+				const stream = event.value.activeVariantId;
+				if (stream !== 'main' && stream !== 'sub') return;
+				const cameraId = Object.values(this.tracks).find(
+					(track) => track.trackId === event.value.subscriptionId
+				)?.cameraId;
+				if (cameraId !== undefined) {
+					this.replaceTrack(cameraId, { activeStream: stream, pendingStream: null });
+				}
+			}
 			return;
 		}
 		if (envelope.message.case !== 'response') return;

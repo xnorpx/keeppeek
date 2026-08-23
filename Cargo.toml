@@ -75,6 +75,7 @@ clap = { version = "*", default-features = false, features = [
   "derive",
   "help",
 ] }
+csv = { version = "*" }
 crossbeam-channel = "0.5.16"
 ctrlc = { version = "*" }
 flate2 = "1"
@@ -113,6 +114,7 @@ prometheus-client = "0.25.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 subtle = "2"
+zip = { version = "*", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 str0m-wincrypto = { version = "0.8.0" }
@@ -202,3 +204,5 @@ lto = 'fat'
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3.2.0"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+zip = { version = "*", default-features = false, features = ["deflate"] }

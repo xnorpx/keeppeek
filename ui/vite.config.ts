@@ -1,3 +1,5 @@
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import tailwindcss from '@tailwindcss/vite';
@@ -5,13 +7,21 @@ import { sveltekit } from '@sveltejs/kit/vite';
 
 const apiTarget = process.env.KEEPPEEK_API_TARGET ?? 'http://localhost:3000';
 const isCI = Boolean(process.env.CI);
+const uiRoot = resolve('.');
+const fontSourceRoots = [
+	realpathSync(resolve(uiRoot, 'node_modules/@fontsource/archivo')),
+	realpathSync(resolve(uiRoot, 'node_modules/@fontsource/ibm-plex-mono'))
+];
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
 	optimizeDeps: {
-		include: ['@lucide/svelte/icons/arrow-up']
+		include: ['@lucide/svelte/icons/arrow-up', '@lucide/svelte/icons/loader-circle']
 	},
 	server: {
+		fs: {
+			allow: [uiRoot, ...fontSourceRoots]
+		},
 		proxy: {
 			'/create': apiTarget,
 			'/delete': apiTarget,

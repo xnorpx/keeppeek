@@ -174,6 +174,56 @@ export interface DiscoveredCameraSettings {
 	sources: string[];
 	configured: boolean;
 	health: CameraHealth['state'] | null;
+	catalog?: CameraCatalogCamera | null;
+}
+
+export interface CameraCatalogInfo {
+	version: string;
+	tag: string;
+	generated_at: string;
+	camera_count: number;
+	website_url: string;
+}
+
+export interface CameraCatalogCamera {
+	id: string;
+	brand: string;
+	model: string;
+	aliases: string[];
+	camera_type: string;
+	resolution_label: string | null;
+	megapixels: number | null;
+	sensor: string | null;
+	field_of_view: string | null;
+	night_vision: string | null;
+	ip_rating: string | null;
+	ik_rating: string | null;
+	two_way_audio: boolean | null;
+	release_year: number | null;
+	community_notes_count: number;
+	protocols: string[];
+	codecs: string[];
+	streams: CameraCatalogStream[];
+	sources: string[];
+	stream_hints: CameraCatalogStreamHints | null;
+}
+
+export interface CameraCatalogStream {
+	name: string;
+	resolution: string | null;
+	fps: number | null;
+	codec: string | null;
+}
+
+export interface CameraCatalogStreamHints {
+	main_rtsp_url: string | null;
+	sub_rtsp_url: string | null;
+}
+
+export interface CameraStreamProbeResult {
+	main_rtsp_url: string | null;
+	sub_rtsp_url: string | null;
+	onvif_port: number | null;
 }
 
 export interface CameraSettingsUpdate {
