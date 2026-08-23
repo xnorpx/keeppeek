@@ -135,8 +135,7 @@ test('adds nine randomized RTSP cameras in Settings and shows the production Web
 			await page.getByRole('link', { name: 'Peek', exact: true }).click();
 		});
 
-		const diagnosticsSelector =
-			'[data-camera-id="192.0.2.101"] button[aria-label="WebRTC stream diagnostics"]';
+		const diagnosticsSelector = '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]';
 		for (const index of [0, 1]) {
 			await waitForAction(page, demoStartAt, diagnosticsSelector, index);
 			await page.locator(diagnosticsSelector).click();

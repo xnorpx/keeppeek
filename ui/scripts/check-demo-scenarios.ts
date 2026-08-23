@@ -110,8 +110,9 @@ if (
 	nineCameraActions.filter((action) => action.selector === 'a[aria-label="Settings"]').length !==
 		1 ||
 	nineCameraActions.filter((action) => action.selector === 'a[aria-label="Peek"]').length !== 1 ||
-	nineCameraActions.filter((action) => action.selector.includes('WebRTC stream diagnostics'))
-		.length !== 2
+	nineCameraActions.filter(
+		(action) => action.selector === '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]'
+	).length !== 2
 ) {
 	throw new Error(
 		'Nine-camera demo must save nine cameras and restart once before opening Peek diagnostics'
