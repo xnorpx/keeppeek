@@ -86,6 +86,8 @@ export interface RecordingsResponse {
 
 export interface RecordingEvent {
 	id: string;
+	source_id?: string;
+	revision?: number;
 	source: 'camera' | 'keeppeek';
 	kind: string;
 	start_time_ms: number;
@@ -94,6 +96,16 @@ export interface RecordingEvent {
 	bbox: [number, number, number, number] | null;
 	zone: string | null;
 	thumbnail_url: string | null;
+	attachments?: readonly RecordingEventAttachment[];
+}
+
+export interface RecordingEventAttachment {
+	id: string;
+	type: string;
+	content_type: string;
+	byte_length: number | null;
+	ordinal: number;
+	timestamp_ms: number | null;
 }
 
 export interface RecordingEventsResponse {

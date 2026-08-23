@@ -182,12 +182,43 @@ describe('VerticalTimeline', () => {
 		});
 		const timeline = container.querySelector<HTMLElement>('[data-timeline-zoom]');
 		const zoomIn = page.getByTitle('Zoom timeline in');
+		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
+		scroller.dispatchEvent(new Event('scroll'));
 
 		expect(timeline?.dataset.timelineZoom).toBe('6h');
 		await userEvent.click(zoomIn);
 		await userEvent.click(zoomIn);
 		await userEvent.click(zoomIn);
 		expect(timeline?.dataset.timelineZoom).toBe('1m');
+		expect(container.querySelectorAll('[data-timeline-tick]').length).toBeLessThan(200);
+	});
+
+	it('reports a zoom-aligned viewport instead of requesting the full day', async () => {
+		const onViewportChange = vi.fn();
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		await render(VerticalTimeline, {
+			props: {
+				segments: [],
+				selectedUrl: null,
+				playheadMs: null,
+				dayStartMs,
+				onSeek: vi.fn(),
+				onViewportChange
+			}
+		});
+		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
+		scroller.dispatchEvent(new Event('scroll'));
+
+		await vi.waitFor(() => expect(onViewportChange).toHaveBeenCalled());
+		const viewport = onViewportChange.mock.lastCall?.[0];
+		expect(viewport).toMatchObject({
+			bucketMs: 5 * 60_000,
+			prefetchMs: 12 * 60 * 60_000,
+			eventTypes: []
+		});
+		expect(viewport.endMs - viewport.startMs).toBeLessThan(86_400_000);
 	});
 
 	it('filters event cards without dropping the underlying timeline', async () => {
