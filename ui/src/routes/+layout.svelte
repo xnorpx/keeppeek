@@ -209,17 +209,6 @@
 		if (page.url.pathname !== '/system-health') return;
 		return livePeer.hold();
 	});
-
-	$effect.pre(() => {
-		const pathname = page.url.pathname;
-		if (
-			!livePeer.peekReviewTransitionActive ||
-			(pathname !== resolve('/') && pathname !== resolve('/keep'))
-		) {
-			return;
-		}
-		return livePeer.hold();
-	});
 </script>
 
 <Tooltip.Provider delayDuration={0}>

@@ -1,6 +1,5 @@
 <script lang="ts">
 	import PlayIcon from '@lucide/svelte/icons/play';
-	import PeekEntryBanner from '$lib/components/PeekEntryBanner.svelte';
 	import Board31RewindStory from './Board31RewindStory.svelte';
 
 	const timeFormatter = new Intl.DateTimeFormat('en-GB', {
@@ -16,16 +15,16 @@
 		landedAtMs === null ? '' : timeFormatter.format(new Date(landedAtMs))
 	);
 
-	function openKeep(_cameraId: string, targetTimestampMs: number): void {
-		landedAtMs = targetTimestampMs;
+	function openKeep(_cameraId: string): void {
+		landedAtMs = Date.parse('2026-08-18T06:37:23Z');
 	}
 </script>
 
 {#if landedAtMs === null}
-	<Board31RewindStory state="ready" onrewind={openKeep} />
+	<Board31RewindStory state="focused" onhistory={openKeep} />
 {:else}
 	<main
-		data-paper-scenario="peek.desktop.rewind-to-keep"
+		data-paper-scenario="peek.desktop.history-keep"
 		data-demo-landed-in-keep
 		class="flex h-[262px] w-[464px] flex-col overflow-hidden bg-ground text-foreground [font-synthesis:none]"
 	>
@@ -36,11 +35,6 @@
 			<span class="flex-1"></span>
 			<span class="font-mono text-[9px] leading-3 text-text-muted">Tue 18 Aug 2026</span>
 		</header>
-		<PeekEntryBanner
-			cameraLabel="Front Door"
-			timestampMs={landedAtMs}
-			timeLabel={landedTimeLabel}
-		/>
 		<section class="relative min-h-0 flex-1 bg-video" aria-label="Recorded Front Door video">
 			<div class="absolute top-2 left-2.5 font-mono text-[9px] leading-3 text-white/80">
 				2026-08-18 {landedTimeLabel}

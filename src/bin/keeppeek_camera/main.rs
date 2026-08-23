@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod catalog;
 mod discover;
 mod stream_test;
 
@@ -10,7 +11,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[derive(Debug, Parser)]
 #[command(
     name = "keeppeek-camera",
-    about = "Discover cameras and test their live streams"
+    about = "Inspect the catalog, discover cameras, and test their live streams"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -19,6 +20,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Report ONVIF capability and explicit service-port evidence in the embedded camera catalog.
+    Catalog,
     /// Discover cameras, test credentials, and write staged TOML results.
     Discover(discover::Cli),
     /// Stream selected camera profiles to MP4 and report ingress statistics.
@@ -34,6 +37,7 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match Cli::parse().command {
+        Command::Catalog => catalog::run(),
         Command::Discover(command) => discover::run(command),
         Command::Test(command) => stream_test::run(command),
     }

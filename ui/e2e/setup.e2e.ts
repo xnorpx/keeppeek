@@ -95,6 +95,6 @@ test('Board 21 keeps first run blocked, names empty states, and opens camera onb
 
 	await page.getByRole('link', { name: 'Enter an address' }).click();
 	await expect(page).toHaveURL(/\/cameras\/new#manual-camera$/);
-	await expect(page.getByRole('heading', { name: 'Enter manually' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Connect directly' })).toBeVisible();
 	expect(writes).toEqual([]);
 });

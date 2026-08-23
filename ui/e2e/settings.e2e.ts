@@ -166,6 +166,13 @@ test('Board 20 uses real theme, runtime, restart, and log evidence without inven
 				}
 			},
 			storage: { long_term_max_bytes: 0, catalog: null }
+		},
+		cameraCatalog: {
+			version: '2.1.0-test',
+			tag: 'v2.1.0-test',
+			generated_at: '2026-08-22T06:13:00Z',
+			camera_count: 3433,
+			website_url: 'https://www.cctv-database.com/'
 		}
 	});
 	await page.route('**/metrics', async (route) => {
@@ -185,6 +192,13 @@ test('Board 20 uses real theme, runtime, restart, and log evidence without inven
 	await expect(section).toContainText('2d 3h 4m');
 	await expect(section).toContainText('/opt/keeppeek/bin/keeppeek');
 	await expect(section).toContainText('/opt/keeppeek');
+	await expect(section).toContainText('2.1.0-test');
+	await expect(section).toContainText('3,433');
+	await expect(section).toContainText('2026-08-22T06:13:00Z');
+	await expect(section.getByRole('link', { name: 'CCTV Database' })).toHaveAttribute(
+		'href',
+		'https://www.cctv-database.com/'
+	);
 	await expect(
 		section.getByText('Browser reduced motion', { exact: true }).locator('..')
 	).toContainText('Reduce');

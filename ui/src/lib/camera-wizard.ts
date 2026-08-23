@@ -1,5 +1,6 @@
 import type {
 	CameraBackend,
+	CameraCatalogStreamHints,
 	CameraSettingsUpdate,
 	CameraTransport,
 	DiscoveredCameraSettings
@@ -40,7 +41,7 @@ export function emptyCameraWizardDraft(): CameraWizardDraft {
 
 export function draftFromDiscoveredCamera(camera: DiscoveredCameraSettings): CameraWizardDraft {
 	const reolink = camera.brand.toLocaleLowerCase() === 'reolink';
-	return {
+	const draft: CameraWizardDraft = {
 		...emptyCameraWizardDraft(),
 		ip: camera.ip,
 		displayName: camera.name ?? '',
@@ -51,6 +52,9 @@ export function draftFromDiscoveredCamera(camera: DiscoveredCameraSettings): Cam
 			.filter((value): value is string => Boolean(value))
 			.join(' · ')
 	};
+	return camera.catalog?.stream_hints
+		? applyCatalogStreamHints(draft, camera.catalog.stream_hints)
+		: draft;
 }
 
 export function applyManualCameraAddress(
@@ -58,14 +62,10 @@ export function applyManualCameraAddress(
 	address: string
 ): CameraWizardDraft {
 	const value = address.trim();
+	const error = manualCameraAddressError(value);
+	if (error) throw new Error(error);
 	if (value.toLocaleLowerCase().startsWith('rtsp://')) {
-		let url: URL;
-		try {
-			url = new URL(value);
-		} catch {
-			throw new Error('Enter a valid RTSP URL.');
-		}
-		if (!url.hostname) throw new Error('RTSP URL must include a camera address.');
+		const url = new URL(value);
 		return {
 			...draft,
 			ip: url.hostname,
@@ -74,8 +74,38 @@ export function applyManualCameraAddress(
 			discoveryEvidence: 'Manual RTSP address supplied · stream not probed'
 		};
 	}
-	validateAddress(value);
 	return { ...draft, ip: value, discoveryEvidence: 'Manual camera address supplied' };
+}
+
+export function manualCameraAddressError(address: string): string | null {
+	const value = address.trim();
+	if (!value) return null;
+	if (value.toLocaleLowerCase().startsWith('rtsp://')) {
+		let url: URL;
+		try {
+			url = new URL(value);
+		} catch {
+			return 'Enter a valid RTSP URL.';
+		}
+		return url.hostname ? null : 'RTSP URL must include a camera address.';
+	}
+	try {
+		validateAddress(value);
+		return null;
+	} catch (cause) {
+		return cause instanceof Error ? cause.message : 'Camera address is invalid.';
+	}
+}
+
+export function applyCatalogStreamHints(
+	draft: CameraWizardDraft,
+	hints: CameraCatalogStreamHints
+): CameraWizardDraft {
+	return {
+		...draft,
+		mainRtspUrl: hints.main_rtsp_url ?? draft.mainRtspUrl,
+		subRtspUrl: hints.sub_rtsp_url ?? draft.subRtspUrl
+	};
 }
 
 export function validateCameraWizardStep(

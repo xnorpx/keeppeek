@@ -3,16 +3,24 @@
 	import { resolve } from '$app/paths';
 	import { useControlClient } from '$lib/control-context';
 	import {
+		applyCatalogStreamHints,
 		applyManualCameraAddress,
 		cameraWizardSteps,
 		cameraWizardUpdate,
 		draftFromDiscoveredCamera,
 		emptyCameraWizardDraft,
+		manualCameraAddressError,
 		validateCameraWizardStep,
 		type CameraWizardDraft,
 		type CameraWizardStep
 	} from '$lib/camera-wizard';
-	import type { CameraSettingsUpdateResponse, DiscoveredCameraSettings } from '$lib/types';
+	import type {
+		CameraCatalogCamera,
+		CameraCatalogInfo,
+		CameraSettingsUpdateResponse,
+		DiscoveredCameraSettings
+	} from '$lib/types';
+	import CameraCatalogEvidence from '$lib/components/CameraCatalogEvidence.svelte';
 	import DiscoveryProgressState from '$lib/components/DiscoveryProgressState.svelte';
 	import DesktopCameraWizardStreamsStep from '$lib/components/DesktopCameraWizardStreamsStep.svelte';
 	import MobileAddCameraWizard, {
@@ -21,12 +29,13 @@
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
 	import ArrowRightIcon from '@lucide/svelte/icons/arrow-right';
 	import CheckIcon from '@lucide/svelte/icons/check';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import LockIcon from '@lucide/svelte/icons/lock';
 	import SearchIcon from '@lucide/svelte/icons/search';
 
 	const stepLabels: Record<CameraWizardStep, string> = {
-		find: 'Find',
-		connect: 'Connect',
+		find: 'Find & connect',
+		connect: 'Connection options',
 		streams: 'Streams',
 		recording: 'Recording',
 		review: 'Review & save'
@@ -35,6 +44,12 @@
 	let stepIndex = $state(0);
 	let draft = $state.raw<CameraWizardDraft>(emptyCameraWizardDraft());
 	let discovered = $state.raw<DiscoveredCameraSettings[]>([]);
+	let selectedCatalogCamera = $state.raw<CameraCatalogCamera | null>(null);
+	let catalogInfo = $state.raw<CameraCatalogInfo | null>(null);
+	let catalogQuery = $state('');
+	let catalogResults = $state.raw<CameraCatalogCamera[]>([]);
+	let catalogSearching = $state(false);
+	let catalogSearchAttempted = $state(false);
 	let subnetPrefixes = $state('192.168.1');
 	let manualAddress = $state('');
 	let discovering = $state(false);
@@ -42,11 +57,49 @@
 	let discoveryStartedAt = $state(0);
 	let discoveryElapsedMs = $state(0);
 	let discoverySubnetCount = $state(0);
+	let streamResolution = $state<'unresolved' | 'catalog' | 'probing' | 'onvif' | 'manual'>(
+		'unresolved'
+	);
+	let streamProbeMessage = $state<string | null>(null);
+	let streamProbing = $state(false);
+	let streamProbeRevision = $state(0);
+	let lastStreamProbeRevision = $state(-1);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 	let saved = $state.raw<CameraSettingsUpdateResponse | null>(null);
 	const controlClient = useControlClient();
 	let currentStep = $derived(cameraWizardSteps[stepIndex]);
+	let manualAddressError = $derived(manualCameraAddressError(manualAddress));
+	let manualAddressValid = $derived(manualAddress.trim().length > 0 && manualAddressError === null);
+	let manualRtspAddress = $derived(manualAddress.trim().toLocaleLowerCase().startsWith('rtsp://'));
+	let firstConnectionReady = $derived(
+		!manualRtspAddress &&
+			validateCameraWizardStep('find', draft) === null &&
+			validateCameraWizardStep('connect', draft) === null
+	);
+	let firstScreenProbeStatus = $derived.by(() => {
+		if (manualRtspAddress) return 'Manual RTSP URL supplied. ONVIF lookup is skipped.';
+		if (streamProbing) {
+			return draft.onvifPort.trim()
+				? `Trying ONVIF at ${draft.ip}:${draft.onvifPort}…`
+				: `Trying ONVIF at ${draft.ip} on common ports…`;
+		}
+		if (streamResolution === 'onvif') {
+			return draft.onvifPort.trim()
+				? `ONVIF stream endpoints are ready on port ${draft.onvifPort}.`
+				: 'ONVIF stream endpoints are ready.';
+		}
+		if (firstConnectionReady) return streamProbeMessage ?? 'ONVIF lookup will start automatically.';
+		return 'Enter a valid address, username, and password to start ONVIF automatically.';
+	});
+	let catalogStreamsApplied = $derived.by(() => {
+		const hints = selectedCatalogCamera?.stream_hints;
+		if (!hints || (!hints.main_rtsp_url && !hints.sub_rtsp_url)) return false;
+		return (
+			(hints.main_rtsp_url === null || draft.mainRtspUrl === hints.main_rtsp_url) &&
+			(hints.sub_rtsp_url === null || draft.subRtspUrl === hints.sub_rtsp_url)
+		);
+	});
 	let mobileStage = $derived<MobileCameraWizardStage>(
 		currentStep === 'streams'
 			? 'streams'
@@ -65,8 +118,37 @@
 		return () => window.clearInterval(timer);
 	});
 
+	$effect(() => {
+		const nextDraft = draft;
+		const revision = streamProbeRevision;
+		if (
+			(currentStep !== 'find' && currentStep !== 'connect') ||
+			!canProbeCameraStreams(nextDraft) ||
+			streamProbing ||
+			lastStreamProbeRevision === revision
+		) {
+			return;
+		}
+		const timer = window.setTimeout(() => {
+			void probeCameraStreams(nextDraft, revision);
+		}, 350);
+		return () => window.clearTimeout(timer);
+	});
+
 	function updateDraft(update: Partial<CameraWizardDraft>): void {
 		draft = { ...draft, ...update };
+		if (
+			update.ip !== undefined ||
+			update.username !== undefined ||
+			update.password !== undefined ||
+			update.onvifPort !== undefined
+		) {
+			streamProbeRevision += 1;
+		}
+		if (update.mainRtspUrl !== undefined || update.subRtspUrl !== undefined) {
+			streamResolution = 'manual';
+			streamProbeMessage = null;
+		}
 		error = null;
 	}
 
@@ -104,7 +186,12 @@
 		discovering = true;
 		error = null;
 		try {
-			discovered = await controlClient.discoverCameras(subnets);
+			const [cameras, nextCatalogInfo] = await Promise.all([
+				controlClient.discoverCameras(subnets),
+				controlClient.getCameraCatalog().catch(() => null)
+			]);
+			discovered = cameras;
+			catalogInfo = nextCatalogInfo;
 			discoveryAttempted = true;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Camera discovery failed.';
@@ -116,23 +203,207 @@
 	function selectDiscovered(camera: DiscoveredCameraSettings): void {
 		if (camera.configured) return;
 		draft = draftFromDiscoveredCamera(camera);
+		manualAddress = '';
+		selectedCatalogCamera = camera.catalog ?? null;
+		streamProbeRevision += 1;
+		streamResolution =
+			camera.catalog?.stream_hints?.main_rtsp_url || camera.catalog?.stream_hints?.sub_rtsp_url
+				? 'catalog'
+				: 'unresolved';
+		streamProbeMessage = null;
 		error = null;
 	}
 
-	function useManualAddress(): void {
+	function updateManualAddress(value: string): void {
+		manualAddress = value;
+		const addressError = manualCameraAddressError(value);
+		if (addressError !== null || !value.trim()) {
+			draft = {
+				...draft,
+				ip: '',
+				mainRtspUrl: '',
+				subRtspUrl: '',
+				discoveryEvidence: null
+			};
+			selectedCatalogCamera = null;
+			streamProbeRevision += 1;
+			streamResolution = 'unresolved';
+			streamProbeMessage = null;
+			if (error) error = null;
+			return;
+		}
+
 		try {
-			draft = applyManualCameraAddress(draft, manualAddress);
+			let nextDraft = applyManualCameraAddress(draft, value);
+			const addressChanged = nextDraft.ip !== draft.ip;
+			const isRtspAddress = value.trim().toLocaleLowerCase().startsWith('rtsp://');
+			if (addressChanged && !isRtspAddress) {
+				nextDraft = { ...nextDraft, mainRtspUrl: '', subRtspUrl: '' };
+			}
+			draft = nextDraft;
+			if (addressChanged || isRtspAddress) selectedCatalogCamera = null;
+			streamProbeRevision += 1;
+			streamResolution = isRtspAddress ? 'manual' : 'unresolved';
+			streamProbeMessage = null;
 			error = null;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Camera address is invalid.';
 		}
 	}
 
+	function updateCatalogQuery(value: string): void {
+		if (catalogQuery === value) return;
+		catalogQuery = value;
+		catalogResults = [];
+		catalogSearchAttempted = false;
+		if (error) error = null;
+	}
+
+	function catalogSearchIp(): string | undefined {
+		if (!manualAddress.trim()) return draft.ip.trim() || undefined;
+		const nextDraft = applyManualCameraAddress(draft, manualAddress);
+		if (nextDraft.ip !== draft.ip) selectedCatalogCamera = null;
+		draft = nextDraft;
+		return nextDraft.ip;
+	}
+
+	async function searchCatalog(): Promise<void> {
+		const query = catalogQuery.trim();
+		if (!query || catalogSearching) return;
+		let ip: string | undefined;
+		try {
+			ip = catalogSearchIp();
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Camera address is invalid.';
+			return;
+		}
+		catalogSearching = true;
+		catalogSearchAttempted = true;
+		catalogResults = [];
+		error = null;
+		try {
+			const [results, nextCatalogInfo] = await Promise.all([
+				controlClient.searchCameraCatalog(query, { ip }),
+				catalogInfo
+					? Promise.resolve(catalogInfo)
+					: controlClient.getCameraCatalog().catch(() => null)
+			]);
+			catalogResults = results;
+			catalogInfo = nextCatalogInfo;
+		} catch (cause) {
+			error = cause instanceof Error ? cause.message : 'Camera catalog search failed.';
+		} finally {
+			catalogSearching = false;
+		}
+	}
+
+	function selectCatalogCamera(camera: CameraCatalogCamera): void {
+		selectedCatalogCamera = camera;
+		if (camera.stream_hints) {
+			draft = applyCatalogStreamHints(draft, camera.stream_hints);
+			streamResolution =
+				camera.stream_hints.main_rtsp_url || camera.stream_hints.sub_rtsp_url
+					? 'catalog'
+					: 'unresolved';
+		} else {
+			streamResolution = 'unresolved';
+		}
+		streamProbeRevision += 1;
+		streamProbeMessage = null;
+		error = null;
+	}
+
+	function applyCatalogStreams(): void {
+		const hints = selectedCatalogCamera?.stream_hints;
+		if (!hints) return;
+		draft = applyCatalogStreamHints(draft, hints);
+		streamResolution = 'catalog';
+		streamProbeMessage = null;
+		error = null;
+	}
+
+	function canProbeCameraStreams(nextDraft: CameraWizardDraft): boolean {
+		return (
+			!manualAddress.trim().toLocaleLowerCase().startsWith('rtsp://') &&
+			validateCameraWizardStep('find', nextDraft) === null &&
+			validateCameraWizardStep('connect', nextDraft) === null
+		);
+	}
+
+	async function probeCameraStreams(
+		nextDraft: CameraWizardDraft,
+		revision = streamProbeRevision,
+		force = false
+	): Promise<void> {
+		if (streamProbing || (!force && lastStreamProbeRevision === revision)) return;
+		if (manualAddress.trim().toLocaleLowerCase().startsWith('rtsp://')) {
+			draft = nextDraft;
+			streamResolution = 'manual';
+			streamProbeMessage = null;
+			lastStreamProbeRevision = revision;
+			return;
+		}
+		if (!canProbeCameraStreams(nextDraft)) return;
+		lastStreamProbeRevision = revision;
+		streamProbing = true;
+		streamResolution = 'probing';
+		streamProbeMessage = null;
+		try {
+			const streams = await controlClient.probeCameraStreams({
+				ip: nextDraft.ip,
+				username: nextDraft.username,
+				password: nextDraft.password,
+				onvif_port: nextDraft.onvifPort.trim() ? Number(nextDraft.onvifPort) : null
+			});
+			if (revision !== streamProbeRevision) return;
+			const foundStream = Boolean(streams.main_rtsp_url || streams.sub_rtsp_url);
+			draft = {
+				...nextDraft,
+				onvifPort: streams.onvif_port?.toString() ?? nextDraft.onvifPort,
+				mainRtspUrl: streams.main_rtsp_url ?? nextDraft.mainRtspUrl,
+				subRtspUrl: streams.sub_rtsp_url ?? nextDraft.subRtspUrl
+			};
+			streamResolution = foundStream
+				? 'onvif'
+				: selectedCatalogCamera?.stream_hints?.main_rtsp_url ||
+					  selectedCatalogCamera?.stream_hints?.sub_rtsp_url
+					? 'catalog'
+					: 'unresolved';
+			streamProbeMessage = foundStream
+				? null
+				: `ONVIF responded${streams.onvif_port === null ? '' : ` on port ${streams.onvif_port}`} but did not report RTSP stream endpoints. You can enter them manually.`;
+		} catch (cause) {
+			if (revision !== streamProbeRevision) return;
+			draft = nextDraft;
+			streamResolution =
+				selectedCatalogCamera?.stream_hints?.main_rtsp_url ||
+				selectedCatalogCamera?.stream_hints?.sub_rtsp_url
+					? 'catalog'
+					: 'unresolved';
+			const detail = cause instanceof Error ? cause.message : '';
+			streamProbeMessage = detail.includes('another camera operation')
+				? 'Another camera operation is in progress. ONVIF will retry when you edit the connection details.'
+				: 'ONVIF did not respond on the automatic port search. Choose an ONVIF port in Connection options to retry, or enter RTSP URLs manually.';
+		} finally {
+			streamProbing = false;
+		}
+	}
+
+	function tryCameraConnection(): void {
+		void probeCameraStreams(draft, streamProbeRevision, true);
+	}
+
 	function next(): void {
-		const validationError = validateCameraWizardStep(currentStep, draft);
+		const validationError =
+			currentStep === 'find'
+				? (validateCameraWizardStep('find', draft) ?? validateCameraWizardStep('connect', draft))
+				: validateCameraWizardStep(currentStep, draft);
 		if (validationError) {
 			error = validationError;
 			return;
+		}
+		if ((currentStep === 'find' || currentStep === 'connect') && !streamProbing) {
+			void probeCameraStreams(draft, streamProbeRevision);
 		}
 		if (stepIndex < cameraWizardSteps.length - 1) stepIndex += 1;
 		error = null;
@@ -160,7 +431,11 @@
 				return;
 			}
 		}
-		draft = nextDraft;
+		if (nextDraft !== draft) {
+			draft = nextDraft;
+			streamProbeRevision += 1;
+		}
+		if (!streamProbing) void probeCameraStreams(nextDraft, streamProbeRevision, true);
 		stepIndex = cameraWizardSteps.indexOf('streams');
 		error = null;
 	}
@@ -277,18 +552,34 @@
 			stage={mobileStage}
 			{draft}
 			{discovered}
+			{selectedCatalogCamera}
+			{catalogInfo}
+			{catalogQuery}
+			{catalogResults}
+			{catalogSearching}
+			{catalogSearchAttempted}
 			{subnetPrefixes}
 			{manualAddress}
+			{manualAddressError}
+			{manualAddressValid}
 			{discovering}
 			{discoveryElapsedMs}
 			{discoveryAttempted}
 			{error}
 			{saving}
+			{streamResolution}
+			{streamProbeMessage}
+			{streamProbing}
+			{catalogStreamsApplied}
 			oncancel={discard}
 			ondiscover={discover}
 			onselect={selectDiscovered}
+			onapplycatalogstreams={applyCatalogStreams}
+			oncatalogquery={updateCatalogQuery}
+			onsearchcatalog={searchCatalog}
+			onselectcatalog={selectCatalogCamera}
 			onsubnets={(value) => (subnetPrefixes = value)}
-			onmanualaddress={(value) => (manualAddress = value)}
+			onmanualaddress={updateManualAddress}
 			onupdate={updateDraft}
 			onconnect={mobileConnect}
 			onreview={mobileReview}
@@ -359,7 +650,7 @@
 										class="h-[172px] rounded-sm border border-hairline"
 									/>
 								{/if}
-								<div class="space-y-1.5">
+								<div class="space-y-1.5" role="group" aria-label="Discovered cameras">
 									{#each discovered as camera (camera.ip)}
 										<button
 											type="button"
@@ -368,6 +659,7 @@
 												? 'border-primary bg-primary/5'
 												: 'border-hairline bg-raised'}"
 											disabled={camera.configured}
+											aria-pressed={draft.ip === camera.ip}
 											onclick={() => selectDiscovered(camera)}
 										>
 											<span
@@ -378,8 +670,13 @@
 											<span class="min-w-0 flex-1"
 												><span class="block truncate text-xs font-medium"
 													>{camera.name ?? camera.ip}</span
-												><span class="block truncate font-mono text-2xs text-text-faint"
-													>{camera.configured ? 'ALREADY ADDED' : evidenceLabel(camera)}</span
+												>
+												<span class="block truncate font-mono text-2xs text-text-faint"
+													>{camera.configured
+														? 'ALREADY ADDED'
+														: camera.catalog
+															? `NETWORK · CATALOG ${camera.catalog.model}`
+															: `NETWORK · ${evidenceLabel(camera)}`}</span
 												></span
 											>
 										</button>
@@ -393,28 +690,136 @@
 										{/if}
 									{/each}
 								</div>
+								{#if selectedCatalogCamera}
+									<CameraCatalogEvidence camera={selectedCatalogCamera} {catalogInfo} />
+								{/if}
 							</div>
 							<div
 								id="manual-camera"
 								class="space-y-3 border-t border-hairline pt-5 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-5"
 							>
-								<h3 class="text-sm font-semibold">Enter manually</h3>
+								<h3 class="text-sm font-semibold">Connect directly</h3>
 								<p class="text-xs leading-5 text-text-muted">
-									Use an IPv4 address or a complete RTSP URL for a camera that stays quiet.
+									Enter an address and sign-in to start ONVIF lookup immediately. A model is
+									optional catalog context.
 								</p>
 								<label class="grid gap-1.5 text-xs font-medium"
 									>Address or RTSP URL
 									<input
 										class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
-										bind:value={manualAddress}
+										value={manualAddress}
 										placeholder="192.168.1.71 or rtsp://…"
+										aria-invalid={manualAddressError ? true : undefined}
+										aria-describedby={manualAddressError || manualAddressValid
+											? 'desktop-manual-address-status'
+											: undefined}
+										oninput={(event) => updateManualAddress(event.currentTarget.value)}
 									/>
 								</label>
-								<button
-									type="button"
-									class="h-9 rounded-sm border border-hairline-strong bg-raised px-4 text-xs font-medium"
-									onclick={useManualAddress}>Use this address</button
+								{#if manualAddressError || manualAddressValid}<p
+										id="desktop-manual-address-status"
+										class="text-xs {manualAddressError ? 'text-live-text' : 'text-healthy'}"
+										role="status"
+									>
+										{manualAddressError ?? 'Address format is ready to use.'}
+									</p>{/if}
+								<div class="grid gap-3 sm:grid-cols-2">
+									<label class="grid gap-1.5 text-xs font-medium"
+										>Username<input
+											class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+											value={draft.username}
+											autocomplete="username"
+											oninput={(event) => updateDraft({ username: event.currentTarget.value })}
+										/></label
+									>
+									<label class="grid gap-1.5 text-xs font-medium"
+										>Password<input
+											type="password"
+											class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+											value={draft.password}
+											autocomplete="new-password"
+											oninput={(event) => updateDraft({ password: event.currentTarget.value })}
+										/></label
+									>
+								</div>
+								<p
+									data-onvif-probe-status
+									class="flex items-start gap-2 rounded-sm border border-activity/40 bg-activity/10 px-3 py-2.5 text-xs leading-5 text-text-muted"
+									role="status"
 								>
+									<LockIcon
+										class="mt-0.5 size-3.5 shrink-0 text-activity"
+									/>{firstScreenProbeStatus}
+								</p>
+								<label class="grid gap-1.5 text-xs font-medium"
+									>Camera model (optional)
+									<div class="flex gap-2">
+										<input
+											class="h-9 min-w-0 flex-1 rounded-sm border border-hairline bg-raised px-3 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+											value={catalogQuery}
+											placeholder="Search catalog"
+											oninput={(event) => updateCatalogQuery(event.currentTarget.value)}
+										/>
+										<button
+											type="button"
+											class="h-9 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium disabled:opacity-50"
+											disabled={!catalogQuery.trim() || catalogSearching}
+											onclick={() => void searchCatalog()}
+											>{catalogSearching ? 'Searching' : 'Search'}</button
+										>
+									</div>
+								</label>
+								{#if catalogResults.length > 0}
+									<div class="space-y-1.5" role="group" aria-label="Camera catalog results">
+										{#each catalogResults as camera (camera.id)}
+											<button
+												type="button"
+												class="flex w-full items-center justify-between gap-3 rounded-sm border px-3 py-2 text-left text-xs {selectedCatalogCamera?.id ===
+												camera.id
+													? 'border-primary bg-primary/5'
+													: 'border-hairline bg-raised'}"
+												aria-pressed={selectedCatalogCamera?.id === camera.id}
+												onclick={() => selectCatalogCamera(camera)}
+											>
+												<span class="min-w-0">
+													<span class="block truncate font-medium"
+														>{camera.brand} {camera.model}</span
+													>
+													<span class="block truncate font-mono text-2xs text-text-faint"
+														>{[camera.camera_type, camera.resolution_label]
+															.filter(Boolean)
+															.join(' · ')}</span
+													>
+												</span>
+												{#if selectedCatalogCamera?.id === camera.id}<span
+														class="inline-flex shrink-0 items-center gap-1 text-primary-soft"
+														><CheckIcon class="size-3.5" /> Selected</span
+													>{/if}
+											</button>
+										{/each}
+									</div>
+								{:else if catalogSearchAttempted && !catalogSearching}
+									<div
+										class="rounded-sm border border-dashed border-hairline-strong px-3 py-3 text-xs leading-5 text-text-muted"
+										role="status"
+									>
+										<p>
+											No catalog results for {catalogQuery}. Try a brand and model, or continue with
+											the manual address.
+										</p>
+										<a
+											href={catalogInfo?.website_url ?? 'https://www.cctv-database.com/'}
+											target="_blank"
+											rel="noreferrer"
+											class="mt-2 inline-flex items-center gap-1 font-medium text-primary-soft hover:text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+										>
+											Research on CCTV Database <ExternalLinkIcon class="size-3" />
+										</a>
+									</div>
+								{/if}
+								{#if selectedCatalogCamera && !discovered.some((camera) => camera.catalog?.id === selectedCatalogCamera?.id)}
+									<CameraCatalogEvidence camera={selectedCatalogCamera} {catalogInfo} />
+								{/if}
 								{#if draft.discoveryEvidence}<p
 										class="rounded-sm border border-healthy/30 bg-healthy/5 px-3 py-2.5 text-xs text-text-muted"
 									>
@@ -424,72 +829,84 @@
 							</div>
 						</div>
 					{:else if currentStep === 'connect'}
-						<div class="mx-auto grid max-w-2xl gap-4 sm:grid-cols-2">
-							<label class="grid gap-1.5 text-xs font-medium"
-								>Username<input
-									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
-									value={draft.username}
-									oninput={(event) => updateDraft({ username: event.currentTarget.value })}
-									autocomplete="username"
-								/></label
+						<div class="mx-auto max-w-2xl space-y-4">
+							<div>
+								<p class="text-sm font-semibold">Tune a nonstandard camera</p>
+								<p class="mt-1 text-xs leading-5 text-text-muted">
+									ONVIF lookup began from the first screen. Adjust these options only when the
+									camera needs a nonstandard connection.
+								</p>
+							</div>
+							<div class="grid gap-4 sm:grid-cols-2">
+								<label class="grid gap-1.5 text-xs font-medium"
+									>Protocol<select
+										class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs"
+										value={draft.backend}
+										onchange={(event) =>
+											updateDraft({
+												backend: event.currentTarget.value as CameraWizardDraft['backend']
+											})}
+										><option value="auto">Auto — recommended</option><option value="retina"
+											>ONVIF / RTSP</option
+										><option value="reo-proto">Reolink native</option></select
+									></label
+								>
+								<label class="grid gap-1.5 text-xs font-medium"
+									>Transport<select
+										class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs"
+										value={draft.transport}
+										onchange={(event) =>
+											updateDraft({
+												transport: event.currentTarget.value as CameraWizardDraft['transport']
+											})}><option value="tcp">TCP</option><option value="udp">UDP</option></select
+									></label
+								>
+								<label class="grid gap-1.5 text-xs font-medium"
+									>ONVIF port<input
+										inputmode="numeric"
+										class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs"
+										value={draft.onvifPort}
+										oninput={(event) => updateDraft({ onvifPort: event.currentTarget.value })}
+									/></label
+								>
+								<label class="grid gap-1.5 text-xs font-medium"
+									>HTTP port<input
+										inputmode="numeric"
+										class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs"
+										value={draft.httpPort}
+										oninput={(event) => updateDraft({ httpPort: event.currentTarget.value })}
+									/></label
+								>
+							</div>
+							<div
+								class="flex items-center justify-between gap-3 rounded-md border border-activity bg-activity/10 px-3 py-2.5"
 							>
-							<label class="grid gap-1.5 text-xs font-medium"
-								>Password<input
-									type="password"
-									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
-									value={draft.password}
-									oninput={(event) => updateDraft({ password: event.currentTarget.value })}
-									autocomplete="new-password"
-								/></label
-							>
-							<label class="grid gap-1.5 text-xs font-medium"
-								>Protocol<select
-									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs"
-									value={draft.backend}
-									onchange={(event) =>
-										updateDraft({
-											backend: event.currentTarget.value as CameraWizardDraft['backend']
-										})}
-									><option value="auto">Auto — recommended</option><option value="retina"
-										>ONVIF / RTSP</option
-									><option value="reo-proto">Reolink native</option></select
-								></label
-							>
-							<label class="grid gap-1.5 text-xs font-medium"
-								>Transport<select
-									class="h-9 rounded-sm border border-hairline bg-raised px-3 text-xs"
-									value={draft.transport}
-									onchange={(event) =>
-										updateDraft({
-											transport: event.currentTarget.value as CameraWizardDraft['transport']
-										})}><option value="tcp">TCP</option><option value="udp">UDP</option></select
-								></label
-							>
-							<label class="grid gap-1.5 text-xs font-medium"
-								>ONVIF port<input
-									inputmode="numeric"
-									class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs"
-									value={draft.onvifPort}
-									oninput={(event) => updateDraft({ onvifPort: event.currentTarget.value })}
-								/></label
-							>
-							<label class="grid gap-1.5 text-xs font-medium"
-								>HTTP port<input
-									inputmode="numeric"
-									class="h-9 rounded-sm border border-hairline bg-raised px-3 font-mono text-xs"
-									value={draft.httpPort}
-									oninput={(event) => updateDraft({ httpPort: event.currentTarget.value })}
-								/></label
-							>
-							<p
-								class="flex items-start gap-2 rounded-md border border-activity bg-activity/10 px-3 py-2.5 text-xs leading-5 text-text-muted sm:col-span-2"
-							>
-								<LockIcon class="mt-0.5 size-3.5 shrink-0" />Credentials remain only in this browser
-								draft and are sent once at step 5.
-							</p>
+								<p class="text-xs text-text-muted" role="status">
+									{streamProbing
+										? 'Connecting to ONVIF…'
+										: streamResolution === 'onvif'
+											? 'ONVIF stream endpoints are ready.'
+											: (streamProbeMessage ?? 'Add a username and password to try the camera.')}
+								</p>
+								<button
+									type="button"
+									class="inline-flex h-9 shrink-0 items-center rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium disabled:opacity-50"
+									disabled={!canProbeCameraStreams(draft) || streamProbing}
+									onclick={tryCameraConnection}
+									>{streamProbing ? 'Trying…' : 'Try ONVIF again'}</button
+								>
+							</div>
 						</div>
 					{:else if currentStep === 'streams'}
-						<DesktopCameraWizardStreamsStep {draft} onupdate={updateDraft} />
+						<DesktopCameraWizardStreamsStep
+							{draft}
+							streamHints={selectedCatalogCamera?.stream_hints ?? null}
+							{catalogStreamsApplied}
+							{streamResolution}
+							{streamProbeMessage}
+							onapplycatalogstreams={applyCatalogStreams}
+							onupdate={updateDraft}
+						/>
 					{:else if currentStep === 'recording'}
 						<div class="mx-auto max-w-2xl space-y-4">
 							<label class="grid gap-1.5 text-xs font-medium"
@@ -526,6 +943,9 @@
 										<dd class="max-w-[70%] truncate text-right font-mono">{item[1]}</dd>
 									</div>{/each}
 							</dl>
+							{#if selectedCatalogCamera}
+								<CameraCatalogEvidence camera={selectedCatalogCamera} {catalogInfo} compact />
+							{/if}
 							<p
 								class="rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-xs leading-5 text-text-muted"
 							>
@@ -564,7 +984,10 @@
 						>{:else}<button
 							type="button"
 							class="inline-flex h-9 items-center gap-1.5 rounded-sm bg-primary px-4 text-xs font-semibold text-on-primary"
-							onclick={next}>Continue<ArrowRightIcon class="size-3.5" /></button
+							onclick={() => void next()}
+							>{streamProbing ? 'Continue to streams' : 'Continue'}<ArrowRightIcon
+								class="size-3.5"
+							/></button
 						>{/if}
 				</footer>
 			</section>

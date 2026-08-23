@@ -33,6 +33,17 @@ export const mixedCameras = [
 
 export const mixedHealth: HealthFixture = {
 	status: 'degraded',
+	system: {
+		system_cpu_percent: 24.8,
+		memory: {
+			total_bytes: 32_000_000_000,
+			used_bytes: 6_100_000_000
+		},
+		process: {
+			cpu_capacity_percent: 3.7,
+			resident_memory_bytes: 286_000_000
+		}
+	},
 	cameras: [
 		{
 			id: 'front-door',

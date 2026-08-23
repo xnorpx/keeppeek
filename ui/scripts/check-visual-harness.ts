@@ -50,7 +50,7 @@ const packageManifest = JSON.parse(
 ) as { scripts: Record<string, string> };
 const workflow = await readFile(resolve('..', '.github/workflows/visual-regression.yml'), 'utf8');
 
-for (const skippedStory of ['Foundation/Capability Gate Unsupported', 'Demos/Peek Rewind']) {
+for (const skippedStory of ['Foundation/Capability Gate Unsupported', 'Demos/Peek History']) {
 	if (!new RegExp(loki.skipStories, 'i').test(skippedStory)) {
 		throw new Error(`Loki must exclude the moving story: ${skippedStory}`);
 	}

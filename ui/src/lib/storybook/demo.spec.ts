@@ -1,48 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import {
 	createDemoWebVtt,
+	demoAssetId,
 	type StoryScenarioMetadata,
 	validateStoryScenarioMetadata
 } from './demo';
 
 const validScenario: StoryScenarioMetadata = {
-	storyId: 'peek.rewind-to-keep',
+	storyId: 'peek.history-keep',
 	paper: {
 		fileId: '01M0B0VBH78TMTX40GCYYQ37SG',
 		tokenHash: 'cf3b1cd7',
 		boardId: '5GD-0',
-		frameId: 'rewind-demo',
-		scenarioId: 'peek.desktop.rewind-to-keep'
+		frameId: 'history-demo',
+		scenarioId: 'peek.desktop.history-keep'
 	},
 	demo: {
 		title: 'Review what just happened',
-		purpose: 'Show the live-to-recorded transition without disturbing other cameras.',
+		purpose: 'Show focused History opening Keep without disturbing other cameras.',
 		narration: {
 			voice: 'coral',
 			instructions: 'Speak clearly in a calm product-demo tone.',
 			cues: [
 				{ atMs: 0, text: 'First, choose one live camera.' },
-				{ atMs: 2_500, text: 'Then drag backward to review the last two minutes.' }
+				{ atMs: 2_500, text: 'Then open Keep history for that camera.' }
 			]
 		},
 		durationMs: 9_000,
 		viewport: { width: 1_440, height: 860 },
 		actions: [
 			{
-				kind: 'pointer-drag',
+				kind: 'click',
 				atMs: 2_500,
-				selector: '[aria-label="Rewind Front Door"]',
-				deltaX: 0,
-				deltaY: 160,
-				durationMs: 1_000,
-				holdAfterMs: 2_000
+				selector: '[data-peek-history]'
 			}
 		],
-		completionSignal: { selector: '[data-peek-rewind]', state: 'hidden' },
+		completionSignal: { selector: '[data-demo-landed-in-keep]', state: 'visible' },
 		captions: [
 			{ atMs: 0, text: 'Every camera remains live.' },
-			{ atMs: 2_500, text: 'Drag one tile back 38 seconds.' },
-			{ atMs: 6_500, text: 'Continue at that moment in Keep.' }
+			{ atMs: 2_500, text: 'History opens Keep for one focused camera.' },
+			{ atMs: 6_500, text: 'Navigate recorded time in Keep.' }
 		]
 	}
 };
@@ -53,9 +50,16 @@ describe('Storybook demo metadata', () => {
 		expect(
 			validateStoryScenarioMetadata({
 				...validScenario,
-				storyId: 'demos-peek-rewind--rewind-one-camera'
+				storyId: 'demos-peek-history--open-keep-history'
 			})
 		).toEqual([]);
+		expect(
+			demoAssetId({
+				...validScenario,
+				demo: { ...validScenario.demo!, assetId: 'cameras.desktop.catalog-guided-setup' }
+			})
+		).toBe('cameras.desktop.catalog-guided-setup');
+		expect(demoAssetId(validScenario)).toBe('peek.desktop.history-keep');
 	});
 
 	it('rejects invalid timing and missing story text', () => {
@@ -64,6 +68,7 @@ describe('Storybook demo metadata', () => {
 			storyId: 'Invalid Story',
 			demo: {
 				...validScenario.demo!,
+				assetId: 'Not a valid asset ID',
 				title: ' ',
 				captions: [
 					{ atMs: 4_000, text: 'Later' },
@@ -75,6 +80,7 @@ describe('Storybook demo metadata', () => {
 		expect(issues).toEqual(
 			expect.arrayContaining([
 				{ path: 'storyId', message: 'must be a stable lowercase identifier' },
+				{ path: 'demo.assetId', message: 'must be a stable lowercase identifier' },
 				{ path: 'demo.title', message: 'must not be empty' },
 				{ path: 'demo.captions[1].atMs', message: 'must be later than the previous caption' },
 				{ path: 'demo.captions[1].endMs', message: 'must end after the caption starts' },
@@ -128,11 +134,11 @@ Every camera remains live.
 
 2
 00:00:02.500 --> 00:00:06.500
-Drag one tile back 38 seconds.
+History opens Keep for one focused camera.
 
 3
 00:00:06.500 --> 00:00:09.000
-Continue at that moment in Keep.
+Navigate recorded time in Keep.
 `);
 	});
 });

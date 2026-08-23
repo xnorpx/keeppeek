@@ -3,7 +3,11 @@
 	import MobileAddCameraWizard, {
 		type MobileCameraWizardStage
 	} from '$lib/components/MobileAddCameraWizard.svelte';
-	import type { DiscoveredCameraSettings } from '$lib/types';
+	import type {
+		CameraCatalogCamera,
+		CameraCatalogInfo,
+		DiscoveredCameraSettings
+	} from '$lib/types';
 	import MobileDeviceStatusBar from './MobileDeviceStatusBar.svelte';
 
 	type Props = { stage: MobileCameraWizardStage };
@@ -23,6 +27,43 @@
 		discoveryEvidence: 'ONVIF · DS-2CD2387G2'
 	} satisfies CameraWizardDraft;
 
+	const catalogInfo = {
+		version: '2.1.0',
+		tag: 'v2.1.0',
+		generated_at: '2026-08-22T06:13:00Z',
+		camera_count: 3433,
+		website_url: 'https://www.cctv-database.com/'
+	} satisfies CameraCatalogInfo;
+
+	const catalogCamera = {
+		id: 'hikvision-ds-2cd2387g2',
+		brand: 'Hikvision',
+		model: 'DS-2CD2387G2',
+		aliases: [],
+		camera_type: 'dome',
+		resolution_label: '4K',
+		megapixels: 8,
+		sensor: null,
+		field_of_view: null,
+		night_vision: 'IR',
+		ip_rating: 'IP67',
+		ik_rating: null,
+		two_way_audio: false,
+		release_year: null,
+		community_notes_count: 0,
+		protocols: ['onvif', 'rtsp'],
+		codecs: ['H.265', 'H.264'],
+		streams: [
+			{ name: 'main', resolution: '3840x2160', fps: 25, codec: 'H.265' },
+			{ name: 'sub', resolution: '640x360', fps: 10, codec: 'H.264' }
+		],
+		sources: ['https://www.cctv-database.com/'],
+		stream_hints: {
+			main_rtsp_url: 'rtsp://192.168.1.71/main',
+			sub_rtsp_url: 'rtsp://192.168.1.71/sub'
+		}
+	} satisfies CameraCatalogCamera;
+
 	const discovered: DiscoveredCameraSettings[] = [
 		{
 			ip: '192.168.1.71',
@@ -32,7 +73,8 @@
 			onvif_port: 8000,
 			sources: [],
 			configured: false,
-			health: null
+			health: null,
+			catalog: catalogCamera
 		},
 		{
 			ip: '192.168.1.41',
@@ -62,6 +104,8 @@
 		{stage}
 		{draft}
 		{discovered}
+		selectedCatalogCamera={catalogCamera}
+		{catalogInfo}
 		subnetPrefixes="192.168.1"
 		manualAddress=""
 		discovering={stage === 'find-connect'}
@@ -69,6 +113,8 @@
 		discoveryAttempted={false}
 		error={null}
 		saving={false}
+		streamResolution="onvif"
+		catalogStreamsApplied={stage === 'streams'}
 		actionFixed={false}
 	/>
 </main>

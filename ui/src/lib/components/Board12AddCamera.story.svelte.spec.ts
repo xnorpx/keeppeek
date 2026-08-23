@@ -18,15 +18,15 @@ describe('Board 12 desktop Add Camera story', () => {
 			'[data-paper-scenario="cameras.desktop.add-wizard"]'
 		);
 		expect(frame).not.toBeNull();
-		expect(roundedSize(frame!)).toEqual([1440, 685]);
+		expect(roundedSize(frame!)).toEqual([1440, 663]);
 		expect([...frame!.children].map(roundedSize)).toEqual([
-			[300, 683],
-			[1140, 683]
+			[300, 661],
+			[1140, 661]
 		]);
 		const body = frame!.querySelector<HTMLElement>('[data-camera-wizard-step-body]');
 		expect(body).not.toBeNull();
 		expect([...body!.children].map(roundedSize)).toEqual([
-			[1140, 129],
+			[1140, 107],
 			[1140, 405],
 			[1140, 76],
 			[1140, 73]
@@ -38,7 +38,7 @@ describe('Board 12 desktop Add Camera story', () => {
 		]);
 	});
 
-	it('keeps candidate authentication and decode evidence unavailable before save', async () => {
+	it('shows ONVIF candidates without claiming decoded media evidence before save', async () => {
 		await page.viewport(1440, 900);
 		const { container } = await render(Board12AddCameraStory);
 		const frame = container.querySelector<HTMLElement>('[data-paper-scenario]');
@@ -47,9 +47,12 @@ describe('Board 12 desktop Add Camera story', () => {
 		await expect
 			.element(page.getByText('NOTHING SAVED UNTIL STEP 5', { exact: true }))
 			.toBeVisible();
+		await expect.element(page.getByText('1 · Find & connect', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('ONVIF LOOKUP FROM STEP 1', { exact: true })).toBeVisible();
 		await expect
-			.element(page.getByText('PROBE UNAVAILABLE', { exact: true }).first())
+			.element(page.getByText('ENDPOINT DECLARATION', { exact: true }).first())
 			.toBeVisible();
+		await expect.element(page.getByText('ONVIF REPORTED', { exact: true }).first()).toBeVisible();
 		await expect
 			.element(
 				page.getByText('Decoded stream evidence is unavailable before save', { exact: true })

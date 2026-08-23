@@ -39,6 +39,27 @@ describe('Board 6 Peek live wall story', () => {
 		const tiles = [...frame!.querySelectorAll<HTMLElement>('[data-peek-camera]')];
 		expect(tiles).toHaveLength(6);
 		expect(tiles.map(roundedSize)).toEqual(Array.from({ length: 6 }, () => [439, 340]));
+		const frontDoorTile = frame!.querySelector<HTMLElement>('[data-peek-camera="front-door"]');
+		const frontDoorLabel = frontDoorTile?.querySelector<HTMLElement>('[data-peek-camera-label]');
+		const frontDoorDiagnostics = frontDoorTile?.querySelector<HTMLElement>(
+			'[aria-label="Front Door WebRTC stream diagnostics"]'
+		);
+		expect(frontDoorTile).not.toBeNull();
+		expect(frontDoorLabel).not.toBeNull();
+		expect(frontDoorDiagnostics).not.toBeNull();
+		const tileBounds = frontDoorTile!.getBoundingClientRect();
+		const labelBounds = frontDoorLabel!.getBoundingClientRect();
+		const diagnosticsBounds = frontDoorDiagnostics!.getBoundingClientRect();
+		expect(frontDoorLabel).toBe(frontDoorDiagnostics);
+		expect(labelBounds.left).toBeGreaterThan(tileBounds.left + tileBounds.width / 2);
+		expect(labelBounds).toEqual(diagnosticsBounds);
+		const fleetRuntime = frame!.querySelector<HTMLElement>('[data-peek-paper-fleet-runtime]');
+		expect(fleetRuntime).not.toBeNull();
+		expect(fleetRuntime!.textContent).toContain('5 / 6 REPORTING');
+		expect(fleetRuntime!.textContent).toContain('HOSTCPU 34% RAM 6.1/32 GB');
+		expect(fleetRuntime!.textContent).toContain('KEEPPEEKCPU 4% RAM 0.3 GB');
+		expect(frame!.textContent).not.toContain('last frame');
+		expect(frame!.textContent).not.toContain('SUB ·');
 	});
 
 	it('reuses all four production tile states without inventing source pagination', async () => {

@@ -61,6 +61,7 @@ export type DemoCompletionSignal = {
 };
 
 export type DemoMetadata = {
+	assetId?: string;
 	title: string;
 	purpose: string;
 	narration?: DemoNarration;
@@ -139,6 +140,12 @@ export function validateStoryScenarioMetadata(
 	const demo = metadata.demo;
 	if (demo === undefined) return issues;
 
+	if (demo.assetId !== undefined) {
+		requireText(issues, 'demo.assetId', demo.assetId);
+		if (!storyIdPattern.test(demo.assetId)) {
+			issues.push({ path: 'demo.assetId', message: 'must be a stable lowercase identifier' });
+		}
+	}
 	requireText(issues, 'demo.title', demo.title);
 	requireText(issues, 'demo.purpose', demo.purpose);
 	requirePositiveInteger(issues, 'demo.durationMs', demo.durationMs);
@@ -245,6 +252,12 @@ export function validateStoryScenarioMetadata(
 	}
 
 	return issues;
+}
+
+export function demoAssetId(metadata: StoryScenarioMetadata): string {
+	const demo = metadata.demo;
+	if (demo === undefined) throw new Error(`Story ${metadata.storyId} has no demo metadata`);
+	return demo.assetId ?? metadata.paper.scenarioId;
 }
 
 function formatWebVttTime(timeMs: number): string {

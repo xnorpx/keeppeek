@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { cameraLifecycleStory } from '../demo/camera-lifecycle.story';
 import { nineCameraLiveStory } from '../demo/nine-camera-live.story';
-import { validateStoryScenarioMetadata } from '../src/lib/storybook/demo';
+import { demoAssetId, validateStoryScenarioMetadata } from '../src/lib/storybook/demo';
 import { demoScenarios } from '../visual-harness/demo-scenarios';
 
 type ScenarioManifest = {
@@ -15,6 +15,7 @@ const manifest = JSON.parse(
 const scenariosById = new Map(manifest.scenarios.map((scenario) => [scenario.id, scenario]));
 const storyIds = new Set<string>();
 const scenarioIds = new Set<string>();
+const assetIds = new Set<string>();
 
 for (const definition of demoScenarios) {
 	const issues = validateStoryScenarioMetadata(definition.metadata);
@@ -28,8 +29,11 @@ for (const definition of demoScenarios) {
 	}
 	storyIds.add(definition.metadata.storyId);
 	const scenarioId = definition.metadata.paper.scenarioId;
+	const assetId = demoAssetId(definition.metadata);
 	if (scenarioIds.has(scenarioId)) throw new Error(`Duplicate demo scenario ID: ${scenarioId}`);
 	scenarioIds.add(scenarioId);
+	if (assetIds.has(assetId)) throw new Error(`Duplicate demo asset ID: ${assetId}`);
+	assetIds.add(assetId);
 	const manifestScenario = scenariosById.get(scenarioId);
 	if (!manifestScenario) throw new Error(`Demo has no Paper scenario: ${scenarioId}`);
 	if (manifestScenario.kind !== 'interaction') {
@@ -222,13 +226,14 @@ for (const requiredText of [
 }
 
 const bookGallery = await readFile(resolve('..', 'book/src/demo-videos.md'), 'utf8');
-for (const scenarioId of [
-	...scenarioIds,
-	cameraLifecycleStory.paper.scenarioId,
-	nineCameraLiveStory.paper.scenarioId
+
+for (const assetId of [
+	...assetIds,
+	demoAssetId(cameraLifecycleStory),
+	demoAssetId(nineCameraLiveStory)
 ]) {
-	if (!bookGallery.includes(`${scenarioId}.mp4`) || !bookGallery.includes(`${scenarioId}.vtt`)) {
-		throw new Error(`Book demo gallery is missing video or captions for: ${scenarioId}`);
+	if (!bookGallery.includes(`${assetId}.mp4`) || !bookGallery.includes(`${assetId}.vtt`)) {
+		throw new Error(`Book demo gallery is missing video or captions for: ${assetId}`);
 	}
 }
 

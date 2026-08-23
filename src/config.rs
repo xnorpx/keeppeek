@@ -746,6 +746,7 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
         "storage",
         "battery_wake",
         "direct_card",
+        "homekit",
         "logging",
         STORAGE_MIGRATION_SECTION,
     ];
@@ -1134,6 +1135,35 @@ mod tests {
 
         let config: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         config.battery_wake.validate().unwrap();
+        let cameras = load_cameras(&path).unwrap();
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras["cameras"].len(), 1);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn homekit_config_is_not_treated_as_camera_configuration() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-homekit-config-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [homekit]
+                enabled = true
+                bind = "0.0.0.0"
+                name = "KeepPeek"
+                port = 32010
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                username = "operator"
+                password = "secret"
+            "#,
+        )
+        .unwrap();
+
         let cameras = load_cameras(&path).unwrap();
         assert_eq!(cameras.len(), 1);
         assert_eq!(cameras["cameras"].len(), 1);

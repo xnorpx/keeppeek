@@ -3,10 +3,11 @@
 	import { resolve } from '$app/paths';
 	import { useAppearanceState } from '$lib/appearance-context';
 	import { appearanceSystemEvidence, type ThemePreference } from '$lib/appearance-system';
-	import type { ServerHealthResponse } from '$lib/types';
+	import type { CameraCatalogInfo, ServerHealthResponse } from '$lib/types';
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import DownloadIcon from '@lucide/svelte/icons/download';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import SunMoonIcon from '@lucide/svelte/icons/sun-moon';
@@ -15,6 +16,7 @@
 	type Props = {
 		health: ServerHealthResponse | null;
 		healthError?: string | null;
+		catalogInfo?: CameraCatalogInfo | null;
 		restarting?: boolean;
 		paperFrame?: boolean;
 		timeZoneOverride?: string | null;
@@ -28,6 +30,7 @@
 	let {
 		health,
 		healthError = null,
+		catalogInfo = null,
 		restarting = false,
 		paperFrame = false,
 		timeZoneOverride,
@@ -219,6 +222,40 @@
 						<dt class="text-text-muted">Config file</dt>
 						<dd class="font-mono text-text-faint">Path unavailable</dd>
 					</div>
+					{#if catalogInfo}
+						<div class="flex justify-between gap-3 py-2.5">
+							<dt class="text-text-muted">Camera catalog</dt>
+							<dd class="font-mono">{catalogInfo.version}</dd>
+						</div>
+						<div class="flex justify-between gap-3 py-2.5">
+							<dt class="text-text-muted">Catalog cameras</dt>
+							<dd class="font-mono">{catalogInfo.camera_count.toLocaleString()}</dd>
+						</div>
+						<div class="flex justify-between gap-3 py-2.5">
+							<dt class="text-text-muted">Catalog generated</dt>
+							<dd class="max-w-[65%] text-right font-mono break-all text-text-faint">
+								{catalogInfo.generated_at}
+							</dd>
+						</div>
+						<div class="flex justify-between gap-3 py-2.5">
+							<dt class="text-text-muted">Catalog source</dt>
+							<dd>
+								<a
+									href={catalogInfo.website_url}
+									target="_blank"
+									rel="noreferrer"
+									class="inline-flex items-center gap-1 text-primary-soft hover:text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+								>
+									CCTV Database <ExternalLinkIcon class="size-3" />
+								</a>
+							</dd>
+						</div>
+					{:else}
+						<div class="flex justify-between gap-3 py-2.5">
+							<dt class="text-text-muted">Camera catalog</dt>
+							<dd class="font-mono text-text-faint">Unavailable</dd>
+						</div>
+					{/if}
 				</dl>
 				<div class="grid grid-cols-2 gap-2">
 					<button

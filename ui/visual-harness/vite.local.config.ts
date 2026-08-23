@@ -1,3 +1,5 @@
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
@@ -13,6 +15,19 @@ export default defineConfig({
 		}
 	},
 	server: {
-		fs: { allow: [fileURLToPath(new URL('..', import.meta.url))] }
+		fs: {
+			allow: [
+				fileURLToPath(new URL('..', import.meta.url)),
+				realpathSync(
+					resolve(fileURLToPath(new URL('..', import.meta.url)), 'node_modules/@fontsource/archivo')
+				),
+				realpathSync(
+					resolve(
+						fileURLToPath(new URL('..', import.meta.url)),
+						'node_modules/@fontsource/ibm-plex-mono'
+					)
+				)
+			]
+		}
 	}
 });

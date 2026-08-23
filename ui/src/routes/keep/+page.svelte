@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { goto, replaceState } from '$app/navigation';
+	import { replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
@@ -9,12 +9,10 @@
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
 	import KeepExportPanel from '$lib/components/KeepExportPanel.svelte';
 	import ColdSeekState from '$lib/components/ColdSeekState.svelte';
-	import PeekEntryBanner from '$lib/components/PeekEntryBanner.svelte';
 	import KeepStories from '$lib/components/KeepStories.svelte';
 	import KeepSwimlanes from '$lib/components/KeepSwimlanes.svelte';
 	import RecordingFilmstrip from '$lib/components/RecordingFilmstrip.svelte';
 	import VerticalTimeline from '$lib/components/VerticalTimeline.svelte';
-	import { useLivePeer } from '$lib/stream-peer-context';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import ArchiveIcon from '@lucide/svelte/icons/archive';
@@ -37,7 +35,6 @@
 		minute: '2-digit',
 		second: '2-digit'
 	});
-	const livePeer = useLivePeer();
 	const controlClient = useControlClient();
 
 	let cameras: CameraListItem[] = $state([]);
@@ -63,7 +60,6 @@
 	let pendingSeekSeconds = 0;
 	let pendingPlay = false;
 	let loadVersion = 0;
-	let peekEntryTimestampMs: number | null = $state(null);
 	let shuttleDirection = $state<-1 | 0 | 1>(0);
 	let shuttleSpeed = $state(1);
 	let timelineFollowRequest = $state(0);
@@ -132,13 +128,7 @@
 		try {
 			const params = new URLSearchParams(window.location.search);
 			mode = parseKeepMode(params.get('mode'));
-			const fromPeek = params.get('from') === 'peek';
 			const requestedTimestampMs = parseTimestamp(params.get('at'));
-			if (fromPeek && (!livePeer.peekReviewTransitionActive || requestedTimestampMs === null)) {
-				await goto(resolve('/'), { replaceState: true });
-				return;
-			}
-			peekEntryTimestampMs = fromPeek ? requestedTimestampMs : null;
 			const [nextCameras, health] = await Promise.all([
 				controlClient.getCameras(),
 				controlClient.getHealth().catch(() => null)
@@ -227,7 +217,6 @@
 	}
 
 	function changeCamera() {
-		clearPeekEntry();
 		const targetTimestampMs = playheadMs ?? undefined;
 		const play = video !== null && !video.paused;
 		void loadRecordings(selectedDate || undefined, targetTimestampMs, play);
@@ -235,7 +224,6 @@
 
 	function selectFilmstripCamera(nextCameraId: string, timestampMs: number) {
 		if (nextCameraId === cameraId) return;
-		clearPeekEntry();
 		const play = video !== null && !video.paused;
 		cameraId = nextCameraId;
 		void loadRecordings(selectedDate || undefined, timestampMs, play);
@@ -265,7 +253,6 @@
 
 	function changeDate(date: string) {
 		if (!date || date === selectedDate) return;
-		clearPeekEntry();
 		void loadRecordings(date);
 	}
 
@@ -555,10 +542,7 @@
 			camera: cameraId,
 			stream,
 			...(selectedDate ? { date: selectedDate } : {}),
-			...(mode === 'timeline' ? {} : { mode }),
-			...(peekEntryTimestampMs === null
-				? {}
-				: { at: String(Math.round(peekEntryTimestampMs)), from: 'peek' })
+			...(mode === 'timeline' ? {} : { mode })
 		});
 		// The base path is resolved before the query string is appended.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
@@ -578,12 +562,6 @@
 		const timestampMs = Number(value);
 		return Number.isSafeInteger(timestampMs) && timestampMs > 0 ? timestampMs : null;
 	}
-
-	function clearPeekEntry(): void {
-		if (peekEntryTimestampMs === null) return;
-		peekEntryTimestampMs = null;
-		livePeer.finishPeekReviewTransition();
-	}
 </script>
 
 <svelte:window onkeydowncapture={handleKeyboard} />
@@ -593,13 +571,6 @@
 </svelte:head>
 
 <div class="mx-auto max-w-[120rem] space-y-4">
-	{#if peekEntryTimestampMs !== null}
-		<PeekEntryBanner
-			cameraLabel={selectedCamera?.name ?? selectedCamera?.id ?? cameraId}
-			timestampMs={peekEntryTimestampMs}
-			timeLabel={formatTime(peekEntryTimestampMs)}
-		/>
-	{/if}
 	<header class="flex flex-col gap-3 border-b pb-3 lg:flex-row lg:items-end lg:justify-between">
 		<div class="flex min-h-9 flex-wrap items-center gap-3">
 			<div class="flex items-center gap-2">

@@ -2,6 +2,8 @@ mod access;
 pub mod api;
 pub mod app;
 pub mod battery_wake;
+pub mod camera_catalog;
+pub(crate) mod camera_database;
 pub mod cameras;
 pub mod client;
 pub mod config;
@@ -17,4 +19,6 @@ pub mod server;
 pub mod shutdown;
 pub mod stats;
 pub mod storage;
+#[doc(hidden)]
+pub mod test_support;
 pub mod webrtc;

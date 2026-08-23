@@ -4,6 +4,12 @@ import { durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Page } from '@playwright/test';
 import {
 	CameraDiscoveryResultSchema,
+	CameraCatalogCameraSchema,
+	CameraCatalogInfoSchema,
+	CameraCatalogSearchResultSchema,
+	CameraCatalogStreamHintsSchema,
+	CameraCatalogStreamSchema,
+	CameraStreamProbeResultSchema,
 	CameraBackend as ProtoCameraBackend,
 	CameraConfigurationResultSchema,
 	CameraDeviceCapabilitiesSchema,
@@ -95,6 +101,8 @@ import type {
 	CameraSettings,
 	CameraSettingsUpdate,
 	CameraSettingsUpdateResponse,
+	CameraCatalogCamera,
+	CameraCatalogInfo,
 	CameraListItem,
 	DiscoveredCameraSettings,
 	MotionDetection,
@@ -112,6 +120,14 @@ type DeepPartial<T> = T extends readonly (infer Item)[]
 		: T;
 
 export type HealthFixture = DeepPartial<ServerHealthResponse>;
+
+const defaultCameraCatalog: CameraCatalogInfo = {
+	version: '2.1.0',
+	tag: 'v2.1.0',
+	generated_at: '2026-08-22T06:13:00Z',
+	camera_count: 3433,
+	website_url: 'https://www.cctv-database.com/'
+};
 
 export type StoredRangeFixture = {
 	sourceId: string;
@@ -179,16 +195,26 @@ export type ControlRequests = {
 	loggingFilters: string[];
 	restarts: number;
 	discoverySubnets: number[][];
+	catalogSearches: Array<{ query: string; limit: number | undefined; ip: string | undefined }>;
 	cameraUpdates: Array<{ ip: string; update: CameraSettingsUpdate }>;
 	removedCameraIps: string[];
 	runtimeUpdates: SettingsConfigUpdate[];
 	storedRefills: Array<{ storedMediaId: string; playbackTimeMs: number }>;
 	exportJobs: ExportControlRequest[];
+	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
 };
 
 export type MockControlPeerOptions = {
 	reportedManufacturer?: string;
 	discoveredCameras?: readonly DiscoveredCameraSettings[];
+	cameraCatalog?: CameraCatalogInfo;
+	cameraCatalogSearchResults?: readonly CameraCatalogCamera[];
+	streamProbeResult?: {
+		main_rtsp_url: string | null;
+		sub_rtsp_url: string | null;
+		onvif_port?: number | null;
+	};
+	streamProbeGate?: Promise<void>;
 	discoveryGate?: Promise<void>;
 	cameraUpdateResult?: CameraSettingsUpdateResponse;
 	cameraUpdateError?: string;
@@ -257,6 +283,8 @@ export async function mockControlPeer(
 		loggingFilters: [],
 		restarts: 0,
 		discoverySubnets: [],
+		catalogSearches: [],
+		streamProbes: [],
 		cameraUpdates: [],
 		removedCameraIps: [],
 		runtimeUpdates: [],
@@ -658,9 +686,55 @@ export async function mockControlPeer(
 							onvifPort: camera.onvif_port ?? undefined,
 							sources: camera.sources,
 							configured: camera.configured,
-							health: camera.health ?? undefined
+							health: camera.health ?? undefined,
+							catalog: camera.catalog ? protoCameraCatalogCamera(camera.catalog) : undefined
 						})
 					)
+				})
+			});
+		}
+		if (
+			request.command.case === 'cameraConfigurationCommand' &&
+			request.command.value.action.case === 'getCatalog'
+		) {
+			return encodedOk(request.requestId, {
+				case: 'cameraCatalogInfo',
+				value: protoCameraCatalogInfo(options.cameraCatalog ?? defaultCameraCatalog)
+			});
+		}
+		if (
+			request.command.case === 'cameraConfigurationCommand' &&
+			request.command.value.action.case === 'searchCatalog'
+		) {
+			const search = request.command.value.action.value;
+			requests.catalogSearches.push({ query: search.query, limit: search.limit, ip: search.ip });
+			return encodedOk(request.requestId, {
+				case: 'cameraCatalogSearchResult',
+				value: create(CameraCatalogSearchResultSchema, {
+					cameras: (options.cameraCatalogSearchResults ?? []).map((camera) =>
+						protoCameraCatalogCamera(cameraCatalogCameraForSearch(camera, search.ip))
+					)
+				})
+			});
+		}
+		if (
+			request.command.case === 'cameraConfigurationCommand' &&
+			request.command.value.action.case === 'probeStreams'
+		) {
+			const probe = request.command.value.action.value;
+			requests.streamProbes.push({ ip: probe.ip, onvifPort: probe.onvifPort ?? null });
+			await options.streamProbeGate;
+			const result = options.streamProbeResult ?? {
+				main_rtsp_url: `rtsp://${probe.ip}:554/onvif-main`,
+				sub_rtsp_url: `rtsp://${probe.ip}:554/onvif-sub`,
+				onvif_port: probe.onvifPort ?? 80
+			};
+			return encodedOk(request.requestId, {
+				case: 'cameraStreamProbeResult',
+				value: create(CameraStreamProbeResultSchema, {
+					mainRtspUrl: result.main_rtsp_url ?? undefined,
+					subRtspUrl: result.sub_rtsp_url ?? undefined,
+					onvifPort: result.onvif_port ?? undefined
 				})
 			});
 		}
@@ -1527,6 +1601,78 @@ function protoCameraSettings(camera: CameraSettings) {
 		transport: camera.transport === 'udp' ? ProtoCameraTransport.UDP : ProtoCameraTransport.TCP,
 		health: camera.health ?? undefined,
 		model: camera.model ?? undefined
+	});
+}
+
+function protoCameraCatalogInfo(catalog: CameraCatalogInfo) {
+	return create(CameraCatalogInfoSchema, {
+		version: catalog.version,
+		tag: catalog.tag,
+		generatedAt: catalog.generated_at,
+		cameraCount: catalog.camera_count,
+		websiteUrl: catalog.website_url
+	});
+}
+
+function cameraCatalogCameraForSearch(
+	camera: CameraCatalogCamera,
+	ip: string | undefined
+): CameraCatalogCamera {
+	if (!ip || !camera.stream_hints) return camera;
+	return {
+		...camera,
+		stream_hints: {
+			main_rtsp_url: catalogStreamHintForIp(camera.stream_hints.main_rtsp_url, ip),
+			sub_rtsp_url: catalogStreamHintForIp(camera.stream_hints.sub_rtsp_url, ip)
+		}
+	};
+}
+
+function catalogStreamHintForIp(value: string | null, ip: string): string | null {
+	if (!value) return null;
+	try {
+		const url = new URL(value);
+		url.hostname = ip;
+		return url.toString();
+	} catch {
+		return value;
+	}
+}
+
+function protoCameraCatalogCamera(camera: CameraCatalogCamera) {
+	return create(CameraCatalogCameraSchema, {
+		id: camera.id,
+		brand: camera.brand,
+		model: camera.model,
+		aliases: camera.aliases,
+		cameraType: camera.camera_type,
+		resolutionLabel: camera.resolution_label ?? undefined,
+		megapixels: camera.megapixels ?? undefined,
+		sensor: camera.sensor ?? undefined,
+		fieldOfView: camera.field_of_view ?? undefined,
+		nightVision: camera.night_vision ?? undefined,
+		ipRating: camera.ip_rating ?? undefined,
+		ikRating: camera.ik_rating ?? undefined,
+		twoWayAudio: camera.two_way_audio ?? undefined,
+		releaseYear: camera.release_year ?? undefined,
+		communityNotesCount: camera.community_notes_count,
+		protocols: camera.protocols,
+		codecs: camera.codecs,
+		streams: camera.streams.map((stream) =>
+			create(CameraCatalogStreamSchema, {
+				name: stream.name,
+				resolution: stream.resolution ?? undefined,
+				fps: stream.fps ?? undefined,
+				codec: stream.codec ?? undefined
+			})
+		),
+		sources: camera.sources,
+		streamHints: camera.stream_hints
+			? create(CameraCatalogStreamHintsSchema, {
+					mainRtspUrl: camera.stream_hints.main_rtsp_url ?? undefined,
+					subRtspUrl: camera.stream_hints.sub_rtsp_url ?? undefined
+				})
+			: undefined
 	});
 }
 

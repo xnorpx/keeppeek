@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { StoryScenarioMetadata } from '$lib/storybook/demo';
+import { demoAssetId, type StoryScenarioMetadata } from '$lib/storybook/demo';
 
 export type DemoPublishAsset = {
 	fileName: string;
@@ -14,6 +14,7 @@ export type DemoPublishEntry = {
 };
 
 export type HostedDemoVideo = {
+	assetId: string;
 	scenarioId: string;
 	storyId: string;
 	title: string;
@@ -60,17 +61,18 @@ export function createDemoVideoManifest(options: {
 	entries: readonly DemoPublishEntry[];
 }): DemoVideoManifest {
 	const baseUrl = normalizeBaseUrl(options.baseUrl);
-	const scenarioIds = new Set<string>();
+	const assetIds = new Set<string>();
 	const videos = options.entries
 		.map((entry): HostedDemoVideo => {
 			const demo = entry.metadata.demo;
 			if (demo === undefined)
 				throw new Error(`Scenario ${entry.metadata.storyId} has no demo metadata`);
-			const scenarioId = entry.metadata.paper.scenarioId;
-			if (scenarioIds.has(scenarioId)) throw new Error(`Duplicate demo scenario: ${scenarioId}`);
-			scenarioIds.add(scenarioId);
+			const assetId = demoAssetId(entry.metadata);
+			if (assetIds.has(assetId)) throw new Error(`Duplicate demo asset: ${assetId}`);
+			assetIds.add(assetId);
 			return {
-				scenarioId,
+				assetId,
+				scenarioId: entry.metadata.paper.scenarioId,
 				storyId: entry.metadata.storyId,
 				title: demo.title,
 				purpose: demo.purpose,
@@ -79,7 +81,7 @@ export function createDemoVideoManifest(options: {
 				metadata: hostedAsset(baseUrl, entry.metadataAsset)
 			};
 		})
-		.toSorted((left, right) => left.scenarioId.localeCompare(right.scenarioId));
+		.toSorted((left, right) => left.assetId.localeCompare(right.assetId));
 
 	return {
 		schemaVersion: 1,

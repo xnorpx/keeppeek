@@ -48,7 +48,7 @@
 		"paper:board27:capture": "bun scripts/capture-paper-story.ts settings.mobile.administration && bun scripts/capture-paper-story.ts settings.mobile.camera-defaults && bun scripts/capture-paper-story.ts settings.mobile.access",
 		"paper:board29:capture": "bun scripts/capture-paper-story.ts keep.desktop.export-lifecycle",
 		"paper:board30:capture": "bun scripts/capture-paper-story.ts health.desktop.camera-diagnosis",
-		"paper:board31:capture": "bun scripts/capture-paper-story.ts peek.desktop.rewind-ready && bun scripts/capture-paper-story.ts peek.desktop.rewind-to-keep",
+		"paper:board31:capture": "bun scripts/capture-paper-story.ts peek.desktop.focus-history && bun scripts/capture-paper-story.ts peek.desktop.history-keep",
 		"paper:board33:capture": "bun scripts/capture-paper-story.ts peek.waiting.first-keyframe && bun scripts/capture-paper-story.ts keep.waiting.cold-seek && bun scripts/capture-paper-story.ts cameras.waiting.discovery && bun scripts/capture-paper-story.ts events.empty.no-results && bun scripts/capture-paper-story.ts settings.waiting.applying && bun scripts/capture-paper-story.ts cameras.waiting.fleet-skeleton",
 		"paper:board34:capture": "bun scripts/capture-paper-story.ts peek.desktop.light-theme",
 		"test:unit": "vitest",

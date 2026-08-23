@@ -19,8 +19,9 @@ import Board19GroupsStory from './stories/Board19GroupsStory.svelte';
 import Board20AppearanceSystemStory from './stories/Board20AppearanceSystemStory.svelte';
 import Board21FirstRunStory from './stories/Board21FirstRunStory.svelte';
 import Board33StatesStory from './stories/Board33StatesStory.svelte';
-import Board31RewindStory from './stories/Board31RewindStory.svelte';
-import DemoRewindStory from './stories/DemoRewindStory.svelte';
+import Board31HistoryStory from './stories/Board31HistoryStory.svelte';
+import DemoHistoryStory from './stories/DemoHistoryStory.svelte';
+import DemoCameraCatalogWizardStory from './stories/DemoCameraCatalogWizardStory.svelte';
 import ExportLifecycleStory from './stories/ExportLifecycleStory.svelte';
 import LightThemePeekStory from './stories/LightThemePeekStory.svelte';
 import Board27MobileAdministrationStory from './stories/Board27MobileAdministrationStory.svelte';
@@ -44,7 +45,11 @@ declare global {
 const previewUrl = new URL(window.location.href);
 const scenarioId = previewUrl.searchParams.get('scenario');
 const demoMode = previewUrl.searchParams.get('demo') === 'true';
-if (demoMode) document.documentElement.dataset.demo = 'true';
+const demoAssetId = previewUrl.searchParams.get('demoAsset');
+if (demoMode) {
+	document.documentElement.dataset.demo = 'true';
+	if (demoAssetId) document.documentElement.dataset.demoAsset = demoAssetId;
+}
 const board33States = {
 	'peek.waiting.first-keyframe': 'first-keyframe',
 	'keep.waiting.cold-seek': 'cold-seek',
@@ -105,7 +110,11 @@ if (scenarioId === 'keep.desktop.timeline-anatomy') {
 } else if (scenarioId === 'cameras.desktop.add-wizard') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
-	mount(Board12AddCameraStory, { target });
+	if (demoMode && demoAssetId === 'cameras.desktop.catalog-guided-setup') {
+		mount(DemoCameraCatalogWizardStory, { target });
+	} else {
+		mount(Board12AddCameraStory, { target });
+	}
 } else if (scenarioId === 'settings.desktop.storage-retention') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
@@ -214,15 +223,15 @@ if (scenarioId === 'keep.desktop.timeline-anatomy') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
 	mount(Board30CameraDiagnosisStory, { target });
-} else if (scenarioId === 'peek.desktop.rewind-ready') {
+} else if (scenarioId === 'peek.desktop.focus-history') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
-	mount(Board31RewindStory, { target, props: { state: 'ready' } });
-} else if (scenarioId === 'peek.desktop.rewind-to-keep') {
+	mount(Board31HistoryStory, { target, props: { state: 'focused' } });
+} else if (scenarioId === 'peek.desktop.history-keep') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
-	if (demoMode) mount(DemoRewindStory, { target });
-	else mount(Board31RewindStory, { target, props: { state: 'scrubbing' } });
+	if (demoMode) mount(DemoHistoryStory, { target });
+	else mount(Board31HistoryStory, { target, props: { state: 'keep' } });
 } else if (scenarioId === 'peek.desktop.light-theme') {
 	document.documentElement.classList.remove('dark');
 	document.documentElement.dataset.theme = 'light';

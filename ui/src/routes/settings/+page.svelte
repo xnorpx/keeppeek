@@ -5,6 +5,7 @@
 	import { waitForMetricsAt } from '$lib/api';
 	import type {
 		CameraBackend,
+		CameraCatalogInfo,
 		CameraSettings,
 		CameraSettingsUpdate,
 		CameraTransport,
@@ -89,6 +90,7 @@
 	let config = $state.raw<SanitizedConfig | null>(null);
 	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
 	let serverHealthError = $state<string | null>(null);
+	let catalogInfo = $state.raw<CameraCatalogInfo | null>(null);
 	let cameras = $state.raw<CameraSettings[]>([]);
 	let discovered = $state.raw<DiscoveredCameraSettings[]>([]);
 	let loading = $state(true);
@@ -215,15 +217,18 @@
 					error: cause instanceof Error ? cause.message : 'Storage health is unavailable.'
 				})
 			);
-			const [nextConfig, nextCameras, nextHealth] = await Promise.all([
+			const catalogRequest = controlClient.getCameraCatalog().catch(() => null);
+			const [nextConfig, nextCameras, nextHealth, nextCatalogInfo] = await Promise.all([
 				controlClient.getRuntimeConfiguration(),
 				controlClient.getCameraSettings(),
-				healthRequest
+				healthRequest,
+				catalogRequest
 			]);
 			config = nextConfig;
 			cameras = nextCameras;
 			serverHealth = nextHealth.value;
 			serverHealthError = nextHealth.error;
+			catalogInfo = nextCatalogInfo;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load settings.';
 		} finally {
@@ -844,6 +849,7 @@
 				<AppearanceSystemSection
 					health={serverHealth}
 					healthError={serverHealthError}
+					{catalogInfo}
 					{restarting}
 					onrestart={() => void restartRecorder()}
 				/>

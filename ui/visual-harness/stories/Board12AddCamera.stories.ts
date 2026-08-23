@@ -19,9 +19,9 @@ const meta = {
 			frameId: '1VQ-0',
 			scenarioId: 'cameras.desktop.add-wizard',
 			reference: 'references/12-add-camera-stream-evidence.png',
-			referenceSha256: '55b57aad24ed47de14f0fd0e86ea5dc525a6d26baf10c55ab0dc68c0a6168e6c',
+			referenceSha256: '55a3d3392d9ee75eb3a078209f4b83366f4cdc73046566f580ef39a2327350a7',
 			exceptions: [
-				'The server has no candidate-camera authentication or stream-probe command, so URLs remain declarations rather than decoded proof.',
+				'ONVIF candidate endpoints can be retrieved after sign-in, but URLs remain declarations rather than decoded proof until the camera is saved.',
 				'Audio codec, first-keyframe timing, frame count, bitrate, recording mode, retention impact, and group assignment are unavailable before save.',
 				'A permanent source ID is assigned only after the final configuration write; credentials remain write-only draft data.'
 			]

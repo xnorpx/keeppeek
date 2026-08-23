@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CameraHealth, CameraListItem, StreamHealth } from './types';
-import {
-	peekStreamEvidenceLabel,
-	presentPeekCamera,
-	reconcilePeekCameraPlayback
-} from './peek-camera';
+import { presentPeekCamera, reconcilePeekCameraPlayback } from './peek-camera';
 
 const camera: CameraListItem = {
 	id: 'front-door',
@@ -57,7 +53,6 @@ describe('Peek camera presentation', () => {
 		expect(presentPeekCamera(camera, health('online'))).toEqual({
 			state: 'live',
 			detail: null,
-			lastFrame: 'last frame 41s ago',
 			fps: 11,
 			recording: true
 		});
@@ -77,7 +72,6 @@ describe('Peek camera presentation', () => {
 			{
 				state: 'reconnecting',
 				detail: 'Reconnecting',
-				lastFrame: 'last frame 41s ago',
 				recording: false
 			}
 		);
@@ -95,8 +89,7 @@ describe('Peek camera presentation', () => {
 		const stale = presentPeekCamera(camera, health('stale', { lifecycle: 'Connected' }));
 		expect(reconcilePeekCameraPlayback(stale, 'stale', true)).toMatchObject({
 			state: 'live',
-			detail: null,
-			lastFrame: null
+			detail: null
 		});
 	});
 
@@ -111,20 +104,12 @@ describe('Peek camera presentation', () => {
 		});
 	});
 
-	it('never treats an absent FPS metric as no signal', () => {
-		const waiting = presentPeekCamera(camera, null);
-		expect(peekStreamEvidenceLabel(waiting, 'sub', false)).toBe('WAITING FOR VIDEO');
-		expect(peekStreamEvidenceLabel(waiting, 'sub', true)).toBe('SUB · LIVE');
-		expect(peekStreamEvidenceLabel(waiting, 'sub', false)).not.toContain('NO SIGNAL');
-	});
-
 	it('maps offline health to a non-recording failure', () => {
 		expect(
 			presentPeekCamera(camera, health('offline', { last_error: 'Authentication failed' }))
 		).toEqual({
 			state: 'offline',
 			detail: 'Authentication failed',
-			lastFrame: 'last frame 41s ago',
 			fps: null,
 			recording: false
 		});
@@ -134,7 +119,6 @@ describe('Peek camera presentation', () => {
 		expect(presentPeekCamera(camera, null)).toEqual({
 			state: 'reconnecting',
 			detail: 'Waiting for camera health',
-			lastFrame: null,
 			fps: null,
 			recording: false
 		});

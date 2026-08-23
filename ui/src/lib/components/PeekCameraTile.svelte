@@ -1,24 +1,12 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import type { CameraHealth, CameraListItem } from '$lib/types';
-	import {
-		peekStreamEvidenceLabel,
-		presentPeekCamera,
-		reconcilePeekCameraPlayback
-	} from '$lib/peek-camera';
-	import {
-		peekRewindAnchorMs,
-		peekRewindMaximumSeconds,
-		peekRewindSeconds as rewindSecondsFromDistance,
-		peekRewindTargetMs
-	} from '$lib/peek-rewind';
+	import { presentPeekCamera, reconcilePeekCameraPlayback } from '$lib/peek-camera';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import VideoOffIcon from '@lucide/svelte/icons/video-off';
 	import FirstKeyframeState from './FirstKeyframeState.svelte';
 	import LiveVideo from './LiveVideo.svelte';
-	import PeekRewindControl from './PeekRewindControl.svelte';
-	import PeekRewindState from './PeekRewindState.svelte';
 
 	type Props = {
 		camera: CameraListItem;
@@ -34,11 +22,7 @@
 		compactNowMs?: number;
 		compactTimeZone?: string;
 		firstFrameElapsedMsOverride?: number;
-		rewindNowMsOverride?: number;
-		rewindTimeZone?: string;
-		rewindControlVisible?: boolean;
 		onfocus: (cameraId: string) => void;
-		onrewind?: (cameraId: string, targetTimestampMs: number) => void | Promise<void>;
 		onlayoutpointerdown?: (event: PointerEvent) => void;
 		onlayoutpointermove?: (event: PointerEvent) => void;
 		onlayoutpointerup?: (event: PointerEvent) => void;
@@ -61,11 +45,7 @@
 		compactNowMs = Date.now(),
 		compactTimeZone,
 		firstFrameElapsedMsOverride,
-		rewindNowMsOverride,
-		rewindTimeZone,
-		rewindControlVisible = false,
 		onfocus,
-		onrewind,
 		onlayoutpointerdown,
 		onlayoutpointermove,
 		onlayoutpointerup,
@@ -73,19 +53,6 @@
 		onlayoutlostpointercapture,
 		onlayoutkeydown
 	}: Props = $props();
-	let rewindTimeFormatter = $derived(
-		new Intl.DateTimeFormat(undefined, {
-			hour: '2-digit',
-			minute: '2-digit',
-			second: '2-digit',
-			hour12: false,
-			timeZone: rewindTimeZone
-		})
-	);
-	let rewindPointerId = $state<number | null>(null);
-	let rewindStartY = 0;
-	let rewindAnchorMs = $state(0);
-	let rewindSeconds = $state(0);
 	let healthPresentation = $derived(presentPeekCamera(camera, health));
 	let hasRecentFrames = $state(false);
 	let presentation = $derived(
@@ -151,9 +118,6 @@
 	let headerSurface = $derived(
 		presentation.state === 'offline' ? 'bg-raised text-foreground' : 'bg-video/75 text-white'
 	);
-	let rewindTargetMs = $derived(peekRewindTargetMs(rewindAnchorMs, rewindSeconds));
-	let rewindMarkerPercent = $derived(100 - (rewindSeconds / peekRewindMaximumSeconds) * 100);
-	let rewindHandleDisplayClass = $derived(mobileFeatured ? 'flex' : 'hidden md:flex');
 	let compactObservedAtMs = $derived.by(() => {
 		const latestStream = health?.streams.reduce<(typeof health.streams)[number] | null>(
 			(latest, candidate) =>
@@ -209,71 +173,6 @@
 		const minutes = elapsedMinutes % 60;
 		return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 	}
-
-	function beginRewind(event: PointerEvent): void {
-		if (event.button !== 0 || rewindPointerId !== null || onrewind === undefined) return;
-		event.preventDefault();
-		event.stopPropagation();
-		rewindPointerId = event.pointerId;
-		rewindStartY = event.clientY;
-		rewindAnchorMs = peekRewindAnchorMs(health, rewindNowMsOverride ?? Date.now());
-		rewindSeconds = 0;
-		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-	}
-
-	function moveRewind(event: PointerEvent): void {
-		if (event.pointerId !== rewindPointerId) return;
-		event.preventDefault();
-		event.stopPropagation();
-		const tile = (event.currentTarget as HTMLElement).closest('[data-peek-camera]');
-		if (!(tile instanceof HTMLElement)) return;
-		rewindSeconds = rewindSecondsFromDistance(
-			event.clientY - rewindStartY,
-			tile.getBoundingClientRect().height
-		);
-	}
-
-	function finishRewind(event: PointerEvent): void {
-		if (event.pointerId !== rewindPointerId) return;
-		event.preventDefault();
-		event.stopPropagation();
-		rewindPointerId = null;
-		if (rewindSeconds === 0 || onrewind === undefined) return;
-		const targetTimestampMs = rewindTargetMs;
-		rewindSeconds = 0;
-		void onrewind(camera.id, targetTimestampMs);
-	}
-
-	function cancelRewind(event?: Event): void {
-		event?.preventDefault();
-		event?.stopPropagation();
-		rewindPointerId = null;
-		rewindSeconds = 0;
-	}
-
-	function handleRewindKeydown(event: KeyboardEvent): void {
-		if (onrewind === undefined) return;
-		if (event.key === 'Escape') {
-			cancelRewind(event);
-			return;
-		}
-		if (event.key === 'ArrowDown') {
-			event.preventDefault();
-			event.stopPropagation();
-			if (rewindSeconds === 0) {
-				rewindAnchorMs = peekRewindAnchorMs(health, rewindNowMsOverride ?? Date.now());
-			}
-			rewindSeconds = Math.min(peekRewindMaximumSeconds, rewindSeconds + 5);
-			return;
-		}
-		if (event.key === 'Enter' && rewindSeconds > 0) {
-			event.preventDefault();
-			event.stopPropagation();
-			const targetTimestampMs = rewindTargetMs;
-			rewindSeconds = 0;
-			void onrewind(camera.id, targetTimestampMs);
-		}
-	}
 </script>
 
 <article
@@ -286,7 +185,9 @@
 		<LiveVideo
 			cameraId={camera.id}
 			{stream}
-			showDiagnostics={!compactStatus && !layoutMode && !desktopPaperFrame}
+			showDiagnostics={!compactStatus && !layoutMode}
+			diagnosticsLabel={!compactStatus && !layoutMode ? label : undefined}
+			diagnosticsStatusClass={stateColor}
 			onframeactivitychange={(active) => (hasRecentFrames = active)}
 			class="size-full overflow-hidden rounded-[inherit]"
 		/>
@@ -369,12 +270,15 @@
 			data-peek-camera-region="header"
 			class="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2 p-2.5"
 		>
-			<span
-				class="flex min-w-0 items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs font-medium {headerSurface}"
-			>
-				<span class="size-1.5 shrink-0 rounded-full {stateColor}"></span>
-				<span class="truncate">{label}</span>
-			</span>
+			{#if layoutMode}
+				<span
+					data-peek-camera-label
+					class="flex min-w-0 items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs font-medium {headerSurface}"
+				>
+					<span class="size-1.5 shrink-0 rounded-full {stateColor}"></span>
+					<span class="truncate">{label}</span>
+				</span>
+			{/if}
 			{#if layoutMode && layoutSize && layoutSelected}
 				<span
 					class="flex shrink-0 items-center rounded-sm bg-primary px-2.5 py-1.5 font-mono text-2xs font-semibold tracking-caps text-on-primary"
@@ -387,6 +291,15 @@
 				>
 					<span class="size-1.5 rounded-full bg-white/85"></span>
 					REC
+				</span>
+			{/if}
+			{#if !layoutMode && !rendersVideo}
+				<span
+					data-peek-camera-label
+					class="mr-8 ml-auto flex min-w-0 items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs font-medium {headerSurface}"
+				>
+					<span class="size-1.5 shrink-0 rounded-full {stateColor}"></span>
+					<span class="truncate">{label}</span>
 				</span>
 			{/if}
 		</div>
@@ -423,11 +336,6 @@
 				/>
 				<p class="text-sm font-medium">Reconnecting…</p>
 				<p class="text-xs text-white/70">{presentation.detail}</p>
-				{#if presentation.lastFrame}<p
-						class="font-mono text-2xs text-white/55 {mobileCompactBlockHiddenClass}"
-					>
-						{presentation.lastFrame}
-					</p>{/if}
 			</div>
 		</div>
 	{:else if !compactStatus && presentation.state === 'offline'}
@@ -443,9 +351,6 @@
 				<p class="text-xs text-text-muted {mobileCompactBlockHiddenClass}">
 					{presentation.detail}
 				</p>
-				{#if presentation.lastFrame}<p class="font-mono text-2xs text-text-faint">
-						{presentation.lastFrame}
-					</p>{/if}
 				<a
 					href={resolve('/system-health')}
 					class="relative z-30 h-8 items-center rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none {mobileCompactInlineFlexClass}"
@@ -491,33 +396,7 @@
 		</a>
 	{/if}
 
-	{#if !layoutMode && onrewind}
-		<PeekRewindControl
-			{label}
-			visibleClass={rewindHandleDisplayClass}
-			forceVisible={rewindControlVisible}
-			onclick={(event) => event.stopPropagation()}
-			onpointerdown={beginRewind}
-			onpointermove={moveRewind}
-			onpointerup={finishRewind}
-			onpointercancel={cancelRewind}
-			onlostpointercapture={(event) => {
-				if (event.pointerId === rewindPointerId) cancelRewind(event);
-			}}
-			onkeydown={handleRewindKeydown}
-		/>
-	{/if}
-
-	{#if rewindSeconds > 0}
-		<PeekRewindState
-			{rewindSeconds}
-			targetTimeLabel={rewindTimeFormatter.format(new Date(rewindTargetMs))}
-			markerPercent={rewindMarkerPercent}
-			class="absolute inset-0 z-50"
-		/>
-	{/if}
-
-	{#if !compactStatus}
+	{#if !compactStatus && (layoutMode || desktopPaperFrame)}
 		<div
 			data-peek-camera-region="footer"
 			class="pointer-events-none absolute inset-x-0 bottom-0 z-20 items-end justify-between gap-2 p-2.5 font-mono text-2xs text-white/80 {mobileCompactFlexClass}"
@@ -528,19 +407,11 @@
 				</span>
 				<span class="tracking-caps">{layoutSelected ? '16:9 LOCKED' : ''}</span>
 			{:else}
-				<span
-					>{desktopPaperFrame
-						? compactObservedTime
-						: (presentation.lastFrame ?? (canFocus ? 'Live now' : ''))}</span
-				>
+				{#if desktopPaperFrame && compactObservedTime}<span>{compactObservedTime}</span>{/if}
 				{#if desktopPaperFrame && camera.capabilities?.ptz}
 					<span class="rounded-sm bg-primary px-2.5 py-1.5 font-semibold tracking-caps text-white"
 						>PTZ</span
 					>
-				{:else}
-					<span class="tracking-caps">
-						{peekStreamEvidenceLabel(presentation, stream, hasRecentFrames)}
-					</span>
 				{/if}
 			{/if}
 		</div>
