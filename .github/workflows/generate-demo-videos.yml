@@ -9,28 +9,6 @@ on:
         type: string
   push:
     branches: [main]
-    paths:
-      - .github/workflows/generate-demo-videos.yml
-      - ui/package.json
-      - ui/scripts/render-story-demos.ts
-      - ui/scripts/render-narrated-demos.ts
-      - ui/scripts/synthesize-demo-narration.ts
-      - ui/scripts/mux-demo-video.ts
-      - ui/scripts/check-demo-scenarios.ts
-      - ui/scripts/prepare-demo-publish.ts
-      - ui/scripts/prepare-nine-camera-demo-fixture.ts
-      - ui/scripts/start-nine-camera-demo-server.ts
-      - ui/src/lib/storybook/demo.ts
-      - ui/src/lib/server/storybook/**
-      - ui/demo/**
-      - ui/playwright.demo.config.ts
-      - ui/playwright.nine-camera-demo.config.ts
-      - ui/visual-harness/demo-scenarios.ts
-      - ui/visual-harness/local-preview.*
-      - ui/visual-harness/stories/**
-      - crates/retina/src/server.rs
-      - crates/retina/src/testutil/fake_camera.rs
-      - crates/test-camera/src/**
 
 permissions:
   contents: read

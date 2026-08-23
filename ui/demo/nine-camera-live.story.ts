@@ -82,12 +82,12 @@ export const nineCameraLiveStory = {
 			{
 				kind: 'click',
 				atMs: 60_000,
-				selector: '[data-camera-id="192.0.2.101"] button[aria-label="WebRTC stream diagnostics"]'
+				selector: '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]'
 			},
 			{
 				kind: 'click',
 				atMs: 65_000,
-				selector: '[data-camera-id="192.0.2.101"] button[aria-label="WebRTC stream diagnostics"]'
+				selector: '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]'
 			}
 		],
 		completionSignal: {
