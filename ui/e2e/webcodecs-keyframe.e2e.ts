@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
@@ -12,31 +11,44 @@ const h265FixturePath = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
 	'../../crates/test-camera/testdata/cc-4k-640x360-h265.mp4'
 );
-const keyframeOffset = 897;
-const keyframeLength = 11_688;
-const decoderConfig = Buffer.from(
+const h264KeyframeOffset = 897;
+const h264KeyframeLength = 11_688;
+const h264DecoderConfig = Buffer.from(
 	'AULAH//hABhnQsAf2QCgL/lhAAADAAEAAAMAHg8YMkgBAAVoy4JLIA==',
 	'base64'
 );
+const h265KeyframeOffset = 3_277;
+const h265KeyframeLength = 9_986;
+const h265DecoderConfigOffset = 547;
+const h265DecoderConfigLength = 2_414;
 
 test('decodes the exact indexed H.264 keyframe with WebCodecs metadata', async ({ page }) => {
 	await page.goto('/');
 	const recording = await readFile(h264FixturePath);
-	const keyframe = recording.subarray(keyframeOffset, keyframeOffset + keyframeLength);
-	expect(await decodeKeyframe(page, 'avc1.42C01F', 640, 368, decoderConfig, keyframe)).toBe(true);
+	const keyframe = recording.subarray(h264KeyframeOffset, h264KeyframeOffset + h264KeyframeLength);
+	expect(await decodeKeyframe(page, 'avc1.42C01F', 640, 368, h264DecoderConfig, keyframe)).toBe(
+		true
+	);
 });
 
 test('decodes the exact indexed H.265 keyframe with WebCodecs metadata', async ({ page }) => {
 	await page.goto('/');
 	const recording = await readFile(h265FixturePath);
-	const packet = probeFirstKeyPacket(h265FixturePath);
-	const keyframe = recording.subarray(packet.offset, packet.offset + packet.length);
+	expect(recording.readUInt32BE(h265DecoderConfigOffset - 8)).toBe(h265DecoderConfigLength + 8);
+	expect(recording.toString('ascii', h265DecoderConfigOffset - 4, h265DecoderConfigOffset)).toBe(
+		'hvcC'
+	);
+	const decoderConfig = recording.subarray(
+		h265DecoderConfigOffset,
+		h265DecoderConfigOffset + h265DecoderConfigLength
+	);
+	const keyframe = recording.subarray(h265KeyframeOffset, h265KeyframeOffset + h265KeyframeLength);
 	const supported = await decodeKeyframe(
 		page,
 		'hvc1.1.6.L63.90',
 		640,
 		360,
-		probeDecoderConfig(h265FixturePath),
+		decoderConfig,
 		keyframe
 	);
 	test.skip(!supported, 'Bundled Chromium does not expose HEVC WebCodecs support');
@@ -99,68 +111,4 @@ async function decodeKeyframe(
 	if (!decoded.supported) return false;
 	expect(decoded.frames).toEqual([{ displayWidth: 640, displayHeight: 360 }]);
 	return true;
-}
-
-function probeFirstKeyPacket(filePath: string): { offset: number; length: number } {
-	const result = JSON.parse(
-		execFileSync(
-			'ffprobe',
-			[
-				'-v',
-				'error',
-				'-read_intervals',
-				'%+#1',
-				'-select_streams',
-				'v:0',
-				'-show_packets',
-				'-show_entries',
-				'packet=pos,size,flags',
-				'-of',
-				'json',
-				filePath
-			],
-			{ encoding: 'utf8' }
-		)
-	) as { packets?: Array<{ pos?: string; size?: string; flags?: string }> };
-	const packet = result.packets?.[0];
-	if (!packet?.flags?.includes('K')) throw new Error('Fixture does not begin with a keyframe');
-	const offset = Number(packet.pos);
-	const length = Number(packet.size);
-	if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || length <= 0) {
-		throw new Error('Fixture keyframe range is invalid');
-	}
-	return { offset, length };
-}
-
-function probeDecoderConfig(filePath: string): Uint8Array {
-	const result = JSON.parse(
-		execFileSync(
-			'ffprobe',
-			[
-				'-v',
-				'error',
-				'-select_streams',
-				'v:0',
-				'-show_streams',
-				'-show_data',
-				'-of',
-				'json',
-				filePath
-			],
-			{ encoding: 'utf8' }
-		)
-	) as { streams?: Array<{ extradata?: string }> };
-	const hex = (result.streams?.[0]?.extradata ?? '')
-		.split('\n')
-		.filter((line) => line.includes(':'))
-		.map(
-			(line) =>
-				line
-					.slice(line.indexOf(':') + 1)
-					.split('  ')[0]
-					?.replaceAll(' ', '') ?? ''
-		)
-		.join('');
-	if (!hex || hex.length % 2 !== 0) throw new Error('Fixture decoder configuration is invalid');
-	return Uint8Array.from(Buffer.from(hex, 'hex'));
 }
