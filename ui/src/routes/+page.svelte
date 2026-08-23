@@ -18,6 +18,7 @@
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import PeekLayoutEditor from '$lib/components/PeekLayoutEditor.svelte';
 	import { presentPeekCamera } from '$lib/peek-camera';
+	import { reconcileServerHealth } from '$lib/health-presentation';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import CameraIcon from '@lucide/svelte/icons/camera';
@@ -28,6 +29,7 @@
 
 	const placeholders = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
 	const qualityOptions = ['auto', 'high', 'low'] as const;
+	const wallRevealTimeoutMs = 5_000;
 	const controlClient = useControlClient();
 	const livePeer = useLivePeer();
 	const gridScheduler = new GridStreamScheduler({ subscriptionSlots: 4, decoderSlots: 4 });
@@ -44,6 +46,13 @@
 	let tileVisibility = $state.raw<Record<string, GridTileVisibility>>({});
 	let screenActive = true;
 	let schedulerTimer: number | null = null;
+	let decoderCapacity = 4;
+	let wallFrameCameraIds = $state.raw<ReadonlySet<string>>(new Set());
+	let wallTargetCameraIds = $state.raw<readonly string[]>([]);
+	let wallRevealState = $state<'staging' | 'frames' | 'timeout'>('staging');
+	let wallRevealTimer: ReturnType<typeof setTimeout> | null = null;
+	let focusReturnPending = $state(false);
+	let wallRevealed = $derived(wallRevealState !== 'staging');
 	let focusedCamera = $derived(
 		focusedCameraId === null
 			? null
@@ -58,24 +67,29 @@
 	let cameraHealthById = $derived(
 		new Map((serverHealth?.cameras ?? []).map((camera) => [camera.id, camera]))
 	);
-	let reportingCameraCount = $derived(
-		(serverHealth?.cameras ?? []).filter(
-			(camera) => camera.state !== 'offline' && camera.state !== 'starting'
-		).length
+	let healthyCameraCount = $derived(
+		(serverHealth?.cameras ?? []).filter((camera) => camera.state === 'online').length
 	);
 	let fleetStatus = $derived.by(() => {
-		if (serverHealth?.status === 'healthy') {
+		if (serverHealth?.status === 'healthy' && cameras.length === 0) {
 			return {
 				colorClass: 'bg-emerald-500',
 				label: 'System online',
 				showCameraCount: true
 			};
 		}
+		if (serverHealth?.status === 'healthy') {
+			return {
+				colorClass: 'bg-emerald-500',
+				label: `${healthyCameraCount} / ${cameras.length} cameras healthy`,
+				showCameraCount: false
+			};
+		}
 
-		if (reportingCameraCount > 0) {
+		if (healthyCameraCount > 0) {
 			return {
 				colorClass: 'bg-amber-500',
-				label: `${reportingCameraCount} / ${cameras.length} cameras reporting`,
+				label: `${healthyCameraCount} / ${cameras.length} cameras healthy`,
 				showCameraCount: false
 			};
 		}
@@ -131,6 +145,7 @@
 
 	onMount(() => {
 		const decoderBudget = webDecoderBudget(navigator.hardwareConcurrency);
+		decoderCapacity = decoderBudget;
 		gridScheduler.setCapacity({
 			subscriptionSlots: decoderBudget,
 			decoderSlots: decoderBudget
@@ -148,6 +163,7 @@
 		return () => {
 			document.removeEventListener('visibilitychange', onVisibility);
 			if (schedulerTimer) clearTimeout(schedulerTimer);
+			if (wallRevealTimer) clearTimeout(wallRevealTimer);
 		};
 	});
 
@@ -168,14 +184,52 @@
 				controlClient.getHealth()
 			]);
 			cameras = nextCameras;
-			serverHealth = nextServerHealth;
+			serverHealth = reconcileServerHealth(nextServerHealth);
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load dashboard';
 		} finally {
 			loading = false;
+			armWallReveal();
 			await tick();
 			reconcileLivePlans();
 		}
+	}
+
+	function armWallReveal(): void {
+		wallFrameCameraIds = new Set();
+		wallRevealState = 'staging';
+		wallTargetCameraIds = cameras
+			.filter(
+				(camera) =>
+					camera.profiles.length > 0 &&
+					presentPeekCamera(camera, cameraHealthById.get(camera.id) ?? null).state !== 'offline'
+			)
+			.slice(0, decoderCapacity)
+			.map((camera) => camera.id);
+		if (wallRevealTimer) clearTimeout(wallRevealTimer);
+		if (wallTargetCameraIds.length === 0) {
+			revealWall('frames');
+			return;
+		}
+		wallRevealTimer = setTimeout(() => revealWall('timeout'), wallRevealTimeoutMs);
+	}
+
+	function handleWallFrameActivity(cameraId: string, active: boolean): void {
+		if (!active || wallRevealState !== 'staging' || !wallTargetCameraIds.includes(cameraId)) {
+			return;
+		}
+		const ready = new Set(wallFrameCameraIds);
+		ready.add(cameraId);
+		wallFrameCameraIds = ready;
+		if (wallTargetCameraIds.every((target) => ready.has(target))) revealWall('frames');
+	}
+
+	function revealWall(reason: 'frames' | 'timeout'): void {
+		if (wallRevealState !== 'staging') return;
+		wallRevealState = reason;
+		if (wallRevealTimer) clearTimeout(wallRevealTimer);
+		wallRevealTimer = null;
+		if (focusReturnPending) finishFocusReturn();
 	}
 
 	function handleTileVisibility(visibility: GridTileVisibility): void {
@@ -195,13 +249,16 @@
 		);
 		const demands: GridTileDemand[] = availableCameras.map((camera) => {
 			const visibility = tileVisibility[camera.id];
-			const focused = focusedCameraId === camera.id;
+			const focused = !focusReturnPending && focusedCameraId === camera.id;
+			const staging = wallRevealState === 'staging' && wallTargetCameraIds.includes(camera.id);
 			return {
 				cameraId: camera.id,
-				visibleFraction: focused ? 1 : (visibility?.visibleFraction ?? 0),
+				visibleFraction: focused || staging ? 1 : (visibility?.visibleFraction ?? 0),
 				distanceFromViewportPx: focused
 					? 0
-					: (visibility?.distanceFromViewportPx ?? Number.POSITIVE_INFINITY),
+					: staging
+						? 0
+						: (visibility?.distanceFromViewportPx ?? Number.POSITIVE_INFINITY),
 				viewportExtentPx: visibility?.viewportExtentPx ?? Math.max(1, window.innerHeight),
 				focused,
 				fullscreen: false,
@@ -216,16 +273,15 @@
 		);
 		const schedule = gridScheduler.reconcile(demands, nowMs);
 		const grants = new Map(schedule.grants.map((grant) => [grant.cameraId, grant]));
-		livePlans = availableCameras.map((camera) => ({
-			cameraId: camera.id,
-			quality:
-				focusedCameraId === camera.id
-					? focusQuality
-					: (grants.get(camera.id)?.quality ?? ('low' as const)),
-			active: grants.has(camera.id),
-			variantId:
-				focusedCameraId === camera.id && focusQuality === 'auto' ? ('main' as const) : undefined
-		}));
+		livePlans = availableCameras.map((camera) => {
+			const focused = !focusReturnPending && focusedCameraId === camera.id;
+			return {
+				cameraId: camera.id,
+				quality: focused ? focusQuality : (grants.get(camera.id)?.quality ?? ('low' as const)),
+				active: grants.has(camera.id),
+				variantId: focused && focusQuality === 'auto' ? ('main' as const) : undefined
+			};
+		});
 		for (const cameraId of grants.keys()) {
 			if (!previouslyActive.has(cameraId)) {
 				emitTimelinePerformanceEvent('GridTileAdmitted', { sourceId: cameraId });
@@ -284,6 +340,9 @@
 	}
 
 	function openFocus(cameraId: string) {
+		focusReturnPending = false;
+		if (wallRevealTimer) clearTimeout(wallRevealTimer);
+		wallRevealTimer = null;
 		focusedCameraId = cameraId;
 		focusQuality = 'auto';
 		queueMicrotask(reconcileLivePlans);
@@ -295,7 +354,15 @@
 	}
 
 	function closeFocus() {
+		if (focusedCameraId === null || focusReturnPending) return;
+		focusReturnPending = true;
+		armWallReveal();
+		queueMicrotask(reconcileLivePlans);
+	}
+
+	function finishFocusReturn() {
 		const previousCameraId = focusedCameraId;
+		focusReturnPending = false;
 		focusedCameraId = null;
 		focusQuality = 'auto';
 		queueMicrotask(reconcileLivePlans);
@@ -473,133 +540,183 @@
 			streamFor={previewStream}
 			ondiscard={closeLayoutEditor}
 		/>
-	{:else if focusedCamera}
-		<section class="space-y-3" aria-label={`${cameraLabel(focusedCamera)} focus`}>
-			<header class="flex min-h-10 flex-wrap items-center gap-2">
-				<button
-					type="button"
-					class="grid size-9 shrink-0 place-items-center rounded-md border bg-background/40 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-					title="Return to camera grid"
-					onclick={closeFocus}
+	{:else}
+		<div class="grid">
+			{#if focusedCamera}
+				<section
+					data-peek-focus-return={focusReturnPending ? 'waiting' : undefined}
+					class="relative z-10 col-start-1 row-start-1 space-y-3 bg-background"
+					aria-label={`${cameraLabel(focusedCamera)} focus`}
+					aria-busy={focusReturnPending}
 				>
-					<Grid2X2Icon class="size-4" />
-					<span class="sr-only">Return to camera grid</span>
-				</button>
-				<div class="mr-auto min-w-0">
-					<p class="text-[10px] font-semibold text-muted-foreground uppercase">Focus</p>
-					<h2 class="truncate text-sm font-semibold text-foreground">
-						{cameraLabel(focusedCamera)}
-					</h2>
-				</div>
-				<div class="flex rounded-md border bg-background/40 p-0.5">
-					<span
-						class="flex h-7 items-center gap-1.5 rounded bg-foreground px-2 text-[11px] font-medium text-background"
-						aria-current="page"
-					>
-						<RadioIcon class="size-3.5" />
-						Live
-					</span>
-					<!-- eslint-disable svelte/no-navigation-without-resolve -->
-					<a
-						href={historyHref(focusedCamera.id)}
-						class="flex h-7 items-center gap-1.5 rounded px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-					>
-						<HistoryIcon class="size-3.5" />
-						History
-					</a>
-					<!-- eslint-enable svelte/no-navigation-without-resolve -->
-				</div>
-				<div
-					class="flex rounded-md border bg-background/40 p-0.5"
-					role="group"
-					aria-label="Live quality ceiling"
-				>
-					{#each qualityOptions as quality (quality)}
+					<header class="flex min-h-10 flex-wrap items-center gap-2">
 						<button
 							type="button"
-							class="h-7 rounded px-2 text-[11px] font-medium capitalize {focusQuality === quality
-								? 'bg-foreground text-background'
-								: 'text-muted-foreground hover:text-foreground'}"
-							aria-pressed={focusQuality === quality}
-							onclick={() => setFocusQuality(quality)}
+							class="grid size-9 shrink-0 place-items-center rounded-md border bg-background/40 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							title="Return to camera grid"
+							onclick={closeFocus}
 						>
-							{quality}
+							<Grid2X2Icon class="size-4" />
+							<span class="sr-only">Return to camera grid</span>
 						</button>
-					{/each}
-				</div>
-				{#if focusQualitySwitching}
-					<span data-peek-quality-switch class="font-mono text-2xs text-primary-soft" role="status">
-						Switching to {pendingFocusStream === 'main' ? 'high' : 'low'} stream…
-					</span>
-				{/if}
-				<!-- eslint-disable svelte/no-navigation-without-resolve -->
-				<a
-					href={cameraHref(focusedCamera.id)}
-					class="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-					title={`Open ${cameraLabel(focusedCamera)} camera information`}
-				>
-					<CameraIcon class="size-4" />
-					<span class="sr-only">Open camera information</span>
-				</a>
-				<!-- eslint-enable svelte/no-navigation-without-resolve -->
-			</header>
-
-			<div class="space-y-2">
-				<div data-peek-focus-history class="group relative min-w-0 self-start">
-					{#key focusedCamera.id}
-						<LiveVideo
-							cameraId={focusedCamera.id}
-							stream="main"
-							quality={focusQuality}
-							matchVideoAspectRatio
-							onvisibilitychange={handleTileVisibility}
-							class="aspect-video overflow-hidden rounded-md ring-1 ring-white/10"
-						/>
-					{/key}
-					<span
-						class="pointer-events-none absolute top-3 left-3 z-20 max-w-[calc(100%-4rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
-					>
-						{cameraLabel(focusedCamera)}
-					</span>
-				</div>
-
-				<aside class="flex min-w-0 gap-2 overflow-x-auto pb-1" aria-label="Other cameras">
-					{#each filmstripCameras as camera (camera.id)}
-						<article class="relative aspect-video w-40 shrink-0 overflow-hidden rounded-md">
-							<LiveVideo
-								cameraId={camera.id}
-								stream="sub"
-								onvisibilitychange={handleTileVisibility}
-								class="size-full overflow-hidden ring-1 ring-white/10"
-							/>
-							<button
-								type="button"
-								class="absolute inset-0 z-10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
-								aria-label={`Focus ${cameraLabel(camera)}`}
-								onclick={() => openFocus(camera.id)}
-							></button>
+						<div class="mr-auto min-w-0">
+							<p class="text-[10px] font-semibold text-muted-foreground uppercase">Focus</p>
+							<h2 class="truncate text-sm font-semibold text-foreground">
+								{cameraLabel(focusedCamera)}
+							</h2>
+						</div>
+						<div class="flex rounded-md border bg-background/40 p-0.5">
 							<span
-								class="pointer-events-none absolute right-1.5 bottom-1.5 left-1.5 z-20 truncate rounded-sm bg-black/72 px-1.5 py-1 text-[10px] font-semibold text-white shadow-sm backdrop-blur-sm"
+								class="flex h-7 items-center gap-1.5 rounded bg-foreground px-2 text-[11px] font-medium text-background"
+								aria-current="page"
 							>
-								{cameraLabel(camera)}
+								<RadioIcon class="size-3.5" />
+								Live
 							</span>
-						</article>
-					{/each}
-				</aside>
-			</div>
-		</section>
-	{:else}
-		<div class="grid grid-cols-2 gap-2.5 md:grid-cols-3 2xl:grid-cols-4">
-			{#each cameras as camera, cameraIndex (camera.id)}
-				<PeekCameraTile
-					{camera}
-					health={cameraHealth(camera.id)}
-					stream={previewStream(camera)}
-					mobileFeatured={cameraIndex === 0}
-					onvisibilitychange={handleTileVisibility}
-					onfocus={openFocus}
-				/>
-			{/each}
+							<!-- eslint-disable svelte/no-navigation-without-resolve -->
+							<a
+								href={historyHref(focusedCamera.id)}
+								class="flex h-7 items-center gap-1.5 rounded px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							>
+								<HistoryIcon class="size-3.5" />
+								History
+							</a>
+							<!-- eslint-enable svelte/no-navigation-without-resolve -->
+						</div>
+						<div
+							class="flex rounded-md border bg-background/40 p-0.5"
+							role="group"
+							aria-label="Live quality ceiling"
+						>
+							{#each qualityOptions as quality (quality)}
+								<button
+									type="button"
+									class="h-7 rounded px-2 text-[11px] font-medium capitalize {focusQuality ===
+									quality
+										? 'bg-foreground text-background'
+										: 'text-muted-foreground hover:text-foreground'}"
+									aria-pressed={focusQuality === quality}
+									onclick={() => setFocusQuality(quality)}
+								>
+									{quality}
+								</button>
+							{/each}
+						</div>
+						{#if focusQualitySwitching}
+							<span
+								data-peek-quality-switch
+								class="font-mono text-2xs text-primary-soft"
+								role="status"
+							>
+								Switching to {pendingFocusStream === 'main' ? 'high' : 'low'} stream…
+							</span>
+						{/if}
+						<!-- eslint-disable svelte/no-navigation-without-resolve -->
+						<a
+							href={cameraHref(focusedCamera.id)}
+							class="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							title={`Open ${cameraLabel(focusedCamera)} camera information`}
+						>
+							<CameraIcon class="size-4" />
+							<span class="sr-only">Open camera information</span>
+						</a>
+						<!-- eslint-enable svelte/no-navigation-without-resolve -->
+					</header>
+
+					<div class="space-y-2">
+						<div data-peek-focus-history class="group relative min-w-0 self-start">
+							{#key focusedCamera.id}
+								<LiveVideo
+									cameraId={focusedCamera.id}
+									stream="main"
+									quality={focusQuality}
+									matchVideoAspectRatio
+									onvisibilitychange={handleTileVisibility}
+									class="aspect-video overflow-hidden rounded-md ring-1 ring-white/10"
+								/>
+							{/key}
+							<span
+								class="pointer-events-none absolute top-3 left-3 z-20 max-w-[calc(100%-4rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
+							>
+								{cameraLabel(focusedCamera)}
+							</span>
+						</div>
+
+						<aside class="flex min-w-0 gap-2 overflow-x-auto pb-1" aria-label="Other cameras">
+							{#each filmstripCameras as camera (camera.id)}
+								<article class="relative aspect-video w-40 shrink-0 overflow-hidden rounded-md">
+									<LiveVideo
+										cameraId={camera.id}
+										stream="sub"
+										onvisibilitychange={handleTileVisibility}
+										class="size-full overflow-hidden ring-1 ring-white/10"
+									/>
+									<button
+										type="button"
+										class="absolute inset-0 z-10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+										aria-label={`Focus ${cameraLabel(camera)}`}
+										onclick={() => openFocus(camera.id)}
+									></button>
+									<span
+										class="pointer-events-none absolute right-1.5 bottom-1.5 left-1.5 z-20 truncate rounded-sm bg-black/72 px-1.5 py-1 text-[10px] font-semibold text-white shadow-sm backdrop-blur-sm"
+									>
+										{cameraLabel(camera)}
+									</span>
+								</article>
+							{/each}
+						</aside>
+					</div>
+				</section>
+			{/if}
+			{#if focusedCamera === null || focusReturnPending}
+				<div
+					data-peek-wall
+					data-peek-wall-state={wallRevealed ? 'ready' : 'staging'}
+					data-peek-wall-reveal={wallRevealState === 'staging' ? undefined : wallRevealState}
+					data-peek-wall-ready-count={wallFrameCameraIds.size}
+					data-peek-wall-target-count={wallTargetCameraIds.length}
+					class="relative col-start-1 row-start-1 {focusedCamera === null
+						? ''
+						: 'pointer-events-none opacity-0'}"
+					aria-busy={!wallRevealed}
+					aria-hidden={focusedCamera !== null}
+				>
+					<div
+						data-peek-wall-content
+						inert={!wallRevealed}
+						class="grid grid-cols-2 gap-2.5 transition-[opacity,transform] duration-500 ease-out motion-reduce:transform-none motion-reduce:transition-none md:grid-cols-3 2xl:grid-cols-4 {wallRevealed
+							? 'translate-y-0 opacity-100'
+							: 'pointer-events-none translate-y-5 opacity-0'}"
+					>
+						{#each cameras as camera, cameraIndex (camera.id)}
+							<PeekCameraTile
+								{camera}
+								health={cameraHealth(camera.id)}
+								stream={previewStream(camera)}
+								mobileFeatured={cameraIndex === 0}
+								onframeactivitychange={handleWallFrameActivity}
+								onvisibilitychange={handleTileVisibility}
+								onfocus={openFocus}
+							/>
+						{/each}
+					</div>
+					<div
+						data-peek-wall-placeholder
+						class="pointer-events-none absolute inset-0 grid grid-cols-2 gap-2.5 transition-[opacity,transform] duration-300 ease-out motion-reduce:transform-none motion-reduce:transition-none md:grid-cols-3 2xl:grid-cols-4 {wallRevealed
+							? '-translate-y-3 opacity-0'
+							: 'translate-y-0 opacity-100'}"
+						aria-hidden="true"
+					>
+						{#each cameras as camera, cameraIndex (camera.id)}
+							<Skeleton
+								class="w-full rounded-lg {cameraIndex === 0
+									? 'col-span-2 aspect-video md:col-span-1'
+									: 'aspect-[174/110] md:aspect-video'}"
+							/>
+						{/each}
+					</div>
+				</div>
+			{/if}
 		</div>
 	{/if}
 </div>

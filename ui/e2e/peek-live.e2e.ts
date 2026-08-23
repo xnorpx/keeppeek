@@ -49,6 +49,11 @@ test('Peek presents native WebRTC frames without a canvas fallback', async ({ pa
 		await expect(tile).not.toContainText('Reconnecting');
 		await expect(tile).not.toContainText('NO SIGNAL');
 	}
+	const wall = page.locator('[data-peek-wall]');
+	await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
+	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'frames');
+	await expect(wall).toHaveAttribute('data-peek-wall-ready-count', String(streams.length));
+	await expect(wall).toHaveAttribute('data-peek-wall-target-count', String(streams.length));
 	expect(browserErrors).toEqual([]);
 });
 
@@ -89,6 +94,12 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 		skipsRealWebRtcOnWindowsCi,
 		'Windows CI does not establish the real WebRTC control channel used by this full-stack test.'
 	);
+	const svelteWarnings: string[] = [];
+	page.on('console', (message) => {
+		if (message.type() === 'warning' && message.text().includes('[svelte]')) {
+			svelteWarnings.push(message.text());
+		}
+	});
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.goto('/');
 
@@ -118,11 +129,12 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 	await expect(liveView).toHaveAttribute('data-requested-quality', 'low');
 	await expect(liveView).toHaveAttribute('data-stream', 'main');
 	await expect(liveView).toHaveAttribute('data-pending-stream', 'sub');
+	await expect(liveView).toHaveAttribute('data-status', 'live');
 	await expect(focus.locator('[data-peek-quality-switch]')).toContainText(
 		'Switching to low stream…'
 	);
 	await expect(focus.getByRole('button', { name: 'high', exact: true })).toBeEnabled();
-	await expect(liveView).toHaveAttribute('data-stream', 'sub');
+	await expect(liveView).toHaveAttribute('data-stream', 'sub', { timeout: 20_000 });
 	await expect(liveView).not.toHaveAttribute('data-pending-stream');
 	await expect(focus.locator('[data-peek-quality-switch]')).toHaveCount(0);
 
@@ -137,7 +149,18 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 		'Switching to low stream…'
 	);
 	await expect(focus.getByRole('button', { name: 'high', exact: true })).toBeEnabled();
-	await expect(liveView).toHaveAttribute('data-stream', 'sub');
+	await expect(liveView).toHaveAttribute('data-stream', 'sub', { timeout: 20_000 });
 	await expect(liveView).not.toHaveAttribute('data-pending-stream');
 	await expect(focus.locator('[data-peek-quality-switch]')).toHaveCount(0);
+
+	await focus.getByRole('button', { name: 'high', exact: true }).click();
+	await expect(liveView).toHaveAttribute('data-stream', 'main', { timeout: 20_000 });
+	await focus.getByRole('button', { name: 'Return to camera grid' }).click();
+	const wall = page.locator('[data-peek-wall]');
+	await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready', { timeout: 10_000 });
+	await expect(wall.locator(`[data-camera-id="${streams[0].cameraId}"]`)).toHaveAttribute(
+		'data-status',
+		'live'
+	);
+	expect(svelteWarnings).toEqual([]);
 });

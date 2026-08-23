@@ -132,6 +132,15 @@ test('uses a searchable ten-section mobile administration index with focused own
 	await expect(page.locator('[data-mobile-settings-action-bar]')).toContainText(
 		'Server update required · keeppeek.runtime-config.v1'
 	);
+	await page.getByRole('link', { name: 'Back to settings sections' }).click();
+	await page
+		.getByRole('navigation', { name: 'Settings sections' })
+		.getByRole('link', { name: /Storage & retention/ })
+		.click();
+	await page.getByRole('button', { name: 'Edit runtime storage' }).click();
+	await expect(page.getByLabel('Medium-term path')).toBeVisible();
+	await expect(page.getByLabel('Medium-term path')).toBeFocused();
+	await expect(page.getByLabel('Medium-term path')).toBeInViewport();
 	expect(writes).toEqual([]);
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))

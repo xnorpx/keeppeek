@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { eventDate, mockEvents } from './fixtures/events';
+import { eventDate, mockEvents, mockEventsWithOlderFilteredMatch } from './fixtures/events';
 
 test('Board 10 browse restores URL filters and preserves mixed Event states', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 840 });
@@ -35,6 +35,45 @@ test('Board 10 browse restores URL filters and preserves mixed Event states', as
 	await page.getByRole('button', { name: 'Clear “nothing-here” · 5 results' }).click();
 	await expect(page.locator('[data-event-card]')).toHaveCount(5);
 	await expect(page).toHaveURL(new RegExp(`/events\\?date=${eventDate}$`));
+});
+
+test('continues a filtered Events search into an earlier bounded window', async ({ page }) => {
+	await mockEventsWithOlderFilteredMatch(page);
+	await page.goto(`/events?date=${eventDate}&type=person`);
+
+	await expect(page.locator('[data-event-card]')).toHaveCount(0);
+	await expect(page.getByText('No matching events in the loaded window.')).toBeVisible();
+	await page.getByRole('button', { name: 'Search earlier events' }).click();
+
+	await expect(page.locator('[data-event-card="front-door:older-person"]')).toBeVisible();
+	await expect(page.getByText('1-1 of 1 loaded')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Clear filters' }).click();
+	const visibleCards = page.locator('[data-event-card]');
+	await expect(visibleCards).toHaveCount(18);
+	const lastVisibleCard = visibleCards.last();
+	await lastVisibleCard.focus();
+	await lastVisibleCard.press('ArrowDown');
+	await expect(lastVisibleCard).toBeFocused();
+	await expect(lastVisibleCard).toHaveAttribute('tabindex', '0');
+});
+
+test('cancels an earlier Events search cleanly when the date changes', async ({ page }) => {
+	let releaseEarlierSearch!: () => void;
+	const earlierSearchGate = new Promise<void>((resolve) => {
+		releaseEarlierSearch = resolve;
+	});
+	await mockEventsWithOlderFilteredMatch(page, [Promise.resolve(), earlierSearchGate]);
+	await page.goto(`/events?date=${eventDate}&type=person`);
+
+	await page.getByRole('button', { name: 'Search earlier events' }).click();
+	await page.getByLabel('Event date').fill('2026-08-19');
+	await page.getByLabel('Event date').press('Tab');
+	releaseEarlierSearch();
+
+	await expect(page).toHaveURL(/date=2026-08-19/);
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await expect(page.getByText('No events found.')).toBeVisible();
 });
 
 test('Board 10 detail restores its deep link and exposes only returned Event evidence', async ({

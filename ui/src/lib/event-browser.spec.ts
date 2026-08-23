@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { CameraListItem, RecordingEvent } from './types';
 import {
+	EVENT_BROWSER_INITIAL_WINDOW_MS,
+	eventBrowserDayBounds,
 	eventBrowserRecordKey,
 	eventBrowserSearchParams,
 	eventFilterSummary,
 	eventNoResultsSuggestion,
 	filterEventBrowserRecords,
 	parseEventBrowserFilters,
+	previousEventBrowserWindow,
 	type EventBrowserRecord
 } from './event-browser';
 
@@ -43,6 +46,25 @@ function record(
 }
 
 describe('Events browser contract', () => {
+	it('starts with a recent window and expands backward without crossing the day', () => {
+		const { startMs, endMs } = eventBrowserDayBounds(
+			'2026-08-18',
+			Date.parse('2026-08-18T12:00:00Z')
+		);
+		const recent = previousEventBrowserWindow(startMs, endMs, EVENT_BROWSER_INITIAL_WINDOW_MS);
+		expect(recent).toEqual({
+			startMs: Date.parse('2026-08-18T11:55:00Z'),
+			endMs,
+			nextDurationMs: 10 * 60_000
+		});
+		expect(previousEventBrowserWindow(startMs, startMs + 1_000, 10 * 60_000)).toEqual({
+			startMs,
+			endMs: startMs + 1_000,
+			nextDurationMs: 20 * 60_000
+		});
+		expect(previousEventBrowserWindow(startMs, startMs, 10 * 60_000)).toBeNull();
+	});
+
 	it('parses known structured filters and rejects invalid values', () => {
 		const filters = parseEventBrowserFilters(
 			new URLSearchParams(

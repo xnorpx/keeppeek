@@ -117,3 +117,45 @@ export async function mockEvents(page: Page): Promise<void> {
 	];
 	await mockControlPeer(page, { cameras, storedRanges, storedEvents });
 }
+
+export async function mockEventsWithOlderFilteredMatch(
+	page: Page,
+	storedTimelineGates: readonly Promise<void>[] = []
+): Promise<void> {
+	const dayEndMs = dayStartMs + 24 * 60 * 60_000;
+	const recentEvents: StoredEventFixture[] = Array.from({ length: 18 }, (_, index) => ({
+		sourceId: 'front-door',
+		event: {
+			id: `recent-motion-${index}`,
+			source: 'camera',
+			kind: 'motion',
+			start_time_ms: dayEndMs - 30_000 - index * 10_000,
+			end_time_ms: null,
+			confidence: null,
+			bbox: null,
+			zone: null,
+			thumbnail_url: null
+		}
+	}));
+	await mockControlPeer(page, {
+		cameras,
+		storedTimelineGates,
+		storedEvents: [
+			...recentEvents,
+			{
+				sourceId: 'front-door',
+				event: {
+					id: 'older-person',
+					source: 'camera',
+					kind: 'person',
+					start_time_ms: dayEndMs - 10 * 60_000,
+					end_time_ms: null,
+					confidence: 0.91,
+					bbox: null,
+					zone: 'porch',
+					thumbnail_url: null
+				}
+			}
+		]
+	});
+}

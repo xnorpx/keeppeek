@@ -24,6 +24,40 @@ export type EventNoResultsSuggestion = {
 };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+export const EVENT_BROWSER_PAGE_SIZE = 18;
+export const EVENT_BROWSER_INITIAL_WINDOW_MS = 5 * 60_000;
+const EVENT_BROWSER_MAX_WINDOW_MS = 6 * 60 * 60_000;
+
+export type EventBrowserTimeWindow = {
+	startMs: number;
+	endMs: number;
+	nextDurationMs: number;
+};
+
+export function eventBrowserDayBounds(
+	date: string,
+	nowMs = Date.now()
+): { startMs: number; endMs: number } {
+	const startMs = Date.parse(`${date}T00:00:00Z`);
+	if (!Number.isFinite(startMs) || new Date(startMs).toISOString().slice(0, 10) !== date) {
+		throw new Error('Event date is invalid.');
+	}
+	const dayEndMs = startMs + 86_400_000;
+	return { startMs, endMs: nowMs >= startMs && nowMs < dayEndMs ? nowMs : dayEndMs };
+}
+
+export function previousEventBrowserWindow(
+	dayStartMs: number,
+	cursorMs: number,
+	durationMs: number
+): EventBrowserTimeWindow | null {
+	if (cursorMs <= dayStartMs) return null;
+	return {
+		startMs: Math.max(dayStartMs, cursorMs - durationMs),
+		endMs: cursorMs,
+		nextDurationMs: Math.min(durationMs * 2, EVENT_BROWSER_MAX_WINDOW_MS)
+	};
+}
 
 export function parseEventBrowserFilters(
 	params: URLSearchParams,
@@ -87,8 +121,8 @@ export function filterEventBrowserRecords(
 			) {
 				return false;
 			}
-			if (filters.image === 'with' && record.event.thumbnail_url === null) return false;
-			if (filters.image === 'without' && record.event.thumbnail_url !== null) return false;
+			if (filters.image === 'with' && !eventHasImage(record.event)) return false;
+			if (filters.image === 'without' && eventHasImage(record.event)) return false;
 			if (!query) return true;
 			return [
 				record.event.kind,
@@ -101,6 +135,13 @@ export function filterEventBrowserRecords(
 				.some((value) => value.toLocaleLowerCase().includes(query));
 		})
 		.toSorted((left, right) => right.event.start_time_ms - left.event.start_time_ms);
+}
+
+export function eventHasImage(event: RecordingEvent): boolean {
+	return (
+		event.thumbnail_url !== null ||
+		event.attachments?.some((attachment) => attachment.type === 'thumbnail') === true
+	);
 }
 
 export function eventBrowserRecordKey(record: EventBrowserRecord): string {

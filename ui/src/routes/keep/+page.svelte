@@ -39,6 +39,8 @@
 		minute: '2-digit',
 		second: '2-digit'
 	});
+	const initialRecordingWindowMs = 5 * 60_000;
+	const maximumRecordingWindowMs = 6 * 60 * 60_000;
 	const controlClient = useControlClient();
 	const timelineRepository = new TimelineRepository(controlClient);
 
@@ -90,12 +92,25 @@
 	let reconnectPending = false;
 	let scrubUsesFragmentFallback = false;
 
+	let viewportSegments = $derived(
+		timelineRepository.ranges.flatMap((range): RecordingSegment[] => {
+			if (
+				range.sourceId !== cameraId ||
+				(range.streamId !== 'main' && range.streamId !== 'sub') ||
+				!selectedDate
+			) {
+				return [];
+			}
+			return [recordingSegment(range.streamId, selectedDate, range.startMs, range.endMs)];
+		})
+	);
+	let allSegments = $derived(mergeRecordingSegments([...segments, ...viewportSegments]));
 	let orderedSegments = $derived(
-		segments
+		allSegments
 			.filter((segment) => segment.stream === stream)
 			.toSorted((left, right) => left.start_time_ms - right.start_time_ms)
 	);
-	let availableStreams = $derived(new Set(segments.map((segment) => segment.stream)));
+	let availableStreams = $derived(new Set(allSegments.map((segment) => segment.stream)));
 	let selectedCamera = $derived(cameras.find((camera) => camera.id === cameraId) ?? null);
 	let selectedBitrateKbps = $derived(
 		selectedCamera?.profiles.find((profile) => profile.stream === stream)?.bitrate_kbps ?? null
@@ -207,11 +222,40 @@
 			const params = new URLSearchParams(window.location.search);
 			mode = parseKeepMode(params.get('mode'));
 			const requestedTimestampMs = parseTimestamp(params.get('at'));
-			const [nextCameras, health] = await Promise.all([
-				controlClient.getCameras(),
-				controlClient.getHealth().catch(() => null)
-			]);
-			cameras = nextCameras;
+			const requestedCamera = params.get('camera')?.trim() ?? '';
+			const requestedStream = params.get('stream');
+			if (requestedStream === 'main' || requestedStream === 'sub') stream = requestedStream;
+			const requestedDate =
+				params.get('date') ??
+				(requestedTimestampMs === null
+					? undefined
+					: new Date(requestedTimestampMs).toISOString().slice(0, 10));
+			const initialDate = requestedDate ?? new Date().toISOString().slice(0, 10);
+			const camerasPromise = controlClient.getCameras().then((nextCameras) => {
+				cameras = nextCameras;
+				return nextCameras;
+			});
+			const healthPromise = controlClient.getHealth().catch(() => null);
+			let recordingsPromise: Promise<void> | null = null;
+			if (requestedCamera) {
+				cameraId = requestedCamera;
+				recordingsPromise = loadRecordings(initialDate, requestedTimestampMs ?? undefined, false);
+			}
+
+			const nextCameras = await camerasPromise;
+			const resolvedCameraId = nextCameras.some((camera) => camera.id === requestedCamera)
+				? requestedCamera
+				: (nextCameras[0]?.id ?? '');
+			if (cameraId !== resolvedCameraId) {
+				cameraId = resolvedCameraId;
+				recordingsPromise = cameraId
+					? loadRecordings(initialDate, requestedTimestampMs ?? undefined, false)
+					: null;
+			} else if (!recordingsPromise && cameraId) {
+				recordingsPromise = loadRecordings(initialDate, requestedTimestampMs ?? undefined, false);
+			}
+
+			const health = await healthPromise;
 			configuredFrameRates = new Map(
 				(health?.cameras ?? []).flatMap((camera) =>
 					camera.configured_profiles.flatMap((profile) =>
@@ -221,20 +265,8 @@
 					)
 				)
 			);
-			const requestedCamera = params.get('camera');
-			cameraId = cameras.some((camera) => camera.id === requestedCamera)
-				? requestedCamera!
-				: (cameras[0]?.id ?? '');
-			const requestedStream = params.get('stream');
-			if (requestedStream === 'main' || requestedStream === 'sub') stream = requestedStream;
-			const requestedDate =
-				params.get('date') ??
-				(requestedTimestampMs === null
-					? undefined
-					: new Date(requestedTimestampMs).toISOString().slice(0, 10));
-			if (cameraId) {
-				const initialDate = requestedDate ?? new Date().toISOString().slice(0, 10);
-				await loadRecordings(initialDate, requestedTimestampMs ?? undefined, false);
+			if (recordingsPromise) {
+				await recordingsPromise;
 				void discoverRecordingDates(requestedDate === undefined && requestedTimestampMs === null);
 			}
 		} catch (cause) {
@@ -257,13 +289,11 @@
 		selectedDate = requestedDate;
 		segments = [];
 		try {
-			const [response] = await controlClient.getRecordingsForDate(
-				[cameraId],
+			const response = await loadInitialRecordingWindow(
 				requestedDate,
-				controller.signal,
-				(pages) => {
-					if (version === loadVersion && pages[0]) segments = pages[0].segments;
-				}
+				targetTimestampMs,
+				controller,
+				version
 			);
 			if (version !== loadVersion) return;
 			segments = response.segments;
@@ -297,6 +327,60 @@
 		} finally {
 			if (version === loadVersion) loading = false;
 		}
+	}
+
+	async function loadInitialRecordingWindow(
+		date: string,
+		targetTimestampMs: number | undefined,
+		controller: AbortController,
+		version: number
+	): Promise<{ segments: RecordingSegment[] }> {
+		const dayStart = Date.parse(`${date}T00:00:00Z`);
+		const dayEnd = dayStart + 86_400_000;
+		const currentDay = new Date().toISOString().slice(0, 10);
+		const edgeMs =
+			targetTimestampMs ?? (date === currentDay ? Math.min(Date.now(), dayEnd) : dayEnd);
+		let cursorMs = edgeMs;
+		let durationMs = initialRecordingWindowMs;
+		let accumulated: RecordingSegment[] = [];
+		let searchComplete = false;
+		do {
+			const startMs = Math.max(dayStart, cursorMs - durationMs);
+			const endMs = Math.min(
+				dayEnd,
+				targetTimestampMs === undefined ? cursorMs : edgeMs + durationMs
+			);
+			const [response] = await controlClient.getRecordingsInRange(
+				[cameraId],
+				date,
+				startMs,
+				endMs,
+				controller.signal,
+				(pages) => {
+					if (version !== loadVersion || !pages[0]) return;
+					segments = mergeRecordingSegments([...accumulated, ...pages[0].segments]);
+				}
+			);
+			if (version !== loadVersion || controller.signal.aborted) {
+				throw new DOMException('Recording query was cancelled.', 'AbortError');
+			}
+			accumulated = mergeRecordingSegments([...accumulated, ...response.segments]);
+			const hasTarget =
+				targetTimestampMs === undefined ||
+				accumulated.some(
+					(segment) =>
+						targetTimestampMs >= segment.start_time_ms && targetTimestampMs < segment.end_time_ms
+				);
+			searchComplete =
+				(accumulated.length > 0 && hasTarget) ||
+				(startMs === dayStart && endMs === dayEnd) ||
+				startMs === dayStart;
+			if (!searchComplete) {
+				if (targetTimestampMs === undefined) cursorMs = startMs;
+				durationMs = Math.min(durationMs * 2, maximumRecordingWindowMs);
+			}
+		} while (!searchComplete);
+		return { segments: accumulated };
 	}
 
 	async function discoverRecordingDates(selectLatestWhenEmpty: boolean): Promise<void> {
@@ -654,7 +738,7 @@
 		const targetTimestampMs = playheadMs;
 		const play = video !== null && !video.paused;
 		stream = next;
-		const candidates = segments
+		const candidates = allSegments
 			.filter((segment) => segment.stream === stream)
 			.toSorted((left, right) => left.start_time_ms - right.start_time_ms);
 		const target =
@@ -670,6 +754,32 @@
 	function handlePlayerError(event: Event) {
 		void event;
 		playerError = 'This recording could not be played.';
+	}
+
+	function recordingSegment(
+		streamId: 'main' | 'sub',
+		date: string,
+		startTimeMs: number,
+		endTimeMs: number
+	): RecordingSegment {
+		return {
+			stream: streamId,
+			date,
+			hour: new Date(startTimeMs).toISOString().slice(11, 13),
+			filename: `${startTimeMs}-${endTimeMs}.mp4`,
+			url: `stored:${cameraId}:${streamId}:${startTimeMs}:${endTimeMs}`,
+			start_time_ms: startTimeMs,
+			end_time_ms: endTimeMs,
+			duration_ms: endTimeMs - startTimeMs
+		};
+	}
+
+	function mergeRecordingSegments(candidates: readonly RecordingSegment[]): RecordingSegment[] {
+		const merged = new Map<string, RecordingSegment>();
+		for (const segment of candidates) {
+			merged.set(`${segment.stream}:${segment.start_time_ms}:${segment.end_time_ms}`, segment);
+		}
+		return [...merged.values()];
 	}
 
 	async function selectSegment(segment: RecordingSegment | null, offsetSeconds = 0, play = false) {

@@ -14,7 +14,7 @@ export function reconcilePeekCameraPlayback(
 	healthState: CameraHealth['state'] | null,
 	hasRecentFrames: boolean
 ): PeekCameraPresentation {
-	if (!hasRecentFrames || (presentation.state !== 'reconnecting' && healthState !== 'stale')) {
+	if (!hasRecentFrames || presentation.state !== 'reconnecting' || healthState === 'stale') {
 		return presentation;
 	}
 	return {

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { EventBrowserRecord } from '$lib/event-browser';
+	import { eventHasImage, type EventBrowserRecord } from '$lib/event-browser';
+	import { onMount } from 'svelte';
 
 	type Props = {
 		record: EventBrowserRecord;
@@ -10,6 +11,7 @@
 		onfocus?: () => void;
 		onkeydown?: (event: KeyboardEvent) => void;
 		onclick?: () => void;
+		onpreviewrequest?: () => void;
 	};
 
 	let {
@@ -20,8 +22,31 @@
 		tabindex = 0,
 		onfocus,
 		onkeydown,
-		onclick
+		onclick,
+		onpreviewrequest
 	}: Props = $props();
+	let cardElement: HTMLButtonElement | null = null;
+
+	onMount(() => {
+		if (
+			!cardElement ||
+			!onpreviewrequest ||
+			record.event.thumbnail_url ||
+			!eventHasImage(record.event)
+		) {
+			return;
+		}
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (!entries.some((entry) => entry.isIntersecting)) return;
+				onpreviewrequest();
+				observer.disconnect();
+			},
+			{ rootMargin: '100% 0px' }
+		);
+		observer.observe(cardElement);
+		return () => observer.disconnect();
+	});
 	const eventTimeFormatter = new Intl.DateTimeFormat(undefined, {
 		year: 'numeric',
 		month: 'short',
@@ -61,6 +86,7 @@
 </script>
 
 <button
+	bind:this={cardElement}
 	type="button"
 	data-event-paper-frame={paperFrame || undefined}
 	data-event-card={recordKey()}
@@ -98,12 +124,14 @@
 					class="size-full object-cover"
 				/>
 			{/if}
-		{:else}
+		{:else if !eventHasImage(record.event)}
 			<div
 				class="grid size-full place-items-center border border-dashed border-hairline-strong font-mono text-2xs tracking-caps text-text-faint"
 			>
 				NO IMAGE
 			</div>
+		{:else}
+			<div class="size-full animate-pulse bg-raised" aria-label="Loading event image"></div>
 		{/if}
 		{#if record.event.confidence !== null}
 			<span

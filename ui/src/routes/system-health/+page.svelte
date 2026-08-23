@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { useControlClient } from '$lib/control-context';
-	import { rankHealthFindings } from '$lib/health-presentation';
+	import { rankHealthFindings, reconcileServerHealth } from '$lib/health-presentation';
 	import HealthPriorityCard from '$lib/components/HealthPriorityCard.svelte';
 	import MobileHealthOverview from '$lib/components/MobileHealthOverview.svelte';
 	import { useLivePeer } from '$lib/stream-peer-context';
@@ -131,7 +131,7 @@
 		try {
 			const next = await controlClient.getHealth();
 			if (version !== requestVersion) return;
-			health = next;
+			health = reconcileServerHealth(next);
 			error = null;
 		} catch (cause) {
 			if (version !== requestVersion) return;

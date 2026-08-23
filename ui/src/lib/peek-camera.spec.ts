@@ -85,11 +85,11 @@ describe('Peek camera presentation', () => {
 		});
 	});
 
-	it('uses recent decoded frames instead of stale reconnecting chrome', () => {
+	it('preserves stale server evidence while decoded frames remain active', () => {
 		const stale = presentPeekCamera(camera, health('stale', { lifecycle: 'Connected' }));
 		expect(reconcilePeekCameraPlayback(stale, 'stale', true)).toMatchObject({
-			state: 'live',
-			detail: null
+			state: 'degraded',
+			detail: 'Stream health report stale'
 		});
 	});
 

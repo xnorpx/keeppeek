@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { mockControlPeer } from './fixtures/control-peer';
-import { mockMixedHealth } from './fixtures/peek';
+import { mixedCameras, mixedHealth, mockMixedHealth } from './fixtures/peek';
 
 test('renders the KeepPeek dashboard without configured cameras', async ({ page }) => {
 	await mockControlPeer(page, { health: { status: 'healthy', cameras: [] } });
@@ -26,7 +26,7 @@ test('Board 6 renders live, degraded, reconnecting, and offline Paper tile state
 	await page.goto('/');
 
 	const fleetStatus = page.locator('[data-peek-fleet-status]');
-	await expect(fleetStatus).toContainText('3 / 4 cameras reporting');
+	await expect(fleetStatus).toContainText('1 / 4 cameras healthy');
 	await expect(fleetStatus.locator('span').first()).toHaveClass(/bg-amber-500/);
 	const runtimeTelemetry = page.locator('[data-peek-runtime-telemetry]');
 	await expect(runtimeTelemetry).toBeVisible();
@@ -140,6 +140,47 @@ test('keeps mixed Peek states usable at the authored mobile viewport', async ({ 
 		.toBe(true);
 });
 
+test('keeps focus visible until the complete Peek wall has a frame', async ({ page }) => {
+	const cameraHealth = mixedHealth.cameras?.[0];
+	if (!cameraHealth) throw new Error('mixed health fixture must include Front Door');
+	const camera = {
+		...mixedCameras[0],
+		profiles: [
+			{
+				name: 'Sub',
+				stream: 'sub' as const,
+				encoding: 'h264' as const,
+				resolution: '640x360',
+				framerate: 15
+			}
+		]
+	};
+	await mockControlPeer(page, {
+		cameras: [camera],
+		health: { ...mixedHealth, cameras: [cameraHealth] }
+	});
+	await page.goto('/');
+
+	const wall = page.locator('[data-peek-wall]');
+	await expect(wall).toHaveAttribute('data-peek-wall-state', 'staging');
+	await wall.locator('video').dispatchEvent('playing');
+	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'frames');
+
+	await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
+	const focus = page.getByRole('region', { name: 'Front Door focus' });
+	await focus.getByRole('button', { name: 'Return to camera grid' }).click();
+
+	await expect(focus).toHaveAttribute('data-peek-focus-return', 'waiting');
+	await expect(focus).toBeVisible();
+	await expect(wall).toHaveAttribute('data-peek-wall-state', 'staging');
+	await expect(wall).toHaveCSS('opacity', '0');
+
+	await wall.locator('video').dispatchEvent('playing');
+	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'frames');
+	await expect(focus).toHaveCount(0);
+	await expect(page.locator('[data-peek-focus="front-door"]')).toBeFocused();
+});
+
 test('names the negotiated first-keyframe wait and degrades it after five seconds', async ({
 	page
 }) => {
@@ -189,8 +230,17 @@ test('names the negotiated first-keyframe wait and degrades it after five second
 	await page.goto('/');
 
 	const state = page.locator('[data-first-frame-state]');
+	const tile = page.locator('[data-peek-camera="alley"]');
+	const wall = page.locator('[data-peek-wall]');
+	await expect(wall).toHaveAttribute('data-peek-wall-state', 'staging');
+	await expect(wall.locator('[data-peek-wall-content]')).toHaveCSS('opacity', '0');
 	await expect(state).toHaveAttribute('data-first-frame-state', 'waiting');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'reconnecting');
 	await expect(state).toContainText('Negotiated · waiting for a keyframe');
 	await expect(state).toHaveAttribute('data-first-frame-state', 'late', { timeout: 7_000 });
+	await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
+	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'timeout');
+	await expect(wall.locator('[data-peek-wall-content]')).toHaveCSS('opacity', '1');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'degraded');
 	await expect(state).toContainText('No keyframe after');
 });

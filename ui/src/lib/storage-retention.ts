@@ -2,6 +2,32 @@ import type { DiskHealth, SanitizedConfig, ServerHealthResponse } from '$lib/typ
 
 const GIBIBYTE_BYTES = 1_073_741_824;
 
+export function formatStorageDuration(seconds: number, locale?: string): string {
+	if (seconds < 1) {
+		const milliseconds = Math.max(0, Math.round(seconds * 1_000));
+		return `${new Intl.NumberFormat(locale).format(milliseconds)} ${milliseconds === 1 ? 'millisecond' : 'milliseconds'}`;
+	}
+	if (seconds < 60) {
+		const value = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(seconds);
+		return `${value} ${seconds === 1 ? 'second' : 'seconds'}`;
+	}
+	if (seconds % 3_600 === 0) {
+		const hours = seconds / 3_600;
+		return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+	}
+	if (seconds % 60 === 0) {
+		const minutes = seconds / 60;
+		return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
+	}
+	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+export function formatStorageBufferDuration(seconds: number, locale?: string): string {
+	if (seconds < 1) return formatStorageDuration(seconds, locale);
+	const value = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(seconds);
+	return `${value} ${seconds === 1 ? 'second' : 'seconds'}`;
+}
+
 function normalizedPath(path: string): string {
 	const normalized = path.trim().replaceAll('\\', '/');
 	const withoutTrailingSlash = normalized.replace(/\/+$/, '');

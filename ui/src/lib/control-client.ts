@@ -220,6 +220,7 @@ export type StoredTimelineQueryOptions = {
 	eventTypes?: readonly string[];
 	includeEvents: boolean;
 	includeAttachments: boolean;
+	includeAvailability?: boolean;
 	signal?: AbortSignal;
 	onPage?: (page: StoredTimelineResult) => void;
 };
@@ -352,14 +353,29 @@ export class ControlClient {
 		signal?: AbortSignal,
 		onPage?: (recordings: RecordingsResponse[]) => void
 	): Promise<RecordingsResponse[]> {
+		const { startMs, endMs } = recordingDayWindow(date);
+		return this.getRecordingsInRange(cameraIds, date, startMs, endMs, signal, onPage);
+	}
+
+	async getRecordingsInRange(
+		cameraIds: readonly string[],
+		date: string,
+		startMs: number,
+		endMs: number,
+		signal?: AbortSignal,
+		onPage?: (recordings: RecordingsResponse[]) => void
+	): Promise<RecordingsResponse[]> {
 		const sourceIds = [...new Set(cameraIds)];
 		if (sourceIds.length === 0) return [];
-		const { startMs, endMs } = recordingDayWindow(date);
+		const day = recordingDayWindow(date);
+		const boundedStartMs = Math.max(day.startMs, startMs);
+		const boundedEndMs = Math.min(day.endMs, endMs);
+		if (boundedStartMs >= boundedEndMs) return recordingsForSources(sourceIds, date, []);
 		const streamedRanges: StoredTimelineRange[] = [];
 		const timeline = await this.queryStoredTimeline({
 			sourceIds,
-			startMs,
-			endMs,
+			startMs: boundedStartMs,
+			endMs: boundedEndMs,
 			includeEvents: false,
 			includeAttachments: false,
 			signal,
@@ -1173,6 +1189,7 @@ export class ControlClient {
 								? durationFromMs(options.availabilityBucketMs)
 								: undefined,
 						channel: DataChannelKind.RELIABLE_DATA,
+						omitAvailability: options.includeAvailability === false,
 						events: options.includeEvents
 							? create(StoredMediaEventQuerySchema, {
 									eventTypes: [...(options.eventTypes ?? [])],
@@ -2075,6 +2092,7 @@ export class StoredMediaPlayback {
 		if (this.#closed) throw new Error('Stored media playback is closed.');
 		const state = await this.#updatePlayback(playing, playbackRate, StoredMediaMode.PLAYBACK);
 		this.acceptPlaybackState(state);
+		if (playing) this.observe(this.initialOffsetSeconds);
 	}
 
 	receiveInitialization(initialization: StoredMediaInitialization): void {
@@ -2218,7 +2236,10 @@ export class StoredMediaPlayback {
 		const previous = this.#playing;
 		this.#playing = playing;
 		void this.#updatePlayback(playing, undefined, undefined)
-			.then((state) => this.acceptPlaybackState(state))
+			.then((state) => {
+				this.acceptPlaybackState(state);
+				if (playing) this.observe(this.initialOffsetSeconds);
+			})
 			.catch((error) => {
 				if (this.#playing === playing) this.#playing = previous;
 				this.fail(error instanceof Error ? error.message : 'Unable to update stored playback.');
@@ -2438,6 +2459,7 @@ export class StoredMediaPlayback {
 			sourceBuffer.addEventListener('error', () => {
 				if (this.#sourceBuffer === sourceBuffer) this.fail('Browser rejected stored media bytes.');
 			});
+			this.flushAppendQueue();
 		} catch (error) {
 			this.fail(error instanceof Error ? error.message : 'Unable to initialize stored playback.');
 		}
@@ -2449,6 +2471,7 @@ export class StoredMediaPlayback {
 			return;
 		}
 		if (this.#appendQueue.length === 0) {
+			this.observe(this.initialOffsetSeconds);
 			this.finishIfEnded();
 			return;
 		}

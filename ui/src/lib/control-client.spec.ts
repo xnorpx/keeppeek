@@ -1319,15 +1319,25 @@ describe('ControlClient', () => {
 		expect(timestampDate(query.endTime!).toISOString()).toBe('2026-08-21T00:00:00.000Z');
 		expect(recordings.map((response) => response.segments.length)).toEqual([1, 1]);
 		expect(query.availabilityBucket).toBeUndefined();
+		const windowStartMs = Date.parse('2026-08-20T12:00:00Z');
+		await client.getRecordingsInRange(
+			['front-door'],
+			'2026-08-20',
+			windowStartMs,
+			windowStartMs + 5 * 60_000
+		);
+		const boundedQuery = control!.storedTimelineQueries[1]!;
+		expect(timestampDate(boundedQuery.startTime!).getTime()).toBe(windowStartMs);
+		expect(timestampDate(boundedQuery.endTime!).getTime()).toBe(windowStartMs + 5 * 60_000);
 
 		const controller = new AbortController();
 		const abandoned = client.getRecordingsForDate(['slow'], '2026-08-20', controller.signal);
-		await vi.waitFor(() => expect(control?.storedTimelineQueries).toHaveLength(2));
+		await vi.waitFor(() => expect(control?.storedTimelineQueries).toHaveLength(3));
 		controller.abort();
 		await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
 		await vi.waitFor(() =>
 			expect(control?.cancelledTimelineQueryIds).toEqual([
-				control?.storedTimelineQueries[1]?.queryId
+				control?.storedTimelineQueries[2]?.queryId
 			])
 		);
 	});
@@ -1351,6 +1361,7 @@ describe('ControlClient', () => {
 				eventTypes: ['person'],
 				includeEvents: true,
 				includeAttachments: false,
+				includeAvailability: false,
 				onPage: (page) => {
 					expect(completed).toBe(false);
 					pages.push(page.ranges.length);
@@ -1365,6 +1376,7 @@ describe('ControlClient', () => {
 		expect(query?.availabilityBucket).toEqual(durationFromMs(60_000));
 		expect(query?.events?.eventTypes).toEqual(['person']);
 		expect(query?.events?.includeAttachments).toBe(false);
+		expect(query?.omitAvailability).toBe(true);
 		expect(pages).toEqual([1]);
 		expect(result.ranges).toHaveLength(1);
 	});
@@ -1461,7 +1473,7 @@ describe('ControlClient', () => {
 				delivery: create(StoredMediaDeliverySchema, {
 					mediaChannel: 1,
 					contentType: 'video/mp4; codecs="avc1.42E01E"',
-					maxBufferDuration: durationFromMs(1_000)
+					maxBufferDuration: durationFromMs(5_000)
 				})
 			});
 		const refill = vi.fn(async () => state(1n, StoredMediaStatus.ENDED));
@@ -1513,8 +1525,9 @@ describe('ControlClient', () => {
 				payload: new Uint8Array([5])
 			})
 		);
+		await vi.waitFor(() => expect(refill).toHaveBeenCalledWith(anchorMs));
 		playback.observe(0.6);
-		await vi.waitFor(() => expect(refill).toHaveBeenCalledWith(anchorMs + 600));
+		expect(refill).toHaveBeenCalledTimes(1);
 		expect(FakeMediaSource.latest?.endCount).toBe(0);
 
 		playback.receiveInitialization(
@@ -1543,6 +1556,181 @@ describe('ControlClient', () => {
 		await vi.waitFor(() => expect(FakeMediaSource.latest?.endCount).toBe(1));
 		expect(FakeMediaSource.instances).toHaveLength(1);
 		expect(FakeMediaSource.latest?.sourceBuffer.appendCount).toBe(4);
+	});
+
+	it('appends bytes that arrive before the MediaSource opens', () => {
+		class FakeSourceBuffer extends EventTarget {
+			updating = false;
+			mode: AppendMode = 'segments';
+			appendCount = 0;
+
+			appendBuffer(): void {
+				this.appendCount += 1;
+				this.dispatchEvent(new Event('updateend'));
+			}
+		}
+
+		class FakeMediaSource extends EventTarget {
+			static latest: FakeMediaSource | null = null;
+			static isTypeSupported(): boolean {
+				return true;
+			}
+
+			readyState: ReadyState = 'closed';
+			duration = Number.NaN;
+			readonly sourceBuffer = new FakeSourceBuffer();
+
+			constructor() {
+				super();
+				FakeMediaSource.latest = this;
+			}
+
+			addSourceBuffer(): SourceBuffer {
+				return this.sourceBuffer as unknown as SourceBuffer;
+			}
+		}
+
+		vi.stubGlobal('MediaSource', FakeMediaSource);
+		vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:sourceopen-test');
+		vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+
+		const anchorMs = Date.UTC(2026, 7, 20, 12);
+		const state = create(StoredMediaStateSchema, {
+			storedMediaId: 'sourceopen-test',
+			status: StoredMediaStatus.ACTIVE,
+			generation: 1n,
+			requestedTime: timestampFromDate(new Date(anchorMs)),
+			fragmentTime: timestampFromDate(new Date(anchorMs)),
+			endTime: timestampFromDate(new Date(anchorMs + 1_000)),
+			mode: StoredMediaMode.PLAYBACK,
+			playing: true,
+			playbackRate: 1,
+			delivery: create(StoredMediaDeliverySchema, {
+				mediaChannel: DataChannelKind.RELIABLE_DATA,
+				contentType: 'video/mp4; codecs="avc1.42E01E"',
+				maxBufferDuration: durationFromMs(1_000)
+			})
+		});
+		const playback = new StoredMediaPlayback(
+			'sourceopen-test',
+			'front-door',
+			'main',
+			vi.fn(async () => state),
+			vi.fn(async () => state),
+			vi.fn(async () => state),
+			vi.fn(async () => {})
+		);
+		playback.configure(state);
+		playback.receiveInitialization(
+			create(StoredMediaInitializationSchema, {
+				storedMediaId: 'sourceopen-test',
+				generation: 1n,
+				initializationId: 1n,
+				contentType: 'video/mp4; codecs="avc1.42E01E"',
+				chunkCount: 1,
+				payload: new Uint8Array([1])
+			})
+		);
+		playback.receiveFragment(
+			create(StoredMediaFragmentSchema, {
+				storedMediaId: 'sourceopen-test',
+				generation: 1n,
+				initializationId: 1n,
+				sequence: 1n,
+				startTime: timestampFromDate(new Date(anchorMs)),
+				duration: durationFromMs(1_000),
+				chunkCount: 1,
+				payload: new Uint8Array([2])
+			})
+		);
+
+		expect(FakeMediaSource.latest?.sourceBuffer.appendCount).toBe(0);
+		if (!FakeMediaSource.latest) throw new Error('MediaSource was not created');
+		FakeMediaSource.latest.readyState = 'open';
+		FakeMediaSource.latest.dispatchEvent(new Event('sourceopen'));
+		expect(FakeMediaSource.latest.sourceBuffer.appendCount).toBe(2);
+		playback.dispose();
+	});
+
+	it('refills a paused cursor immediately after playback starts', async () => {
+		class FakeSourceBuffer extends EventTarget {
+			updating = false;
+			mode: AppendMode = 'segments';
+			appendBuffer(): void {
+				this.dispatchEvent(new Event('updateend'));
+			}
+		}
+		class FakeMediaSource extends EventTarget {
+			static isTypeSupported(): boolean {
+				return true;
+			}
+			readyState: ReadyState = 'open';
+			duration = Number.NaN;
+			readonly sourceBuffer = new FakeSourceBuffer();
+			addSourceBuffer(): SourceBuffer {
+				return this.sourceBuffer as unknown as SourceBuffer;
+			}
+		}
+		vi.stubGlobal('MediaSource', FakeMediaSource);
+		vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:start-refill-test');
+		vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+
+		const anchorMs = Date.UTC(2026, 7, 20, 12);
+		const state = (playing: boolean) =>
+			create(StoredMediaStateSchema, {
+				storedMediaId: 'start-refill-test',
+				status: StoredMediaStatus.ACTIVE,
+				generation: 1n,
+				requestedTime: timestampFromDate(new Date(anchorMs)),
+				fragmentTime: timestampFromDate(new Date(anchorMs)),
+				endTime: timestampFromDate(new Date(anchorMs + 60_000)),
+				mode: StoredMediaMode.PLAYBACK,
+				playing,
+				playbackRate: 1,
+				delivery: create(StoredMediaDeliverySchema, {
+					mediaChannel: DataChannelKind.RELIABLE_DATA,
+					contentType: 'video/mp4; codecs="avc1.42E01E"',
+					maxBufferDuration: durationFromMs(5_000)
+				})
+			});
+		const refill = vi.fn(async () => state(true));
+		const playback = new StoredMediaPlayback(
+			'start-refill-test',
+			'front-door',
+			'main',
+			vi.fn(async () => state(false)),
+			refill,
+			vi.fn(async () => state(true)),
+			vi.fn(async () => {})
+		);
+		playback.configure(state(false));
+		playback.receiveInitialization(
+			create(StoredMediaInitializationSchema, {
+				storedMediaId: 'start-refill-test',
+				generation: 1n,
+				initializationId: 1n,
+				contentType: 'video/mp4; codecs="avc1.42E01E"',
+				chunkCount: 1,
+				payload: new Uint8Array([1])
+			})
+		);
+		playback.receiveFragment(
+			create(StoredMediaFragmentSchema, {
+				storedMediaId: 'start-refill-test',
+				generation: 1n,
+				initializationId: 1n,
+				sequence: 1n,
+				startTime: timestampFromDate(new Date(anchorMs)),
+				duration: durationFromMs(1_000),
+				chunkCount: 1,
+				payload: new Uint8Array([2])
+			})
+		);
+		expect(refill).not.toHaveBeenCalled();
+
+		playback.setPlaying(true);
+		await vi.waitFor(() => expect(refill).toHaveBeenCalledWith(anchorMs));
+		playback.dispose();
 	});
 
 	it('keeps one cursor seek in flight and dispatches only the latest pending target', async () => {

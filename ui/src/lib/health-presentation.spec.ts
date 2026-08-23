@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { cameraDiagnosisEvidence, rankHealthFindings } from '$lib/health-presentation';
+import {
+	cameraDiagnosisEvidence,
+	effectiveCameraHealth,
+	rankHealthFindings
+} from '$lib/health-presentation';
 import type { CameraHealth, HealthIssue } from '$lib/types';
 
 function camera(update: Partial<CameraHealth>): CameraHealth {
@@ -31,6 +35,21 @@ function issue(update: Partial<HealthIssue>): HealthIssue {
 }
 
 describe('health presentation', () => {
+	it('marks an online camera degraded when its snapshot has an active warning', () => {
+		const online = camera({ state: 'online', last_error: null });
+		expect(
+			effectiveCameraHealth(online, [
+				issue({ scope: 'back-yard', message: 'One or more stream reports are stale' })
+			])
+		).toMatchObject({
+			state: 'degraded',
+			last_error: 'One or more stream reports are stale'
+		});
+		expect(effectiveCameraHealth(online, [issue({ severity: 'info', scope: 'back-yard' })])).toBe(
+			online
+		);
+	});
+
 	it('ranks a camera recording outage before a same-severity system finding', () => {
 		const findings = rankHealthFindings({
 			cameras: [camera({})],

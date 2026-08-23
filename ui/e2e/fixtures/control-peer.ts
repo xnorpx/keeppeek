@@ -231,6 +231,7 @@ export type MockControlPeerOptions = {
 	healthGate?: Promise<void>;
 	storedRanges?: readonly StoredRangeFixture[];
 	storedEvents?: readonly StoredEventFixture[];
+	storedTimelineGates?: readonly Promise<void>[];
 	storedOpenGates?: readonly Promise<void>[];
 	capabilityIds?: readonly string[];
 	exportJobs?: readonly ExportJobFixture[];
@@ -298,6 +299,7 @@ export async function mockControlPeer(
 	let activeFilter = 'info,keeppeek=debug';
 	const pendingDataMessages: number[][] = [];
 	const storedCursors = new Map<string, StoredMediaState>();
+	const storedTimelineGates = [...(options.storedTimelineGates ?? [])];
 	const storedOpenGates = [...(options.storedOpenGates ?? [])];
 	const exportFile = options.exportFile ?? Uint8Array.from([0, 0, 0, 8, 102, 116, 121, 112]);
 	const exportFileHash = createHash('sha256').update(exportFile).digest('hex');
@@ -336,6 +338,7 @@ export async function mockControlPeer(
 		if (request.command.case === 'storedMediaCommand') {
 			const action = request.command.value.action;
 			if (action.case === 'queryTimeline') {
+				await storedTimelineGates.shift();
 				const query = action.value;
 				const startMs = query.startTime ? timestampFromProto(query.startTime) : 0;
 				const endMs = query.endTime ? timestampFromProto(query.endTime) : Number.MAX_SAFE_INTEGER;

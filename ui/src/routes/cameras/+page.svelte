@@ -6,8 +6,10 @@
 	import CameraFleetSkeleton from '$lib/components/CameraFleetSkeleton.svelte';
 	import { useControlClient } from '$lib/control-context';
 	import { fixedRowWindow } from '$lib/fixed-row-virtualizer';
+	import { reconcileServerHealth } from '$lib/health-presentation';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { CameraListItem, ServerHealthResponse } from '$lib/types';
+	import CheckIcon from '@lucide/svelte/icons/check';
 	import SearchIcon from '@lucide/svelte/icons/search';
 
 	const rowHeight = 56;
@@ -83,7 +85,7 @@
 			const nextCameras = await camerasRequest;
 			cameras = nextCameras;
 			const nextHealth = await healthRequest;
-			serverHealth = nextHealth;
+			serverHealth = reconcileServerHealth(nextHealth);
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load cameras';
 		} finally {
@@ -153,9 +155,12 @@
 			viewportElement?.scrollTo({ top: scrollTop });
 		}
 		await tick();
-		document
-			.querySelector<HTMLElement>(`[data-fleet-focus="${CSS.escape(next.camera.id)}"]`)
-			?.focus();
+		const nextFocusTarget = [
+			...document.querySelectorAll<HTMLElement>(
+				`[data-fleet-focus="${CSS.escape(next.camera.id)}"]`
+			)
+		].find((element) => element.getClientRects().length > 0);
+		nextFocusTarget?.focus();
 	}
 </script>
 
@@ -222,10 +227,37 @@
 			</div>
 		</div>
 	{:else}
-		<div data-fleet-table-scroll class="min-w-0 overflow-x-auto border-y border-hairline">
-			<div class="min-w-[1314px]">
+		<div
+			data-fleet-table-scroll
+			class="min-w-0 overflow-x-hidden border-y border-hairline md:overflow-x-auto"
+		>
+			<div class="md:min-w-[1314px]">
 				<div
-					class="grid h-[34px] grid-cols-[32px_20px_270px_140px_230px_150px_140px_120px_152px_60px] items-center border-b border-hairline-strong font-mono text-2xs tracking-caps text-text-faint"
+					class="grid h-[44px] grid-cols-[44px_12px_minmax(0,1fr)_44px] items-center border-b border-hairline-strong font-mono text-2xs tracking-caps text-text-faint md:hidden"
+				>
+					<label class="relative grid size-11 cursor-pointer place-items-center">
+						<input
+							type="checkbox"
+							class="peer absolute inset-0 size-11 cursor-pointer opacity-0"
+							aria-label="Select all filtered cameras"
+							checked={allFilteredSelected}
+							onchange={toggleAllFiltered}
+						/>
+						<span
+							class="pointer-events-none grid size-[13px] place-items-center rounded-xs border border-hairline-strong bg-raised peer-focus-visible:ring-2 peer-focus-visible:ring-ring"
+						>
+							{#if allFilteredSelected}<CheckIcon
+									class="size-3 text-primary"
+									strokeWidth={3}
+								/>{/if}
+						</span>
+					</label>
+					<span></span>
+					<span class="pl-2">CAMERA AND HEALTH</span>
+					<span></span>
+				</div>
+				<div
+					class="hidden h-[34px] grid-cols-[32px_20px_270px_140px_230px_150px_140px_120px_152px_60px] items-center border-b border-hairline-strong font-mono text-2xs tracking-caps text-text-faint md:grid"
 				>
 					<div>
 						<input

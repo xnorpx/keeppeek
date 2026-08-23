@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { capabilityActions } from '$lib/capability-actions';
 	import CapabilityGate from '$lib/components/CapabilityGate.svelte';
-	import { storageRetentionEvidence } from '$lib/storage-retention';
+	import {
+		formatStorageBufferDuration,
+		formatStorageDuration,
+		storageRetentionEvidence
+	} from '$lib/storage-retention';
 	import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
 	import ArchiveIcon from '@lucide/svelte/icons/archive';
 	import DatabaseIcon from '@lucide/svelte/icons/database';
@@ -42,19 +46,6 @@
 			unitIndex += 1;
 		}
 		return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: value >= 100 ? 0 : 2 }).format(value)} ${units[unitIndex]}`;
-	}
-
-	function formatDuration(seconds: number): string {
-		if (seconds < 60) return `${seconds} seconds`;
-		if (seconds % 3600 === 0) {
-			const hours = seconds / 3600;
-			return `${hours} ${hours === 1 ? 'hour' : 'hours'}`;
-		}
-		if (seconds % 60 === 0) {
-			const minutes = seconds / 60;
-			return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
-		}
-		return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 	}
 
 	function formatProjectedDays(days: number | null): string {
@@ -148,7 +139,9 @@
 				<h3 class="text-base font-semibold">Short-term buffer</h3>
 				<div class="rounded-sm border border-hairline bg-raised px-3 py-2.5">
 					<p class="font-mono text-2xs tracking-caps text-text-faint">TIME WINDOW</p>
-					<p class="mt-1 text-sm font-medium">{evidence.shortTerm.durationSeconds} seconds</p>
+					<p class="mt-1 text-sm font-medium">
+						{formatStorageBufferDuration(evidence.shortTerm.durationSeconds)}
+					</p>
 				</div>
 				<p class="text-xs leading-5 text-text-muted">
 					Frames wait in memory before demand or the flush interval moves them to an active MP4
@@ -167,11 +160,11 @@
 				<div class="rounded-sm border border-hairline bg-raised px-3 py-2.5">
 					<p class="font-mono text-2xs tracking-caps text-text-faint">WRITER ROLLOVER</p>
 					<p class="mt-1 text-sm font-medium">
-						{formatDuration(evidence.activeWriter.rolloverSeconds)}
+						{formatStorageDuration(evidence.activeWriter.rolloverSeconds)}
 					</p>
 				</div>
 				<p class="text-xs leading-5 text-text-muted">
-					Flushes every {formatDuration(evidence.activeWriter.flushSeconds)} with a {formatBytes(
+					Flushes every {formatStorageDuration(evidence.activeWriter.flushSeconds)} with a {formatBytes(
 						evidence.activeWriter.writeBufferBytes
 					)} write buffer. This duration sizes active files; it is not retention age.
 				</p>
