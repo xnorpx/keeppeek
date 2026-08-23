@@ -23,7 +23,9 @@ test('Board 9 Stories renders only server-authored events and returns to Timelin
 		'true'
 	);
 	await expect(page).not.toHaveURL(/mode=stories/);
-	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
+	await expect(
+		page.getByRole('region', { name: 'Recorded video player' }).locator('video').first()
+	).toHaveAttribute('data-play-requested', 'true');
 });
 
 test('Board 9 Calendar enables only footage-backed days', async ({ page }) => {

@@ -136,6 +136,52 @@ describe('VerticalTimeline', () => {
 		expect(onSeek).toHaveBeenCalledWith(dayStartMs + 18 * 60 * 60_000);
 	});
 
+	it('reports scrub movement without committing the fallback seek callback', async () => {
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		const onSeek = vi.fn();
+		const onScrubStart = vi.fn();
+		const onScrub = vi.fn();
+		const onScrubEnd = vi.fn();
+		await render(VerticalTimeline, {
+			props: {
+				segments: [],
+				selectedUrl: null,
+				playheadMs: dayStartMs + 12 * 60 * 60_000,
+				dayStartMs,
+				onSeek,
+				onScrubStart,
+				onScrub,
+				onScrubEnd
+			}
+		});
+
+		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue({
+			bottom: 2_688,
+			height: 2_688,
+			left: 0,
+			right: 200,
+			top: 0,
+			width: 200,
+			x: 0,
+			y: 0,
+			toJSON: () => ({})
+		});
+		const playhead = page.getByRole('button', { name: /playback position/i }).element();
+		playhead.setPointerCapture = vi.fn();
+		playhead.hasPointerCapture = vi.fn(() => true);
+		playhead.releasePointerCapture = vi.fn();
+
+		playhead.dispatchEvent(pointer('pointerdown', 11, 1_344));
+		playhead.dispatchEvent(pointer('pointermove', 11, 672));
+		playhead.dispatchEvent(pointer('pointerup', 11, 672));
+
+		expect(onScrubStart).toHaveBeenCalledWith(dayStartMs + 12 * 60 * 60_000);
+		expect(onScrub).toHaveBeenCalledWith(dayStartMs + 18 * 60 * 60_000);
+		expect(onScrubEnd).toHaveBeenCalledWith(dayStartMs + 18 * 60 * 60_000);
+		expect(onSeek).not.toHaveBeenCalled();
+	});
+
 	it('stops following on manual scroll and returns to the newest edge', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const initialNowMs = dayStartMs + 12 * 60 * 60_000;
@@ -182,12 +228,43 @@ describe('VerticalTimeline', () => {
 		});
 		const timeline = container.querySelector<HTMLElement>('[data-timeline-zoom]');
 		const zoomIn = page.getByTitle('Zoom timeline in');
+		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
+		scroller.dispatchEvent(new Event('scroll'));
 
 		expect(timeline?.dataset.timelineZoom).toBe('6h');
 		await userEvent.click(zoomIn);
 		await userEvent.click(zoomIn);
 		await userEvent.click(zoomIn);
 		expect(timeline?.dataset.timelineZoom).toBe('1m');
+		expect(container.querySelectorAll('[data-timeline-tick]').length).toBeLessThan(200);
+	});
+
+	it('reports a zoom-aligned viewport instead of requesting the full day', async () => {
+		const onViewportChange = vi.fn();
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		await render(VerticalTimeline, {
+			props: {
+				segments: [],
+				selectedUrl: null,
+				playheadMs: null,
+				dayStartMs,
+				onSeek: vi.fn(),
+				onViewportChange
+			}
+		});
+		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
+		scroller.dispatchEvent(new Event('scroll'));
+
+		await vi.waitFor(() => expect(onViewportChange).toHaveBeenCalled());
+		const viewport = onViewportChange.mock.lastCall?.[0];
+		expect(viewport).toMatchObject({
+			bucketMs: 5 * 60_000,
+			prefetchMs: 12 * 60 * 60_000,
+			eventTypes: []
+		});
+		expect(viewport.endMs - viewport.startMs).toBeLessThan(86_400_000);
 	});
 
 	it('filters event cards without dropping the underlying timeline', async () => {

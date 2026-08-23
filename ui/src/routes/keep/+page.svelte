@@ -3,7 +3,10 @@
 	import { resolve } from '$app/paths';
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
-	import type { StoredMediaPlayback } from '$lib/control-client';
+	import type { StoredMediaKeyFramePreview, StoredMediaPlayback } from '$lib/control-client';
+	import { decodeEventKeyframePreview } from '$lib/event-keyframe-preview';
+	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
+	import { TimelineRepository, type TimelineViewport } from '$lib/timeline-repository.svelte';
 	import { parseKeepMode, type KeepMode } from '$lib/keep-modes';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
@@ -12,6 +15,7 @@
 	import KeepStories from '$lib/components/KeepStories.svelte';
 	import KeepSwimlanes from '$lib/components/KeepSwimlanes.svelte';
 	import RecordingFilmstrip from '$lib/components/RecordingFilmstrip.svelte';
+	import HorizontalTimeline from '$lib/components/HorizontalTimeline.svelte';
 	import VerticalTimeline from '$lib/components/VerticalTimeline.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -36,6 +40,7 @@
 		second: '2-digit'
 	});
 	const controlClient = useControlClient();
+	const timelineRepository = new TimelineRepository(controlClient);
 
 	let cameras: CameraListItem[] = $state([]);
 	let mode = $state<KeepMode>('timeline');
@@ -44,7 +49,6 @@
 	let dates: string[] = $state([]);
 	let selectedDate = $state('');
 	let segments: RecordingSegment[] = $state([]);
-	let events = $state.raw<RecordingEvent[]>([]);
 	let selected: RecordingSegment | null = $state(null);
 	let playheadMs: number | null = $state(null);
 	let loading = $state(true);
@@ -69,6 +73,22 @@
 	let coldSeekTimestampMs: number | null = $state(null);
 	let coldSeekElapsedMs = $state(0);
 	let coldSeekStartedAt = 0;
+	let recordingLoadController: AbortController | null = null;
+	let latestTimelineViewport = $state.raw<TimelineViewport | null>(null);
+	let eventSearchAvailable = $state(false);
+	let stillPreviewUrl = $state<string | null>(null);
+	let previewVersion = 0;
+	let previewController: AbortController | null = null;
+	const keyframePreviewCache = new Map<string, string>();
+	let keyFrameUnsubscribe: (() => void) | null = null;
+	let scrubbing = $state(false);
+	let scrubTargetMs: number | null = null;
+	let scrubPump: Promise<void> | null = null;
+	let scrubVersion = 0;
+	let mobilePortrait = $state(false);
+	let capabilitiesSeen = false;
+	let reconnectPending = false;
+	let scrubUsesFragmentFallback = false;
 
 	let orderedSegments = $derived(
 		segments
@@ -81,6 +101,11 @@
 		selectedCamera?.profiles.find((profile) => profile.stream === stream)?.bitrate_kbps ?? null
 	);
 	let dayStartMs = $derived(selectedDate ? Date.parse(`${selectedDate}T00:00:00Z`) : 0);
+	let events = $derived(
+		timelineRepository.events.filter(
+			(event) => event.start_time_ms >= dayStartMs && event.start_time_ms < dayStartMs + 86_400_000
+		)
+	);
 	let swimlaneAnchorMs = $derived.by(() => {
 		if (playheadMs !== null) return playheadMs;
 		const latestSegment = orderedSegments.at(-1);
@@ -94,6 +119,9 @@
 		const frameRate = configuredFrameRates.get(`${cameraId}:${stream}`);
 		return frameRate && frameRate > 0 ? 1 / frameRate : null;
 	});
+	let isLiveDate = $derived(
+		selectedDate.length > 0 && selectedDate === new Date(Date.now()).toISOString().slice(0, 10)
+	);
 
 	$effect(() => {
 		if (coldSeekTimestampMs === null) return;
@@ -103,6 +131,33 @@
 		updateElapsed();
 		const timer = window.setInterval(updateElapsed, 100);
 		return () => window.clearInterval(timer);
+	});
+
+	$effect(() => {
+		if (!isLiveDate || mode !== 'timeline') return;
+		const timer = window.setInterval(() => {
+			const viewport = latestTimelineViewport;
+			if (!viewport) return;
+			const refreshStartMs = Math.max(viewport.startMs, viewport.endMs - 5 * 60_000);
+			timelineRepository.invalidate(refreshStartMs, viewport.endMs + viewport.bucketMs);
+			void loadTimelineViewport(viewport);
+		}, 5_000);
+		return () => window.clearInterval(timer);
+	});
+
+	$effect(() => {
+		if (mode === 'timeline' || !cameraId || !selectedDate) return;
+		const startMs = Date.parse(`${selectedDate}T00:00:00Z`);
+		void timelineRepository
+			.loadWindow({
+				sourceIds: [cameraId],
+				startMs,
+				endMs: startMs + 86_400_000,
+				bucketMs: 5 * 60_000,
+				prefetchMs: 0,
+				viewportExtentPx: 1_200
+			})
+			.catch(() => undefined);
 	});
 
 	$effect(() => {
@@ -117,8 +172,31 @@
 	});
 
 	onMount(() => {
+		const portraitMedia = window.matchMedia('(max-width: 767px) and (orientation: portrait)');
+		const updateOrientation = () => (mobilePortrait = portraitMedia.matches);
+		updateOrientation();
+		portraitMedia.addEventListener('change', updateOrientation);
+		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
+			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
+			if (capabilityIds.length === 0) {
+				if (capabilitiesSeen) reconnectPending = true;
+				return;
+			}
+			if (reconnectPending) {
+				reconnectPending = false;
+				timelineRepository.revalidate();
+				if (latestTimelineViewport) void loadTimelineViewport(latestTimelineViewport);
+			}
+			capabilitiesSeen = true;
+		});
 		void initialize();
 		return () => {
+			portraitMedia.removeEventListener('change', updateOrientation);
+			unsubscribeCapabilities();
+			previewController?.abort();
+			for (const url of keyframePreviewCache.values()) URL.revokeObjectURL(url);
+			recordingLoadController?.abort();
+			timelineRepository.dispose();
 			playbackVersion += 1;
 			void closeStoredPlayback();
 		};
@@ -155,7 +233,9 @@
 					? undefined
 					: new Date(requestedTimestampMs).toISOString().slice(0, 10));
 			if (cameraId) {
-				await loadRecordings(requestedDate, requestedTimestampMs ?? undefined, false);
+				const initialDate = requestedDate ?? new Date().toISOString().slice(0, 10);
+				await loadRecordings(initialDate, requestedTimestampMs ?? undefined, false);
+				void discoverRecordingDates(requestedDate === undefined && requestedTimestampMs === null);
 			}
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to open Keep';
@@ -167,25 +247,28 @@
 	async function loadRecordings(date?: string, targetTimestampMs?: number, play = false) {
 		if (!cameraId) return;
 		const version = ++loadVersion;
+		recordingLoadController?.abort();
+		const controller = new AbortController();
+		recordingLoadController = controller;
 		loading = true;
 		error = null;
 		playerError = null;
-		events = [];
+		const requestedDate = (date ?? selectedDate) || new Date().toISOString().slice(0, 10);
+		selectedDate = requestedDate;
+		segments = [];
 		try {
-			const response = await controlClient.getRecordings(cameraId, date);
+			const [response] = await controlClient.getRecordingsForDate(
+				[cameraId],
+				requestedDate,
+				controller.signal,
+				(pages) => {
+					if (version === loadVersion && pages[0]) segments = pages[0].segments;
+				}
+			);
 			if (version !== loadVersion) return;
 			segments = response.segments;
-			dates = response.dates;
-			selectedDate = response.date ?? date ?? '';
-			if (selectedDate) {
-				try {
-					const eventResponse = await controlClient.getRecordingEvents(cameraId, selectedDate);
-					if (version !== loadVersion) return;
-					events = eventResponse.events;
-				} catch {
-					if (version !== loadVersion) return;
-					events = [];
-				}
+			if (response.segments.length > 0 && !dates.includes(requestedDate)) {
+				dates = [...dates, requestedDate].toSorted().toReversed();
 			}
 			if (
 				response.segments.length > 0 &&
@@ -206,9 +289,9 @@
 			updateUrl();
 		} catch (cause) {
 			if (version !== loadVersion) return;
+			if (cause instanceof DOMException && cause.name === 'AbortError') return;
 			error = cause instanceof Error ? cause.message : 'Failed to load recordings';
 			segments = [];
-			events = [];
 			selected = null;
 			playheadMs = null;
 		} finally {
@@ -216,17 +299,320 @@
 		}
 	}
 
+	async function discoverRecordingDates(selectLatestWhenEmpty: boolean): Promise<void> {
+		const sourceId = cameraId;
+		const version = loadVersion;
+		try {
+			const nextDates = await controlClient.getRecordingDates(sourceId);
+			if (version !== loadVersion || sourceId !== cameraId) return;
+			dates = nextDates;
+			if (
+				selectLatestWhenEmpty &&
+				segments.length === 0 &&
+				nextDates[0] &&
+				nextDates[0] !== selectedDate
+			) {
+				await loadRecordings(nextDates[0]);
+			}
+		} catch {
+			if (version === loadVersion && segments.length > 0 && !dates.includes(selectedDate)) {
+				dates = [selectedDate];
+			}
+		}
+	}
+
+	function handleTimelineViewport(viewport: TimelineViewport): void {
+		latestTimelineViewport = viewport;
+		void loadTimelineViewport(viewport);
+	}
+
+	async function loadTimelineViewport(viewport: TimelineViewport): Promise<void> {
+		if (!cameraId || !selectedDate || mode !== 'timeline') return;
+		await timelineRepository
+			.loadWindow({
+				...viewport,
+				sourceIds: [cameraId]
+			})
+			.catch(() => undefined);
+	}
+
+	function showNearestCachedPreview(timestampMs: number): void {
+		const cachedPreview = events
+			.filter((event) => event.thumbnail_url)
+			.toSorted(
+				(left, right) =>
+					Math.abs(left.start_time_ms - timestampMs) - Math.abs(right.start_time_ms - timestampMs)
+			)[0];
+		if (cachedPreview && Math.abs(cachedPreview.start_time_ms - timestampMs) <= 30_000) {
+			stillPreviewUrl = cachedPreview.thumbnail_url;
+		}
+	}
+
+	function attachKeyFramePreview(playback: StoredMediaPlayback): void {
+		keyFrameUnsubscribe?.();
+		keyFrameUnsubscribe = playback.onKeyFrame((preview) => {
+			void renderStoredKeyFrame(preview);
+		});
+	}
+
+	async function renderStoredKeyFrame(preview: StoredMediaKeyFramePreview): Promise<void> {
+		if (preview.storedMediaId !== storedPlayback?.id) return;
+		const version = ++previewVersion;
+		const cacheKey = `${cameraId}:${stream}:${preview.timestampMs}:${preview.codec}:${preview.configurationRevision}`;
+		const cached = keyframePreviewCache.get(cacheKey);
+		if (cached) {
+			keyframePreviewCache.delete(cacheKey);
+			keyframePreviewCache.set(cacheKey, cached);
+			stillPreviewUrl = cached;
+			emitTimelinePerformanceEvent('ScrubPreviewRendered', {
+				sourceId: cameraId,
+				cursorId: preview.storedMediaId,
+				generation: String(preview.generation),
+				cache: 'memory'
+			});
+			return;
+		}
+		try {
+			const url = await decodeEventKeyframePreview(preview);
+			if (version !== previewVersion || preview.storedMediaId !== storedPlayback?.id) {
+				URL.revokeObjectURL(url);
+				return;
+			}
+			keyframePreviewCache.set(cacheKey, url);
+			while (keyframePreviewCache.size > 32) {
+				const oldest = keyframePreviewCache.entries().next().value as [string, string] | undefined;
+				if (!oldest) break;
+				keyframePreviewCache.delete(oldest[0]);
+				URL.revokeObjectURL(oldest[1]);
+			}
+			stillPreviewUrl = url;
+			emitTimelinePerformanceEvent('ScrubPreviewRendered', {
+				sourceId: cameraId,
+				cursorId: preview.storedMediaId,
+				generation: String(preview.generation),
+				cache: 'decoder'
+			});
+		} catch {
+			if (version === previewVersion) {
+				stillPreviewUrl = null;
+				const playback = storedPlayback;
+				if (scrubbing && playback?.id === preview.storedMediaId) {
+					scrubUsesFragmentFallback = true;
+					await playback.commitPlayback(false, 1).catch(() => undefined);
+					playbackUrl = playback.url;
+					playbackAnchorMs = playback.anchorTimeMs;
+					pendingSeekSeconds = playback.initialOffsetSeconds;
+				}
+			}
+		}
+	}
+
+	function queueTimelineScrub(timestampMs: number): Promise<void> {
+		scrubTargetMs = timestampMs;
+		playheadMs = timestampMs;
+		showNearestCachedPreview(timestampMs);
+		if (!scrubPump) {
+			const version = scrubVersion;
+			scrubPump = drainTimelineScrub(version).finally(() => {
+				scrubPump = null;
+				if (scrubTargetMs !== null && version === scrubVersion) {
+					void queueTimelineScrub(scrubTargetMs);
+				}
+			});
+		}
+		return scrubPump;
+	}
+
+	async function drainTimelineScrub(version: number): Promise<void> {
+		while (scrubTargetMs !== null && version === scrubVersion) {
+			const timestampMs = scrubTargetMs;
+			scrubTargetMs = null;
+			const target = recordingTarget(orderedSegments, timestampMs);
+			if (!target) return;
+			const requestedTimestampMs = target.segment.start_time_ms + target.offsetSeconds * 1_000;
+			const playback = await ensureScrubPlayback(target.segment, requestedTimestampMs, version);
+			if (!playback || version !== scrubVersion) return;
+			if (scrubTargetMs !== null) continue;
+			await playback.seek(requestedTimestampMs);
+			if (version !== scrubVersion) return;
+			playbackUrl = playback.url;
+			playbackAnchorMs = playback.anchorTimeMs;
+			pendingSeekSeconds = playback.initialOffsetSeconds;
+		}
+	}
+
+	async function ensureScrubPlayback(
+		segment: RecordingSegment,
+		timestampMs: number,
+		version: number
+	): Promise<StoredMediaPlayback | null> {
+		const current = storedPlayback;
+		if (
+			current &&
+			selected?.date === segment.date &&
+			current.sourceId === cameraId &&
+			current.streamId === segment.stream
+		) {
+			if (scrubUsesFragmentFallback) await current.commitPlayback(false, 1);
+			else await current.enterScrub();
+			selected = segment;
+			return version === scrubVersion ? current : null;
+		}
+		const previous = storedPlayback;
+		previous?.setPlaying(false);
+		const playback = await controlClient.openStoredMedia({
+			sourceId: cameraId,
+			streamId: segment.stream,
+			timestampMs,
+			endTimeMs: dayStartMs + 86_400_000,
+			playing: false,
+			playbackRate: 1,
+			mode: scrubUsesFragmentFallback ? 'playback' : 'scrub'
+		});
+		if (version !== scrubVersion) {
+			await playback.close().catch(() => undefined);
+			return null;
+		}
+		storedPlayback = playback;
+		selected = segment;
+		playbackUrl = playback.url;
+		playbackAnchorMs = playback.anchorTimeMs;
+		pendingSeekSeconds = playback.initialOffsetSeconds;
+		attachKeyFramePreview(playback);
+		if (previous && previous !== playback) await previous.close().catch(() => undefined);
+		return playback;
+	}
+
+	function beginTimelineScrub(timestampMs: number): void {
+		scrubVersion += 1;
+		scrubbing = true;
+		playing = false;
+		video?.pause();
+		void queueTimelineScrub(timestampMs);
+	}
+
+	function moveTimelineScrub(timestampMs: number): void {
+		void queueTimelineScrub(timestampMs);
+	}
+
+	async function finishTimelineScrub(timestampMs: number): Promise<void> {
+		await queueTimelineScrub(timestampMs);
+		await scrubPump;
+		const playback = storedPlayback;
+		if (!playback) {
+			scrubbing = false;
+			return;
+		}
+		await playback.commitPlayback(true, playbackRate);
+		playbackUrl = playback.url;
+		playbackAnchorMs = playback.anchorTimeMs;
+		pendingSeekSeconds = playback.initialOffsetSeconds;
+		pendingPlay = true;
+		playing = true;
+		scrubbing = false;
+		await tick();
+		applyPendingSeek();
+	}
+
+	function cancelTimelineScrub(): void {
+		scrubVersion += 1;
+		scrubTargetMs = null;
+		scrubbing = false;
+		void storedPlayback?.commitPlayback(false, playbackRate);
+	}
+
+	async function previewEvent(event: RecordingEvent): Promise<void> {
+		const version = ++previewVersion;
+		previewController?.abort();
+		stillPreviewUrl = event.thumbnail_url;
+		if (event.thumbnail_url) {
+			return;
+		}
+		if (!eventSearchAvailable || !cameraId) return;
+
+		const controller = new AbortController();
+		previewController = controller;
+		try {
+			const page = await controlClient.searchEventPreviews({
+				sourceId: event.source_id ?? cameraId,
+				streamId: stream,
+				eventType: event.kind,
+				startMs: event.start_time_ms - 60_000,
+				endMs: (event.end_time_ms ?? event.start_time_ms) + 60_000,
+				signal: controller.signal
+			});
+			const hit = page.hits.find((candidate) => candidate.eventId === event.id);
+			const keyframe = hit?.keyframes
+				.filter((candidate) => candidate.byteLength <= 4 * 1_048_576)
+				.toSorted(
+					(left, right) =>
+						Math.abs(left.eventTimeMs - event.start_time_ms) -
+						Math.abs(right.eventTimeMs - event.start_time_ms)
+				)[0];
+			if (!keyframe || version !== previewVersion) return;
+			const cacheKey = `${keyframe.sourceId}:${keyframe.streamId}:${keyframe.recordingId}:${keyframe.fragmentSequence}`;
+			const cached = keyframePreviewCache.get(cacheKey);
+			if (cached) {
+				keyframePreviewCache.delete(cacheKey);
+				keyframePreviewCache.set(cacheKey, cached);
+				stillPreviewUrl = cached;
+				return;
+			}
+			const media = await controlClient.fetchEventPreviewKeyframe(keyframe, controller.signal);
+			const url = await decodeEventKeyframePreview(media);
+			if (version !== previewVersion || controller.signal.aborted) {
+				URL.revokeObjectURL(url);
+				return;
+			}
+			keyframePreviewCache.set(cacheKey, url);
+			while (keyframePreviewCache.size > 32) {
+				const oldest = keyframePreviewCache.entries().next().value as [string, string] | undefined;
+				if (!oldest) break;
+				keyframePreviewCache.delete(oldest[0]);
+				URL.revokeObjectURL(oldest[1]);
+			}
+			stillPreviewUrl = url;
+		} catch {
+			if (version === previewVersion && !controller.signal.aborted) stillPreviewUrl = null;
+		}
+	}
+
+	function clearStillPreview(): void {
+		if (storedPlayback) {
+			emitTimelinePerformanceEvent('ReplayFirstFrame', {
+				sourceId: cameraId,
+				cursorId: storedPlayback.id,
+				durationMs:
+					coldSeekStartedAt > 0 ? Math.max(0, performance.now() - coldSeekStartedAt) : undefined
+			});
+		}
+		previewVersion += 1;
+		previewController?.abort();
+		previewController = null;
+		stillPreviewUrl = null;
+		coldSeekTimestampMs = null;
+		coldSeekElapsedMs = 0;
+	}
+
 	function changeCamera() {
+		timelineRepository.deactivate();
+		latestTimelineViewport = null;
 		const targetTimestampMs = playheadMs ?? undefined;
 		const play = video !== null && !video.paused;
-		void loadRecordings(selectedDate || undefined, targetTimestampMs, play);
+		void loadRecordings(selectedDate || undefined, targetTimestampMs, play).then(() =>
+			discoverRecordingDates(false)
+		);
 	}
 
 	function selectFilmstripCamera(nextCameraId: string, timestampMs: number) {
 		if (nextCameraId === cameraId) return;
+		timelineRepository.deactivate();
+		latestTimelineViewport = null;
 		const play = video !== null && !video.paused;
 		cameraId = nextCameraId;
-		void loadRecordings(selectedDate || undefined, timestampMs, play);
+		void loadRecordings(selectedDate || undefined, timestampMs, play).then(() =>
+			discoverRecordingDates(false)
+		);
 	}
 
 	function openTimestamp(timestampMs: number): void {
@@ -237,8 +623,14 @@
 
 	function selectSwimlane(nextCameraId: string, timestampMs: number): void {
 		mode = 'timeline';
+		if (nextCameraId !== cameraId) {
+			timelineRepository.deactivate();
+			latestTimelineViewport = null;
+		}
 		cameraId = nextCameraId;
-		void loadRecordings(selectedDate || undefined, timestampMs, false);
+		void loadRecordings(selectedDate || undefined, timestampMs, false).then(() =>
+			discoverRecordingDates(false)
+		);
 	}
 
 	function switchMode(nextMode: KeepMode): void {
@@ -253,6 +645,7 @@
 
 	function changeDate(date: string) {
 		if (!date || date === selectedDate) return;
+		latestTimelineViewport = null;
 		void loadRecordings(date);
 	}
 
@@ -288,11 +681,16 @@
 			playing = false;
 			return;
 		}
-		const sameSegment = selected?.url === segment.url && storedPlayback !== null;
 		const requestedTimestampMs =
 			segment.start_time_ms +
 			Math.max(0, Math.min(offsetSeconds, Math.max(0, segment.duration_ms / 1_000 - 0.001))) *
 				1_000;
+		const sameSegment = selected?.url === segment.url && storedPlayback !== null;
+		const reusablePlayback =
+			storedPlayback !== null &&
+			selected?.date === segment.date &&
+			storedPlayback.sourceId === cameraId &&
+			storedPlayback.streamId === segment.stream;
 		if (selected?.url !== segment.url) {
 			exportRangeStartMs = null;
 			exportRangeEndMs = null;
@@ -300,6 +698,9 @@
 		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
 		if (sameSegment) {
+			const playback = storedPlayback;
+			if (!playback) return;
+			const canSeekLocally = playback.canSeekLocally(requestedTimestampMs);
 			selected = segment;
 			pendingPlay = play;
 			playing = play;
@@ -307,6 +708,25 @@
 			pendingSeekSeconds = Math.max(0, (playheadMs - playbackAnchorMs) / 1_000);
 			await tick();
 			applyPendingSeek();
+			if (!canSeekLocally) {
+				const version = ++playbackVersion;
+				coldSeekTimestampMs = requestedTimestampMs;
+				coldSeekElapsedMs = 0;
+				coldSeekStartedAt = performance.now();
+				try {
+					await playback.seek(requestedTimestampMs);
+				} catch (cause) {
+					if (version === playbackVersion) {
+						playerError =
+							cause instanceof Error ? cause.message : 'This recording could not be opened.';
+					}
+					return;
+				}
+				if (version !== playbackVersion || playback !== storedPlayback) return;
+				playbackUrl = playback.url;
+				playbackAnchorMs = playback.anchorTimeMs;
+				pendingSeekSeconds = playback.initialOffsetSeconds;
+			}
 			return;
 		}
 		const version = ++playbackVersion;
@@ -318,13 +738,39 @@
 			coldSeekElapsedMs = 0;
 			coldSeekStartedAt = performance.now();
 		}
+		if (reusablePlayback && previousPlayback) {
+			try {
+				await previousPlayback.seek(requestedTimestampMs);
+			} catch (cause) {
+				coldSeekTimestampMs = null;
+				coldSeekElapsedMs = 0;
+				if (version === playbackVersion) {
+					playerError =
+						cause instanceof Error ? cause.message : 'This recording could not be opened.';
+				}
+				return;
+			}
+			if (version !== playbackVersion) return;
+			selected = segment;
+			pendingPlay = play;
+			playing = play;
+			playheadMs = requestedTimestampMs;
+			playbackUrl = previousPlayback.url;
+			playbackAnchorMs = previousPlayback.anchorTimeMs;
+			pendingSeekSeconds = previousPlayback.initialOffsetSeconds;
+			previousPlayback.setPlaybackRate(playbackRate);
+			previousPlayback.setPlaying(play);
+			await tick();
+			applyPendingSeek();
+			return;
+		}
 		let playback: StoredMediaPlayback;
 		try {
 			playback = await controlClient.openStoredMedia({
 				sourceId: cameraId,
 				streamId: segment.stream,
 				timestampMs: requestedTimestampMs,
-				endTimeMs: segment.end_time_ms,
+				endTimeMs: dayStartMs + 86_400_000,
 				playing: play,
 				playbackRate
 			});
@@ -342,13 +788,12 @@
 			await playback.close().catch(() => undefined);
 			return;
 		}
-		coldSeekTimestampMs = null;
-		coldSeekElapsedMs = 0;
 		selected = segment;
 		pendingPlay = play;
 		playing = play;
 		playheadMs = requestedTimestampMs;
 		storedPlayback = playback;
+		attachKeyFramePreview(playback);
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
@@ -361,12 +806,16 @@
 
 	async function closeStoredPlayback() {
 		const playback = storedPlayback;
+		keyFrameUnsubscribe?.();
+		keyFrameUnsubscribe = null;
 		storedPlayback = null;
+		scrubUsesFragmentFallback = false;
 		playbackUrl = null;
 		if (playback) await playback.close().catch(() => undefined);
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
+		showNearestCachedPreview(timestampMs);
 		const target = recordingTarget(orderedSegments, timestampMs);
 		if (target) void selectSegment(target.segment, target.offsetSeconds, play);
 	}
@@ -728,11 +1177,14 @@
 								bind:this={video}
 								controls
 								playsinline
+								muted={scrubbing}
 								preload="metadata"
 								src={playbackUrl}
 								class="aspect-video w-full object-contain"
 								onloadedmetadata={applyPendingSeek}
 								ondurationchange={applyPendingSeek}
+								onloadeddata={clearStillPreview}
+								onseeked={clearStillPreview}
 								ontimeupdate={updatePlayhead}
 								onended={handleEnded}
 								onplay={handlePlay}
@@ -741,6 +1193,13 @@
 								onerror={handlePlayerError}
 							></video>
 						{/key}
+						{#if stillPreviewUrl}
+							<img
+								src={stillPreviewUrl}
+								alt=""
+								class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+							/>
+						{/if}
 						<span
 							class="pointer-events-none absolute top-3 left-3 max-w-[calc(100%-1.5rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
 						>
@@ -801,19 +1260,46 @@
 					timestampMs={playheadMs}
 					{playing}
 					{playbackRate}
+					{scrubbing}
 					onselect={selectFilmstripCamera}
 				/>
 			</section>
 
-			<VerticalTimeline
-				segments={orderedSegments}
-				{events}
-				selectedUrl={selected?.url ?? null}
-				{playheadMs}
-				{dayStartMs}
-				followRequest={timelineFollowRequest}
-				onSeek={seekToTimestamp}
-			/>
+			{#if mobilePortrait}
+				<HorizontalTimeline
+					segments={orderedSegments}
+					{events}
+					selectedUrl={selected?.url ?? null}
+					{playheadMs}
+					{dayStartMs}
+					followRequest={timelineFollowRequest}
+					loading={timelineRepository.loading}
+					onSeek={seekToTimestamp}
+					onEventPreview={(event) => void previewEvent(event)}
+					onScrubStart={beginTimelineScrub}
+					onScrub={moveTimelineScrub}
+					onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+					onScrubCancel={cancelTimelineScrub}
+					onViewportChange={handleTimelineViewport}
+				/>
+			{:else}
+				<VerticalTimeline
+					segments={orderedSegments}
+					{events}
+					selectedUrl={selected?.url ?? null}
+					{playheadMs}
+					{dayStartMs}
+					followRequest={timelineFollowRequest}
+					loading={timelineRepository.loading}
+					onSeek={seekToTimestamp}
+					onEventPreview={(event) => void previewEvent(event)}
+					onScrubStart={beginTimelineScrub}
+					onScrub={moveTimelineScrub}
+					onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+					onScrubCancel={cancelTimelineScrub}
+					onViewportChange={handleTimelineViewport}
+				/>
+			{/if}
 		</div>
 	{/if}
 </div>

@@ -74,6 +74,8 @@ const DATA_MESSAGE_CHUNK_BYTES: usize = 32 * 1_024;
 const DEFAULT_STORED_MEDIA_BUFFER: Duration = Duration::from_secs(120);
 const MAX_STORED_MEDIA_BUFFER: Duration = Duration::from_secs(300);
 const MAX_STORED_OBJECT_BYTES: u64 = 256 * 1_024 * 1_024;
+const MAX_STORED_KEYFRAME_BYTES: u64 = 4 * 1_024 * 1_024;
+const STORED_MEDIA_TARGET_BUFFER_MS: u64 = 3_000;
 const MAX_EVENT_SEARCH_MEDIA_OBJECTS: usize = 64;
 const MAX_EVENT_SEARCH_MEDIA_BYTES: u64 = 32 * 1_024 * 1_024;
 const MAX_EVENT_SEARCH_TASKS_PER_SESSION: usize = 4;
@@ -403,6 +405,7 @@ impl ControlRequestHandler for ServerControlHandler {
             capability_ids: vec![
                 "keeppeek.media-export.v1".to_owned(),
                 "keeppeek.event-search".to_owned(),
+                "stored-media-keyframe-preview.v1".to_owned(),
             ],
         })
     }
@@ -1417,10 +1420,10 @@ impl ServerControlHandler {
                 })
             }
             Some(stored_media_command::Action::SetPlayback(update)) => {
-                let state = set_stored_media_playback(&self.state, session_id, update)?;
+                let (state, messages) = set_stored_media_playback(&self.state, session_id, update)?;
                 Ok(StoredMediaDispatch {
                     result: Some(control_ok::Result::StoredMediaState(state)),
-                    messages: Vec::new(),
+                    messages,
                     notifications: Vec::new(),
                 })
             }
@@ -1500,6 +1503,8 @@ struct StoredMediaDispatch {
 
 struct StoredMediaBatchRequest<'a> {
     stored_media_id: &'a str,
+    source_id: &'a str,
+    stream_id: &'a str,
     recording_stream_id: &'a str,
     requested_time_ms: i64,
     end_time_ms: Option<i64>,
@@ -2089,6 +2094,13 @@ fn open_stored_media(
             "stored media mode is required",
         ));
     }
+    if mode == proto::StoredMediaMode::Scrub && open.playing {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "stored media scrub mode must be paused",
+        ));
+    }
     let (media_target, media_channel) = data_channel_target(open.media_channel)?;
     let requested_buffer_ms = optional_duration_ms(open.max_buffer_duration.as_ref())?;
     let max_buffer_ms = if requested_buffer_ms == 0 {
@@ -2108,6 +2120,8 @@ fn open_stored_media(
         state,
         StoredMediaBatchRequest {
             stored_media_id: &open.stored_media_id,
+            source_id: &open.source_id,
+            stream_id: &open.stream_id,
             recording_stream_id: &recording_stream_id,
             requested_time_ms,
             end_time_ms,
@@ -2121,6 +2135,8 @@ fn open_stored_media(
     let demand = state.recording_demand.acquire(recording_stream_id.clone());
     let status = stored_media_status(end_time_ms, batch.delivered_through_ms);
     let cursor = StoredMediaCursor {
+        source_id: open.source_id,
+        stream_id: open.stream_id,
         recording_stream_id,
         requested_time_ms,
         end_time_ms,
@@ -2149,6 +2165,8 @@ fn seek_stored_media(
     let requested_time_ms =
         required_timestamp_ms(seek.timestamp.as_ref(), "stored media seek time")?;
     let (
+        source_id,
+        stream_id,
         recording_stream_id,
         end_time_ms,
         mode,
@@ -2181,6 +2199,8 @@ fn seek_stored_media(
             ));
         }
         (
+            cursor.source_id.clone(),
+            cursor.stream_id.clone(),
             cursor.recording_stream_id.clone(),
             cursor.end_time_ms,
             cursor.mode,
@@ -2201,6 +2221,8 @@ fn seek_stored_media(
         state,
         StoredMediaBatchRequest {
             stored_media_id: &seek.stored_media_id,
+            source_id: &source_id,
+            stream_id: &stream_id,
             recording_stream_id: &recording_stream_id,
             requested_time_ms,
             end_time_ms,
@@ -2291,8 +2313,9 @@ fn refill_stored_media(
             Vec::new(),
         ));
     }
+    let target_buffer_ms = max_buffer_ms.min(STORED_MEDIA_TARGET_BUFFER_MS);
     let buffer_end =
-        playback_time_ms.saturating_add(i64::try_from(max_buffer_ms).unwrap_or(i64::MAX));
+        playback_time_ms.saturating_add(i64::try_from(target_buffer_ms).unwrap_or(i64::MAX));
     let delivery_end = end_time_ms.map_or(buffer_end, |end_time| end_time.min(buffer_end));
     if delivery_end <= delivered_through_ms {
         let cursors = state
@@ -2307,13 +2330,6 @@ fn refill_stored_media(
             Vec::new(),
         ));
     }
-    let generation = previous_generation.checked_add(1).ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "stored media generation overflowed",
-        )
-    })?;
     let Some(batch) = stored_media_continuation_batch(
         state,
         &refill.stored_media_id,
@@ -2321,7 +2337,7 @@ fn refill_stored_media(
         delivered_through_ms,
         delivery_end,
         media_target,
-        generation,
+        previous_generation,
     )?
     else {
         let cursors = state
@@ -2357,7 +2373,6 @@ fn refill_stored_media(
                 "stored media cursor changed during refill",
             )
         })?;
-    cursor.generation = generation;
     cursor.delivered_through_ms = batch.delivered_through_ms;
     cursor.status = stored_media_status(cursor.end_time_ms, cursor.delivered_through_ms);
     let cursor_state = proto_stored_media_state(&refill.stored_media_id, cursor);
@@ -2368,51 +2383,142 @@ fn set_stored_media_playback(
     state: &ServerState,
     session_id: SessionId,
     update: proto::SetStoredMediaPlayback,
-) -> Result<proto::StoredMediaState, ControlCommandError> {
+) -> Result<(proto::StoredMediaState, Vec<OutboundDataMessage>), ControlCommandError> {
+    let playback_rate = update
+        .playback_rate
+        .map(|playback_rate| {
+            if !playback_rate.is_finite() || playback_rate <= 0.0 {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "stored media playback rate must be finite and positive",
+                ));
+            }
+            Ok(playback_rate)
+        })
+        .transpose()?;
+    let mode = update
+        .mode
+        .map(|mode| {
+            let mode = proto::StoredMediaMode::try_from(mode).map_err(|_| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "stored media mode is invalid",
+                )
+            })?;
+            if mode == proto::StoredMediaMode::Unspecified {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "stored media mode is required",
+                ));
+            }
+            Ok(mode)
+        })
+        .transpose()?;
+    let (
+        source_id,
+        stream_id,
+        recording_stream_id,
+        requested_time_ms,
+        end_time_ms,
+        media_target,
+        max_buffer_ms,
+        generation,
+        next_mode,
+        next_playing,
+        starts_playback,
+    ) = {
+        let cursors = state
+            .stored_media_cursors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cursor = cursors
+            .get(&(session_id, update.stored_media_id.clone()))
+            .ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::NotFound,
+                    404,
+                    "stored media cursor was not found",
+                )
+            })?;
+        let next_mode = mode.unwrap_or(cursor.mode);
+        let next_playing = update.playing.unwrap_or(cursor.playing);
+        if next_mode == proto::StoredMediaMode::Scrub && next_playing {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "stored media scrub mode must be paused",
+            ));
+        }
+        (
+            cursor.source_id.clone(),
+            cursor.stream_id.clone(),
+            cursor.recording_stream_id.clone(),
+            cursor.requested_time_ms,
+            cursor.end_time_ms,
+            cursor.media_target,
+            cursor.max_buffer_ms,
+            cursor.generation,
+            next_mode,
+            next_playing,
+            cursor.mode == proto::StoredMediaMode::Scrub
+                && next_mode == proto::StoredMediaMode::Playback,
+        )
+    };
+    let batch = starts_playback
+        .then(|| {
+            stored_media_batch(
+                state,
+                StoredMediaBatchRequest {
+                    stored_media_id: &update.stored_media_id,
+                    source_id: &source_id,
+                    stream_id: &stream_id,
+                    recording_stream_id: &recording_stream_id,
+                    requested_time_ms,
+                    end_time_ms,
+                    mode: next_mode,
+                    playing: next_playing,
+                    media_target,
+                    max_buffer_ms,
+                    generation,
+                },
+            )
+        })
+        .transpose()?;
     let mut cursors = state
         .stored_media_cursors
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cursor = cursors
         .get_mut(&(session_id, update.stored_media_id.clone()))
+        .filter(|cursor| cursor.generation == generation)
         .ok_or_else(|| {
             ControlCommandError::new(
-                proto::ErrorCode::NotFound,
-                404,
-                "stored media cursor was not found",
+                proto::ErrorCode::Rejected,
+                409,
+                "stored media cursor changed during playback update",
             )
         })?;
-    if let Some(playback_rate) = update.playback_rate {
-        if !playback_rate.is_finite() || playback_rate <= 0.0 {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "stored media playback rate must be finite and positive",
-            ));
-        }
+    cursor.mode = next_mode;
+    cursor.playing = next_playing;
+    if let Some(playback_rate) = playback_rate {
         cursor.playback_rate = playback_rate;
     }
-    if let Some(mode) = update.mode {
-        let mode = proto::StoredMediaMode::try_from(mode).map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "stored media mode is invalid",
-            )
-        })?;
-        if mode == proto::StoredMediaMode::Unspecified {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "stored media mode is required",
-            ));
-        }
-        cursor.mode = mode;
-    }
-    if let Some(playing) = update.playing {
-        cursor.playing = playing;
-    }
-    Ok(proto_stored_media_state(&update.stored_media_id, cursor))
+    let messages = if let Some(batch) = batch {
+        cursor.content_type = batch.content_type;
+        cursor.fragment_time_ms = batch.fragment_time_ms;
+        cursor.delivered_through_ms = batch.delivered_through_ms;
+        cursor.status = stored_media_status(cursor.end_time_ms, cursor.delivered_through_ms);
+        batch.messages
+    } else {
+        Vec::new()
+    };
+    Ok((
+        proto_stored_media_state(&update.stored_media_id, cursor),
+        messages,
+    ))
 }
 
 fn stored_media_batch(
@@ -2449,16 +2555,20 @@ fn stored_media_batch(
                 "stored media timestamp is unavailable",
             )
         })?;
+    if request.mode == proto::StoredMediaMode::Scrub {
+        return encode_stored_media_keyframe(state, request, &selected);
+    }
+    let target_buffer_ms = request.max_buffer_ms.min(STORED_MEDIA_TARGET_BUFFER_MS);
     let buffer_end = request
         .requested_time_ms
-        .saturating_add(i64::try_from(request.max_buffer_ms).unwrap_or(i64::MAX));
+        .saturating_add(i64::try_from(target_buffer_ms).unwrap_or(i64::MAX));
     let delivery_end = request
         .end_time_ms
         .map_or(buffer_end, |end_time_ms| end_time_ms.min(buffer_end));
     let mut fragments = catalog
         .media_fragments_in_range(request.recording_stream_id, selected.start_ms, delivery_end)
         .map_err(|error| stored_catalog_error("query stored media fragments", error))?;
-    if request.mode == proto::StoredMediaMode::Scrub || !request.playing {
+    if !request.playing {
         fragments.retain(|fragment| {
             fragment.recording_id == selected.recording_id && fragment.sequence == selected.sequence
         });
@@ -2473,6 +2583,111 @@ fn stored_media_batch(
         request.media_target,
         fragments,
     )
+}
+
+fn encode_stored_media_keyframe(
+    state: &ServerState,
+    request: StoredMediaBatchRequest<'_>,
+    fragment: &CatalogMediaFragment,
+) -> Result<StoredMediaBatch, ControlCommandError> {
+    let catalog = state.catalog.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "recording catalog is unavailable",
+        )
+    })?;
+    let location = catalog
+        .resolve_media_object(
+            request.source_id,
+            request.stream_id,
+            Some(request.recording_stream_id),
+            &fragment.recording_id,
+            fragment.sequence,
+        )
+        .map_err(|error| stored_catalog_error("resolve stored media keyframe", error))?
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "stored media keyframe was not found",
+            )
+        })?;
+    if location.keyframe_len > MAX_STORED_KEYFRAME_BYTES {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            413,
+            "stored media keyframe exceeds 4 MiB",
+        ));
+    }
+    let initialization = read_stored_range(
+        Path::new(&location.path),
+        location.initialization_offset,
+        location.initialization_len,
+    )?;
+    let format = indexed_video_format(&initialization)?;
+    let payload = read_stored_range(
+        Path::new(&location.path),
+        location.keyframe_offset,
+        location.keyframe_len,
+    )?;
+    let stream_binding_id = format!("stored:{}:video", request.stored_media_id);
+    let configuration = proto::MediaDataConfiguration {
+        stream_binding_id: stream_binding_id.clone(),
+        codec: Some(proto::CodecDescriptor {
+            name: format.decoder.codec,
+            parameters: HashMap::new(),
+        }),
+        format: Some(proto::MediaDataFormat {
+            format: Some(proto::media_data_format::Format::Video(
+                proto::VideoDataFormat {
+                    width: u32::from(format.decoder.width),
+                    height: u32::from(format.decoder.height),
+                    decoder_config: format.decoder.description,
+                },
+            )),
+        }),
+        configuration_revision: request.generation,
+    };
+    let chunk_count = protobuf_chunk_count(payload.len())?;
+    let messages = payload
+        .chunks(DATA_MESSAGE_CHUNK_BYTES)
+        .enumerate()
+        .map(|(chunk_index, chunk)| OutboundDataMessage {
+            target: DataChannelTarget::Reliable,
+            group: format!("stored:{}", request.stored_media_id),
+            message: proto::Message {
+                message: Some(proto::message::Message::StoredMedia(
+                    proto::StoredMediaMessage {
+                        message: Some(proto::stored_media_message::Message::KeyFrame(
+                            proto::StoredMediaKeyFrame {
+                                stored_media_id: request.stored_media_id.to_owned(),
+                                generation: request.generation,
+                                configuration: Some(configuration.clone()),
+                                frame: Some(proto::VideoDataFrame {
+                                    stream_binding_id: stream_binding_id.clone(),
+                                    frame_id: request.generation,
+                                    timestamp: Some(millis_timestamp(fragment.start_ms)),
+                                    fragment_index: u32::try_from(chunk_index).unwrap_or(u32::MAX),
+                                    fragment_count: chunk_count,
+                                    key_frame: true,
+                                    payload: chunk.to_vec(),
+                                    decode_time: None,
+                                    configuration_revision: request.generation,
+                                }),
+                            },
+                        )),
+                    },
+                )),
+            },
+        })
+        .collect();
+    Ok(StoredMediaBatch {
+        content_type: format.keyframe_content_type,
+        fragment_time_ms: fragment.start_ms,
+        delivered_through_ms: fragment.start_ms,
+        messages,
+    })
 }
 
 fn stored_media_continuation_batch(
@@ -5231,6 +5446,8 @@ enum ApiPrincipal {
 }
 
 struct StoredMediaCursor {
+    source_id: String,
+    stream_id: String,
     recording_stream_id: String,
     requested_time_ms: i64,
     end_time_ms: Option<i64>,
@@ -7253,6 +7470,18 @@ mod tests {
         let format = indexed_video_format(&initialization).unwrap();
 
         assert_eq!((format.decoder.width, format.decoder.height), (640, 368));
+
+        let h265 = std::fs::read(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/test-camera/testdata/cc-4k-640x360-h265.mp4"),
+        )
+        .unwrap();
+        let h265_format = indexed_video_format(&h265).unwrap();
+        assert_eq!(h265_format.decoder.codec, "hvc1.1.6.L63.90");
+        assert_eq!(
+            (h265_format.decoder.width, h265_format.decoder.height),
+            (640, 360)
+        );
     }
 
     use crate::logging::LogFilterFile;
@@ -7869,7 +8098,11 @@ mod tests {
         );
         assert_eq!(
             capabilities.capability_ids,
-            ["keeppeek.media-export.v1", "keeppeek.event-search"]
+            [
+                "keeppeek.media-export.v1",
+                "keeppeek.event-search",
+                "stored-media-keyframe-preview.v1"
+            ]
         );
     }
 
@@ -8550,14 +8783,15 @@ mod tests {
         let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
         let handle = catalog.handle();
         let started_at = Instant::now();
-        let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
-            &directory,
-            "front-door/main",
-            started_at,
-            8 * 1024,
-            handle.clone(),
-        )
-        .unwrap();
+        let mut writer =
+            crate::storage::medium_term::MediumTermWriter::create_with_catalog_identity(
+                &directory,
+                crate::storage::RecordingStreamIdentity::new("127.0.0.1", "main", "front-door"),
+                started_at,
+                8 * 1024,
+                handle.clone(),
+            )
+            .unwrap();
         let frame_payload = bytes::Bytes::from_static(&[
             0, 0, 0, 8, 0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce,
             0x3c, 0x80, 0, 0, 0, 1, 0x65,
@@ -8604,8 +8838,8 @@ mod tests {
                             stream_id: "main".to_owned(),
                             timestamp: Some(millis_timestamp(open_time)),
                             end_time: Some(millis_timestamp(end_time)),
-                            mode: proto::StoredMediaMode::Playback as i32,
-                            playing: true,
+                            mode: proto::StoredMediaMode::Scrub as i32,
+                            playing: false,
                             playback_rate: 1.0,
                             media_channel: proto::DataChannelKind::ReliableData as i32,
                             data_payload_routes: Vec::new(),
@@ -8616,10 +8850,13 @@ mod tests {
             },
         );
 
-        let Some(control_response::Result::Ok(ok)) = open.response.result else {
-            panic!("indexed stored media open must succeed");
+        let Some(control_response::Result::Ok(ok)) = &open.response.result else {
+            panic!(
+                "indexed stored media open must succeed: {:?}",
+                open.response.result
+            );
         };
-        let Some(control_ok::Result::StoredMediaState(open_state)) = ok.result else {
+        let Some(control_ok::Result::StoredMediaState(open_state)) = &ok.result else {
             panic!("stored media open must return cursor state");
         };
         assert_eq!(open_state.generation, 1);
@@ -8628,21 +8865,101 @@ mod tests {
             open_state
                 .delivery
                 .as_ref()
-                .is_some_and(|delivery| delivery.content_type.contains("avc1.42001f"))
+                .is_some_and(|delivery| delivery.content_type == "video/h264; format=avcc")
         );
+        assert_eq!(open_state.mode, proto::StoredMediaMode::Scrub as i32);
+        assert!(!open_state.playing);
         assert_eq!(state.recording_demand.viewer_count("front-door/main"), 1);
-        assert!(open.data_messages.len() >= 2);
+        assert_eq!(open.data_messages.len(), 1);
+        let Some(proto::message::Message::StoredMedia(open_message)) =
+            &open.data_messages[0].message.message
+        else {
+            panic!("stored media scrub must emit a stored-media message");
+        };
+        let Some(proto::stored_media_message::Message::KeyFrame(open_keyframe)) =
+            &open_message.message
+        else {
+            panic!("stored media scrub must emit one keyframe");
+        };
+        assert_eq!(open_keyframe.stored_media_id, cursor_id);
+        assert_eq!(open_keyframe.generation, 1);
+        let configuration = open_keyframe
+            .configuration
+            .as_ref()
+            .expect("stored keyframe must include decoder configuration");
         assert!(
-            open.data_messages
-                .iter()
-                .all(|message| message.group == "stored:review-1")
+            configuration
+                .codec
+                .as_ref()
+                .is_some_and(|codec| codec.name.eq_ignore_ascii_case("avc1.42001f"))
         );
+        let Some(proto::media_data_format::Format::Video(video)) = configuration
+            .format
+            .as_ref()
+            .and_then(|format| format.format.as_ref())
+        else {
+            panic!("stored keyframe must include a video format");
+        };
+        assert!(video.width > 0);
+        assert!(video.height > 0);
+        assert!(!video.decoder_config.is_empty());
+        let frame = open_keyframe
+            .frame
+            .as_ref()
+            .expect("stored keyframe must include its encoded frame");
+        assert!(frame.key_frame);
+        assert_eq!(frame.fragment_count, 1);
+        assert!(!frame.payload.is_empty());
         assert!(open.notifications.is_empty());
+
+        let start_playback = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 102,
+                command: Some(control_request::Command::StoredMediaCommand(
+                    proto::StoredMediaCommand {
+                        action: Some(stored_media_command::Action::SetPlayback(
+                            proto::SetStoredMediaPlayback {
+                                stored_media_id: cursor_id.to_owned(),
+                                playing: Some(true),
+                                playback_rate: Some(1.0),
+                                mode: Some(proto::StoredMediaMode::Playback as i32),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(ok)) = start_playback.response.result else {
+            panic!("stored media playback transition must succeed");
+        };
+        let Some(control_ok::Result::StoredMediaState(playback_state)) = ok.result else {
+            panic!("stored media playback transition must return cursor state");
+        };
+        assert_eq!(playback_state.stored_media_id, cursor_id);
+        assert_eq!(playback_state.generation, 1);
+        assert_eq!(playback_state.mode, proto::StoredMediaMode::Playback as i32);
+        assert!(playback_state.playing);
+        assert!(start_playback.data_messages.iter().all(|message| {
+            matches!(
+                &message.message.message,
+                Some(proto::message::Message::StoredMedia(message))
+                    if matches!(
+                        &message.message,
+                        Some(proto::stored_media_message::Message::Initialization(initialization))
+                            if initialization.generation == 1
+                    ) || matches!(
+                        &message.message,
+                        Some(proto::stored_media_message::Message::Fragment(fragment))
+                            if fragment.generation == 1
+                    )
+            )
+        }));
 
         let refill = handler.handle_for_session(
             session_id,
             proto::Request {
-                request_id: 102,
+                request_id: 103,
                 command: Some(control_request::Command::StoredMediaCommand(
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::Refill(
@@ -8661,7 +8978,7 @@ mod tests {
         let Some(control_ok::Result::StoredMediaState(refill_state)) = ok.result else {
             panic!("stored media refill must return cursor state");
         };
-        assert_eq!(refill_state.generation, 2);
+        assert_eq!(refill_state.generation, 1);
         assert_eq!(refill_state.status, proto::StoredMediaStatus::Ended as i32);
         assert!(refill.data_messages.iter().all(|message| {
             matches!(
@@ -8670,11 +8987,11 @@ mod tests {
                     if matches!(
                         &message.message,
                         Some(proto::stored_media_message::Message::Initialization(initialization))
-                            if initialization.generation == 2
+                            if initialization.generation == 1
                     ) || matches!(
                         &message.message,
                         Some(proto::stored_media_message::Message::Fragment(fragment))
-                            if fragment.generation == 2
+                            if fragment.generation == 1
                     )
             )
         }));
@@ -8685,10 +9002,39 @@ mod tests {
             }] if state.status == proto::StoredMediaStatus::Ended as i32
         ));
 
+        let start_scrub = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 104,
+                command: Some(control_request::Command::StoredMediaCommand(
+                    proto::StoredMediaCommand {
+                        action: Some(stored_media_command::Action::SetPlayback(
+                            proto::SetStoredMediaPlayback {
+                                stored_media_id: cursor_id.to_owned(),
+                                playing: Some(false),
+                                playback_rate: None,
+                                mode: Some(proto::StoredMediaMode::Scrub as i32),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(ok)) = start_scrub.response.result else {
+            panic!("stored media scrub transition must succeed");
+        };
+        let Some(control_ok::Result::StoredMediaState(scrub_state)) = ok.result else {
+            panic!("stored media scrub transition must return cursor state");
+        };
+        assert_eq!(scrub_state.generation, 1);
+        assert_eq!(scrub_state.mode, proto::StoredMediaMode::Scrub as i32);
+        assert!(!scrub_state.playing);
+        assert!(start_scrub.data_messages.is_empty());
+
         let seek = handler.handle_for_session(
             session_id,
             proto::Request {
-                request_id: 103,
+                request_id: 105,
                 command: Some(control_request::Command::StoredMediaCommand(
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::Seek(proto::SeekStoredMedia {
@@ -8705,33 +9051,69 @@ mod tests {
         let Some(control_ok::Result::StoredMediaState(seek_state)) = ok.result else {
             panic!("stored media seek must return cursor state");
         };
-        assert_eq!(seek_state.generation, 3);
-        assert!(
-            seek.data_messages
-                .iter()
-                .all(|message| match &message.message.message {
-                    Some(proto::message::Message::StoredMedia(message)) => match &message.message {
-                        Some(proto::stored_media_message::Message::Initialization(
-                            initialization,
-                        )) => {
-                            initialization.generation == 3
-                        }
-                        Some(proto::stored_media_message::Message::Fragment(fragment)) => {
-                            fragment.generation == 3
-                        }
-                        Some(proto::stored_media_message::Message::TimedData(data)) => {
-                            data.generation == 3
-                        }
-                        None => false,
+        assert_eq!(seek_state.generation, 2);
+        assert_eq!(seek_state.mode, proto::StoredMediaMode::Scrub as i32);
+        assert_eq!(seek_state.stored_media_id, cursor_id);
+        assert_eq!(seek.data_messages.len(), 1);
+        assert!(matches!(
+            &seek.data_messages[0].message.message,
+            Some(proto::message::Message::StoredMedia(message))
+                if matches!(
+                    &message.message,
+                    Some(proto::stored_media_message::Message::KeyFrame(keyframe))
+                        if keyframe.generation == 2
+                            && keyframe.stored_media_id == cursor_id
+                )
+        ));
+
+        let resume = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 106,
+                command: Some(control_request::Command::StoredMediaCommand(
+                    proto::StoredMediaCommand {
+                        action: Some(stored_media_command::Action::SetPlayback(
+                            proto::SetStoredMediaPlayback {
+                                stored_media_id: cursor_id.to_owned(),
+                                playing: Some(true),
+                                playback_rate: Some(1.0),
+                                mode: Some(proto::StoredMediaMode::Playback as i32),
+                            },
+                        )),
                     },
-                    _ => false,
-                })
+                )),
+            },
         );
+        let Some(control_response::Result::Ok(ok)) = resume.response.result else {
+            panic!("stored media resume must succeed");
+        };
+        let Some(control_ok::Result::StoredMediaState(resume_state)) = ok.result else {
+            panic!("stored media resume must return cursor state");
+        };
+        assert_eq!(resume_state.stored_media_id, cursor_id);
+        assert_eq!(resume_state.generation, 2);
+        assert_eq!(resume_state.mode, proto::StoredMediaMode::Playback as i32);
+        assert!(resume_state.playing);
+        assert!(resume.data_messages.iter().all(|message| {
+            matches!(
+                &message.message.message,
+                Some(proto::message::Message::StoredMedia(message))
+                    if matches!(
+                        &message.message,
+                        Some(proto::stored_media_message::Message::Initialization(initialization))
+                            if initialization.generation == 2
+                    ) || matches!(
+                        &message.message,
+                        Some(proto::stored_media_message::Message::Fragment(fragment))
+                            if fragment.generation == 2
+                    )
+            )
+        }));
 
         let update = handler.handle_for_session(
             session_id,
             proto::Request {
-                request_id: 105,
+                request_id: 107,
                 command: Some(control_request::Command::StoredMediaCommand(
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::SetPlayback(
@@ -8758,7 +9140,7 @@ mod tests {
         let close = handler.handle_for_session(
             session_id,
             proto::Request {
-                request_id: 107,
+                request_id: 108,
                 command: Some(control_request::Command::StoredMediaCommand(
                     proto::StoredMediaCommand {
                         action: Some(stored_media_command::Action::Close(

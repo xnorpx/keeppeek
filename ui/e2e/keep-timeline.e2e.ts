@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { mockControlPeer } from './fixtures/control-peer';
+import { mockControlPeer, type ControlRequests } from './fixtures/control-peer';
 
 const date = '2026-08-10';
 const dayStartMs = Date.parse(`${date}T00:00:00Z`);
@@ -12,7 +12,7 @@ const jpeg = Buffer.from(
 async function mockKeepTimeline(
 	page: Page,
 	options: { storedOpenGates?: readonly Promise<void>[] } = {}
-): Promise<void> {
+): Promise<ControlRequests> {
 	const cameras = [
 		{
 			id: 'front-door',
@@ -35,7 +35,7 @@ async function mockKeepTimeline(
 			}
 		});
 	}, newestMs);
-	await mockControlPeer(page, {
+	return mockControlPeer(page, {
 		cameras,
 		storedOpenGates: options.storedOpenGates,
 		storedRanges: [
@@ -85,6 +85,33 @@ async function mockKeepTimeline(
 		]
 	});
 }
+
+test('coalesces rapid timeline drag samples onto one stored-media cursor', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 840 });
+	const requests = await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
+
+	const playhead = page.getByRole('button', { name: /Playback position at/i });
+	const bounds = await playhead.boundingBox();
+	if (!bounds) throw new Error('Timeline playhead has no bounds');
+	const pointerX = bounds.x + bounds.width / 2;
+	const pointerY = bounds.y + bounds.height / 2;
+	const dragStartedAt = performance.now();
+	await page.mouse.move(pointerX, pointerY);
+	await page.mouse.down();
+	await page.mouse.move(pointerX, pointerY + 120, { steps: 30 });
+	await page.mouse.up();
+	const dragElapsedMs = performance.now() - dragStartedAt;
+
+	await expect.poll(() => requests.storedSeeks.length).toBeGreaterThan(0);
+	const cursorIds = new Set([
+		...requests.storedOpens.map((request) => request.storedMediaId),
+		...requests.storedSeeks.map((request) => request.storedMediaId)
+	]);
+	expect(cursorIds.size).toBe(1);
+	expect(requests.storedOpens).toHaveLength(1);
+	expect(requests.storedSeeks.length).toBeLessThanOrEqual(Math.ceil(dragElapsedMs / 50) + 1);
+});
 
 test('Board 4 renders the newest-at-top timeline with explicit gaps and live follow', async ({
 	page
@@ -185,6 +212,7 @@ test('names a cold seek after 400ms while preserving the current frame', async (
 	await expect(video).toHaveAttribute('src', currentSource!);
 
 	releaseColdSeek();
-	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
 	await expect.poll(() => video.getAttribute('src')).not.toBe(currentSource);
+	await video.dispatchEvent('loadeddata');
+	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
 });

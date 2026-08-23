@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { capabilityActions } from '$lib/capability-actions';
-import { serverCapabilityIds } from '$lib/capabilities';
+import { serverCapabilityCatalog, serverCapabilityIds } from '$lib/capabilities';
 
 describe('capability action ownership', () => {
 	it('uses every exact Board 28 target capability version', () => {
 		const used = new Set(Object.values(capabilityActions).map((action) => action.capability));
 		const targetCapabilities = serverCapabilityIds.filter(
-			(capability) => capability !== 'keeppeek.runtime-config.v1'
+			(capability) => serverCapabilityCatalog[capability].delivery !== 'ships'
 		);
 
 		expect([...used].toSorted()).toEqual(targetCapabilities.toSorted());

@@ -3509,8 +3509,8 @@ mod tests {
     }
 
     #[test]
-    fn event_search_cancellation_targets_the_matching_outbound_group() {
-        use crate::api::proto::{event_search_command, request};
+    fn data_cancellation_targets_the_matching_outbound_group() {
+        use crate::api::proto::{event_search_command, request, stored_media_command};
 
         let group = |action| {
             control_data_group(Some(&request::Command::EventSearchCommand(
@@ -3552,6 +3552,31 @@ mod tests {
                 },
             )),
             Some("event-search-media:media-1".to_owned())
+        );
+
+        let timeline_group = |action| {
+            control_data_group(Some(&request::Command::StoredMediaCommand(
+                crate::api::proto::StoredMediaCommand {
+                    action: Some(action),
+                },
+            )))
+        };
+        assert_eq!(
+            timeline_group(stored_media_command::Action::QueryTimeline(
+                crate::api::proto::QueryStoredMediaTimeline {
+                    query_id: "timeline-1".to_owned(),
+                    ..Default::default()
+                },
+            )),
+            Some("query:timeline-1".to_owned())
+        );
+        assert_eq!(
+            timeline_group(stored_media_command::Action::CancelTimelineQuery(
+                crate::api::proto::CancelStoredMediaTimelineQuery {
+                    query_id: "timeline-1".to_owned(),
+                },
+            )),
+            Some("query:timeline-1".to_owned())
         );
     }
 

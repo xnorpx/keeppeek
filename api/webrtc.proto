@@ -2135,7 +2135,15 @@ message StoredMediaMessage {
     StoredMediaInitialization initialization = 1;
     StoredMediaFragment fragment = 2;
     StoredMediaTimedData timed_data = 3;
+    StoredMediaKeyFrame key_frame = 4;
   }
+}
+
+message StoredMediaKeyFrame {
+  string stored_media_id = 1;
+  uint64 generation = 2;
+  MediaDataConfiguration configuration = 3;
+  VideoDataFrame frame = 4;
 }
 
 message StoredMediaInitialization {

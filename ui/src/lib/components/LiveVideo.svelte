@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { LiveQuality } from '$lib/types';
+	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import { Popover } from 'bits-ui';
 
@@ -84,6 +86,7 @@
 		diagnosticsLabel?: string;
 		diagnosticsStatusClass?: string;
 		onframeactivitychange?: (active: boolean) => void;
+		onvisibilitychange?: (visibility: GridTileVisibility) => void;
 		class?: string;
 	};
 
@@ -96,11 +99,13 @@
 		diagnosticsLabel,
 		diagnosticsStatusClass = 'bg-white/65',
 		onframeactivitychange,
+		onvisibilitychange,
 		class: className = ''
 	}: Props = $props();
 
 	const livePeer = useLivePeer();
 	let track = $derived(livePeer.track(cameraId));
+	let container: HTMLDivElement | null = $state(null);
 	let video = $state<HTMLVideoElement | null>(null);
 	let videoAspectRatio = $state<number | null>(null);
 	let negotiatedCodec = $state<string | null>(null);
@@ -116,6 +121,7 @@
 	let presentedFrames = 0;
 	let lastPresentedFrameAt = 0;
 	let frameActivityActive = $state(false);
+	let frozenFrameUrl = $state<string | null>(null);
 	// The compositor discards every frame while the tab is hidden; those are not render drops.
 	let renderDropsNeedRebaseline = false;
 	let status = $derived(track?.status ?? 'connecting');
@@ -141,12 +147,24 @@
 			: `${compactNumber.format(diagnostics.packetsLost)} (${diagnostics.packetLossPercent.toFixed(2)}%)`
 	);
 
-	onMount(() => livePeer.attach(cameraId));
+	onMount(() => {
+		const detach = livePeer.attach(cameraId);
+		return () => {
+			detach();
+			if (frozenFrameUrl) URL.revokeObjectURL(frozenFrameUrl);
+		};
+	});
+
+	onMount(() => {
+		if (!container || !onvisibilitychange) return;
+		return observeGridVisibility(container, cameraId, onvisibilitychange);
+	});
 
 	$effect(() => {
 		if (!video) return;
 		const stream = track?.stream ?? null;
 		if (video.srcObject !== stream) {
+			if (video.srcObject && !stream) void captureFrozenFrame(video);
 			video.srcObject = stream;
 			video.load();
 		}
@@ -206,6 +224,10 @@
 	async function handlePlaying() {
 		refreshVideoAspectRatio();
 		livePeer.markPlaying(cameraId);
+		if (frozenFrameUrl) {
+			URL.revokeObjectURL(frozenFrameUrl);
+			frozenFrameUrl = null;
+		}
 		void refreshReceiverStats(false);
 	}
 
@@ -218,6 +240,25 @@
 	function handleVideoResize() {
 		refreshVideoAspectRatio();
 		void refreshReceiverStats(false);
+	}
+
+	async function captureFrozenFrame(element: HTMLVideoElement): Promise<void> {
+		if (element.videoWidth <= 0 || element.videoHeight <= 0) return;
+		const scale = Math.min(1, 640 / Math.max(element.videoWidth, element.videoHeight));
+		const canvas = document.createElement('canvas');
+		canvas.width = Math.max(1, Math.round(element.videoWidth * scale));
+		canvas.height = Math.max(1, Math.round(element.videoHeight * scale));
+		const context = canvas.getContext('2d');
+		if (!context) return;
+		context.drawImage(element, 0, 0, canvas.width, canvas.height);
+		const blob = await new Promise<Blob | null>((resolve) =>
+			canvas.toBlob(resolve, 'image/jpeg', 0.78)
+		);
+		if (!blob || track?.stream) return;
+		const url = URL.createObjectURL(blob);
+		if (frozenFrameUrl) URL.revokeObjectURL(frozenFrameUrl);
+		frozenFrameUrl = url;
+		emitTimelinePerformanceEvent('GridTileFrozen', { sourceId: cameraId });
 	}
 
 	function markFrameActivity(): void {
@@ -390,6 +431,7 @@
 </script>
 
 <div
+	bind:this={container}
 	class="relative bg-video {className}"
 	style={matchVideoAspectRatio && videoAspectRatio !== null
 		? `aspect-ratio: ${videoAspectRatio}`
@@ -426,6 +468,13 @@
 		}}
 		class="h-full w-full object-contain"
 	></video>
+	{#if frozenFrameUrl && status !== 'live'}
+		<img
+			src={frozenFrameUrl}
+			alt=""
+			class="pointer-events-none absolute inset-0 z-10 size-full object-contain"
+		/>
+	{/if}
 	<Popover.Root bind:open={diagnosticsOpen}>
 		<Popover.Trigger
 			data-peek-camera-label={diagnosticsLabel ?? undefined}
@@ -553,6 +602,10 @@
 	{#if status === 'unavailable'}
 		<div class="absolute inset-0 grid place-items-center bg-black/70">
 			<span class="text-xs font-medium text-white/70">Live view unavailable</span>
+		</div>
+	{:else if status === 'queued'}
+		<div class="absolute inset-0 z-20 grid place-items-center bg-black/35">
+			<span class="text-xs font-medium text-white/70">Queued</span>
 		</div>
 	{/if}
 </div>

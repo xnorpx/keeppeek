@@ -23,6 +23,16 @@ import {
 	DataChannelKind,
 	DiscoveredCameraSchema,
 	DiskHealthSnapshotSchema,
+	EventSearchDeliverySchema,
+	EventSearchField,
+	EventSearchHitSchema,
+	EventSearchKeyframeSchema,
+	EventSearchMediaChunkSchema,
+	EventSearchMediaDeliverySchema,
+	EventSearchMediaEndSchema,
+	EventSearchMessageSchema,
+	EventSearchQueryEndSchema,
+	EventSearchResultSchema,
 	ExportDownloadResultSchema,
 	ExportFileChunkSchema,
 	ExportJobListSchema,
@@ -35,6 +45,7 @@ import {
 	LogBufferStatsSchema,
 	LoadHealthSnapshotSchema,
 	LoggingSettingsResultSchema,
+	MediaDataConfigurationSchema,
 	MemoryHealthSnapshotSchema,
 	MotionDetectionResultSchema,
 	MediaDataFormatSchema,
@@ -63,6 +74,9 @@ import {
 	StoredMediaDeliverySchema,
 	StoredMediaFragmentSchema,
 	StoredMediaInitializationSchema,
+	StoredMediaKeyFrameSchema,
+	StoredMediaMode,
+	StoredMediaObjectRepresentation,
 	StoredMediaQueryDeliverySchema,
 	StoredMediaQueryEndSchema,
 	StoredMediaQueryMessageSchema,
@@ -71,7 +85,9 @@ import {
 	StoredMediaStateSchema,
 	StoredMediaStatus,
 	type QueryStoredMediaTimeline,
+	type QueryEvents,
 	VideoDataFormatSchema,
+	VideoDataFrameSchema,
 	WebRtcHealthSnapshotSchema
 } from './proto/webrtc_pb';
 
@@ -128,6 +144,7 @@ class FakeDataChannel {
 	ptzActions: string[] = [];
 	storedTimelineQueries: QueryStoredMediaTimeline[] = [];
 	cancelledTimelineQueryIds: string[] = [];
+	eventSearchQueries: QueryEvents[] = [];
 
 	send(data: ArrayBuffer | ArrayBufferView): void {
 		if (this.label !== 'control-channel') return;
@@ -138,6 +155,173 @@ class FakeDataChannel {
 		const request = fromBinary(ControlEnvelopeSchema, bytes);
 		if (request.message.case !== 'request') throw new Error('expected request');
 		const command = request.message.value.command;
+		if (command.case === 'eventSearchCommand') {
+			const action = command.value.action;
+			if (action.case === 'query') {
+				this.eventSearchQueries.push(action.value);
+				const response = create(ControlEnvelopeSchema, {
+					message: {
+						case: 'response',
+						value: create(ResponseSchema, {
+							requestId: request.message.value.requestId,
+							result: {
+								case: 'ok',
+								value: create(OkSchema, {
+									result: {
+										case: 'eventSearchDelivery',
+										value: create(EventSearchDeliverySchema, {
+											queryId: action.value.queryId,
+											channel: DataChannelKind.RELIABLE_DATA
+										})
+									}
+								})
+							}
+						})
+					}
+				});
+				const reliable = FakePeerConnection.latest?.channels.find(
+					(channel) => channel.label === 'reliable-data'
+				);
+				const keyframe = create(EventSearchKeyframeSchema, {
+					sourceId: action.value.sourceId,
+					streamId: action.value.streamId,
+					recordingId: 'recording-7',
+					fragmentSequence: 7n,
+					eventTime: timestampFromDate(new Date('2026-08-20T01:00:00Z')),
+					fragmentStartTime: timestampFromDate(new Date('2026-08-20T00:59:59Z')),
+					byteLen: 3n
+				});
+				const hit = create(EventSearchHitSchema, {
+					eventId: 'event-42',
+					sourceId: action.value.sourceId,
+					eventType: 'person',
+					startTime: timestampFromDate(new Date('2026-08-20T01:00:00Z')),
+					previewStartTime: timestampFromDate(new Date('2026-08-20T00:59:55Z')),
+					previewEndTime: timestampFromDate(new Date('2026-08-20T01:00:10Z')),
+					keyframes: [keyframe]
+				});
+				const result = create(MessageSchema, {
+					message: {
+						case: 'eventSearch',
+						value: create(EventSearchMessageSchema, {
+							message: {
+								case: 'result',
+								value: create(EventSearchResultSchema, {
+									queryId: action.value.queryId,
+									sequence: 1n,
+									hit
+								})
+							}
+						})
+					}
+				});
+				const end = create(MessageSchema, {
+					message: {
+						case: 'eventSearch',
+						value: create(EventSearchMessageSchema, {
+							message: {
+								case: 'queryEnd',
+								value: create(EventSearchQueryEndSchema, {
+									queryId: action.value.queryId,
+									resultCount: 1n
+								})
+							}
+						})
+					}
+				});
+				queueMicrotask(() =>
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
+				);
+				queueMicrotask(() =>
+					reliable?.onmessage?.({ data: toBinary(MessageSchema, result).buffer } as MessageEvent)
+				);
+				queueMicrotask(() =>
+					reliable?.onmessage?.({ data: toBinary(MessageSchema, end).buffer } as MessageEvent)
+				);
+				return;
+			}
+			if (action.case === 'fetchMedia') {
+				const object = action.value.objects[0]!;
+				const response = create(ControlEnvelopeSchema, {
+					message: {
+						case: 'response',
+						value: create(ResponseSchema, {
+							requestId: request.message.value.requestId,
+							result: {
+								case: 'ok',
+								value: create(OkSchema, {
+									result: {
+										case: 'eventSearchMediaDelivery',
+										value: create(EventSearchMediaDeliverySchema, {
+											transferId: action.value.transferId,
+											channel: DataChannelKind.RELIABLE_DATA,
+											objectCount: 1
+										})
+									}
+								})
+							}
+						})
+					}
+				});
+				const reliable = FakePeerConnection.latest?.channels.find(
+					(channel) => channel.label === 'reliable-data'
+				);
+				const chunk = create(MessageSchema, {
+					message: {
+						case: 'eventSearch',
+						value: create(EventSearchMessageSchema, {
+							message: {
+								case: 'mediaChunk',
+								value: create(EventSearchMediaChunkSchema, {
+									transferId: action.value.transferId,
+									objectId: object.objectId,
+									representation: StoredMediaObjectRepresentation.ENCODED_KEYFRAME,
+									contentType: 'video/avc',
+									byteLen: 3n,
+									chunkCount: 1,
+									payload: Uint8Array.from([1, 2, 3]),
+									codec: 'avc1.42C01F',
+									width: 640,
+									height: 360,
+									decoderConfig: Uint8Array.from([4, 5]),
+									nalLengthSize: 4
+								})
+							}
+						})
+					}
+				});
+				const end = create(MessageSchema, {
+					message: {
+						case: 'eventSearch',
+						value: create(EventSearchMessageSchema, {
+							message: {
+								case: 'mediaEnd',
+								value: create(EventSearchMediaEndSchema, {
+									transferId: action.value.transferId,
+									objectCount: 1
+								})
+							}
+						})
+					}
+				});
+				queueMicrotask(() =>
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
+				);
+				queueMicrotask(() =>
+					reliable?.onmessage?.({ data: toBinary(MessageSchema, chunk).buffer } as MessageEvent)
+				);
+				queueMicrotask(() =>
+					reliable?.onmessage?.({ data: toBinary(MessageSchema, end).buffer } as MessageEvent)
+				);
+				return;
+			}
+			if (action.case === 'cancelQuery' || action.case === 'cancelMedia') return;
+			throw new Error('unexpected event search action');
+		}
 		if (command.case === 'storedMediaCommand') {
 			const action = command.value.action;
 			if (action.case === 'queryTimeline') {
@@ -773,6 +957,7 @@ class FakePeerConnection {
 }
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 	vi.clearAllMocks();
@@ -1133,6 +1318,7 @@ describe('ControlClient', () => {
 		expect(timestampDate(query.startTime!).toISOString()).toBe('2026-08-20T00:00:00.000Z');
 		expect(timestampDate(query.endTime!).toISOString()).toBe('2026-08-21T00:00:00.000Z');
 		expect(recordings.map((response) => response.segments.length)).toEqual([1, 1]);
+		expect(query.availabilityBucket).toBeUndefined();
 
 		const controller = new AbortController();
 		const abandoned = client.getRecordingsForDate(['slow'], '2026-08-20', controller.signal);
@@ -1144,6 +1330,76 @@ describe('ControlClient', () => {
 				control?.storedTimelineQueries[1]?.queryId
 			])
 		);
+	});
+
+	it('streams bucketed timeline pages before query completion', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-timeline-pages',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+		let completed = false;
+		const pages: number[] = [];
+
+		const result = await client
+			.queryStoredTimeline({
+				sourceIds: ['front-door'],
+				startMs: Date.parse('2026-08-20T00:00:00Z'),
+				endMs: Date.parse('2026-08-20T02:00:00Z'),
+				availabilityBucketMs: 60_000,
+				eventTypes: ['person'],
+				includeEvents: true,
+				includeAttachments: false,
+				onPage: (page) => {
+					expect(completed).toBe(false);
+					pages.push(page.ranges.length);
+				}
+			})
+			.finally(() => (completed = true));
+
+		const control = FakePeerConnection.latest?.channels.find(
+			(channel) => channel.label === 'control-channel'
+		);
+		const query = control?.storedTimelineQueries[0];
+		expect(query?.availabilityBucket).toEqual(durationFromMs(60_000));
+		expect(query?.events?.eventTypes).toEqual(['person']);
+		expect(query?.events?.includeAttachments).toBe(false);
+		expect(pages).toEqual([1]);
+		expect(result.ranges).toHaveLength(1);
+	});
+
+	it('searches indexed event previews and fetches a decoder-ready keyframe', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-event-preview',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+
+		const page = await client.searchEventPreviews({
+			sourceId: 'front-door',
+			streamId: 'main',
+			eventType: 'person',
+			startMs: Date.parse('2026-08-20T00:59:00Z'),
+			endMs: Date.parse('2026-08-20T01:01:00Z')
+		});
+		const query = FakePeerConnection.latest?.channels.find(
+			(channel) => channel.label === 'control-channel'
+		)?.eventSearchQueries[0];
+		expect(query?.search.case).toBe('text');
+		if (query?.search.case !== 'text') throw new Error('expected text event search');
+		expect(query.search.value.field).toBe(EventSearchField.EVENT_TYPE);
+		expect(page.hits[0]).toMatchObject({ eventId: 'event-42', eventType: 'person' });
+
+		const media = await client.fetchEventPreviewKeyframe(page.hits[0]!.keyframes[0]!);
+		expect(media).toMatchObject({
+			codec: 'avc1.42C01F',
+			width: 640,
+			height: 360,
+			nalLengthSize: 4
+		});
+		expect([...media.payload]).toEqual([1, 2, 3]);
 	});
 
 	it('refills at half-buffer and ends only after the terminal generation is appended', async () => {
@@ -1160,6 +1416,7 @@ describe('ControlClient', () => {
 
 		class FakeMediaSource extends EventTarget {
 			static latest: FakeMediaSource | null = null;
+			static instances: FakeMediaSource[] = [];
 			static isTypeSupported(): boolean {
 				return true;
 			}
@@ -1172,6 +1429,7 @@ describe('ControlClient', () => {
 			constructor() {
 				super();
 				FakeMediaSource.latest = this;
+				FakeMediaSource.instances.push(this);
 			}
 
 			addSourceBuffer(): SourceBuffer {
@@ -1206,9 +1464,12 @@ describe('ControlClient', () => {
 					maxBufferDuration: durationFromMs(1_000)
 				})
 			});
-		const refill = vi.fn(async () => state(2n, StoredMediaStatus.ENDED));
+		const refill = vi.fn(async () => state(1n, StoredMediaStatus.ENDED));
 		const playback = new StoredMediaPlayback(
 			'review-test',
+			'front-door',
+			'main',
+			vi.fn(async () => state(2n, StoredMediaStatus.ACTIVE)),
 			refill,
 			vi.fn(async () => state(1n, StoredMediaStatus.ACTIVE)),
 			vi.fn(async () => {})
@@ -1259,7 +1520,7 @@ describe('ControlClient', () => {
 		playback.receiveInitialization(
 			create(StoredMediaInitializationSchema, {
 				storedMediaId: 'review-test',
-				generation: 2n,
+				generation: 1n,
 				initializationId: 1n,
 				contentType: 'video/mp4; codecs="avc1.42E01E"',
 				chunkCount: 1,
@@ -1269,7 +1530,7 @@ describe('ControlClient', () => {
 		playback.receiveFragment(
 			create(StoredMediaFragmentSchema, {
 				storedMediaId: 'review-test',
-				generation: 2n,
+				generation: 1n,
 				initializationId: 1n,
 				sequence: 1n,
 				startTime: timestampFromDate(new Date(anchorMs + 1_000)),
@@ -1280,6 +1541,213 @@ describe('ControlClient', () => {
 		);
 
 		await vi.waitFor(() => expect(FakeMediaSource.latest?.endCount).toBe(1));
+		expect(FakeMediaSource.instances).toHaveLength(1);
 		expect(FakeMediaSource.latest?.sourceBuffer.appendCount).toBe(4);
+	});
+
+	it('keeps one cursor seek in flight and dispatches only the latest pending target', async () => {
+		class FakeMediaSource extends EventTarget {
+			static isTypeSupported(): boolean {
+				return true;
+			}
+			readyState: ReadyState = 'closed';
+			duration = Number.NaN;
+		}
+		vi.useFakeTimers();
+		vi.stubGlobal('MediaSource', FakeMediaSource);
+		vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:seek-test');
+		vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+
+		const anchorMs = Date.UTC(2026, 7, 20, 12);
+		const state = (generation: bigint, requestedMs: number) =>
+			create(StoredMediaStateSchema, {
+				storedMediaId: 'review-seek',
+				status: StoredMediaStatus.ACTIVE,
+				generation,
+				requestedTime: timestampFromDate(new Date(requestedMs)),
+				fragmentTime: timestampFromDate(new Date(requestedMs)),
+				endTime: timestampFromDate(new Date(anchorMs + 86_400_000)),
+				mode: 1,
+				playing: false,
+				playbackRate: 1,
+				delivery: create(StoredMediaDeliverySchema, {
+					mediaChannel: 1,
+					contentType: 'video/mp4; codecs="avc1.42E01E"',
+					maxBufferDuration: durationFromMs(5_000)
+				})
+			});
+		const resolvers: Array<(value: ReturnType<typeof state>) => void> = [];
+		const requested: number[] = [];
+		const seek = vi.fn(
+			(timestampMs: number) =>
+				new Promise<ReturnType<typeof state>>((resolve) => {
+					requested.push(timestampMs);
+					resolvers.push(resolve);
+				})
+		);
+		const playback = new StoredMediaPlayback(
+			'review-seek',
+			'front-door',
+			'main',
+			seek,
+			vi.fn(async () => state(1n, anchorMs)),
+			vi.fn(async () => state(1n, anchorMs)),
+			vi.fn(async () => {})
+		);
+		playback.configure(state(1n, anchorMs));
+
+		const first = playback.seek(anchorMs + 1_000);
+		await vi.advanceTimersByTimeAsync(0);
+		const superseded = playback.seek(anchorMs + 2_000);
+		const latest = playback.seek(anchorMs + 3_000);
+		await superseded;
+		expect(requested).toEqual([anchorMs + 1_000]);
+
+		resolvers[0]!(state(2n, anchorMs + 1_000));
+		await first;
+		await vi.advanceTimersByTimeAsync(49);
+		expect(requested).toEqual([anchorMs + 1_000]);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requested).toEqual([anchorMs + 1_000, anchorMs + 3_000]);
+		resolvers[1]!(state(3n, anchorMs + 3_000));
+		await latest;
+		expect(playback.id).toBe('review-seek');
+		playback.dispose();
+	});
+
+	it('assembles stored keyframes and commits one cursor across scrub and playback', async () => {
+		class FakeMediaSource extends EventTarget {
+			static isTypeSupported(): boolean {
+				return true;
+			}
+			readyState: ReadyState = 'closed';
+			duration = Number.NaN;
+		}
+		vi.stubGlobal('MediaSource', FakeMediaSource);
+		vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:keyframe-test');
+		vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+
+		const anchorMs = Date.UTC(2026, 7, 20, 12);
+		const state = (generation: bigint, mode: StoredMediaMode, contentType: string) =>
+			create(StoredMediaStateSchema, {
+				storedMediaId: 'review-keyframe',
+				status: StoredMediaStatus.ACTIVE,
+				generation,
+				requestedTime: timestampFromDate(new Date(anchorMs + 100)),
+				fragmentTime: timestampFromDate(new Date(anchorMs)),
+				endTime: timestampFromDate(new Date(anchorMs + 60_000)),
+				mode,
+				playing: mode === StoredMediaMode.PLAYBACK,
+				playbackRate: 1,
+				delivery: create(StoredMediaDeliverySchema, {
+					mediaChannel: DataChannelKind.RELIABLE_DATA,
+					contentType,
+					maxBufferDuration: durationFromMs(5_000)
+				})
+			});
+		const update = vi.fn(
+			async (
+				playing: boolean | undefined,
+				_playbackRate: number | undefined,
+				mode: StoredMediaMode | undefined
+			) =>
+				state(
+					2n,
+					mode ?? StoredMediaMode.PLAYBACK,
+					mode === StoredMediaMode.SCRUB
+						? 'video/h264; format=avcc'
+						: 'video/mp4; codecs="avc1.42E01E"'
+				)
+		);
+		const playback = new StoredMediaPlayback(
+			'review-keyframe',
+			'front-door',
+			'main',
+			vi.fn(async () => state(2n, StoredMediaMode.SCRUB, 'video/h264; format=avcc')),
+			vi.fn(async () => state(2n, StoredMediaMode.PLAYBACK, 'video/mp4')),
+			update,
+			vi.fn(async () => {})
+		);
+		playback.configure(state(1n, StoredMediaMode.PLAYBACK, 'video/mp4'));
+		await playback.enterScrub();
+		playback.configure(state(2n, StoredMediaMode.SCRUB, 'video/h264; format=avcc'));
+
+		const configuration = create(MediaDataConfigurationSchema, {
+			streamBindingId: 'stored:review-keyframe:video',
+			codec: create(CodecDescriptorSchema, { name: 'avc1.42E01E' }),
+			format: create(MediaDataFormatSchema, {
+				format: {
+					case: 'video',
+					value: create(VideoDataFormatSchema, {
+						width: 640,
+						height: 360,
+						decoderConfig: Uint8Array.from([4, 5])
+					})
+				}
+			}),
+			configurationRevision: 2n
+		});
+		for (const [fragmentIndex, payload] of [
+			[1, Uint8Array.from([3])],
+			[0, Uint8Array.from([1, 2])]
+		] as const) {
+			playback.receiveKeyFrame(
+				create(StoredMediaKeyFrameSchema, {
+					storedMediaId: 'review-keyframe',
+					generation: 2n,
+					configuration,
+					frame: create(VideoDataFrameSchema, {
+						streamBindingId: configuration.streamBindingId,
+						frameId: 7n,
+						timestamp: timestampFromDate(new Date(anchorMs)),
+						fragmentIndex,
+						fragmentCount: 2,
+						keyFrame: true,
+						payload,
+						configurationRevision: 2n
+					})
+				})
+			);
+		}
+
+		const preview = vi.fn();
+		playback.onKeyFrame(preview);
+		expect(preview).toHaveBeenCalledOnce();
+		expect(preview.mock.calls[0]?.[0]).toMatchObject({
+			storedMediaId: 'review-keyframe',
+			generation: 2n,
+			codec: 'avc1.42E01E',
+			width: 640,
+			height: 360
+		});
+		expect([...preview.mock.calls[0]![0].payload]).toEqual([1, 2, 3]);
+		playback.receiveKeyFrame(
+			create(StoredMediaKeyFrameSchema, {
+				storedMediaId: 'review-keyframe',
+				generation: 1n,
+				configuration: create(MediaDataConfigurationSchema, {
+					...configuration,
+					configurationRevision: 1n
+				}),
+				frame: create(VideoDataFrameSchema, {
+					streamBindingId: configuration.streamBindingId,
+					frameId: 8n,
+					timestamp: timestampFromDate(new Date(anchorMs - 1_000)),
+					fragmentCount: 1,
+					keyFrame: true,
+					payload: Uint8Array.from([9]),
+					configurationRevision: 1n
+				})
+			})
+		);
+		expect(preview).toHaveBeenCalledOnce();
+
+		await playback.commitPlayback(true, 1);
+		expect(update.mock.calls.map((call) => [call[0], call[2]])).toEqual([
+			[false, StoredMediaMode.SCRUB],
+			[true, StoredMediaMode.PLAYBACK]
+		]);
+		expect(playback.id).toBe('review-keyframe');
+		playback.dispose();
 	});
 });

@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import type { RecordingEvent, RecordingSegment } from '$lib/types';
+	import type { TimelineViewport } from '$lib/timeline-repository.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { buildTimelineAvailability } from '$lib/timeline-availability';
 	import { TimelinePan } from '$lib/timeline-pan.svelte';
@@ -11,11 +13,46 @@
 	const DAY_MS = 86_400_000;
 	const MINUTE_MS = 60_000;
 	const ZOOM_LEVELS = [
-		{ label: '24h', pixelsPerHour: 28 },
-		{ label: '6h', pixelsPerHour: 112 },
-		{ label: '1h', pixelsPerHour: 672 },
-		{ label: '15m', pixelsPerHour: 2_688 },
-		{ label: '1m', pixelsPerHour: 40_320 }
+		{
+			label: '24h',
+			pixelsPerHour: 28,
+			tickMs: 60 * MINUTE_MS,
+			majorEvery: 6,
+			bucketMs: 5 * MINUTE_MS,
+			prefetchMs: 12 * 60 * MINUTE_MS
+		},
+		{
+			label: '6h',
+			pixelsPerHour: 112,
+			tickMs: 15 * MINUTE_MS,
+			majorEvery: 4,
+			bucketMs: 5 * MINUTE_MS,
+			prefetchMs: 12 * 60 * MINUTE_MS
+		},
+		{
+			label: '1h',
+			pixelsPerHour: 672,
+			tickMs: 5 * MINUTE_MS,
+			majorEvery: 3,
+			bucketMs: MINUTE_MS,
+			prefetchMs: 2 * 60 * MINUTE_MS
+		},
+		{
+			label: '15m',
+			pixelsPerHour: 2_688,
+			tickMs: MINUTE_MS,
+			majorEvery: 5,
+			bucketMs: 15_000,
+			prefetchMs: 30 * MINUTE_MS
+		},
+		{
+			label: '1m',
+			pixelsPerHour: 40_320,
+			tickMs: 15_000,
+			majorEvery: 4,
+			bucketMs: 15_000,
+			prefetchMs: 30 * MINUTE_MS
+		}
 	] as const;
 	const EVENT_FILTERS = ['all', 'person', 'vehicle', 'motion'] as const;
 	const EVENT_CARD_HEIGHT = 68;
@@ -43,7 +80,14 @@
 		followRequest?: number;
 		mobileFrame?: boolean;
 		paperFrame?: boolean;
+		loading?: boolean;
 		onSeek: (timestampMs: number) => void;
+		onEventPreview?: (event: RecordingEvent) => void;
+		onScrubStart?: (timestampMs: number) => void;
+		onScrub?: (timestampMs: number) => void;
+		onScrubEnd?: (timestampMs: number) => void;
+		onScrubCancel?: () => void;
+		onViewportChange?: (viewport: TimelineViewport) => void;
 	};
 
 	let {
@@ -56,7 +100,14 @@
 		followRequest = 0,
 		mobileFrame = false,
 		paperFrame = false,
-		onSeek
+		loading = false,
+		onSeek,
+		onEventPreview,
+		onScrubStart,
+		onScrub,
+		onScrubEnd,
+		onScrubCancel,
+		onViewportChange
 	}: Props = $props();
 
 	let zoomIndex = $state(1);
@@ -68,6 +119,8 @@
 	let detachedEndMs = $state<number | null>(null);
 	let draggedPlayheadMs = $state<number | null>(null);
 	let dragPointerId = $state<number | null>(null);
+	let viewportTopPx = $state(0);
+	let viewportExtentPx = $state(0);
 	let dragOffsetY = 0;
 	const timelinePan = new TimelinePan();
 	let zoomLevel = $derived(ZOOM_LEVELS[zoomIndex]);
@@ -81,21 +134,50 @@
 	let timelineStartMs = $derived(dayStartMs);
 	let timelineDurationMs = $derived(Math.max(1, timelineEndMs - timelineStartMs));
 	let timelineHeight = $derived((pixelsPerHour * timelineDurationMs) / (60 * MINUTE_MS));
-	let availability = $derived(buildTimelineAvailability(segments, timelineStartMs, timelineEndMs));
-	let isLiveDay = $derived(effectiveNowMs >= dayStartMs && effectiveNowMs < dayEndMs);
-	let ticks = $derived(
-		Array.from({ length: Math.ceil(timelineDurationMs / (15 * MINUTE_MS)) + 1 }, (_, index) => ({
-			index,
-			major: index % 4 === 0,
-			top: Math.min(timelineHeight, (index * 15 * MINUTE_MS * timelineHeight) / timelineDurationMs),
-			timestampMs: Math.max(timelineStartMs, timelineEndMs - index * 15 * MINUTE_MS)
-		}))
+	let renderTopPx = $derived(
+		viewportExtentPx > 0 ? Math.max(0, viewportTopPx - viewportExtentPx * 2) : 0
 	);
+	let renderBottomPx = $derived(
+		viewportExtentPx > 0
+			? Math.min(timelineHeight, viewportTopPx + viewportExtentPx * 3)
+			: timelineHeight
+	);
+	let renderStartMs = $derived(timestampAtTop(renderBottomPx));
+	let renderEndMs = $derived(timestampAtTop(renderTopPx));
+	let viewportStartMs = $derived(
+		timestampAtTop(Math.min(timelineHeight, viewportTopPx + viewportExtentPx))
+	);
+	let viewportEndMs = $derived(timestampAtTop(Math.max(0, viewportTopPx)));
+	let availability = $derived(buildTimelineAvailability(segments, renderStartMs, renderEndMs));
+	let isLiveDay = $derived(effectiveNowMs >= dayStartMs && effectiveNowMs < dayEndMs);
+	let ticks = $derived.by(() => {
+		const values: Array<{ timestampMs: number; major: boolean; top: number }> = [];
+		const firstTimestampMs = Math.ceil(renderStartMs / zoomLevel.tickMs) * zoomLevel.tickMs;
+		for (
+			let timestampMs = firstTimestampMs;
+			timestampMs <= renderEndMs;
+			timestampMs += zoomLevel.tickMs
+		) {
+			values.push({
+				timestampMs,
+				major: Math.floor(timestampMs / zoomLevel.tickMs) % zoomLevel.majorEvery === 0,
+				top: timestampTop(timestampMs)
+			});
+		}
+		return values;
+	});
 	let displayedPlayheadMs = $derived(draggedPlayheadMs ?? playheadMs);
 	let playheadTop = $derived(
 		displayedPlayheadMs === null ? null : timestampTop(displayedPlayheadMs)
 	);
-	let visibleEvents = $derived(events.filter((event) => eventMatchesFilter(event.kind)));
+	let visibleEvents = $derived(
+		events.filter(
+			(event) =>
+				event.start_time_ms >= renderStartMs &&
+				event.start_time_ms <= renderEndMs &&
+				eventMatchesFilter(event.kind)
+		)
+	);
 	let eventClusters = $derived.by(() => {
 		const clusters: EventCluster[] = [];
 		for (const event of visibleEvents.toSorted(
@@ -118,6 +200,12 @@
 		return fraction * timelineHeight;
 	}
 
+	function timestampAtTop(topPx: number): number {
+		if (timelineHeight <= 0) return timelineEndMs;
+		const fraction = Math.max(0, Math.min(1, topPx / timelineHeight));
+		return timelineEndMs - fraction * timelineDurationMs;
+	}
+
 	function rangeHeight(startMs: number, endMs: number): number {
 		return Math.max(1, timestampTop(startMs) - timestampTop(endMs));
 	}
@@ -138,6 +226,11 @@
 		if (eventFilter === 'all') return true;
 		const normalizedKind = kind.toLocaleLowerCase().replaceAll(/[-_]/g, ' ');
 		return normalizedKind.split(/\s+/).includes(eventFilter);
+	}
+
+	function selectEvent(event: RecordingEvent): void {
+		onEventPreview?.(event);
+		onSeek(event.start_time_ms);
 	}
 
 	function filterLabel(filter: (typeof EVENT_FILTERS)[number]): string {
@@ -180,7 +273,15 @@
 	}
 
 	function beginPlayheadDrag(event: PointerEvent) {
-		if (event.button !== 0 || dragPointerId !== null || playheadTop === null) return;
+		const startTimestampMs = displayedPlayheadMs;
+		if (
+			event.button !== 0 ||
+			dragPointerId !== null ||
+			playheadTop === null ||
+			startTimestampMs === null
+		) {
+			return;
+		}
 		const pointerTop = pointerTimelineTop(event.clientY);
 		if (pointerTop === null) return;
 		event.preventDefault();
@@ -190,6 +291,7 @@
 		draggedPlayheadMs = displayedPlayheadMs;
 		stopFollowing();
 		(event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+		onScrubStart?.(startTimestampMs);
 	}
 
 	function movePlayhead(event: PointerEvent) {
@@ -197,7 +299,10 @@
 		event.preventDefault();
 		event.stopPropagation();
 		const timestampMs = timestampFromDrag(event.clientY);
-		if (timestampMs !== null) draggedPlayheadMs = timestampMs;
+		if (timestampMs !== null) {
+			draggedPlayheadMs = timestampMs;
+			onScrub?.(timestampMs);
+		}
 	}
 
 	function endPlayheadDrag(event: PointerEvent) {
@@ -209,7 +314,10 @@
 		dragPointerId = null;
 		dragOffsetY = 0;
 		if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
-		if (timestampMs !== null) onSeek(timestampMs);
+		if (timestampMs !== null) {
+			if (onScrubEnd) onScrubEnd(timestampMs);
+			else onSeek(timestampMs);
+		}
 		draggedPlayheadMs = null;
 		stopFollowing();
 	}
@@ -221,6 +329,7 @@
 		dragOffsetY = 0;
 		draggedPlayheadMs = null;
 		stopFollowing();
+		onScrubCancel?.();
 	}
 
 	function beginPan(event: PointerEvent) {
@@ -232,15 +341,39 @@
 		if (timelinePan.end(event)) stopFollowing();
 	}
 
-	function zoom(direction: number) {
-		zoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, zoomIndex + direction));
+	async function zoom(direction: number) {
+		const nextZoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, zoomIndex + direction));
+		if (nextZoomIndex === zoomIndex) return;
+		const node = scroller;
+		const markerOffsetPx = node ? node.scrollTop + node.clientHeight / 2 : 0;
+		const markerTimestampMs = timestampAtTop(markerOffsetPx);
+		zoomIndex = nextZoomIndex;
+		await tick();
+		if (!node || node.clientHeight <= 0) return;
+		node.scrollTop = Math.max(
+			0,
+			Math.min(
+				timelineHeight - node.clientHeight,
+				timestampTop(markerTimestampMs) - node.clientHeight / 2
+			)
+		);
+		syncViewport(node);
 	}
 
 	function handleWheel(event: WheelEvent): void {
 		stopFollowing();
 		if (!event.ctrlKey) return;
 		event.preventDefault();
-		zoom(event.deltaY > 0 ? -1 : 1);
+		void zoom(event.deltaY > 0 ? -1 : 1);
+	}
+
+	function syncViewport(node: HTMLDivElement): void {
+		viewportTopPx = node.scrollTop;
+		viewportExtentPx = node.clientHeight;
+	}
+
+	function handleScroll(event: Event): void {
+		syncViewport(event.currentTarget as HTMLDivElement);
 	}
 
 	function stopFollowing(): void {
@@ -287,7 +420,37 @@
 	$effect(() => {
 		const node = scroller;
 		if (!node || !followPlayhead || timelinePan.active) return;
-		requestAnimationFrame(() => node.scrollTo({ top: 0, behavior: 'smooth' }));
+		const frame = requestAnimationFrame(() => {
+			node.scrollTo({ top: 0, behavior: 'smooth' });
+			syncViewport(node);
+		});
+		return () => cancelAnimationFrame(frame);
+	});
+
+	$effect(() => {
+		const node = scroller;
+		if (!node) return;
+		const update = () => syncViewport(node);
+		update();
+		const observer = new ResizeObserver(update);
+		observer.observe(node);
+		return () => observer.disconnect();
+	});
+
+	$effect(() => {
+		const callback = onViewportChange;
+		const extentPx = viewportExtentPx;
+		if (!callback || extentPx <= 0) return;
+		const viewport: TimelineViewport = {
+			startMs: viewportStartMs,
+			endMs: viewportEndMs,
+			bucketMs: zoomLevel.bucketMs,
+			prefetchMs: zoomLevel.prefetchMs,
+			viewportExtentPx: extentPx,
+			eventTypes: eventFilter === 'all' ? [] : [eventFilter]
+		};
+		const frame = requestAnimationFrame(() => callback(viewport));
+		return () => cancelAnimationFrame(frame);
 	});
 </script>
 
@@ -295,6 +458,7 @@
 	data-timeline-zoom={zoomLevel.label}
 	data-timeline-following={followPlayhead}
 	data-timeline-end-ms={timelineEndMs}
+	aria-busy={loading}
 	class="relative flex min-h-0 flex-col overflow-hidden bg-card/95 {paperFrame
 		? 'h-[718px] w-[396px] shrink-0 border-l border-hairline [font-synthesis:none]'
 		: mobileFrame
@@ -343,7 +507,7 @@
 					size="icon-sm"
 					title="Zoom timeline out"
 					disabled={zoomIndex === 0}
-					onclick={() => zoom(-1)}
+					onclick={() => void zoom(-1)}
 				>
 					<ZoomOutIcon />
 				</Button>
@@ -352,7 +516,7 @@
 					size="icon-sm"
 					title="Zoom timeline in"
 					disabled={zoomIndex === ZOOM_LEVELS.length - 1}
-					onclick={() => zoom(1)}
+					onclick={() => void zoom(1)}
 				>
 					<ZoomInIcon />
 				</Button>
@@ -389,13 +553,13 @@
 					type="button"
 					class="grid size-4 place-items-center text-text-muted"
 					title="Zoom timeline in"
-					onclick={() => zoom(1)}><ZoomInIcon class="size-3.5" /></button
+					onclick={() => void zoom(1)}><ZoomInIcon class="size-3.5" /></button
 				>
 				<button
 					type="button"
 					class="grid size-4 place-items-center text-text-muted"
 					title="Zoom timeline out"
-					onclick={() => zoom(-1)}><ZoomOutIcon class="size-3.5" /></button
+					onclick={() => void zoom(-1)}><ZoomOutIcon class="size-3.5" /></button
 				>
 			</div>
 		{/if}
@@ -426,6 +590,7 @@
 		onlostpointercapture={(event) => timelinePan.cancel(event)}
 		onclickcapture={(event) => timelinePan.consumeClick(event)}
 		onwheel={handleWheel}
+		onscroll={handleScroll}
 	>
 		<div class="relative min-w-full" style={`height: ${timelineHeight}px`}>
 			<button
@@ -437,8 +602,9 @@
 				onkeydown={seekFromKeyboard}
 			></button>
 
-			{#each ticks as tick (tick.index)}
+			{#each ticks as tick (tick.timestampMs)}
 				<div
+					data-timeline-tick
 					class="pointer-events-none absolute left-0 z-10 flex w-14 items-center"
 					style={`top: ${tick.top}px`}
 				>
@@ -481,7 +647,7 @@
 						title={`No footage ${formatTime(gap.startMs)}–${formatTime(gap.endMs)}`}
 					></div>
 				{/each}
-				{#each visibleEvents.filter((event) => event.start_time_ms >= timelineStartMs && event.start_time_ms <= timelineEndMs) as event (event.id)}
+				{#each visibleEvents as event (event.id)}
 					{#if event.end_time_ms !== null && event.end_time_ms > event.start_time_ms}
 						<span
 							data-timeline-activity={event.id}
@@ -521,7 +687,7 @@
 					style={`top: ${eventCardTop(cluster.top)}px`}
 					aria-label={`${eventLabel(cluster.event.kind)} event at ${formatTime(cluster.event.start_time_ms)}`}
 					title={`${eventLabel(cluster.event.kind)} · ${formatTime(cluster.event.start_time_ms)}`}
-					onclick={() => onSeek(cluster.event.start_time_ms)}
+					onclick={() => selectEvent(cluster.event)}
 				>
 					{#if cluster.event.thumbnail_url}
 						{#if paperFrame}

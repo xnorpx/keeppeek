@@ -1,5 +1,9 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
+	import type { GridTileVisibility } from '$lib/grid-visibility';
+	import { GridPlaybackSession } from '$lib/grid-playback-session';
+	import { webDecoderBudget } from '$lib/grid-stream-scheduler';
 	import RecordingFilmstripPreview from '$lib/components/RecordingFilmstripPreview.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import type { CameraListItem, RecordingSegment } from '$lib/types';
@@ -12,6 +16,7 @@
 		timestampMs: number | null;
 		playing: boolean;
 		playbackRate: number;
+		scrubbing?: boolean;
 		onselect: (cameraId: string, timestampMs: number) => void;
 	};
 
@@ -25,12 +30,25 @@
 		segment: RecordingSegment | null;
 	};
 
-	let { cameras, selectedCameraId, date, timestampMs, playing, playbackRate, onselect }: Props =
-		$props();
+	let {
+		cameras,
+		selectedCameraId,
+		date,
+		timestampMs,
+		playing,
+		playbackRate,
+		scrubbing = false,
+		onselect
+	}: Props = $props();
 	const controlClient = useControlClient();
+	const gridPlayback = new GridPlaybackSession();
 	let recordings = $state.raw<CameraRecordings[]>([]);
 	let loading = $state(false);
 	let requestVersion = 0;
+	let decoderBudget = $state(3);
+	let screenActive = $state(true);
+	let visibility = $state.raw<Record<string, GridTileVisibility>>({});
+	let activeCameraIds = $state.raw<ReadonlySet<string>>(new Set());
 	let placeholders = $derived(
 		Array.from({ length: Math.min(4, Math.max(1, cameras.length - 1)) }, (_, index) => index)
 	);
@@ -42,6 +60,48 @@
 				segment: previewSegment(camera, segments, timestampMs)
 			}))
 	);
+
+	onMount(() => {
+		decoderBudget = Math.max(1, webDecoderBudget(navigator.hardwareConcurrency) - 1);
+		const onVisibility = () => (screenActive = document.visibilityState === 'visible');
+		onVisibility();
+		document.addEventListener('visibilitychange', onVisibility);
+		return () => document.removeEventListener('visibilitychange', onVisibility);
+	});
+
+	$effect(() => {
+		const previewList = previews;
+		const selectedEpochMs = timestampMs ?? 0;
+		gridPlayback.update({
+			mode: !screenActive || scrubbing ? 'scrub' : playing ? 'playback' : 'paused',
+			selectedEpochMs,
+			playbackRate,
+			focusedSourceId: selectedCameraId
+		});
+		const schedule = gridPlayback.reconcile(
+			previewList.map((preview) => ({
+				cameraId: preview.camera.id,
+				visibleFraction: visibility[preview.camera.id]?.visibleFraction ?? 0,
+				focused: false,
+				hasRecording: preview.segment !== null
+			})),
+			decoderBudget
+		);
+		activeCameraIds = new Set(schedule.activeCameraIds);
+	});
+
+	function handleVisibility(next: GridTileVisibility): void {
+		const previous = visibility[next.cameraId];
+		if (
+			previous &&
+			previous.visibleFraction === next.visibleFraction &&
+			previous.distanceFromViewportPx === next.distanceFromViewportPx &&
+			previous.viewportExtentPx === next.viewportExtentPx
+		) {
+			return;
+		}
+		visibility = { ...visibility, [next.cameraId]: next };
+	}
 
 	function preferredStream(camera: CameraListItem): 'main' | 'sub' {
 		return (
@@ -141,6 +201,8 @@
 							{timestampMs}
 							{playing}
 							{playbackRate}
+							active={activeCameraIds.has(preview.camera.id)}
+							onvisibilitychange={handleVisibility}
 							{onselect}
 						/>
 					{/key}

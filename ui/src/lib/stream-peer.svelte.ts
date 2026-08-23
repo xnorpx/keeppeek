@@ -27,6 +27,7 @@ export type LivePeerPlan = {
 	cameraId: string;
 	quality: LiveQuality;
 	variantId?: 'main' | 'sub';
+	active?: boolean;
 };
 
 export type LivePeerTrack = {
@@ -34,12 +35,13 @@ export type LivePeerTrack = {
 	trackId: string;
 	receiver: RTCRtpReceiver | null;
 	stream: MediaStream | null;
-	status: 'connecting' | 'live' | 'unavailable';
+	status: 'queued' | 'connecting' | 'live' | 'unavailable';
 	requestedQuality: LiveQuality;
 	requestedVariantId: 'main' | 'sub' | null;
 	activeStream: 'main' | 'sub';
 	pendingStream: 'main' | 'sub' | null;
 	estimatedBitrateBps: number | null;
+	subscribed: boolean;
 };
 
 export class LivePeer {
@@ -94,7 +96,7 @@ export class LivePeer {
 
 	configure(plans: LivePeerPlan[]): Promise<void> {
 		const nextPlans = plans
-			.map((plan) => ({ ...plan }))
+			.map((plan) => ({ ...plan, active: plan.active ?? true }))
 			.toSorted((left, right) => left.cameraId.localeCompare(right.cameraId));
 		const cameraIds = Object.create(null) as Record<string, true>;
 		for (const plan of nextPlans) {
@@ -138,6 +140,7 @@ export class LivePeer {
 
 	private async configureNow(plans: LivePeerPlan[]): Promise<void> {
 		const topologyKey = plans.map((plan) => plan.cameraId).join('\u0000');
+		if (plans.length === 0 && this.#peer === null) return;
 		if (this.#peer === null || this.#topologyKey !== topologyKey) {
 			await this.closeNow();
 			if (plans.length === 0) return;
@@ -145,15 +148,30 @@ export class LivePeer {
 			return;
 		}
 		await Promise.all(
-			plans
-				.filter((plan) => {
-					const track = this.track(plan.cameraId);
-					return (
-						track?.requestedQuality !== plan.quality ||
-						track?.requestedVariantId !== (plan.variantId ?? null)
+			plans.map(async (plan) => {
+				const track = this.track(plan.cameraId);
+				if (!track) return;
+				if (plan.active && !track.subscribed) {
+					await this.subscribeTrack(
+						plan.cameraId,
+						track.trackId,
+						plan.quality,
+						plan.variantId ?? null
 					);
-				})
-				.map((plan) => this.setQuality(plan.cameraId, plan.quality, plan.variantId ?? null))
+					return;
+				}
+				if (!plan.active && track.subscribed) {
+					await this.unsubscribeTrack(plan.cameraId, track.trackId);
+					return;
+				}
+				if (
+					plan.active &&
+					(track.requestedQuality !== plan.quality ||
+						track.requestedVariantId !== (plan.variantId ?? null))
+				) {
+					await this.setQuality(plan.cameraId, plan.quality, plan.variantId ?? null);
+				}
+			})
 		);
 	}
 
@@ -209,12 +227,13 @@ export class LivePeer {
 					trackId: track.trackId,
 					receiver: null,
 					stream: null,
-					status: 'connecting',
+					status: track.active ? 'connecting' : 'queued',
 					requestedQuality: track.quality,
 					requestedVariantId: track.variantId ?? null,
 					activeStream: 'sub',
 					pendingStream: null,
-					estimatedBitrateBps: null
+					estimatedBitrateBps: null,
+					subscribed: false
 				} satisfies LivePeerTrack
 			])
 		);
@@ -271,7 +290,7 @@ export class LivePeer {
 			});
 			if (controlChannel.readyState !== 'open') await controlOpened;
 			await this.waitForCapabilities();
-			for (const track of localTracks) {
+			for (const track of localTracks.filter((track) => track.active)) {
 				await this.subscribeTrack(
 					track.cameraId,
 					track.trackId,
@@ -300,7 +319,7 @@ export class LivePeer {
 		variantId: 'main' | 'sub' | null
 	): Promise<void> {
 		const track = this.tracks[cameraId];
-		if (!track) return;
+		if (!track?.subscribed) return;
 		await this.subscribeTrack(cameraId, track.trackId, quality, variantId, true);
 	}
 
@@ -313,6 +332,7 @@ export class LivePeer {
 	): Promise<void> {
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
 		if (!sourceSessionId) throw new Error(`Camera ${cameraId} has no live source session.`);
+		this.replaceTrack(cameraId, { status: 'connecting' });
 		const subscribe = create(SubscribeMediaSchema, {
 			subscriptionId,
 			sourceSessionId,
@@ -337,10 +357,26 @@ export class LivePeer {
 			requestedQuality: quality,
 			requestedVariantId: variantId,
 			activeStream: pendingStream === null ? selectedStream : current!.activeStream,
-			pendingStream
+			pendingStream,
+			subscribed: true
 		});
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
+	}
+
+	private async unsubscribeTrack(cameraId: string, subscriptionId: string): Promise<void> {
+		await this.request({
+			case: 'unsubscribe',
+			value: create(UnsubscribeSchema, { subscriptionIds: [subscriptionId] })
+		});
+		this.replaceTrack(cameraId, {
+			receiver: null,
+			stream: null,
+			status: 'queued',
+			subscribed: false,
+			pendingStream: null,
+			estimatedBitrateBps: null
+		});
 	}
 
 	private attachTrackEvent(cameraId: string, event: RTCTrackEvent): void {
@@ -459,13 +495,14 @@ export class LivePeer {
 	}
 
 	private async closeNow(): Promise<void> {
-		if (this.#controlChannel?.readyState === 'open' && Object.keys(this.tracks).length > 0) {
+		const subscriptionIds = Object.values(this.tracks)
+			.filter((track) => track.subscribed)
+			.map((track) => track.trackId);
+		if (this.#controlChannel?.readyState === 'open' && subscriptionIds.length > 0) {
 			try {
 				await this.request({
 					case: 'unsubscribe',
-					value: create(UnsubscribeSchema, {
-						subscriptionIds: Object.values(this.tracks).map((track) => track.trackId)
-					})
+					value: create(UnsubscribeSchema, { subscriptionIds })
 				});
 			} catch {
 				// Session deletion remains authoritative teardown.
