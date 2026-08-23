@@ -96,6 +96,7 @@ export interface RecordingEvent {
 	bbox: [number, number, number, number] | null;
 	zone: string | null;
 	thumbnail_url: string | null;
+	thumbnail_blob?: Blob;
 	attachments?: readonly RecordingEventAttachment[];
 }
 

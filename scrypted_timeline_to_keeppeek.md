@@ -1,8 +1,16 @@
 # Scrypted Timeline and Camera Grid Design for KeepPeek
 
-Status: Proposed  
-Scope: Rust SDK, C ABI, Android viewer, iOS viewer, and the corresponding server behavior  
-Transport constraint: no new HTTP media or metadata endpoints
+- Status: Implemented for the KeepPeek server and web viewer
+- Original scope: Rust SDK, C ABI, Android viewer, iOS viewer, and corresponding server behavior
+- Transport constraint: no new HTTP media or metadata endpoints
+
+Implementation note (2026-08-22): this repository contains the Rust server and Svelte web viewer,
+but it does not contain the `crates/sdk`, Android, or iOS projects referenced by the original
+cross-repository design. The server/web implementation covers the virtual timeline, lazy interval
+cache, sparse memory/disk thumbnails, exact-time keyframe SCRUB, persistent append-only playback,
+live grid scheduling, frozen frames, historical replay admission, responsive rulers, reconnect
+revalidation, observability, and conformance/performance tests. Sections 13.2, 13.3, 14.1, and
+14.2 remain contracts for those external native repositories.
 
 ## 1. Decision summary
 
@@ -145,14 +153,14 @@ These objects should be long-lived children of `ViewerViewModel` on Android and
 
 Use the three pre-negotiated channels as they are intended today:
 
-| Traffic | Channel | Policy |
-| --- | --- | --- |
-| Commands, responses, state | control | Always process first |
-| Timeline pages | reliable data | Cancelable and metadata-only by default |
-| JPEG attachment chunks | reliable data | Sparse, at most two active fetches |
-| Historical keyframes | reliable data | Latest-wins, one active per focused preview |
-| Stored fMP4 | reliable data | Refill-controlled, bounded by buffer duration |
-| Transient media where advertised | unreliable data | Existing capability-driven behavior |
+| Traffic                          | Channel         | Policy                                        |
+| -------------------------------- | --------------- | --------------------------------------------- |
+| Commands, responses, state       | control         | Always process first                          |
+| Timeline pages                   | reliable data   | Cancelable and metadata-only by default       |
+| JPEG attachment chunks           | reliable data   | Sparse, at most two active fetches            |
+| Historical keyframes             | reliable data   | Latest-wins, one active per focused preview   |
+| Stored fMP4                      | reliable data   | Refill-controlled, bounded by buffer duration |
+| Transient media where advertised | unreliable data | Existing capability-driven behavior           |
 
 Live video keeps its existing negotiated media delivery. The important rule is
 that the new feature never creates a parallel HTTP path.
@@ -209,10 +217,10 @@ the same cells. No network request is caused by creating ticks.
 Initial zoom presets:
 
 | Preset | Tick duration | Tick extent | Availability bucket |
-| --- | ---: | ---: | ---: |
-| Fine | 15 seconds | 12 dp | 15 seconds |
-| Normal | 1 minute | 12 dp | 1 minute |
-| Coarse | 5 minutes | 12 dp | 5 minutes |
+| ------ | ------------: | ----------: | ------------------: |
+| Fine   |    15 seconds |       12 dp |          15 seconds |
+| Normal |      1 minute |       12 dp |            1 minute |
+| Coarse |     5 minutes |       12 dp |           5 minutes |
 
 Changing zoom must preserve the selected epoch under the marker. Exact values
 can be tuned after profiling without changing the repository API.
@@ -804,17 +812,17 @@ Add structured events with source ID, query/cursor generation, and duration:
 
 Initial local-network budgets:
 
-| Metric | Target |
-| --- | ---: |
-| Cached timeline response to render | under 16 ms |
-| Timeline first page | p95 under 250 ms |
-| Cached scrub still | under 16 ms |
-| Cold scrub still or first video frame | p95 under 600 ms |
-| Drag-to-network seek rate | at most 20 per second, normally lower |
-| Timeline frame rate | 60 fps with no main-thread query decoding |
-| Offscreen release | 1 second grace |
-| Decoded thumbnail memory | at most 24 MiB |
-| Compressed thumbnail disk cache | at most 128 MiB |
+| Metric                                |                                    Target |
+| ------------------------------------- | ----------------------------------------: |
+| Cached timeline response to render    |                               under 16 ms |
+| Timeline first page                   |                          p95 under 250 ms |
+| Cached scrub still                    |                               under 16 ms |
+| Cold scrub still or first video frame |                          p95 under 600 ms |
+| Drag-to-network seek rate             |     at most 20 per second, normally lower |
+| Timeline frame rate                   | 60 fps with no main-thread query decoding |
+| Offscreen release                     |                            1 second grace |
+| Decoded thumbnail memory              |                            at most 24 MiB |
+| Compressed thumbnail disk cache       |                           at most 128 MiB |
 
 Treat these as release gates on a representative local server with at least 16
 cameras and 24 hours of events.
@@ -935,9 +943,9 @@ The feature is complete when:
 Resolve these with Phase 0 measurements rather than assumptions:
 
 1. Whether all recording backends can provide an event JPEG. The DataChannel
-  keyframe remains the exact-time fallback.
+   keyframe remains the exact-time fallback.
 2. Which recording backends can expose a true H.264/H.265 random-access unit;
-  others retain the one-fragment fMP4 fallback.
+   others retain the one-fragment fMP4 fallback.
 3. The practical replay decoder budget per device class.
 4. Whether reliable-channel head-of-line delay justifies another pre-negotiated
    reliable DataChannel in a later protocol revision.

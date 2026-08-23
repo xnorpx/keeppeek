@@ -747,11 +747,11 @@ A seek at or after the cursor's exclusive end timestamp is rejected with
 
 `SetStoredMediaPlayback` changes the cursor's playing state, forward playback rate, or mode and
 returns the complete resulting `StoredMediaState`. `RefillStoredMedia` supplies the browser's
-current absolute playback time. When the remaining accepted delivery window reaches half of
-`max_buffer_duration`, the client requests another bounded window. A successful refill that
-enqueues media advances the cursor generation, returns the complete state, and sends the new
-generation's initialization before its fragments. It does not cancel bytes already queued for the
-preceding generation. `CloseStoredMedia` releases the cursor and returns `Ok`.
+current absolute playback time. The client refills below 1.5 seconds buffered ahead, and the
+server delivers toward a three-second target without exceeding `max_buffer_duration`. Refill is a
+continuation of the current generation: it returns the complete state and appends initialization
+and fragments with that same generation. Only a seek creates a new generation.
+`CloseStoredMedia` releases the cursor and returns `Ok`.
 
 When an explicit end timestamp has been fully delivered, KeepPeek returns status `ENDED` and sends
 an unsolicited `StoredMediaState` notification with the same terminal state. The client does not
@@ -760,9 +760,17 @@ calling `MediaSource.endOfStream()`.
 
 In `PLAYBACK` mode, KeepPeek sends an initial bounded window and accepts client-paced refills while
 `playing` is true. `playback_rate` controls presentation but does not enlarge the recorded-time
-window. In `SCRUB` mode, the cursor is paused and each successful open or seek produces at most the
-one fragment containing the requested timestamp. Scrub mode is intended for rapidly changing
-preview positions; playback mode is intended for continuous viewing.
+window. `SCRUB` must be paused. When `stored-media-keyframe-preview.v1` is advertised, each
+successful SCRUB open or seek produces exactly one independently decodable `StoredMediaKeyFrame`
+on `reliable-data`. `SetStoredMediaPlayback` can switch that same cursor to `PLAYBACK`; KeepPeek
+then emits fMP4 for the current generation without changing `stored_media_id`. Older servers omit
+the capability and retain the one-fragment fMP4 scrub fallback.
+
+`StoredMediaKeyFrame` repeats its decoder-ready `MediaDataConfiguration` on every chunk and carries
+one fragmented `VideoDataFrame`. The configuration and frame stream-binding IDs and configuration
+revisions must match. The frame is a random-access unit at or before the requested timestamp and
+is bounded to 4 MiB. H.264 uses AVCC IDR bytes with AVC decoder configuration; H.265 uses HVCC
+random-access bytes with HEVC decoder configuration.
 
 ### MP4 and timed-data delivery
 
@@ -819,9 +827,9 @@ server therefore keeps no more than the accepted `max_buffer_duration` ahead of 
 cursor, measured in recorded media time rather than wall-clock drain time. Zero in
 `OpenStoredMedia` requests a server default, and the complete state response reports the accepted
 value. A playback-rate change does not change this recorded-time bound. For the lowest seek
-latency during continuous dragging, a viewer uses `SCRUB` mode with `unreliable-data`, then
-switches or reopens the cursor in `PLAYBACK` mode on the desired delivery channel when the
-position settles.
+latency during continuous dragging, a viewer uses paused `SCRUB`, coalesces seeks to the latest
+target, decodes the reliable keyframe when supported, then switches the same cursor to `PLAYBACK`
+when the position settles.
 
 The storage lookup for an open or seek uses the recording catalog's time index and
 keyframe-aligned fragment byte ranges. It must not scan the MP4 or remux the recording. Seek work

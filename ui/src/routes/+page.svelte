@@ -6,6 +6,14 @@
 	import type { CameraHealth, CameraListItem, LiveQuality, ServerHealthResponse } from '$lib/types';
 	import { useControlClient } from '$lib/control-context';
 	import { useLivePeer } from '$lib/stream-peer-context';
+	import type { LivePeerPlan } from '$lib/stream-peer.svelte';
+	import type { GridTileVisibility } from '$lib/grid-visibility';
+	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
+	import {
+		GridStreamScheduler,
+		type GridTileDemand,
+		webDecoderBudget
+	} from '$lib/grid-stream-scheduler';
 	import LiveVideo from '$lib/components/LiveVideo.svelte';
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import PeekLayoutEditor from '$lib/components/PeekLayoutEditor.svelte';
@@ -22,6 +30,7 @@
 	const qualityOptions = ['auto', 'high', 'low'] as const;
 	const controlClient = useControlClient();
 	const livePeer = useLivePeer();
+	const gridScheduler = new GridStreamScheduler({ subscriptionSlots: 4, decoderSlots: 4 });
 
 	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
 	let cameras = $state.raw<CameraListItem[]>([]);
@@ -31,6 +40,10 @@
 	let requestedCameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let isLayoutEditing = $derived(page.url.searchParams.get('mode') === 'layout-editor');
 	let focusQuality = $state<LiveQuality>('auto');
+	let livePlans = $state.raw<LivePeerPlan[]>([]);
+	let tileVisibility = $state.raw<Record<string, GridTileVisibility>>({});
+	let screenActive = true;
+	let schedulerTimer: number | null = null;
 	let focusedCamera = $derived(
 		focusedCameraId === null
 			? null
@@ -92,26 +105,18 @@
 			processMemory: formatBytes(serverHealth.system.process.resident_memory_bytes)
 		};
 	});
-	let livePlans = $derived(
-		cameras
-			.filter(
-				(camera) =>
-					camera.profiles.length > 0 &&
-					presentPeekCamera(camera, cameraHealthById.get(camera.id) ?? null).state !== 'offline'
-			)
-			.map((camera) => ({
-				cameraId: camera.id,
-				quality: focusedCameraId === camera.id ? focusQuality : ('low' as const),
-				variantId:
-					focusedCameraId === camera.id && focusQuality === 'auto' ? ('main' as const) : undefined
-			}))
-	);
-
 	$effect(() => {
 		if (loading) return;
 		void livePeer.configure(livePlans).catch((error) => {
 			console.error('Unable to configure shared live view', error);
 		});
+	});
+
+	$effect(() => {
+		void isLayoutEditing;
+		void focusedCameraId;
+		void focusQuality;
+		queueMicrotask(reconcileLivePlans);
 	});
 
 	$effect(() => {
@@ -125,7 +130,25 @@
 	});
 
 	onMount(() => {
-		loadDashboard();
+		const decoderBudget = webDecoderBudget(navigator.hardwareConcurrency);
+		gridScheduler.setCapacity({
+			subscriptionSlots: decoderBudget,
+			decoderSlots: decoderBudget
+		});
+		emitTimelinePerformanceEvent('DecoderCapacity', {
+			decoderSlots: decoderBudget,
+			subscriptionSlots: decoderBudget
+		});
+		const onVisibility = () => {
+			screenActive = document.visibilityState === 'visible';
+			reconcileLivePlans();
+		};
+		document.addEventListener('visibilitychange', onVisibility);
+		void loadDashboard();
+		return () => {
+			document.removeEventListener('visibilitychange', onVisibility);
+			if (schedulerTimer) clearTimeout(schedulerTimer);
+		};
 	});
 
 	function previewStream(camera: CameraListItem): 'main' | 'sub' {
@@ -150,6 +173,74 @@
 			error = cause instanceof Error ? cause.message : 'Failed to load dashboard';
 		} finally {
 			loading = false;
+			await tick();
+			reconcileLivePlans();
+		}
+	}
+
+	function handleTileVisibility(visibility: GridTileVisibility): void {
+		tileVisibility = { ...tileVisibility, [visibility.cameraId]: visibility };
+		reconcileLivePlans();
+	}
+
+	function reconcileLivePlans(): void {
+		if (schedulerTimer) {
+			clearTimeout(schedulerTimer);
+			schedulerTimer = null;
+		}
+		const availableCameras = cameras.filter(
+			(camera) =>
+				camera.profiles.length > 0 &&
+				presentPeekCamera(camera, cameraHealthById.get(camera.id) ?? null).state !== 'offline'
+		);
+		const demands: GridTileDemand[] = availableCameras.map((camera) => {
+			const visibility = tileVisibility[camera.id];
+			const focused = focusedCameraId === camera.id;
+			return {
+				cameraId: camera.id,
+				visibleFraction: focused ? 1 : (visibility?.visibleFraction ?? 0),
+				distanceFromViewportPx: focused
+					? 0
+					: (visibility?.distanceFromViewportPx ?? Number.POSITIVE_INFINITY),
+				viewportExtentPx: visibility?.viewportExtentPx ?? Math.max(1, window.innerHeight),
+				focused,
+				fullscreen: false,
+				selectedForAudio: false,
+				screenActive: screenActive && !isLayoutEditing,
+				mode: 'live'
+			};
+		});
+		const nowMs = performance.now();
+		const previouslyActive = new Set(
+			livePlans.filter((plan) => plan.active).map((plan) => plan.cameraId)
+		);
+		const schedule = gridScheduler.reconcile(demands, nowMs);
+		const grants = new Map(schedule.grants.map((grant) => [grant.cameraId, grant]));
+		livePlans = availableCameras.map((camera) => ({
+			cameraId: camera.id,
+			quality:
+				focusedCameraId === camera.id
+					? focusQuality
+					: (grants.get(camera.id)?.quality ?? ('low' as const)),
+			active: grants.has(camera.id),
+			variantId:
+				focusedCameraId === camera.id && focusQuality === 'auto' ? ('main' as const) : undefined
+		}));
+		for (const cameraId of grants.keys()) {
+			if (!previouslyActive.has(cameraId)) {
+				emitTimelinePerformanceEvent('GridTileAdmitted', { sourceId: cameraId });
+			}
+		}
+		for (const cameraId of previouslyActive) {
+			if (!grants.has(cameraId)) {
+				emitTimelinePerformanceEvent('GridTileEvicted', { sourceId: cameraId });
+			}
+		}
+		if (schedule.nextReconcileAtMs !== null) {
+			schedulerTimer = window.setTimeout(
+				reconcileLivePlans,
+				Math.max(0, schedule.nextReconcileAtMs - nowMs)
+			);
 		}
 	}
 
@@ -195,6 +286,7 @@
 	function openFocus(cameraId: string) {
 		focusedCameraId = cameraId;
 		focusQuality = 'auto';
+		queueMicrotask(reconcileLivePlans);
 	}
 
 	function setFocusQuality(quality: LiveQuality) {
@@ -206,6 +298,7 @@
 		const previousCameraId = focusedCameraId;
 		focusedCameraId = null;
 		focusQuality = 'auto';
+		queueMicrotask(reconcileLivePlans);
 		if (previousCameraId !== null) {
 			void tick().then(() => {
 				document
@@ -459,6 +552,7 @@
 							stream="main"
 							quality={focusQuality}
 							matchVideoAspectRatio
+							onvisibilitychange={handleTileVisibility}
 							class="aspect-video overflow-hidden rounded-md ring-1 ring-white/10"
 						/>
 					{/key}
@@ -475,6 +569,7 @@
 							<LiveVideo
 								cameraId={camera.id}
 								stream="sub"
+								onvisibilitychange={handleTileVisibility}
 								class="size-full overflow-hidden ring-1 ring-white/10"
 							/>
 							<button
@@ -501,6 +596,7 @@
 					health={cameraHealth(camera.id)}
 					stream={previewStream(camera)}
 					mobileFeatured={cameraIndex === 0}
+					onvisibilitychange={handleTileVisibility}
 					onfocus={openFocus}
 				/>
 			{/each}

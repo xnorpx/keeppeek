@@ -5,6 +5,11 @@ import type {
 	StoredTimelineResult
 } from './control-client';
 import type { RecordingEvent } from './types';
+import { emitTimelinePerformanceEvent } from './timeline-observability';
+import {
+	TimelineThumbnailDiskCache,
+	type TimelineThumbnailIdentity
+} from './timeline-thumbnail-disk-cache';
 
 const MAX_CACHE_CONTEXTS = 6;
 const MAX_EVENTS = 10_000;
@@ -89,6 +94,7 @@ export class TimelineRepository {
 	#thumbnailUrls = new Map<string, CachedThumbnail>();
 	#thumbnailByIdentity = new Map<string, string>();
 	#decodedThumbnailBytes = 0;
+	#diskCache = new TimelineThumbnailDiskCache();
 
 	constructor(client: TimelineQueryClient) {
 		this.#client = client;
@@ -110,16 +116,12 @@ export class TimelineRepository {
 		const requiredInterval = alignedPrefetchWindow(request, 0.5);
 		this.#cancelQueriesOutside(contextKey, targetInterval);
 		const inFlight = [...this.#activeQueries.values()]
-			.filter(
-				(query) => query.contextKey === contextKey && !query.controller.signal.aborted
-			)
+			.filter((query) => query.contextKey === contextKey && !query.controller.signal.aborted)
 			.map((query) => query.interval);
 		const coverage = [...cache.coverage, ...inFlight];
 		const requiredMissing = subtractTimelineIntervals([requiredInterval], coverage);
 		const missing =
-			requiredMissing.length > 0
-				? subtractTimelineIntervals([targetInterval], coverage)
-				: [];
+			requiredMissing.length > 0 ? subtractTimelineIntervals([targetInterval], coverage) : [];
 		if (missing.length > 0) {
 			this.error = null;
 			await Promise.all(
@@ -151,6 +153,14 @@ export class TimelineRepository {
 		const cache = this.#caches.get(this.#activeContextKey);
 		if (!cache) return;
 		cache.coverage = subtractTimelineIntervals(cache.coverage, [{ startMs, endMs }]);
+	}
+
+	revalidate(): void {
+		this.#generation += 1;
+		for (const query of this.#activeQueries.values()) query.controller.abort();
+		this.#cancelThumbnails();
+		for (const cache of this.#caches.values()) cache.coverage = [];
+		this.#refreshLoading();
 	}
 
 	deactivate(): void {
@@ -204,9 +214,10 @@ export class TimelineRepository {
 		includeEvents: boolean;
 		bucketMs: number;
 	}): Promise<void> {
-		const queryKey =
-			`${options.contextKey}:${options.interval.startMs}:${options.interval.endMs}:${this.#nextQueryId++}`;
+		const queryKey = `${options.contextKey}:${options.interval.startMs}:${options.interval.endMs}:${this.#nextQueryId++}`;
 		const controller = new AbortController();
+		const startedAtMs = performance.now();
+		let firstPage = true;
 		this.#activeQueries.set(queryKey, {
 			contextKey: options.contextKey,
 			generation: options.generation,
@@ -214,6 +225,13 @@ export class TimelineRepository {
 			controller
 		});
 		this.#refreshLoading();
+		emitTimelinePerformanceEvent('TimelineQueryStarted', {
+			queryId: queryKey,
+			sourceId: options.sourceIds.join(','),
+			startMs: options.interval.startMs,
+			endMs: options.interval.endMs,
+			bucketMs: options.bucketMs
+		});
 
 		const queryOptions: StoredTimelineQueryOptions = {
 			sourceIds: options.sourceIds,
@@ -226,6 +244,14 @@ export class TimelineRepository {
 			signal: controller.signal,
 			onPage: (page) => {
 				if (!this.#isCurrent(options.contextKey, options.generation, controller)) return;
+				if (firstPage) {
+					firstPage = false;
+					emitTimelinePerformanceEvent('TimelineFirstPage', {
+						queryId: queryKey,
+						sourceId: options.sourceIds.join(','),
+						durationMs: performance.now() - startedAtMs
+					});
+				}
 				this.#mergePage(options.cache, page);
 			}
 		};
@@ -238,8 +264,20 @@ export class TimelineRepository {
 				...options.cache.coverage,
 				options.interval
 			]);
+			emitTimelinePerformanceEvent('TimelineQueryCompleted', {
+				queryId: queryKey,
+				sourceId: options.sourceIds.join(','),
+				durationMs: performance.now() - startedAtMs
+			});
 		} catch (cause) {
-			if (controller.signal.aborted || isAbortError(cause)) return;
+			if (controller.signal.aborted || isAbortError(cause)) {
+				emitTimelinePerformanceEvent('TimelineQueryCancelled', {
+					queryId: queryKey,
+					sourceId: options.sourceIds.join(','),
+					durationMs: performance.now() - startedAtMs
+				});
+				return;
+			}
 			if (this.#isCurrent(options.contextKey, options.generation, controller)) {
 				this.error = cause instanceof Error ? cause.message : 'Unable to load timeline metadata.';
 			}
@@ -286,9 +324,7 @@ export class TimelineRepository {
 		const candidates = cache.events
 			.filter((event) => {
 				const sourceId = event.source_id ?? sourceIds[0];
-				const thumbnail = event.attachments?.find(
-					(attachment) => attachment.type === 'thumbnail'
-				);
+				const thumbnail = event.attachments?.find((attachment) => attachment.type === 'thumbnail');
 				return (
 					!!sourceId &&
 					sourceSet.has(sourceId) &&
@@ -307,6 +343,11 @@ export class TimelineRepository {
 				event.start_time_ms <= candidateEndMs
 			) {
 				this.#touchThumbnail(event.thumbnail_url);
+				emitTimelinePerformanceEvent('ThumbnailCacheHitMemory', {
+					sourceId: event.source_id ?? event.source,
+					eventId: event.id,
+					revision: event.revision ?? 0
+				});
 			}
 		}
 		const selected: RecordingEvent[] = [];
@@ -351,6 +392,27 @@ export class TimelineRepository {
 		const controller = new AbortController();
 		this.#thumbnailControllers.set(controller, task.key);
 		try {
+			const identity = thumbnailDiskIdentity(task.event, task.sourceId);
+			const cachedBlob = identity ? await this.#diskCache.get(identity).catch(() => null) : null;
+			if (cachedBlob) {
+				if (!this.#isCurrent(task.contextKey, task.generation, controller)) return;
+				this.#mergePage(task.cache, {
+					ranges: [],
+					events: [
+						{
+							...task.event,
+							thumbnail_url: URL.createObjectURL(cachedBlob),
+							thumbnail_blob: cachedBlob
+						}
+					]
+				});
+				emitTimelinePerformanceEvent('ThumbnailCacheHitDisk', {
+					sourceId: task.sourceId,
+					eventId: task.event.id,
+					revision: task.event.revision ?? 0
+				});
+				return;
+			}
 			const result = await this.#client.queryStoredTimeline({
 				sourceIds: [task.sourceId],
 				startMs: task.event.start_time_ms,
@@ -365,8 +427,14 @@ export class TimelineRepository {
 			});
 			if (!this.#isCurrent(task.contextKey, task.generation, controller)) return;
 			this.#mergePage(task.cache, { ranges: [], events: result.events });
+			emitTimelinePerformanceEvent('ThumbnailFetched', {
+				sourceId: task.sourceId,
+				eventId: task.event.id,
+				revision: task.event.revision ?? 0
+			});
 		} catch (cause) {
-			if (controller.signal.aborted || isAbortError(cause)) this.#thumbnailRequested.delete(task.key);
+			if (controller.signal.aborted || isAbortError(cause))
+				this.#thumbnailRequested.delete(task.key);
 		} finally {
 			this.#thumbnailControllers.delete(controller);
 		}
@@ -384,8 +452,7 @@ export class TimelineRepository {
 	#rememberThumbnail(cache: TimelineCache, event: RecordingEvent): void {
 		const url = event.thumbnail_url;
 		if (!url) return;
-		const identity =
-			`${cache.key}:${event.source_id ?? event.source}:${event.id}:${event.revision ?? 0}`;
+		const identity = `${cache.key}:${event.source_id ?? event.source}:${event.id}:${event.revision ?? 0}`;
 		const previousUrl = this.#thumbnailByIdentity.get(identity);
 		if (previousUrl === url) {
 			this.#touchThumbnail(url);
@@ -399,6 +466,10 @@ export class TimelineRepository {
 		this.#thumbnailUrls.set(url, { identity, cache, bytes });
 		this.#thumbnailByIdentity.set(identity, url);
 		this.#decodedThumbnailBytes += bytes;
+		const diskIdentity = thumbnailDiskIdentity(event, event.source_id ?? event.source);
+		if (diskIdentity && event.thumbnail_blob) {
+			void this.#diskCache.put(diskIdentity, event.thumbnail_blob).catch(() => undefined);
+		}
 		while (this.#decodedThumbnailBytes > MAX_DECODED_THUMBNAIL_BYTES) {
 			const oldestUrl = this.#thumbnailUrls.keys().next().value as string | undefined;
 			if (!oldestUrl) break;
@@ -431,7 +502,7 @@ export class TimelineRepository {
 	}
 
 	#releaseAllThumbnails(): void {
-		for (const url of [...this.#thumbnailUrls.keys()]) this.#releaseThumbnail(url, false);
+		for (const url of this.#thumbnailUrls.keys()) this.#releaseThumbnail(url, false);
 	}
 
 	#isCurrent(contextKey: string, generation: number, controller: AbortController): boolean {
@@ -444,8 +515,7 @@ export class TimelineRepository {
 
 	#refreshLoading(): void {
 		this.loading = [...this.#activeQueries.values()].some(
-			(query) =>
-				query.contextKey === this.#activeContextKey && !query.controller.signal.aborted
+			(query) => query.contextKey === this.#activeContextKey && !query.controller.signal.aborted
 		);
 	}
 
@@ -560,6 +630,21 @@ function compareThumbnailPriority(left: RecordingEvent, right: RecordingEvent): 
 		right.start_time_ms - left.start_time_ms ||
 		left.id.localeCompare(right.id)
 	);
+}
+
+function thumbnailDiskIdentity(
+	event: RecordingEvent,
+	sourceId: string
+): TimelineThumbnailIdentity | null {
+	const attachment = event.attachments?.find((candidate) => candidate.type === 'thumbnail');
+	if (!attachment) return null;
+	return {
+		sourceId,
+		eventId: event.id,
+		revision: event.revision ?? 0,
+		attachmentId: attachment.id,
+		sizeClass: 320
+	};
 }
 
 function thumbnailKindPriority(kind: string): number {

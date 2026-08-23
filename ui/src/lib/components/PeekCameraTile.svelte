@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { onMount } from 'svelte';
+	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import type { CameraHealth, CameraListItem } from '$lib/types';
 	import { presentPeekCamera, reconcilePeekCameraPlayback } from '$lib/peek-camera';
 	import CameraIcon from '@lucide/svelte/icons/camera';
@@ -23,6 +25,7 @@
 		compactTimeZone?: string;
 		firstFrameElapsedMsOverride?: number;
 		onfocus: (cameraId: string) => void;
+		onvisibilitychange?: (visibility: GridTileVisibility) => void;
 		onlayoutpointerdown?: (event: PointerEvent) => void;
 		onlayoutpointermove?: (event: PointerEvent) => void;
 		onlayoutpointerup?: (event: PointerEvent) => void;
@@ -46,6 +49,7 @@
 		compactTimeZone,
 		firstFrameElapsedMsOverride,
 		onfocus,
+		onvisibilitychange,
 		onlayoutpointerdown,
 		onlayoutpointermove,
 		onlayoutpointerup,
@@ -53,6 +57,7 @@
 		onlayoutlostpointercapture,
 		onlayoutkeydown
 	}: Props = $props();
+	let tileElement: HTMLElement | null = $state(null);
 	let healthPresentation = $derived(presentPeekCamera(camera, health));
 	let hasRecentFrames = $state(false);
 	let presentation = $derived(
@@ -151,6 +156,11 @@
 		return () => window.clearInterval(timer);
 	});
 
+	onMount(() => {
+		if (!tileElement || !onvisibilitychange) return;
+		return observeGridVisibility(tileElement, camera.id, onvisibilitychange);
+	});
+
 	function cameraHref(): string {
 		return `${resolve('/camera')}?camera=${encodeURIComponent(camera.id)}`;
 	}
@@ -176,6 +186,7 @@
 </script>
 
 <article
+	bind:this={tileElement}
 	data-peek-camera={camera.id}
 	data-peek-camera-state={presentation.state}
 	data-peek-camera-size={layoutMode ? 'layout' : mobileFeatured ? 'featured' : 'compact'}

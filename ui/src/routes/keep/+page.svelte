@@ -3,12 +3,10 @@
 	import { resolve } from '$app/paths';
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
-	import type { StoredMediaPlayback } from '$lib/control-client';
+	import type { StoredMediaKeyFramePreview, StoredMediaPlayback } from '$lib/control-client';
 	import { decodeEventKeyframePreview } from '$lib/event-keyframe-preview';
-	import {
-		TimelineRepository,
-		type TimelineViewport
-	} from '$lib/timeline-repository.svelte';
+	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
+	import { TimelineRepository, type TimelineViewport } from '$lib/timeline-repository.svelte';
 	import { parseKeepMode, type KeepMode } from '$lib/keep-modes';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
@@ -17,6 +15,7 @@
 	import KeepStories from '$lib/components/KeepStories.svelte';
 	import KeepSwimlanes from '$lib/components/KeepSwimlanes.svelte';
 	import RecordingFilmstrip from '$lib/components/RecordingFilmstrip.svelte';
+	import HorizontalTimeline from '$lib/components/HorizontalTimeline.svelte';
 	import VerticalTimeline from '$lib/components/VerticalTimeline.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -81,8 +80,16 @@
 	let previewVersion = 0;
 	let previewController: AbortController | null = null;
 	const keyframePreviewCache = new Map<string, string>();
+	let keyFrameUnsubscribe: (() => void) | null = null;
+	let scrubbing = $state(false);
+	let scrubTargetMs: number | null = null;
+	let scrubPump: Promise<void> | null = null;
+	let scrubVersion = 0;
+	let mobilePortrait = $state(false);
+	let capabilitiesSeen = false;
+	let reconnectPending = false;
+	let scrubUsesFragmentFallback = false;
 
-	let events = $derived(timelineRepository.events);
 	let orderedSegments = $derived(
 		segments
 			.filter((segment) => segment.stream === stream)
@@ -94,6 +101,11 @@
 		selectedCamera?.profiles.find((profile) => profile.stream === stream)?.bitrate_kbps ?? null
 	);
 	let dayStartMs = $derived(selectedDate ? Date.parse(`${selectedDate}T00:00:00Z`) : 0);
+	let events = $derived(
+		timelineRepository.events.filter(
+			(event) => event.start_time_ms >= dayStartMs && event.start_time_ms < dayStartMs + 86_400_000
+		)
+	);
 	let swimlaneAnchorMs = $derived.by(() => {
 		if (playheadMs !== null) return playheadMs;
 		const latestSegment = orderedSegments.at(-1);
@@ -160,11 +172,26 @@
 	});
 
 	onMount(() => {
+		const portraitMedia = window.matchMedia('(max-width: 767px) and (orientation: portrait)');
+		const updateOrientation = () => (mobilePortrait = portraitMedia.matches);
+		updateOrientation();
+		portraitMedia.addEventListener('change', updateOrientation);
 		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
+			if (capabilityIds.length === 0) {
+				if (capabilitiesSeen) reconnectPending = true;
+				return;
+			}
+			if (reconnectPending) {
+				reconnectPending = false;
+				timelineRepository.revalidate();
+				if (latestTimelineViewport) void loadTimelineViewport(latestTimelineViewport);
+			}
+			capabilitiesSeen = true;
 		});
 		void initialize();
 		return () => {
+			portraitMedia.removeEventListener('change', updateOrientation);
 			unsubscribeCapabilities();
 			previewController?.abort();
 			for (const url of keyframePreviewCache.values()) URL.revokeObjectURL(url);
@@ -309,6 +336,191 @@
 			.catch(() => undefined);
 	}
 
+	function showNearestCachedPreview(timestampMs: number): void {
+		const cachedPreview = events
+			.filter((event) => event.thumbnail_url)
+			.toSorted(
+				(left, right) =>
+					Math.abs(left.start_time_ms - timestampMs) - Math.abs(right.start_time_ms - timestampMs)
+			)[0];
+		if (cachedPreview && Math.abs(cachedPreview.start_time_ms - timestampMs) <= 30_000) {
+			stillPreviewUrl = cachedPreview.thumbnail_url;
+		}
+	}
+
+	function attachKeyFramePreview(playback: StoredMediaPlayback): void {
+		keyFrameUnsubscribe?.();
+		keyFrameUnsubscribe = playback.onKeyFrame((preview) => {
+			void renderStoredKeyFrame(preview);
+		});
+	}
+
+	async function renderStoredKeyFrame(preview: StoredMediaKeyFramePreview): Promise<void> {
+		if (preview.storedMediaId !== storedPlayback?.id) return;
+		const version = ++previewVersion;
+		const cacheKey = `${cameraId}:${stream}:${preview.timestampMs}:${preview.codec}:${preview.configurationRevision}`;
+		const cached = keyframePreviewCache.get(cacheKey);
+		if (cached) {
+			keyframePreviewCache.delete(cacheKey);
+			keyframePreviewCache.set(cacheKey, cached);
+			stillPreviewUrl = cached;
+			emitTimelinePerformanceEvent('ScrubPreviewRendered', {
+				sourceId: cameraId,
+				cursorId: preview.storedMediaId,
+				generation: String(preview.generation),
+				cache: 'memory'
+			});
+			return;
+		}
+		try {
+			const url = await decodeEventKeyframePreview(preview);
+			if (version !== previewVersion || preview.storedMediaId !== storedPlayback?.id) {
+				URL.revokeObjectURL(url);
+				return;
+			}
+			keyframePreviewCache.set(cacheKey, url);
+			while (keyframePreviewCache.size > 32) {
+				const oldest = keyframePreviewCache.entries().next().value as [string, string] | undefined;
+				if (!oldest) break;
+				keyframePreviewCache.delete(oldest[0]);
+				URL.revokeObjectURL(oldest[1]);
+			}
+			stillPreviewUrl = url;
+			emitTimelinePerformanceEvent('ScrubPreviewRendered', {
+				sourceId: cameraId,
+				cursorId: preview.storedMediaId,
+				generation: String(preview.generation),
+				cache: 'decoder'
+			});
+		} catch {
+			if (version === previewVersion) {
+				stillPreviewUrl = null;
+				const playback = storedPlayback;
+				if (scrubbing && playback?.id === preview.storedMediaId) {
+					scrubUsesFragmentFallback = true;
+					await playback.commitPlayback(false, 1).catch(() => undefined);
+					playbackUrl = playback.url;
+					playbackAnchorMs = playback.anchorTimeMs;
+					pendingSeekSeconds = playback.initialOffsetSeconds;
+				}
+			}
+		}
+	}
+
+	function queueTimelineScrub(timestampMs: number): Promise<void> {
+		scrubTargetMs = timestampMs;
+		playheadMs = timestampMs;
+		showNearestCachedPreview(timestampMs);
+		if (!scrubPump) {
+			const version = scrubVersion;
+			scrubPump = drainTimelineScrub(version).finally(() => {
+				scrubPump = null;
+				if (scrubTargetMs !== null && version === scrubVersion) {
+					void queueTimelineScrub(scrubTargetMs);
+				}
+			});
+		}
+		return scrubPump;
+	}
+
+	async function drainTimelineScrub(version: number): Promise<void> {
+		while (scrubTargetMs !== null && version === scrubVersion) {
+			const timestampMs = scrubTargetMs;
+			scrubTargetMs = null;
+			const target = recordingTarget(orderedSegments, timestampMs);
+			if (!target) return;
+			const requestedTimestampMs = target.segment.start_time_ms + target.offsetSeconds * 1_000;
+			const playback = await ensureScrubPlayback(target.segment, requestedTimestampMs, version);
+			if (!playback || version !== scrubVersion) return;
+			if (scrubTargetMs !== null) continue;
+			await playback.seek(requestedTimestampMs);
+			if (version !== scrubVersion) return;
+			playbackUrl = playback.url;
+			playbackAnchorMs = playback.anchorTimeMs;
+			pendingSeekSeconds = playback.initialOffsetSeconds;
+		}
+	}
+
+	async function ensureScrubPlayback(
+		segment: RecordingSegment,
+		timestampMs: number,
+		version: number
+	): Promise<StoredMediaPlayback | null> {
+		const current = storedPlayback;
+		if (
+			current &&
+			selected?.date === segment.date &&
+			current.sourceId === cameraId &&
+			current.streamId === segment.stream
+		) {
+			if (scrubUsesFragmentFallback) await current.commitPlayback(false, 1);
+			else await current.enterScrub();
+			selected = segment;
+			return version === scrubVersion ? current : null;
+		}
+		const previous = storedPlayback;
+		previous?.setPlaying(false);
+		const playback = await controlClient.openStoredMedia({
+			sourceId: cameraId,
+			streamId: segment.stream,
+			timestampMs,
+			endTimeMs: dayStartMs + 86_400_000,
+			playing: false,
+			playbackRate: 1,
+			mode: scrubUsesFragmentFallback ? 'playback' : 'scrub'
+		});
+		if (version !== scrubVersion) {
+			await playback.close().catch(() => undefined);
+			return null;
+		}
+		storedPlayback = playback;
+		selected = segment;
+		playbackUrl = playback.url;
+		playbackAnchorMs = playback.anchorTimeMs;
+		pendingSeekSeconds = playback.initialOffsetSeconds;
+		attachKeyFramePreview(playback);
+		if (previous && previous !== playback) await previous.close().catch(() => undefined);
+		return playback;
+	}
+
+	function beginTimelineScrub(timestampMs: number): void {
+		scrubVersion += 1;
+		scrubbing = true;
+		playing = false;
+		video?.pause();
+		void queueTimelineScrub(timestampMs);
+	}
+
+	function moveTimelineScrub(timestampMs: number): void {
+		void queueTimelineScrub(timestampMs);
+	}
+
+	async function finishTimelineScrub(timestampMs: number): Promise<void> {
+		await queueTimelineScrub(timestampMs);
+		await scrubPump;
+		const playback = storedPlayback;
+		if (!playback) {
+			scrubbing = false;
+			return;
+		}
+		await playback.commitPlayback(true, playbackRate);
+		playbackUrl = playback.url;
+		playbackAnchorMs = playback.anchorTimeMs;
+		pendingSeekSeconds = playback.initialOffsetSeconds;
+		pendingPlay = true;
+		playing = true;
+		scrubbing = false;
+		await tick();
+		applyPendingSeek();
+	}
+
+	function cancelTimelineScrub(): void {
+		scrubVersion += 1;
+		scrubTargetMs = null;
+		scrubbing = false;
+		void storedPlayback?.commitPlayback(false, playbackRate);
+	}
+
 	async function previewEvent(event: RecordingEvent): Promise<void> {
 		const version = ++previewVersion;
 		previewController?.abort();
@@ -338,8 +550,7 @@
 						Math.abs(right.eventTimeMs - event.start_time_ms)
 				)[0];
 			if (!keyframe || version !== previewVersion) return;
-			const cacheKey =
-				`${keyframe.sourceId}:${keyframe.streamId}:${keyframe.recordingId}:${keyframe.fragmentSequence}`;
+			const cacheKey = `${keyframe.sourceId}:${keyframe.streamId}:${keyframe.recordingId}:${keyframe.fragmentSequence}`;
 			const cached = keyframePreviewCache.get(cacheKey);
 			if (cached) {
 				keyframePreviewCache.delete(cacheKey);
@@ -355,9 +566,7 @@
 			}
 			keyframePreviewCache.set(cacheKey, url);
 			while (keyframePreviewCache.size > 32) {
-				const oldest = keyframePreviewCache.entries().next().value as
-					| [string, string]
-					| undefined;
+				const oldest = keyframePreviewCache.entries().next().value as [string, string] | undefined;
 				if (!oldest) break;
 				keyframePreviewCache.delete(oldest[0]);
 				URL.revokeObjectURL(oldest[1]);
@@ -369,6 +578,14 @@
 	}
 
 	function clearStillPreview(): void {
+		if (storedPlayback) {
+			emitTimelinePerformanceEvent('ReplayFirstFrame', {
+				sourceId: cameraId,
+				cursorId: storedPlayback.id,
+				durationMs:
+					coldSeekStartedAt > 0 ? Math.max(0, performance.now() - coldSeekStartedAt) : undefined
+			});
+		}
 		previewVersion += 1;
 		previewController?.abort();
 		previewController = null;
@@ -468,10 +685,7 @@
 			segment.start_time_ms +
 			Math.max(0, Math.min(offsetSeconds, Math.max(0, segment.duration_ms / 1_000 - 0.001))) *
 				1_000;
-		const sameSegment =
-			selected?.url === segment.url &&
-			storedPlayback !== null &&
-			storedPlayback.canSeekLocally(requestedTimestampMs);
+		const sameSegment = selected?.url === segment.url && storedPlayback !== null;
 		const reusablePlayback =
 			storedPlayback !== null &&
 			selected?.date === segment.date &&
@@ -484,6 +698,9 @@
 		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
 		if (sameSegment) {
+			const playback = storedPlayback;
+			if (!playback) return;
+			const canSeekLocally = playback.canSeekLocally(requestedTimestampMs);
 			selected = segment;
 			pendingPlay = play;
 			playing = play;
@@ -491,6 +708,25 @@
 			pendingSeekSeconds = Math.max(0, (playheadMs - playbackAnchorMs) / 1_000);
 			await tick();
 			applyPendingSeek();
+			if (!canSeekLocally) {
+				const version = ++playbackVersion;
+				coldSeekTimestampMs = requestedTimestampMs;
+				coldSeekElapsedMs = 0;
+				coldSeekStartedAt = performance.now();
+				try {
+					await playback.seek(requestedTimestampMs);
+				} catch (cause) {
+					if (version === playbackVersion) {
+						playerError =
+							cause instanceof Error ? cause.message : 'This recording could not be opened.';
+					}
+					return;
+				}
+				if (version !== playbackVersion || playback !== storedPlayback) return;
+				playbackUrl = playback.url;
+				playbackAnchorMs = playback.anchorTimeMs;
+				pendingSeekSeconds = playback.initialOffsetSeconds;
+			}
 			return;
 		}
 		const version = ++playbackVersion;
@@ -557,6 +793,7 @@
 		playing = play;
 		playheadMs = requestedTimestampMs;
 		storedPlayback = playback;
+		attachKeyFramePreview(playback);
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
@@ -569,21 +806,16 @@
 
 	async function closeStoredPlayback() {
 		const playback = storedPlayback;
+		keyFrameUnsubscribe?.();
+		keyFrameUnsubscribe = null;
 		storedPlayback = null;
+		scrubUsesFragmentFallback = false;
 		playbackUrl = null;
 		if (playback) await playback.close().catch(() => undefined);
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
-		const cachedPreview = events
-			.filter((event) => event.thumbnail_url)
-			.toSorted(
-				(left, right) =>
-					Math.abs(left.start_time_ms - timestampMs) - Math.abs(right.start_time_ms - timestampMs)
-			)[0];
-		if (cachedPreview && Math.abs(cachedPreview.start_time_ms - timestampMs) <= 30_000) {
-			stillPreviewUrl = cachedPreview.thumbnail_url;
-		}
+		showNearestCachedPreview(timestampMs);
 		const target = recordingTarget(orderedSegments, timestampMs);
 		if (target) void selectSegment(target.segment, target.offsetSeconds, play);
 	}
@@ -945,6 +1177,7 @@
 								bind:this={video}
 								controls
 								playsinline
+								muted={scrubbing}
 								preload="metadata"
 								src={playbackUrl}
 								class="aspect-video w-full object-contain"
@@ -1027,22 +1260,46 @@
 					timestampMs={playheadMs}
 					{playing}
 					{playbackRate}
+					{scrubbing}
 					onselect={selectFilmstripCamera}
 				/>
 			</section>
 
-			<VerticalTimeline
-				segments={orderedSegments}
-				{events}
-				selectedUrl={selected?.url ?? null}
-				{playheadMs}
-				{dayStartMs}
-				followRequest={timelineFollowRequest}
-				loading={timelineRepository.loading}
-				onSeek={seekToTimestamp}
-				onEventPreview={(event) => void previewEvent(event)}
-				onViewportChange={handleTimelineViewport}
-			/>
+			{#if mobilePortrait}
+				<HorizontalTimeline
+					segments={orderedSegments}
+					{events}
+					selectedUrl={selected?.url ?? null}
+					{playheadMs}
+					{dayStartMs}
+					followRequest={timelineFollowRequest}
+					loading={timelineRepository.loading}
+					onSeek={seekToTimestamp}
+					onEventPreview={(event) => void previewEvent(event)}
+					onScrubStart={beginTimelineScrub}
+					onScrub={moveTimelineScrub}
+					onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+					onScrubCancel={cancelTimelineScrub}
+					onViewportChange={handleTimelineViewport}
+				/>
+			{:else}
+				<VerticalTimeline
+					segments={orderedSegments}
+					{events}
+					selectedUrl={selected?.url ?? null}
+					{playheadMs}
+					{dayStartMs}
+					followRequest={timelineFollowRequest}
+					loading={timelineRepository.loading}
+					onSeek={seekToTimestamp}
+					onEventPreview={(event) => void previewEvent(event)}
+					onScrubStart={beginTimelineScrub}
+					onScrub={moveTimelineScrub}
+					onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+					onScrubCancel={cancelTimelineScrub}
+					onViewportChange={handleTimelineViewport}
+				/>
+			{/if}
 		</div>
 	{/if}
 </div>

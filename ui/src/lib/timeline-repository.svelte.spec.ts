@@ -200,4 +200,41 @@ describe('TimelineRepository', () => {
 			includeAttachments: true
 		});
 	});
+
+	it('retains rendered data but reloads coverage after reconnect revalidation', async () => {
+		let calls = 0;
+		const client = {
+			queryStoredTimeline: vi.fn(async (options: StoredTimelineQueryOptions) => {
+				calls += 1;
+				return {
+					ranges: [
+						{
+							sourceId: 'front-door',
+							streamId: 'main',
+							startMs: options.startMs,
+							endMs: options.endMs
+						}
+					],
+					events: []
+				};
+			})
+		};
+		const repository = new TimelineRepository(client);
+		const request = {
+			sourceIds: ['front-door'],
+			startMs: 100,
+			endMs: 200,
+			bucketMs: 10,
+			prefetchMs: 0
+		};
+
+		await repository.loadWindow(request);
+		expect(repository.ranges).toHaveLength(1);
+		repository.revalidate();
+		expect(repository.ranges).toHaveLength(1);
+		await repository.loadWindow(request);
+
+		expect(calls).toBe(2);
+		expect(repository.ranges).toHaveLength(1);
+	});
 });

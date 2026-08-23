@@ -85,7 +85,7 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 			value() {}
 		});
 	});
-	await mockControlPeer(page, {
+	const requests = await mockControlPeer(page, {
 		cameras,
 		storedRanges: ['deck', 'garden', 'gate'].flatMap((sourceId) =>
 			(['main', 'sub'] as const).map((streamId) => ({
@@ -116,6 +116,8 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 	await expect(mainVideo).toHaveAttribute('src', /^blob:/);
 	await expect(visiblePreviews.first()).toHaveAttribute('src', /^blob:/);
 	await expect(visiblePreviews.last()).toHaveAttribute('src', /^blob:/);
+	expect(requests.storedOpens.filter((request) => request.sourceId === 'garden')).toHaveLength(1);
+	expect(requests.storedOpens.filter((request) => request.sourceId === 'gate')).toHaveLength(1);
 	await mainVideo.evaluate(async (node) => {
 		const video = node as HTMLVideoElement;
 		video.currentTime = 120;
@@ -146,6 +148,8 @@ test('switches synchronized historical cameras from the Keep filmstrip', async (
 	});
 	await expect(visiblePreviews.first()).toHaveAttribute('data-pause-requested', 'true');
 	await expect(visiblePreviews.last()).toHaveAttribute('data-pause-requested', 'true');
+	expect(requests.storedOpens.filter((request) => request.sourceId === 'garden')).toHaveLength(1);
+	expect(requests.storedOpens.filter((request) => request.sourceId === 'gate')).toHaveLength(1);
 	await expect(synchronizedGarden).toBeVisible();
 	await synchronizedGarden.click();
 

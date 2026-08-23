@@ -83,6 +83,10 @@
 		loading?: boolean;
 		onSeek: (timestampMs: number) => void;
 		onEventPreview?: (event: RecordingEvent) => void;
+		onScrubStart?: (timestampMs: number) => void;
+		onScrub?: (timestampMs: number) => void;
+		onScrubEnd?: (timestampMs: number) => void;
+		onScrubCancel?: () => void;
 		onViewportChange?: (viewport: TimelineViewport) => void;
 	};
 
@@ -99,6 +103,10 @@
 		loading = false,
 		onSeek,
 		onEventPreview,
+		onScrubStart,
+		onScrub,
+		onScrubEnd,
+		onScrubCancel,
 		onViewportChange
 	}: Props = $props();
 
@@ -265,7 +273,15 @@
 	}
 
 	function beginPlayheadDrag(event: PointerEvent) {
-		if (event.button !== 0 || dragPointerId !== null || playheadTop === null) return;
+		const startTimestampMs = displayedPlayheadMs;
+		if (
+			event.button !== 0 ||
+			dragPointerId !== null ||
+			playheadTop === null ||
+			startTimestampMs === null
+		) {
+			return;
+		}
 		const pointerTop = pointerTimelineTop(event.clientY);
 		if (pointerTop === null) return;
 		event.preventDefault();
@@ -275,6 +291,7 @@
 		draggedPlayheadMs = displayedPlayheadMs;
 		stopFollowing();
 		(event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+		onScrubStart?.(startTimestampMs);
 	}
 
 	function movePlayhead(event: PointerEvent) {
@@ -282,7 +299,10 @@
 		event.preventDefault();
 		event.stopPropagation();
 		const timestampMs = timestampFromDrag(event.clientY);
-		if (timestampMs !== null) draggedPlayheadMs = timestampMs;
+		if (timestampMs !== null) {
+			draggedPlayheadMs = timestampMs;
+			onScrub?.(timestampMs);
+		}
 	}
 
 	function endPlayheadDrag(event: PointerEvent) {
@@ -294,7 +314,10 @@
 		dragPointerId = null;
 		dragOffsetY = 0;
 		if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
-		if (timestampMs !== null) onSeek(timestampMs);
+		if (timestampMs !== null) {
+			if (onScrubEnd) onScrubEnd(timestampMs);
+			else onSeek(timestampMs);
+		}
 		draggedPlayheadMs = null;
 		stopFollowing();
 	}
@@ -306,6 +329,7 @@
 		dragOffsetY = 0;
 		draggedPlayheadMs = null;
 		stopFollowing();
+		onScrubCancel?.();
 	}
 
 	function beginPan(event: PointerEvent) {

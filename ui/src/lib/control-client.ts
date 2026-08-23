@@ -1,6 +1,7 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import { createSession, deleteSession } from './api';
+import { emitTimelinePerformanceEvent } from './timeline-observability';
 import {
 	CameraControlCommandSchema,
 	CameraConfigurationCommandSchema,
@@ -77,6 +78,7 @@ import {
 	type ServerCapabilities,
 	type StoredMediaFragment,
 	type StoredMediaInitialization,
+	type StoredMediaKeyFrame,
 	type StoredMediaState,
 	type MotionDetectionResult,
 	type Request,
@@ -189,6 +191,13 @@ export type EncodedEventKeyframe = {
 	decoderConfig: Uint8Array;
 	nalLengthSize: number;
 	payload: Uint8Array;
+};
+
+export type StoredMediaKeyFramePreview = EncodedEventKeyframe & {
+	storedMediaId: string;
+	generation: bigint;
+	timestampMs: number;
+	configurationRevision: bigint;
 };
 
 export type StoredTimelineRange = {
@@ -550,6 +559,7 @@ export class ControlClient {
 		endTimeMs: number;
 		playing: boolean;
 		playbackRate: number;
+		mode?: 'scrub' | 'playback';
 	}): Promise<StoredMediaPlayback> {
 		const storedMediaId = `review-${this.#nextStoredId++}`;
 		const playback = new StoredMediaPlayback(
@@ -558,12 +568,13 @@ export class ControlClient {
 			options.streamId,
 			(timestampMs) => this.seekStoredMedia(storedMediaId, timestampMs),
 			(timestampMs) => this.refillStoredMedia(storedMediaId, timestampMs),
-			(playing, playbackRate) =>
-				this.updateStoredMediaPlayback(storedMediaId, playing, playbackRate),
+			(playing, playbackRate, mode) =>
+				this.updateStoredMediaPlayback(storedMediaId, playing, playbackRate, mode),
 			() => this.closeStoredMedia(storedMediaId)
 		);
 		this.#playbacks.set(storedMediaId, playback);
 		try {
+			const mode = options.mode === 'scrub' ? StoredMediaMode.SCRUB : StoredMediaMode.PLAYBACK;
 			const command = create(StoredMediaCommandSchema, {
 				action: {
 					case: 'open',
@@ -573,8 +584,8 @@ export class ControlClient {
 						streamId: options.streamId,
 						timestamp: timestampFromDate(new Date(options.timestampMs)),
 						endTime: timestampFromDate(new Date(options.endTimeMs)),
-						mode: StoredMediaMode.PLAYBACK,
-						playing: options.playing,
+						mode,
+						playing: mode === StoredMediaMode.SCRUB ? false : options.playing,
 						playbackRate: options.playbackRate,
 						mediaChannel: DataChannelKind.RELIABLE_DATA,
 						dataPayloadRoutes: [],
@@ -1254,7 +1265,7 @@ export class ControlClient {
 					storedMediaId,
 					timestamp: timestampFromDate(new Date(timestampMs))
 				})
-		}
+			}
 		});
 		const result = await this.request({ case: 'storedMediaCommand', value: command });
 		if (result.case !== 'storedMediaState') {
@@ -1266,7 +1277,8 @@ export class ControlClient {
 	private async updateStoredMediaPlayback(
 		storedMediaId: string,
 		playing: boolean | undefined,
-		playbackRate: number | undefined
+		playbackRate: number | undefined,
+		mode: StoredMediaMode | undefined
 	): Promise<StoredMediaState> {
 		const command = create(StoredMediaCommandSchema, {
 			action: {
@@ -1274,7 +1286,8 @@ export class ControlClient {
 				value: create(SetStoredMediaPlaybackSchema, {
 					storedMediaId,
 					playing,
-					playbackRate
+					playbackRate,
+					mode
 				})
 			}
 		});
@@ -1393,8 +1406,12 @@ export class ControlClient {
 		};
 		reliable.onclose = () => this.failData('WebRTC reliable data channel closed.');
 		peer.onconnectionstatechange = () => {
-			if (['failed', 'disconnected', 'closed'].includes(peer.connectionState)) {
-				this.failPending('WebRTC control connection ended.');
+			if (
+				peer === this.#peer &&
+				['failed', 'disconnected', 'closed'].includes(peer.connectionState)
+			) {
+				const sessionId = this.releaseTransport(false);
+				if (sessionId !== null) void deleteSession(sessionId).catch(() => undefined);
 			}
 		};
 
@@ -1502,6 +1519,9 @@ export class ControlClient {
 		if (stored.case === 'fragment') {
 			this.#playbacks.get(stored.value.storedMediaId)?.receiveFragment(stored.value);
 		}
+		if (stored.case === 'keyFrame') {
+			this.#playbacks.get(stored.value.storedMediaId)?.receiveKeyFrame(stored.value);
+		}
 	}
 
 	private receiveExportChunk(chunk: import('./proto/webrtc_pb').ExportFileChunk): void {
@@ -1571,9 +1591,7 @@ export class ControlClient {
 		pending.reject(new Error(message));
 	}
 
-	private receiveEventSearchResult(
-		result: import('./proto/webrtc_pb').EventSearchResult
-	): void {
+	private receiveEventSearchResult(result: import('./proto/webrtc_pb').EventSearchResult): void {
 		const pending = this.#eventSearchPending.get(result.queryId);
 		if (!pending || !result.hit) return;
 		const sequence = numeric(result.sequence);
@@ -1618,7 +1636,10 @@ export class ControlClient {
 			byteLength <= 0 ||
 			byteLength > maxEventKeyframeBytes
 		) {
-			this.failEventMediaPending(chunk.transferId, 'Event keyframe chunk was invalid or oversized.');
+			this.failEventMediaPending(
+				chunk.transferId,
+				'Event keyframe chunk was invalid or oversized.'
+			);
 			return;
 		}
 		const accumulator = pending.objects.get(chunk.objectId) ?? {
@@ -1834,6 +1855,10 @@ export class ControlClient {
 	}
 
 	private release(): string | null {
+		return this.releaseTransport(true);
+	}
+
+	private releaseTransport(revokeObjectUrls: boolean): string | null {
 		const sessionId = this.#sessionId;
 		this.#sessionId = null;
 		this.#controlChannel?.close();
@@ -1853,8 +1878,10 @@ export class ControlClient {
 		this.failData('WebRTC control connection closed.');
 		for (const playback of this.#playbacks.values()) playback.dispose();
 		this.#playbacks.clear();
-		for (const url of this.#objectUrls) URL.revokeObjectURL(url);
-		this.#objectUrls.clear();
+		if (revokeObjectUrls) {
+			for (const url of this.#objectUrls) URL.revokeObjectURL(url);
+			this.#objectUrls.clear();
+		}
 		this.publishCapabilities([]);
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;
@@ -1870,6 +1897,20 @@ type CompletedStoredObject = {
 type StoredChunkAccumulator = ChunkAccumulator & {
 	generation: bigint;
 	deliveredThroughMs?: number;
+};
+
+type StoredKeyFrameAccumulator = {
+	generation: bigint;
+	frameId: bigint;
+	configurationRevision: bigint;
+	chunkCount: number;
+	chunks: Array<Uint8Array | undefined>;
+	byteCount: number;
+	timestampMs: number;
+	codec: string;
+	width: number;
+	height: number;
+	decoderConfig: Uint8Array;
 };
 
 type PendingStoredSeek = {
@@ -1898,7 +1939,8 @@ export class StoredMediaPlayback {
 	#refill: (timestampMs: number) => Promise<StoredMediaState>;
 	#updatePlayback: (
 		playing: boolean | undefined,
-		playbackRate: number | undefined
+		playbackRate: number | undefined,
+		mode: StoredMediaMode | undefined
 	) => Promise<StoredMediaState>;
 	#close: () => Promise<void>;
 	#maxBufferMs = 0;
@@ -1909,12 +1951,17 @@ export class StoredMediaPlayback {
 	#playing = false;
 	#playbackRate = 1;
 	#closed = false;
+	#mode = StoredMediaMode.PLAYBACK;
 	#seekInFlight = false;
 	#pendingSeek: PendingStoredSeek | null = null;
 	#currentSeek: PendingStoredSeek | null = null;
 	#seekTimer: ReturnType<typeof setTimeout> | null = null;
 	#lastSeekDispatchMs = Number.NEGATIVE_INFINITY;
 	#blockedGeneration: bigint | null = null;
+	#keyFrameChunks = new Map<string, StoredKeyFrameAccumulator>();
+	#keyFrameListeners = new Set<(preview: StoredMediaKeyFramePreview) => void>();
+	#latestKeyFrame: StoredMediaKeyFramePreview | null = null;
+	#firstFragmentGenerations = new Set<bigint>();
 
 	constructor(
 		id: string,
@@ -1924,7 +1971,8 @@ export class StoredMediaPlayback {
 		refill: (timestampMs: number) => Promise<StoredMediaState>,
 		updatePlayback: (
 			playing: boolean | undefined,
-			playbackRate: number | undefined
+			playbackRate: number | undefined,
+			mode: StoredMediaMode | undefined
 		) => Promise<StoredMediaState>,
 		close: () => Promise<void>
 	) {
@@ -1949,6 +1997,7 @@ export class StoredMediaPlayback {
 			this.replaceMediaSource();
 		}
 		this.#generation = state.generation;
+		this.#mode = state.mode as StoredMediaMode;
 		this.#contentType = state.delivery.contentType;
 		this.anchorTimeMs = timestampDate(state.fragmentTime).getTime();
 		this.#maxBufferMs = state.delivery.maxBufferDuration
@@ -1967,17 +2016,20 @@ export class StoredMediaPlayback {
 		for (const [key, chunks] of this.#chunks) {
 			if (chunks.generation !== this.#generation) this.#chunks.delete(key);
 		}
+		for (const [key, chunks] of this.#keyFrameChunks) {
+			if (chunks.generation !== this.#generation) this.#keyFrameChunks.delete(key);
+		}
+		if (this.#latestKeyFrame && this.#latestKeyFrame.generation < this.#generation) {
+			this.#latestKeyFrame = null;
+		}
 		for (const object of this.#completed) {
 			this.#appendQueue.push(object.payload);
 			if (object.deliveredThroughMs !== undefined) {
-				this.#deliveredThroughMs = Math.max(
-					this.#deliveredThroughMs,
-					object.deliveredThroughMs
-				);
+				this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, object.deliveredThroughMs);
 			}
 		}
 		this.#completed = [];
-		this.initializeSourceBuffer();
+		if (this.#mode === StoredMediaMode.PLAYBACK) this.initializeSourceBuffer();
 		if (this.#endTimeMs !== null && this.#mediaSource.readyState === 'open') {
 			this.#mediaSource.duration = Math.max(0, (this.#endTimeMs - this.anchorTimeMs) / 1_000);
 		}
@@ -1993,12 +2045,36 @@ export class StoredMediaPlayback {
 		return new Promise((resolve, reject) => {
 			this.#pendingSeek?.resolve();
 			this.#pendingSeek = { timestampMs, resolve, reject };
+			emitTimelinePerformanceEvent('ScrubSeekQueued', {
+				sourceId: this.sourceId,
+				cursorId: this.id,
+				targetMs: timestampMs
+			});
 			this.scheduleSeek();
 		});
 	}
 
 	canSeekLocally(timestampMs: number): boolean {
 		return timestampMs >= this.anchorTimeMs && timestampMs < this.#deliveredThroughMs;
+	}
+
+	onKeyFrame(listener: (preview: StoredMediaKeyFramePreview) => void): () => void {
+		this.#keyFrameListeners.add(listener);
+		if (this.#latestKeyFrame) listener(this.#latestKeyFrame);
+		return () => this.#keyFrameListeners.delete(listener);
+	}
+
+	async enterScrub(): Promise<void> {
+		if (this.#closed) throw new Error('Stored media playback is closed.');
+		if (this.#mode === StoredMediaMode.SCRUB && !this.#playing) return;
+		const state = await this.#updatePlayback(false, undefined, StoredMediaMode.SCRUB);
+		this.acceptPlaybackState(state);
+	}
+
+	async commitPlayback(playing: boolean, playbackRate: number): Promise<void> {
+		if (this.#closed) throw new Error('Stored media playback is closed.');
+		const state = await this.#updatePlayback(playing, playbackRate, StoredMediaMode.PLAYBACK);
+		this.acceptPlaybackState(state);
 	}
 
 	receiveInitialization(initialization: StoredMediaInitialization): void {
@@ -2029,6 +2105,83 @@ export class StoredMediaPlayback {
 		);
 	}
 
+	receiveKeyFrame(keyFrame: StoredMediaKeyFrame): void {
+		const configuration = keyFrame.configuration;
+		const frame = keyFrame.frame;
+		const format = configuration?.format?.format;
+		if (
+			keyFrame.storedMediaId !== this.id ||
+			!configuration ||
+			!frame ||
+			format?.case !== 'video' ||
+			!configuration.codec?.name ||
+			!frame.timestamp ||
+			!frame.keyFrame ||
+			frame.streamBindingId !== configuration.streamBindingId ||
+			frame.configurationRevision !== configuration.configurationRevision ||
+			frame.fragmentCount === 0 ||
+			frame.fragmentIndex >= frame.fragmentCount
+		) {
+			this.fail('Stored media keyframe metadata was invalid.');
+			return;
+		}
+		if (keyFrame.generation < this.#generation) return;
+		if (this.#generation !== 0n && keyFrame.generation > this.#generation && !this.#seekInFlight) {
+			return;
+		}
+		const timestampMs = timestampDate(frame.timestamp).getTime();
+		const key = `${keyFrame.generation}:${frame.frameId}`;
+		const accumulator = this.#keyFrameChunks.get(key) ?? {
+			generation: keyFrame.generation,
+			frameId: frame.frameId,
+			configurationRevision: configuration.configurationRevision,
+			chunkCount: frame.fragmentCount,
+			chunks: Array.from<Uint8Array | undefined>({ length: frame.fragmentCount }),
+			byteCount: 0,
+			timestampMs,
+			codec: configuration.codec.name,
+			width: format.value.width,
+			height: format.value.height,
+			decoderConfig: format.value.decoderConfig
+		};
+		if (
+			accumulator.generation !== keyFrame.generation ||
+			accumulator.frameId !== frame.frameId ||
+			accumulator.configurationRevision !== configuration.configurationRevision ||
+			accumulator.chunkCount !== frame.fragmentCount ||
+			accumulator.timestampMs !== timestampMs ||
+			accumulator.codec !== configuration.codec.name ||
+			accumulator.width !== format.value.width ||
+			accumulator.height !== format.value.height ||
+			!bytesEqual(accumulator.decoderConfig, format.value.decoderConfig) ||
+			accumulator.chunks[frame.fragmentIndex] !== undefined ||
+			accumulator.byteCount + frame.payload.byteLength > maxEventKeyframeBytes
+		) {
+			this.fail('Stored media keyframe chunks were inconsistent or oversized.');
+			return;
+		}
+		accumulator.chunks[frame.fragmentIndex] = frame.payload;
+		accumulator.byteCount += frame.payload.byteLength;
+		this.#keyFrameChunks.set(key, accumulator);
+		if (!accumulator.chunks.every((chunk) => chunk !== undefined)) return;
+		this.#keyFrameChunks.delete(key);
+		const preview: StoredMediaKeyFramePreview = {
+			storedMediaId: this.id,
+			generation: keyFrame.generation,
+			timestampMs,
+			configurationRevision: configuration.configurationRevision,
+			contentType: accumulator.codec.startsWith('avc1') ? 'video/avc' : 'video/hevc',
+			codec: accumulator.codec,
+			width: accumulator.width,
+			height: accumulator.height,
+			decoderConfig: accumulator.decoderConfig,
+			nalLengthSize: 0,
+			payload: concatenateChunks(accumulator.chunks)
+		};
+		this.#latestKeyFrame = preview;
+		for (const listener of this.#keyFrameListeners) listener(preview);
+	}
+
 	observe(currentTimeSeconds: number): void {
 		if (
 			this.#closed ||
@@ -2041,10 +2194,17 @@ export class StoredMediaPlayback {
 			return;
 		}
 		const playbackTimeMs = this.anchorTimeMs + Math.max(0, currentTimeSeconds) * 1_000;
-		if (this.#deliveredThroughMs - playbackTimeMs > this.#maxBufferMs / 2) return;
+		const lowWatermarkMs = Math.min(1_500, this.#maxBufferMs / 2);
+		if (this.#deliveredThroughMs - playbackTimeMs > lowWatermarkMs) return;
 		this.#refillInFlight = true;
+		emitTimelinePerformanceEvent('ReplayRefill', {
+			sourceId: this.sourceId,
+			cursorId: this.id,
+			generation: String(this.#generation),
+			playbackTimeMs
+		});
 		void this.#refill(playbackTimeMs)
-			.then((state) => this.configure(state))
+			.then((state) => this.acceptPlaybackState(state))
 			.catch((error) =>
 				this.fail(error instanceof Error ? error.message : 'Unable to refill stored media.')
 			)
@@ -2057,7 +2217,7 @@ export class StoredMediaPlayback {
 		if (this.#closed || playing === this.#playing) return;
 		const previous = this.#playing;
 		this.#playing = playing;
-		void this.#updatePlayback(playing, undefined)
+		void this.#updatePlayback(playing, undefined, undefined)
 			.then((state) => this.acceptPlaybackState(state))
 			.catch((error) => {
 				if (this.#playing === playing) this.#playing = previous;
@@ -2076,7 +2236,7 @@ export class StoredMediaPlayback {
 		}
 		const previous = this.#playbackRate;
 		this.#playbackRate = playbackRate;
-		void this.#updatePlayback(undefined, playbackRate)
+		void this.#updatePlayback(undefined, playbackRate, undefined)
 			.then((state) => this.acceptPlaybackState(state))
 			.catch((error) => {
 				if (this.#playbackRate === playbackRate) this.#playbackRate = previous;
@@ -2085,7 +2245,11 @@ export class StoredMediaPlayback {
 	}
 
 	private acceptPlaybackState(state: StoredMediaState): void {
-		if (state.generation !== this.#generation) {
+		if (
+			state.generation !== this.#generation ||
+			state.mode !== this.#mode ||
+			state.delivery?.contentType !== this.#contentType
+		) {
 			this.configure(state);
 			return;
 		}
@@ -2108,6 +2272,10 @@ export class StoredMediaPlayback {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.#chunks.clear();
+		this.#keyFrameChunks.clear();
+		this.#keyFrameListeners.clear();
+		this.#latestKeyFrame = null;
+		this.#firstFragmentGenerations.clear();
 		this.#completed = [];
 		this.#appendQueue = [];
 		this.#refillInFlight = false;
@@ -2170,6 +2338,17 @@ export class StoredMediaPlayback {
 			this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, accumulator.deliveredThroughMs);
 		}
 		this.#appendQueue.push(completed.payload);
+		if (
+			accumulator.deliveredThroughMs !== undefined &&
+			!this.#firstFragmentGenerations.has(generation)
+		) {
+			this.#firstFragmentGenerations.add(generation);
+			emitTimelinePerformanceEvent('ReplayFirstFragment', {
+				sourceId: this.sourceId,
+				cursorId: this.id,
+				generation: String(generation)
+			});
+		}
 		this.flushAppendQueue();
 	}
 
@@ -2190,6 +2369,12 @@ export class StoredMediaPlayback {
 		this.#seekInFlight = true;
 		this.#blockedGeneration = this.#generation;
 		this.#lastSeekDispatchMs = performance.now();
+		emitTimelinePerformanceEvent('ScrubSeekSent', {
+			sourceId: this.sourceId,
+			cursorId: this.id,
+			generation: String(this.#generation),
+			targetMs: seek.timestampMs
+		});
 		void this.#seek(seek.timestampMs)
 			.then((state) => {
 				if (this.#closed) return;
@@ -2381,13 +2566,12 @@ function recordingEvent(
 	const attachment = descriptor
 		? attachments.get(`${event.eventId}:${descriptor.attachmentId}`)
 		: undefined;
-	const thumbnailUrl = attachment?.chunks.every((chunk) => chunk !== undefined)
-		? URL.createObjectURL(
-				new Blob([ownedArrayBuffer(concatenateChunks(attachment.chunks))], {
-					type: attachment.contentType
-				})
-			)
-		: null;
+	const thumbnailBlob = attachment?.chunks.every((chunk) => chunk !== undefined)
+		? new Blob([ownedArrayBuffer(concatenateChunks(attachment.chunks))], {
+				type: attachment.contentType
+			})
+		: undefined;
+	const thumbnailUrl = thumbnailBlob ? URL.createObjectURL(thumbnailBlob) : null;
 	if (thumbnailUrl) onObjectUrl(thumbnailUrl);
 	return {
 		id: event.eventId,
@@ -2408,15 +2592,14 @@ function recordingEvent(
 			: null,
 		zone: event.zone ?? null,
 		thumbnail_url: thumbnailUrl,
+		thumbnail_blob: thumbnailBlob,
 		attachments: event.attachments.map((attachment) => ({
 			id: attachment.attachmentId,
 			type: attachment.attachmentType,
 			content_type: attachment.contentType,
 			byte_length: attachment.byteLen === undefined ? null : numeric(attachment.byteLen),
 			ordinal: attachment.ordinal,
-			timestamp_ms: attachment.timestamp
-				? timestampDate(attachment.timestamp).getTime()
-				: null
+			timestamp_ms: attachment.timestamp ? timestampDate(attachment.timestamp).getTime() : null
 		}))
 	};
 }

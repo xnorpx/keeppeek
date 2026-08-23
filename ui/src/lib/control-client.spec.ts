@@ -45,6 +45,7 @@ import {
 	LogBufferStatsSchema,
 	LoadHealthSnapshotSchema,
 	LoggingSettingsResultSchema,
+	MediaDataConfigurationSchema,
 	MemoryHealthSnapshotSchema,
 	MotionDetectionResultSchema,
 	MediaDataFormatSchema,
@@ -73,6 +74,8 @@ import {
 	StoredMediaDeliverySchema,
 	StoredMediaFragmentSchema,
 	StoredMediaInitializationSchema,
+	StoredMediaKeyFrameSchema,
+	StoredMediaMode,
 	StoredMediaObjectRepresentation,
 	StoredMediaQueryDeliverySchema,
 	StoredMediaQueryEndSchema,
@@ -84,6 +87,7 @@ import {
 	type QueryStoredMediaTimeline,
 	type QueryEvents,
 	VideoDataFormatSchema,
+	VideoDataFrameSchema,
 	WebRtcHealthSnapshotSchema
 } from './proto/webrtc_pb';
 
@@ -226,7 +230,9 @@ class FakeDataChannel {
 					}
 				});
 				queueMicrotask(() =>
-					this.onmessage?.({ data: toBinary(ControlEnvelopeSchema, response).buffer } as MessageEvent)
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
 				);
 				queueMicrotask(() =>
 					reliable?.onmessage?.({ data: toBinary(MessageSchema, result).buffer } as MessageEvent)
@@ -301,7 +307,9 @@ class FakeDataChannel {
 					}
 				});
 				queueMicrotask(() =>
-					this.onmessage?.({ data: toBinary(ControlEnvelopeSchema, response).buffer } as MessageEvent)
+					this.onmessage?.({
+						data: toBinary(ControlEnvelopeSchema, response).buffer
+					} as MessageEvent)
 				);
 				queueMicrotask(() =>
 					reliable?.onmessage?.({ data: toBinary(MessageSchema, chunk).buffer } as MessageEvent)
@@ -1456,7 +1464,7 @@ describe('ControlClient', () => {
 					maxBufferDuration: durationFromMs(1_000)
 				})
 			});
-		const refill = vi.fn(async () => state(2n, StoredMediaStatus.ENDED));
+		const refill = vi.fn(async () => state(1n, StoredMediaStatus.ENDED));
 		const playback = new StoredMediaPlayback(
 			'review-test',
 			'front-door',
@@ -1512,7 +1520,7 @@ describe('ControlClient', () => {
 		playback.receiveInitialization(
 			create(StoredMediaInitializationSchema, {
 				storedMediaId: 'review-test',
-				generation: 2n,
+				generation: 1n,
 				initializationId: 1n,
 				contentType: 'video/mp4; codecs="avc1.42E01E"',
 				chunkCount: 1,
@@ -1522,7 +1530,7 @@ describe('ControlClient', () => {
 		playback.receiveFragment(
 			create(StoredMediaFragmentSchema, {
 				storedMediaId: 'review-test',
-				generation: 2n,
+				generation: 1n,
 				initializationId: 1n,
 				sequence: 1n,
 				startTime: timestampFromDate(new Date(anchorMs + 1_000)),
@@ -1533,13 +1541,8 @@ describe('ControlClient', () => {
 		);
 
 		await vi.waitFor(() => expect(FakeMediaSource.latest?.endCount).toBe(1));
-		expect(FakeMediaSource.latest?.sourceBuffer.appendCount).toBe(2);
-		expect(
-			FakeMediaSource.instances.reduce(
-				(total, mediaSource) => total + mediaSource.sourceBuffer.appendCount,
-				0
-			)
-		).toBe(4);
+		expect(FakeMediaSource.instances).toHaveLength(1);
+		expect(FakeMediaSource.latest?.sourceBuffer.appendCount).toBe(4);
 	});
 
 	it('keeps one cursor seek in flight and dispatches only the latest pending target', async () => {
@@ -1609,6 +1612,142 @@ describe('ControlClient', () => {
 		resolvers[1]!(state(3n, anchorMs + 3_000));
 		await latest;
 		expect(playback.id).toBe('review-seek');
+		playback.dispose();
+	});
+
+	it('assembles stored keyframes and commits one cursor across scrub and playback', async () => {
+		class FakeMediaSource extends EventTarget {
+			static isTypeSupported(): boolean {
+				return true;
+			}
+			readyState: ReadyState = 'closed';
+			duration = Number.NaN;
+		}
+		vi.stubGlobal('MediaSource', FakeMediaSource);
+		vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:keyframe-test');
+		vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+
+		const anchorMs = Date.UTC(2026, 7, 20, 12);
+		const state = (generation: bigint, mode: StoredMediaMode, contentType: string) =>
+			create(StoredMediaStateSchema, {
+				storedMediaId: 'review-keyframe',
+				status: StoredMediaStatus.ACTIVE,
+				generation,
+				requestedTime: timestampFromDate(new Date(anchorMs + 100)),
+				fragmentTime: timestampFromDate(new Date(anchorMs)),
+				endTime: timestampFromDate(new Date(anchorMs + 60_000)),
+				mode,
+				playing: mode === StoredMediaMode.PLAYBACK,
+				playbackRate: 1,
+				delivery: create(StoredMediaDeliverySchema, {
+					mediaChannel: DataChannelKind.RELIABLE_DATA,
+					contentType,
+					maxBufferDuration: durationFromMs(5_000)
+				})
+			});
+		const update = vi.fn(
+			async (
+				playing: boolean | undefined,
+				_playbackRate: number | undefined,
+				mode: StoredMediaMode | undefined
+			) =>
+				state(
+					2n,
+					mode ?? StoredMediaMode.PLAYBACK,
+					mode === StoredMediaMode.SCRUB
+						? 'video/h264; format=avcc'
+						: 'video/mp4; codecs="avc1.42E01E"'
+				)
+		);
+		const playback = new StoredMediaPlayback(
+			'review-keyframe',
+			'front-door',
+			'main',
+			vi.fn(async () => state(2n, StoredMediaMode.SCRUB, 'video/h264; format=avcc')),
+			vi.fn(async () => state(2n, StoredMediaMode.PLAYBACK, 'video/mp4')),
+			update,
+			vi.fn(async () => {})
+		);
+		playback.configure(state(1n, StoredMediaMode.PLAYBACK, 'video/mp4'));
+		await playback.enterScrub();
+		playback.configure(state(2n, StoredMediaMode.SCRUB, 'video/h264; format=avcc'));
+
+		const configuration = create(MediaDataConfigurationSchema, {
+			streamBindingId: 'stored:review-keyframe:video',
+			codec: create(CodecDescriptorSchema, { name: 'avc1.42E01E' }),
+			format: create(MediaDataFormatSchema, {
+				format: {
+					case: 'video',
+					value: create(VideoDataFormatSchema, {
+						width: 640,
+						height: 360,
+						decoderConfig: Uint8Array.from([4, 5])
+					})
+				}
+			}),
+			configurationRevision: 2n
+		});
+		for (const [fragmentIndex, payload] of [
+			[1, Uint8Array.from([3])],
+			[0, Uint8Array.from([1, 2])]
+		] as const) {
+			playback.receiveKeyFrame(
+				create(StoredMediaKeyFrameSchema, {
+					storedMediaId: 'review-keyframe',
+					generation: 2n,
+					configuration,
+					frame: create(VideoDataFrameSchema, {
+						streamBindingId: configuration.streamBindingId,
+						frameId: 7n,
+						timestamp: timestampFromDate(new Date(anchorMs)),
+						fragmentIndex,
+						fragmentCount: 2,
+						keyFrame: true,
+						payload,
+						configurationRevision: 2n
+					})
+				})
+			);
+		}
+
+		const preview = vi.fn();
+		playback.onKeyFrame(preview);
+		expect(preview).toHaveBeenCalledOnce();
+		expect(preview.mock.calls[0]?.[0]).toMatchObject({
+			storedMediaId: 'review-keyframe',
+			generation: 2n,
+			codec: 'avc1.42E01E',
+			width: 640,
+			height: 360
+		});
+		expect([...preview.mock.calls[0]![0].payload]).toEqual([1, 2, 3]);
+		playback.receiveKeyFrame(
+			create(StoredMediaKeyFrameSchema, {
+				storedMediaId: 'review-keyframe',
+				generation: 1n,
+				configuration: create(MediaDataConfigurationSchema, {
+					...configuration,
+					configurationRevision: 1n
+				}),
+				frame: create(VideoDataFrameSchema, {
+					streamBindingId: configuration.streamBindingId,
+					frameId: 8n,
+					timestamp: timestampFromDate(new Date(anchorMs - 1_000)),
+					fragmentCount: 1,
+					keyFrame: true,
+					payload: Uint8Array.from([9]),
+					configurationRevision: 1n
+				})
+			})
+		);
+		expect(preview).toHaveBeenCalledOnce();
+
+		await playback.commitPlayback(true, 1);
+		expect(update.mock.calls.map((call) => [call[0], call[2]])).toEqual([
+			[false, StoredMediaMode.SCRUB],
+			[true, StoredMediaMode.PLAYBACK]
+		]);
+		expect(playback.id).toBe('review-keyframe');
 		playback.dispose();
 	});
 });

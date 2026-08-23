@@ -199,6 +199,8 @@ export type ControlRequests = {
 	cameraUpdates: Array<{ ip: string; update: CameraSettingsUpdate }>;
 	removedCameraIps: string[];
 	runtimeUpdates: SettingsConfigUpdate[];
+	storedOpens: Array<{ storedMediaId: string; sourceId: string; streamId: string }>;
+	storedSeeks: Array<{ storedMediaId: string; timestampMs: number }>;
 	storedRefills: Array<{ storedMediaId: string; playbackTimeMs: number }>;
 	exportJobs: ExportControlRequest[];
 	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
@@ -288,6 +290,8 @@ export async function mockControlPeer(
 		cameraUpdates: [],
 		removedCameraIps: [],
 		runtimeUpdates: [],
+		storedOpens: [],
+		storedSeeks: [],
 		storedRefills: [],
 		exportJobs: []
 	};
@@ -448,6 +452,11 @@ export async function mockControlPeer(
 			if (action.case === 'open') {
 				await storedOpenGates.shift();
 				const open = action.value;
+				requests.storedOpens.push({
+					storedMediaId: open.storedMediaId,
+					sourceId: open.sourceId,
+					streamId: open.streamId
+				});
 				const state = create(StoredMediaStateSchema, {
 					storedMediaId: open.storedMediaId,
 					status: StoredMediaStatus.ACTIVE,
@@ -480,8 +489,13 @@ export async function mockControlPeer(
 				return encodedOk(request.requestId, { case: 'storedMediaState', value: state });
 			}
 			if (action.case === 'seek') {
+				await storedOpenGates.shift();
 				const current = storedCursors.get(action.value.storedMediaId);
 				if (!current) return encodedError(request.requestId, 'stored media cursor not found');
+				requests.storedSeeks.push({
+					storedMediaId: action.value.storedMediaId,
+					timestampMs: action.value.timestamp ? timestampFromProto(action.value.timestamp) : 0
+				});
 				const state = create(StoredMediaStateSchema, {
 					...current,
 					generation: current.generation + 1n,
@@ -502,7 +516,6 @@ export async function mockControlPeer(
 				});
 				const state = create(StoredMediaStateSchema, {
 					...current,
-					generation: current.generation + 1n,
 					status: StoredMediaStatus.ENDED
 				});
 				storedCursors.set(action.value.storedMediaId, state);

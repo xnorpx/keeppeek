@@ -25,6 +25,14 @@ export const serverCapabilityCatalog = {
 		whenMissing: 'Ranges remain selectable and estimated; export commands require a server update',
 		failureGuarantee: 'Failed jobs remain retryable and expose no corrupt partial download'
 	},
+	'stored-media-keyframe-preview.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'One decoder-ready random-access frame per paused SCRUB open or seek, bounded to 4 MiB',
+		unlocks: 'Exact-time timeline previews without constructing an MP4 player',
+		whenMissing: 'Scrub preview falls back to one keyframe-aligned fMP4 fragment',
+		failureGuarantee: 'Generation checks prevent an older preview from replacing the current target'
+	},
 	'keeppeek.identity.v1': {
 		delivery: 'target',
 		serverOwns: 'Remote sign-in, sessions, two roles, invitations, and access-token CRUD',
