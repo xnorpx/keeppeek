@@ -60,10 +60,10 @@
 | `keep.desktop.calendar`          | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.calendar.png`          | Approved `e192953cc22df1ef212112ae3a2293db3acaeb387f316d1f867655ad42cced40` |
 | `keep.desktop.export-lifecycle`  | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png`  | Approved `c045aad78865f1d3a5c8ebb8dd862018d3609711898a80b49fd4bc0fe307349d` |
 | `keep.waiting.cold-seek`         | `visual-harness/.loki/reference/chrome.desktop/keep.waiting.cold-seek.png`         | Approved `85bcb594d11464d3f0c0a06fb525a85a8c2ce84c604288f794b3f7a20e13550b` |
-| `peek.desktop.focus-history`     | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png`     | Approved `98b56171d3a75336894406ec56709479c1848ee5f90320780cdf5e8f148e2f92` |
-| `peek.desktop.history-keep`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png`      | Approved `e5d9782e69c1d66d67422a4677f719e28dd6ebbb71aa58965a401f9197d7233a` |
+| `peek.desktop.focus-history`     | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png`     | Approved `9076662f9be6f12b30e49220037bc9a68338e0d16a23275cd4cc128ef5e36dbc` |
+| `peek.desktop.history-keep`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png`      | Approved `b8ead2f325d9b5712058377a55095ee38ed8e21cc4abb234c4f8bfdbfab4f5d7` |
 | `peek.desktop.light-theme`       | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png`       | Approved `c0b04e71e4d62ba2540443ceb6e494b4ca7dde0ef473df93125573c5e4a0be91` |
-| `peek.desktop.live-wall`         | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png`         | Approved `10c96180b89450f986bd8fd75d85d32d865c1addfaa9aac2facfca87320c262c` |
+| `peek.desktop.live-wall`         | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png`         | Approved `b22a3b2c5344a8d94ec3e8901b3b596bc2990d608dc03905427b819776f072b0` |
 | `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Approved `3d5eb367f51b9d20e74dc3ae346e66034a6bc13428b2a6dfe8f5c3ba49025128` |
 | `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `6075b070128f6cffe19ad0669b2b421dcff14f9d233ff42c5fbef17379f5d95f` |
 | `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Approved `21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509` |
