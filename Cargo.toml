@@ -112,7 +112,7 @@ prost = "0.14"
 prost-types = "0.14"
 prometheus-client = "0.25.0"
 uuid = { version = "1", features = ["v4", "serde"] }
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2"
 zip = { version = "*", default-features = false, features = ["deflate"] }
 
