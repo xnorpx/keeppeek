@@ -1,0 +1,27 @@
+{
+	"status": "candidate",
+	"reviewedAt": "2026-08-24",
+	"paperFileId": "01M0B0VBH78TMTX40GCYYQ37SG",
+	"boardId": "233-0",
+	"frameId": "9FQ-0",
+	"tokenHash": "b35ec365",
+	"scenarioId": "settings.desktop.storage-setup-reviewed",
+	"route": "/settings?edit=storage#storage",
+	"state": "location-limit-migration-choice",
+	"theme": "dark",
+	"viewport": {
+		"width": 1440,
+		"height": 940
+	},
+	"source": "13-storage-setup-reviewed.png",
+	"sha256": "cd876b671c0a66804fe87ad4e0da6bf7261574a2f335fb1634a02f3dfea63d0f",
+	"productionOwner": "ui/src/lib/components/StorageSettingsEditor.svelte",
+	"browserStoryTest": "ui/src/lib/components/Board13StorageRetention.story.svelte.spec.ts",
+	"playwrightOwner": "ui/e2e/settings.e2e.ts",
+	"notes": [
+		"Candidate supplements the immutable v34 Board 13 measured-storage reference.",
+		"Location and archive limit are primary; implementation paths and writer controls remain collapsed.",
+		"Migration choice is visible only after the recording location changes.",
+		"The review step and durable migration progress require separate authored states before Loki approval."
+	]
+}
