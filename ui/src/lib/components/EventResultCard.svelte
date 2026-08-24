@@ -1,9 +1,17 @@
 <script lang="ts">
-	import { eventHasImage, type EventBrowserRecord } from '$lib/event-browser';
+	import {
+		eventHasImage,
+		type EventBrowserRecord,
+		type EventPreviewState
+	} from '$lib/event-browser';
+	import ImageIcon from '@lucide/svelte/icons/image';
+	import ImageOffIcon from '@lucide/svelte/icons/image-off';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { onMount } from 'svelte';
 
 	type Props = {
 		record: EventBrowserRecord;
+		previewState?: EventPreviewState;
 		selected?: boolean;
 		mobileVariant?: 'hero' | 'row';
 		paperFrame?: boolean;
@@ -16,6 +24,7 @@
 
 	let {
 		record,
+		previewState = 'idle',
 		selected = false,
 		mobileVariant = 'row',
 		paperFrame = false,
@@ -53,7 +62,9 @@
 		day: 'numeric',
 		hour: '2-digit',
 		minute: '2-digit',
-		second: '2-digit'
+		second: '2-digit',
+		timeZone: 'UTC',
+		timeZoneName: 'short'
 	});
 	const paperTimeFormatter = new Intl.DateTimeFormat('en-GB', {
 		timeZone: 'UTC',
@@ -130,8 +141,37 @@
 			>
 				NO IMAGE
 			</div>
+		{:else if previewState === 'unavailable'}
+			<div
+				class="grid size-full place-items-center border border-dashed border-hairline-strong text-text-faint"
+				aria-label="Event image unavailable"
+			>
+				<span class="grid justify-items-center gap-1.5 font-mono text-2xs tracking-caps">
+					<ImageOffIcon class="size-4" />
+					PREVIEW UNAVAILABLE
+				</span>
+			</div>
+		{:else if previewState === 'loading'}
+			<div
+				class="grid size-full place-items-center bg-raised text-text-faint"
+				aria-label="Loading event image"
+			>
+				<LoaderCircleIcon class="size-4 animate-spin" />
+			</div>
+		{:else if previewState === 'queued'}
+			<div
+				class="grid size-full place-items-center bg-raised text-text-faint"
+				aria-label="Event image queued"
+			>
+				<ImageIcon class="size-4" />
+			</div>
 		{:else}
-			<div class="size-full animate-pulse bg-raised" aria-label="Loading event image"></div>
+			<div
+				class="grid size-full place-items-center bg-video text-text-faint"
+				aria-label="Event image available"
+			>
+				<ImageIcon class="size-4" />
+			</div>
 		{/if}
 		{#if record.event.confidence !== null}
 			<span
@@ -150,6 +190,7 @@
 	</div>
 	{#if paperFrame}
 		<time
+			datetime={new Date(record.event.start_time_ms).toISOString()}
 			class="block h-[14px] w-full shrink-0 font-mono text-[11px] leading-[14px] text-text-muted"
 		>
 			{paperTimeFormatter.format(new Date(record.event.start_time_ms))}
@@ -164,7 +205,10 @@
 				? 'max-md:h-[104px] max-md:px-3 max-md:py-2.5'
 				: 'max-md:min-w-0 max-md:p-0'} md:px-1 md:pt-2 md:pb-1"
 		>
-			<time class="block font-mono text-2xs text-text-muted">
+			<time
+				datetime={new Date(record.event.start_time_ms).toISOString()}
+				class="block font-mono text-2xs text-text-muted"
+			>
 				{eventTimeFormatter.format(new Date(record.event.start_time_ms))}
 			</time>
 			<p class="truncate text-sm font-medium">{eventLabel()}</p>

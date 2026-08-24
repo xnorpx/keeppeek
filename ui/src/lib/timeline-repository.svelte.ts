@@ -30,6 +30,8 @@ export type TimelineWindowRequest = {
 	endMs: number;
 	bucketMs: number;
 	prefetchMs: number;
+	minimumMs?: number;
+	maximumMs?: number;
 	eventTypes?: readonly string[];
 	includeEvents?: boolean;
 	viewportExtentPx?: number;
@@ -575,8 +577,14 @@ function alignedPrefetchWindow(
 	const unalignedStart = Math.max(0, request.startMs - prefetchMs);
 	const unalignedEnd = request.endMs + prefetchMs;
 	return {
-		startMs: Math.floor(unalignedStart / request.bucketMs) * request.bucketMs,
-		endMs: Math.ceil(unalignedEnd / request.bucketMs) * request.bucketMs
+		startMs: Math.max(
+			request.minimumMs ?? 0,
+			Math.floor(unalignedStart / request.bucketMs) * request.bucketMs
+		),
+		endMs: Math.min(
+			request.maximumMs ?? Number.POSITIVE_INFINITY,
+			Math.ceil(unalignedEnd / request.bucketMs) * request.bucketMs
+		)
 	};
 }
 

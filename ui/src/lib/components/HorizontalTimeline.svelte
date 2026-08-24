@@ -13,10 +13,10 @@
 			label: 'Coarse',
 			tickMs: 5 * MINUTE_MS,
 			bucketMs: 5 * MINUTE_MS,
-			prefetchMs: 12 * 60 * MINUTE_MS
+			prefetchMs: 60 * MINUTE_MS
 		},
-		{ label: 'Normal', tickMs: MINUTE_MS, bucketMs: MINUTE_MS, prefetchMs: 2 * 60 * MINUTE_MS },
-		{ label: 'Fine', tickMs: 15_000, bucketMs: 15_000, prefetchMs: 30 * MINUTE_MS }
+		{ label: 'Normal', tickMs: MINUTE_MS, bucketMs: MINUTE_MS, prefetchMs: 30 * MINUTE_MS },
+		{ label: 'Fine', tickMs: 15_000, bucketMs: 15_000, prefetchMs: 10 * MINUTE_MS }
 	] as const;
 	const TICK_EXTENT_PX = 12;
 	const EVENT_CLUSTER_GAP_PX = 96;

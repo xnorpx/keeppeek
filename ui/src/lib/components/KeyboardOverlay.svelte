@@ -177,6 +177,7 @@
 			: pathname.startsWith('/keep')
 				? [
 						{ keys: ['J', 'K', 'L'], label: 'Shuttle backward, pause, or forward' },
+						{ keys: ['↑', '↓'], label: 'Scroll the focused recording timeline' },
 						{ keys: ['←', '→'], label: 'Step one reported video frame' },
 						{ keys: ['[', ']'], label: 'Set export range in and out' },
 						{ keys: ['Space'], label: 'Play or pause without changing speed' },
