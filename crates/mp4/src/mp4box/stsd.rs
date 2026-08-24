@@ -1,28 +1,53 @@
 use crate::mp4box::{avc1::Avc1Box, hev1::Hev1Box, mp4a::Mp4aBox, tx3g::Tx3gBox, vp09::Vp09Box, *};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum SampleEntry {
+    Avc1(Avc1Box),
+    Hev1(Hev1Box),
+    Hvc1(Hev1Box),
+    Vp09(Vp09Box),
+    Mp4a(Mp4aBox),
+    Tx3g(Tx3gBox),
+    Unknown { box_type: u32, data: Vec<u8> },
+}
+
+impl SampleEntry {
+    fn box_size(&self) -> u64 {
+        match self {
+            Self::Avc1(entry) => entry.box_size(),
+            Self::Hev1(entry) | Self::Hvc1(entry) => entry.box_size(),
+            Self::Vp09(entry) => entry.box_size(),
+            Self::Mp4a(entry) => entry.box_size(),
+            Self::Tx3g(entry) => entry.box_size(),
+            Self::Unknown { data, .. } => HEADER_SIZE + data.len() as u64,
+        }
+    }
+
+    fn write_box<W: Write>(&self, writer: &mut W) -> Result<u64> {
+        match self {
+            Self::Avc1(entry) => entry.write_box(writer),
+            Self::Hev1(entry) => entry.write_box(writer),
+            Self::Hvc1(entry) => entry.write_box_with_type(writer, BoxType::Hvc1Box),
+            Self::Vp09(entry) => entry.write_box(writer),
+            Self::Mp4a(entry) => entry.write_box(writer),
+            Self::Tx3g(entry) => entry.write_box(writer),
+            Self::Unknown { box_type, data } => {
+                let size = HEADER_SIZE + data.len() as u64;
+                BoxHeader::new(BoxType::from(*box_type), size).write(writer)?;
+                writer.write_all(data)?;
+                Ok(size)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct StsdBox {
     pub version: u8,
     pub flags: u32,
-
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub avc1: Option<Avc1Box>,
-
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub hev1: Option<Hev1Box>,
-
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub hvc1: Option<Hev1Box>,
-
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub vp09: Option<Vp09Box>,
-
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub mp4a: Option<Mp4aBox>,
-
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub tx3g: Option<Tx3gBox>,
+    pub entries: Vec<SampleEntry>,
 }
 
 impl StsdBox {
@@ -31,21 +56,65 @@ impl StsdBox {
     }
 
     pub fn get_size(&self) -> u64 {
-        let mut size = HEADER_SIZE + HEADER_EXT_SIZE + 4;
-        if let Some(ref avc1) = self.avc1 {
-            size += avc1.box_size();
-        } else if let Some(ref hev1) = self.hev1 {
-            size += hev1.box_size();
-        } else if let Some(ref hvc1) = self.hvc1 {
-            size += hvc1.box_size();
-        } else if let Some(ref vp09) = self.vp09 {
-            size += vp09.box_size();
-        } else if let Some(ref mp4a) = self.mp4a {
-            size += mp4a.box_size();
-        } else if let Some(ref tx3g) = self.tx3g {
-            size += tx3g.box_size();
-        }
-        size
+        HEADER_SIZE
+            + HEADER_EXT_SIZE
+            + 4
+            + self.entries.iter().map(SampleEntry::box_size).sum::<u64>()
+    }
+
+    pub fn entry(&self, index: u32) -> Option<&SampleEntry> {
+        index
+            .checked_sub(1)
+            .and_then(|index| self.entries.get(index as usize))
+    }
+
+    pub fn avc1(&self) -> Option<&Avc1Box> {
+        self.entries.iter().find_map(|entry| match entry {
+            SampleEntry::Avc1(entry) => Some(entry),
+            _ => None,
+        })
+    }
+
+    pub fn hev1(&self) -> Option<&Hev1Box> {
+        self.entries.iter().find_map(|entry| match entry {
+            SampleEntry::Hev1(entry) => Some(entry),
+            _ => None,
+        })
+    }
+
+    pub fn hvc1(&self) -> Option<&Hev1Box> {
+        self.entries.iter().find_map(|entry| match entry {
+            SampleEntry::Hvc1(entry) => Some(entry),
+            _ => None,
+        })
+    }
+
+    pub fn vp09(&self) -> Option<&Vp09Box> {
+        self.entries.iter().find_map(|entry| match entry {
+            SampleEntry::Vp09(entry) => Some(entry),
+            _ => None,
+        })
+    }
+
+    pub fn mp4a(&self) -> Option<&Mp4aBox> {
+        self.entries.iter().find_map(|entry| match entry {
+            SampleEntry::Mp4a(entry) => Some(entry),
+            _ => None,
+        })
+    }
+
+    pub fn mp4a_mut(&mut self) -> Option<&mut Mp4aBox> {
+        self.entries.iter_mut().find_map(|entry| match entry {
+            SampleEntry::Mp4a(entry) => Some(entry),
+            _ => None,
+        })
+    }
+
+    pub fn tx3g(&self) -> Option<&Tx3gBox> {
+        self.entries.iter().find_map(|entry| match entry {
+            SampleEntry::Tx3g(entry) => Some(entry),
+            _ => None,
+        })
     }
 }
 
@@ -64,68 +133,57 @@ impl Mp4Box for StsdBox {
     }
 
     fn summary(&self) -> Result<String> {
-        let s = String::new();
-        Ok(s)
+        Ok(format!("entry_count={}", self.entries.len()))
     }
 }
 
 impl<R: Read + Seek> ReadBox<&mut R> for StsdBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
         let start = box_start(reader)?;
-
         let (version, flags) = read_box_header_ext(reader)?;
-
-        reader.read_u32::<BigEndian>()?; // XXX entry_count
-
-        let mut avc1 = None;
-        let mut hev1 = None;
-        let mut hvc1 = None;
-        let mut vp09 = None;
-        let mut mp4a = None;
-        let mut tx3g = None;
-
-        // Get box header.
-        let header = BoxHeader::read(reader)?;
-        let BoxHeader { name, size: s } = header;
-        if s > size {
-            return Err(Error::InvalidData(
-                "stsd box contains a box with a larger size than it",
-            ));
+        let entry_count = reader.read_u32::<BigEndian>()?;
+        let entry_bytes = size
+            .checked_sub(HEADER_SIZE + HEADER_EXT_SIZE + 4)
+            .ok_or(Error::InvalidData("invalid stsd box size"))?;
+        if u64::from(entry_count) > entry_bytes / HEADER_SIZE {
+            return Err(Error::InvalidData("stsd entry count exceeds box size"));
         }
-
-        match name {
-            BoxType::Avc1Box => {
-                avc1 = Some(Avc1Box::read_box(reader, s)?);
+        let mut entries = Vec::with_capacity(entry_count as usize);
+        for _ in 0..entry_count {
+            let BoxHeader {
+                name,
+                size: entry_size,
+            } = BoxHeader::read(reader)?;
+            if entry_size < HEADER_SIZE
+                || reader.stream_position()? - start + entry_size - HEADER_SIZE > size
+            {
+                return Err(Error::InvalidData("invalid stsd sample entry size"));
             }
-            BoxType::Hev1Box => {
-                hev1 = Some(Hev1Box::read_box(reader, s)?);
-            }
-            BoxType::Hvc1Box => {
-                hvc1 = Some(Hev1Box::read_box(reader, s)?);
-            }
-            BoxType::Vp09Box => {
-                vp09 = Some(Vp09Box::read_box(reader, s)?);
-            }
-            BoxType::Mp4aBox => {
-                mp4a = Some(Mp4aBox::read_box(reader, s)?);
-            }
-            BoxType::Tx3gBox => {
-                tx3g = Some(Tx3gBox::read_box(reader, s)?);
-            }
-            _ => {}
+            let entry = match name {
+                BoxType::Avc1Box => SampleEntry::Avc1(Avc1Box::read_box(reader, entry_size)?),
+                BoxType::Hev1Box => SampleEntry::Hev1(Hev1Box::read_box(reader, entry_size)?),
+                BoxType::Hvc1Box => SampleEntry::Hvc1(Hev1Box::read_box(reader, entry_size)?),
+                BoxType::Vp09Box => SampleEntry::Vp09(Vp09Box::read_box(reader, entry_size)?),
+                BoxType::Mp4aBox => SampleEntry::Mp4a(Mp4aBox::read_box(reader, entry_size)?),
+                BoxType::Tx3gBox => SampleEntry::Tx3g(Tx3gBox::read_box(reader, entry_size)?),
+                _ => {
+                    let data_len = usize::try_from(entry_size - HEADER_SIZE)
+                        .map_err(|_| Error::InvalidData("stsd sample entry is too large"))?;
+                    let mut data = vec![0; data_len];
+                    reader.read_exact(&mut data)?;
+                    SampleEntry::Unknown {
+                        box_type: name.into(),
+                        data,
+                    }
+                }
+            };
+            entries.push(entry);
         }
-
         skip_bytes_to(reader, start + size)?;
-
         Ok(Self {
             version,
             flags,
-            avc1,
-            hev1,
-            hvc1,
-            vp09,
-            mp4a,
-            tx3g,
+            entries,
         })
     }
 }
@@ -136,23 +194,15 @@ impl<W: Write> WriteBox<&mut W> for StsdBox {
         BoxHeader::new(self.box_type(), size).write(writer)?;
 
         write_box_header_ext(writer, self.version, self.flags)?;
-
-        writer.write_u32::<BigEndian>(1)?; // entry_count
-
-        if let Some(ref avc1) = self.avc1 {
-            avc1.write_box(writer)?;
-        } else if let Some(ref hev1) = self.hev1 {
-            hev1.write_box(writer)?;
-        } else if let Some(ref hvc1) = self.hvc1 {
-            hvc1.write_box_with_type(writer, BoxType::Hvc1Box)?;
-        } else if let Some(ref vp09) = self.vp09 {
-            vp09.write_box(writer)?;
-        } else if let Some(ref mp4a) = self.mp4a {
-            mp4a.write_box(writer)?;
-        } else if let Some(ref tx3g) = self.tx3g {
-            tx3g.write_box(writer)?;
+        writer.write_u32::<BigEndian>(
+            self.entries
+                .len()
+                .try_into()
+                .map_err(|_| Error::InvalidData("too many stsd sample entries"))?,
+        )?;
+        for entry in &self.entries {
+            entry.write_box(writer)?;
         }
-
         Ok(size)
     }
 }
@@ -163,9 +213,20 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn hvc1_sample_entry_round_trips() {
+    fn multiple_video_sample_entries_round_trip_in_order() {
         let source = StsdBox {
-            hvc1: Some(Hev1Box::default()),
+            entries: vec![
+                SampleEntry::Avc1(Avc1Box {
+                    width: 640,
+                    height: 360,
+                    ..Avc1Box::default()
+                }),
+                SampleEntry::Hvc1(Hev1Box {
+                    width: 3840,
+                    height: 2160,
+                    ..Hev1Box::default()
+                }),
+            ],
             ..Default::default()
         };
         let mut buffer = Vec::new();
@@ -174,8 +235,76 @@ mod tests {
         let mut reader = Cursor::new(buffer);
         let header = BoxHeader::read(&mut reader).unwrap();
         let parsed = StsdBox::read_box(&mut reader, header.size).unwrap();
-        assert!(parsed.avc1.is_none());
-        assert!(parsed.hev1.is_none());
-        assert!(parsed.hvc1.is_some());
+        assert_eq!(parsed.entries.len(), 2);
+        assert!(matches!(
+            parsed.entry(1),
+            Some(SampleEntry::Avc1(entry)) if entry.width == 640
+        ));
+        assert!(matches!(
+            parsed.entry(2),
+            Some(SampleEntry::Hvc1(entry)) if entry.width == 3840
+        ));
+    }
+
+    #[test]
+    fn rejects_entry_count_that_cannot_fit_in_the_box() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        bytes.extend_from_slice(b"stsd");
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&u32::MAX.to_be_bytes());
+
+        let mut reader = Cursor::new(bytes);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let error = StsdBox::read_box(&mut reader, header.size).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidData("stsd entry count exceeds box size")
+        ));
+    }
+
+    #[test]
+    fn rejects_truncated_known_sample_entry() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&24u32.to_be_bytes());
+        bytes.extend_from_slice(b"stsd");
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&8u32.to_be_bytes());
+        bytes.extend_from_slice(b"avc1");
+
+        let mut reader = Cursor::new(bytes);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let error = StsdBox::read_box(&mut reader, header.size).unwrap_err();
+        assert!(matches!(error, Error::IoError(_)));
+    }
+
+    #[test]
+    fn truncated_and_mutated_stsd_inputs_never_panic() {
+        let source = StsdBox {
+            entries: vec![SampleEntry::Avc1(Avc1Box {
+                width: 640,
+                height: 360,
+                ..Avc1Box::default()
+            })],
+            ..Default::default()
+        };
+        let mut valid = Vec::new();
+        source.write_box(&mut valid).unwrap();
+        let parse = |bytes: Vec<u8>| {
+            let mut reader = Cursor::new(bytes);
+            if let Ok(header) = BoxHeader::read(&mut reader) {
+                let _ = StsdBox::read_box(&mut reader, header.size);
+            }
+        };
+        for length in 0..valid.len() {
+            let truncated = valid[..length].to_vec();
+            assert!(std::panic::catch_unwind(|| parse(truncated)).is_ok());
+        }
+        for index in 0..valid.len() {
+            let mut mutated = valid.clone();
+            mutated[index] ^= 0xff;
+            assert!(std::panic::catch_unwind(|| parse(mutated)).is_ok());
+        }
     }
 }

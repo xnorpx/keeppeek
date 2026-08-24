@@ -1,4 +1,5 @@
 use crate::{
+    cameras::CameraRecordingMode,
     config::StorageToml,
     storage::{
         catalog::RecordingCatalogHandle, demand::RecordingDemand,
@@ -9,7 +10,7 @@ use crate::{
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, RwLock, mpsc},
     time::{Duration, Instant},
 };
 
@@ -95,9 +96,232 @@ struct CameraPipeline {
     last_flush: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CameraRecordingPolicy {
+    mode: CameraRecordingMode,
+    event_duration: Duration,
+    main_until: Option<Instant>,
+    event_main_state: EventMainState,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum EventMainState {
+    #[default]
+    Idle,
+    WaitingForKeyframe,
+    Recording,
+}
+
+enum AdmissionDecision {
+    Record,
+    RecordAs(&'static str),
+    Ignore,
+}
+
+#[derive(Clone, Default)]
+struct RecordingAdmission {
+    policies: Arc<RwLock<HashMap<String, CameraRecordingPolicy>>>,
+}
+
+impl RecordingAdmission {
+    fn configure(&self, camera_id: &str, mode: CameraRecordingMode, event_duration: Duration) {
+        self.policies
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                camera_id.to_owned(),
+                CameraRecordingPolicy {
+                    mode,
+                    event_duration,
+                    main_until: None,
+                    event_main_state: EventMainState::Idle,
+                },
+            );
+    }
+
+    fn note_event_at(&self, camera_id: &str, now: Instant) {
+        let mut policies = self
+            .policies
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(policy) = policies.get_mut(camera_id) else {
+            return;
+        };
+        if policy.mode == CameraRecordingMode::EventBoost {
+            policy.main_until = now.checked_add(policy.event_duration);
+            if policy.event_main_state == EventMainState::Idle {
+                policy.event_main_state = EventMainState::WaitingForKeyframe;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn decide_at(
+        &self,
+        camera_id: &str,
+        stream_id: &str,
+        is_video: bool,
+        is_video_keyframe: bool,
+        now: Instant,
+    ) -> AdmissionDecision {
+        let mut policies = self
+            .policies
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let policy =
+            policies
+                .entry(camera_id.to_owned())
+                .or_insert_with(|| CameraRecordingPolicy {
+                    mode: CameraRecordingMode::default(),
+                    event_duration: Duration::from_secs(60),
+                    main_until: None,
+                    event_main_state: EventMainState::Idle,
+                });
+        Self::decide(policy, stream_id, is_video, is_video_keyframe, now)
+    }
+
+    fn ingest_at(
+        &self,
+        tx: &mpsc::Sender<Command>,
+        identity: RecordingStreamIdentity,
+        frame: RecordingFrame,
+        now: Instant,
+    ) {
+        self.ingest_with_hook_at(tx, identity, frame, now, || {});
+    }
+
+    fn ingest_with_hook_at(
+        &self,
+        tx: &mpsc::Sender<Command>,
+        mut identity: RecordingStreamIdentity,
+        mut frame: RecordingFrame,
+        now: Instant,
+        before_send: impl FnOnce(),
+    ) {
+        let mut policies = self
+            .policies
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let policy = policies
+            .entry(identity.source_id.clone())
+            .or_insert_with(|| CameraRecordingPolicy {
+                mode: CameraRecordingMode::default(),
+                event_duration: Duration::from_secs(60),
+                main_until: None,
+                event_main_state: EventMainState::Idle,
+            });
+        let decision = Self::decide(
+            policy,
+            &identity.stream_id,
+            frame.frame.is_video(),
+            frame.is_video_keyframe(),
+            now,
+        );
+        before_send();
+        match decision {
+            AdmissionDecision::Record => {
+                let _ = tx.send(Command::Ingest { identity, frame });
+            }
+            AdmissionDecision::RecordAs(stream_id) => {
+                frame.timestamp = None;
+                identity = identity.with_recording_stream(stream_id);
+                let _ = tx.send(Command::Ingest { identity, frame });
+            }
+            AdmissionDecision::Ignore => {}
+        }
+    }
+
+    fn decide(
+        policy: &mut CameraRecordingPolicy,
+        stream_id: &str,
+        is_video: bool,
+        is_video_keyframe: bool,
+        now: Instant,
+    ) -> AdmissionDecision {
+        match (policy.mode, stream_id) {
+            (CameraRecordingMode::Sub, "sub")
+            | (CameraRecordingMode::Main, "main")
+            | (CameraRecordingMode::Both, "main" | "sub") => AdmissionDecision::Record,
+            (CameraRecordingMode::EventBoost, "main" | "sub") if !is_video => {
+                let preferred = if policy.event_main_state == EventMainState::Recording {
+                    "main"
+                } else {
+                    "sub"
+                };
+                if stream_id == preferred {
+                    AdmissionDecision::RecordAs("sub")
+                } else {
+                    AdmissionDecision::Ignore
+                }
+            }
+            (CameraRecordingMode::EventBoost, "main" | "sub") => {
+                if policy.event_main_state == EventMainState::WaitingForKeyframe
+                    && policy.main_until.is_none_or(|deadline| now >= deadline)
+                {
+                    policy.event_main_state = EventMainState::Idle;
+                    policy.main_until = None;
+                }
+                match policy.event_main_state {
+                    EventMainState::Idle if stream_id == "sub" => {
+                        AdmissionDecision::RecordAs("sub")
+                    }
+                    EventMainState::WaitingForKeyframe if stream_id == "sub" => {
+                        AdmissionDecision::RecordAs("sub")
+                    }
+                    EventMainState::WaitingForKeyframe
+                        if stream_id == "main" && is_video_keyframe =>
+                    {
+                        policy.event_main_state = EventMainState::Recording;
+                        AdmissionDecision::RecordAs("sub")
+                    }
+                    EventMainState::Recording
+                        if policy.main_until.is_some_and(|deadline| now < deadline)
+                            && stream_id == "main" =>
+                    {
+                        AdmissionDecision::RecordAs("sub")
+                    }
+                    EventMainState::Recording
+                        if stream_id == "sub"
+                            && is_video_keyframe
+                            && policy.main_until.is_none_or(|deadline| now >= deadline) =>
+                    {
+                        policy.event_main_state = EventMainState::Idle;
+                        policy.main_until = None;
+                        AdmissionDecision::RecordAs("sub")
+                    }
+                    EventMainState::Recording if stream_id == "main" => {
+                        AdmissionDecision::RecordAs("sub")
+                    }
+                    _ => AdmissionDecision::Ignore,
+                }
+            }
+            _ => AdmissionDecision::Ignore,
+        }
+    }
+
+    fn preferred_audio_stream(&self, camera_id: &str) -> &'static str {
+        let policies = self
+            .policies
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match policies.get(camera_id).map(|policy| policy.mode) {
+            Some(CameraRecordingMode::Main | CameraRecordingMode::Both) => "main",
+            Some(CameraRecordingMode::EventBoost)
+                if policies
+                    .get(camera_id)
+                    .is_some_and(|policy| policy.event_main_state == EventMainState::Recording) =>
+            {
+                "main"
+            }
+            _ => "sub",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct StorageHandle {
     tx: mpsc::Sender<Command>,
+    admission: RecordingAdmission,
 }
 
 impl StorageHandle {
@@ -106,13 +330,32 @@ impl StorageHandle {
     }
 
     pub fn ingest_stream(&self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
-        let _ = self.tx.send(Command::Ingest { identity, frame });
+        self.admission
+            .ingest_at(&self.tx, identity, frame, Instant::now());
+    }
+
+    pub fn configure_camera_recording(
+        &self,
+        camera_id: &str,
+        mode: CameraRecordingMode,
+        event_duration: Duration,
+    ) {
+        self.admission.configure(camera_id, mode, event_duration);
+    }
+
+    pub fn note_camera_event(&self, camera_id: &str) {
+        self.admission.note_event_at(camera_id, Instant::now());
+    }
+
+    pub fn preferred_audio_stream(&self, camera_id: &str) -> &'static str {
+        self.admission.preferred_audio_stream(camera_id)
     }
 }
 
 pub struct StorageEngine {
     tx: mpsc::Sender<Command>,
     demand: RecordingDemand,
+    admission: RecordingAdmission,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -152,6 +395,7 @@ impl StorageEngine {
         );
 
         let demand = RecordingDemand::new(DEMAND_INACTIVITY_GRACE);
+        let admission = RecordingAdmission::default();
         let worker_demand = demand.clone();
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -165,6 +409,7 @@ impl StorageEngine {
         Self {
             tx,
             demand,
+            admission,
             thread: Some(thread),
         }
     }
@@ -172,6 +417,7 @@ impl StorageEngine {
     pub fn handle(&self) -> StorageHandle {
         StorageHandle {
             tx: self.tx.clone(),
+            admission: self.admission.clone(),
         }
     }
 
@@ -242,6 +488,8 @@ impl WriterWorker {
         let reap_interval = Duration::from_secs(300);
         let mut last_reap = Instant::now();
 
+        self.enforce_storage_limit();
+
         loop {
             let cmd = if self.config.long_term_max_bytes > 0 {
                 match rx.recv_timeout(reap_interval) {
@@ -277,15 +525,22 @@ impl WriterWorker {
 
             if self.config.long_term_max_bytes > 0 && last_reap.elapsed() >= reap_interval {
                 last_reap = Instant::now();
-                let removed = self
-                    .long_term
-                    .enforce_limit_with_removed(self.config.long_term_max_bytes);
-                if let Some(catalog) = &self.catalog
-                    && let Err(error) = catalog.delete_recordings_by_path(&removed)
-                {
-                    tracing::warn!(%error, "unable to remove retained recording catalog rows");
-                }
+                self.enforce_storage_limit();
             }
+        }
+    }
+
+    fn enforce_storage_limit(&self) {
+        if self.config.long_term_max_bytes == 0 {
+            return;
+        }
+        let removed = self
+            .long_term
+            .enforce_limit_with_removed(self.config.long_term_max_bytes);
+        if let Some(catalog) = &self.catalog
+            && let Err(error) = catalog.delete_recordings_by_path(&removed)
+        {
+            tracing::warn!(%error, "unable to remove retained recording catalog rows");
         }
     }
 
@@ -628,7 +883,12 @@ fn cleanup_stale_active_files(root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{MediaFrame, VideoCodec, VideoFrame};
+    use crate::storage::{
+        AudioCodec, AudioFrame, CatalogRecording, MediaFrame, RecordingCatalog, VideoCodec,
+        VideoFrame,
+    };
+    use bytes::Bytes;
+    use std::fs::File;
 
     fn storage_config(name: &str) -> StorageConfig {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -666,6 +926,210 @@ mod tests {
             PathBuf::from("/archive/keeppeek/.event-thumbnails")
         );
         assert_eq!(storage.event_thumbnail_max_bytes, 512 * MEBIBYTE_BYTES);
+        assert_eq!(storage.long_term_max_bytes, 1_024 * GIBIBYTE_BYTES);
+    }
+
+    #[test]
+    fn recording_admission_enforces_modes_and_keyframe_aligned_event_boost() {
+        let admission = RecordingAdmission::default();
+        let now = Instant::now();
+
+        admission.configure("off", CameraRecordingMode::Off, Duration::from_secs(60));
+        admission.configure("sub", CameraRecordingMode::Sub, Duration::from_secs(60));
+        admission.configure("main", CameraRecordingMode::Main, Duration::from_secs(60));
+        admission.configure("both", CameraRecordingMode::Both, Duration::from_secs(60));
+        admission.configure(
+            "event",
+            CameraRecordingMode::EventBoost,
+            Duration::from_secs(60),
+        );
+
+        assert!(matches!(
+            admission.decide_at("off", "sub", true, false, now),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("off", "main", true, true, now),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("sub", "sub", true, false, now),
+            AdmissionDecision::Record
+        ));
+        assert!(matches!(
+            admission.decide_at("sub", "main", true, true, now),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("main", "main", true, false, now),
+            AdmissionDecision::Record
+        ));
+        assert!(matches!(
+            admission.decide_at("main", "sub", true, false, now),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("both", "main", true, false, now),
+            AdmissionDecision::Record
+        ));
+        assert!(matches!(
+            admission.decide_at("both", "sub", true, false, now),
+            AdmissionDecision::Record
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "sub", true, false, now),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "main", true, true, now),
+            AdmissionDecision::Ignore
+        ));
+
+        admission.note_event_at("event", now);
+        assert!(matches!(
+            admission.decide_at("event", "main", true, false, now + Duration::from_secs(1)),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "sub", true, false, now + Duration::from_secs(1)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "main", true, true, now + Duration::from_secs(2)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        assert_eq!(admission.preferred_audio_stream("event"), "main");
+        assert!(matches!(
+            admission.decide_at("event", "sub", true, false, now + Duration::from_secs(3)),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "main", false, false, now + Duration::from_secs(3)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        admission.note_event_at("event", now + Duration::from_secs(30));
+        assert!(matches!(
+            admission.decide_at("event", "main", true, false, now + Duration::from_secs(89)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "main", true, false, now + Duration::from_secs(90)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        admission.note_event_at("event", now + Duration::from_secs(90));
+        assert!(matches!(
+            admission.decide_at("event", "sub", true, true, now + Duration::from_secs(91)),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "main", true, false, now + Duration::from_secs(150)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "sub", true, false, now + Duration::from_secs(151)),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("event", "sub", true, true, now + Duration::from_secs(152)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+        assert_eq!(admission.preferred_audio_stream("event"), "sub");
+        assert!(matches!(
+            admission.decide_at("event", "main", true, false, now + Duration::from_secs(153)),
+            AdmissionDecision::Ignore
+        ));
+
+        admission.configure(
+            "expired",
+            CameraRecordingMode::EventBoost,
+            Duration::from_secs(60),
+        );
+        admission.note_event_at("expired", now);
+        assert!(matches!(
+            admission.decide_at("expired", "main", true, true, now + Duration::from_secs(60)),
+            AdmissionDecision::Ignore
+        ));
+        assert!(matches!(
+            admission.decide_at("expired", "sub", true, false, now + Duration::from_secs(61)),
+            AdmissionDecision::RecordAs("sub")
+        ));
+    }
+
+    #[test]
+    fn admission_and_enqueue_are_atomic_across_source_threads() {
+        let admission = RecordingAdmission::default();
+        let now = Instant::now();
+        admission.configure(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            Duration::from_secs(60),
+        );
+        admission.note_event_at("camera", now);
+
+        let (command_tx, command_rx) = mpsc::channel();
+        let (sub_paused_tx, sub_paused_rx) = mpsc::sync_channel(0);
+        let (release_sub_tx, release_sub_rx) = mpsc::sync_channel(0);
+        let sub_admission = admission.clone();
+        let sub_command_tx = command_tx.clone();
+        let sub_thread = std::thread::spawn(move || {
+            sub_admission.ingest_with_hook_at(
+                &sub_command_tx,
+                RecordingStreamIdentity::new("camera", "sub", "camera"),
+                inter_frame(),
+                now + Duration::from_secs(1),
+                || {
+                    sub_paused_tx.send(()).unwrap();
+                    release_sub_rx.recv().unwrap();
+                },
+            );
+        });
+        sub_paused_rx.recv().unwrap();
+
+        let (main_started_tx, main_started_rx) = mpsc::sync_channel(0);
+        let (main_admitted_tx, main_admitted_rx) = mpsc::sync_channel(1);
+        let main_admission = admission;
+        let main_command_tx = command_tx;
+        let main_thread = std::thread::spawn(move || {
+            main_started_tx.send(()).unwrap();
+            main_admission.ingest_with_hook_at(
+                &main_command_tx,
+                RecordingStreamIdentity::new("camera", "main", "camera"),
+                key_frame(now + Duration::from_secs(2)),
+                now + Duration::from_secs(2),
+                || main_admitted_tx.send(()).unwrap(),
+            );
+        });
+        main_started_rx.recv().unwrap();
+        let main_overtook_sub = main_admitted_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+
+        release_sub_tx.send(()).unwrap();
+        sub_thread.join().unwrap();
+        main_thread.join().unwrap();
+        assert!(
+            !main_overtook_sub,
+            "main admission overtook a paused sub enqueue"
+        );
+
+        let Command::Ingest {
+            identity: first_identity,
+            frame: first_frame,
+        } = command_rx.recv().unwrap()
+        else {
+            panic!("first command must ingest the admitted sub frame");
+        };
+        let Command::Ingest {
+            identity: second_identity,
+            frame: second_frame,
+        } = command_rx.recv().unwrap()
+        else {
+            panic!("second command must ingest the switching main keyframe");
+        };
+        assert_eq!(first_identity.storage_key, "camera/sub");
+        assert!(!first_frame.is_video_keyframe());
+        assert_eq!(second_identity.storage_key, "camera/sub");
+        assert!(second_frame.is_video_keyframe());
     }
 
     fn inter_frame() -> RecordingFrame {
@@ -680,6 +1144,259 @@ mod tests {
                 data: vec![0; 16].into(),
             }),
         }
+    }
+
+    fn key_frame(received_at: Instant) -> RecordingFrame {
+        RecordingFrame {
+            received_at,
+            timestamp: None,
+            frame: MediaFrame::Video(VideoFrame {
+                codec: VideoCodec::H264,
+                is_keyframe: true,
+                width: 320,
+                height: 240,
+                data: vec![
+                    0, 0, 0, 8, 0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68,
+                    0xce, 0x3c, 0x80, 0, 0, 0, 1, 0x65,
+                ]
+                .into(),
+            }),
+        }
+    }
+
+    fn h265_key_frame(received_at: Instant) -> RecordingFrame {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/test-camera/testdata/cc-4k-640x360-h265.mp4");
+        let mut input = mp4::read_mp4(File::open(fixture).unwrap()).unwrap();
+        let (&track_id, track) = input
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.media_type().ok() == Some(mp4::MediaType::H265))
+            .unwrap();
+        let decoder = track.video_decoder_config().unwrap().unwrap();
+        let mp4::MediaConfig::HevcConfig(config) = track.media_config_for_description(1).unwrap()
+        else {
+            panic!("H.265 fixture must expose HEVC configuration");
+        };
+        let sample = (1..=track.sample_count())
+            .find_map(|sample_id| {
+                let sample = input.read_sample(track_id, sample_id).unwrap().unwrap();
+                sample.is_sync.then_some(sample.bytes)
+            })
+            .unwrap();
+        let mut data = Vec::new();
+        for parameter_set in [&config.vps, &config.sps, &config.pps] {
+            data.extend_from_slice(&u32::try_from(parameter_set.len()).unwrap().to_be_bytes());
+            data.extend_from_slice(parameter_set);
+        }
+        data.extend_from_slice(&sample);
+        RecordingFrame {
+            received_at,
+            timestamp: None,
+            frame: MediaFrame::Video(VideoFrame {
+                codec: VideoCodec::H265,
+                is_keyframe: true,
+                width: u32::from(decoder.width),
+                height: u32::from(decoder.height),
+                data: Bytes::from(data),
+            }),
+        }
+    }
+
+    fn audio_frame(received_at: Instant) -> RecordingFrame {
+        RecordingFrame {
+            received_at,
+            timestamp: None,
+            frame: MediaFrame::Audio(AudioFrame {
+                codec: AudioCodec::Aac,
+                sample_rate: 48_000,
+                duration: Duration::from_millis(20),
+                data: vec![0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa],
+            }),
+        }
+    }
+
+    #[test]
+    fn event_boost_writes_sub_and_main_gops_to_one_sub_recording() {
+        let mut config = storage_config("event-boost-single-recording");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        config.short_term_duration = Duration::ZERO;
+        config.flush_interval = Duration::ZERO;
+        let engine = StorageEngine::start(config);
+        let storage = engine.handle();
+        storage.configure_camera_recording(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            Duration::from_secs(60),
+        );
+        let started_at = Instant::now();
+        for offset in [0, 40] {
+            storage.ingest_stream(
+                RecordingStreamIdentity::new("camera", "sub", "camera"),
+                key_frame(started_at + Duration::from_millis(offset)),
+            );
+        }
+        storage.note_camera_event("camera");
+        for offset in [80, 120] {
+            storage.ingest_stream(
+                RecordingStreamIdentity::new("camera", "main", "camera"),
+                key_frame(started_at + Duration::from_millis(offset)),
+            );
+        }
+        engine.shutdown();
+
+        let store = LongTermStore::new(root.clone());
+        let sub_recordings = store.finalized_segments("camera/sub").unwrap();
+        assert_eq!(sub_recordings.len(), 1);
+        assert!(store.finalized_segments("camera/main").unwrap().is_empty());
+        let reader = mp4::read_mp4(std::fs::File::open(&sub_recordings[0]).unwrap()).unwrap();
+        let video = reader
+            .tracks()
+            .values()
+            .find(|track| matches!(track.track_type(), Ok(mp4::TrackType::Video)))
+            .unwrap();
+        assert_eq!(video.sample_count(), 4);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn event_boost_round_trips_h264_h265_h264_with_audio_and_catalog() {
+        let mut config = storage_config("event-boost-full-handoff");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        config.short_term_duration = Duration::ZERO;
+        config.flush_interval = Duration::ZERO;
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let catalog_handle = catalog.handle();
+        let engine = StorageEngine::start_with_catalog(config, catalog_handle.clone());
+        let storage = engine.handle();
+        storage.configure_camera_recording(
+            "camera",
+            CameraRecordingMode::EventBoost,
+            Duration::from_millis(60),
+        );
+        let now = Instant::now();
+        let ingest = |stream: &str, frame: RecordingFrame, at: Instant| {
+            storage.admission.ingest_at(
+                &storage.tx,
+                RecordingStreamIdentity::new("camera", stream, "camera"),
+                frame,
+                at,
+            );
+        };
+
+        ingest("sub", key_frame(now), now);
+        ingest(
+            "sub",
+            audio_frame(now + Duration::from_millis(10)),
+            now + Duration::from_millis(10),
+        );
+        ingest(
+            "sub",
+            key_frame(now + Duration::from_millis(40)),
+            now + Duration::from_millis(40),
+        );
+        storage
+            .admission
+            .note_event_at("camera", now + Duration::from_millis(50));
+        ingest(
+            "main",
+            h265_key_frame(now + Duration::from_millis(80)),
+            now + Duration::from_millis(80),
+        );
+        ingest(
+            "main",
+            audio_frame(now + Duration::from_millis(90)),
+            now + Duration::from_millis(90),
+        );
+        storage
+            .admission
+            .note_event_at("camera", now + Duration::from_millis(100));
+        ingest(
+            "main",
+            h265_key_frame(now + Duration::from_millis(140)),
+            now + Duration::from_millis(140),
+        );
+        ingest(
+            "sub",
+            key_frame(now + Duration::from_millis(150)),
+            now + Duration::from_millis(150),
+        );
+        ingest(
+            "main",
+            h265_key_frame(now + Duration::from_millis(170)),
+            now + Duration::from_millis(170),
+        );
+        ingest(
+            "sub",
+            key_frame(now + Duration::from_millis(180)),
+            now + Duration::from_millis(180),
+        );
+        ingest(
+            "sub",
+            audio_frame(now + Duration::from_millis(190)),
+            now + Duration::from_millis(190),
+        );
+        ingest(
+            "sub",
+            key_frame(now + Duration::from_millis(220)),
+            now + Duration::from_millis(220),
+        );
+        engine.shutdown();
+
+        let sub_fragments = catalog_handle
+            .media_fragments_in_range("camera/sub", i64::MIN + 1, i64::MAX)
+            .unwrap();
+        assert_eq!(sub_fragments.len(), 7);
+        assert!(
+            catalog_handle
+                .media_fragments_in_range("camera/main", i64::MIN + 1, i64::MAX)
+                .unwrap()
+                .is_empty()
+        );
+        let path = PathBuf::from(&sub_fragments[0].path);
+        assert!(
+            sub_fragments
+                .iter()
+                .all(|fragment| fragment.path == sub_fragments[0].path)
+        );
+        let mut reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        let (&video_track_id, video) = reader
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.track_type().ok() == Some(mp4::TrackType::Video))
+            .unwrap();
+        let (&audio_track_id, audio) = reader
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.track_type().ok() == Some(mp4::TrackType::Audio))
+            .unwrap();
+        assert_eq!(video.sample_description_count(), 2);
+        assert_eq!(video.sample_count(), 7);
+        assert_eq!(
+            (1..=video.sample_count())
+                .map(|sample_id| video.sample_description_index(sample_id).unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 1, 2, 2, 2, 1, 1]
+        );
+        assert_eq!(audio.sample_count(), 3);
+        let audio_starts = (1..=audio.sample_count())
+            .map(|sample_id| {
+                reader
+                    .read_sample(audio_track_id, sample_id)
+                    .unwrap()
+                    .unwrap()
+                    .start_time
+            })
+            .collect::<Vec<_>>();
+        assert!(audio_starts.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(reader.sample_count(video_track_id).unwrap(), 7);
+
+        drop(catalog_handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -712,5 +1429,45 @@ mod tests {
         worker.ingest(RecordingStreamIdentity::legacy(STREAM), inter_frame());
 
         assert!(worker.pipelines[STREAM].medium_term.is_none());
+    }
+
+    #[test]
+    fn startup_removes_stale_active_file_and_its_catalog_row() {
+        let config = storage_config("stale-active-recovery");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        let active_path = root
+            .join("camera")
+            .join("sub")
+            .join("2026-08-24")
+            .join("15")
+            .join("recording.mp4.active");
+        std::fs::create_dir_all(active_path.parent().unwrap()).unwrap();
+        std::fs::write(&active_path, b"interrupted recording").unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let catalog_handle = catalog.handle();
+        catalog_handle
+            .upsert_recording(CatalogRecording {
+                id: "interrupted".to_owned(),
+                stream_id: "camera/sub".to_owned(),
+                source_id: Some("camera".to_owned()),
+                logical_stream_id: Some("sub".to_owned()),
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                path: active_path.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 0,
+                finalized: false,
+            })
+            .unwrap();
+
+        let engine = StorageEngine::start_with_catalog(config, catalog_handle.clone());
+        engine.shutdown();
+
+        assert!(!active_path.exists());
+        assert_eq!(catalog_handle.stats().unwrap().recording_files, 0);
+        drop(catalog_handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

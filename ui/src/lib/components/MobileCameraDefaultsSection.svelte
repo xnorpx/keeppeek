@@ -33,6 +33,15 @@
 		const used = Object.entries(evidence.transports).filter(([, count]) => count > 0);
 		return used.length === 1 ? used[0][0].toUpperCase() : 'Mixed';
 	}
+
+	function recordingLabel(): string {
+		const used = Object.entries(evidence.recordingModes).filter(([, count]) => count > 0);
+		if (used.length !== 1) return 'Mixed';
+		if (used[0][0] === 'off') return 'Off';
+		if (used[0][0] === 'event-boost') return 'Sub, main on events';
+		if (used[0][0] === 'both') return 'Main + sub';
+		return `${used[0][0]} only`;
+	}
 </script>
 
 <section
@@ -85,7 +94,7 @@
 		</div>
 		<div class="flex h-12 items-center justify-between px-[14px]">
 			<dt class="text-sm leading-4">Recording</dt>
-			<dd class="font-mono text-xs leading-[14px] text-text-faint">Not exposed</dd>
+			<dd class="font-mono text-xs leading-[14px] text-text-faint">{recordingLabel()}</dd>
 		</div>
 	</dl>
 

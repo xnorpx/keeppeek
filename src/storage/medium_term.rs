@@ -2,7 +2,7 @@ use crate::media_time::duration_to_ticks;
 use crate::storage::{
     adts,
     catalog::{CatalogFragment, CatalogKeyframe, CatalogRecording, RecordingCatalogHandle},
-    frame::{AudioCodec, MediaFrame, VideoCodec},
+    frame::{AudioCodec, MediaFrame, VideoCodec, VideoFrame},
     identity::RecordingStreamIdentity,
     layout, nal,
     segment::RecordingFrame,
@@ -37,12 +37,15 @@ pub struct MediumTermWriter {
 enum WriterState {
     WaitingForKeyframe,
     Preparing(Vec<RecordingFrame>),
-    Active(ActiveWriter),
+    Active(Box<ActiveWriter>),
 }
 
 struct ActiveWriter {
     writer: mp4::FragmentedMp4Writer<BufWriter<File>>,
     video_track: u32,
+    video_codec: VideoCodec,
+    video_media_config: mp4::MediaConfig,
+    video_sample_description_index: u32,
     audio_track: Option<u32>,
     audio_timescale: u32,
     last_video_dts: Option<u64>,
@@ -173,7 +176,7 @@ impl MediumTermWriter {
             return Ok(());
         };
         let active = self.init_mp4(&frames)?;
-        self.state = WriterState::Active(active);
+        self.state = WriterState::Active(Box::new(active));
         for frame in frames {
             self.write_frame(frame)?;
         }
@@ -200,89 +203,13 @@ impl MediumTermWriter {
             timescale: 1000,
         };
 
-        let media_conf = match video.codec {
-            VideoCodec::H264 => {
-                let (sps, pps) = nal::extract_h264_sps_pps(&video.data);
-                let sps = sps.ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.264 keyframe has no SPS",
-                    )
-                })?;
-                let pps = pps.ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.264 keyframe has no PPS",
-                    )
-                })?;
-                let (width, height) = nal::h264_pixel_dimensions(&sps, &pps)
-                    .unwrap_or((video.width as u16, video.height as u16));
-                mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
-                    width,
-                    height,
-                    seq_param_set: sps,
-                    pic_param_set: pps,
-                })
-            }
-            VideoCodec::H265 => {
-                let (vps, sps, pps) = nal::extract_h265_params(&video.data);
-                let vps = vps.ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.265 keyframe has no VPS",
-                    )
-                })?;
-                let sps = sps.ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.265 keyframe has no SPS",
-                    )
-                })?;
-                let pps = pps.ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "H.265 keyframe has no PPS",
-                    )
-                })?;
-                let parameters = retina::codec::h265::parameters_from_vps_sps_pps(
-                    &vps,
-                    &sps,
-                    &pps,
-                    retina::codec::h26x::Framing::FourByteLength,
-                )
-                .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("invalid H.265 parameter sets: {error}"),
-                    )
-                })?;
-                let (width, height) = parameters.pixel_dimensions();
-                mp4::MediaConfig::HevcConfig(mp4::HevcConfig {
-                    width: u16::try_from(width).map_err(|_| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "H.265 width exceeds MP4 range",
-                        )
-                    })?,
-                    height: u16::try_from(height).map_err(|_| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "H.265 height exceeds MP4 range",
-                        )
-                    })?,
-                    vps,
-                    sps,
-                    pps,
-                    decoder_config: parameters.extra_data().to_vec(),
-                })
-            }
-        };
+        let media_conf = required_video_media_config(video)?;
 
         let video_config = mp4::TrackConfig {
             track_type: mp4::TrackType::Video,
             timescale: VIDEO_TIMESCALE,
             language: String::from("und"),
-            media_conf,
+            media_conf: media_conf.clone(),
         };
         let audio = frames.iter().find_map(|frame| {
             let MediaFrame::Audio(audio) = &frame.frame else {
@@ -348,6 +275,9 @@ impl MediumTermWriter {
         Ok(ActiveWriter {
             writer,
             video_track: 1,
+            video_codec: video.codec,
+            video_media_config: media_conf,
+            video_sample_description_index: 1,
             audio_track: audio.map(|_| 2),
             audio_timescale: audio.map_or(0, |(timescale, _)| timescale),
             last_video_dts: None,
@@ -373,9 +303,9 @@ impl MediumTermWriter {
                     elapsed,
                     VIDEO_TIMESCALE,
                 );
-                let default_duration = VIDEO_TIMESCALE / 30;
+                let fallback_duration = active.last_video_duration.max(1);
                 let previous_dts = active.last_video_dts;
-                let dts = resolve_video_dts(previous_dts, camera_dts, default_duration);
+                let dts = resolve_video_dts(previous_dts, camera_dts, fallback_duration);
                 if video.is_keyframe && active.writer.has_pending_samples() {
                     let fragment_start_dts = active.fragment_start_dts.ok_or_else(|| {
                         std::io::Error::other("active MP4 fragment has no start timestamp")
@@ -388,17 +318,52 @@ impl MediumTermWriter {
                         fragment.map(|fragment| (fragment, fragment_start_dts, dts));
                     active.fragment_start_dts = Some(dts);
                 }
+                if video.is_keyframe {
+                    if let Some(media_config) = video_media_config(&video)? {
+                        active.video_sample_description_index = active
+                            .writer
+                            .add_sample_description(active.video_track, media_config.clone())
+                            .map_err(mp4_err)?;
+                        active.video_codec = video.codec;
+                        active.video_media_config = media_config;
+                    } else if video.codec != active.video_codec {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "video codec changed without decoder parameters",
+                        ));
+                    }
+                } else {
+                    if video.codec != active.video_codec {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "video codec changed without a keyframe boundary",
+                        ));
+                    }
+                    let has_parameters = match video.codec {
+                        VideoCodec::H264 => nal::has_h264_parameter_sets(&video.data),
+                        VideoCodec::H265 => nal::has_h265_parameter_sets(&video.data),
+                    };
+                    if has_parameters
+                        && required_video_media_config(&video)? != active.video_media_config
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "video decoder parameters changed without a keyframe boundary",
+                        ));
+                    }
+                }
                 active.fragment_start_dts.get_or_insert(dts);
                 let duration = active
                     .last_video_dts
                     .and_then(|last| u32::try_from(dts - last).ok())
                     .filter(|duration| *duration > 0)
-                    .unwrap_or(default_duration);
+                    .unwrap_or(fallback_duration);
                 let data_len = video.data.len();
                 active
                     .writer
-                    .write_sample(
+                    .write_sample_with_description(
                         active.video_track,
+                        active.video_sample_description_index,
                         mp4::Mp4Sample {
                             start_time: dts,
                             duration,
@@ -517,13 +482,14 @@ impl MediumTermWriter {
         }
         let state = std::mem::replace(&mut self.state, WriterState::WaitingForKeyframe);
         match state {
-            WriterState::Active(ActiveWriter {
-                mut writer,
-                last_video_dts,
-                last_video_duration,
-                fragment_start_dts,
-                ..
-            }) => {
+            WriterState::Active(active) => {
+                let ActiveWriter {
+                    mut writer,
+                    last_video_dts,
+                    last_video_duration,
+                    fragment_start_dts,
+                    ..
+                } = *active;
                 tracing::debug!(path = %self.path.display(), "writing final MP4 fragment");
                 let final_fragment = writer.write_end().map_err(mp4_err)?;
                 let mut inner = writer.into_writer();
@@ -575,7 +541,98 @@ impl MediumTermWriter {
     }
 }
 
-fn resolve_video_dts(previous_dts: Option<u64>, camera_dts: u64, default_duration: u32) -> u64 {
+fn required_video_media_config(video: &VideoFrame) -> std::io::Result<mp4::MediaConfig> {
+    video_media_config(video)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} keyframe has no decoder parameters", video.codec),
+        )
+    })
+}
+
+fn video_media_config(video: &VideoFrame) -> std::io::Result<Option<mp4::MediaConfig>> {
+    match video.codec {
+        VideoCodec::H264 => {
+            let (sps, pps) = nal::extract_h264_sps_pps(&video.data);
+            let (sps, pps) = match (sps, pps) {
+                (None, None) => return Ok(None),
+                (Some(sps), Some(pps)) => (sps, pps),
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "H.264 keyframe has incomplete decoder parameters",
+                    ));
+                }
+            };
+            let fallback_width = u16::try_from(video.width).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "H.264 width exceeds MP4 range",
+                )
+            })?;
+            let fallback_height = u16::try_from(video.height).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "H.264 height exceeds MP4 range",
+                )
+            })?;
+            let (width, height) =
+                nal::h264_pixel_dimensions(&sps, &pps).unwrap_or((fallback_width, fallback_height));
+            Ok(Some(mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+                width,
+                height,
+                seq_param_set: sps,
+                pic_param_set: pps,
+            })))
+        }
+        VideoCodec::H265 => {
+            let (vps, sps, pps) = nal::extract_h265_params(&video.data);
+            let (vps, sps, pps) = match (vps, sps, pps) {
+                (None, None, None) => return Ok(None),
+                (Some(vps), Some(sps), Some(pps)) => (vps, sps, pps),
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "H.265 keyframe has incomplete decoder parameters",
+                    ));
+                }
+            };
+            let parameters = retina::codec::h265::parameters_from_vps_sps_pps(
+                &vps,
+                &sps,
+                &pps,
+                retina::codec::h26x::Framing::FourByteLength,
+            )
+            .map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid H.265 parameter sets: {error}"),
+                )
+            })?;
+            let (width, height) = parameters.pixel_dimensions();
+            Ok(Some(mp4::MediaConfig::HevcConfig(mp4::HevcConfig {
+                width: u16::try_from(width).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "H.265 width exceeds MP4 range",
+                    )
+                })?,
+                height: u16::try_from(height).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "H.265 height exceeds MP4 range",
+                    )
+                })?,
+                vps,
+                sps,
+                pps,
+                decoder_config: parameters.extra_data().to_vec(),
+            })))
+        }
+    }
+}
+
+fn resolve_video_dts(previous_dts: Option<u64>, camera_dts: u64, fallback_duration: u32) -> u64 {
     let Some(previous_dts) = previous_dts else {
         return camera_dts;
     };
@@ -583,7 +640,7 @@ fn resolve_video_dts(previous_dts: Option<u64>, camera_dts: u64, default_duratio
         return camera_dts;
     }
 
-    previous_dts.saturating_add(u64::from(default_duration))
+    previous_dts.saturating_add(u64::from(fallback_duration.max(1)))
 }
 
 fn timestamp_ticks_or_fallback(
@@ -643,7 +700,10 @@ const fn sample_freq_index(rate: u32) -> mp4::SampleFreqIndex {
 
 #[cfg(test)]
 mod tests {
-    use super::{MediumTermWriter, audio_sample_duration, resolve_video_dts};
+    use super::{
+        MediumTermWriter, audio_sample_duration, required_video_media_config, resolve_video_dts,
+        timestamp_ticks_or_fallback,
+    };
     use crate::storage::{
         AudioCodec, AudioFrame, MediaFrame, RecordingCatalog, RecordingFrame, VideoCodec,
         VideoFrame,
@@ -686,6 +746,77 @@ mod tests {
         }
     }
 
+    fn h265_keyframe() -> (Bytes, mp4::Mp4VideoDecoderConfig) {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/test-camera/testdata/cc-4k-640x360-h265.mp4");
+        let mut input = mp4::read_mp4(File::open(fixture).unwrap()).unwrap();
+        let (&track_id, track) = input
+            .tracks()
+            .iter()
+            .find(|(_, track)| matches!(track.media_type(), Ok(mp4::MediaType::H265)))
+            .unwrap();
+        let decoder = track.video_decoder_config().unwrap().unwrap();
+        let sample_entry = track
+            .trak
+            .mdia
+            .minf
+            .stbl
+            .stsd
+            .hvc1()
+            .or_else(|| track.trak.mdia.minf.stbl.stsd.hev1())
+            .unwrap();
+        let configuration = sample_entry.hvcc.configuration().unwrap();
+        let sample = (1..=track.sample_count())
+            .find_map(|sample_id| {
+                let sample = input.read_sample(track_id, sample_id).unwrap().unwrap();
+                sample.is_sync.then_some(sample.bytes)
+            })
+            .unwrap();
+        let mut frame_data = Vec::new();
+        for parameter_set in [
+            &configuration.vps[0],
+            &configuration.sps[0],
+            &configuration.pps[0],
+        ] {
+            frame_data
+                .extend_from_slice(&u32::try_from(parameter_set.len()).unwrap().to_be_bytes());
+            frame_data.extend_from_slice(parameter_set);
+        }
+        frame_data.extend_from_slice(&sample);
+        (Bytes::from(frame_data), decoder)
+    }
+
+    fn h264_keyframe(name: &str) -> (Bytes, mp4::Mp4VideoDecoderConfig) {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/test-camera/testdata")
+            .join(name);
+        let mut input = mp4::read_mp4(File::open(fixture).unwrap()).unwrap();
+        let (&track_id, track) = input
+            .tracks()
+            .iter()
+            .find(|(_, track)| matches!(track.media_type(), Ok(mp4::MediaType::H264)))
+            .unwrap();
+        let decoder = track.video_decoder_config().unwrap().unwrap();
+        let config = track.media_config_for_description(1).unwrap();
+        let mp4::MediaConfig::AvcConfig(config) = config else {
+            panic!("H.264 fixture must expose an AVC configuration");
+        };
+        let sample = (1..=track.sample_count())
+            .find_map(|sample_id| {
+                let sample = input.read_sample(track_id, sample_id).unwrap().unwrap();
+                sample.is_sync.then_some(sample.bytes)
+            })
+            .unwrap();
+        let mut frame_data = Vec::new();
+        for parameter_set in [&config.seq_param_set, &config.pic_param_set] {
+            frame_data
+                .extend_from_slice(&u32::try_from(parameter_set.len()).unwrap().to_be_bytes());
+            frame_data.extend_from_slice(parameter_set);
+        }
+        frame_data.extend_from_slice(&sample);
+        (Bytes::from(frame_data), decoder)
+    }
+
     #[test]
     fn writer_waits_for_complete_decoder_parameters() {
         let root = std::env::temp_dir().join(format!(
@@ -706,7 +837,7 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        assert_eq!(error.to_string(), "H.264 keyframe has no SPS");
+        assert_eq!(error.to_string(), "h264 keyframe has no decoder parameters");
         assert!(!writer.active_path().exists());
 
         writer
@@ -728,6 +859,151 @@ mod tests {
     }
 
     #[test]
+    fn writer_reuses_active_description_when_a_later_keyframe_omits_parameters() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-repeated-parameters-{}",
+            rand::random::<u64>()
+        ));
+        let started_at = Instant::now();
+        let mut writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8 * 1024)
+            .expect("create writer");
+        writer
+            .append_one(video_frame(started_at, Duration::ZERO))
+            .unwrap();
+        writer
+            .append_one(video_frame(
+                started_at + Duration::from_millis(40),
+                Duration::from_millis(40),
+            ))
+            .unwrap();
+        writer
+            .append_one(RecordingFrame {
+                received_at: started_at + Duration::from_millis(80),
+                timestamp: Some(Duration::from_millis(80)),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: VideoCodec::H264,
+                    is_keyframe: true,
+                    width: 320,
+                    height: 240,
+                    data: Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+                }),
+            })
+            .unwrap();
+
+        let path = writer.finalize().unwrap();
+        let reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        let video = reader
+            .tracks()
+            .values()
+            .find(|track| track.track_type().ok() == Some(mp4::TrackType::Video))
+            .unwrap();
+        assert_eq!(video.sample_description_count(), 1);
+        assert_eq!(video.sample_count(), 3);
+        assert_eq!(video.sample_description_index(3).unwrap(), 1);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_reuses_active_h265_description_when_a_later_keyframe_omits_parameters() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-repeated-h265-parameters-{}",
+            rand::random::<u64>()
+        ));
+        let started_at = Instant::now();
+        let (full_keyframe, decoder) = h265_keyframe();
+        let mut position = 0usize;
+        for _ in 0..3 {
+            let length =
+                u32::from_be_bytes(full_keyframe[position..position + 4].try_into().unwrap())
+                    as usize;
+            position += 4 + length;
+        }
+        let parameterless_keyframe = full_keyframe.slice(position..);
+        let mut writer = MediumTermWriter::create(&root, "camera/main", started_at, 8 * 1024)
+            .expect("create writer");
+        for offset_ms in [0, 40] {
+            writer
+                .append_one(RecordingFrame {
+                    received_at: started_at + Duration::from_millis(offset_ms),
+                    timestamp: Some(Duration::from_millis(offset_ms)),
+                    frame: MediaFrame::Video(VideoFrame {
+                        codec: VideoCodec::H265,
+                        is_keyframe: true,
+                        width: u32::from(decoder.width),
+                        height: u32::from(decoder.height),
+                        data: full_keyframe.clone(),
+                    }),
+                })
+                .unwrap();
+        }
+        writer
+            .append_one(RecordingFrame {
+                received_at: started_at + Duration::from_millis(80),
+                timestamp: Some(Duration::from_millis(80)),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: VideoCodec::H265,
+                    is_keyframe: true,
+                    width: u32::from(decoder.width),
+                    height: u32::from(decoder.height),
+                    data: parameterless_keyframe,
+                }),
+            })
+            .unwrap();
+
+        let path = writer.finalize().unwrap();
+        let reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        let video = reader
+            .tracks()
+            .values()
+            .find(|track| track.track_type().ok() == Some(mp4::TrackType::Video))
+            .unwrap();
+        assert_eq!(video.sample_description_count(), 1);
+        assert_eq!(video.sample_count(), 3);
+        assert_eq!(video.sample_description_index(3).unwrap(), 1);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_keeps_dts_increasing_across_backward_and_duplicate_camera_timestamps() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-backward-clock-{}",
+            rand::random::<u64>()
+        ));
+        let started_at = Instant::now();
+        let mut writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8 * 1024)
+            .expect("create writer");
+        for (received_ms, timestamp_ms) in [(0, 0), (40, 40), (80, 20), (120, 20)] {
+            writer
+                .append_one(video_frame(
+                    started_at + Duration::from_millis(received_ms),
+                    Duration::from_millis(timestamp_ms),
+                ))
+                .unwrap();
+        }
+        let path = writer.finalize().unwrap();
+        let mut reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        let (&track_id, track) = reader
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.track_type().ok() == Some(mp4::TrackType::Video))
+            .unwrap();
+        let start_times = (1..=track.sample_count())
+            .map(|sample_id| {
+                reader
+                    .read_sample(track_id, sample_id)
+                    .unwrap()
+                    .unwrap()
+                    .start_time
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(start_times, vec![0, 3_600, 7_200, 10_800]);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn writer_preserves_real_h265_decoder_configuration() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("crates/test-camera/testdata/cc-4k-640x360-h265.mp4");
@@ -744,9 +1020,8 @@ mod tests {
             .minf
             .stbl
             .stsd
-            .hev1
-            .as_ref()
-            .or(track.trak.mdia.minf.stbl.stsd.hvc1.as_ref())
+            .hev1()
+            .or_else(|| track.trak.mdia.minf.stbl.stsd.hvc1())
             .unwrap();
         let configuration = sample_entry.hvcc.configuration().unwrap();
         let sample_count = track.sample_count();
@@ -806,9 +1081,8 @@ mod tests {
             .minf
             .stbl
             .stsd
-            .hev1
-            .as_ref()
-            .or(output_track.trak.mdia.minf.stbl.stsd.hvc1.as_ref())
+            .hev1()
+            .or_else(|| output_track.trak.mdia.minf.stbl.stsd.hvc1())
             .unwrap();
         let output_configuration = output_sample_entry.hvcc.configuration().unwrap();
         assert_eq!(
@@ -823,6 +1097,218 @@ mod tests {
         assert_eq!(output_configuration.pps, configuration.pps);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_switches_codec_and_resolution_per_gop_without_assuming_frame_rate() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-variable-gop-{}",
+            rand::random::<u64>()
+        ));
+        let started_at = Instant::now();
+        let (h265_data, h265_decoder) = h265_keyframe();
+        let mut writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8 * 1024)
+            .expect("create writer");
+        let frames = [
+            video_frame(started_at, Duration::ZERO),
+            RecordingFrame {
+                received_at: started_at + Duration::from_millis(41),
+                timestamp: Some(Duration::from_millis(41)),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: VideoCodec::H265,
+                    is_keyframe: true,
+                    width: u32::from(h265_decoder.width),
+                    height: u32::from(h265_decoder.height),
+                    data: h265_data.clone(),
+                }),
+            },
+            RecordingFrame {
+                received_at: started_at + Duration::from_millis(97),
+                timestamp: Some(Duration::from_millis(97)),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: VideoCodec::H265,
+                    is_keyframe: true,
+                    width: u32::from(h265_decoder.width),
+                    height: u32::from(h265_decoder.height),
+                    data: h265_data,
+                }),
+            },
+            video_frame(
+                started_at + Duration::from_millis(130),
+                Duration::from_millis(130),
+            ),
+        ];
+        for frame in frames {
+            writer.append_one(frame).unwrap();
+        }
+
+        let path = writer.finalize().unwrap();
+        let mut reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        let (&track_id, track) = reader
+            .tracks()
+            .iter()
+            .find(|(_, track)| matches!(track.track_type(), Ok(mp4::TrackType::Video)))
+            .unwrap();
+        assert_eq!(track.sample_description_count(), 2);
+        assert_eq!(track.sample_description_index(1).unwrap(), 1);
+        assert_eq!(track.sample_description_index(2).unwrap(), 2);
+        assert_eq!(track.sample_description_index(3).unwrap(), 2);
+        assert_eq!(track.sample_description_index(4).unwrap(), 1);
+        assert_eq!(
+            track.media_type_for_description(1).unwrap(),
+            mp4::MediaType::H264
+        );
+        assert_eq!(
+            track.media_type_for_description(2).unwrap(),
+            mp4::MediaType::H265
+        );
+        assert_eq!(
+            track.dimensions_for_description(2).unwrap(),
+            (h265_decoder.width, h265_decoder.height)
+        );
+        assert_eq!(
+            reader.read_sample(track_id, 1).unwrap().unwrap().duration,
+            3_690
+        );
+        assert_eq!(
+            reader.read_sample(track_id, 2).unwrap().unwrap().duration,
+            5_040
+        );
+        assert_eq!(
+            reader.read_sample(track_id, 3).unwrap().unwrap().duration,
+            2_970
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_switches_h264_configuration_and_resolution_per_gop() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-h264-reconfiguration-{}",
+            rand::random::<u64>()
+        ));
+        let started_at = Instant::now();
+        let (low_data, low_decoder) = h264_keyframe("cc-4k-640x360-h264.mp4");
+        let (high_data, high_decoder) = h264_keyframe("cc-4k-3840x2160-h264.mp4");
+        let mut writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8 * 1024)
+            .expect("create writer");
+        for (offset_ms, data, decoder) in [
+            (0, low_data.clone(), &low_decoder),
+            (40, low_data.clone(), &low_decoder),
+            (80, high_data, &high_decoder),
+            (120, low_data, &low_decoder),
+        ] {
+            writer
+                .append_one(RecordingFrame {
+                    received_at: started_at + Duration::from_millis(offset_ms),
+                    timestamp: Some(Duration::from_millis(offset_ms)),
+                    frame: MediaFrame::Video(VideoFrame {
+                        codec: VideoCodec::H264,
+                        is_keyframe: true,
+                        width: u32::from(decoder.width),
+                        height: u32::from(decoder.height),
+                        data,
+                    }),
+                })
+                .unwrap();
+        }
+
+        let path = writer.finalize().unwrap();
+        let reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+        let video = reader
+            .tracks()
+            .values()
+            .find(|track| track.track_type().ok() == Some(mp4::TrackType::Video))
+            .unwrap();
+        assert_eq!(video.sample_description_count(), 2);
+        assert_eq!(video.sample_description_index(1).unwrap(), 1);
+        assert_eq!(video.sample_description_index(2).unwrap(), 1);
+        assert_eq!(video.sample_description_index(3).unwrap(), 2);
+        assert_eq!(video.sample_description_index(4).unwrap(), 1);
+        assert_eq!(
+            video.dimensions_for_description(1).unwrap(),
+            (low_decoder.width, low_decoder.height)
+        );
+        assert_eq!(
+            video.dimensions_for_description(2).unwrap(),
+            (high_decoder.width, high_decoder.height)
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_rejects_decoder_parameter_change_on_a_non_keyframe() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-non-keyframe-config-{}",
+            rand::random::<u64>()
+        ));
+        let started_at = Instant::now();
+        let (low_data, low_decoder) = h264_keyframe("cc-4k-640x360-h264.mp4");
+        let (high_data, high_decoder) = h264_keyframe("cc-4k-3840x2160-h264.mp4");
+        let mut writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8 * 1024)
+            .expect("create writer");
+        for offset_ms in [0, 40] {
+            writer
+                .append_one(RecordingFrame {
+                    received_at: started_at + Duration::from_millis(offset_ms),
+                    timestamp: Some(Duration::from_millis(offset_ms)),
+                    frame: MediaFrame::Video(VideoFrame {
+                        codec: VideoCodec::H264,
+                        is_keyframe: true,
+                        width: u32::from(low_decoder.width),
+                        height: u32::from(low_decoder.height),
+                        data: low_data.clone(),
+                    }),
+                })
+                .unwrap();
+        }
+        let error = writer
+            .append_one(RecordingFrame {
+                received_at: started_at + Duration::from_millis(80),
+                timestamp: Some(Duration::from_millis(80)),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: VideoCodec::H264,
+                    is_keyframe: false,
+                    width: u32::from(high_decoder.width),
+                    height: u32::from(high_decoder.height),
+                    data: high_data,
+                }),
+            })
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "video decoder parameters changed without a keyframe boundary"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_partial_decoder_parameter_sets() {
+        let h264 = VideoFrame {
+            codec: VideoCodec::H264,
+            is_keyframe: true,
+            width: 640,
+            height: 360,
+            data: Bytes::from_static(&[0, 0, 0, 4, 0x67, 0x42, 0x00, 0x1f]),
+        };
+        assert_eq!(
+            required_video_media_config(&h264).unwrap_err().to_string(),
+            "H.264 keyframe has incomplete decoder parameters"
+        );
+        let h265 = VideoFrame {
+            codec: VideoCodec::H265,
+            is_keyframe: true,
+            width: 1920,
+            height: 1080,
+            data: Bytes::from_static(&[0, 0, 0, 3, 0x40, 0x01, 0x0c, 0, 0, 0, 3, 0x42, 0x01, 0x01]),
+        };
+        assert_eq!(
+            required_video_media_config(&h265).unwrap_err().to_string(),
+            "H.265 keyframe has incomplete decoder parameters"
+        );
     }
 
     #[test]
@@ -973,12 +1459,25 @@ mod tests {
     }
 
     #[test]
-    fn non_advancing_camera_clock_uses_the_default_frame_duration() {
+    fn non_advancing_camera_clock_uses_the_last_observed_frame_duration() {
         assert_eq!(resolve_video_dts(Some(90_000), 0, 3_000), 93_000);
     }
 
     #[test]
     fn monotonic_camera_clock_remains_the_segment_clock() {
         assert_eq!(resolve_video_dts(Some(90_000), 93_000, 3_000), 93_000);
+    }
+
+    #[test]
+    fn missing_camera_timestamp_uses_the_receive_clock() {
+        assert_eq!(
+            timestamp_ticks_or_fallback(None, None, Duration::from_millis(41), 90_000),
+            3_690
+        );
+    }
+
+    #[test]
+    fn timestamp_fallback_saturates_instead_of_overflowing() {
+        assert_eq!(resolve_video_dts(Some(u64::MAX - 5), 0, 10), u64::MAX);
     }
 }

@@ -178,7 +178,11 @@
 				</div>
 				<div class="flex h-11 items-center justify-between gap-2">
 					<dt class="leading-[18px]">Recording mode</dt>
-					<dd class="font-mono text-xs leading-[14px] text-text-faint">NOT EXPOSED PER CAMERA</dd>
+					<dd class="font-mono text-xs leading-[14px] text-text-muted">
+						Off {evidence.recordingModes.off} · Boost {evidence.recordingModes['event-boost']} · Sub
+						{evidence.recordingModes.sub} · Main {evidence.recordingModes.main} · Both
+						{evidence.recordingModes.both}
+					</dd>
 				</div>
 				<div class="flex h-11 items-center justify-between gap-2">
 					<dt class="leading-[18px]">Retention reference</dt>

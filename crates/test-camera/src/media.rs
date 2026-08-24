@@ -131,8 +131,7 @@ fn describe_track<R: std::io::Read + std::io::Seek>(
                     .minf
                     .stbl
                     .stsd
-                    .avc1
-                    .as_ref()
+                    .avc1()
                     .ok_or_else(|| anyhow!("H.264 MP4 track has no avc1 sample entry"))?;
                 let nal_length_size = avcc
                     .avcc
@@ -152,9 +151,8 @@ fn describe_track<R: std::io::Read + std::io::Seek>(
                     .minf
                     .stbl
                     .stsd
-                    .hev1
-                    .as_ref()
-                    .or(track.trak.mdia.minf.stbl.stsd.hvc1.as_ref())
+                    .hev1()
+                    .or_else(|| track.trak.mdia.minf.stbl.stsd.hvc1())
                     .ok_or_else(|| anyhow!("H.265 MP4 track has no HEVC sample entry"))?;
                 let configuration = hevc.hvcc.configuration()?;
                 let vps = configuration

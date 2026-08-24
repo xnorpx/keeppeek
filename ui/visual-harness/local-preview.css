@@ -3,6 +3,36 @@
 @source '../src';
 @source './stories';
 
+[data-visual-fixture-notice] {
+	position: sticky;
+	top: 0;
+	z-index: 100;
+	display: flex;
+	min-height: 44px;
+	align-items: center;
+	gap: 16px;
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--color-activity);
+	background: var(--color-ground);
+	color: var(--color-text-muted);
+	font-family: var(--font-sans);
+	font-size: 13px;
+	line-height: 20px;
+}
+
+[data-visual-fixture-notice] strong {
+	flex-shrink: 0;
+	color: var(--color-activity);
+	font-family: var(--font-mono);
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.08em;
+}
+
+html[data-demo='true'] [data-visual-fixture-notice] {
+	display: none;
+}
+
 html[data-demo='true']:not([data-demo-asset='cameras.desktop.catalog-guided-setup']),
 html[data-demo='true']:not([data-demo-asset='cameras.desktop.catalog-guided-setup']) body {
 	width: 928px;

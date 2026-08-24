@@ -618,7 +618,7 @@ pub enum MediaConfig {
     TtxtConfig(TtxtConfig),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Mp4Sample {
     pub start_time: u64,
     pub duration: u32,
@@ -643,6 +643,8 @@ pub struct Mp4FragmentSampleLocation {
     pub sequence_number: u32,
     /// One-based sample ID within the track.
     pub sample_id: u32,
+    /// One-based `stsd` entry selected by this fragment.
+    pub sample_description_index: u32,
     /// Exact encoded sample location in the MP4 input.
     pub location: Mp4SampleLocation,
     /// Whether the sample is a random-access sample.

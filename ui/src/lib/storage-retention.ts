@@ -63,7 +63,8 @@ export type StorageRetentionEvidence = {
 	catalogBytes: number | null;
 	eventThumbnailCount: number | null;
 	projectedRetentionDays: number | null;
-	oldestFootageAtMs: null;
+	oldestFootageAtMs: number | null;
+	newestFootageAtMs: number | null;
 	longTermCapBytes: number | null;
 	fillBehavior: 'prune-oldest';
 	diskWarningThresholdPercent: 10;
@@ -108,7 +109,8 @@ export function storageRetentionEvidence(
 		catalogBytes: health?.storage.catalog_bytes ?? null,
 		eventThumbnailCount: health?.storage.catalog?.event_thumbnails ?? null,
 		projectedRetentionDays: config.recording_estimate.estimated_retention_days,
-		oldestFootageAtMs: null,
+		oldestFootageAtMs: health?.storage.catalog?.oldest_recording_at_ms ?? null,
+		newestFootageAtMs: health?.storage.catalog?.newest_recording_at_ms ?? null,
 		longTermCapBytes: effectiveCapBytes,
 		fillBehavior: 'prune-oldest',
 		diskWarningThresholdPercent: 10,

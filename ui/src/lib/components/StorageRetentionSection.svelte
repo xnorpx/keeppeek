@@ -4,6 +4,7 @@
 	import {
 		formatStorageBufferDuration,
 		formatStorageDuration,
+		mostSpecificDiskForPath,
 		storageRetentionEvidence
 	} from '$lib/storage-retention';
 	import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
@@ -34,6 +35,9 @@
 				)
 			: 0
 	);
+	let observedSpan = $derived(
+		formatObservedSpan(evidence.oldestFootageAtMs, evidence.newestFootageAtMs)
+	);
 
 	function formatBytes(bytes: number | null): string {
 		if (bytes === null) return 'Unavailable';
@@ -49,8 +53,30 @@
 	}
 
 	function formatProjectedDays(days: number | null): string {
-		if (days === null) return 'Unavailable';
+		if (days === null) return 'Needs bitrate data';
 		return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(days)} days`;
+	}
+
+	function formatObservedTimestamp(timestampMs: number | null): string {
+		if (timestampMs === null) return 'Not reported';
+		return `${new Intl.DateTimeFormat(undefined, {
+			dateStyle: 'medium',
+			timeStyle: 'short',
+			timeZone: 'UTC'
+		}).format(timestampMs)} UTC`;
+	}
+
+	function formatObservedSpan(oldestMs: number | null, newestMs: number | null): string | null {
+		if (oldestMs === null || newestMs === null || newestMs < oldestMs) return null;
+		const days = (newestMs - oldestMs) / 86_400_000;
+		if (days >= 1) {
+			return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(days)} days of indexed footage observed.`;
+		}
+		return `${formatStorageDuration((newestMs - oldestMs) / 1_000)} of indexed footage observed.`;
+	}
+
+	function diskForPath(path: string) {
+		return mostSpecificDiskForPath(path, health?.system.disks ?? []);
 	}
 </script>
 
@@ -59,29 +85,34 @@
 {:else}
 	<section
 		id="storage"
-		class="scroll-mt-4 overflow-hidden rounded-md border border-hairline bg-surface"
+		class="scroll-mt-4 overflow-hidden rounded-md border border-hairline bg-surface [font-synthesis:none]"
 		aria-labelledby="storage-retention-heading"
 	>
 		<header
-			class="flex flex-wrap items-end justify-between gap-4 border-b border-hairline px-5 py-5"
+			data-storage-band="heading"
+			class="flex flex-wrap items-end justify-between gap-5 border-b border-hairline px-5 py-5"
 		>
-			<div class="max-w-2xl">
+			<div class="max-w-3xl">
 				<p class="font-mono text-2xs tracking-caps text-primary-soft">STORAGE & RETENTION</p>
-				<h2 id="storage-retention-heading" class="mt-1 text-xl font-semibold">
+				<h2 id="storage-retention-heading" class="mt-1 text-[28px] leading-[34px] font-semibold">
 					Storage & retention
 				</h2>
-				<p class="mt-1 text-sm leading-6 text-text-muted">
-					The storage engine buffers in memory, rolls active MP4 writers, then prunes the oldest
-					dated recordings when the archive reaches its configured cap.
+				<p class="mt-1 text-sm leading-[22px] text-text-muted">
+					Memory buffering, writer rollover, archive capacity, and disk health are separate limits.
+					This view shows what is configured and what the server can measure now.
 				</p>
 			</div>
-			<div class="flex items-end gap-4">
+			<div class="flex items-end gap-5">
 				<div class="text-right">
-					<p class="text-2xl font-semibold text-primary-soft">
+					<p class="text-[32px] leading-9 font-bold text-primary-soft">
 						{formatProjectedDays(evidence.projectedRetentionDays)}
 					</p>
 					<p class="font-mono text-2xs tracking-caps text-text-faint">
 						PROJECTED AT CONFIGURED CAP
+					</p>
+					<p class="mt-1 text-2xs text-text-faint">
+						{config.recording_estimate.known_streams} measured · {config.recording_estimate
+							.unknown_streams} unmeasured
 					</p>
 				</div>
 				<button
@@ -89,16 +120,18 @@
 					class="inline-flex h-8 items-center gap-2 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
 					onclick={onedit}
 				>
-					<PencilIcon class="size-3.5" /> Edit runtime storage
+					<PencilIcon class="size-3.5" /> Change storage
 				</button>
 			</div>
 		</header>
 
-		<div class="border-b border-hairline bg-raised p-5">
+		<div data-storage-band="capacity" class="border-b border-hairline bg-raised p-5">
 			{#if evidence.recordingDisk}
 				<div class="flex flex-wrap items-baseline justify-between gap-2">
 					<h3 class="text-sm font-semibold">
-						{evidence.recordingDisk.mount_point} · {evidence.recordingDisk.name}
+						{evidence.recordingDisk.mount_point} · {evidence.recordingDisk.name} · {formatBytes(
+							evidence.recordingDisk.total_bytes
+						)}
 					</h3>
 					<p class="font-mono text-2xs text-text-muted">
 						{formatBytes(evidence.recordingDisk.used_bytes)} USED · {formatBytes(
@@ -107,15 +140,20 @@
 					</p>
 				</div>
 				<div
-					class="mt-3 h-5 overflow-hidden rounded-xs bg-hairline"
+					class="mt-3 h-[22px] overflow-hidden rounded-xs bg-hairline"
 					aria-label={`${diskUsedPercent.toFixed(1)} percent of recording disk used`}
 				>
 					<div class="h-full bg-primary" style:width={`${diskUsedPercent}%`}></div>
 				</div>
-				<div class="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-xs text-text-muted">
+				<div class="mt-3 flex flex-wrap gap-x-7 gap-y-2 text-xs text-text-muted">
 					<span>Indexed fragments {formatBytes(evidence.indexedFragmentBytes)}</span>
 					<span>Catalog {formatBytes(evidence.catalogBytes)}</span>
-					<span>Event thumbnails {evidence.eventThumbnailCount ?? 'Unavailable'}</span>
+					<span>Thumbnails {evidence.eventThumbnailCount ?? 'Unavailable'}</span>
+					<span
+						>Configured cap {evidence.archive.limitBytes === null
+							? 'Unlimited'
+							: formatBytes(evidence.archive.limitBytes)}</span
+					>
 				</div>
 			{:else}
 				<div
@@ -130,15 +168,15 @@
 			{/if}
 		</div>
 
-		<div class="grid border-b border-hairline lg:grid-cols-3">
+		<div data-storage-band="tiers" class="grid border-b border-hairline lg:grid-cols-3">
 			<article class="space-y-3 border-b border-hairline p-5 lg:border-r lg:border-b-0">
 				<div class="flex items-center justify-between gap-2">
 					<span class="font-mono text-2xs tracking-caps text-primary-soft">TIER 1 · MEMORY</span>
 					<MemoryStickIcon class="size-4 text-text-faint" />
 				</div>
-				<h3 class="text-base font-semibold">Short-term buffer</h3>
+				<h3 class="text-lg font-semibold">Short-term buffer</h3>
 				<div class="rounded-sm border border-hairline bg-raised px-3 py-2.5">
-					<p class="font-mono text-2xs tracking-caps text-text-faint">TIME WINDOW</p>
+					<p class="font-mono text-2xs tracking-caps text-text-faint">BOUNDED BY DURATION</p>
 					<p class="mt-1 text-sm font-medium">
 						{formatStorageBufferDuration(evidence.shortTerm.durationSeconds)}
 					</p>
@@ -156,7 +194,7 @@
 					>
 					<TimerResetIcon class="size-4 text-text-faint" />
 				</div>
-				<h3 class="text-base font-semibold">Rolling MP4 segment</h3>
+				<h3 class="text-lg font-semibold">Rolling MP4 segment</h3>
 				<div class="rounded-sm border border-hairline bg-raised px-3 py-2.5">
 					<p class="font-mono text-2xs tracking-caps text-text-faint">WRITER ROLLOVER</p>
 					<p class="mt-1 text-sm font-medium">
@@ -175,10 +213,14 @@
 					<span class="font-mono text-2xs tracking-caps text-primary-soft">TIER 3 · ARCHIVE</span>
 					<ArchiveIcon class="size-4 text-text-faint" />
 				</div>
-				<h3 class="text-base font-semibold">Finalized recordings</h3>
+				<h3 class="text-lg font-semibold">Finalized recordings</h3>
 				<div class="rounded-sm border border-hairline bg-raised px-3 py-2.5">
 					<p class="font-mono text-2xs tracking-caps text-text-faint">SIZE CAP</p>
-					<p class="mt-1 text-sm font-medium">{formatBytes(evidence.archive.limitBytes)}</p>
+					<p class="mt-1 text-sm font-medium">
+						{evidence.archive.limitBytes === null
+							? 'Unlimited'
+							: formatBytes(evidence.archive.limitBytes)}
+					</p>
 				</div>
 				<p class="text-xs leading-5 text-text-muted">
 					The archive scans dated recording directories and removes the oldest until it is within
@@ -187,70 +229,97 @@
 			</article>
 		</div>
 
-		<div class="grid lg:grid-cols-[1.15fr_0.85fr]">
-			<div class="space-y-3 border-b border-hairline p-5 lg:border-r lg:border-b-0">
-				<h3 class="flex items-center gap-2 text-base font-semibold">
+		<section
+			data-storage-band="locations"
+			class="border-b border-hairline p-5"
+			aria-labelledby="storage-locations-heading"
+		>
+			<header class="flex flex-wrap items-center justify-between gap-3 pb-3">
+				<h3 id="storage-locations-heading" class="flex items-center gap-2 text-lg font-semibold">
 					<HardDriveIcon class="size-4" /> Where it is written
 				</h3>
-				<dl class="divide-y divide-hairline border-y border-hairline text-xs">
-					<div class="grid gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
-						<dt class="text-text-muted">Active MP4 files</dt>
-						<dd class="font-mono break-all">{evidence.activeWriter.path}</dd>
-					</div>
-					<div class="grid gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
-						<dt class="text-text-muted">Finalized archive</dt>
-						<dd class="font-mono break-all">{evidence.archive.path}</dd>
-					</div>
-					<div class="grid gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
-						<dt class="text-text-muted">Recording catalog</dt>
-						<dd class="font-mono break-all">{config.storage.recording_catalog_path}</dd>
-					</div>
-					<div class="grid gap-1 py-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
-						<dt class="text-text-muted">Event thumbnails</dt>
-						<dd class="font-mono break-all">{config.storage.event_thumbnail_path}</dd>
-					</div>
-				</dl>
-				<div class="rounded-sm border border-hairline bg-raised px-3 py-3">
-					<p class="font-mono text-2xs tracking-caps text-text-faint">ACTUAL OLDEST FOOTAGE</p>
-					<p class="mt-1 text-xs leading-5 text-text-muted">
-						Unavailable. The config and health responses do not expose the oldest catalog timestamp,
-						so projected retention is never labeled as observed history.
-					</p>
-				</div>
+				<CapabilityGate
+					{...capabilityActions.addOffsiteArchive}
+					class="h-[30px] min-h-[30px] px-3 text-[11px]"
+				/>
+			</header>
+			<div
+				class="hidden border-b border-hairline-strong pb-2 font-mono text-2xs tracking-caps text-text-faint sm:grid sm:grid-cols-[minmax(0,2fr)_minmax(8rem,0.8fr)_minmax(7rem,0.6fr)_minmax(6rem,0.5fr)] sm:gap-4"
+			>
+				<span>PATH</span><span>HOLDS</span><span>DEVICE</span><span>STATUS</span>
 			</div>
+			{#each [[evidence.activeWriter.path, 'Active MP4 files'], [evidence.archive.path, 'Finalized archive'], [config.storage.recording_catalog_path, 'Catalog and events'], [config.storage.event_thumbnail_path, 'Event thumbnails']] as row (`${row[0]}-${row[1]}`)}
+				{@const disk = diskForPath(row[0])}
+				<div
+					class="grid gap-1 border-b border-hairline py-3 text-xs last:border-b-0 sm:grid-cols-[minmax(0,2fr)_minmax(8rem,0.8fr)_minmax(7rem,0.6fr)_minmax(6rem,0.5fr)] sm:items-center sm:gap-4"
+				>
+					<span class="font-mono break-all">{row[0]}</span>
+					<span class="text-text-muted">{row[1]}</span>
+					<span class="text-text-muted">{disk?.name ?? 'Not mapped'}</span>
+					<span
+						class="flex items-center gap-2 font-mono text-2xs {disk
+							? 'text-healthy'
+							: 'text-text-faint'}"
+					>
+						<span class="size-1.5 rounded-full {disk ? 'bg-healthy' : 'bg-text-faint'}"></span>
+						{disk ? 'Observed' : 'Path only'}
+					</span>
+				</div>
+			{/each}
+		</section>
 
-			<div class="space-y-4 p-5">
-				<div>
-					<h3 class="text-base font-semibold">When the archive reaches its cap</h3>
-					<div class="mt-2 rounded-sm border border-primary bg-primary/5 px-3 py-3">
+		<div data-storage-band="policy" class="grid lg:grid-cols-2">
+			<article class="space-y-3 border-b border-hairline p-5 lg:border-r lg:border-b-0">
+				<h3 class="text-lg font-semibold">When the archive reaches its cap</h3>
+				<div class="flex gap-3 rounded-sm border border-primary bg-primary/5 p-3">
+					<span class="mt-0.5 size-4 shrink-0 rounded-full border-4 border-primary"></span>
+					<div>
 						<p class="text-sm font-medium">Prune the oldest dated recordings</p>
 						<p class="mt-1 text-xs leading-5 text-text-muted">
-							This is the current engine behavior, not a selectable policy. Health raises a critical
-							issue when the recording disk falls below {evidence.diskWarningThresholdPercent}%
+							Fixed engine behavior. Health becomes critical below {evidence.diskWarningThresholdPercent}%
 							free.
 						</p>
 					</div>
 				</div>
-				<div>
-					<p class="font-mono text-2xs tracking-caps text-text-faint">PER-CAMERA RETENTION</p>
-					<p class="mt-1 text-xs leading-5 text-text-muted">
-						Unavailable. Camera settings expose no recording mode, retention override, or pin
-						policy.
+				<div class="flex items-center justify-between gap-4 border-t border-hairline pt-3 text-sm">
+					<span>Actual oldest footage</span>
+					{#if evidence.oldestFootageAtMs === null}
+						<span class="text-right font-mono text-xs text-text-faint">Not reported</span>
+					{:else}
+						<time
+							datetime={new Date(evidence.oldestFootageAtMs).toISOString()}
+							class="text-right font-mono text-xs text-text-faint"
+						>
+							{formatObservedTimestamp(evidence.oldestFootageAtMs)}
+						</time>
+					{/if}
+				</div>
+				{#if observedSpan}
+					<p class="text-xs leading-5 text-text-muted">{observedSpan}</p>
+				{:else}
+					<p class="text-xs leading-5 text-text-muted">
+						Projected retention is never presented as observed history.
 					</p>
+				{/if}
+			</article>
+
+			<article class="space-y-3 p-5">
+				<div class="flex items-center justify-between gap-3">
+					<h3 class="text-lg font-semibold">Camera recording policy</h3>
+					<span class="font-mono text-2xs text-healthy">CONFIGURED PER CAMERA</span>
 				</div>
-				<div>
-					<p class="font-mono text-2xs tracking-caps text-text-faint">ADDITIONAL LOCATIONS</p>
-					<div class="mt-2">
-						<CapabilityGate {...capabilityActions.addOffsiteArchive} class="w-full justify-start" />
+				{#each [['Recording modes', 'Off · Sub · Main · Both'], ['Event boost', 'Sub → Main → Sub'], ['Pinned recordings', 'Not available']] as row (row[0])}
+					<div
+						class="flex min-h-10 items-center justify-between gap-4 border-b border-hairline text-sm"
+					>
+						<span>{row[0]}</span><span class="font-mono text-xs text-text-faint">{row[1]}</span>
 					</div>
+				{/each}
+				<div class="flex gap-2 pt-1 text-xs leading-5 text-text-muted">
+					<DatabaseIcon class="mt-0.5 size-4 shrink-0 text-text-faint" /> Indexed fragment bytes cover
+					cataloged media; disk use can also include active files and unrelated data.
 				</div>
-				<div
-					class="flex gap-2 rounded-sm border border-hairline bg-raised px-3 py-3 text-xs leading-5 text-text-muted"
-				>
-					<DatabaseIcon class="mt-0.5 size-4 shrink-0 text-text-faint" /> Indexed fragment bytes measure
-					cataloged media only; disk usage can include active files and unrelated data.
-				</div>
-			</div>
+			</article>
 		</div>
 	</section>
 {/if}

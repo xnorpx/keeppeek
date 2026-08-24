@@ -88,7 +88,10 @@ mod writer;
 pub use writer::{Mp4Config, Mp4Writer};
 
 mod fragmented;
-pub use fragmented::{FragmentedMp4Writer, Mp4ByteRange, Mp4FragmentInfo};
+pub use fragmented::{
+    FragmentedMp4Writer, FragmentedTrackConfig, Mp4ByteRange, Mp4FragmentInfo,
+    normalize_fragment_sample_description_indices,
+};
 
 pub fn read_mp4(f: File) -> Result<Mp4Reader<BufReader<File>>> {
     let size = f.metadata()?.len();

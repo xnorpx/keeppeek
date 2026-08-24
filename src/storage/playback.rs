@@ -11,6 +11,7 @@ use crate::storage::CatalogMediaFragment;
 struct PlaybackTrack {
     source_id: u32,
     config: mp4::TrackConfig,
+    sample_descriptions: Vec<mp4::MediaConfig>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,7 @@ struct ExportSample {
     absolute_ms: i64,
     track_id: u32,
     track_type: mp4::TrackType,
+    sample_description: mp4::MediaConfig,
     sample: mp4::Mp4Sample,
 }
 
@@ -107,7 +109,12 @@ fn write_export_recordings(
     let tracks = export_tracks(&first_reader)?;
     let configs = tracks
         .iter()
-        .map(|track| track.config.clone())
+        .map(|track| mp4::FragmentedTrackConfig {
+            track_type: track.config.track_type,
+            timescale: track.config.timescale,
+            language: track.config.language.clone(),
+            sample_descriptions: track.sample_descriptions.clone(),
+        })
         .collect::<Vec<_>>();
     if !configs
         .iter()
@@ -126,7 +133,8 @@ fn write_export_recordings(
         timescale: 1_000,
     };
     let output = BufWriter::new(File::create(destination)?);
-    let mut writer = mp4::FragmentedMp4Writer::write_start(output, &config, &configs)?;
+    let mut writer =
+        mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(output, &config, &configs)?;
     let mut pending_video = false;
 
     write_export_recording(
@@ -141,12 +149,14 @@ fn write_export_recordings(
     for recording in recordings.iter().skip(1) {
         let mut reader = mp4::read_mp4(File::open(&recording.path)?)?;
         let source_tracks = export_tracks(&reader)?;
-        if source_tracks
-            .iter()
-            .map(|track| &track.config)
-            .ne(configs.iter())
+        if source_tracks.len() != tracks.len()
+            || source_tracks.iter().zip(&tracks).any(|(source, output)| {
+                source.config.track_type != output.config.track_type
+                    || source.config.timescale != output.config.timescale
+                    || source.config.language != output.config.language
+            })
         {
-            bail!("export crosses a recording codec or track configuration change");
+            bail!("export crosses an incompatible track layout change");
         }
         write_export_recording(
             &mut reader,
@@ -168,8 +178,11 @@ fn export_tracks<R: Read + Seek>(reader: &mp4::Mp4Reader<R>) -> anyhow::Result<V
     let mut tracks = reader
         .tracks()
         .iter()
-        .filter_map(|(&source_id, track)| match playback_track_config(track) {
-            Ok(Some(config)) => Some(Ok(PlaybackTrack { source_id, config })),
+        .filter_map(|(&source_id, track)| match playback_track(track) {
+            Ok(Some(mut playback)) => {
+                playback.source_id = source_id;
+                Some(Ok(playback))
+            }
             Ok(None) => None,
             Err(error) if track.track_type().ok() == Some(mp4::TrackType::Audio) => {
                 tracing::warn!(track_id = source_id, %error, "omitting invalid audio track from export");
@@ -203,6 +216,16 @@ fn write_export_recording<R: Read + Seek>(
                 .with_context(|| {
                     format!("track {} sample {sample_id} is missing", track.source_id)
                 })?;
+            let sample_description_index = reader
+                .tracks()
+                .get(&track.source_id)
+                .context("export source track disappeared")?
+                .sample_description_index(sample_id)?;
+            let sample_description = reader
+                .tracks()
+                .get(&track.source_id)
+                .context("export source track disappeared")?
+                .media_config_for_description(sample_description_index)?;
             let start_offset_ms =
                 sample.start_time.saturating_mul(1_000) / u64::from(track.config.timescale);
             let end_offset_ms = sample
@@ -232,6 +255,7 @@ fn write_export_recording<R: Read + Seek>(
                 absolute_ms,
                 track_id: u32::try_from(index + 1).unwrap_or(u32::MAX),
                 track_type: track.config.track_type,
+                sample_description,
                 sample,
             });
         }
@@ -253,7 +277,9 @@ fn write_export_recording<R: Read + Seek>(
             }
             *pending_video = true;
         }
-        writer.write_sample(sample.track_id, sample.sample)?;
+        let description_index =
+            writer.add_sample_description(sample.track_id, sample.sample_description)?;
+        writer.write_sample_with_description(sample.track_id, description_index, sample.sample)?;
     }
     Ok(())
 }
@@ -284,8 +310,11 @@ fn remux_recording(source: &Path, destination: &Path) -> anyhow::Result<()> {
     let mut tracks = reader
         .tracks()
         .iter()
-        .filter_map(|(&source_id, track)| match playback_track_config(track) {
-            Ok(Some(config)) => Some(Ok(PlaybackTrack { source_id, config })),
+        .filter_map(|(&source_id, track)| match playback_track(track) {
+            Ok(Some(mut playback)) => {
+                playback.source_id = source_id;
+                Some(Ok(playback))
+            }
             Ok(None) => None,
             Err(error) if track.track_type().ok() == Some(mp4::TrackType::Audio) => {
                 tracing::warn!(path = %source.display(), track_id = source_id, %error, "omitting invalid audio track from browser compatibility recording");
@@ -303,20 +332,31 @@ fn remux_recording(source: &Path, destination: &Path) -> anyhow::Result<()> {
     }
 
     let config = mp4::Mp4Config {
-        major_brand: "isom".parse().unwrap(),
-        minor_version: 512,
+        major_brand: "iso6".parse().unwrap(),
+        minor_version: 1,
         compatible_brands: vec![
+            "iso6".parse().unwrap(),
             "isom".parse().unwrap(),
-            "iso2".parse().unwrap(),
             "mp41".parse().unwrap(),
         ],
         timescale: 1_000,
     };
     let output = BufWriter::new(File::create(destination)?);
-    let mut writer = mp4::Mp4Writer::write_start(output, &config)?;
-    for track in &tracks {
-        writer.add_track(&track.config)?;
-    }
+    let track_configs = tracks
+        .iter()
+        .map(|track| mp4::FragmentedTrackConfig {
+            track_type: track.config.track_type,
+            timescale: track.config.timescale,
+            language: track.config.language.clone(),
+            sample_descriptions: track.sample_descriptions.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+        output,
+        &config,
+        &track_configs,
+    )?;
+    let mut samples = Vec::new();
     for (output_index, track) in tracks.iter().enumerate() {
         let sample_count = reader.sample_count(track.source_id)?;
         for sample_id in 1..=sample_count {
@@ -325,8 +365,40 @@ fn remux_recording(source: &Path, destination: &Path) -> anyhow::Result<()> {
                 .with_context(|| {
                     format!("track {} sample {sample_id} is missing", track.source_id)
                 })?;
-            writer.write_sample(output_index as u32 + 1, &sample)?;
+            let description_index =
+                reader.tracks()[&track.source_id].sample_description_index(sample_id)?;
+            let sample_description = reader.tracks()[&track.source_id]
+                .media_config_for_description(description_index)?;
+            samples.push(ExportSample {
+                absolute_ms: i64::try_from(
+                    sample.start_time.saturating_mul(1_000) / u64::from(track.config.timescale),
+                )
+                .unwrap_or(i64::MAX),
+                track_id: u32::try_from(output_index + 1).unwrap_or(u32::MAX),
+                track_type: track.config.track_type,
+                sample_description,
+                sample,
+            });
         }
+    }
+    samples.sort_unstable_by(|left, right| {
+        left.absolute_ms.cmp(&right.absolute_ms).then_with(|| {
+            let left_rank = u8::from(left.track_type != mp4::TrackType::Video);
+            let right_rank = u8::from(right.track_type != mp4::TrackType::Video);
+            left_rank.cmp(&right_rank)
+        })
+    });
+    let mut pending_video = false;
+    for sample in samples {
+        if sample.track_type == mp4::TrackType::Video && sample.sample.is_sync {
+            if pending_video {
+                writer.flush_fragment()?;
+            }
+            pending_video = true;
+        }
+        let description_index =
+            writer.add_sample_description(sample.track_id, sample.sample_description)?;
+        writer.write_sample_with_description(sample.track_id, description_index, sample.sample)?;
     }
     writer.write_end()?;
     let mut output = writer.into_writer();
@@ -335,49 +407,19 @@ fn remux_recording(source: &Path, destination: &Path) -> anyhow::Result<()> {
 }
 
 fn playback_track_config(track: &mp4::Mp4Track) -> anyhow::Result<Option<mp4::TrackConfig>> {
-    let media_conf = match track.media_type()? {
-        mp4::MediaType::H264 => mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
-            width: track.width(),
-            height: track.height(),
-            seq_param_set: track.sequence_parameter_set()?.to_vec(),
-            pic_param_set: track.picture_parameter_set()?.to_vec(),
-        }),
-        mp4::MediaType::H265 => {
-            let sample_entry = track
-                .trak
-                .mdia
-                .minf
-                .stbl
-                .stsd
-                .hev1
-                .as_ref()
-                .or(track.trak.mdia.minf.stbl.stsd.hvc1.as_ref())
-                .context("HEVC track has no sample entry")?;
-            let configuration = sample_entry.hvcc.configuration()?;
-            mp4::MediaConfig::HevcConfig(mp4::HevcConfig {
-                width: track.width(),
-                height: track.height(),
-                vps: configuration.vps.first().cloned().unwrap_or_default(),
-                sps: configuration.sps.first().cloned().unwrap_or_default(),
-                pps: configuration.pps.first().cloned().unwrap_or_default(),
-                decoder_config: sample_entry.hvcc.record_data.clone(),
-            })
-        }
-        mp4::MediaType::AAC => {
-            let frequency = track.sample_freq_index()?;
+    let media_conf = match track.media_config_for_description(1)? {
+        mp4::MediaConfig::AvcConfig(config) => mp4::MediaConfig::AvcConfig(config),
+        mp4::MediaConfig::HevcConfig(config) => mp4::MediaConfig::HevcConfig(config),
+        mp4::MediaConfig::AacConfig(mut config) => {
+            config.bitrate = config.bitrate.max(64_000);
             return Ok(Some(mp4::TrackConfig {
                 track_type: mp4::TrackType::Audio,
-                timescale: frequency.freq(),
+                timescale: config.freq_index.freq(),
                 language: track.language().to_owned(),
-                media_conf: mp4::MediaConfig::AacConfig(mp4::AacConfig {
-                    bitrate: track.bitrate().max(64_000),
-                    profile: track.audio_profile()?,
-                    freq_index: frequency,
-                    chan_conf: track.channel_config()?,
-                }),
+                media_conf: mp4::MediaConfig::AacConfig(config),
             }));
         }
-        _ => return Ok(None),
+        mp4::MediaConfig::Vp9Config(_) | mp4::MediaConfig::TtxtConfig(_) => return Ok(None),
     };
     Ok(Some(mp4::TrackConfig {
         track_type: mp4::TrackType::Video,
@@ -387,15 +429,41 @@ fn playback_track_config(track: &mp4::Mp4Track) -> anyhow::Result<Option<mp4::Tr
     }))
 }
 
+fn playback_track(track: &mp4::Mp4Track) -> anyhow::Result<Option<PlaybackTrack>> {
+    let Some(config) = playback_track_config(track)? else {
+        return Ok(None);
+    };
+    let sample_descriptions = if config.track_type == mp4::TrackType::Video {
+        (1..=track.sample_description_count())
+            .map(|index| {
+                track.media_config_for_description(u32::try_from(index).unwrap_or(u32::MAX))
+            })
+            .collect::<mp4::Result<Vec<_>>>()?
+    } else {
+        vec![config.media_conf.clone()]
+    };
+    Ok(Some(PlaybackTrack {
+        source_id: track.track_id(),
+        config,
+        sample_descriptions,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::storage::{
-        MediaFrame, RecordingCatalog, RecordingFrame, VideoCodec, VideoFrame,
-        medium_term::MediumTermWriter,
+        AudioCodec, AudioFrame, MediaFrame, RecordingCatalog, RecordingFrame, VideoCodec,
+        VideoFrame, medium_term::MediumTermWriter,
     };
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn compatibility_remux_repairs_audio_timescale_and_is_cached() {
@@ -484,6 +552,327 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn export_preserves_mixed_codec_gop_descriptions() {
+        fn fixture(name: &str, media_type: mp4::MediaType) -> (mp4::MediaConfig, mp4::Mp4Sample) {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/test-camera/testdata")
+                .join(name);
+            let mut reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+            let (&track_id, track) = reader
+                .tracks()
+                .iter()
+                .find(|(_, track)| track.media_type().ok() == Some(media_type))
+                .unwrap();
+            let config = track.media_config_for_description(1).unwrap();
+            let mut sample = (1..=track.sample_count())
+                .find_map(|sample_id| {
+                    let sample = reader.read_sample(track_id, sample_id).unwrap().unwrap();
+                    sample.is_sync.then_some(sample)
+                })
+                .unwrap();
+            sample.start_time = 0;
+            sample.duration = 90_000;
+            (config, sample)
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-export-mixed-codec-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("source.mp4");
+        let (h264, h264_sample) = fixture("cc-4k-640x360-h264.mp4", mp4::MediaType::H264);
+        let (h265, mut h265_sample) = fixture("cc-4k-640x360-h265.mp4", mp4::MediaType::H265);
+        h265_sample.start_time = 90_000;
+        let config = mp4::Mp4Config {
+            major_brand: "iso6".parse().unwrap(),
+            minor_version: 1,
+            compatible_brands: vec!["iso6".parse().unwrap(), "mp41".parse().unwrap()],
+            timescale: 1_000,
+        };
+        let track = mp4::FragmentedTrackConfig {
+            track_type: mp4::TrackType::Video,
+            timescale: 90_000,
+            language: "und".to_owned(),
+            sample_descriptions: vec![h264, h265],
+        };
+        let mut writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+            File::create(&source).unwrap(),
+            &config,
+            &[track],
+        )
+        .unwrap();
+        let initialization = writer.initialization();
+        writer
+            .write_sample_with_description(1, 1, h264_sample)
+            .unwrap();
+        let first = writer.flush_fragment().unwrap().unwrap();
+        writer
+            .write_sample_with_description(1, 2, h265_sample)
+            .unwrap();
+        let second = writer.write_end().unwrap().unwrap();
+        drop(writer);
+        let fragments = [
+            CatalogMediaFragment {
+                recording_id: "mixed".to_owned(),
+                recording_started_at_ms: 0,
+                path: source.to_string_lossy().into_owned(),
+                init_offset: initialization.offset,
+                init_len: initialization.size,
+                sequence: 1,
+                start_ms: 0,
+                duration_ms: 1_000,
+                byte_offset: first.range.offset,
+                byte_len: first.range.size,
+            },
+            CatalogMediaFragment {
+                recording_id: "mixed".to_owned(),
+                recording_started_at_ms: 0,
+                path: source.to_string_lossy().into_owned(),
+                init_offset: initialization.offset,
+                init_len: initialization.size,
+                sequence: 2,
+                start_ms: 1_000,
+                duration_ms: 1_000,
+                byte_offset: second.range.offset,
+                byte_len: second.range.size,
+            },
+        ];
+        let destination = directory.join("export.mp4");
+        export_fragment_ranges(&fragments, 2_000, &destination, || false).unwrap();
+
+        let reader = mp4::read_mp4(File::open(destination).unwrap()).unwrap();
+        let track = reader
+            .tracks()
+            .values()
+            .find(|track| track.track_type().ok() == Some(mp4::TrackType::Video))
+            .unwrap();
+        assert_eq!(track.sample_description_count(), 2);
+        assert_eq!(track.sample_description_index(1).unwrap(), 1);
+        assert_eq!(track.sample_description_index(2).unwrap(), 2);
+        assert_eq!(
+            track.media_type_for_description(1).unwrap(),
+            mp4::MediaType::H264
+        );
+        assert_eq!(
+            track.media_type_for_description(2).unwrap(),
+            mp4::MediaType::H265
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn export_registers_codec_changes_across_recording_files() {
+        fn fixture(name: &str, media_type: mp4::MediaType) -> (mp4::MediaConfig, mp4::Mp4Sample) {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/test-camera/testdata")
+                .join(name);
+            let mut reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+            let (&track_id, track) = reader
+                .tracks()
+                .iter()
+                .find(|(_, track)| track.media_type().ok() == Some(media_type))
+                .unwrap();
+            let config = track.media_config_for_description(1).unwrap();
+            let mut sample = (1..=track.sample_count())
+                .find_map(|sample_id| {
+                    let sample = reader.read_sample(track_id, sample_id).unwrap().unwrap();
+                    sample.is_sync.then_some(sample)
+                })
+                .unwrap();
+            sample.start_time = 0;
+            sample.duration = 90_000;
+            (config, sample)
+        }
+
+        fn write_source(
+            path: &Path,
+            config: mp4::MediaConfig,
+            sample: mp4::Mp4Sample,
+        ) -> (mp4::Mp4ByteRange, mp4::Mp4FragmentInfo) {
+            let track = mp4::TrackConfig {
+                track_type: mp4::TrackType::Video,
+                timescale: 90_000,
+                language: "und".to_owned(),
+                media_conf: config,
+            };
+            let mut writer = mp4::FragmentedMp4Writer::write_start(
+                File::create(path).unwrap(),
+                &mp4::Mp4Config {
+                    major_brand: "iso6".parse().unwrap(),
+                    minor_version: 1,
+                    compatible_brands: vec!["iso6".parse().unwrap(), "mp41".parse().unwrap()],
+                    timescale: 1_000,
+                },
+                &[track],
+            )
+            .unwrap();
+            let initialization = writer.initialization();
+            writer.write_sample(1, sample).unwrap();
+            let fragment = writer.write_end().unwrap().unwrap();
+            (initialization, fragment)
+        }
+
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-export-cross-recording-codec-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let h264_path = directory.join("h264.mp4");
+        let h265_path = directory.join("h265.mp4");
+        let (h264_config, h264_sample) = fixture("cc-4k-640x360-h264.mp4", mp4::MediaType::H264);
+        let (h265_config, h265_sample) = fixture("cc-4k-640x360-h265.mp4", mp4::MediaType::H265);
+        let (h264_init, h264_fragment) = write_source(&h264_path, h264_config, h264_sample);
+        let (h265_init, h265_fragment) = write_source(&h265_path, h265_config, h265_sample);
+        let fragments = [
+            CatalogMediaFragment {
+                recording_id: "h264".to_owned(),
+                recording_started_at_ms: 0,
+                path: h264_path.to_string_lossy().into_owned(),
+                init_offset: h264_init.offset,
+                init_len: h264_init.size,
+                sequence: 1,
+                start_ms: 0,
+                duration_ms: 1_000,
+                byte_offset: h264_fragment.range.offset,
+                byte_len: h264_fragment.range.size,
+            },
+            CatalogMediaFragment {
+                recording_id: "h265".to_owned(),
+                recording_started_at_ms: 1_000,
+                path: h265_path.to_string_lossy().into_owned(),
+                init_offset: h265_init.offset,
+                init_len: h265_init.size,
+                sequence: 1,
+                start_ms: 1_000,
+                duration_ms: 1_000,
+                byte_offset: h265_fragment.range.offset,
+                byte_len: h265_fragment.range.size,
+            },
+        ];
+        let destination = directory.join("cross-recording-export.mp4");
+        export_fragment_ranges(&fragments, 2_000, &destination, || false).unwrap();
+        let reader = mp4::read_mp4(File::open(destination).unwrap()).unwrap();
+        let video = reader
+            .tracks()
+            .values()
+            .find(|track| track.track_type().ok() == Some(mp4::TrackType::Video))
+            .unwrap();
+        assert_eq!(video.sample_description_count(), 2);
+        assert_eq!(video.sample_description_index(1).unwrap(), 1);
+        assert_eq!(video.sample_description_index(2).unwrap(), 2);
+        assert_eq!(
+            video.media_type_for_description(1).unwrap(),
+            mp4::MediaType::H264
+        );
+        assert_eq!(
+            video.media_type_for_description(2).unwrap(),
+            mp4::MediaType::H265
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cancelled_export_removes_partial_file_and_can_retry() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-export-cancel-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        write_export_source(&directory, Instant::now(), handle.clone());
+        let fragments = handle
+            .media_fragments_in_range("front-door/main", i64::MIN + 1, i64::MAX)
+            .unwrap();
+        let end_ms = fragments
+            .last()
+            .map(|fragment| {
+                fragment
+                    .start_ms
+                    .saturating_add(i64::try_from(fragment.duration_ms).unwrap())
+            })
+            .unwrap();
+        let destination = directory.join("cancelled.mp4");
+        let checks = Arc::new(AtomicUsize::new(0));
+        let error = export_fragment_ranges(&fragments, end_ms, &destination, move || {
+            checks.fetch_add(1, Ordering::Relaxed) >= 1
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "export was cancelled");
+        assert!(!destination.exists());
+        assert!(std::fs::read_dir(&directory).unwrap().all(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("active")
+        }));
+
+        let artifact = export_fragment_ranges(&fragments, end_ms, &destination, || false).unwrap();
+        assert!(destination.is_file());
+        assert_eq!(artifact.bytes, destination.metadata().unwrap().len());
+
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn export_keeps_aac_timestamps_monotonic_across_recordings() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-export-audio-continuity-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let now = Instant::now();
+        write_audio_export_source(&directory, now - Duration::from_secs(2), handle.clone());
+        write_audio_export_source(&directory, now, handle.clone());
+        let fragments = handle
+            .media_fragments_in_range("front-door/main", i64::MIN + 1, i64::MAX)
+            .unwrap();
+        let end_ms = fragments
+            .last()
+            .map(|fragment| {
+                fragment
+                    .start_ms
+                    .saturating_add(i64::try_from(fragment.duration_ms).unwrap())
+            })
+            .unwrap();
+        let destination = directory.join("audio-export.mp4");
+        export_fragment_ranges(&fragments, end_ms, &destination, || false).unwrap();
+
+        let mut reader = mp4::read_mp4(File::open(destination).unwrap()).unwrap();
+        let (&audio_track_id, audio_track) = reader
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.track_type().ok() == Some(mp4::TrackType::Audio))
+            .unwrap();
+        let samples = (1..=audio_track.sample_count())
+            .map(|sample_id| {
+                reader
+                    .read_sample(audio_track_id, sample_id)
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(samples.len(), 4);
+        assert!(samples.windows(2).all(|pair| {
+            pair[0]
+                .start_time
+                .saturating_add(u64::from(pair[0].duration))
+                <= pair[1].start_time
+        }));
+
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     fn write_export_source(
         directory: &Path,
         started_at: Instant,
@@ -516,6 +905,66 @@ mod tests {
                 })
                 .unwrap();
         }
+        writer.finalize().unwrap();
+    }
+
+    fn write_audio_export_source(
+        directory: &Path,
+        started_at: Instant,
+        catalog: crate::storage::RecordingCatalogHandle,
+    ) {
+        let mut writer = MediumTermWriter::create_with_catalog(
+            directory,
+            "front-door/main",
+            started_at,
+            8 * 1_024,
+            catalog,
+        )
+        .unwrap();
+        let payload = bytes::Bytes::from_static(&[
+            0, 0, 0, 8, 0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce,
+            0x3c, 0x80, 0, 0, 0, 1, 0x65,
+        ]);
+        writer
+            .append_one(RecordingFrame {
+                received_at: started_at,
+                timestamp: Some(Duration::ZERO),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: VideoCodec::H264,
+                    is_keyframe: true,
+                    width: 640,
+                    height: 360,
+                    data: payload.clone(),
+                }),
+            })
+            .unwrap();
+        for offset_ms in [10, 30] {
+            writer
+                .append_one(RecordingFrame {
+                    received_at: started_at + Duration::from_millis(offset_ms),
+                    timestamp: Some(Duration::from_millis(offset_ms)),
+                    frame: MediaFrame::Audio(AudioFrame {
+                        codec: AudioCodec::Aac,
+                        sample_rate: 48_000,
+                        duration: Duration::from_millis(20),
+                        data: vec![0xff, 0xf1, 0x4c, 0x40, 0, 0, 0, 0xaa],
+                    }),
+                })
+                .unwrap();
+        }
+        writer
+            .append_one(RecordingFrame {
+                received_at: started_at + Duration::from_millis(100),
+                timestamp: Some(Duration::from_millis(100)),
+                frame: MediaFrame::Video(VideoFrame {
+                    codec: VideoCodec::H264,
+                    is_keyframe: true,
+                    width: 640,
+                    height: 360,
+                    data: payload,
+                }),
+            })
+            .unwrap();
         writer.finalize().unwrap();
     }
 

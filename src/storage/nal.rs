@@ -68,6 +68,16 @@ pub fn extract_h264_sps_pps(avcc: &[u8]) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
     (sps, pps)
 }
 
+pub fn has_h264_parameter_sets(avcc: &[u8]) -> bool {
+    let mut found = false;
+    for_each_avcc_nalu(avcc, |nalu| {
+        found |= nalu
+            .first()
+            .is_some_and(|header| matches!(header & 0x1f, 7 | 8));
+    });
+    found
+}
+
 pub fn h264_pixel_dimensions(sps: &[u8], pps: &[u8]) -> Option<(u16, u16)> {
     let parameters = retina::codec::h264::parameters_from_sps_and_pps(
         sps,
@@ -98,6 +108,16 @@ pub fn extract_h265_params(avcc: &[u8]) -> H265Params {
         }
     });
     (vps, sps, pps)
+}
+
+pub fn has_h265_parameter_sets(avcc: &[u8]) -> bool {
+    let mut found = false;
+    for_each_avcc_nalu(avcc, |nalu| {
+        found |= nalu
+            .first()
+            .is_some_and(|header| matches!((header >> 1) & 0x3f, 32..=34));
+    });
+    found
 }
 
 fn for_each_avcc_nalu(data: &[u8], mut f: impl FnMut(&[u8])) {

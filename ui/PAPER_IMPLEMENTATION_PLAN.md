@@ -21,9 +21,9 @@ Implement the complete current 34-board Paper system as a phased Svelte 5 migrat
 - Never update Loki references without confirming the corresponding Paper reference and manifest revision.
 - Never accept a Loki reference produced only from the implementation. Its manifest entry must identify the reviewed Paper frame and reference-image hash from which it was approved.
 
-- **Current focus:** Close the remaining cross-platform PR checks with lockfile-free public-registry installs.
-- **Last completed:** Linux Storybook/Loki passed all 50 deterministic scenarios against the 14 hash-locked Paper-approved references.
-- **Current blockers:** The remaining 36 visual scenarios are deliberately capability-gated with named product/API evidence gaps in `design/paper/keeppeek-nvr-v34/COVERAGE.md`; they remain candidate artifacts rather than approved baselines.
+- **Current focus:** Validate the Board 13 reviewed storage-setup redesign and preserve its candidate reference without rewriting the approved v34 frame.
+- **Last completed:** Board 13 now has a Paper-reviewed 1440×940 editor candidate, shared first-run/reconfiguration owner, observed-history health contract, and desktop/mobile behavior coverage.
+- **Current blockers:** Candidate-path write probing and durable startup-migration progress/retry remain backend lifecycle contracts. The other 36 visual scenarios retain their named capability gaps in `design/paper/keeppeek-nvr-v34/COVERAGE.md`.
 
 ## Progress Overview
 
@@ -393,6 +393,15 @@ CI never runs `loki update` or `loki approve`. A changed Loki reference without 
 | 2026-08-21 | 1.5 nine-camera demo      | Planned → real-server story   | Empty server; 9 Settings saves; restart; 18 RTSP profiles; 70.000s source → 80.320s H.264/AAC; 7 narrated cues; decoded/nonblank wall                   | Hosted publish is gated by the protected environment                                                               |
 | 2026-08-23 | Board 04 camera transport | Dropdown → Paper-aligned UX   | Live Paper Board 04 closed/search states; previous/next stepper; searchable direct selection; focused Playwright camera-switch transition coverage      | Sole cross-camera control; no secondary strip or previews; old frame pinned until 180 ms decoded-frame handoff     |
 | 2026-08-23 | Board 04 timeline scroll  | Hold-to-pan → native scroll   | Live Paper Board 04 wheel/key contract; normal cursor; focused component coverage; real-wheel Playwright coverage with zero stored-media seeks          | Wheel/trackpad/touch and arrow/page keys scroll only; explicit click, event, or playhead gestures seek playback    |
+
+### 2026-08-24 · Board 13 storage setup
+
+- **Status:** Blocked candidate → reviewed redesign.
+- **Evidence:** Paper 1440×940 candidate `cd876b67…3d0f`; shared Svelte owner;
+  catalog/protobuf history tests; Board 13 browser story; first-run, desktop, mobile,
+  dirty-draft, and migration-capacity Playwright coverage.
+- **Follow-up:** The approved v34 evidence frame remains immutable. Candidate-path write probing
+  and durable migration progress/retry still need backend lifecycle ownership.
 
 ## Next Update Template
 

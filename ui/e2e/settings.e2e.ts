@@ -56,6 +56,8 @@ test('uses a searchable ten-section mobile administration index with focused own
 			backend: 'auto',
 			transport: 'tcp',
 			record_generic_motion_events: false,
+			recording_mode: 'event-boost',
+			event_recording_duration_secs: 60,
 			health: 'online',
 			model: null
 		})),
@@ -138,10 +140,10 @@ test('uses a searchable ten-section mobile administration index with focused own
 		.getByRole('navigation', { name: 'Settings sections' })
 		.getByRole('link', { name: /Storage & retention/ })
 		.click();
-	await page.getByRole('button', { name: 'Edit runtime storage' }).click();
-	await expect(page.getByLabel('Medium-term path')).toBeVisible();
-	await expect(page.getByLabel('Medium-term path')).toBeFocused();
-	await expect(page.getByLabel('Medium-term path')).toBeInViewport();
+	await page.getByRole('button', { name: 'Change storage' }).click();
+	await expect(page.getByLabel('Folder path')).toBeVisible();
+	await expect(page.getByLabel('Folder path')).toBeFocused();
+	await expect(page.getByLabel('Folder path')).toBeInViewport();
 	expect(writes).toEqual([]);
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
@@ -304,7 +306,9 @@ test('Board 13 shows measured storage evidence without presenting projected rete
 				catalog_bytes: 8_388_608,
 				catalog: {
 					fragment_bytes: 1_800_000_000_000,
-					event_thumbnails: 350
+					event_thumbnails: 350,
+					oldest_recording_at_ms: Date.UTC(2026, 7, 1),
+					newest_recording_at_ms: Date.UTC(2026, 7, 24, 12)
 				}
 			}
 		}
@@ -322,7 +326,7 @@ test('Board 13 shows measured storage evidence without presenting projected rete
 	await expect(section).toContainText('2.5 TB USED · 1.5 TB FREE · 4 TB TOTAL');
 	await expect(section).toContainText('Indexed fragments 1.8 TB');
 	await expect(section).toContainText('Catalog 8.39 MB');
-	await expect(section).toContainText('Event thumbnails 350');
+	await expect(section).toContainText('Thumbnails 350');
 	await expect(section).toContainText('Short-term buffer');
 	await expect(section).toContainText('90 seconds');
 	await expect(section).toContainText('Rolling MP4 segment');
@@ -330,16 +334,18 @@ test('Board 13 shows measured storage evidence without presenting projected rete
 	await expect(section).toContainText('This duration sizes active files; it is not retention age.');
 	await expect(section).toContainText('Prune the oldest dated recordings');
 	await expect(section).toContainText('below 10% free');
-	await expect(section).toContainText('ACTUAL OLDEST FOOTAGE');
-	await expect(section).toContainText('projected retention is never labeled as observed history');
+	await expect(section).toContainText('Actual oldest footage');
+	await expect(section.locator('time')).toHaveAttribute('datetime', '2026-08-01T00:00:00.000Z');
+	await expect(section).toContainText('23.5 days of indexed footage observed');
 	await expect(section).toContainText('Server update required · keeppeek.offsite-archive.v1');
 	await expect(section.getByText('11 days', { exact: true })).toHaveCount(0);
 	await expect(section.getByText('OLDEST FOOTAGE ON DISK', { exact: true })).toHaveCount(0);
 
-	await section.getByRole('button', { name: 'Edit runtime storage' }).click();
-	await expect(page.getByLabel('Medium-term path')).toBeInViewport();
-	await expect(page.getByLabel('Medium-term path')).toHaveValue('/recordings/active');
-	await expect(page.getByLabel('Long-term path')).toHaveValue('/recordings/archive');
+	await section.getByRole('button', { name: 'Change storage' }).click();
+	await expect(page.getByLabel('Folder path')).toBeInViewport();
+	await expect(page.getByLabel('Folder path')).toHaveValue('/recordings/archive');
+	await expect(page.getByLabel('Host')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Edit storage' })).toHaveCount(0);
 	expect(writes).toEqual([]);
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
@@ -371,6 +377,8 @@ test('discovers and configures a camera without rendering its saved password', a
 				backend: 'retina',
 				transport: 'tcp',
 				record_generic_motion_events: false,
+				recording_mode: 'event-boost',
+				event_recording_duration_secs: 60,
 				health: 'online',
 				model: 'Test Camera'
 			}
@@ -413,6 +421,8 @@ test('discovers and configures a camera without rendering its saved password', a
 				backend: 'reo-proto',
 				transport: 'tcp',
 				record_generic_motion_events: true,
+				recording_mode: 'event-boost',
+				event_recording_duration_secs: 60,
 				health: null,
 				model: null
 			},
@@ -450,6 +460,8 @@ test('discovers and configures a camera without rendering its saved password', a
 	await expect(page.getByLabel('Sub RTSP stream URL')).toHaveValue('');
 	await expect(page.getByLabel('Main RTSP stream URL')).not.toHaveAttribute('placeholder');
 	await expect(page.getByLabel('Sub RTSP stream URL')).not.toHaveAttribute('placeholder');
+	await expect(page.locator('#camera-recording-mode')).toHaveValue('event-boost');
+	await expect(page.getByLabel('Main recording after an event (seconds)')).toHaveValue('60');
 	await expect(page.locator('#camera-password')).toHaveAttribute('type', 'password');
 	await page.getByLabel('Username').fill('operator');
 	await page.getByLabel('Password').fill('write-only-password');
@@ -473,15 +485,79 @@ test('discovers and configures a camera without rendering its saved password', a
 			backend: 'reo-proto',
 			transport: 'tcp',
 			record_generic_motion_events: true,
+			recording_mode: 'event-boost',
+			event_recording_duration_secs: 60,
 			main_rtsp_url: 'rtsp://192.0.2.77:8554/live/main',
 			sub_rtsp_url: 'rtsp://192.0.2.77:8554/live/sub'
 		}
 	});
 });
 
-test('updates server and storage settings before applying a restart', async ({ page }) => {
-	const targetOrigin = 'http://localhost:3200';
-	let targetMetricsChecks = 0;
+test('configures one recording stream policy per camera', async ({ page }) => {
+	const camera = {
+		id: '192.0.2.10',
+		ip: '192.0.2.10',
+		display_name: 'North Garden',
+		manufacturer_override: null,
+		username_configured: true,
+		password_configured: true,
+		onvif_port: 80,
+		http_port: null,
+		main_rtsp_url: null,
+		sub_rtsp_url: null,
+		uid_configured: false,
+		backend: 'retina' as const,
+		transport: 'tcp' as const,
+		record_generic_motion_events: false,
+		recording_mode: 'event-boost' as const,
+		event_recording_duration_secs: 60,
+		health: 'online' as const,
+		model: 'Test Camera'
+	};
+	const controls = await mockControlPeer(page, {
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			camera_count: 1,
+			storage: { ...storage, long_term_max_gb: 1024 },
+			recording_estimate: recordingEstimate
+		},
+		cameraSettings: [camera],
+		cameraUpdateResult: {
+			camera: { ...camera, recording_mode: 'off' },
+			restart_required: true
+		}
+	});
+	await page.goto('/settings');
+
+	await page.getByRole('button', { name: 'Edit', exact: true }).click();
+	const recordingMode = page.locator('#camera-recording-mode');
+	await expect(recordingMode.locator('option')).toHaveCount(5);
+	await expect(recordingMode.locator('option')).toHaveText([
+		'Sub, switch to main on events (recommended)',
+		'Sub only',
+		'Main only',
+		'Main + sub',
+		"Don't record"
+	]);
+	await expect(recordingMode).toHaveValue('event-boost');
+	await expect(page.getByLabel('Main recording after an event (seconds)')).toHaveValue('60');
+	await recordingMode.selectOption('off');
+	await expect(page.getByLabel('Main recording after an event (seconds)')).toHaveCount(0);
+	await page.getByRole('button', { name: 'Save camera' }).click();
+
+	await expect(page.getByText('Camera settings saved.', { exact: true })).toBeVisible();
+	expect(controls.cameraUpdates).toHaveLength(1);
+	expect(controls.cameraUpdates[0]).toMatchObject({
+		ip: '192.0.2.10',
+		update: {
+			recording_mode: 'off',
+			event_recording_duration_secs: 60
+		}
+	});
+});
+
+test('reviews and stages safe storage changes before a restart', async ({ page }) => {
 	const updatedStorage = {
 		medium_term_path: '/archive/medium',
 		long_term_path: '/archive/long',
@@ -504,68 +580,219 @@ test('updates server and storage settings before applying a restart', async ({ p
 		},
 		runtimeUpdateResult: {
 			config: {
-				host: 'localhost',
-				port: 3200,
+				host: '0.0.0.0',
+				port: 3000,
 				camera_count: 0,
 				storage: updatedStorage,
 				recording_estimate: recordingEstimate
 			},
 			restart_required: true
+		},
+		health: {
+			system: {
+				disks: [
+					{
+						name: 'Current recordings',
+						kind: 'SSD',
+						file_system: 'apfs',
+						mount_point: '/recordings',
+						total_bytes: 4_000_000_000_000,
+						available_bytes: 1_000_000_000_000,
+						used_bytes: 3_000_000_000_000,
+						removable: false,
+						stores_recordings: true
+					},
+					{
+						name: 'Archive',
+						kind: 'SSD',
+						file_system: 'apfs',
+						mount_point: '/archive',
+						total_bytes: 2_000_000_000_000,
+						available_bytes: 1_500_000_000_000,
+						used_bytes: 500_000_000_000,
+						removable: true,
+						stores_recordings: false
+					}
+				]
+			},
+			storage: {
+				long_term_max_bytes: 0,
+				catalog: { fragment_bytes: 900_000_000_000 }
+			}
 		}
-	});
-	await page.route(`${targetOrigin}/metrics`, async (route) => {
-		targetMetricsChecks += 1;
-		await route.fulfill({
-			contentType: 'text/plain',
-			body: '# EOF\n'
-		});
-	});
-	await page.route(`${targetOrigin}/settings`, async (route) => {
-		await route.fulfill({ contentType: 'text/html', body: '<main>Restarted settings</main>' });
 	});
 
 	await page.goto('/settings');
-	await page.getByRole('button', { name: 'Edit storage' }).click();
-	await page.getByLabel('Host').fill('localhost');
-	await page.getByLabel('Port').fill('3200');
-	await page.getByLabel('Medium-term path').fill('/archive/medium');
-	await page.getByLabel('Long-term path').fill('/archive/long');
-	await page.getByLabel('Recording metadata database path').fill('/archive/metadata/recordings.db');
-	await page.getByLabel('Event JPEG storage path').fill('/archive/events');
-	await page.getByLabel('Event JPEG limit MB').fill('512');
-	await page.getByLabel('Move current storage files').check();
-	await page.getByLabel('Short-term buffer seconds').fill('30');
-	await page.getByLabel('Medium-term segment seconds').fill('120');
-	await page.getByLabel('Flush interval seconds').fill('15');
-	await page.getByLabel('Write buffer bytes').fill('16384');
-	await page.getByLabel('Long-term max GB').fill('24');
-	await page.getByRole('button', { name: 'Save settings' }).click();
+	await page.getByRole('button', { name: 'Change storage' }).click();
+	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
+	await expect(page.getByLabel('Host')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
 
-	await expect(page.getByText('Server and storage settings saved.', { exact: true })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Apply changes' })).toBeVisible();
-	await expect(page.getByText('localhost', { exact: true })).toBeVisible();
-	await expect(page.getByText('3200', { exact: true })).toBeVisible();
-	await expect(page.getByText('30s', { exact: true })).toBeVisible();
-	const runtimeSettings = page.locator('#runtime-settings-form');
+	await page.getByLabel('Maximum recording storage (GiB)').fill('-1');
+	await expect(page.getByText('Maximum recording storage must be a whole number.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
+	await page.getByLabel('Maximum recording storage (GiB)').fill('24');
+	await expect(page.getByText('7 hours', { exact: true })).toBeVisible();
+	await page.getByLabel('Folder path').fill('/archive/long');
+	await expect(page.getByText('Existing files', { exact: true })).toBeVisible();
+	await page.getByLabel('Move existing storage during restart').check();
+
+	await page.getByText('Advanced storage paths and writer controls').click();
+	await page.getByLabel('Active recording path').fill('/archive/medium');
+	await page.getByLabel('Recording catalog path').fill('/archive/metadata/recordings.db');
+	await page.getByLabel('Event thumbnail path').fill('/archive/events');
+	await page.getByLabel('Thumbnail storage limit (MiB)').fill('512');
+	await page.getByLabel('Memory buffer (seconds)').fill('30');
+	await page.getByLabel('Recording file duration (seconds)').fill('120');
+	await page.getByLabel('Flush interval (seconds)').fill('15');
+	await page.getByLabel('Write buffer (bytes)').fill('16384');
+	await page.getByRole('button', { name: 'Continue to review' }).click();
+
+	await expect(page.getByRole('heading', { name: 'Review storage changes' })).toBeFocused();
+	await expect(page.getByText('Move during restart', { exact: true })).toBeVisible();
+	await expect(page.getByText('RESTART REQUIRED', { exact: true })).toBeVisible();
+	await expect(page.getByText(/may remove about 814 GiB of indexed footage/)).toBeVisible();
+	await expect(page.getByText('/archive/metadata/recordings.db', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Stage storage changes' }).click();
+
 	await expect(
-		runtimeSettings.getByText('/archive/metadata/recordings.db', { exact: true })
+		page.getByText(
+			'Storage settings staged. Restart will move existing storage before recording resumes.',
+			{ exact: true }
+		)
 	).toBeVisible();
-	await expect(runtimeSettings.getByText('/archive/events', { exact: true })).toBeVisible();
-	await expect(page.getByText('Current recording estimate', { exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Restart and move storage' })).toBeVisible();
 	expect(controls.runtimeUpdates).toEqual([
 		{
-			host: 'localhost',
-			port: 3200,
+			host: '0.0.0.0',
+			port: 3000,
 			storage: updatedStorage,
 			move_existing_recordings: true
 		}
 	]);
-	await page.getByRole('button', { name: 'Apply changes' }).click();
+	expect(controls.restarts).toBe(0);
+});
 
-	await expect(page).toHaveURL(`${targetOrigin}/settings`);
-	await expect(page.getByText('Restarted settings', { exact: true })).toBeVisible();
-	expect(targetMetricsChecks).toBeGreaterThan(0);
-	expect(controls.restarts).toBe(1);
+test('protects an unsaved storage draft from cancel and navigation', async ({ page }) => {
+	await mockControlPeer(page, {
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			camera_count: 0,
+			storage: { ...storage, long_term_max_gb: 1024 },
+			recording_estimate: recordingEstimate
+		}
+	});
+	await page.goto('/settings#storage');
+	await page.getByRole('button', { name: 'Change storage' }).click();
+	await page.getByLabel('Maximum recording storage (GiB)').fill('512');
+	await expect(page.getByText('1 unsaved change', { exact: true })).toBeVisible();
+
+	let dialogPromise = page.waitForEvent('dialog');
+	let actionPromise = page.getByRole('button', { name: 'Cancel', exact: true }).click();
+	let dialog = await dialogPromise;
+	expect(dialog.message()).toBe('Discard your unsaved storage changes?');
+	await dialog.dismiss();
+	await actionPromise;
+	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
+
+	dialogPromise = page.waitForEvent('dialog');
+	actionPromise = page.getByRole('link', { name: 'View logs' }).click();
+	dialog = await dialogPromise;
+	expect(dialog.message()).toBe('Discard your unsaved storage changes?');
+	await dialog.dismiss();
+	await actionPromise;
+	await expect(page).toHaveURL(/\/settings#storage$/);
+	await expect(page.getByLabel('Maximum recording storage (GiB)')).toHaveValue('512');
+
+	dialogPromise = page.waitForEvent('dialog');
+	actionPromise = page.getByRole('button', { name: 'Cancel', exact: true }).click();
+	dialog = await dialogPromise;
+	await dialog.accept();
+	await actionPromise;
+	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toHaveCount(0);
+});
+
+test('blocks a storage move that cannot fit on the reported destination', async ({ page }) => {
+	await mockControlPeer(page, {
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			camera_count: 0,
+			storage: { ...storage, long_term_max_gb: 1024 },
+			recording_estimate: recordingEstimate
+		},
+		health: {
+			system: {
+				disks: [
+					{
+						name: 'Current recordings',
+						kind: 'SSD',
+						file_system: 'apfs',
+						mount_point: '/recordings',
+						total_bytes: 2_000_000_000_000,
+						available_bytes: 1_000_000_000_000,
+						used_bytes: 1_000_000_000_000,
+						removable: false,
+						stores_recordings: true
+					},
+					{
+						name: 'Small archive',
+						kind: 'SSD',
+						file_system: 'apfs',
+						mount_point: '/archive',
+						total_bytes: 500_000_000_000,
+						available_bytes: 100_000_000_000,
+						used_bytes: 400_000_000_000,
+						removable: true,
+						stores_recordings: false
+					}
+				]
+			},
+			storage: {
+				long_term_max_bytes: 1_099_511_627_776,
+				catalog: { fragment_bytes: 900_000_000_000 }
+			}
+		}
+	});
+	await page.goto('/settings#storage');
+	await page.getByRole('button', { name: 'Change storage' }).click();
+	await page.getByLabel('Folder path').fill('/archive/recordings');
+	await page.getByLabel('Move existing storage during restart').check();
+
+	await expect(page.getByText(/destination has 93 GiB free, less than the 838 GiB/)).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
+	await page.getByLabel('Use the new location from restart').check();
+	await expect(page.getByText(/destination has 93 GiB free/)).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeEnabled();
+});
+
+test('keeps storage setup and review inside the mobile administration viewport', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await mockControlPeer(page, {
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			camera_count: 0,
+			storage: { ...storage, long_term_max_gb: 1024 },
+			recording_estimate: recordingEstimate
+		}
+	});
+	await page.goto('/settings?edit=storage#storage');
+
+	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
+	await expect(page.getByLabel('Folder path')).toBeInViewport();
+	await page.getByLabel('Maximum recording storage (GiB)').fill('512');
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+		.toBe(true);
+	await page.getByRole('button', { name: 'Continue to review' }).click();
+	await expect(page.getByRole('heading', { name: 'Review storage changes' })).toBeFocused();
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+		.toBe(true);
 });
 
 test('uses the browser hostname after a wildcard host changes port', async ({ page }) => {
@@ -602,7 +829,7 @@ test('uses the browser hostname after a wildcard host changes port', async ({ pa
 	await page.goto('/settings');
 	await page.getByRole('button', { name: 'Edit server' }).click();
 	await page.getByLabel('Port').fill('3201');
-	await page.getByRole('button', { name: 'Save settings' }).click();
+	await page.getByRole('button', { name: 'Save server settings' }).click();
 	await page.getByRole('button', { name: 'Apply changes' }).click();
 
 	await expect(page).toHaveURL(`${targetOrigin}/settings`);
@@ -641,10 +868,10 @@ test('keeps confirmed settings visible and locked while a WebRTC update is apply
 	await page.getByRole('button', { name: 'Edit server' }).click();
 	const port = page.getByLabel('Port');
 	await port.fill('3201');
-	await page.getByRole('button', { name: 'Save settings' }).click();
+	await page.getByRole('button', { name: 'Save server settings' }).click();
 
 	const applying = page.locator('[data-settings-applying]');
-	await expect(applying).toContainText('Applying server and storage settings');
+	await expect(applying).toContainText('Applying server settings');
 	await expect(applying).toContainText('Confirmed values remain visible');
 	await expect(port).toHaveValue('3000');
 	await expect(port).toBeDisabled();
@@ -653,6 +880,6 @@ test('keeps confirmed settings visible and locked while a WebRTC update is apply
 
 	releaseUpdate();
 	await expect(applying).toHaveCount(0);
-	await expect(page.getByText('Server and storage settings saved.', { exact: true })).toBeVisible();
+	await expect(page.getByText('Server settings saved.', { exact: true })).toBeVisible();
 	await expect(page.getByText('3201', { exact: true })).toBeVisible();
 });

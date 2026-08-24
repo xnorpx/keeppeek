@@ -49,6 +49,22 @@ const packageManifest = JSON.parse(
 	await readFile(resolve('visual-harness/package.json'), 'utf8')
 ) as { scripts: Record<string, string> };
 const workflow = await readFile(resolve('..', '.github/workflows/visual-regression.yml'), 'utf8');
+const localPreviewHtml = await readFile(resolve('visual-harness/local-preview.html'), 'utf8');
+const localPreviewCss = await readFile(resolve('visual-harness/local-preview.css'), 'utf8');
+
+if (
+	!localPreviewHtml.includes('data-visual-fixture-notice') ||
+	!localPreviewHtml.includes('not measurements from this machine')
+) {
+	throw new Error('The local visual preview must identify deterministic fixture data.');
+}
+if (
+	!localPreviewCss.match(
+		/html\[data-demo='true'\] \[data-visual-fixture-notice\]\s*\{[^}]*display:\s*none;/s
+	)
+) {
+	throw new Error('Demo captures must hide the local fixture-data notice.');
+}
 
 for (const skippedStory of ['Foundation/Capability Gate Unsupported', 'Demos/Peek History']) {
 	if (!new RegExp(loki.skipStories, 'i').test(skippedStory)) {
