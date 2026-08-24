@@ -25,6 +25,11 @@ updates:
       ui-dependencies:
         patterns:
           - "*"
+    ignore:
+      # Svelte tooling requires the direct package to remain on TS 6; TS 7 is consumed through @typescript/native.
+      - dependency-name: typescript
+        update-types:
+          - "version-update:semver-major"
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
