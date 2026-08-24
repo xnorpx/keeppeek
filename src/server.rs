@@ -2013,7 +2013,18 @@ fn sha256_file(path: &Path) -> anyhow::Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(encode_lower_hex(hasher.finalize()))
+}
+
+fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 fn export_requested_start(job: &proto::ExportJob) -> i64 {
@@ -9411,7 +9422,7 @@ mod tests {
         }
         assert_eq!(u64::try_from(bytes.len()).unwrap(), ready.bytes_written);
         assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
+            encode_lower_hex(Sha256::digest(&bytes)),
             ready.sha256.unwrap()
         );
         let downloaded = directory.join("downloaded-export.mp4");

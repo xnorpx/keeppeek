@@ -2518,7 +2518,18 @@ fn search_fingerprint(parts: &[&[u8]]) -> String {
         hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
         hasher.update(part);
     }
-    format!("{:x}", hasher.finalize())
+    encode_lower_hex(hasher.finalize())
+}
+
+fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 fn encode_search_cursor(cursor: &EventSearchCursor) -> anyhow::Result<String> {

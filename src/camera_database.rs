@@ -624,11 +624,22 @@ fn verify_release_file(
         );
     }
     let expected = file.sha256.strip_prefix("sha256:").unwrap_or(&file.sha256);
-    let actual = format!("{:x}", Sha256::digest(contents));
+    let actual = encode_lower_hex(Sha256::digest(contents));
     if !expected.eq_ignore_ascii_case(&actual) {
         anyhow::bail!("camera database checksum does not match metadata for {name}");
     }
     Ok(())
+}
+
+fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 fn validate_summary(record: &JsonCamera, summary: &CsvCamera) -> anyhow::Result<()> {
@@ -979,6 +990,6 @@ mod tests {
     }
 
     fn sha256(contents: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(contents))
+        encode_lower_hex(Sha256::digest(contents))
     }
 }
