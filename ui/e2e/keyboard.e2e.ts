@@ -184,7 +184,7 @@ test('controls Keep transport, exact frames, live follow, and export range from 
 	await page.keyboard.press(']');
 
 	const timeline = page.getByRole('region', { name: 'Recording timeline', exact: true });
-	const viewport = page.getByRole('region', { name: 'Recording timeline pan viewport' });
+	const viewport = page.getByRole('region', { name: 'Recording timeline scroll viewport' });
 	await viewport.dispatchEvent('wheel', { deltaY: 100 });
 	await expect(timeline).toHaveAttribute('data-timeline-following', 'false');
 	await video.focus();

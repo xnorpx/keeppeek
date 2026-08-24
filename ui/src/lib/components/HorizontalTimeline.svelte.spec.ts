@@ -44,7 +44,7 @@ describe('HorizontalTimeline', () => {
 		await vi.waitFor(() => expect(onViewportChange).toHaveBeenCalled());
 		expect(onViewportChange.mock.lastCall?.[0]).toMatchObject({
 			bucketMs: 5 * 60_000,
-			prefetchMs: 12 * 60 * 60_000,
+			prefetchMs: 60 * 60_000,
 			viewportExtentPx: 400
 		});
 		expect(document.querySelectorAll('[data-timeline-orientation="horizontal"]')).toHaveLength(1);

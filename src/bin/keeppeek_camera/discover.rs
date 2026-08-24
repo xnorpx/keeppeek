@@ -433,6 +433,7 @@ fn gather_camera_info(
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
 
         match ReolinkClient::connect(&config) {
@@ -724,6 +725,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     uid: None,
                     backend: CameraBackend::Auto,
                     transport: CameraTransport::Tcp,
+                    record_generic_motion_events: false,
                 },
                 |result| CameraConfig {
                     ip: cam.ip,
@@ -739,6 +741,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     uid: None,
                     backend: CameraBackend::Auto,
                     transport: CameraTransport::Tcp,
+                    record_generic_motion_events: false,
                 },
             )
         })
@@ -902,6 +905,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         }
     }
 

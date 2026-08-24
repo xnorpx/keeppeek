@@ -75,7 +75,7 @@ const DEFAULT_STORED_MEDIA_BUFFER: Duration = Duration::from_secs(120);
 const MAX_STORED_MEDIA_BUFFER: Duration = Duration::from_secs(300);
 const MAX_STORED_OBJECT_BYTES: u64 = 256 * 1_024 * 1_024;
 const MAX_STORED_KEYFRAME_BYTES: u64 = 4 * 1_024 * 1_024;
-const STORED_MEDIA_TARGET_BUFFER_MS: u64 = 3_000;
+const STORED_MEDIA_TARGET_BUFFER_MS: u64 = 10_000;
 const MAX_EVENT_SEARCH_MEDIA_OBJECTS: usize = 64;
 const MAX_EVENT_SEARCH_MEDIA_BYTES: u64 = 32 * 1_024 * 1_024;
 const MAX_EVENT_SEARCH_TASKS_PER_SESSION: usize = 4;
@@ -108,6 +108,7 @@ struct CameraSettingsUpdate {
     uid: Option<Option<String>>,
     backend: Option<CameraBackend>,
     transport: Option<CameraTransport>,
+    record_generic_motion_events: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -148,6 +149,7 @@ struct CameraSettings {
     uid_configured: bool,
     backend: String,
     transport: String,
+    record_generic_motion_events: bool,
     health: Option<String>,
     model: Option<String>,
 }
@@ -1107,6 +1109,7 @@ impl ServerControlHandler {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
         let streams = probe_onvif_streams(&config).map_err(|error| {
             tracing::debug!(%error, %ip, "candidate ONVIF stream probe failed");
@@ -2940,7 +2943,25 @@ fn fragmented_mp4_content_type(initialization: &[u8]) -> Result<String, ControlC
             }
             mp4::MediaType::H265 => {
                 has_video = true;
-                codecs.push("hvc1".to_owned());
+                let decoder = track
+                    .video_decoder_config()
+                    .map_err(|error| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::Internal,
+                            500,
+                            format!(
+                                "unable to read indexed MP4 video decoder configuration: {error}"
+                            ),
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::Internal,
+                            500,
+                            "indexed MP4 HEVC track has no decoder configuration",
+                        )
+                    })?;
+                codecs.push(decoder.codec);
             }
             mp4::MediaType::AAC => codecs.push("mp4a.40.2".to_owned()),
             _ => {}
@@ -5202,6 +5223,7 @@ fn proto_camera_settings(camera: CameraSettings) -> proto::CameraSettings {
             "udp" => proto::CameraTransport::Udp as i32,
             _ => proto::CameraTransport::Tcp as i32,
         },
+        record_generic_motion_events: camera.record_generic_motion_events,
         health: camera.health,
         model: camera.model,
     }
@@ -5222,6 +5244,7 @@ fn camera_settings_update_from_proto(
         uid: optional_string_update(update.uid, "UID")?,
         backend: optional_camera_backend(update.backend)?,
         transport: optional_camera_transport(update.transport)?,
+        record_generic_motion_events: update.record_generic_motion_events,
     })
 }
 
@@ -6603,6 +6626,7 @@ fn camera_settings_entry(
         uid_configured: configuration.uid.is_some(),
         backend: camera_backend_name(configuration.backend).to_owned(),
         transport: camera_transport_name(configuration.transport).to_owned(),
+        record_generic_motion_events: configuration.record_generic_motion_events,
         health,
         model: camera.and_then(|camera| camera.info.model.clone()),
     }
@@ -7008,6 +7032,14 @@ fn save_camera_settings(
             .transport
             .or_else(|| existing_config.as_ref().map(|camera| camera.transport))
             .unwrap_or_default(),
+        record_generic_motion_events: update
+            .record_generic_motion_events
+            .or_else(|| {
+                existing_config
+                    .as_ref()
+                    .map(|camera| camera.record_generic_motion_events)
+            })
+            .unwrap_or_default(),
     };
     if let Err(error) = config::upsert_camera(config_path, &config) {
         return Err(ControlCommandError::new(
@@ -7042,6 +7074,7 @@ fn save_camera_settings(
         uid_configured: config.uid.is_some(),
         backend: camera_backend_name(config.backend).to_owned(),
         transport: camera_transport_name(config.transport).to_owned(),
+        record_generic_motion_events: config.record_generic_motion_events,
         health,
         model: existing
             .as_ref()
@@ -7470,6 +7503,10 @@ mod tests {
         let h265_format = indexed_video_format(&h265).unwrap();
         assert_eq!(h265_format.decoder.codec, "hvc1.1.6.L63.90");
         assert_eq!(
+            h265_format.mp4_content_type,
+            "video/mp4; codecs=\"hvc1.1.6.L63.90\""
+        );
+        assert_eq!(
             (h265_format.decoder.width, h265_format.decoder.height),
             (640, 360)
         );
@@ -7533,6 +7570,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
         let mut state = ServerState::empty();
         state.cameras = Arc::new(RwLock::new(vec![camera_entry(&config, None)]));
@@ -9714,6 +9752,7 @@ mod tests {
                                 uid: None,
                                 backend: None,
                                 transport: None,
+                                record_generic_motion_events: None,
                             },
                         )),
                     },
@@ -10309,6 +10348,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
 
@@ -10451,6 +10491,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Udp,
+            record_generic_motion_events: false,
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
         let state = ServerState::new(
@@ -10585,6 +10626,7 @@ mod tests {
                 uid: None,
                 backend: CameraBackend::Retina,
                 transport: CameraTransport::Tcp,
+                record_generic_motion_events: false,
             },
             recording_label: "back-yard".to_owned(),
             control: None,
@@ -10637,6 +10679,7 @@ mod tests {
                 sub_rtsp_url: Some(Some("rtsp://192.0.2.77:8554/live/sub".to_owned())),
                 backend: Some(CameraBackend::ReoProto),
                 transport: Some(CameraTransport::Udp),
+                record_generic_motion_events: Some(true),
                 ..CameraSettingsUpdate::default()
             },
             &router_tx,
@@ -10646,6 +10689,7 @@ mod tests {
         .unwrap();
         assert_eq!(saved_response.camera.ip, "192.0.2.77");
         assert!(saved_response.camera.password_configured);
+        assert!(saved_response.camera.record_generic_motion_events);
         assert!(saved_response.restart_required);
         assert_eq!(router_thread.join().unwrap(), 1);
 
@@ -10656,6 +10700,7 @@ mod tests {
         assert_eq!(config.display_name.as_deref(), Some("Manual Gate"));
         assert_eq!(config.backend, CameraBackend::ReoProto);
         assert_eq!(config.transport, CameraTransport::Udp);
+        assert!(config.record_generic_motion_events);
         assert_eq!(
             config.main_rtsp_url.as_deref(),
             Some("rtsp://192.0.2.77:8554/live/main")
@@ -10690,6 +10735,7 @@ mod tests {
         assert_eq!(result.cameras.len(), 1);
         assert_eq!(result.cameras[0].ip, "192.0.2.77");
         assert!(result.cameras[0].password_configured);
+        assert!(result.cameras[0].record_generic_motion_events);
         assert_eq!(
             result.cameras[0].main_rtsp_url.as_deref(),
             Some("rtsp://192.0.2.77:8554/live/main")
@@ -10719,6 +10765,7 @@ mod tests {
         let config = &cameras["cameras"][0];
         assert_eq!(config.display_name.as_deref(), Some("Updated Manual Gate"));
         assert_eq!(config.password, "not-in-the-response");
+        assert!(config.record_generic_motion_events);
         assert_eq!(
             config.main_rtsp_url.as_deref(),
             Some("rtsp://192.0.2.77:8554/live/main")
