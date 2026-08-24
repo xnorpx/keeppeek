@@ -4,7 +4,6 @@
 	import type { TimelineViewport } from '$lib/timeline-repository.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { buildTimelineAvailability } from '$lib/timeline-availability';
-	import { TimelinePan } from '$lib/timeline-pan.svelte';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ScanSearchIcon from '@lucide/svelte/icons/scan-search';
 	import ZoomInIcon from '@lucide/svelte/icons/zoom-in';
@@ -19,7 +18,7 @@
 			tickMs: 60 * MINUTE_MS,
 			majorEvery: 6,
 			bucketMs: 5 * MINUTE_MS,
-			prefetchMs: 12 * 60 * MINUTE_MS
+			prefetchMs: 0
 		},
 		{
 			label: '6h',
@@ -27,7 +26,7 @@
 			tickMs: 15 * MINUTE_MS,
 			majorEvery: 4,
 			bucketMs: 5 * MINUTE_MS,
-			prefetchMs: 12 * 60 * MINUTE_MS
+			prefetchMs: 60 * MINUTE_MS
 		},
 		{
 			label: '1h',
@@ -35,7 +34,7 @@
 			tickMs: 5 * MINUTE_MS,
 			majorEvery: 3,
 			bucketMs: MINUTE_MS,
-			prefetchMs: 2 * 60 * MINUTE_MS
+			prefetchMs: 30 * MINUTE_MS
 		},
 		{
 			label: '15m',
@@ -43,7 +42,7 @@
 			tickMs: MINUTE_MS,
 			majorEvery: 5,
 			bucketMs: 15_000,
-			prefetchMs: 30 * MINUTE_MS
+			prefetchMs: 10 * MINUTE_MS
 		},
 		{
 			label: '1m',
@@ -51,12 +50,13 @@
 			tickMs: 15_000,
 			majorEvery: 4,
 			bucketMs: 15_000,
-			prefetchMs: 30 * MINUTE_MS
+			prefetchMs: MINUTE_MS
 		}
 	] as const;
 	const EVENT_FILTERS = ['all', 'person', 'vehicle', 'motion'] as const;
 	const EVENT_CARD_HEIGHT = 68;
 	const EVENT_CLUSTER_GAP = 72;
+	const ARROW_SCROLL_PX = 72;
 	const timeFormatter = new Intl.DateTimeFormat(undefined, {
 		hour: '2-digit',
 		minute: '2-digit',
@@ -115,6 +115,7 @@
 	let clockNowMs = $state(Date.now());
 	let activeDayStartMs = $state<number | null>(null);
 	let scroller: HTMLDivElement | null = $state(null);
+	let seekSurface: HTMLButtonElement | null = $state(null);
 	let followPlayhead = $state(true);
 	let detachedEndMs = $state<number | null>(null);
 	let draggedPlayheadMs = $state<number | null>(null);
@@ -122,7 +123,6 @@
 	let viewportTopPx = $state(0);
 	let viewportExtentPx = $state(0);
 	let dragOffsetY = 0;
-	const timelinePan = new TimelinePan();
 	let zoomLevel = $derived(ZOOM_LEVELS[zoomIndex]);
 	let pixelsPerHour = $derived(paperFrame ? 206.67 : zoomLevel.pixelsPerHour);
 	let effectiveNowMs = $derived(nowMs ?? clockNowMs);
@@ -245,18 +245,25 @@
 		onSeek(timelineEndMs - fraction * timelineDurationMs);
 	}
 
-	function seekFromKeyboard(event: KeyboardEvent) {
-		const step = event.shiftKey ? 10 * MINUTE_MS : MINUTE_MS;
-		const current = playheadMs ?? timelineEndMs;
-		let next: number | null = null;
-		if (event.key === 'ArrowUp') next = current + step;
-		if (event.key === 'ArrowDown') next = current - step;
-		if (event.key === 'Home') next = timelineEndMs;
-		if (event.key === 'End') next = timelineStartMs;
-		if (next === null) return;
+	function scrollFromKeyboard(event: KeyboardEvent): void {
+		const node = scroller;
+		if (!node) return;
+		const maximumScrollTop = Math.max(0, timelineHeight - node.clientHeight);
+		const pageStep = Math.max(ARROW_SCROLL_PX, node.clientHeight * 0.8);
+		let nextScrollTop: number | null = null;
+		if (event.key === 'ArrowUp') nextScrollTop = node.scrollTop - ARROW_SCROLL_PX;
+		if (event.key === 'ArrowDown') nextScrollTop = node.scrollTop + ARROW_SCROLL_PX;
+		if (event.key === 'PageUp') nextScrollTop = node.scrollTop - pageStep;
+		if (event.key === 'PageDown') nextScrollTop = node.scrollTop + pageStep;
+		if (event.key === 'Home') nextScrollTop = 0;
+		if (event.key === 'End') nextScrollTop = maximumScrollTop;
+		if (nextScrollTop === null) return;
 		event.preventDefault();
+		const clampedScrollTop = Math.max(0, Math.min(maximumScrollTop, nextScrollTop));
+		if (clampedScrollTop === node.scrollTop) return;
 		stopFollowing();
-		onSeek(Math.max(timelineStartMs, Math.min(timelineEndMs, next)));
+		node.scrollTop = clampedScrollTop;
+		syncViewport(node);
 	}
 
 	function pointerTimelineTop(clientY: number): number | null {
@@ -332,15 +339,6 @@
 		onScrubCancel?.();
 	}
 
-	function beginPan(event: PointerEvent) {
-		const target = scroller ?? (event.currentTarget as HTMLDivElement);
-		timelinePan.begin(event, target);
-	}
-
-	function endPan(event: PointerEvent) {
-		if (timelinePan.end(event)) stopFollowing();
-	}
-
 	async function zoom(direction: number) {
 		const nextZoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, zoomIndex + direction));
 		if (nextZoomIndex === zoomIndex) return;
@@ -361,6 +359,7 @@
 	}
 
 	function handleWheel(event: WheelEvent): void {
+		seekSurface?.focus({ preventScroll: true });
 		stopFollowing();
 		if (!event.ctrlKey) return;
 		event.preventDefault();
@@ -419,7 +418,7 @@
 
 	$effect(() => {
 		const node = scroller;
-		if (!node || !followPlayhead || timelinePan.active) return;
+		if (!node || !followPlayhead) return;
 		const frame = requestAnimationFrame(() => {
 			node.scrollTo({ top: 0, behavior: 'smooth' });
 			syncViewport(node);
@@ -578,28 +577,23 @@
 
 	<div
 		bind:this={scroller}
-		class="min-h-0 touch-none [scrollbar-width:none] overflow-y-auto overscroll-contain bg-muted/15 [&::-webkit-scrollbar]:hidden {timelinePan.cursorClass} {paperFrame
+		class="min-h-0 cursor-default touch-pan-y [scrollbar-width:none] overflow-y-auto overscroll-contain bg-muted/15 [&::-webkit-scrollbar]:hidden {paperFrame
 			? 'h-[620px] w-[395px] shrink-0'
 			: 'flex-1'}"
 		role="region"
-		aria-label="Recording timeline pan viewport"
-		onpointerdown={beginPan}
-		onpointermove={(event) => timelinePan.move(event)}
-		onpointerup={endPan}
-		onpointercancel={(event) => timelinePan.cancel(event)}
-		onlostpointercapture={(event) => timelinePan.cancel(event)}
-		onclickcapture={(event) => timelinePan.consumeClick(event)}
+		aria-label="Recording timeline scroll viewport"
 		onwheel={handleWheel}
 		onscroll={handleScroll}
 	>
 		<div class="relative min-w-full" style={`height: ${timelineHeight}px`}>
 			<button
+				bind:this={seekSurface}
 				type="button"
-				class="absolute inset-x-0 top-0 z-0 {timelinePan.cursorClass} focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+				class="absolute inset-x-0 top-0 z-0 cursor-default"
 				style={`height: ${timelineHeight}px`}
-				aria-label="Seek recording timeline. Use arrow keys to move one minute and Shift plus arrow keys to move ten minutes."
+				aria-label="Scroll recording timeline. Use the mouse wheel or arrow keys. Click to seek."
 				onclick={seekFromPointer}
-				onkeydown={seekFromKeyboard}
+				onkeydown={scrollFromKeyboard}
 			></button>
 
 			{#each ticks as tick (tick.timestampMs)}
@@ -757,7 +751,7 @@
 					onpointerup={endPlayheadDrag}
 					onpointercancel={cancelPlayheadDrag}
 					onlostpointercapture={cancelPlayheadDrag}
-					onkeydown={seekFromKeyboard}
+					onkeydown={scrollFromKeyboard}
 				>
 					<span
 						class="w-11 rounded-sm bg-red-500 px-1 py-0.5 text-center font-mono text-[9px] font-semibold text-white"

@@ -605,7 +605,7 @@ export class ControlClient {
 						playbackRate: options.playbackRate,
 						mediaChannel: DataChannelKind.RELIABLE_DATA,
 						dataPayloadRoutes: [],
-						maxBufferDuration: durationFromMs(5_000)
+						maxBufferDuration: durationFromMs(10_000)
 					})
 				}
 			});
@@ -1053,7 +1053,8 @@ export class ControlClient {
 			subRtspUrl: stringPatch(update, 'sub_rtsp_url'),
 			uid: stringPatch(update, 'uid'),
 			backend: update.backend === undefined ? undefined : protoBackend(update.backend),
-			transport: update.transport === undefined ? undefined : protoTransport(update.transport)
+			transport: update.transport === undefined ? undefined : protoTransport(update.transport),
+			recordGenericMotionEvents: update.record_generic_motion_events
 		});
 		const command = create(CameraConfigurationCommandSchema, {
 			action: { case: 'update', value: payload }
@@ -2826,6 +2827,7 @@ function cameraSettings(camera: import('./proto/webrtc_pb').CameraSettings): Cam
 					? 'reo-proto'
 					: 'auto',
 		transport: camera.transport === ProtoCameraTransport.UDP ? 'udp' : 'tcp',
+		record_generic_motion_events: camera.recordGenericMotionEvents,
 		health: (camera.health ?? null) as CameraSettings['health'],
 		model: camera.model ?? null
 	};

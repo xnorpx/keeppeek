@@ -63,9 +63,17 @@ test('renders camera motion thumbnails in the recording timeline', async ({ page
 	await expect(event).toBeVisible();
 	await expect(event.locator('img')).toHaveAttribute('loading', 'lazy');
 	await expect(event.locator('img')).toHaveAttribute('decoding', 'async');
-	await expect(
-		page.getByRole('region', { name: 'Recorded video player' }).getByText('Front Door')
-	).toBeVisible();
+	const cameraName = page.locator('[data-camera-name]');
+	await expect(cameraName).toHaveText('Front Door');
+	const [cameraNameBounds, playerBounds] = await Promise.all([
+		cameraName.boundingBox(),
+		cameraName.locator('..').boundingBox()
+	]);
+	expect(cameraNameBounds).not.toBeNull();
+	expect(playerBounds).not.toBeNull();
+	expect(
+		playerBounds!.x + playerBounds!.width - cameraNameBounds!.x - cameraNameBounds!.width
+	).toBe(12);
 	await event.click();
 	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
 	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);

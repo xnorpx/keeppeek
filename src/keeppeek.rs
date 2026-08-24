@@ -363,6 +363,7 @@ impl KeepPeekLoop {
                     sub_video.map_or(0, |video| video.width),
                     sub_video.map_or(0, |video| video.height),
                     sub_video.map_or(0.0, |video| video.framerate),
+                    camera.config.record_generic_motion_events,
                 );
             }
         }
@@ -391,6 +392,7 @@ impl KeepPeekLoop {
             0,
             0,
             0.0,
+            camera.config.record_generic_motion_events,
         );
     }
 
@@ -533,6 +535,7 @@ impl KeepPeekLoop {
         sub_expected_width: u32,
         sub_expected_height: u32,
         sub_expected_fps: f64,
+        record_generic_motion_events: bool,
     ) {
         if enable_main {
             self.expect_stream(camera_ip, camera_name.as_deref(), StreamKind::Main);
@@ -563,6 +566,7 @@ impl KeepPeekLoop {
             sub_expected_width,
             sub_expected_height,
             sub_expected_fps,
+            record_generic_motion_events,
             storage: self.storage.clone(),
             live: self.live.clone(),
             health: self.health.clone(),
@@ -717,6 +721,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::ReoProto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
 
         assert_eq!(
@@ -779,6 +784,7 @@ mod tests {
                 uid: None,
                 backend: CameraBackend::Retina,
                 transport: CameraTransport::Tcp,
+                record_generic_motion_events: false,
             },
             device: DeviceInfo::default(),
             reported_manufacturer: None,
@@ -860,6 +866,7 @@ mod tests {
                     uid: None,
                     backend: CameraBackend::Retina,
                     transport: CameraTransport::Tcp,
+                    record_generic_motion_events: false,
                 },
                 device: DeviceInfo::default(),
                 reported_manufacturer: None,

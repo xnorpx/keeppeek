@@ -241,6 +241,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         }
     }
 

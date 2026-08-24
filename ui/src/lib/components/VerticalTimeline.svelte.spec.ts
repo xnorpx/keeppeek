@@ -15,7 +15,7 @@ function pointer(type: string, pointerId: number, clientY: number): PointerEvent
 }
 
 describe('VerticalTimeline', () => {
-	it('seeks one minute into the past from the newest edge', async () => {
+	it('scrolls with arrow keys without seeking playback', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const onSeek = vi.fn();
 		await render(VerticalTimeline, {
@@ -28,11 +28,20 @@ describe('VerticalTimeline', () => {
 			}
 		});
 
-		const timeline = page.getByRole('button', { name: /seek recording timeline/i });
-		await userEvent.type(timeline, '{ArrowDown}');
+		const timeline = page.getByRole('region', { name: /recording timeline scroll/i }).element();
+		Object.defineProperties(timeline, {
+			clientHeight: { configurable: true, value: 400 },
+			scrollTop: { configurable: true, value: 0, writable: true }
+		});
+		const scrollControl = page
+			.getByRole('button', { name: /scroll recording timeline/i })
+			.element();
+		scrollControl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowDown' }));
 
-		expect(onSeek).toHaveBeenCalledOnce();
-		expect(onSeek).toHaveBeenCalledWith(dayStartMs + 24 * 60 * 60_000 - 60_000);
+		expect(timeline.scrollTop).toBe(72);
+		expect(onSeek).not.toHaveBeenCalled();
+		scrollControl.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowUp' }));
+		expect(timeline.scrollTop).toBe(0);
 	});
 
 	it('renders an explicit gap between separated one-minute recordings', async () => {
@@ -110,7 +119,7 @@ describe('VerticalTimeline', () => {
 			}
 		});
 
-		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		const scroller = page.getByRole('region', { name: /recording timeline scroll/i }).element();
 		vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue({
 			bottom: 2_688,
 			height: 2_688,
@@ -155,7 +164,7 @@ describe('VerticalTimeline', () => {
 			}
 		});
 
-		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		const scroller = page.getByRole('region', { name: /recording timeline scroll/i }).element();
 		vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue({
 			bottom: 2_688,
 			height: 2_688,
@@ -197,7 +206,7 @@ describe('VerticalTimeline', () => {
 			}
 		});
 
-		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		const scroller = page.getByRole('region', { name: /recording timeline scroll/i }).element();
 		scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 100 }));
 		await view.rerender({
 			segments: [],
@@ -228,7 +237,7 @@ describe('VerticalTimeline', () => {
 		});
 		const timeline = container.querySelector<HTMLElement>('[data-timeline-zoom]');
 		const zoomIn = page.getByTitle('Zoom timeline in');
-		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		const scroller = page.getByRole('region', { name: /recording timeline scroll/i }).element();
 		Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
 		scroller.dispatchEvent(new Event('scroll'));
 
@@ -253,7 +262,7 @@ describe('VerticalTimeline', () => {
 				onViewportChange
 			}
 		});
-		const scroller = page.getByRole('region', { name: /recording timeline pan/i }).element();
+		const scroller = page.getByRole('region', { name: /recording timeline scroll/i }).element();
 		Object.defineProperty(scroller, 'clientHeight', { configurable: true, value: 400 });
 		scroller.dispatchEvent(new Event('scroll'));
 
@@ -261,7 +270,7 @@ describe('VerticalTimeline', () => {
 		const viewport = onViewportChange.mock.lastCall?.[0];
 		expect(viewport).toMatchObject({
 			bucketMs: 5 * 60_000,
-			prefetchMs: 12 * 60 * 60_000,
+			prefetchMs: 60 * 60_000,
 			eventTypes: []
 		});
 		expect(viewport.endMs - viewport.startMs).toBeLessThan(86_400_000);

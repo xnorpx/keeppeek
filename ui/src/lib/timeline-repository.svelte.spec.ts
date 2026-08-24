@@ -105,6 +105,29 @@ describe('TimelineRepository', () => {
 		]);
 	});
 
+	it('clamps aligned prefetch to the selected recording day', async () => {
+		const calls: Array<[number, number]> = [];
+		const client = {
+			queryStoredTimeline: vi.fn(async (options: StoredTimelineQueryOptions) => {
+				calls.push([options.startMs, options.endMs]);
+				return emptyResult;
+			})
+		};
+		const repository = new TimelineRepository(client);
+
+		await repository.loadWindow({
+			sourceIds: ['front-door'],
+			startMs: 100,
+			endMs: 200,
+			bucketMs: 50,
+			prefetchMs: 1_000,
+			minimumMs: 75,
+			maximumMs: 225
+		});
+
+		expect(calls).toEqual([[75, 225]]);
+	});
+
 	it('cancels the previous generation when the source changes', async () => {
 		const signals: AbortSignal[] = [];
 		const client = {

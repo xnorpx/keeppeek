@@ -277,6 +277,7 @@ message UpdateCameraConfiguration {
   OptionalStringUpdate uid = 10;
   optional CameraBackend backend = 11;
   optional CameraTransport transport = 12;
+  optional bool record_generic_motion_events = 13;
 }
 
 message RemoveCameraConfiguration {
@@ -1509,6 +1510,7 @@ message CameraSettings {
   CameraTransport transport = 13;
   optional string health = 14;
   optional string model = 15;
+  bool record_generic_motion_events = 16;
 }
 
 message RuntimeConfigurationResult {
