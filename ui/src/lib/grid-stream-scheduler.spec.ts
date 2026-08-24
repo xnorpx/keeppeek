@@ -75,6 +75,7 @@ describe('GridStreamScheduler', () => {
 		expect(webDecoderBudget(undefined)).toBe(4);
 		expect(webDecoderBudget(4)).toBe(4);
 		expect(webDecoderBudget(16)).toBe(8);
+		expect(webDecoderBudget(18)).toBe(9);
 		expect(webDecoderBudget(64)).toBe(12);
 	});
 });

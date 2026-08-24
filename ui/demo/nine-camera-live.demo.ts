@@ -88,6 +88,9 @@ test('adds nine randomized RTSP cameras in Settings and shows the production Web
 	});
 	const pageCreatedAt = performance.now();
 	const page = await context.newPage();
+	await page.addInitScript(() => {
+		Object.defineProperty(navigator, 'hardwareConcurrency', { value: 18 });
+	});
 	let contextClosed = false;
 
 	try {
