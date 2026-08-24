@@ -64,6 +64,8 @@
 		backend: 'auto',
 		transport: 'tcp',
 		record_generic_motion_events: false,
+		recording_mode: 'event-boost',
+		event_recording_duration_secs: 60,
 		health: 'online',
 		model: null
 	}));

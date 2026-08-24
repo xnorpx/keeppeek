@@ -183,7 +183,7 @@ pub struct StorageToml {
     #[serde(default = "default_write_buffer_bytes")]
     pub write_buffer_bytes: usize,
 
-    #[serde(default)]
+    #[serde(default = "default_long_term_max_gb")]
     pub long_term_max_gb: u64,
 }
 
@@ -415,6 +415,10 @@ const fn default_event_thumbnail_max_mb() -> u64 {
     1_024
 }
 
+const fn default_long_term_max_gb() -> u64 {
+    1_024
+}
+
 impl Default for StorageToml {
     fn default() -> Self {
         Self {
@@ -427,7 +431,7 @@ impl Default for StorageToml {
             medium_term_secs: default_medium_term_secs(),
             flush_interval_secs: default_flush_interval_secs(),
             write_buffer_bytes: default_write_buffer_bytes(),
-            long_term_max_gb: 0,
+            long_term_max_gb: default_long_term_max_gb(),
         }
     }
 }
@@ -1710,6 +1714,8 @@ mod tests {
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
         };
 
         assert_eq!(upsert_camera(&path, &config).unwrap(), "existing");

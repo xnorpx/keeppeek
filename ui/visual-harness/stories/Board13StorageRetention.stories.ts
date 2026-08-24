@@ -21,7 +21,7 @@ const meta = {
 			reference: 'references/13-storage-retention.png',
 			referenceSha256: '888a17ae7c9ca723426274cc0bfb95df2bbd567ec5d4551bec04513abbdcb2b0',
 			exceptions: [
-				'Estimated retention is a configured-cap projection; actual oldest-footage time is not exposed.',
+				'Observed oldest/newest catalog bounds are now distinct from configured-cap retention projection.',
 				'The active writer duration controls MP4 rollover and is not presented as a medium-tier age guarantee.',
 				'Prune-oldest is fixed engine behavior, while selectable stop-on-full, per-camera retention, pins, and offsite locations are unavailable.'
 			]

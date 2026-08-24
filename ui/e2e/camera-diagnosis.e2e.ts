@@ -93,6 +93,8 @@ test('switches an advertised diagnosis transport through WebRTC control', async 
 				backend: 'retina',
 				transport: 'tcp',
 				record_generic_motion_events: false,
+				recording_mode: 'event-boost',
+				event_recording_duration_secs: 60,
 				health: 'offline',
 				model: 'RLC-820A'
 			},
@@ -160,6 +162,8 @@ test('renders Board 26 current stream evidence and switches TCP through WebRTC',
 				backend: 'retina',
 				transport: 'tcp',
 				record_generic_motion_events: false,
+				recording_mode: 'event-boost',
+				event_recording_duration_secs: 60,
 				health: 'degraded',
 				model: null
 			},

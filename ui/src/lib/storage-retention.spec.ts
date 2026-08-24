@@ -63,7 +63,9 @@ const health = {
 		catalog_bytes: 8_388_608,
 		catalog: {
 			fragment_bytes: 1_800_000_000_000,
-			event_thumbnails: 350
+			event_thumbnails: 350,
+			oldest_recording_at_ms: 1_000,
+			newest_recording_at_ms: 2_000
 		}
 	}
 } as ServerHealthResponse;
@@ -91,7 +93,8 @@ describe('storage retention evidence', () => {
 			catalogBytes: 8_388_608,
 			eventThumbnailCount: 350,
 			projectedRetentionDays: 25.4,
-			oldestFootageAtMs: null,
+			oldestFootageAtMs: 1_000,
+			newestFootageAtMs: 2_000,
 			longTermCapBytes: 2_199_023_255_552,
 			fillBehavior: 'prune-oldest',
 			diskWarningThresholdPercent: 10
@@ -138,6 +141,7 @@ describe('storage retention evidence', () => {
 			catalogBytes: null,
 			eventThumbnailCount: null,
 			oldestFootageAtMs: null,
+			newestFootageAtMs: null,
 			perCameraOverrides: null,
 			additionalLocations: null
 		});

@@ -279,7 +279,7 @@ test('saves only the active Settings draft with Control+S', async ({ page }) => 
 	await page.getByRole('button', { name: 'Edit server' }).click();
 	await page.getByLabel('Port').fill('3201');
 	await page.keyboard.press('Control+s');
-	await expect(page.getByText('Server and storage settings saved.', { exact: true })).toBeVisible();
+	await expect(page.getByText('Server settings saved.', { exact: true })).toBeVisible();
 	expect(controls.runtimeUpdates).toEqual([
 		{
 			host: '0.0.0.0',

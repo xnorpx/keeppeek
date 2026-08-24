@@ -43,6 +43,8 @@
 		backend: index === 1 ? 'retina' : index === 2 ? 'reo-proto' : 'auto',
 		transport: index === 1 ? 'udp' : 'tcp',
 		record_generic_motion_events: false,
+		recording_mode: 'event-boost',
+		event_recording_duration_secs: 60,
 		health: index === 1 ? 'degraded' : 'online',
 		model: null
 	}));

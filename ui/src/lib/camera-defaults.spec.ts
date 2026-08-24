@@ -18,6 +18,8 @@ function camera(update: Partial<CameraSettings>): CameraSettings {
 		backend: 'auto',
 		transport: 'tcp',
 		record_generic_motion_events: false,
+		recording_mode: 'event-boost',
+		event_recording_duration_secs: 60,
 		health: null,
 		model: null,
 		...update
@@ -40,7 +42,8 @@ describe('camera defaults evidence', () => {
 				id: 'three',
 				username_configured: false,
 				password_configured: false,
-				backend: 'reo-proto'
+				backend: 'reo-proto',
+				recording_mode: 'off'
 			})
 		]);
 
@@ -49,6 +52,7 @@ describe('camera defaults evidence', () => {
 			credentials: { complete: 1, partial: 1, missing: 1 },
 			backends: { auto: 1, retina: 1, 'reo-proto': 1 },
 			transports: { tcp: 2, udp: 1 },
+			recordingModes: { off: 1, sub: 0, main: 0, both: 0, 'event-boost': 2 },
 			manualStreamOverrides: 1,
 			sharedLogin: null,
 			credentialOverrides: null

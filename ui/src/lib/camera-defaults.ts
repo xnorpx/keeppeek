@@ -1,4 +1,9 @@
-import type { CameraBackend, CameraSettings, CameraTransport } from '$lib/types';
+import type {
+	CameraBackend,
+	CameraRecordingMode,
+	CameraSettings,
+	CameraTransport
+} from '$lib/types';
 
 export type CameraDefaultsEvidence = {
 	cameraCount: number;
@@ -9,6 +14,7 @@ export type CameraDefaultsEvidence = {
 	};
 	backends: Record<CameraBackend, number>;
 	transports: Record<CameraTransport, number>;
+	recordingModes: Record<CameraRecordingMode, number>;
 	manualStreamOverrides: number;
 	sharedLogin: null;
 	credentialOverrides: null;
@@ -20,6 +26,7 @@ export function cameraDefaultsEvidence(cameras: readonly CameraSettings[]): Came
 		credentials: { complete: 0, partial: 0, missing: 0 },
 		backends: { auto: 0, retina: 0, 'reo-proto': 0 },
 		transports: { tcp: 0, udp: 0 },
+		recordingModes: { off: 0, sub: 0, main: 0, both: 0, 'event-boost': 0 },
 		manualStreamOverrides: 0,
 		sharedLogin: null,
 		credentialOverrides: null
@@ -35,6 +42,7 @@ export function cameraDefaultsEvidence(cameras: readonly CameraSettings[]): Came
 		}
 		evidence.backends[camera.backend] += 1;
 		evidence.transports[camera.transport] += 1;
+		evidence.recordingModes[camera.recording_mode] += 1;
 		if (camera.main_rtsp_url !== null || camera.sub_rtsp_url !== null) {
 			evidence.manualStreamOverrides += 1;
 		}

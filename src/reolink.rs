@@ -526,6 +526,8 @@ impl ReolinkLoop {
         active_motion: &mut HashMap<String, String>,
     ) -> anyhow::Result<()> {
         reset_stream_bindings(streams);
+        let camera_id = self.camera_ip.to_string();
+        let storage_label = self.storage_label();
         let addr = SocketAddr::new(self.camera_ip, BAICHUAN_PORT);
         tracing::info!(
             ip = %self.camera_ip,
@@ -862,9 +864,9 @@ impl ReolinkLoop {
                             if let Some(ref storage) = self.storage {
                                 storage.ingest_stream(
                                     RecordingStreamIdentity::new(
-                                        self.camera_ip.to_string(),
+                                        camera_id.clone(),
                                         entry.kind.to_string(),
-                                        &self.storage_label(),
+                                        &storage_label,
                                     ),
                                     RecordingFrame {
                                         received_at,
@@ -880,16 +882,31 @@ impl ReolinkLoop {
                             data,
                             duration,
                         } => {
-                            let preferred_kind = if self.enable_main {
-                                StreamKind::Main
-                            } else {
-                                StreamKind::Sub
-                            };
-                            if streams
+                            let preferred_kind = self
+                                .storage
+                                .as_ref()
+                                .map(|storage| storage.preferred_audio_stream(&camera_id))
+                                .and_then(|stream| match stream {
+                                    "main" => Some(StreamKind::Main),
+                                    "sub" => Some(StreamKind::Sub),
+                                    _ => None,
+                                })
+                                .filter(|kind| streams.iter().any(|entry| entry.kind == *kind))
+                                .unwrap_or({
+                                    if self.enable_main {
+                                        StreamKind::Main
+                                    } else {
+                                        StreamKind::Sub
+                                    }
+                                });
+                            let Some(audio_stream) = streams
                                 .iter()
                                 .find(|entry| entry.stream_id == Some(stream_id))
-                                .is_some_and(|entry| entry.kind != preferred_kind)
-                            {
+                                .map(|entry| entry.kind)
+                            else {
+                                continue;
+                            };
+                            if audio_stream != preferred_kind {
                                 continue;
                             }
                             let (encoding, frame_codec) = match codec {
@@ -911,19 +928,14 @@ impl ReolinkLoop {
                             }
                             audio_codec = Some(encoding.to_string());
 
-                            let audio_stream = streams
-                                .iter()
-                                .find(|entry| entry.kind == StreamKind::Main)
-                                .or_else(|| streams.first())
-                                .map(|entry| entry.kind);
-                            if let Some(entry) = audio_stream.and_then(|kind| {
-                                streams.iter_mut().find(|entry| entry.kind == kind)
-                            }) {
+                            if let Some(entry) =
+                                streams.iter_mut().find(|entry| entry.kind == audio_stream)
+                            {
                                 entry.stats.on_audio_frame(data.len());
                             }
                             if let Some(fc) = frame_codec {
                                 let sample_rate = fc.default_sample_rate();
-                                if let (Some(storage), Some(kind)) = (&self.storage, audio_stream) {
+                                if let Some(storage) = &self.storage {
                                     let frame = MediaFrame::Audio(AudioFrame {
                                         codec: fc,
                                         sample_rate,
@@ -932,9 +944,9 @@ impl ReolinkLoop {
                                     });
                                     storage.ingest_stream(
                                         RecordingStreamIdentity::new(
-                                            self.camera_ip.to_string(),
-                                            kind.to_string(),
-                                            &self.storage_label(),
+                                            camera_id.clone(),
+                                            audio_stream.to_string(),
+                                            &storage_label,
                                         ),
                                         RecordingFrame {
                                             received_at: Instant::now(),

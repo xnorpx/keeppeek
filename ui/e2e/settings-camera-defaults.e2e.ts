@@ -43,6 +43,8 @@ const cameras: CameraSettings[] = [
 		backend: 'auto',
 		transport: 'tcp',
 		record_generic_motion_events: false,
+		recording_mode: 'event-boost',
+		event_recording_duration_secs: 60,
 		health: 'online',
 		model: 'RLC-Test'
 	},
@@ -61,6 +63,8 @@ const cameras: CameraSettings[] = [
 		backend: 'retina',
 		transport: 'udp',
 		record_generic_motion_events: false,
+		recording_mode: 'sub',
+		event_recording_duration_secs: 60,
 		health: 'degraded',
 		model: null
 	},
@@ -79,6 +83,8 @@ const cameras: CameraSettings[] = [
 		backend: 'reo-proto',
 		transport: 'tcp',
 		record_generic_motion_events: false,
+		recording_mode: 'main',
+		event_recording_duration_secs: 60,
 		health: 'offline',
 		model: null
 	}
@@ -126,7 +132,7 @@ test('reports real camera-default evidence without inventing shared credentials'
 	await expect(section).toContainText('Auto 1 · Retina 1 · Reo-Proto 1');
 	await expect(section).toContainText('TCP 2 · UDP 1');
 	await expect(section).toContainText('1 cameras');
-	await expect(section.getByText('NOT EXPOSED PER CAMERA')).toBeVisible();
+	await expect(section).toContainText('Off 0 · Boost 1 · Sub 1 · Main 1 · Both 0');
 	await expect(section).toContainText('About 14 days · 2048 GB cap');
 
 	await expect(section.getByText('Workshop', { exact: true })).toBeVisible();
@@ -157,7 +163,7 @@ test('renders Board 27 mobile camera defaults without inventing shared credentia
 	await expect(section).toBeVisible();
 	await expect(section).toContainText('Not returned by the API');
 	await expect(section).toContainText('Write-only per camera');
-	await expect(section).toContainText('Not exposed');
+	await expect(section).toContainText('Recording Mixed');
 	await expect(section.getByText('Workshop', { exact: true })).toBeVisible();
 	await expect(section.getByText('Till', { exact: true })).toBeVisible();
 	await expect(section.getByText('Porch', { exact: true })).toBeVisible();

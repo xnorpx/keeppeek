@@ -140,9 +140,9 @@
 				</div>
 				{#if !paperFrame}
 					<a
-						href={resolve('/settings')}
+						href={`${resolve('/settings')}?edit=storage#storage`}
 						class="inline-flex h-7 items-center rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
-						>Review storage settings</a
+						>Set up recording storage</a
 					>
 				{/if}
 			</div>
