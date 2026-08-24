@@ -55,6 +55,7 @@ const savedCamera = {
 	uid_configured: false,
 	backend: 'reo-proto' as const,
 	transport: 'tcp' as const,
+	record_generic_motion_events: false,
 	health: null,
 	model: null
 };

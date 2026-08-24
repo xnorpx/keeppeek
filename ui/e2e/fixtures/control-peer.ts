@@ -140,6 +140,7 @@ export type StoredEventFixture = {
 	sourceId: string;
 	event: RecordingEvent;
 	thumbnail?: Uint8Array;
+	thumbnailDescriptorOnly?: boolean;
 };
 
 export type MotionControlRequest = {
@@ -188,6 +189,14 @@ export type ExportControlRequest = {
 	burnInTimestamp?: boolean;
 };
 
+export type StoredTimelineControlRequest = {
+	sourceIds: string[];
+	startMs: number;
+	endMs: number;
+	includeAttachments: boolean;
+	includeAvailability: boolean;
+};
+
 export type ControlRequests = {
 	motion: MotionControlRequest[];
 	ptz: PtzControlRequest[];
@@ -199,9 +208,15 @@ export type ControlRequests = {
 	cameraUpdates: Array<{ ip: string; update: CameraSettingsUpdate }>;
 	removedCameraIps: string[];
 	runtimeUpdates: SettingsConfigUpdate[];
-	storedOpens: Array<{ storedMediaId: string; sourceId: string; streamId: string }>;
+	storedOpens: Array<{
+		storedMediaId: string;
+		sourceId: string;
+		streamId: string;
+		timestampMs: number;
+	}>;
 	storedSeeks: Array<{ storedMediaId: string; timestampMs: number }>;
 	storedRefills: Array<{ storedMediaId: string; playbackTimeMs: number }>;
+	storedTimelineQueries: StoredTimelineControlRequest[];
 	exportJobs: ExportControlRequest[];
 	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
 };
@@ -230,9 +245,11 @@ export type MockControlPeerOptions = {
 	cameras?: readonly CameraListItem[];
 	healthGate?: Promise<void>;
 	storedRanges?: readonly StoredRangeFixture[];
+	storedBucketedRanges?: readonly StoredRangeFixture[];
 	storedEvents?: readonly StoredEventFixture[];
 	storedTimelineGates?: readonly Promise<void>[];
 	storedOpenGates?: readonly Promise<void>[];
+	storedSeekError?: string;
 	capabilityIds?: readonly string[];
 	exportJobs?: readonly ExportJobFixture[];
 	exportCreateResults?: readonly ExportJobFixture[];
@@ -294,6 +311,7 @@ export async function mockControlPeer(
 		storedOpens: [],
 		storedSeeks: [],
 		storedRefills: [],
+		storedTimelineQueries: [],
 		exportJobs: []
 	};
 	let activeFilter = 'info,keeppeek=debug';
@@ -342,8 +360,18 @@ export async function mockControlPeer(
 				const query = action.value;
 				const startMs = query.startTime ? timestampFromProto(query.startTime) : 0;
 				const endMs = query.endTime ? timestampFromProto(query.endTime) : Number.MAX_SAFE_INTEGER;
+				requests.storedTimelineQueries.push({
+					sourceIds: [...query.sourceIds],
+					startMs,
+					endMs,
+					includeAttachments: query.events?.includeAttachments ?? false,
+					includeAvailability: !query.omitAvailability
+				});
 				const sourceIds = new Set(query.sourceIds);
-				const ranges = (options.storedRanges ?? []).filter(
+				const rangeFixtures = query.availabilityBucket
+					? (options.storedBucketedRanges ?? options.storedRanges)
+					: options.storedRanges;
+				const ranges = (rangeFixtures ?? []).filter(
 					(range) =>
 						(sourceIds.size === 0 || sourceIds.has(range.sourceId)) &&
 						range.startMs < endMs &&
@@ -458,7 +486,8 @@ export async function mockControlPeer(
 				requests.storedOpens.push({
 					storedMediaId: open.storedMediaId,
 					sourceId: open.sourceId,
-					streamId: open.streamId
+					streamId: open.streamId,
+					timestampMs: open.timestamp ? timestampFromProto(open.timestamp) : 0
 				});
 				const state = create(StoredMediaStateSchema, {
 					storedMediaId: open.storedMediaId,
@@ -499,6 +528,9 @@ export async function mockControlPeer(
 					storedMediaId: action.value.storedMediaId,
 					timestampMs: action.value.timestamp ? timestampFromProto(action.value.timestamp) : 0
 				});
+				if (options.storedSeekError) {
+					return encodedError(request.requestId, options.storedSeekError);
+				}
 				const state = create(StoredMediaStateSchema, {
 					...current,
 					generation: current.generation + 1n,
@@ -1535,18 +1567,19 @@ function protoEvent(fixture: StoredEventFixture) {
 				})
 			: undefined,
 		zone: event.zone ?? undefined,
-		attachments: fixture.thumbnail
-			? [
-					create(EventAttachmentDescriptorSchema, {
-						attachmentId: 'thumbnail',
-						attachmentType: 'thumbnail',
-						contentType: 'image/jpeg',
-						byteLen: BigInt(fixture.thumbnail.byteLength),
-						ordinal: 0,
-						timestamp: timestampFromDate(new Date(event.start_time_ms))
-					})
-				]
-			: []
+		attachments:
+			fixture.thumbnail || fixture.thumbnailDescriptorOnly
+				? [
+						create(EventAttachmentDescriptorSchema, {
+							attachmentId: 'thumbnail',
+							attachmentType: 'thumbnail',
+							contentType: 'image/jpeg',
+							byteLen: BigInt(fixture.thumbnail?.byteLength ?? 1),
+							ordinal: 0,
+							timestamp: timestampFromDate(new Date(event.start_time_ms))
+						})
+					]
+				: []
 	});
 }
 
@@ -1573,6 +1606,9 @@ function cameraUpdate(
 	}
 	if (update.transport !== undefined) {
 		result.transport = update.transport === ProtoCameraTransport.UDP ? 'udp' : 'tcp';
+	}
+	if (update.recordGenericMotionEvents !== undefined) {
+		result.record_generic_motion_events = update.recordGenericMotionEvents;
 	}
 	return result;
 }
@@ -1615,6 +1651,7 @@ function protoCameraSettings(camera: CameraSettings) {
 					? ProtoCameraBackend.REO_PROTO
 					: ProtoCameraBackend.AUTO,
 		transport: camera.transport === 'udp' ? ProtoCameraTransport.UDP : ProtoCameraTransport.TCP,
+		recordGenericMotionEvents: camera.record_generic_motion_events,
 		health: camera.health ?? undefined,
 		model: camera.model ?? undefined
 	});

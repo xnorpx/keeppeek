@@ -456,6 +456,7 @@ pub(crate) struct ReolinkLoop {
     pub sub_expected_width: u32,
     pub sub_expected_height: u32,
     pub sub_expected_fps: f64,
+    pub record_generic_motion_events: bool,
     pub storage: Option<StorageHandle>,
     pub live: Option<Publisher>,
     pub health: HealthRegistry,
@@ -957,7 +958,9 @@ impl ReolinkLoop {
                                     continue;
                                 }
                                 received_alarm = true;
-                                for kind in alarm_event_kinds(&data) {
+                                for kind in
+                                    alarm_event_kinds(&data, self.record_generic_motion_events)
+                                {
                                     received_active_alarm = true;
                                     if active_motion.contains_key(&kind) {
                                         continue;
@@ -1157,11 +1160,12 @@ fn normalize_alarm_kind(kind: &str) -> String {
         "" | "1" | "true" | "md" | "motion" => "motion".to_owned(),
         "people" | "person" => "person".to_owned(),
         "dog_cat" | "dogcat" | "animal" => "animal".to_owned(),
+        "car" | "vehicle" => "vehicle".to_owned(),
         other => other.to_owned(),
     }
 }
 
-fn alarm_event_kinds(data: &AlarmEventData) -> Vec<String> {
+fn alarm_event_kinds(data: &AlarmEventData, record_generic_motion_events: bool) -> Vec<String> {
     if !data.is_active() {
         return Vec::new();
     }
@@ -1185,7 +1189,10 @@ fn alarm_event_kinds(data: &AlarmEventData) -> Vec<String> {
                 continue;
             }
             let kind = normalize_alarm_kind(kind);
-            if !kinds.contains(&kind) {
+            if (record_generic_motion_events || kind != "motion")
+                && matches!(kind.as_str(), "motion" | "person" | "animal" | "vehicle")
+                && !kinds.contains(&kind)
+            {
                 kinds.push(kind);
             }
         }
@@ -1267,17 +1274,29 @@ mod tests {
     }
 
     #[test]
-    fn alarm_event_kinds_include_motion_and_ai_types() {
+    fn alarm_event_kinds_include_supported_ai_types_only() {
         let alarm = AlarmEventData {
             status: "MD".try_into().unwrap(),
             ai_types: "people,vehicle".try_into().unwrap(),
             ..AlarmEventData::default()
         };
 
+        assert_eq!(alarm_event_kinds(&alarm, false), vec!["person", "vehicle"]);
         assert_eq!(
-            alarm_event_kinds(&alarm),
+            alarm_event_kinds(&alarm, true),
             vec!["motion", "person", "vehicle"]
         );
+    }
+
+    #[test]
+    fn generic_motion_alarm_has_no_timeline_kind() {
+        let alarm = AlarmEventData {
+            status: "MD".try_into().unwrap(),
+            ..AlarmEventData::default()
+        };
+
+        assert!(alarm_event_kinds(&alarm, false).is_empty());
+        assert_eq!(alarm_event_kinds(&alarm, true), vec!["motion"]);
     }
 
     #[test]
@@ -1288,7 +1307,7 @@ mod tests {
             ..AlarmEventData::default()
         };
 
-        assert!(alarm_event_kinds(&alarm).is_empty());
+        assert!(alarm_event_kinds(&alarm, false).is_empty());
     }
 
     #[test]
@@ -1299,7 +1318,7 @@ mod tests {
             ..AlarmEventData::default()
         };
 
-        assert!(alarm_event_kinds(&alarm).is_empty());
+        assert!(alarm_event_kinds(&alarm, false).is_empty());
     }
 
     #[test]

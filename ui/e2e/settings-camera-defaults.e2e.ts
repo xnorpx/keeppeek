@@ -42,6 +42,7 @@ const cameras: CameraSettings[] = [
 		uid_configured: false,
 		backend: 'auto',
 		transport: 'tcp',
+		record_generic_motion_events: false,
 		health: 'online',
 		model: 'RLC-Test'
 	},
@@ -59,6 +60,7 @@ const cameras: CameraSettings[] = [
 		uid_configured: false,
 		backend: 'retina',
 		transport: 'udp',
+		record_generic_motion_events: false,
 		health: 'degraded',
 		model: null
 	},
@@ -76,6 +78,7 @@ const cameras: CameraSettings[] = [
 		uid_configured: true,
 		backend: 'reo-proto',
 		transport: 'tcp',
+		record_generic_motion_events: false,
 		health: 'offline',
 		model: null
 	}

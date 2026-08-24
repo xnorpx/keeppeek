@@ -69,7 +69,7 @@ load or retain a whole day across all cameras before showing the first result.
   the selected day.
 - Changing date/filter or leaving Events must cancel in-flight server and client work.
 
-## KP-UI-002 [P1] Keep indexed playback never reaches a playable frame
+## KP-UI-002 [P1] Keep replay is codec-blind and misses its first-frame and smoothness budgets
 
 **Area:** Keep, stored playback, latency
 
@@ -92,6 +92,23 @@ load or retain a whole day across all cameras before showing the first result.
 - In the isolated rerun, the player took 6.2 seconds to mount, then remained at
   `readyState=0`, `currentTime=0`, and an empty buffered range for at least another 12 seconds.
 - The player shows an indefinite spinner instead of a bounded error/retry state.
+- A fresh real-camera run reproduced the H.265 failure after four fragments and 40.8 seconds
+  with zero decoded frames.
+- The same camera's H.264 substream produced its first fragment in 307 ms and first frame in
+  322 ms after an in-page stream switch, proving that the control and indexed-read path can be
+  fast when the selected codec is browser-compatible.
+- A clean fresh-page benchmark at a stable historical timestamp measured **4.14-5.10 seconds**
+  to first frame across all seven H.264 substreams.
+- During the following five-second sample, those streams advanced only 2.97-4.15 media seconds
+  and presented 5.4-12.8 fps against 10 or 15 fps sources. Every run produced a 114-135 ms
+  main-thread task.
+- The two cameras whose substreams are also H.265 received fragments but produced no decoded
+  frame within ten seconds.
+- Camera switches logged `net::ERR_FILE_NOT_FOUND` for revoked `blob:` URLs. After one failed
+  switch, later recordings decoded a frame but remained paused because playback intent was
+  inherited from the failed predecessor.
+- One H.264 run reached `readyState=4` and started playback, then advanced only 7.5 media
+  seconds over 12 wall-clock seconds before becoming stuck at the end of its buffered range.
 
 ### Expected
 
@@ -107,6 +124,17 @@ Unsupported H.265 should fail over to a playable variant or explain the incompat
 - Never leave `HTMLMediaElement.play()` pending indefinitely.
 - Cancel open/refill work immediately when the camera, stream, date, route, or play attempt
   changes.
+- Prefer a browser-decodable H.264 profile when the selected/default H.265 profile is unsupported.
+- Keep playback intent explicit across camera, stream, filmstrip, date, and live-edge transitions.
+- Do not revoke an MSE object URL until its media element has detached from it.
+- Continue across newly finalized live-edge fragments without pausing or requiring another click.
+
+The optimized real-camera rerun reduced average first-frame latency across seven H.264 substreams
+from 4.66 seconds to 1.02 seconds. Six continuous recordings reached their source rate and advanced
+the full 15-second sample: five at 14.9-15.1 fps and Right Side at 10.1 fps. Front Gate advanced
+4.32 seconds because the sampled MP4 ends at 23:35:04 and the next starts around 23:35:40; the UI
+remained playing without a browser error and correctly exposed the recording gap. The final run
+produced no request failures or console errors.
 
 ## KP-UI-003 [P1] Camera health state contradicts itself across Peek, Cameras, and diagnosis
 
@@ -284,6 +312,229 @@ fractional second, rather than appearing disabled.
 
 - Format durations below one second in milliseconds.
 - Add boundary tests around 0 ms, sub-second, one second, and minute values.
+
+## KP-UI-009 [P2] Keep scans an empty current day before discovering the newest recorded day
+
+**Area:** Keep, recording discovery, startup latency
+
+**Paper reference:** Boards 04, 09, and 31
+
+### Reproduction
+
+1. Open `/keep` for a camera that has no recordings today but does have recordings on an earlier day.
+2. Leave the date unspecified so Keep selects the current day.
+3. Measure the time from route navigation to the first selected recorded day and playable segment.
+
+### Actual
+
+Keep calls `loadRecordings()` for the current day first. For an empty day,
+`loadInitialRecordingWindow()` serially expands recording-range requests from five minutes to
+the whole day before `initialize()` calls `discoverRecordingDates()`. The date index that could
+select the newest recorded day is deliberately requested only after the empty-day scan finishes.
+
+On a high-latency or busy recorder this produces up to eight dependent control round trips before
+the UI can even learn that the selected day is empty. The page shows a recording-loading state
+instead of navigating promptly to the latest available footage.
+
+### Expected
+
+Keep should determine the newest available recording date before performing an exhaustive scan of
+an implicit current-day selection. Opening historical footage must prioritize time to first
+playable frame over proving that today is empty.
+
+### Acceptance criteria
+
+- For an unspecified date, request the recording-date index concurrently with camera and health
+  data, then select its newest day before loading recording ranges when today has no footage.
+- Keep the five-minute-first expanding window only for an explicitly requested date or timestamp.
+- Display the newest available segment or an honest empty state within one control round trip after
+  the date index resolves.
+- Add a controlled E2E case with an empty current day and an older recorded day. Assert no more
+  than one empty-day range query occurs before the older day is selected.
+- Emit a `KeepFirstSegment` timing metric and enforce a representative local budget of under one
+  second from navigation to first selected segment.
+
+## KP-UI-010 [P2] Stories and swimlanes request full-day event metadata on mode entry
+
+**Area:** Keep, events, timeline query volume, responsiveness
+
+**Paper reference:** Boards 04 and 09
+
+### Reproduction
+
+1. Open a camera/day with a dense event history in Keep.
+2. Select **Stories** or **Swimlanes**.
+3. Observe stored-timeline request ranges, first content timing, main-thread work, and retained
+   event metadata while changing modes or dates.
+
+### Actual
+
+When `mode !== 'timeline'`, the Keep route unconditionally calls `timelineRepository.loadWindow()`
+with the selected day's complete 24-hour range and `includeEvents` enabled. The repository caps
+its retained event collection at 10,000 entries, but it still asks the server for the full day
+before rendering the mode. The request is not shaped by the visible story list, selected swimlanes,
+or an initial viewport, so dense days can transfer, merge, sort, and retain far more event metadata
+than the user can inspect.
+
+Against the real nine-camera catalog, **Swimlanes took 7.37 seconds** to replace its loading state
+and caused a 121 ms main-thread task. It queried a full day for eight cameras to render only one
+shared hour. Stories reused partial timeline cache coverage and became ready in 249 ms, but it
+still issued an additional 8.17-hour metadata query despite reporting zero story events.
+
+### Expected
+
+Mode changes should show the first relevant stories or lane evidence quickly and expand only as the
+user scrolls, changes the time window, or asks for more cameras. Timeline metadata should remain
+bounded by visible demand across every Keep mode.
+
+### Acceptance criteria
+
+- Use a newest-first, keyset-paged event query for Stories, with a small initial page and
+  cancellation when the date, camera, or mode changes.
+- Request swimlane availability at the selected shared-clock window first; fetch event markers only
+  for visible lanes and the viewport plus bounded overscan.
+- Do not issue a full-day event-metadata request solely because a non-timeline mode was selected.
+- Keep decoded event metadata and thumbnail work bounded to visible items plus overscan.
+- Add dense-fixture performance coverage asserting first content under one second, no main-thread
+  task over 50 ms, and no more than the page/viewport budget of event records retained.
+
+## KP-UI-011 [P1] Generic motion floods the event catalog and thumbnail store
+
+**Area:** Event ingestion, storage, Keep timeline performance
+
+**Paper reference:** Boards 04, 09, 10, and 14
+
+### Reproduction
+
+1. Run the real nine-camera recorder with camera alarm subscriptions enabled.
+2. Let the recorder ingest motion and AI alarm events over several days.
+3. Compare `recording_events.kind` counts and thumbnail files.
+
+### Actual
+
+- The real catalog contains 13,418 events from August 14-24: 13,084 generic `motion`, 151
+  `person`, 98 `animal`, and 85 `vehicle`.
+- Generic motion is 97.5% of all event rows and 13,060 of the 13,392 thumbnail files. The
+  thumbnail directory occupies 338 MB.
+- In the latest 24 hours, KeepPeek stored 2,372 generic motion events versus 47 classified
+  person or animal events.
+- One camera contributed 10,387 generic motion events.
+- Only 77 generic motion rows had a person, animal, or vehicle event from the same camera
+  within one second; 13,007 were motion-only.
+- Each accepted alarm kind creates a separate event and queues the same camera snapshot path,
+  so generic motion consumes catalog, disk, query, decode, and UI work even when an AI event is
+  the only evidence the user wants.
+
+### Expected
+
+Generic motion retention should be an explicit per-camera setting that defaults off. Camera motion
+detection may remain enabled, but KeepPeek should store event rows and snapshots only for person,
+animal, and vehicle classifications unless the user opts that camera into generic motion history.
+
+### Acceptance criteria
+
+- Add a per-camera **Store generic motion events** setting, defaulting to off for existing and new
+  cameras.
+- When off, a generic motion-only alarm creates neither a `recording_events` row nor a snapshot.
+- Person, animal, and vehicle alarms continue to create their normalized events and snapshots.
+- When enabled, generic motion behavior is restored for that camera without affecting others.
+- Preserve the setting across unrelated camera edits and expose its current value without exposing
+  camera credentials.
+- Add unit coverage for motion-only, mixed motion plus AI, disabled, enabled, and alias
+  normalization behavior.
+
+The local fix adds this per-camera setting with a default of off. Two real-camera verification
+runs, including the all-camera replay benchmark, left both the 13,084 motion-row count and 13,392
+thumbnail-file count unchanged. Historical generic-motion data is intentionally not deleted.
+
+## KP-UI-012 [P1] Keep overfetches timeline history and churns thumbnail object URLs
+
+**Area:** Keep, timeline, CPU, query volume
+
+**Paper reference:** Boards 04 and 22
+
+### Reproduction
+
+1. Open Keep's live day for a camera with dense motion history.
+2. Select a playable H.264 substream and leave the page untouched for 12 seconds.
+3. Capture `keeppeek:timeline-performance` events and browser long tasks.
+
+### Actual
+
+- A clean live-page run issued an initial **1,470-minute** timeline query for the default six-hour
+  view. Its first page took 2.17 seconds and the query completed in 6.43 seconds.
+- During the same navigation and a following 15-second playback sample, Keep emitted 214 thumbnail
+  cache/fetch signals and made two additional ten-minute live-edge queries.
+- The initial query is expanded by the 12-hour prefetch on both sides of the visible range and is
+  not clamped to the selected day. Dense generic-motion history amplifies the transfer, merge,
+  sort, thumbnail lookup, and object-URL churn.
+- The work competes directly with the primary MSE open: the real H.264 first frame arrived at
+  3.40 seconds in this run while the timeline query was still running.
+
+### Expected
+
+Initial and live refresh work should stay near the visible time range and process only newly visible
+or changed thumbnails. Timeline metadata must not delay the primary replay.
+
+### Acceptance criteria
+
+- Clamp prefetch to the selected day and reduce default six-hour overscan to a bounded fraction of
+  the visible window.
+- Give primary recording discovery/open priority over timeline metadata and filmstrip previews.
+- Refresh only the advancing live-edge delta.
+- Queue or touch only newly visible thumbnail identities; do not emit one cache-hit event per
+  cached thumbnail on every refresh.
+- In the real dense-camera fixture, first timeline metadata must render within 250 ms, the initial
+  query must not exceed the selected day, and no task may exceed 50 ms.
+- Replay remains at source frame rate while live timeline refreshes run.
+
+Primary replay is now deferred ahead of timeline and filmstrip work, prefetch is clamped to the
+selected day, and default overscan is one hour instead of twelve. The final real-camera run kept
+continuous replay at source rate, but the six-hour view still requested 405 minutes and produced
+119-157 ms long tasks. This issue remains open for narrower viewport queries and incremental
+thumbnail work.
+
+## KP-UI-013 [P2] Keep revokes blob URLs while previews are still loading
+
+**Area:** Keep, media lifecycle, console cleanliness
+
+**Paper reference:** Boards 04, 22, and 31
+
+### Reproduction
+
+1. Open a dense recorded day directly in Keep.
+2. Switch among cameras or let timeline thumbnails and the Other cameras filmstrip populate.
+3. Observe failed browser requests and console errors.
+
+### Actual
+
+- Every H.264 camera in the fresh-page benchmark produced failed `blob:` requests.
+- Each page attempted to load 5-12 distinct object URLs after they had already been revoked.
+- Chromium reported 47-144 combined request-failure and console-error notifications per camera
+  during the cold-open plus five-second playback sample.
+- Failures occur while timeline thumbnail eviction and multiple filmstrip replay cursors compete
+  with the primary player lifecycle.
+
+### Expected
+
+Object URLs should remain valid until every consuming media element has detached, and background
+previews must not interfere with the primary replay.
+
+### Acceptance criteria
+
+- Revoke thumbnail and MSE object URLs only after their owning DOM consumers detach or switch source.
+- Prioritize the primary player through its first decoded frame before opening filmstrip cursors.
+- Bound simultaneous filmstrip cursors independently of hardware-concurrency overestimates.
+- A real-camera cold-open and camera-switch benchmark produces no failed `blob:` requests or
+  console errors.
+
+The final seven-camera cold-open benchmark produced zero failed requests and zero console errors
+over 15-second samples. Filmstrip cards remain synchronized and clickable while primary playback
+owns the decoder budget; visible previews are admitted when the primary player is paused. Mocked
+camera-switch coverage passes. The remaining real format error was caused by stored H.265 media
+being advertised as bare `hvc1`, which Chromium rejects for MSE. Stored playback now derives the
+full RFC 6381 codec from the MP4 decoder configuration. A real North Frontyard Sub to Main switch
+decoded H.264 in 1.10 seconds and HEVC in 319 ms without a media error or stale cold-seek overlay.
 
 ## Performance checks that passed
 

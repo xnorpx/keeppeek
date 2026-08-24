@@ -174,6 +174,7 @@ export interface CameraSettings {
 	uid_configured: boolean;
 	backend: CameraBackend;
 	transport: CameraTransport;
+	record_generic_motion_events: boolean;
 	health: CameraHealth['state'] | null;
 	model: string | null;
 }
@@ -251,6 +252,7 @@ export interface CameraSettingsUpdate {
 	uid?: string | null;
 	backend?: CameraBackend;
 	transport?: CameraTransport;
+	record_generic_motion_events?: boolean;
 }
 
 export interface CameraSettingsUpdateResponse {

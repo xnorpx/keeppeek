@@ -1,6 +1,11 @@
 import type { Page } from '@playwright/test';
 import type { RecordingEvent } from '../../src/lib/types';
-import { mockControlPeer, type StoredEventFixture, type StoredRangeFixture } from './control-peer';
+import {
+	mockControlPeer,
+	type ControlRequests,
+	type StoredEventFixture,
+	type StoredRangeFixture
+} from './control-peer';
 
 export const eventDate = '2026-08-18';
 const dayStartMs = Date.parse(`${eventDate}T00:00:00Z`);
@@ -94,7 +99,7 @@ const drivewayEvents: RecordingEvent[] = [
 	}
 ];
 
-export async function mockEvents(page: Page): Promise<void> {
+export async function mockEvents(page: Page): Promise<ControlRequests> {
 	const storedRanges: StoredRangeFixture[] = [
 		{
 			sourceId: 'front-door',
@@ -115,7 +120,20 @@ export async function mockEvents(page: Page): Promise<void> {
 			thumbnail: event.thumbnail_url === null ? undefined : jpeg
 		}))
 	];
-	await mockControlPeer(page, { cameras, storedRanges, storedEvents });
+	return mockControlPeer(page, { cameras, storedRanges, storedEvents });
+}
+
+export async function mockEventsWithUnavailablePreview(page: Page): Promise<void> {
+	await mockControlPeer(page, {
+		cameras: [cameras[0]],
+		storedEvents: [
+			{
+				sourceId: 'front-door',
+				event: frontDoorEvents[0],
+				thumbnailDescriptorOnly: true
+			}
+		]
+	});
 }
 
 export async function mockEventsWithOlderFilteredMatch(

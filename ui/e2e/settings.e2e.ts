@@ -55,6 +55,7 @@ test('uses a searchable ten-section mobile administration index with focused own
 			uid_configured: false,
 			backend: 'auto',
 			transport: 'tcp',
+			record_generic_motion_events: false,
 			health: 'online',
 			model: null
 		})),
@@ -369,6 +370,7 @@ test('discovers and configures a camera without rendering its saved password', a
 				uid_configured: false,
 				backend: 'retina',
 				transport: 'tcp',
+				record_generic_motion_events: false,
 				health: 'online',
 				model: 'Test Camera'
 			}
@@ -410,6 +412,7 @@ test('discovers and configures a camera without rendering its saved password', a
 				uid_configured: false,
 				backend: 'reo-proto',
 				transport: 'tcp',
+				record_generic_motion_events: true,
 				health: null,
 				model: null
 			},
@@ -452,6 +455,8 @@ test('discovers and configures a camera without rendering its saved password', a
 	await page.getByLabel('Password').fill('write-only-password');
 	await page.getByLabel('Main RTSP stream URL').fill('rtsp://192.0.2.77:8554/live/main');
 	await page.getByLabel('Sub RTSP stream URL').fill('rtsp://192.0.2.77:8554/live/sub');
+	await expect(page.getByLabel('Store generic motion events')).not.toBeChecked();
+	await page.getByLabel('Store generic motion events').check();
 	await page.getByRole('button', { name: 'Save camera' }).click();
 
 	await expect(page.getByText('Camera settings saved.', { exact: true })).toBeVisible();
@@ -467,6 +472,7 @@ test('discovers and configures a camera without rendering its saved password', a
 			password: 'write-only-password',
 			backend: 'reo-proto',
 			transport: 'tcp',
+			record_generic_motion_events: true,
 			main_rtsp_url: 'rtsp://192.0.2.77:8554/live/main',
 			sub_rtsp_url: 'rtsp://192.0.2.77:8554/live/sub'
 		}

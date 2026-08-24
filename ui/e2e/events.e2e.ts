@@ -1,5 +1,12 @@
 import { expect, test } from '@playwright/test';
-import { eventDate, mockEvents, mockEventsWithOlderFilteredMatch } from './fixtures/events';
+import type { CameraListItem, RecordingEvent } from '../src/lib/types';
+import { mockControlPeer, type StoredEventFixture } from './fixtures/control-peer';
+import {
+	eventDate,
+	mockEvents,
+	mockEventsWithOlderFilteredMatch,
+	mockEventsWithUnavailablePreview
+} from './fixtures/events';
 
 test('Board 10 browse restores URL filters and preserves mixed Event states', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 840 });
@@ -10,6 +17,7 @@ test('Board 10 browse restores URL filters and preserves mixed Event states', as
 	await expect(page.getByRole('heading', { name: 'Events', exact: true })).toBeVisible();
 	await expect(page.getByLabel('Event type filter')).toHaveValue('person');
 	await expect(page.locator('[data-event-card]')).toHaveCount(2);
+	await expect(page.locator('[data-event-card]').first().locator('time')).toContainText('UTC');
 	await expect(page.getByText('0.94', { exact: true })).toBeVisible();
 	await expect(page.getByText('0.42', { exact: true })).toBeVisible();
 
@@ -76,6 +84,64 @@ test('cancels an earlier Events search cleanly when the date changes', async ({ 
 	await expect(page.getByText('No events found.')).toBeVisible();
 });
 
+test('refreshes today’s event metadata without clearing rendered results', async ({ page }) => {
+	await page.clock.install();
+	const camera = {
+		id: 'front-door',
+		ip: '192.0.2.1',
+		name: 'Front Door',
+		manufacturer: 'Reolink',
+		model: 'RLC-811A',
+		firmware_version: null,
+		is_reolink: true,
+		profiles: []
+	} satisfies CameraListItem;
+	const storedEvents: StoredEventFixture[] = [];
+	const requests = await mockControlPeer(page, { cameras: [camera], storedEvents });
+	const today = new Date().toISOString().slice(0, 10);
+	await page.goto(`/events?date=${today}`);
+
+	await expect(page.getByText('LIVE', { exact: true })).toBeVisible();
+	await expect(page.getByText('No events found.', { exact: true })).toBeVisible();
+	const initialQueryCount = requests.storedTimelineQueries.length;
+	storedEvents.push({
+		sourceId: camera.id,
+		event: {
+			id: 'live-person',
+			source: 'camera',
+			kind: 'person',
+			start_time_ms: Date.now() - 1_000,
+			end_time_ms: null,
+			confidence: 0.93,
+			bbox: null,
+			zone: 'porch',
+			thumbnail_url: null
+		} satisfies RecordingEvent
+	});
+	await page.clock.fastForward(5_000);
+	await expect(page.locator('[data-event-card="front-door:live-person"]')).toBeVisible({
+		timeout: 2_000
+	});
+	expect(requests.storedTimelineQueries.length).toBeGreaterThan(initialQueryCount);
+	const refresh = requests.storedTimelineQueries.at(-1);
+	expect(refresh?.includeAttachments).toBe(false);
+	expect(refresh?.includeAvailability).toBe(false);
+	expect((refresh?.endMs ?? 0) - (refresh?.startMs ?? 0)).toBeLessThanOrEqual(5 * 60_000);
+});
+
+test('ends a failed preview cleanly and retries it from event detail', async ({ page }) => {
+	await mockEventsWithUnavailablePreview(page);
+	await page.goto(`/events?date=${eventDate}`);
+
+	const card = page.locator('[data-event-card="front-door:person-high"]');
+	await expect(card.getByLabel('Event image unavailable')).toBeVisible();
+	await card.click();
+	const detail = page.getByRole('complementary', { name: 'Event detail' });
+	await expect(detail.getByText('PREVIEW UNAVAILABLE', { exact: true })).toBeVisible();
+	await detail.getByRole('button', { name: 'Retry preview' }).click();
+	await expect(detail.getByText('PREVIEW UNAVAILABLE', { exact: true })).toBeVisible();
+});
+
 test('Board 10 detail restores its deep link and exposes only returned Event evidence', async ({
 	page
 }) => {
@@ -90,7 +156,9 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 	await expect(detail.getByText('porch', { exact: true })).toBeVisible();
 	await expect(detail.getByText('0.300, 0.200, 0.250, 0.500', { exact: true })).toBeVisible();
 	await expect(detail.getByText('Camera event source', { exact: true })).toBeVisible();
-	await expect(detail.getByText('Not reported by REST API', { exact: true })).toHaveCount(3);
+	await expect(detail.getByText('REVISION 1', { exact: true })).toBeVisible();
+	await expect(detail.getByText('front-door', { exact: true })).toBeVisible();
+	await expect(detail.getByText('Not reported by REST API', { exact: true })).toHaveCount(1);
 	await expect(
 		detail
 			.locator('[data-capability-gate][data-capability="keeppeek.media-export.v1"]')

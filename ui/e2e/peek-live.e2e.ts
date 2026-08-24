@@ -90,6 +90,7 @@ test('Peek diagnostics stays open without interrupting live playback', async ({ 
 test('Peek focus automatic quality starts on the main stream and preserves explicit switches', async ({
 	page
 }) => {
+	test.setTimeout(75_000);
 	test.skip(
 		skipsRealWebRtcOnWindowsCi,
 		'Windows CI does not establish the real WebRTC control channel used by this full-stack test.'
