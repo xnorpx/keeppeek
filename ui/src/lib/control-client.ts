@@ -6,6 +6,7 @@ import {
 	CameraControlCommandSchema,
 	CameraConfigurationCommandSchema,
 	CameraBackend as ProtoCameraBackend,
+	CameraRecordingMode as ProtoCameraRecordingMode,
 	CameraTransport as ProtoCameraTransport,
 	CancelEventSearchMediaSchema,
 	CancelEventSearchQuerySchema,
@@ -100,6 +101,7 @@ import type {
 } from './types';
 import type {
 	CameraBackend,
+	CameraRecordingMode,
 	CameraDetailsResponse,
 	CameraListItem,
 	CameraSettings,
@@ -1054,7 +1056,12 @@ export class ControlClient {
 			uid: stringPatch(update, 'uid'),
 			backend: update.backend === undefined ? undefined : protoBackend(update.backend),
 			transport: update.transport === undefined ? undefined : protoTransport(update.transport),
-			recordGenericMotionEvents: update.record_generic_motion_events
+			recordGenericMotionEvents: update.record_generic_motion_events,
+			recordingMode:
+				update.recording_mode === undefined
+					? undefined
+					: protoCameraRecordingMode(update.recording_mode),
+			eventRecordingDurationSecs: update.event_recording_duration_secs
 		});
 		const command = create(CameraConfigurationCommandSchema, {
 			action: { case: 'update', value: payload }
@@ -1910,11 +1917,13 @@ type CompletedStoredObject = {
 	generation: bigint;
 	payload: Uint8Array;
 	deliveredThroughMs?: number;
+	sourceBufferContentType?: string;
 };
 
 type StoredChunkAccumulator = ChunkAccumulator & {
 	generation: bigint;
 	deliveredThroughMs?: number;
+	sourceBufferContentType?: string;
 };
 
 type StoredKeyFrameAccumulator = {
@@ -1949,10 +1958,11 @@ export class StoredMediaPlayback {
 	#mediaSource: MediaSource;
 	#sourceBuffer: SourceBuffer | null = null;
 	#contentType: string | null = null;
+	#sourceBufferContentType: string | null = null;
 	#generation = 0n;
 	#chunks = new Map<string, StoredChunkAccumulator>();
 	#completed: CompletedStoredObject[] = [];
-	#appendQueue: Uint8Array[] = [];
+	#appendQueue: Array<{ payload: Uint8Array; sourceBufferContentType?: string }> = [];
 	#seek: (timestampMs: number) => Promise<StoredMediaState>;
 	#refill: (timestampMs: number) => Promise<StoredMediaState>;
 	#updatePlayback: (
@@ -2041,7 +2051,10 @@ export class StoredMediaPlayback {
 			this.#latestKeyFrame = null;
 		}
 		for (const object of this.#completed) {
-			this.#appendQueue.push(object.payload);
+			this.#appendQueue.push({
+				payload: object.payload,
+				sourceBufferContentType: object.sourceBufferContentType
+			});
 			if (object.deliveredThroughMs !== undefined) {
 				this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, object.deliveredThroughMs);
 			}
@@ -2104,7 +2117,8 @@ export class StoredMediaPlayback {
 			initialization.chunkCount,
 			initialization.contentType,
 			initialization.payload,
-			undefined
+			undefined,
+			initialization.contentType
 		);
 	}
 
@@ -2318,7 +2332,8 @@ export class StoredMediaPlayback {
 		chunkCount: number,
 		contentType: string,
 		payload: Uint8Array,
-		deliveredThroughMs: number | undefined
+		deliveredThroughMs: number | undefined,
+		sourceBufferContentType?: string
 	): void {
 		if (this.#closed || chunkCount === 0 || chunkIndex >= chunkCount) return;
 		const accumulator = this.#chunks.get(key) ?? {
@@ -2326,13 +2341,15 @@ export class StoredMediaPlayback {
 			chunkCount,
 			chunks: Array.from<Uint8Array | undefined>({ length: chunkCount }),
 			contentType,
-			deliveredThroughMs
+			deliveredThroughMs,
+			sourceBufferContentType
 		};
 		if (
 			accumulator.generation !== generation ||
 			accumulator.chunkCount !== chunkCount ||
 			accumulator.contentType !== contentType ||
 			accumulator.deliveredThroughMs !== deliveredThroughMs ||
+			accumulator.sourceBufferContentType !== sourceBufferContentType ||
 			accumulator.chunks[chunkIndex] !== undefined
 		) {
 			this.fail('Stored media chunks were inconsistent.');
@@ -2345,7 +2362,8 @@ export class StoredMediaPlayback {
 		const completed = {
 			generation,
 			payload: concatenateChunks(accumulator.chunks),
-			deliveredThroughMs: accumulator.deliveredThroughMs
+			deliveredThroughMs: accumulator.deliveredThroughMs,
+			sourceBufferContentType: accumulator.sourceBufferContentType
 		};
 		if (this.#generation === 0n) {
 			this.#completed.push(completed);
@@ -2359,7 +2377,10 @@ export class StoredMediaPlayback {
 		if (accumulator.deliveredThroughMs !== undefined) {
 			this.#deliveredThroughMs = Math.max(this.#deliveredThroughMs, accumulator.deliveredThroughMs);
 		}
-		this.#appendQueue.push(completed.payload);
+		this.#appendQueue.push({
+			payload: completed.payload,
+			sourceBufferContentType: completed.sourceBufferContentType
+		});
 		if (
 			accumulator.deliveredThroughMs !== undefined &&
 			!this.#firstFragmentGenerations.has(generation)
@@ -2417,6 +2438,7 @@ export class StoredMediaPlayback {
 	private replaceMediaSource(): void {
 		URL.revokeObjectURL(this.url);
 		this.#sourceBuffer = null;
+		this.#sourceBufferContentType = null;
 		this.#appendQueue = [];
 		this.#refillInFlight = false;
 		this.#mediaSource = new MediaSource();
@@ -2451,6 +2473,7 @@ export class StoredMediaPlayback {
 		try {
 			const sourceBuffer = this.#mediaSource.addSourceBuffer(this.#contentType);
 			this.#sourceBuffer = sourceBuffer;
+			this.#sourceBufferContentType = this.#contentType;
 			sourceBuffer.mode = 'sequence';
 			sourceBuffer.addEventListener('updateend', () => {
 				if (this.#sourceBuffer !== sourceBuffer) return;
@@ -2476,10 +2499,25 @@ export class StoredMediaPlayback {
 			this.finishIfEnded();
 			return;
 		}
-		const payload = this.#appendQueue.shift();
-		if (!payload) return;
+		const next = this.#appendQueue.shift();
+		if (!next) return;
 		try {
-			sourceBuffer.appendBuffer(ownedArrayBuffer(payload));
+			if (
+				next.sourceBufferContentType &&
+				next.sourceBufferContentType !== this.#sourceBufferContentType
+			) {
+				if (!MediaSource.isTypeSupported(next.sourceBufferContentType)) {
+					this.fail(`Browser does not support ${next.sourceBufferContentType}.`);
+					return;
+				}
+				if (typeof sourceBuffer.changeType !== 'function') {
+					this.fail('Browser cannot switch stored media codecs.');
+					return;
+				}
+				sourceBuffer.changeType(next.sourceBufferContentType);
+				this.#sourceBufferContentType = next.sourceBufferContentType;
+			}
+			sourceBuffer.appendBuffer(ownedArrayBuffer(next.payload));
 		} catch (error) {
 			this.fail(error instanceof Error ? error.message : 'Unable to append stored media bytes.');
 		}
@@ -2807,6 +2845,14 @@ function protoTransport(transport: CameraTransport): ProtoCameraTransport {
 	return transport === 'udp' ? ProtoCameraTransport.UDP : ProtoCameraTransport.TCP;
 }
 
+function protoCameraRecordingMode(mode: CameraRecordingMode): ProtoCameraRecordingMode {
+	if (mode === 'off') return ProtoCameraRecordingMode.OFF;
+	if (mode === 'sub') return ProtoCameraRecordingMode.SUB;
+	if (mode === 'main') return ProtoCameraRecordingMode.MAIN;
+	if (mode === 'both') return ProtoCameraRecordingMode.BOTH;
+	return ProtoCameraRecordingMode.EVENT_BOOST;
+}
+
 function cameraSettings(camera: import('./proto/webrtc_pb').CameraSettings): CameraSettings {
 	return {
 		id: camera.id,
@@ -2828,6 +2874,17 @@ function cameraSettings(camera: import('./proto/webrtc_pb').CameraSettings): Cam
 					: 'auto',
 		transport: camera.transport === ProtoCameraTransport.UDP ? 'udp' : 'tcp',
 		record_generic_motion_events: camera.recordGenericMotionEvents,
+		recording_mode:
+			camera.recordingMode === ProtoCameraRecordingMode.OFF
+				? 'off'
+				: camera.recordingMode === ProtoCameraRecordingMode.SUB
+					? 'sub'
+					: camera.recordingMode === ProtoCameraRecordingMode.MAIN
+						? 'main'
+						: camera.recordingMode === ProtoCameraRecordingMode.BOTH
+							? 'both'
+							: 'event-boost',
+		event_recording_duration_secs: camera.eventRecordingDurationSecs || 60,
 		health: (camera.health ?? null) as CameraSettings['health'],
 		model: camera.model ?? null
 	};
@@ -3037,7 +3094,9 @@ function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
 						fragment_bytes: numeric(storage.catalog.fragmentBytes),
 						events: numeric(storage.catalog.events),
 						open_events: numeric(storage.catalog.openEvents),
-						event_thumbnails: numeric(storage.catalog.eventThumbnails)
+						event_thumbnails: numeric(storage.catalog.eventThumbnails),
+						oldest_recording_at_ms: optionalNumber(storage.catalog.oldestRecordingAtMs),
+						newest_recording_at_ms: optionalNumber(storage.catalog.newestRecordingAtMs)
 					}
 				: null,
 			demand: {

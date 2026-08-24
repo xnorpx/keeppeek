@@ -176,6 +176,10 @@ pub struct CameraConfig {
     pub transport: CameraTransport,
     #[serde(default)]
     pub record_generic_motion_events: bool,
+    #[serde(default)]
+    pub recording_mode: CameraRecordingMode,
+    #[serde(default = "default_event_recording_duration_secs")]
+    pub event_recording_duration_secs: u64,
 }
 
 impl CameraConfig {
@@ -196,6 +200,21 @@ impl CameraConfig {
             .flatten()
             .any(|url| configured_rtsp_url(Some(url)).is_some())
     }
+}
+
+const fn default_event_recording_duration_secs() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraRecordingMode {
+    Off,
+    Sub,
+    Main,
+    Both,
+    #[default]
+    EventBoost,
 }
 
 fn configured_rtsp_url(value: Option<&str>) -> Option<String> {
@@ -1508,6 +1527,8 @@ mod tests {
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Sub,
+            event_recording_duration_secs: 60,
         };
 
         let camera = configured_camera(&config);
@@ -1543,6 +1564,8 @@ mod tests {
             backend: CameraBackend::ReoProto,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Sub,
+            event_recording_duration_secs: 60,
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1577,6 +1600,8 @@ mod tests {
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Sub,
+            event_recording_duration_secs: 60,
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1612,6 +1637,8 @@ mod tests {
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Sub,
+            event_recording_duration_secs: 60,
         };
         let mut camera = Camera {
             config,
@@ -1677,6 +1704,8 @@ mod tests {
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Sub,
+            event_recording_duration_secs: 60,
         };
         let mut camera = Camera {
             config,

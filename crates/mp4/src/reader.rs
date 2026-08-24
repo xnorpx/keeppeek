@@ -134,6 +134,8 @@ impl<R: Read + Seek> Mp4Reader<R> {
                         track.default_sample_duration = trex.default_sample_duration;
                         track.default_sample_size = trex.default_sample_size;
                         track.default_sample_flags = trex.default_sample_flags;
+                        track.default_sample_description_index =
+                            trex.default_sample_description_index;
                     }
                 }
             }
@@ -248,6 +250,7 @@ impl<R: Read + Seek> Mp4Reader<R> {
             locations.push(Mp4FragmentSampleLocation {
                 sequence_number: moof.mfhd.sequence_number,
                 sample_id,
+                sample_description_index: track.sample_description_index(sample_id)?,
                 location,
                 is_sync: track.is_sync_sample(sample_id),
             });

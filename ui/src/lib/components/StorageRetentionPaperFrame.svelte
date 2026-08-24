@@ -25,6 +25,11 @@
 				)
 			: 0
 	);
+	let observedRetentionDays = $derived(
+		evidence.oldestFootageAtMs === null || evidence.newestFootageAtMs === null
+			? null
+			: Math.max(0, (evidence.newestFootageAtMs - evidence.oldestFootageAtMs) / 86_400_000)
+	);
 
 	function formatBytes(bytes: number | null): string {
 		if (bytes === null) return 'Unavailable';
@@ -39,7 +44,7 @@
 		return `${new Intl.NumberFormat('en-US', { maximumFractionDigits: value >= 100 ? 0 : 2 }).format(value)} ${units[unitIndex]}`;
 	}
 
-	function formatProjectedDays(days: number | null): string {
+	function formatDays(days: number | null): string {
 		return days === null
 			? 'Unavailable'
 			: `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(days)} days`;
@@ -82,15 +87,15 @@
 						</h1>
 						<p class="text-sm leading-[22px] text-text-muted">
 							Memory buffering, writer rollover, archive cap, and measured disk capacity are
-							distinct. Observed oldest-footage history is not exposed.
+							distinct. Catalog bounds report observed history.
 						</p>
 					</div>
 					<div class="flex h-[58px] shrink-0 flex-col items-end gap-0.5">
 						<p class="text-[40px] leading-[42px] font-bold text-primary-soft">
-							{formatProjectedDays(evidence.projectedRetentionDays)}
+							{formatDays(observedRetentionDays)}
 						</p>
 						<p class="font-mono text-2xs leading-[14px] tracking-[0.1em] text-text-faint">
-							PROJECTED AT CONFIGURED CAP
+							OLDEST FOOTAGE ON DISK
 						</p>
 					</div>
 				</section>
@@ -294,18 +299,18 @@
 					>
 						<div class="flex items-center justify-between">
 							<h2 class="text-lg leading-[22px] font-semibold">Camera retention evidence</h2>
-							<span class="font-mono text-2xs text-text-faint">UNAVAILABLE</span>
+							<span class="font-mono text-2xs text-healthy">PARTIAL</span>
 						</div>
-						{#each ['Recording mode', 'Retention override', 'Pinned recordings'] as row (row)}
+						{#each [['Recording mode', 'Configured per camera'], ['Retention override', 'Not returned'], ['Pinned recordings', 'Not returned']] as row (row[0])}
 							<div class="flex h-10 shrink-0 items-center justify-between border-b border-hairline">
-								<span class="text-sm">{row}</span><span class="font-mono text-xs text-text-faint"
-									>Not returned</span
+								<span class="text-sm">{row[0]}</span><span class="font-mono text-xs text-text-faint"
+									>{row[1]}</span
 								>
 							</div>
 						{/each}
 						<p class="text-[13px] leading-[21px] text-text-muted">
-							Actual oldest-footage time is also unavailable. Projected retention is never presented
-							as observed history.
+							Catalog bounds observe {formatDays(observedRetentionDays)}. The configured-cap
+							projection remains a separate estimate.
 						</p>
 					</article>
 				</section>

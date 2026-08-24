@@ -319,6 +319,13 @@ impl KeepPeekLoop {
         enable_main: bool,
         enable_sub: bool,
     ) -> anyhow::Result<()> {
+        if let Some(storage) = &self.storage {
+            storage.configure_camera_recording(
+                &camera.config.ip.to_string(),
+                camera.config.recording_mode,
+                Duration::from_secs(camera.config.event_recording_duration_secs),
+            );
+        }
         let route_result = resolve_configured_camera_route(&camera.config, camera.is_reolink);
         let route = route_result.map_err(|error| {
             anyhow::anyhow!(
@@ -613,6 +620,9 @@ impl KeepPeekLoop {
                     }
                 }
                 Ok(KeepPeekEvent::TimelineEventStarted { event }) => {
+                    if let Some(storage) = &self.storage {
+                        storage.note_camera_event(&event.camera_id);
+                    }
                     if let Some(events) = &self.events {
                         let event_id = event.id.clone();
                         let camera_id = event.camera_id.clone();
@@ -722,6 +732,8 @@ mod tests {
             backend: CameraBackend::ReoProto,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
         };
 
         assert_eq!(
@@ -785,6 +797,8 @@ mod tests {
                 backend: CameraBackend::Retina,
                 transport: CameraTransport::Tcp,
                 record_generic_motion_events: false,
+                recording_mode: Default::default(),
+                event_recording_duration_secs: 60,
             },
             device: DeviceInfo::default(),
             reported_manufacturer: None,
@@ -867,6 +881,8 @@ mod tests {
                     backend: CameraBackend::Retina,
                     transport: CameraTransport::Tcp,
                     record_generic_motion_events: false,
+                    recording_mode: Default::default(),
+                    event_recording_duration_secs: 60,
                 },
                 device: DeviceInfo::default(),
                 reported_manufacturer: None,

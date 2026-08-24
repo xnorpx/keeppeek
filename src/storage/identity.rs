@@ -32,4 +32,14 @@ impl RecordingStreamIdentity {
             storage_key,
         }
     }
+
+    pub fn with_recording_stream(mut self, stream_id: &str) -> Self {
+        let storage_label = self
+            .storage_key
+            .rsplit_once('/')
+            .map_or(self.storage_key.as_str(), |(label, _)| label);
+        self.storage_key = format!("{storage_label}/{stream_id}");
+        self.stream_id = stream_id.to_owned();
+        self
+    }
 }

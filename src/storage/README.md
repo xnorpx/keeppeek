@@ -102,10 +102,19 @@ expects.
 `MediumTermWriter` — MP4 muxer using the `mp4` crate.
 
 - Receives batches of `RecordingFrame`s drained from `ShortTermBuffer`.
-- Buffers the first GOP to discover the fixed video and optional AAC track set, then writes a
-  flushed `ftyp`/`moov` initialization range with `mvex` track defaults.
+- Buffers the first GOP to discover the video and optional AAC track set, then writes a flushed
+  `ftyp`/`moov` initialization range with `mvex` track defaults and bounded metadata padding.
+- Registers video sample descriptions from keyframes. Different GOPs in one track may use
+  different codecs, decoder parameter sets, and dimensions; each `tfhd` selects the matching
+  one-based `stsd` entry.
+- Serializes event-boost admission and writer enqueue under one policy lock so concurrent main and
+  sub producers cannot reorder frames across a handoff keyframe.
 - Writes H.264/H.265 video track (timescale 90 000) and optional AAC
   audio track (timescale = sample rate). Non-AAC audio is skipped.
+- Derives video sample durations from adjacent decode timestamps. It does not assume a frame rate.
+- Stored browser delivery emits one sample description per GOP period and normalizes that
+  fragment's `tfhd` index to 1. This keeps the archive flexible while remaining compatible with
+  MSE `SourceBuffer.changeType` and updated initialization segments.
 - Writes and flushes one `moof`/`mdat` fragment per video GOP. Every fragment begins with a video
   keyframe and has an exact byte range suitable for the recording catalog and HTTP range serving.
 - Active segments use a `.mp4.active` suffix. Finalization flushes the last fragment and removes

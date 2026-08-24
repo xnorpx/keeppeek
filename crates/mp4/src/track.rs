@@ -8,6 +8,7 @@ use crate::{
         smhd::SmhdBox,
         stco::StcoBox,
         stsc::StscEntry,
+        stsd::SampleEntry,
         stss::StssBox,
         stts::SttsEntry,
         traf::TrafBox,
@@ -109,6 +110,7 @@ pub struct Mp4Track {
     pub default_sample_duration: u32,
     pub default_sample_size: u32,
     pub default_sample_flags: u32,
+    pub default_sample_description_index: u32,
     pub(crate) traf_sample_counts: Vec<u32>,
     pub(crate) traf_start_times: Vec<u64>,
     pub(crate) traf_base_offsets: Vec<u64>,
@@ -125,6 +127,7 @@ impl Mp4Track {
             default_sample_duration: 0,
             default_sample_size: 0,
             default_sample_flags: 0,
+            default_sample_description_index: 1,
             traf_sample_counts: Vec::new(),
             traf_start_times: Vec::new(),
             traf_base_offsets: Vec::new(),
@@ -180,45 +183,72 @@ impl Mp4Track {
         TrackType::try_from(&self.trak.mdia.hdlr.handler_type)
     }
 
-    pub const fn media_type(&self) -> Result<MediaType> {
-        if self.trak.mdia.minf.stbl.stsd.avc1.is_some() {
-            Ok(MediaType::H264)
-        } else if self.trak.mdia.minf.stbl.stsd.hev1.is_some()
-            || self.trak.mdia.minf.stbl.stsd.hvc1.is_some()
+    pub fn media_type(&self) -> Result<MediaType> {
+        self.media_type_for_description(1)
+    }
+
+    pub fn media_type_for_description(&self, sample_description_index: u32) -> Result<MediaType> {
+        match self
+            .trak
+            .mdia
+            .minf
+            .stbl
+            .stsd
+            .entry(sample_description_index)
         {
-            Ok(MediaType::H265)
-        } else if self.trak.mdia.minf.stbl.stsd.vp09.is_some() {
-            Ok(MediaType::VP9)
-        } else if self.trak.mdia.minf.stbl.stsd.mp4a.is_some() {
-            Ok(MediaType::AAC)
-        } else if self.trak.mdia.minf.stbl.stsd.tx3g.is_some() {
-            Ok(MediaType::TTXT)
-        } else {
-            Err(Error::InvalidData("unsupported media type"))
+            Some(SampleEntry::Avc1(_)) => Ok(MediaType::H264),
+            Some(SampleEntry::Hev1(_) | SampleEntry::Hvc1(_)) => Ok(MediaType::H265),
+            Some(SampleEntry::Vp09(_)) => Ok(MediaType::VP9),
+            Some(SampleEntry::Mp4a(_)) => Ok(MediaType::AAC),
+            Some(SampleEntry::Tx3g(_)) => Ok(MediaType::TTXT),
+            Some(SampleEntry::Unknown { .. }) => Err(Error::InvalidData("unsupported media type")),
+            None => Err(Error::InvalidData(
+                "sample description index is out of range",
+            )),
         }
     }
 
     pub fn box_type(&self) -> Result<FourCC> {
-        if self.trak.mdia.minf.stbl.stsd.avc1.is_some() {
-            Ok(FourCC::from(BoxType::Avc1Box))
-        } else if self.trak.mdia.minf.stbl.stsd.hev1.is_some() {
-            Ok(FourCC::from(BoxType::Hev1Box))
-        } else if self.trak.mdia.minf.stbl.stsd.hvc1.is_some() {
-            Ok(FourCC::from(BoxType::Hvc1Box))
-        } else if self.trak.mdia.minf.stbl.stsd.vp09.is_some() {
-            Ok(FourCC::from(BoxType::Vp09Box))
-        } else if self.trak.mdia.minf.stbl.stsd.mp4a.is_some() {
-            Ok(FourCC::from(BoxType::Mp4aBox))
-        } else if self.trak.mdia.minf.stbl.stsd.tx3g.is_some() {
-            Ok(FourCC::from(BoxType::Tx3gBox))
-        } else {
-            Err(Error::InvalidData("unsupported sample entry box"))
+        match self.trak.mdia.minf.stbl.stsd.entry(1) {
+            Some(SampleEntry::Avc1(_)) => Ok(FourCC::from(BoxType::Avc1Box)),
+            Some(SampleEntry::Hev1(_)) => Ok(FourCC::from(BoxType::Hev1Box)),
+            Some(SampleEntry::Hvc1(_)) => Ok(FourCC::from(BoxType::Hvc1Box)),
+            Some(SampleEntry::Vp09(_)) => Ok(FourCC::from(BoxType::Vp09Box)),
+            Some(SampleEntry::Mp4a(_)) => Ok(FourCC::from(BoxType::Mp4aBox)),
+            Some(SampleEntry::Tx3g(_)) => Ok(FourCC::from(BoxType::Tx3gBox)),
+            Some(SampleEntry::Unknown { .. }) => {
+                Err(Error::InvalidData("unsupported sample entry box"))
+            }
+            None => Err(Error::InvalidData(
+                "sample description index is out of range",
+            )),
         }
     }
 
     /// Returns decoder-ready configuration for an H.264 or H.265 video track.
     pub fn video_decoder_config(&self) -> Result<Option<Mp4VideoDecoderConfig>> {
-        if let Some(avc1) = &self.trak.mdia.minf.stbl.stsd.avc1 {
+        self.video_decoder_config_for_description(1)
+    }
+
+    pub const fn sample_description_count(&self) -> usize {
+        self.trak.mdia.minf.stbl.stsd.entries.len()
+    }
+
+    pub fn video_decoder_config_for_description(
+        &self,
+        sample_description_index: u32,
+    ) -> Result<Option<Mp4VideoDecoderConfig>> {
+        let entry = self
+            .trak
+            .mdia
+            .minf
+            .stbl
+            .stsd
+            .entry(sample_description_index)
+            .ok_or(Error::InvalidData(
+                "sample description index is out of range",
+            ))?;
+        if let SampleEntry::Avc1(avc1) = entry {
             if avc1.avcc.sequence_parameter_sets.is_empty()
                 || avc1.avcc.picture_parameter_sets.is_empty()
             {
@@ -245,72 +275,127 @@ impl Mp4Track {
                 nal_length_size: (avc1.avcc.length_size_minus_one & 0x03) + 1,
             }));
         }
-        let sample_entry = self.trak.mdia.minf.stbl.stsd.hvc1.as_ref().or(self
+        let (sample_entry_name, sample_entry) = match entry {
+            SampleEntry::Hvc1(entry) => ("hvc1", entry),
+            SampleEntry::Hev1(entry) => ("hev1", entry),
+            _ => return Ok(None),
+        };
+        let configuration = sample_entry.hvcc.configuration()?;
+        if configuration.vps.is_empty()
+            || configuration.sps.is_empty()
+            || configuration.pps.is_empty()
+        {
+            return Err(Error::InvalidData(
+                "HEVC decoder configuration has incomplete parameter sets",
+            ));
+        }
+        Ok(Some(Mp4VideoDecoderConfig {
+            codec: hevc_codec_string(sample_entry_name, &sample_entry.hvcc.record_data)?,
+            width: sample_entry.width,
+            height: sample_entry.height,
+            description: sample_entry.hvcc.record_data.clone(),
+            nal_length_size: configuration.nal_length_size,
+        }))
+    }
+
+    pub fn width(&self) -> u16 {
+        self.dimensions_for_description(1)
+            .map_or_else(|_| self.trak.tkhd.width.value(), |dimensions| dimensions.0)
+    }
+
+    pub fn height(&self) -> u16 {
+        self.dimensions_for_description(1)
+            .map_or_else(|_| self.trak.tkhd.height.value(), |dimensions| dimensions.1)
+    }
+
+    pub fn dimensions_for_description(&self, sample_description_index: u32) -> Result<(u16, u16)> {
+        match self
             .trak
             .mdia
             .minf
             .stbl
             .stsd
-            .hev1
-            .as_ref());
-        if let Some(sample_entry) = sample_entry {
-            let configuration = sample_entry.hvcc.configuration()?;
-            if configuration.vps.is_empty()
-                || configuration.sps.is_empty()
-                || configuration.pps.is_empty()
-            {
-                return Err(Error::InvalidData(
-                    "HEVC decoder configuration has incomplete parameter sets",
-                ));
+            .entry(sample_description_index)
+        {
+            Some(SampleEntry::Avc1(entry)) => Ok((entry.width, entry.height)),
+            Some(SampleEntry::Hev1(entry) | SampleEntry::Hvc1(entry)) => {
+                Ok((entry.width, entry.height))
             }
-            let sample_entry_name = if self.trak.mdia.minf.stbl.stsd.hvc1.is_some() {
-                "hvc1"
-            } else {
-                "hev1"
-            };
-            return Ok(Some(Mp4VideoDecoderConfig {
-                codec: hevc_codec_string(sample_entry_name, &sample_entry.hvcc.record_data)?,
-                width: sample_entry.width,
-                height: sample_entry.height,
-                description: sample_entry.hvcc.record_data.clone(),
-                nal_length_size: configuration.nal_length_size,
-            }));
+            Some(SampleEntry::Vp09(entry)) => Ok((entry.width, entry.height)),
+            Some(_) => Err(Error::InvalidData("sample description is not video")),
+            None => Err(Error::InvalidData(
+                "sample description index is out of range",
+            )),
         }
-        Ok(None)
     }
 
-    pub fn width(&self) -> u16 {
-        self.trak.mdia.minf.stbl.stsd.avc1.as_ref().map_or_else(
-            || {
-                self.trak
-                    .mdia
-                    .minf
-                    .stbl
-                    .stsd
-                    .hev1
+    pub fn media_config_for_description(
+        &self,
+        sample_description_index: u32,
+    ) -> Result<MediaConfig> {
+        match self
+            .trak
+            .mdia
+            .minf
+            .stbl
+            .stsd
+            .entry(sample_description_index)
+        {
+            Some(SampleEntry::Avc1(entry)) => Ok(MediaConfig::AvcConfig(AvcConfig {
+                width: entry.width,
+                height: entry.height,
+                seq_param_set: entry
+                    .avcc
+                    .sequence_parameter_sets
+                    .first()
+                    .ok_or(Error::InvalidData("AVC sample description has no SPS"))?
+                    .bytes
+                    .to_vec(),
+                pic_param_set: entry
+                    .avcc
+                    .picture_parameter_sets
+                    .first()
+                    .ok_or(Error::InvalidData("AVC sample description has no PPS"))?
+                    .bytes
+                    .to_vec(),
+            })),
+            Some(SampleEntry::Hev1(entry) | SampleEntry::Hvc1(entry)) => {
+                let configuration = entry.hvcc.configuration()?;
+                Ok(MediaConfig::HevcConfig(HevcConfig {
+                    width: entry.width,
+                    height: entry.height,
+                    vps: configuration.vps.first().cloned().unwrap_or_default(),
+                    sps: configuration.sps.first().cloned().unwrap_or_default(),
+                    pps: configuration.pps.first().cloned().unwrap_or_default(),
+                    decoder_config: entry.hvcc.record_data.clone(),
+                }))
+            }
+            Some(SampleEntry::Vp09(entry)) => Ok(MediaConfig::Vp9Config(Vp9Config {
+                width: entry.width,
+                height: entry.height,
+            })),
+            Some(SampleEntry::Mp4a(entry)) => {
+                let decoder = &entry
+                    .esds
                     .as_ref()
-                    .or(self.trak.mdia.minf.stbl.stsd.hvc1.as_ref())
-                    .map_or_else(|| self.trak.tkhd.width.value(), |hevc| hevc.width)
-            },
-            |avc1| avc1.width,
-        )
-    }
-
-    pub fn height(&self) -> u16 {
-        self.trak.mdia.minf.stbl.stsd.avc1.as_ref().map_or_else(
-            || {
-                self.trak
-                    .mdia
-                    .minf
-                    .stbl
-                    .stsd
-                    .hev1
-                    .as_ref()
-                    .or(self.trak.mdia.minf.stbl.stsd.hvc1.as_ref())
-                    .map_or_else(|| self.trak.tkhd.height.value(), |hevc| hevc.height)
-            },
-            |avc1| avc1.height,
-        )
+                    .ok_or(Error::InvalidData("AAC sample description has no esds"))?
+                    .es_desc
+                    .dec_config;
+                Ok(MediaConfig::AacConfig(AacConfig {
+                    bitrate: decoder.avg_bitrate,
+                    profile: AudioObjectType::try_from(decoder.dec_specific.profile)?,
+                    freq_index: SampleFreqIndex::try_from(decoder.dec_specific.freq_index)?,
+                    chan_conf: ChannelConfig::try_from(decoder.dec_specific.chan_conf)?,
+                }))
+            }
+            Some(SampleEntry::Tx3g(_)) => Ok(MediaConfig::TtxtConfig(TtxtConfig::default())),
+            Some(SampleEntry::Unknown { .. }) => {
+                Err(Error::InvalidData("unsupported sample description"))
+            }
+            None => Err(Error::InvalidData(
+                "sample description index is out of range",
+            )),
+        }
     }
 
     pub fn frame_rate(&self) -> f64 {
@@ -321,7 +406,7 @@ impl Mp4Track {
     }
 
     pub fn sample_freq_index(&self) -> Result<SampleFreqIndex> {
-        self.trak.mdia.minf.stbl.stsd.mp4a.as_ref().map_or_else(
+        self.trak.mdia.minf.stbl.stsd.mp4a().map_or_else(
             || Err(Error::BoxInStblNotFound(self.track_id(), BoxType::Mp4aBox)),
             |mp4a| {
                 mp4a.esds.as_ref().map_or_else(
@@ -335,7 +420,7 @@ impl Mp4Track {
     }
 
     pub fn channel_config(&self) -> Result<ChannelConfig> {
-        self.trak.mdia.minf.stbl.stsd.mp4a.as_ref().map_or_else(
+        self.trak.mdia.minf.stbl.stsd.mp4a().map_or_else(
             || Err(Error::BoxInStblNotFound(self.track_id(), BoxType::Mp4aBox)),
             |mp4a| {
                 mp4a.esds.as_ref().map_or_else(
@@ -368,7 +453,7 @@ impl Mp4Track {
     }
 
     pub fn bitrate(&self) -> u32 {
-        self.trak.mdia.minf.stbl.stsd.mp4a.as_ref().map_or_else(
+        self.trak.mdia.minf.stbl.stsd.mp4a().map_or_else(
             || {
                 let dur_sec = self.duration().as_secs();
                 (self.total_sample_size() * 8)
@@ -392,7 +477,7 @@ impl Mp4Track {
     }
 
     pub fn video_profile(&self) -> Result<AvcProfile> {
-        self.trak.mdia.minf.stbl.stsd.avc1.as_ref().map_or_else(
+        self.trak.mdia.minf.stbl.stsd.avc1().map_or_else(
             || Err(Error::BoxInStblNotFound(self.track_id(), BoxType::Avc1Box)),
             |avc1| {
                 AvcProfile::try_from((
@@ -404,7 +489,7 @@ impl Mp4Track {
     }
 
     pub fn sequence_parameter_set(&self) -> Result<&[u8]> {
-        self.trak.mdia.minf.stbl.stsd.avc1.as_ref().map_or_else(
+        self.trak.mdia.minf.stbl.stsd.avc1().map_or_else(
             || Err(Error::BoxInStblNotFound(self.track_id(), BoxType::Avc1Box)),
             |avc1| {
                 avc1.avcc.sequence_parameter_sets.first().map_or_else(
@@ -422,7 +507,7 @@ impl Mp4Track {
     }
 
     pub fn picture_parameter_set(&self) -> Result<&[u8]> {
-        self.trak.mdia.minf.stbl.stsd.avc1.as_ref().map_or_else(
+        self.trak.mdia.minf.stbl.stsd.avc1().map_or_else(
             || Err(Error::BoxInStblNotFound(self.track_id(), BoxType::Avc1Box)),
             |avc1| {
                 avc1.avcc.picture_parameter_sets.first().map_or_else(
@@ -440,7 +525,7 @@ impl Mp4Track {
     }
 
     pub fn audio_profile(&self) -> Result<AudioObjectType> {
-        self.trak.mdia.minf.stbl.stsd.mp4a.as_ref().map_or_else(
+        self.trak.mdia.minf.stbl.stsd.mp4a().map_or_else(
             || Err(Error::BoxInStblNotFound(self.track_id(), BoxType::Mp4aBox)),
             |mp4a| {
                 mp4a.esds.as_ref().map_or_else(
@@ -466,6 +551,34 @@ impl Mp4Track {
                 }
             }
         }
+    }
+
+    pub fn sample_description_index(&self, sample_id: u32) -> Result<u32> {
+        if sample_id == 0 || sample_id > self.sample_count() {
+            return Err(Error::EntryInStblNotFound(
+                self.track_id(),
+                BoxType::StsdBox,
+                sample_id,
+            ));
+        }
+        let index = if !self.trafs.is_empty() {
+            let (traf_index, _) = self
+                .find_traf_idx_and_sample_idx(sample_id)
+                .ok_or_else(|| Error::BoxInTrafNotFound(self.track_id(), BoxType::TrafBox))?;
+            self.trafs[traf_index]
+                .tfhd
+                .sample_description_index
+                .unwrap_or(self.default_sample_description_index)
+        } else {
+            let stsc_index = self.stsc_index(sample_id)?;
+            self.trak.mdia.minf.stbl.stsc.entries[stsc_index].sample_description_index
+        };
+        if index == 0 || index as usize > self.sample_description_count() {
+            return Err(Error::InvalidData(
+                "sample description index is out of range",
+            ));
+        }
+        Ok(index)
     }
 
     fn chunk_offset(&self, chunk_id: u32) -> Result<u64> {
@@ -861,6 +974,35 @@ fn hevc_codec_string(sample_entry_name: &str, record: &[u8]) -> Result<String> {
     Ok(codec)
 }
 
+const fn media_config_track_type(config: &MediaConfig) -> TrackType {
+    match config {
+        MediaConfig::AvcConfig(_) | MediaConfig::HevcConfig(_) | MediaConfig::Vp9Config(_) => {
+            TrackType::Video
+        }
+        MediaConfig::AacConfig(_) => TrackType::Audio,
+        MediaConfig::TtxtConfig(_) => TrackType::Subtitle,
+    }
+}
+
+const fn video_dimensions(config: &MediaConfig) -> Option<(u16, u16)> {
+    match config {
+        MediaConfig::AvcConfig(config) => Some((config.width, config.height)),
+        MediaConfig::HevcConfig(config) => Some((config.width, config.height)),
+        MediaConfig::Vp9Config(config) => Some((config.width, config.height)),
+        MediaConfig::AacConfig(_) | MediaConfig::TtxtConfig(_) => None,
+    }
+}
+
+fn sample_entry_from_media_config(config: &MediaConfig) -> SampleEntry {
+    match config {
+        MediaConfig::AvcConfig(config) => SampleEntry::Avc1(Avc1Box::new(config)),
+        MediaConfig::HevcConfig(config) => SampleEntry::Hev1(Hev1Box::new(config)),
+        MediaConfig::Vp9Config(config) => SampleEntry::Vp09(Vp09Box::new(config)),
+        MediaConfig::AacConfig(config) => SampleEntry::Mp4a(Mp4aBox::new(config)),
+        MediaConfig::TtxtConfig(_) => SampleEntry::Tx3g(Tx3gBox::default()),
+    }
+}
+
 // TODO creation_time, modification_time
 #[derive(Debug, Default)]
 pub struct Mp4TrackWriter {
@@ -879,56 +1021,68 @@ pub struct Mp4TrackWriter {
 
 impl Mp4TrackWriter {
     pub(crate) fn new(track_id: u32, config: &TrackConfig) -> Result<Self> {
+        Self::new_with_sample_descriptions(
+            track_id,
+            config.track_type,
+            config.timescale,
+            &config.language,
+            std::slice::from_ref(&config.media_conf),
+        )
+    }
+
+    pub(crate) fn new_with_sample_descriptions(
+        track_id: u32,
+        track_type: TrackType,
+        timescale: u32,
+        language: &str,
+        sample_descriptions: &[MediaConfig],
+    ) -> Result<Self> {
+        if sample_descriptions.is_empty() {
+            return Err(Error::InvalidData(
+                "track requires at least one sample description",
+            ));
+        }
+        if sample_descriptions
+            .iter()
+            .any(|description| media_config_track_type(description) != track_type)
+        {
+            return Err(Error::InvalidData(
+                "sample description does not match the track type",
+            ));
+        }
         let mut trak = TrakBox::default();
         trak.tkhd.track_id = track_id;
-        trak.mdia.mdhd.timescale = config.timescale;
-        trak.mdia.mdhd.language = config.language.to_owned();
-        trak.mdia.hdlr.handler_type = config.track_type.into();
+        trak.mdia.mdhd.timescale = timescale;
+        trak.mdia.mdhd.language = language.to_owned();
+        trak.mdia.hdlr.handler_type = track_type.into();
         trak.mdia.minf.stbl.co64 = Some(Co64Box::default());
-        match config.media_conf {
-            MediaConfig::AvcConfig(ref avc_config) => {
-                trak.tkhd.set_width(avc_config.width);
-                trak.tkhd.set_height(avc_config.height);
-
-                let vmhd = VmhdBox::default();
-                trak.mdia.minf.vmhd = Some(vmhd);
-
-                let avc1 = Avc1Box::new(avc_config);
-                trak.mdia.minf.stbl.stsd.avc1 = Some(avc1);
+        match track_type {
+            TrackType::Video => {
+                trak.mdia.minf.vmhd = Some(VmhdBox::default());
+                let dimensions = sample_descriptions
+                    .iter()
+                    .filter_map(video_dimensions)
+                    .fold(
+                        (0, 0),
+                        |(width, height), (candidate_width, candidate_height)| {
+                            (width.max(candidate_width), height.max(candidate_height))
+                        },
+                    );
+                trak.tkhd.set_width(dimensions.0);
+                trak.tkhd.set_height(dimensions.1);
             }
-            MediaConfig::HevcConfig(ref hevc_config) => {
-                trak.tkhd.set_width(hevc_config.width);
-                trak.tkhd.set_height(hevc_config.height);
-
-                let vmhd = VmhdBox::default();
-                trak.mdia.minf.vmhd = Some(vmhd);
-
-                let hev1 = Hev1Box::new(hevc_config);
-                trak.mdia.minf.stbl.stsd.hev1 = Some(hev1);
-            }
-            MediaConfig::Vp9Config(ref config) => {
-                trak.tkhd.set_width(config.width);
-                trak.tkhd.set_height(config.height);
-
-                trak.mdia.minf.stbl.stsd.vp09 = Some(Vp09Box::new(config));
-            }
-            MediaConfig::AacConfig(ref aac_config) => {
-                let smhd = SmhdBox::default();
-                trak.mdia.minf.smhd = Some(smhd);
-
-                let mp4a = Mp4aBox::new(aac_config);
-                trak.mdia.minf.stbl.stsd.mp4a = Some(mp4a);
-            }
-            MediaConfig::TtxtConfig(ref _ttxt_config) => {
-                let tx3g = Tx3gBox::default();
-                trak.mdia.minf.stbl.stsd.tx3g = Some(tx3g);
-            }
+            TrackType::Audio => trak.mdia.minf.smhd = Some(SmhdBox::default()),
+            TrackType::Subtitle => {}
         }
+        trak.mdia.minf.stbl.stsd.entries = sample_descriptions
+            .iter()
+            .map(sample_entry_from_media_config)
+            .collect();
         Ok(Self {
             trak,
             chunk_buffer: BytesMut::new(),
             sample_id: 1,
-            duration_per_chunk: config.timescale, // 1 second
+            duration_per_chunk: timescale, // 1 second
             ..Self::default()
         })
     }
@@ -1133,7 +1287,7 @@ impl Mp4TrackWriter {
         self.write_chunk(writer)?;
 
         let max_sample_size = self.max_sample_size();
-        if let Some(ref mut mp4a) = self.trak.mdia.minf.stbl.stsd.mp4a
+        if let Some(mp4a) = self.trak.mdia.minf.stbl.stsd.mp4a_mut()
             && let Some(ref mut esds) = mp4a.esds
         {
             esds.es_desc.dec_config.buffer_size_db = max_sample_size;

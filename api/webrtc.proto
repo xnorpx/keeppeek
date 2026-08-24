@@ -2,14 +2,14 @@ syntax = "proto3";
 
 package keeppeek.webrtc.v1;
 
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
-import "google/protobuf/duration.proto";
-import "google/protobuf/any.proto";
 
 // Next 7 lines deliberately violate AIP-136 (Custom RPC Envelope).
-// This is required because this protocol operates over raw WebRTC DataChannels 
-// instead of HTTP/2 headers framing, thus necessitating application-level 
+// This is required because this protocol operates over raw WebRTC DataChannels
+// instead of HTTP/2 headers framing, thus necessitating application-level
 // framing for multiplexing.
 message ControlEnvelope {
   oneof message {
@@ -30,7 +30,7 @@ message Request {
     PublicationCommand publication_command = 7;
     StoredMediaCommand stored_media_command = 8;
     EventPublicationCommand event_publication_command = 9;
-     
+
     GroupCommand group_command = 11;
     StateStoreCommand state_store_command = 12;
     CameraControlCommand camera_control_command = 13;
@@ -278,6 +278,8 @@ message UpdateCameraConfiguration {
   optional CameraBackend backend = 11;
   optional CameraTransport transport = 12;
   optional bool record_generic_motion_events = 13;
+  optional CameraRecordingMode recording_mode = 14;
+  optional uint32 event_recording_duration_secs = 15;
 }
 
 message RemoveCameraConfiguration {
@@ -303,6 +305,14 @@ enum CameraBackend {
   CAMERA_BACKEND_AUTO = 1;
   CAMERA_BACKEND_RETINA = 2;
   CAMERA_BACKEND_REO_PROTO = 3;
+}
+enum CameraRecordingMode {
+  CAMERA_RECORDING_MODE_UNSPECIFIED = 0;
+  CAMERA_RECORDING_MODE_SUB = 1;
+  CAMERA_RECORDING_MODE_MAIN = 2;
+  CAMERA_RECORDING_MODE_BOTH = 3;
+  CAMERA_RECORDING_MODE_EVENT_BOOST = 4;
+  CAMERA_RECORDING_MODE_OFF = 5;
 }
 
 enum CameraTransport {
@@ -1511,6 +1521,8 @@ message CameraSettings {
   optional string health = 14;
   optional string model = 15;
   bool record_generic_motion_events = 16;
+  CameraRecordingMode recording_mode = 17;
+  uint32 event_recording_duration_secs = 18;
 }
 
 message RuntimeConfigurationResult {
@@ -1742,6 +1754,8 @@ message CatalogHealthSnapshot {
   uint64 events = 6;
   uint64 open_events = 7;
   uint64 event_thumbnails = 8;
+  optional int64 oldest_recording_at_ms = 9;
+  optional int64 newest_recording_at_ms = 10;
 }
 
 message RecordingDemandHealthSnapshot {
@@ -1948,7 +1962,6 @@ enum ErrorCode {
   ERROR_CODE_TIMEOUT = 6;
   ERROR_CODE_INTERNAL = 7;
 }
-
 
 message Message {
   oneof message {

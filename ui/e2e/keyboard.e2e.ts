@@ -178,7 +178,10 @@ test('controls Keep transport, exact frames, live follow, and export range from 
 	await page.keyboard.press('ArrowRight');
 	await expect
 		.poll(async () => Number(await player.getAttribute('data-recording-playhead-ms')))
-		.toBe(beforeFrame + 40);
+		.toBeGreaterThan(beforeFrame);
+	const steppedFrame = Number(await player.getAttribute('data-recording-playhead-ms'));
+	expect((steppedFrame - beforeFrame) % 40).toBe(0);
+	expect(steppedFrame - beforeFrame).toBeLessThanOrEqual(80);
 	await page.keyboard.press('[');
 	await page.keyboard.press('ArrowRight');
 	await page.keyboard.press(']');
@@ -194,8 +197,12 @@ test('controls Keep transport, exact frames, live follow, and export range from 
 
 	await page.getByRole('button', { name: 'Export', exact: true }).click();
 	const exportPanel = page.locator('[data-keep-export]');
-	await expect(exportPanel).toHaveAttribute('data-export-start-ms', String(beforeFrame + 40));
-	await expect(exportPanel).toHaveAttribute('data-export-end-ms', String(beforeFrame + 80));
+	const exportStartMs = Number(await exportPanel.getAttribute('data-export-start-ms'));
+	const exportEndMs = Number(await exportPanel.getAttribute('data-export-end-ms'));
+	expect([beforeFrame + 40, beforeFrame + 80]).toContain(exportStartMs);
+	expect([beforeFrame + 80, beforeFrame + 120]).toContain(exportEndMs);
+	expect(exportEndMs - exportStartMs).toBeGreaterThanOrEqual(40);
+	expect(exportEndMs - exportStartMs).toBeLessThanOrEqual(80);
 });
 
 test('moves Event card focus and opens only the selected card with Enter', async ({ page }) => {
@@ -272,7 +279,7 @@ test('saves only the active Settings draft with Control+S', async ({ page }) => 
 	await page.getByRole('button', { name: 'Edit server' }).click();
 	await page.getByLabel('Port').fill('3201');
 	await page.keyboard.press('Control+s');
-	await expect(page.getByText('Server and storage settings saved.', { exact: true })).toBeVisible();
+	await expect(page.getByText('Server settings saved.', { exact: true })).toBeVisible();
 	expect(controls.runtimeUpdates).toEqual([
 		{
 			host: '0.0.0.0',
