@@ -171,6 +171,8 @@ pub struct CatalogStats {
     pub events: u64,
     pub open_events: u64,
     pub event_thumbnails: u64,
+    pub oldest_recording_at_ms: Option<i64>,
+    pub newest_recording_at_ms: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -2518,7 +2520,18 @@ fn search_fingerprint(parts: &[&[u8]]) -> String {
         hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
         hasher.update(part);
     }
-    format!("{:x}", hasher.finalize())
+    encode_lower_hex(hasher.finalize())
+}
+
+fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 fn encode_search_cursor(cursor: &EventSearchCursor) -> anyhow::Result<String> {
@@ -2816,7 +2829,9 @@ async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<Catalog
                  (SELECT COALESCE(SUM(byte_len), 0) FROM recording_fragments),
                  (SELECT COUNT(*) FROM recording_events),
                  (SELECT COUNT(*) FROM recording_events WHERE end_time_ms IS NULL),
-                 (SELECT COUNT(*) FROM recording_events WHERE thumbnail_filename IS NOT NULL)",
+                 (SELECT COUNT(*) FROM recording_events WHERE thumbnail_filename IS NOT NULL),
+                 (SELECT MIN(start_ms) FROM recording_fragments),
+                 (SELECT MAX(start_ms + duration_ms) FROM recording_fragments)",
             turso::params![],
         )
         .await?;
@@ -2833,6 +2848,8 @@ async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<Catalog
         events: to_u64(row.get(5)?, "event count")?,
         open_events: to_u64(row.get(6)?, "open event count")?,
         event_thumbnails: to_u64(row.get(7)?, "event thumbnail count")?,
+        oldest_recording_at_ms: row.get(8)?,
+        newest_recording_at_ms: row.get(9)?,
     })
 }
 
@@ -2946,6 +2963,8 @@ mod tests {
                 events: 0,
                 open_events: 0,
                 event_thumbnails: 0,
+                oldest_recording_at_ms: Some(2_000),
+                newest_recording_at_ms: Some(4_000),
             }
         );
 

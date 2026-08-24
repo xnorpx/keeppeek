@@ -154,7 +154,7 @@ Scenario capability IDs: `keeppeek.runtime-config.v1`
 Scenario capability IDs: `keeppeek.offsite-archive.v1`<br>`keeppeek.runtime-config.v1`
 
 - `settings.desktop.storage-retention`
-  - Estimated retention is a configured-cap projection; actual oldest-footage time and observed retention history are not exposed.
+  - Observed oldest/newest catalog bounds now support the authored oldest-footage headline; configured-cap retention remains a separate projection.
   - The active writer duration controls MP4 rollover, not medium-tier retention age, and prune-oldest is fixed engine behavior rather than a selectable fill policy.
   - Per-camera recording/retention overrides, pinned recordings, additional locations, and offsite archive runtime are unavailable.
 

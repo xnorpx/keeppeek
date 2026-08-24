@@ -13,7 +13,8 @@ use crate::{
     },
     camera_database::{CameraDatabase, CameraMatch, CatalogCamera, StreamHints},
     cameras::{
-        Camera, CameraBackend, CameraConfig, CameraPorts, CameraTransport, probe_onvif_streams,
+        Camera, CameraBackend, CameraConfig, CameraPorts, CameraRecordingMode, CameraTransport,
+        probe_onvif_streams,
         reolink::{PtzOp, ReolinkClient},
     },
     config::{self, Config, StorageMigration, StorageMigrationPaths, StorageToml},
@@ -109,6 +110,8 @@ struct CameraSettingsUpdate {
     backend: Option<CameraBackend>,
     transport: Option<CameraTransport>,
     record_generic_motion_events: Option<bool>,
+    recording_mode: Option<CameraRecordingMode>,
+    event_recording_duration_secs: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -150,6 +153,8 @@ struct CameraSettings {
     backend: String,
     transport: String,
     record_generic_motion_events: bool,
+    recording_mode: String,
+    event_recording_duration_secs: u64,
     health: Option<String>,
     model: Option<String>,
 }
@@ -1110,6 +1115,8 @@ impl ServerControlHandler {
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
         };
         let streams = probe_onvif_streams(&config).map_err(|error| {
             tracing::debug!(%error, %ip, "candidate ONVIF stream probe failed");
@@ -1498,6 +1505,19 @@ struct StoredMediaBatch {
     messages: Vec<OutboundDataMessage>,
 }
 
+#[derive(PartialEq, Eq)]
+struct StoredMediaPeriodKey {
+    recording_id: String,
+    sample_descriptions: Vec<u32>,
+}
+
+struct StoredMediaPeriod {
+    sample_descriptions: Vec<u32>,
+    initialization: Vec<u8>,
+    fragment: Vec<u8>,
+    content_type: String,
+}
+
 struct StoredMediaDispatch {
     result: Option<control_ok::Result>,
     messages: Vec<OutboundDataMessage>,
@@ -1573,7 +1593,7 @@ fn create_export_job(
             ));
         }
     }
-    let recording_stream_id = format!("{}/{}", camera.recording_label, request.stream_id);
+    let recording_stream_id = recording_stream_id(&camera, &request.stream_id);
     let catalog = state.catalog.as_ref().ok_or_else(|| {
         ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -2013,7 +2033,18 @@ fn sha256_file(path: &Path) -> anyhow::Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(encode_lower_hex(hasher.finalize()))
+}
+
+fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 fn export_requested_start(job: &proto::ExportJob) -> i64 {
@@ -2117,13 +2148,14 @@ fn open_stored_media(
             "stored media buffer duration exceeds 300 seconds",
         ));
     }
-    let recording_stream_id = format!("{}/{}", camera.recording_label, open.stream_id);
+    let stored_stream_id = recording_stream(&camera, &open.stream_id).to_owned();
+    let recording_stream_id = recording_stream_id(&camera, &open.stream_id);
     let batch = stored_media_batch(
         state,
         StoredMediaBatchRequest {
             stored_media_id: &open.stored_media_id,
             source_id: &open.source_id,
-            stream_id: &open.stream_id,
+            stream_id: &stored_stream_id,
             recording_stream_id: &recording_stream_id,
             requested_time_ms,
             end_time_ms,
@@ -2137,7 +2169,7 @@ fn open_stored_media(
     let status = stored_media_status(end_time_ms, batch.delivered_through_ms);
     let cursor = StoredMediaCursor {
         source_id: open.source_id,
-        stream_id: open.stream_id,
+        stream_id: stored_stream_id,
         recording_stream_id,
         requested_time_ms,
         end_time_ms,
@@ -2617,7 +2649,12 @@ fn encode_stored_media_keyframe(
         location.initialization_offset,
         location.initialization_len,
     )?;
-    let format = indexed_video_format(&initialization)?;
+    let fragment_bytes = read_stored_range(
+        Path::new(&location.path),
+        location.fragment_offset,
+        location.fragment_len,
+    )?;
+    let format = indexed_video_format(&initialization, Some(&fragment_bytes))?;
     let payload = read_stored_range(
         Path::new(&location.path),
         location.keyframe_offset,
@@ -2728,51 +2765,40 @@ fn encode_stored_media_fragments(
                 .saturating_add(i64::try_from(fragment.duration_ms).unwrap_or(i64::MAX)),
         )
     });
-    let mut initialization_ids = HashMap::<String, u64>::new();
+    let mut last_period = None::<StoredMediaPeriodKey>;
+    let mut initialization_id = 0u64;
     let mut content_type = None;
     let mut messages = Vec::new();
     let mut sequence = 0u64;
     for fragment in fragments {
-        let initialization_id =
-            if let Some(initialization_id) = initialization_ids.get(&fragment.recording_id) {
-                *initialization_id
-            } else {
-                let initialization_id = u64::try_from(initialization_ids.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(1);
-                let initialization = read_stored_range(
-                    Path::new(&fragment.path),
-                    fragment.init_offset,
-                    fragment.init_len,
-                )?;
-                let initialization_content_type = fragmented_mp4_content_type(&initialization)?;
-                if content_type
-                    .as_ref()
-                    .is_some_and(|content_type| content_type != &initialization_content_type)
-                {
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::Rejected,
-                        409,
-                        "stored media codec changes within the requested delivery window",
-                    ));
-                }
-                content_type.get_or_insert_with(|| initialization_content_type.clone());
-                append_initialization_messages(
-                    &mut messages,
-                    stored_media_id,
-                    generation,
-                    initialization_id,
-                    &initialization_content_type,
-                    &initialization,
-                )?;
-                initialization_ids.insert(fragment.recording_id.clone(), initialization_id);
-                initialization_id
-            };
+        let initialization = read_stored_range(
+            Path::new(&fragment.path),
+            fragment.init_offset,
+            fragment.init_len,
+        )?;
         let payload = read_stored_range(
             Path::new(&fragment.path),
             fragment.byte_offset,
             fragment.byte_len,
         )?;
+        let period = stored_media_period(&initialization, &payload)?;
+        let period_key = StoredMediaPeriodKey {
+            recording_id: fragment.recording_id.clone(),
+            sample_descriptions: period.sample_descriptions,
+        };
+        if last_period.as_ref() != Some(&period_key) {
+            initialization_id = initialization_id.saturating_add(1);
+            content_type.get_or_insert_with(|| period.content_type.clone());
+            append_initialization_messages(
+                &mut messages,
+                stored_media_id,
+                generation,
+                initialization_id,
+                &period.content_type,
+                &period.initialization,
+            )?;
+            last_period = Some(period_key);
+        }
         sequence = sequence.saturating_add(1);
         append_fragment_messages(
             &mut messages,
@@ -2783,7 +2809,7 @@ fn encode_stored_media_fragments(
             fragment.start_ms,
             fragment.duration_ms,
             media_target,
-            &payload,
+            &period.fragment,
         )?;
     }
     Ok(StoredMediaBatch {
@@ -2922,49 +2948,41 @@ fn fragmented_mp4_content_type(initialization: &[u8]) -> Result<String, ControlC
     let mut codecs = Vec::new();
     let mut has_video = false;
     for track in reader.tracks().values() {
-        match track.media_type().map_err(|error| {
+        let track_type = track.track_type().map_err(|error| {
             ControlCommandError::new(
                 proto::ErrorCode::Internal,
                 500,
                 format!("unable to read indexed MP4 track type: {error}"),
             )
-        })? {
-            mp4::MediaType::H264 => {
-                has_video = true;
-                let codec = track
-                    .sequence_parameter_set()
-                    .ok()
-                    .filter(|sps| sps.len() >= 4)
-                    .map_or_else(
-                        || "avc1".to_owned(),
-                        |sps| format!("avc1.{:02x}{:02x}{:02x}", sps[1], sps[2], sps[3]),
-                    );
-                codecs.push(codec);
-            }
-            mp4::MediaType::H265 => {
-                has_video = true;
-                let decoder = track
-                    .video_decoder_config()
-                    .map_err(|error| {
-                        ControlCommandError::new(
-                            proto::ErrorCode::Internal,
-                            500,
-                            format!(
-                                "unable to read indexed MP4 video decoder configuration: {error}"
-                            ),
+        })?;
+        match track_type {
+            mp4::TrackType::Video => {
+                for index in 1..=track.sample_description_count() {
+                    let decoder = track
+                        .video_decoder_config_for_description(
+                            u32::try_from(index).unwrap_or(u32::MAX),
                         )
-                    })?
-                    .ok_or_else(|| {
-                        ControlCommandError::new(
-                            proto::ErrorCode::Internal,
-                            500,
-                            "indexed MP4 HEVC track has no decoder configuration",
-                        )
-                    })?;
-                codecs.push(decoder.codec);
+                        .map_err(|error| {
+                            ControlCommandError::new(
+                                proto::ErrorCode::Internal,
+                                500,
+                                format!("unable to read indexed MP4 video codec: {error}"),
+                            )
+                        })?;
+                    if let Some(decoder) = decoder {
+                        has_video = true;
+                        if !codecs.contains(&decoder.codec) {
+                            codecs.push(decoder.codec);
+                        }
+                    }
+                }
             }
-            mp4::MediaType::AAC => codecs.push("mp4a.40.2".to_owned()),
-            _ => {}
+            mp4::TrackType::Audio => {
+                if matches!(track.media_type(), Ok(mp4::MediaType::AAC)) {
+                    codecs.push("mp4a.40.2".to_owned());
+                }
+            }
+            mp4::TrackType::Subtitle => {}
         }
     }
     if !has_video {
@@ -2975,6 +2993,81 @@ fn fragmented_mp4_content_type(initialization: &[u8]) -> Result<String, ControlC
         ));
     }
     Ok(format!("video/mp4; codecs=\"{}\"", codecs.join(", ")))
+}
+
+fn stored_media_period(
+    initialization: &[u8],
+    fragment: &[u8],
+) -> Result<StoredMediaPeriod, ControlCommandError> {
+    let mut media = Vec::with_capacity(initialization.len() + fragment.len());
+    media.extend_from_slice(initialization);
+    media.extend_from_slice(fragment);
+    let reader = mp4::Mp4Reader::read_header(
+        Cursor::new(media),
+        (initialization.len() + fragment.len())
+            .try_into()
+            .unwrap_or(u64::MAX),
+    )
+    .map_err(|error| stored_mp4_period_error("parse", error))?;
+    let mut tracks = reader.tracks().iter().collect::<Vec<_>>();
+    tracks.sort_unstable_by_key(|(track_id, _)| **track_id);
+    let mut sample_descriptions = Vec::with_capacity(tracks.len());
+    let mut track_configs = Vec::with_capacity(tracks.len());
+    for (_, track) in tracks {
+        let sample_description = if track.sample_count() == 0 {
+            1
+        } else {
+            track
+                .sample_description_index(1)
+                .map_err(|error| stored_mp4_period_error("resolve sample description", error))?
+        };
+        sample_descriptions.push(sample_description);
+        track_configs.push(mp4::FragmentedTrackConfig {
+            track_type: track
+                .track_type()
+                .map_err(|error| stored_mp4_period_error("read track type", error))?,
+            timescale: track.timescale(),
+            language: track.language().to_owned(),
+            sample_descriptions: vec![
+                track
+                    .media_config_for_description(sample_description)
+                    .map_err(|error| stored_mp4_period_error("read sample description", error))?,
+            ],
+        });
+    }
+    let config = mp4::Mp4Config {
+        major_brand: *reader.major_brand(),
+        minor_version: reader.minor_version(),
+        compatible_brands: reader.compatible_brands().to_vec(),
+        timescale: reader.timescale(),
+    };
+    let writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+        Cursor::new(Vec::new()),
+        &config,
+        &track_configs,
+    )
+    .map_err(|error| stored_mp4_period_error("write initialization", error))?;
+    let range = writer.initialization();
+    let bytes = writer.into_writer().into_inner();
+    let initialization =
+        bytes[range.offset as usize..(range.offset + range.size) as usize].to_vec();
+    let fragment = mp4::normalize_fragment_sample_description_indices(fragment)
+        .map_err(|error| stored_mp4_period_error("normalize fragment", error))?;
+    let content_type = fragmented_mp4_content_type(&initialization)?;
+    Ok(StoredMediaPeriod {
+        sample_descriptions,
+        initialization,
+        fragment,
+        content_type,
+    })
+}
+
+fn stored_mp4_period_error(context: &str, error: mp4::Error) -> ControlCommandError {
+    ControlCommandError::new(
+        proto::ErrorCode::Internal,
+        500,
+        format!("unable to {context} stored MP4 period: {error}"),
+    )
 }
 
 fn append_initialization_messages(
@@ -3625,13 +3718,17 @@ fn stream_event_search_media(
             ));
         }
         validate_event_search_stream(&object.stream_id)?;
-        let legacy_recording_stream_id = state
-            .camera(&object.source_id)
-            .map(|camera| format!("{}/{}", camera.recording_label, object.stream_id));
+        let camera = state.camera(&object.source_id);
+        let stored_stream_id = camera.as_ref().map_or(object.stream_id.as_str(), |camera| {
+            recording_stream(camera, &object.stream_id)
+        });
+        let legacy_recording_stream_id = camera
+            .as_ref()
+            .map(|camera| format!("{}/{}", camera.recording_label, stored_stream_id));
         let location = catalog
             .resolve_media_object(
                 &object.source_id,
-                &object.stream_id,
+                stored_stream_id,
                 legacy_recording_stream_id.as_deref(),
                 &object.recording_id,
                 object.fragment_sequence,
@@ -3649,7 +3746,12 @@ fn stream_event_search_media(
             location.initialization_offset,
             location.initialization_len,
         )?;
-        let video_format = indexed_video_format(&initialization)?;
+        let fragment = read_stored_range(
+            Path::new(&location.path),
+            location.fragment_offset,
+            location.fragment_len,
+        )?;
+        let video_format = indexed_video_format(&initialization, Some(&fragment))?;
         let representation = proto::StoredMediaObjectRepresentation::try_from(
             object.representation,
         )
@@ -3979,11 +4081,12 @@ fn remap_event_search_keyframes(
             continue;
         };
         hit_indexes.push(hit_index);
+        let stored_stream_id = recording_stream(&camera, stream_id);
         requests.push(crate::storage::catalog::EventPreviewRequest {
             event_id: hit.event_id.clone(),
             source_id: hit.source_id.clone(),
-            stream_id: stream_id.to_owned(),
-            recording_stream_id: format!("{}/{}", camera.recording_label, stream_id),
+            stream_id: stored_stream_id.to_owned(),
+            recording_stream_id: format!("{}/{}", camera.recording_label, stored_stream_id),
             event_time_ms: hit.start_time_ms,
             start_time_ms: hit.preview_start_ms,
             end_time_ms: hit.preview_end_ms,
@@ -3992,7 +4095,7 @@ fn remap_event_search_keyframes(
     let resolutions = catalog
         .resolve_event_preview_keyframes(requests)
         .map_err(|error| stored_catalog_error("resolve event preview keyframes", error))?;
-    for (hit_index, resolution) in hit_indexes.into_iter().zip(resolutions) {
+    for (hit_index, mut resolution) in hit_indexes.into_iter().zip(resolutions) {
         let hit = &mut hits[hit_index];
         if hit.event_id != resolution.event_id {
             return Err(ControlCommandError::new(
@@ -4000,6 +4103,9 @@ fn remap_event_search_keyframes(
                 500,
                 "event preview resolution order changed",
             ));
+        }
+        for keyframe in &mut resolution.keyframes {
+            keyframe.stream_id = stream_id.to_owned();
         }
         hit.keyframes = resolution.keyframes;
         hit.keyframes_truncated |= resolution.truncated;
@@ -4059,10 +4165,18 @@ struct IndexedVideoFormat {
     decoder: mp4::Mp4VideoDecoderConfig,
 }
 
-fn indexed_video_format(initialization: &[u8]) -> Result<IndexedVideoFormat, ControlCommandError> {
+fn indexed_video_format(
+    initialization: &[u8],
+    fragment: Option<&[u8]>,
+) -> Result<IndexedVideoFormat, ControlCommandError> {
+    let mut media = Vec::with_capacity(initialization.len() + fragment.map_or(0, <[u8]>::len));
+    media.extend_from_slice(initialization);
+    if let Some(fragment) = fragment {
+        media.extend_from_slice(fragment);
+    }
     let reader = mp4::Mp4Reader::read_header(
-        Cursor::new(initialization),
-        initialization.len().try_into().unwrap_or(u64::MAX),
+        Cursor::new(media.as_slice()),
+        media.len().try_into().unwrap_or(u64::MAX),
     )
     .map_err(|error| {
         ControlCommandError::new(
@@ -4072,15 +4186,32 @@ fn indexed_video_format(initialization: &[u8]) -> Result<IndexedVideoFormat, Con
         )
     })?;
     for track in reader.tracks().values() {
-        let decoder = track.video_decoder_config().map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                format!("unable to read indexed video decoder configuration: {error}"),
-            )
-        })?;
+        if track.track_type().ok() != Some(mp4::TrackType::Video) {
+            continue;
+        }
+        let description_index = if track.sample_count() > 0 {
+            track.sample_description_index(1).map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Internal,
+                    500,
+                    format!("unable to resolve indexed video sample description: {error}"),
+                )
+            })?
+        } else {
+            1
+        };
+        let decoder = track
+            .video_decoder_config_for_description(description_index)
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Internal,
+                    500,
+                    format!("unable to read indexed video decoder configuration: {error}"),
+                )
+            })?;
         if let Some(mut decoder) = decoder {
-            let (coded_width, coded_height) = indexed_video_coded_dimensions(track)?;
+            let (coded_width, coded_height) =
+                indexed_video_coded_dimensions(track, description_index)?;
             decoder.width = coded_width;
             decoder.height = coded_height;
             let keyframe_content_type = if decoder.codec.starts_with("avc1") {
@@ -4104,56 +4235,32 @@ fn indexed_video_format(initialization: &[u8]) -> Result<IndexedVideoFormat, Con
 
 fn indexed_video_coded_dimensions(
     track: &mp4::Mp4Track,
+    description_index: u32,
 ) -> Result<(u16, u16), ControlCommandError> {
-    let dimensions = match track.media_type() {
-        Ok(mp4::MediaType::H264) => {
+    let dimensions = match track
+        .media_config_for_description(description_index)
+        .map_err(indexed_video_config_error)?
+    {
+        mp4::MediaConfig::AvcConfig(config) => {
             let parameters = retina::codec::h264::parameters_from_sps_and_pps(
-                track
-                    .sequence_parameter_set()
-                    .map_err(indexed_video_config_error)?,
-                track
-                    .picture_parameter_set()
-                    .map_err(indexed_video_config_error)?,
+                &config.seq_param_set,
+                &config.pic_param_set,
                 retina::codec::h26x::Framing::FourByteLength,
             )
             .map_err(indexed_video_config_error)?;
             parameters.coded_pixel_dimensions()
         }
-        Ok(mp4::MediaType::H265) => {
-            let sample_entry = track
-                .trak
-                .mdia
-                .minf
-                .stbl
-                .stsd
-                .hvc1
-                .as_ref()
-                .or(track.trak.mdia.minf.stbl.stsd.hev1.as_ref())
-                .ok_or_else(|| indexed_video_config_error("HEVC sample entry is missing"))?;
-            let configuration = sample_entry
-                .hvcc
-                .configuration()
-                .map_err(indexed_video_config_error)?;
+        mp4::MediaConfig::HevcConfig(config) => {
             let parameters = retina::codec::h265::parameters_from_vps_sps_pps(
-                configuration
-                    .vps
-                    .first()
-                    .ok_or_else(|| indexed_video_config_error("HEVC VPS is missing"))?,
-                configuration
-                    .sps
-                    .first()
-                    .ok_or_else(|| indexed_video_config_error("HEVC SPS is missing"))?,
-                configuration
-                    .pps
-                    .first()
-                    .ok_or_else(|| indexed_video_config_error("HEVC PPS is missing"))?,
+                &config.vps,
+                &config.sps,
+                &config.pps,
                 retina::codec::h26x::Framing::FourByteLength,
             )
             .map_err(indexed_video_config_error)?;
             parameters.coded_pixel_dimensions()
         }
-        Ok(_) => return Err(indexed_video_config_error("unsupported video codec")),
-        Err(error) => return Err(indexed_video_config_error(error)),
+        _ => return Err(indexed_video_config_error("unsupported video codec")),
     };
     Ok((
         u16::try_from(dimensions.0)
@@ -4232,7 +4339,7 @@ fn query_stored_media_timeline(
             streams.sort_unstable();
             streams.dedup();
             for stream in streams {
-                let stream_id = format!("{}/{stream}", camera.recording_label);
+                let stream_id = recording_stream_id(camera, stream);
                 let fragments = catalog
                     .media_fragments_in_range(&stream_id, start_ms, end_ms)
                     .map_err(|error| {
@@ -4927,6 +5034,8 @@ fn proto_storage_health(storage: StorageHealth) -> proto::StorageHealthSnapshot 
             events: catalog.events,
             open_events: catalog.open_events,
             event_thumbnails: catalog.event_thumbnails,
+            oldest_recording_at_ms: catalog.oldest_recording_at_ms,
+            newest_recording_at_ms: catalog.newest_recording_at_ms,
         }),
         demand: Some(proto::RecordingDemandHealthSnapshot {
             active_streams: usize_u64(storage.demand.active_streams),
@@ -5224,6 +5333,15 @@ fn proto_camera_settings(camera: CameraSettings) -> proto::CameraSettings {
             _ => proto::CameraTransport::Tcp as i32,
         },
         record_generic_motion_events: camera.record_generic_motion_events,
+        recording_mode: match camera.recording_mode.as_str() {
+            "off" => proto::CameraRecordingMode::Off as i32,
+            "main" => proto::CameraRecordingMode::Main as i32,
+            "both" => proto::CameraRecordingMode::Both as i32,
+            "event-boost" => proto::CameraRecordingMode::EventBoost as i32,
+            _ => proto::CameraRecordingMode::Sub as i32,
+        },
+        event_recording_duration_secs: u32::try_from(camera.event_recording_duration_secs)
+            .unwrap_or(u32::MAX),
         health: camera.health,
         model: camera.model,
     }
@@ -5245,6 +5363,8 @@ fn camera_settings_update_from_proto(
         backend: optional_camera_backend(update.backend)?,
         transport: optional_camera_transport(update.transport)?,
         record_generic_motion_events: update.record_generic_motion_events,
+        recording_mode: optional_camera_recording_mode(update.recording_mode)?,
+        event_recording_duration_secs: update.event_recording_duration_secs.map(u64::from),
     })
 }
 
@@ -5322,6 +5442,25 @@ fn optional_camera_transport(
                 proto::ErrorCode::InvalidRequest,
                 400,
                 "camera transport is invalid",
+            )),
+        })
+        .transpose()
+}
+
+fn optional_camera_recording_mode(
+    value: Option<i32>,
+) -> Result<Option<CameraRecordingMode>, ControlCommandError> {
+    value
+        .map(|value| match proto::CameraRecordingMode::try_from(value) {
+            Ok(proto::CameraRecordingMode::Off) => Ok(CameraRecordingMode::Off),
+            Ok(proto::CameraRecordingMode::Sub) => Ok(CameraRecordingMode::Sub),
+            Ok(proto::CameraRecordingMode::Main) => Ok(CameraRecordingMode::Main),
+            Ok(proto::CameraRecordingMode::Both) => Ok(CameraRecordingMode::Both),
+            Ok(proto::CameraRecordingMode::EventBoost) => Ok(CameraRecordingMode::EventBoost),
+            Ok(proto::CameraRecordingMode::Unspecified) | Err(_) => Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "camera recording mode is invalid",
             )),
         })
         .transpose()
@@ -5718,12 +5857,42 @@ fn sanitized_config(
         },
         camera_count,
         recording_estimate: recording_capacity_estimate(
-            cameras
-                .iter()
-                .flat_map(|camera| camera.info.profiles.iter()),
+            cameras.iter().flat_map(|camera| {
+                camera.info.profiles.iter().filter(|profile| {
+                    recording_mode_includes_stream(
+                        camera.configuration.recording_mode,
+                        &profile.stream,
+                    )
+                })
+            }),
             storage_config.long_term_max_bytes,
         ),
     }
+}
+
+fn recording_mode_includes_stream(mode: CameraRecordingMode, stream: &str) -> bool {
+    match mode {
+        CameraRecordingMode::Off => false,
+        CameraRecordingMode::Sub | CameraRecordingMode::EventBoost => stream == "sub",
+        CameraRecordingMode::Main => stream == "main",
+        CameraRecordingMode::Both => matches!(stream, "main" | "sub"),
+    }
+}
+
+fn recording_stream<'a>(camera: &CameraEntry, requested_stream: &'a str) -> &'a str {
+    if camera.configuration.recording_mode == CameraRecordingMode::EventBoost {
+        "sub"
+    } else {
+        requested_stream
+    }
+}
+
+fn recording_stream_id(camera: &CameraEntry, requested_stream: &str) -> String {
+    format!(
+        "{}/{}",
+        camera.recording_label,
+        recording_stream(camera, requested_stream)
+    )
 }
 
 fn recording_capacity_estimate<'a>(
@@ -6627,6 +6796,15 @@ fn camera_settings_entry(
         backend: camera_backend_name(configuration.backend).to_owned(),
         transport: camera_transport_name(configuration.transport).to_owned(),
         record_generic_motion_events: configuration.record_generic_motion_events,
+        recording_mode: match configuration.recording_mode {
+            CameraRecordingMode::Off => "off",
+            CameraRecordingMode::Sub => "sub",
+            CameraRecordingMode::Main => "main",
+            CameraRecordingMode::Both => "both",
+            CameraRecordingMode::EventBoost => "event-boost",
+        }
+        .to_owned(),
+        event_recording_duration_secs: configuration.event_recording_duration_secs,
         health,
         model: camera.and_then(|camera| camera.info.model.clone()),
     }
@@ -7040,7 +7218,26 @@ fn save_camera_settings(
                     .map(|camera| camera.record_generic_motion_events)
             })
             .unwrap_or_default(),
+        recording_mode: update
+            .recording_mode
+            .or_else(|| existing_config.as_ref().map(|camera| camera.recording_mode))
+            .unwrap_or_default(),
+        event_recording_duration_secs: update
+            .event_recording_duration_secs
+            .or_else(|| {
+                existing_config
+                    .as_ref()
+                    .map(|camera| camera.event_recording_duration_secs)
+            })
+            .unwrap_or(60),
     };
+    if config.event_recording_duration_secs == 0 || config.event_recording_duration_secs > 3_600 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event recording duration must be between 1 and 3600 seconds",
+        ));
+    }
     if let Err(error) = config::upsert_camera(config_path, &config) {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Internal,
@@ -7075,6 +7272,15 @@ fn save_camera_settings(
         backend: camera_backend_name(config.backend).to_owned(),
         transport: camera_transport_name(config.transport).to_owned(),
         record_generic_motion_events: config.record_generic_motion_events,
+        recording_mode: match config.recording_mode {
+            CameraRecordingMode::Off => "off",
+            CameraRecordingMode::Sub => "sub",
+            CameraRecordingMode::Main => "main",
+            CameraRecordingMode::Both => "both",
+            CameraRecordingMode::EventBoost => "event-boost",
+        }
+        .to_owned(),
+        event_recording_duration_secs: config.event_recording_duration_secs,
         health,
         model: existing
             .as_ref()
@@ -7491,7 +7697,7 @@ mod tests {
         )
         .unwrap();
 
-        let format = indexed_video_format(&initialization).unwrap();
+        let format = indexed_video_format(&initialization, None).unwrap();
 
         assert_eq!((format.decoder.width, format.decoder.height), (640, 368));
 
@@ -7500,7 +7706,7 @@ mod tests {
                 .join("crates/test-camera/testdata/cc-4k-640x360-h265.mp4"),
         )
         .unwrap();
-        let h265_format = indexed_video_format(&h265).unwrap();
+        let h265_format = indexed_video_format(&h265, None).unwrap();
         assert_eq!(h265_format.decoder.codec, "hvc1.1.6.L63.90");
         assert_eq!(
             h265_format.mp4_content_type,
@@ -7510,6 +7716,287 @@ mod tests {
             (h265_format.decoder.width, h265_format.decoder.height),
             (640, 360)
         );
+    }
+
+    #[test]
+    fn indexed_video_format_follows_the_fragment_codec_description() {
+        fn fixture(name: &str, media_type: mp4::MediaType) -> (mp4::MediaConfig, mp4::Mp4Sample) {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/test-camera/testdata")
+                .join(name);
+            let mut reader = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
+            let (&track_id, track) = reader
+                .tracks()
+                .iter()
+                .find(|(_, track)| track.media_type().ok() == Some(media_type))
+                .unwrap();
+            let config = track.media_config_for_description(1).unwrap();
+            let mut sample = (1..=track.sample_count())
+                .find_map(|sample_id| {
+                    let sample = reader.read_sample(track_id, sample_id).unwrap().unwrap();
+                    sample.is_sync.then_some(sample)
+                })
+                .unwrap();
+            sample.start_time = 0;
+            sample.duration = 3_000;
+            (config, sample)
+        }
+
+        let (h264, h264_sample) = fixture("cc-4k-640x360-h264.mp4", mp4::MediaType::H264);
+        let (h265, mut h265_sample) = fixture("cc-4k-640x360-h265.mp4", mp4::MediaType::H265);
+        h265_sample.start_time = 9_000;
+        let config = mp4::Mp4Config {
+            major_brand: "iso6".parse().unwrap(),
+            minor_version: 1,
+            compatible_brands: vec!["iso6".parse().unwrap(), "mp41".parse().unwrap()],
+            timescale: 1_000,
+        };
+        let track = mp4::FragmentedTrackConfig {
+            track_type: mp4::TrackType::Video,
+            timescale: 90_000,
+            language: "und".to_owned(),
+            sample_descriptions: vec![h264, h265],
+        };
+        let mut writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+            Cursor::new(Vec::new()),
+            &config,
+            &[track],
+        )
+        .unwrap();
+        let initialization = writer.initialization();
+        writer
+            .write_sample_with_description(1, 1, h264_sample)
+            .unwrap();
+        writer.flush_fragment().unwrap();
+        writer
+            .write_sample_with_description(1, 2, h265_sample)
+            .unwrap();
+        let h265_fragment = writer.write_end().unwrap().unwrap();
+        let buffer = writer.into_writer().into_inner();
+        let initialization = &buffer[initialization.offset as usize
+            ..(initialization.offset + initialization.size) as usize];
+        let fragment = &buffer[h265_fragment.range.offset as usize
+            ..(h265_fragment.range.offset + h265_fragment.range.size) as usize];
+
+        let content_type = fragmented_mp4_content_type(initialization).unwrap();
+        assert!(content_type.contains("avc1"));
+        assert!(content_type.contains("hev1"));
+        let format = indexed_video_format(initialization, Some(fragment)).unwrap();
+        assert!(format.decoder.codec.starts_with("hev1"));
+        assert_eq!((format.decoder.width, format.decoder.height), (640, 360));
+        assert_eq!(format.keyframe_content_type, "video/h265; format=hvcc");
+    }
+
+    #[test]
+    fn stored_media_periods_normalize_h264_h265_h264_archive_gops() {
+        fn fixture(name: &str, media_type: mp4::MediaType) -> (mp4::MediaConfig, mp4::Mp4Sample) {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/test-camera/testdata")
+                .join(name);
+            let mut reader = mp4::read_mp4(File::open(path).unwrap()).unwrap();
+            let (&track_id, track) = reader
+                .tracks()
+                .iter()
+                .find(|(_, track)| track.media_type().ok() == Some(media_type))
+                .unwrap();
+            let config = track.media_config_for_description(1).unwrap();
+            let mut sample = (1..=track.sample_count())
+                .find_map(|sample_id| {
+                    let sample = reader.read_sample(track_id, sample_id).unwrap().unwrap();
+                    sample.is_sync.then_some(sample)
+                })
+                .unwrap();
+            sample.start_time = 0;
+            sample.duration = 90_000;
+            (config, sample)
+        }
+
+        let (h264, mut h264_sample) = fixture("cc-4k-640x360-h264.mp4", mp4::MediaType::H264);
+        let (h265, mut h265_sample) = fixture("cc-4k-640x360-h265.mp4", mp4::MediaType::H265);
+        let track = mp4::FragmentedTrackConfig {
+            track_type: mp4::TrackType::Video,
+            timescale: 90_000,
+            language: "und".to_owned(),
+            sample_descriptions: vec![h264, h265],
+        };
+        let mut writer = mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(
+            Cursor::new(Vec::new()),
+            &mp4::Mp4Config {
+                major_brand: "iso6".parse().unwrap(),
+                minor_version: 1,
+                compatible_brands: vec!["iso6".parse().unwrap(), "mp41".parse().unwrap()],
+                timescale: 1_000,
+            },
+            &[track],
+        )
+        .unwrap();
+        let initialization = writer.initialization();
+        writer
+            .write_sample_with_description(1, 1, h264_sample.clone())
+            .unwrap();
+        let first = writer.flush_fragment().unwrap().unwrap();
+        h265_sample.start_time = 90_000;
+        writer
+            .write_sample_with_description(1, 2, h265_sample)
+            .unwrap();
+        let second = writer.flush_fragment().unwrap().unwrap();
+        h264_sample.start_time = 180_000;
+        writer
+            .write_sample_with_description(1, 1, h264_sample)
+            .unwrap();
+        let third = writer.write_end().unwrap().unwrap();
+        let bytes = writer.into_writer().into_inner();
+        let initialization = &bytes[initialization.offset as usize
+            ..(initialization.offset + initialization.size) as usize];
+        let periods = [first, second, third]
+            .into_iter()
+            .map(|fragment| {
+                stored_media_period(
+                    initialization,
+                    &bytes[fragment.range.offset as usize
+                        ..(fragment.range.offset + fragment.range.size) as usize],
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            periods
+                .iter()
+                .map(|period| period.sample_descriptions.as_slice())
+                .collect::<Vec<_>>(),
+            vec![&[1][..], &[2][..], &[1][..]]
+        );
+        assert!(periods[0].content_type.contains("avc1"));
+        assert!(periods[1].content_type.contains("hev1"));
+        assert!(periods[2].content_type.contains("avc1"));
+        for period in periods {
+            let mut media = period.initialization;
+            media.extend_from_slice(&period.fragment);
+            let reader =
+                mp4::Mp4Reader::read_header(Cursor::new(media.clone()), media.len() as u64)
+                    .unwrap();
+            let video = reader.tracks()[&1].sample_description_count();
+            assert_eq!(video, 1);
+            assert_eq!(reader.tracks()[&1].sample_description_index(1).unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn stored_media_batch_allows_codec_changes_between_recordings() {
+        fn write_source(
+            fixture_name: &str,
+            media_type: mp4::MediaType,
+            path: &Path,
+            recording_id: &str,
+            start_ms: i64,
+        ) -> CatalogMediaFragment {
+            let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("crates/test-camera/testdata")
+                .join(fixture_name);
+            let mut reader = mp4::read_mp4(File::open(fixture).unwrap()).unwrap();
+            let (&track_id, track) = reader
+                .tracks()
+                .iter()
+                .find(|(_, track)| track.media_type().ok() == Some(media_type))
+                .unwrap();
+            let config = track.media_config_for_description(1).unwrap();
+            let mut sample = (1..=track.sample_count())
+                .find_map(|sample_id| {
+                    let sample = reader.read_sample(track_id, sample_id).unwrap().unwrap();
+                    sample.is_sync.then_some(sample)
+                })
+                .unwrap();
+            sample.start_time = 0;
+            sample.duration = 90_000;
+            let track = mp4::TrackConfig {
+                track_type: mp4::TrackType::Video,
+                timescale: 90_000,
+                language: "und".to_owned(),
+                media_conf: config,
+            };
+            let mut writer = mp4::FragmentedMp4Writer::write_start(
+                File::create(path).unwrap(),
+                &mp4::Mp4Config {
+                    major_brand: "iso6".parse().unwrap(),
+                    minor_version: 1,
+                    compatible_brands: vec!["iso6".parse().unwrap(), "mp41".parse().unwrap()],
+                    timescale: 1_000,
+                },
+                &[track],
+            )
+            .unwrap();
+            let initialization = writer.initialization();
+            writer.write_sample(1, sample).unwrap();
+            let fragment = writer.write_end().unwrap().unwrap();
+            CatalogMediaFragment {
+                recording_id: recording_id.to_owned(),
+                recording_started_at_ms: start_ms,
+                path: path.to_string_lossy().into_owned(),
+                init_offset: initialization.offset,
+                init_len: initialization.size,
+                sequence: 1,
+                start_ms,
+                duration_ms: 1_000,
+                byte_offset: fragment.range.offset,
+                byte_len: fragment.range.size,
+            }
+        }
+
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-stored-periods-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let fragments = vec![
+            write_source(
+                "cc-4k-640x360-h264.mp4",
+                mp4::MediaType::H264,
+                &directory.join("h264.mp4"),
+                "h264",
+                0,
+            ),
+            write_source(
+                "cc-4k-640x360-h265.mp4",
+                mp4::MediaType::H265,
+                &directory.join("h265.mp4"),
+                "h265",
+                1_000,
+            ),
+        ];
+
+        let batch = encode_stored_media_fragments(
+            "mixed-recordings",
+            1,
+            0,
+            DataChannelTarget::Reliable,
+            fragments,
+        )
+        .unwrap();
+        let content_types = batch
+            .messages
+            .iter()
+            .filter_map(|message| match message.message.message.as_ref() {
+                Some(proto::message::Message::StoredMedia(stored)) => {
+                    match stored.message.as_ref() {
+                        Some(proto::stored_media_message::Message::Initialization(init)) => {
+                            Some(init.content_type.as_str())
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(content_types.len(), 2);
+        assert!(
+            content_types
+                .iter()
+                .any(|content_type| content_type.contains("avc1"))
+        );
+        assert!(
+            content_types
+                .iter()
+                .any(|content_type| content_type.contains("hev1"))
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     use crate::logging::LogFilterFile;
@@ -7571,6 +8058,8 @@ mod tests {
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
         };
         let mut state = ServerState::empty();
         state.cameras = Arc::new(RwLock::new(vec![camera_entry(&config, None)]));
@@ -8289,9 +8778,9 @@ mod tests {
         handle
             .upsert_recording(crate::storage::CatalogRecording {
                 id: "recording-1".to_owned(),
-                stream_id: "front-door/main".to_owned(),
+                stream_id: "front-door/sub".to_owned(),
                 source_id: Some("127.0.0.1".to_owned()),
-                logical_stream_id: Some("main".to_owned()),
+                logical_stream_id: Some("sub".to_owned()),
                 started_at_ms: 1_000,
                 ended_at_ms: Some(3_000),
                 path: directory
@@ -8383,9 +8872,11 @@ mod tests {
             panic!("first stored timeline data message must be a page");
         };
         assert_eq!(page.sequence, 1);
-        assert_eq!(page.availability.len(), 1);
+        assert_eq!(page.availability.len(), 2);
         assert_eq!(page.availability[0].source_id, "127.0.0.1");
         assert_eq!(page.availability[0].stream_id, "main");
+        assert_eq!(page.availability[1].source_id, "127.0.0.1");
+        assert_eq!(page.availability[1].stream_id, "sub");
         assert_eq!(page.events.len(), 1);
         assert_eq!(page.events[0].event_id, "motion-1");
         let Some(proto::message::Message::StoredMediaQuery(query_message)) =
@@ -8454,7 +8945,7 @@ mod tests {
                 &directory,
                 crate::storage::RecordingStreamIdentity::new(
                     "127.0.0.1",
-                    "main",
+                    "sub",
                     "archived-front-door",
                 ),
                 started_at,
@@ -8483,7 +8974,7 @@ mod tests {
         }
         writer.finalize().unwrap();
         let fragments = handle
-            .media_fragments_in_range("archived-front-door/main", 0, i64::MAX)
+            .media_fragments_in_range("archived-front-door/sub", 0, i64::MAX)
             .unwrap();
         let event_time_ms = fragments[0].start_ms + 100;
         handle
@@ -8853,7 +9344,7 @@ mod tests {
         let mut writer =
             crate::storage::medium_term::MediumTermWriter::create_with_catalog_identity(
                 &directory,
-                crate::storage::RecordingStreamIdentity::new("127.0.0.1", "main", "front-door"),
+                crate::storage::RecordingStreamIdentity::new("127.0.0.1", "sub", "front-door"),
                 started_at,
                 8 * 1024,
                 handle.clone(),
@@ -8880,7 +9371,7 @@ mod tests {
         }
         writer.finalize().unwrap();
         let fragments = handle
-            .media_fragments_in_range("front-door/main", 0, i64::MAX)
+            .media_fragments_in_range("front-door/sub", 0, i64::MAX)
             .unwrap();
         assert_eq!(fragments.len(), 2);
         let mut state = media_test_state();
@@ -8970,7 +9461,7 @@ mod tests {
         );
         assert_eq!(open_state.mode, proto::StoredMediaMode::Scrub as i32);
         assert!(!open_state.playing);
-        assert_eq!(state.recording_demand.viewer_count("front-door/main"), 1);
+        assert_eq!(state.recording_demand.viewer_count("front-door/sub"), 1);
         assert_eq!(open.data_messages.len(), 1);
         let Some(proto::message::Message::StoredMedia(open_message)) =
             &open.data_messages[0].message.message
@@ -9257,7 +9748,7 @@ mod tests {
             panic!("stored media close must succeed");
         };
         assert!(ok.result.is_none());
-        assert_eq!(state.recording_demand.viewer_count("front-door/main"), 0);
+        assert_eq!(state.recording_demand.viewer_count("front-door/sub"), 0);
 
         drop((handler, state));
         catalog.shutdown();
@@ -9273,7 +9764,7 @@ mod tests {
         let started_at = Instant::now();
         let mut writer = crate::storage::medium_term::MediumTermWriter::create_with_catalog(
             &directory,
-            "front-door/main",
+            "front-door/sub",
             started_at,
             8 * 1_024,
             handle.clone(),
@@ -9300,7 +9791,7 @@ mod tests {
         }
         writer.finalize().unwrap();
         let fragments = handle
-            .media_fragments_in_range("front-door/main", 0, i64::MAX)
+            .media_fragments_in_range("front-door/sub", 0, i64::MAX)
             .unwrap();
         let start_ms = fragments[0].start_ms;
         let end_ms = fragments
@@ -9411,7 +9902,7 @@ mod tests {
         }
         assert_eq!(u64::try_from(bytes.len()).unwrap(), ready.bytes_written);
         assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
+            encode_lower_hex(Sha256::digest(&bytes)),
             ready.sha256.unwrap()
         );
         let downloaded = directory.join("downloaded-export.mp4");
@@ -9753,6 +10244,8 @@ mod tests {
                                 backend: None,
                                 transport: None,
                                 record_generic_motion_events: None,
+                                recording_mode: Some(proto::CameraRecordingMode::Off as i32),
+                                event_recording_duration_secs: Some(90),
                             },
                         )),
                     },
@@ -9775,8 +10268,18 @@ mod tests {
             camera.sub_rtsp_url.as_deref(),
             Some("rtsp://192.0.2.77/sub")
         );
+        assert_eq!(
+            camera.recording_mode,
+            proto::CameraRecordingMode::Off as i32
+        );
+        assert_eq!(camera.event_recording_duration_secs, 90);
         let persisted = crate::config::load_cameras(&config_path).unwrap();
         assert_eq!(persisted["cameras"][0].password, "preserved-secret");
+        assert_eq!(
+            persisted["cameras"][0].recording_mode,
+            CameraRecordingMode::Off
+        );
+        assert_eq!(persisted["cameras"][0].event_recording_duration_secs, 90);
 
         let removed = handler
             .handle(proto::Request {
@@ -10349,6 +10852,8 @@ mod tests {
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
 
@@ -10471,6 +10976,26 @@ mod tests {
         assert_eq!(estimate.known_streams, 2);
         assert_eq!(estimate.unknown_streams, 1);
         assert_eq!(estimate.estimated_retention_days, Some(2.0));
+        assert!(recording_mode_includes_stream(
+            CameraRecordingMode::EventBoost,
+            "sub"
+        ));
+        assert!(!recording_mode_includes_stream(
+            CameraRecordingMode::EventBoost,
+            "main"
+        ));
+        assert!(recording_mode_includes_stream(
+            CameraRecordingMode::Both,
+            "main"
+        ));
+        assert!(!recording_mode_includes_stream(
+            CameraRecordingMode::Off,
+            "sub"
+        ));
+        assert!(!recording_mode_includes_stream(
+            CameraRecordingMode::Off,
+            "main"
+        ));
     }
 
     #[test]
@@ -10492,6 +11017,8 @@ mod tests {
             backend: CameraBackend::Retina,
             transport: CameraTransport::Udp,
             record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
         };
         let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
         let state = ServerState::new(
@@ -10627,6 +11154,8 @@ mod tests {
                 backend: CameraBackend::Retina,
                 transport: CameraTransport::Tcp,
                 record_generic_motion_events: false,
+                recording_mode: Default::default(),
+                event_recording_duration_secs: 60,
             },
             recording_label: "back-yard".to_owned(),
             control: None,

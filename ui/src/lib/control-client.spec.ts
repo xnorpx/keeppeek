@@ -615,7 +615,11 @@ class FakeDataChannel {
 											mediumTermPath: '/recordings',
 											longTermPath: '/recordings',
 											pathsAreSame: true,
-											catalog: create(CatalogHealthSnapshotSchema, { events: 12n }),
+											catalog: create(CatalogHealthSnapshotSchema, {
+												events: 12n,
+												oldestRecordingAtMs: 1_776_000_000_000n,
+												newestRecordingAtMs: 1_777_000_000_000n
+											}),
 											demand: create(RecordingDemandHealthSnapshotSchema, {
 												activeStreams: 1n,
 												totalViewers: 2n
@@ -1069,7 +1073,14 @@ describe('ControlClient', () => {
 				process: { pid: 42, resident_memory_bytes: 536_870_912 },
 				disks: [{ mount_point: '/recordings', stores_recordings: true }]
 			},
-			storage: { catalog: { events: 12 }, demand: { active_streams: 1, total_viewers: 2 } },
+			storage: {
+				catalog: {
+					events: 12,
+					oldest_recording_at_ms: 1_776_000_000_000,
+					newest_recording_at_ms: 1_777_000_000_000
+				},
+				demand: { active_streams: 1, total_viewers: 2 }
+			},
 			webrtc: { active_sessions: 1, browser_sessions: 1, browser_tracks: 2 },
 			cameras: [
 				{
@@ -1222,6 +1233,8 @@ describe('ControlClient', () => {
 				backend: 'reo-proto',
 				transport: 'tcp',
 				record_generic_motion_events: false,
+				recording_mode: 'event-boost',
+				event_recording_duration_secs: 60,
 				health: 'online',
 				model: 'RLC-811A'
 			}
@@ -1420,10 +1433,18 @@ describe('ControlClient', () => {
 			updating = false;
 			mode: AppendMode = 'segments';
 			appendCount = 0;
+			changeTypes: string[] = [];
+			operations: string[] = [];
 
 			appendBuffer(): void {
 				this.appendCount += 1;
+				this.operations.push('append');
 				this.dispatchEvent(new Event('updateend'));
+			}
+
+			changeType(contentType: string): void {
+				this.changeTypes.push(contentType);
+				this.operations.push('change-type');
 			}
 		}
 
@@ -1460,7 +1481,11 @@ describe('ControlClient', () => {
 		vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
 
 		const anchorMs = Date.UTC(2026, 7, 20, 12);
-		const state = (generation: bigint, status: StoredMediaStatus) =>
+		const state = (
+			generation: bigint,
+			status: StoredMediaStatus,
+			contentType = 'video/mp4; codecs="avc1.42E01E"'
+		) =>
 			create(StoredMediaStateSchema, {
 				storedMediaId: 'review-test',
 				status,
@@ -1473,11 +1498,12 @@ describe('ControlClient', () => {
 				playbackRate: 1,
 				delivery: create(StoredMediaDeliverySchema, {
 					mediaChannel: 1,
-					contentType: 'video/mp4; codecs="avc1.42E01E"',
+					contentType,
 					maxBufferDuration: durationFromMs(5_000)
 				})
 			});
-		const refill = vi.fn(async () => state(1n, StoredMediaStatus.ENDED));
+		const mixedContentType = 'video/mp4; codecs="avc1.42E01E, hev1.1.6.L150.00"';
+		const refill = vi.fn(async () => state(1n, StoredMediaStatus.ENDED, mixedContentType));
 		const playback = new StoredMediaPlayback(
 			'review-test',
 			'front-door',
@@ -1536,7 +1562,7 @@ describe('ControlClient', () => {
 				storedMediaId: 'review-test',
 				generation: 1n,
 				initializationId: 1n,
-				contentType: 'video/mp4; codecs="avc1.42E01E"',
+				contentType: mixedContentType,
 				chunkCount: 1,
 				payload: new Uint8Array([3])
 			})
@@ -1557,6 +1583,118 @@ describe('ControlClient', () => {
 		await vi.waitFor(() => expect(FakeMediaSource.latest?.endCount).toBe(1));
 		expect(FakeMediaSource.instances).toHaveLength(1);
 		expect(FakeMediaSource.latest?.sourceBuffer.appendCount).toBe(4);
+		expect(FakeMediaSource.latest?.sourceBuffer.changeTypes).toEqual([mixedContentType]);
+		expect(FakeMediaSource.latest?.sourceBuffer.operations).toEqual([
+			'append',
+			'append',
+			'change-type',
+			'append',
+			'append'
+		]);
+	});
+
+	it('fails closed when the browser cannot apply a stored codec transition', () => {
+		const scenarios = [
+			{
+				behavior: 'unsupported',
+				expected: 'Browser does not support video/mp4; codecs="avc1.42E01E, hev1.1.6.L150.00".'
+			},
+			{
+				behavior: 'missing',
+				expected: 'Browser cannot switch stored media codecs.'
+			},
+			{ behavior: 'throws', expected: 'injected changeType failure' }
+		] as const;
+		const anchorMs = Date.UTC(2026, 7, 20, 12);
+		const initialContentType = 'video/mp4; codecs="avc1.42E01E"';
+		const mixedContentType = 'video/mp4; codecs="avc1.42E01E, hev1.1.6.L150.00"';
+
+		for (const scenario of scenarios) {
+			class FakeSourceBuffer extends EventTarget {
+				updating = false;
+				mode: AppendMode = 'segments';
+				changeType: ((contentType: string) => void) | undefined =
+					scenario.behavior === 'missing'
+						? undefined
+						: () => {
+								if (scenario.behavior === 'throws') {
+									throw new Error('injected changeType failure');
+								}
+							};
+
+				appendBuffer(): void {
+					this.dispatchEvent(new Event('updateend'));
+				}
+			}
+
+			class FakeMediaSource extends EventTarget {
+				static isTypeSupported(contentType: string): boolean {
+					return scenario.behavior !== 'unsupported' || contentType === initialContentType;
+				}
+
+				readyState: ReadyState = 'open';
+				duration = Number.NaN;
+				readonly sourceBuffer = new FakeSourceBuffer();
+
+				addSourceBuffer(): SourceBuffer {
+					return this.sourceBuffer as unknown as SourceBuffer;
+				}
+			}
+
+			vi.stubGlobal('MediaSource', FakeMediaSource);
+			vi.spyOn(URL, 'createObjectURL').mockReturnValue(`blob:transition-${scenario.behavior}`);
+			vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+			const state = create(StoredMediaStateSchema, {
+				storedMediaId: `transition-${scenario.behavior}`,
+				status: StoredMediaStatus.ACTIVE,
+				generation: 1n,
+				requestedTime: timestampFromDate(new Date(anchorMs)),
+				fragmentTime: timestampFromDate(new Date(anchorMs)),
+				mode: StoredMediaMode.PLAYBACK,
+				playing: true,
+				playbackRate: 1,
+				delivery: create(StoredMediaDeliverySchema, {
+					mediaChannel: DataChannelKind.RELIABLE_DATA,
+					contentType: initialContentType,
+					maxBufferDuration: durationFromMs(1_000)
+				})
+			});
+			const playback = new StoredMediaPlayback(
+				`transition-${scenario.behavior}`,
+				'front-door',
+				'sub',
+				vi.fn(async () => state),
+				vi.fn(async () => state),
+				vi.fn(async () => state),
+				vi.fn(async () => {})
+			);
+			playback.configure(state);
+			playback.receiveInitialization(
+				create(StoredMediaInitializationSchema, {
+					storedMediaId: `transition-${scenario.behavior}`,
+					generation: 1n,
+					initializationId: 1n,
+					contentType: initialContentType,
+					chunkCount: 1,
+					payload: new Uint8Array([1])
+				})
+			);
+			playback.receiveInitialization(
+				create(StoredMediaInitializationSchema, {
+					storedMediaId: `transition-${scenario.behavior}`,
+					generation: 1n,
+					initializationId: 2n,
+					contentType: mixedContentType,
+					chunkCount: 1,
+					payload: new Uint8Array([2])
+				})
+			);
+
+			expect(playback.error).toBe(scenario.expected);
+			playback.dispose();
+			vi.restoreAllMocks();
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it('appends bytes that arrive before the MediaSource opens', () => {

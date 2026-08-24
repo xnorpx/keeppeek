@@ -121,36 +121,45 @@ impl LongTermStore {
     }
 
     fn find_oldest_date_dir(&self) -> Option<PathBuf> {
-        let cameras = std::fs::read_dir(&self.root).ok()?;
         let mut oldest: Option<(String, PathBuf)> = None;
-
-        for cam_entry in cameras.flatten() {
-            let cam_path = cam_entry.path();
-            if !cam_path.is_dir() {
-                continue;
-            }
-            let dates = match std::fs::read_dir(&cam_path) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-            for date_entry in dates.flatten() {
-                let name = date_entry.file_name();
-                let Some(date_str) = name.to_str() else {
-                    continue;
-                };
-                if !date_entry.path().is_dir() || date_str.len() != 10 {
-                    continue;
-                }
-                let key = date_str.to_owned();
-                let dominated = oldest.as_ref().is_none_or(|(cur, _)| key < *cur);
-                if dominated {
-                    oldest = Some((key, date_entry.path()));
-                }
-            }
-        }
+        find_oldest_date_dir(&self.root, &mut oldest);
 
         oldest.map(|(_, path)| path)
     }
+}
+
+fn find_oldest_date_dir(root: &Path, oldest: &mut Option<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if is_recording_date(name) {
+            let key = name.to_owned();
+            if oldest.as_ref().is_none_or(|(current, _)| key < *current) {
+                *oldest = Some((key, path));
+            }
+        } else if !name.starts_with('.') {
+            find_oldest_date_dir(&path, oldest);
+        }
+    }
+}
+
+fn is_recording_date(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes().get(4) == Some(&b'-')
+        && value.as_bytes().get(7) == Some(&b'-')
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
 }
 
 fn collect_finalized(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -213,4 +222,31 @@ fn remove_empty_parents(dir: &Path, stop_at: &Path) -> std::io::Result<()> {
         };
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prunes_oldest_date_below_camera_and_stream_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-long-term-prune-{}",
+            rand::random::<u64>()
+        ));
+        let old = root.join("front_gate/main/2026-08-20/00");
+        let new = root.join("front_gate/sub/2026-08-21/00");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("old.mp4"), vec![1; 16]).unwrap();
+        std::fs::write(new.join("new.mp4"), vec![2; 16]).unwrap();
+
+        let store = LongTermStore::new(root.clone());
+        let removed = store.enforce_limit_with_removed(16);
+
+        assert_eq!(removed, vec![old.join("old.mp4")]);
+        assert!(!old.exists());
+        assert!(new.join("new.mp4").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

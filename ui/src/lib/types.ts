@@ -160,6 +160,8 @@ export type CameraBackend = 'auto' | 'retina' | 'reo-proto';
 
 export type CameraTransport = 'tcp' | 'udp';
 
+export type CameraRecordingMode = 'off' | 'sub' | 'main' | 'both' | 'event-boost';
+
 export interface CameraSettings {
 	id: string;
 	ip: string;
@@ -175,6 +177,8 @@ export interface CameraSettings {
 	backend: CameraBackend;
 	transport: CameraTransport;
 	record_generic_motion_events: boolean;
+	recording_mode: CameraRecordingMode;
+	event_recording_duration_secs: number;
 	health: CameraHealth['state'] | null;
 	model: string | null;
 }
@@ -253,6 +257,8 @@ export interface CameraSettingsUpdate {
 	backend?: CameraBackend;
 	transport?: CameraTransport;
 	record_generic_motion_events?: boolean;
+	recording_mode?: CameraRecordingMode;
+	event_recording_duration_secs?: number;
 }
 
 export interface CameraSettingsUpdateResponse {
@@ -456,6 +462,8 @@ export interface CatalogHealth {
 	events: number;
 	open_events: number;
 	event_thumbnails: number;
+	oldest_recording_at_ms?: number | null;
+	newest_recording_at_ms?: number | null;
 }
 
 export interface RecordingDemandHealth {

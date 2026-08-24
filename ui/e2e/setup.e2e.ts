@@ -93,6 +93,14 @@ test('Board 21 keeps first run blocked, names empty states, and opens camera onb
 	);
 	expect(writes).toEqual([]);
 
+	await page.getByRole('link', { name: 'Set up recording storage' }).click();
+	await expect(page).toHaveURL(/\/settings\?edit=storage#storage$/);
+	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
+	await expect(page.getByLabel('Folder path')).toHaveValue('/mnt/keeppeek');
+	await expect(page.getByText('Confirm unlimited storage before continuing.')).toBeVisible();
+	expect(writes).toEqual([]);
+
+	await page.goto('/setup');
 	await page.getByRole('link', { name: 'Enter an address' }).click();
 	await expect(page).toHaveURL(/\/cameras\/new#manual-camera$/);
 	await expect(page.getByRole('heading', { name: 'Connect directly' })).toBeVisible();

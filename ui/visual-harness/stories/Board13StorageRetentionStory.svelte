@@ -57,7 +57,9 @@
 				fragment_bytes: 2_300_000_000_000,
 				events: 1_402,
 				open_events: 2,
-				event_thumbnails: 350
+				event_thumbnails: 350,
+				oldest_recording_at_ms: Date.UTC(2026, 7, 13),
+				newest_recording_at_ms: Date.UTC(2026, 7, 24)
 			}
 		}
 	} as ServerHealthResponse;

@@ -11,6 +11,7 @@ import {
 	CameraCatalogStreamSchema,
 	CameraStreamProbeResultSchema,
 	CameraBackend as ProtoCameraBackend,
+	CameraRecordingMode as ProtoCameraRecordingMode,
 	CameraConfigurationResultSchema,
 	CameraDeviceCapabilitiesSchema,
 	CameraInfoSchema,
@@ -1396,7 +1397,9 @@ function protoHealthSnapshot(health: HealthFixture) {
 						fragmentBytes: fixtureBigInt(storage.catalog.fragment_bytes),
 						events: fixtureBigInt(storage.catalog.events),
 						openEvents: fixtureBigInt(storage.catalog.open_events),
-						eventThumbnails: fixtureBigInt(storage.catalog.event_thumbnails)
+						eventThumbnails: fixtureBigInt(storage.catalog.event_thumbnails),
+						oldestRecordingAtMs: optionalFixtureBigInt(storage.catalog.oldest_recording_at_ms),
+						newestRecordingAtMs: optionalFixtureBigInt(storage.catalog.newest_recording_at_ms)
 					})
 				: undefined,
 			demand: create(RecordingDemandHealthSnapshotSchema, {
@@ -1610,6 +1613,21 @@ function cameraUpdate(
 	if (update.recordGenericMotionEvents !== undefined) {
 		result.record_generic_motion_events = update.recordGenericMotionEvents;
 	}
+	if (update.recordingMode !== undefined) {
+		result.recording_mode =
+			update.recordingMode === ProtoCameraRecordingMode.OFF
+				? 'off'
+				: update.recordingMode === ProtoCameraRecordingMode.SUB
+					? 'sub'
+					: update.recordingMode === ProtoCameraRecordingMode.MAIN
+						? 'main'
+						: update.recordingMode === ProtoCameraRecordingMode.BOTH
+							? 'both'
+							: 'event-boost';
+	}
+	if (update.eventRecordingDurationSecs !== undefined) {
+		result.event_recording_duration_secs = update.eventRecordingDurationSecs;
+	}
 	return result;
 }
 
@@ -1652,6 +1670,17 @@ function protoCameraSettings(camera: CameraSettings) {
 					: ProtoCameraBackend.AUTO,
 		transport: camera.transport === 'udp' ? ProtoCameraTransport.UDP : ProtoCameraTransport.TCP,
 		recordGenericMotionEvents: camera.record_generic_motion_events,
+		recordingMode:
+			camera.recording_mode === 'off'
+				? ProtoCameraRecordingMode.OFF
+				: camera.recording_mode === 'sub'
+					? ProtoCameraRecordingMode.SUB
+					: camera.recording_mode === 'main'
+						? ProtoCameraRecordingMode.MAIN
+						: camera.recording_mode === 'both'
+							? ProtoCameraRecordingMode.BOTH
+							: ProtoCameraRecordingMode.EVENT_BOOST,
+		eventRecordingDurationSecs: camera.event_recording_duration_secs,
 		health: camera.health ?? undefined,
 		model: camera.model ?? undefined
 	});

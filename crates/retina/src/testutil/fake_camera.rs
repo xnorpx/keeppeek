@@ -396,17 +396,9 @@ impl MediaSource {
             if !matches!(track.media_type(), Ok(mp4::MediaType::H264)) {
                 continue;
             }
-            let avcc = track
-                .trak
-                .mdia
-                .minf
-                .stbl
-                .stsd
-                .avc1
-                .as_ref()
-                .ok_or_else(|| {
-                    FakeRtspCameraError::Mp4("H.264 track has no avc1 sample entry".to_string())
-                })?;
+            let avcc = track.trak.mdia.minf.stbl.stsd.avc1().ok_or_else(|| {
+                FakeRtspCameraError::Mp4("H.264 track has no avc1 sample entry".to_string())
+            })?;
             let nal_length_size =
                 avcc.avcc
                     .length_size_minus_one
@@ -545,9 +537,8 @@ impl MediaSource {
                 .minf
                 .stbl
                 .stsd
-                .hev1
-                .as_ref()
-                .or(track.trak.mdia.minf.stbl.stsd.hvc1.as_ref())
+                .hev1()
+                .or_else(|| track.trak.mdia.minf.stbl.stsd.hvc1())
                 .ok_or_else(|| {
                     FakeRtspCameraError::Mp4("H.265 track has no HEVC sample entry".to_string())
                 })?;

@@ -56,6 +56,8 @@ const savedCamera = {
 	backend: 'reo-proto' as const,
 	transport: 'tcp' as const,
 	record_generic_motion_events: false,
+	recording_mode: 'event-boost' as const,
+	event_recording_duration_secs: 60,
 	health: null,
 	model: null
 };

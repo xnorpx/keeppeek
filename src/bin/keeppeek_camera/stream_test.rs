@@ -242,6 +242,8 @@ mod tests {
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
         }
     }
 
