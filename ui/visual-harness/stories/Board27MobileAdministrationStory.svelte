@@ -63,6 +63,7 @@
 		uid_configured: false,
 		backend: 'auto',
 		transport: 'tcp',
+		record_generic_motion_events: false,
 		health: 'online',
 		model: null
 	}));

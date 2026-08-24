@@ -15,6 +15,7 @@ import { createDemoWebVtt } from '../src/lib/storybook/demo';
 import { nineCameraLiveStory } from './nine-camera-live.story';
 
 const cameraIds = Array.from({ length: 9 }, (_, index) => `192.0.2.${101 + index}`);
+const backendMetricsUrl = 'http://127.0.0.1:4318/metrics';
 const { demo } = nineCameraLiveStory;
 const viewport = demo.viewport;
 const outputDirectory = resolve(process.env.DEMO_OUTPUT_DIR ?? 'test-results/demo-videos/assets');
@@ -22,6 +23,7 @@ const recordingDirectory = resolve('test-results/nine-camera-demo-playwright/rec
 const draftsPath = resolve('../target/nine-camera-demo/camera-drafts.json');
 const scenarioStem = join(outputDirectory, nineCameraLiveStory.paper.scenarioId);
 const recordingTailMs = 500;
+const nineCameraHardwareConcurrency = 18;
 
 type CameraDraft = {
 	id: string;
@@ -88,6 +90,9 @@ test('adds nine randomized RTSP cameras in Settings and shows the production Web
 	});
 	const pageCreatedAt = performance.now();
 	const page = await context.newPage();
+	await page.addInitScript((hardwareConcurrency) => {
+		Object.defineProperty(navigator, 'hardwareConcurrency', { value: hardwareConcurrency });
+	}, nineCameraHardwareConcurrency);
 	let contextClosed = false;
 
 	try {
@@ -129,6 +134,7 @@ test('adds nine randomized RTSP cameras in Settings and shows the production Web
 		await restarted;
 		await showCameraSetup(page);
 		await expect(page.getByText('9 configured', { exact: true })).toBeVisible();
+		await waitForCameraIngress(page);
 
 		await waitForNineLiveCameras(page, async () => {
 			await waitForAction(page, demoStartAt, 'a[aria-label="Peek"]');
@@ -230,6 +236,48 @@ test('adds nine randomized RTSP cameras in Settings and shows the production Web
 		await rm(recordingDirectory, { recursive: true, force: true });
 	}
 });
+
+async function waitForCameraIngress(page: Page): Promise<void> {
+	await expect
+		.poll(
+			async () => {
+				try {
+					const response = await page.request.get(backendMetricsUrl);
+					if (!response.ok()) return [];
+					const metrics = await response.text();
+					return cameraIds.filter(
+						(cameraId) =>
+							metricValue(metrics, 'keeppeek_camera_online', { camera_id: cameraId }) === 1 &&
+							(metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
+								camera_id: cameraId,
+								stream: 'video_sub'
+							}) ?? 0) > 0
+					);
+				} catch {
+					return [];
+				}
+			},
+			{ timeout: 90_000 }
+		)
+		.toEqual(cameraIds);
+}
+
+function metricValue(
+	metrics: string,
+	metricName: string,
+	labels: Readonly<Record<string, string>>
+): number | null {
+	const line = metrics
+		.split('\n')
+		.find(
+			(candidate) =>
+				candidate.startsWith(`${metricName}{`) &&
+				Object.entries(labels).every(([label, value]) => candidate.includes(`${label}="${value}"`))
+		);
+	if (!line) return null;
+	const value = Number(line.slice(line.lastIndexOf(' ') + 1));
+	return Number.isFinite(value) ? value : null;
+}
 
 async function waitForNineLiveCameras(page: Page, navigate: () => Promise<unknown>): Promise<void> {
 	await navigate();

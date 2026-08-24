@@ -62,6 +62,7 @@
 		clearUid: boolean;
 		backend: CameraBackend;
 		transport: CameraTransport;
+		recordGenericMotionEvents: boolean;
 	};
 
 	type RuntimeSettingsForm = {
@@ -139,7 +140,8 @@
 			uid: '',
 			clearUid: false,
 			backend: 'auto',
-			transport: 'tcp'
+			transport: 'tcp',
+			recordGenericMotionEvents: false
 		};
 	}
 
@@ -157,7 +159,8 @@
 			uid: '',
 			clearUid: false,
 			backend: camera.backend,
-			transport: camera.transport
+			transport: camera.transport,
+			recordGenericMotionEvents: camera.record_generic_motion_events
 		};
 	}
 
@@ -474,7 +477,8 @@
 			main_rtsp_url: form.mainRtspUrl.trim() || null,
 			sub_rtsp_url: form.subRtspUrl.trim() || null,
 			backend: form.backend,
-			transport: form.transport
+			transport: form.transport,
+			record_generic_motion_events: form.recordGenericMotionEvents
 		};
 		if (form.username.trim()) update.username = form.username.trim();
 		if (form.password) update.password = form.password;
@@ -1122,6 +1126,24 @@
 										placeholder="Optional"
 										autocomplete="off"
 									/>
+								</label>
+								<label
+									class="flex items-start gap-3 rounded-md border border-hairline bg-raised p-3 md:col-span-2"
+									for="camera-record-generic-motion-events"
+								>
+									<input
+										id="camera-record-generic-motion-events"
+										type="checkbox"
+										bind:checked={form.recordGenericMotionEvents}
+										class="mt-0.5 size-4 shrink-0 accent-primary"
+									/>
+									<span class="min-w-0">
+										<span class="block text-sm font-medium">Store generic motion events</span>
+										<span class="mt-1 block text-xs leading-5 text-muted-foreground">
+											Off stores only person, animal, and vehicle alarms and skips generic motion
+											snapshots.
+										</span>
+									</span>
 								</label>
 							</div>
 							{#if !isNewCamera && cameras.find((camera) => camera.ip === editorIp)?.uid_configured}

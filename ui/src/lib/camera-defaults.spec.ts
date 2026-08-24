@@ -17,6 +17,7 @@ function camera(update: Partial<CameraSettings>): CameraSettings {
 		uid_configured: false,
 		backend: 'auto',
 		transport: 'tcp',
+		record_generic_motion_events: false,
 		health: null,
 		model: null,
 		...update

@@ -174,6 +174,8 @@ pub struct CameraConfig {
     pub backend: CameraBackend,
     #[serde(default)]
     pub transport: CameraTransport,
+    #[serde(default)]
+    pub record_generic_motion_events: bool,
 }
 
 impl CameraConfig {
@@ -1505,6 +1507,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
 
         let camera = configured_camera(&config);
@@ -1539,6 +1542,7 @@ mod tests {
             uid: Some("test-uid".to_owned()),
             backend: CameraBackend::ReoProto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1572,6 +1576,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
         let configs = HashMap::from([("cameras".to_owned(), vec![config])]);
 
@@ -1606,6 +1611,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
         let mut camera = Camera {
             config,
@@ -1670,6 +1676,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Auto,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
         let mut camera = Camera {
             config,

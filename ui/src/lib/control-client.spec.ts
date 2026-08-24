@@ -1221,6 +1221,7 @@ describe('ControlClient', () => {
 				uid_configured: false,
 				backend: 'reo-proto',
 				transport: 'tcp',
+				record_generic_motion_events: false,
 				health: 'online',
 				model: 'RLC-811A'
 			}

@@ -2,6 +2,8 @@ import type { CameraListItem, RecordingEvent } from './types';
 
 export type EventImageFilter = 'all' | 'with' | 'without';
 
+export type EventPreviewState = 'idle' | 'queued' | 'loading' | 'unavailable';
+
 export type EventBrowserFilters = {
 	date: string;
 	cameraId: string | null;

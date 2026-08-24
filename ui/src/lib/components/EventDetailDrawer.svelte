@@ -1,25 +1,42 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { capabilityActions } from '$lib/capability-actions';
-	import type { EventBrowserRecord } from '$lib/event-browser';
+	import {
+		eventHasImage,
+		type EventBrowserRecord,
+		type EventPreviewState
+	} from '$lib/event-browser';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import ImageOffIcon from '@lucide/svelte/icons/image-off';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import XIcon from '@lucide/svelte/icons/x';
 	import CapabilityGate from './CapabilityGate.svelte';
 
 	type Props = {
 		record: EventBrowserRecord;
+		previewState?: EventPreviewState;
 		paperFrame?: boolean;
 		onclose?: () => void;
+		onpreviewretry?: () => void;
 	};
 
-	let { record, paperFrame = false, onclose }: Props = $props();
+	let {
+		record,
+		previewState = 'idle',
+		paperFrame = false,
+		onclose,
+		onpreviewretry
+	}: Props = $props();
 	const eventTimeFormatter = new Intl.DateTimeFormat(undefined, {
 		year: 'numeric',
 		month: 'short',
 		day: 'numeric',
 		hour: '2-digit',
 		minute: '2-digit',
-		second: '2-digit'
+		second: '2-digit',
+		timeZone: 'UTC',
+		timeZoneName: 'short'
 	});
 
 	function cameraLabel(): string {
@@ -45,6 +62,15 @@
 			: record.event.bbox.map((value) => value.toFixed(3)).join(', ');
 	}
 
+	function revisionLabel(): string {
+		return record.event.revision === undefined ? 'Not reported' : String(record.event.revision);
+	}
+
+	function attachmentLabel(): string {
+		const count = record.event.attachments?.length ?? 0;
+		return count === 0 ? 'Not reported' : `${count} reported`;
+	}
+
 	function paperTimestamp(): string {
 		return new Date(record.event.start_time_ms).toISOString().slice(11, 23);
 	}
@@ -55,9 +81,13 @@
 
 	function keepHref(): string {
 		const date = new Date(record.event.start_time_ms).toISOString().slice(0, 10);
+		const stream =
+			record.camera.profiles.find(
+				(profile) => profile.stream === 'sub' && profile.encoding?.toLowerCase() === 'h264'
+			)?.stream ?? 'main';
 		const search = new URLSearchParams({
 			camera: record.camera.id,
-			stream: 'main',
+			stream,
 			date,
 			at: String(record.event.start_time_ms)
 		});
@@ -84,7 +114,7 @@
 				</p>{/if}
 		</div>
 		<span class="font-mono text-[10px] tracking-[0.08em] text-text-faint">
-			REVISION NOT REPORTED
+			REVISION {revisionLabel().toUpperCase()}
 		</span>
 		<button
 			type="button"
@@ -109,6 +139,27 @@
 			{:else}
 				<img src={record.event.thumbnail_url} alt="" class="size-full object-contain" />
 			{/if}
+		{:else if eventHasImage(record.event) && previewState === 'unavailable'}
+			<div class="grid justify-items-center gap-2 text-text-faint">
+				<ImageOffIcon class="size-5" />
+				<span class="font-mono text-2xs tracking-caps">PREVIEW UNAVAILABLE</span>
+				{#if onpreviewretry}
+					<button
+						type="button"
+						class="inline-flex h-8 items-center gap-1.5 rounded-sm border border-hairline bg-surface px-2.5 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+						onclick={onpreviewretry}
+					>
+						<RefreshCwIcon class="size-3.5" /> Retry preview
+					</button>
+				{/if}
+			</div>
+		{:else if eventHasImage(record.event)}
+			<div class="grid justify-items-center gap-2 text-text-faint">
+				<LoaderCircleIcon class="size-5 animate-spin" />
+				<span class="font-mono text-2xs tracking-caps">
+					{previewState === 'loading' ? 'LOADING PREVIEW' : 'PREVIEW QUEUED'}
+				</span>
+			</div>
 		{:else}
 			<div
 				class="grid size-full place-items-center border border-dashed border-hairline-strong font-mono text-2xs tracking-caps text-text-faint"
@@ -118,7 +169,7 @@
 		{/if}
 		{#if record.event.bbox}
 			<span
-				class="absolute border-2 border-primary"
+				class="pointer-events-none absolute border-2 border-primary"
 				style:left={`${record.event.bbox[0] * 100}%`}
 				style:top={`${record.event.bbox[1] * 100}%`}
 				style:width={`${record.event.bbox[2] * 100}%`}
@@ -126,7 +177,7 @@
 			></span>
 			{#if record.event.confidence !== null}
 				<span
-					class="absolute rounded-sm bg-primary px-[7px] py-0.5 font-mono text-[10px] font-semibold text-on-primary"
+					class="pointer-events-none absolute rounded-sm bg-primary px-[7px] py-0.5 font-mono text-[10px] font-semibold text-on-primary"
 					style:left={`${record.event.bbox[0] * 100}%`}
 					style:top={`calc(${record.event.bbox[1] * 100}% - 20px)`}
 				>
@@ -136,7 +187,11 @@
 			{/if}
 		{/if}
 		<span class="absolute bottom-3 left-3 font-mono text-[10px] tracking-[0.1em] text-text-faint">
-			{record.event.thumbnail_url ? 'ONE THUMBNAIL URL' : 'NO ATTACHMENT'}
+			{record.event.thumbnail_url
+				? 'ONE THUMBNAIL URL'
+				: eventHasImage(record.event)
+					? 'THUMBNAIL REPORTED'
+					: 'NO ATTACHMENT'}
 		</span>
 	</div>
 
@@ -155,9 +210,11 @@
 			<div>
 				<dt class="font-mono text-[10px] tracking-caps text-text-faint">WHEN</dt>
 				<dd class="font-mono">
-					{paperFrame
-						? paperTimestamp()
-						: eventTimeFormatter.format(new Date(record.event.start_time_ms))}
+					<time datetime={new Date(record.event.start_time_ms).toISOString()}>
+						{paperFrame
+							? paperTimestamp()
+							: eventTimeFormatter.format(new Date(record.event.start_time_ms))}
+					</time>
 				</dd>
 			</div>
 			<div>
@@ -180,15 +237,16 @@
 				</p>
 				<p>confidence: {confidenceLabel()} · zone: {record.event.zone ?? 'Not reported'}</p>
 				<p>bounding_box: {bboxLabel()}</p>
-				<p>attachments[]: {record.event.thumbnail_url ? 'One thumbnail URL' : 'Not reported'}</p>
-				<p>payload · revision · source_id: Not reported by REST API</p>
+				<p>attachments[]: {attachmentLabel()}</p>
+				<p>revision: {revisionLabel()} · source_id: {record.event.source_id ?? 'Not reported'}</p>
+				<p>payload: Not reported by REST API</p>
 			</section>
 		{:else}
 			<section class="h-[127px] shrink-0" aria-label="Event API evidence">
 				<div
 					class="grid h-full grid-cols-2 gap-px overflow-hidden rounded-md border border-hairline bg-hairline text-xs"
 				>
-					{#each [['confidence', confidenceLabel()], ['zone', record.event.zone ?? 'Not reported'], ['bounding_box', bboxLabel()], ['attachments[]', record.event.thumbnail_url ? 'One thumbnail URL' : 'Not reported'], ['payload', 'Not reported by REST API'], ['revision', 'Not reported by REST API'], ['source_id', 'Not reported by REST API']] as evidence (evidence[0])}
+					{#each [['confidence', confidenceLabel()], ['zone', record.event.zone ?? 'Not reported'], ['bounding_box', bboxLabel()], ['attachments[]', attachmentLabel()], ['payload', 'Not reported by REST API'], ['revision', revisionLabel()], ['source_id', record.event.source_id ?? 'Not reported']] as evidence (evidence[0])}
 						<div class="bg-surface px-3 py-2">
 							<p class="font-mono text-[10px] tracking-caps text-primary-soft">{evidence[0]}</p>
 							<p class="mt-0.5 truncate text-text-muted">{evidence[1]}</p>

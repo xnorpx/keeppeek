@@ -11,7 +11,17 @@ const jpeg = Buffer.from(
 
 async function mockKeepTimeline(
 	page: Page,
-	options: { storedOpenGates?: readonly Promise<void>[] } = {}
+	options: {
+		storedOpenGates?: readonly Promise<void>[];
+		storedBucketedRanges?: readonly {
+			sourceId: string;
+			streamId: 'main' | 'sub';
+			startMs: number;
+			endMs: number;
+		}[];
+		storedEvents?: NonNullable<Parameters<typeof mockControlPeer>[1]>['storedEvents'];
+		storedSeekError?: string;
+	} = {}
 ): Promise<ControlRequests> {
 	const cameras = [
 		{
@@ -22,7 +32,22 @@ async function mockKeepTimeline(
 			model: 'RLC-811A',
 			firmware_version: null,
 			is_reolink: true,
-			profiles: []
+			profiles: [
+				{
+					name: 'Main',
+					stream: 'main' as const,
+					encoding: 'h265',
+					resolution: '3840x2160',
+					framerate: 25
+				},
+				{
+					name: 'Sub',
+					stream: 'sub' as const,
+					encoding: 'h264',
+					resolution: '640x360',
+					framerate: 15
+				}
+			]
 		}
 	];
 	await page.addInitScript((frozenNowMs) => {
@@ -38,6 +63,7 @@ async function mockKeepTimeline(
 	return mockControlPeer(page, {
 		cameras,
 		storedOpenGates: options.storedOpenGates,
+		storedSeekError: options.storedSeekError,
 		storedRanges: [
 			{
 				sourceId: 'front-door',
@@ -50,9 +76,16 @@ async function mockKeepTimeline(
 				streamId: 'main',
 				startMs: dayStartMs + 6 * 60 * 60_000 + 15 * 60_000,
 				endMs: newestMs
+			},
+			{
+				sourceId: 'front-door',
+				streamId: 'sub',
+				startMs: dayStartMs + 6 * 60 * 60_000,
+				endMs: newestMs
 			}
 		],
-		storedEvents: [
+		storedBucketedRanges: options.storedBucketedRanges,
+		storedEvents: options.storedEvents ?? [
 			{
 				sourceId: 'front-door',
 				thumbnail: jpeg,
@@ -86,6 +119,126 @@ async function mockKeepTimeline(
 	});
 }
 
+test('defaults to an H.264 substream and autoplays when no stream is requested', async ({
+	page
+}) => {
+	await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+
+	await expect(page).toHaveURL(new RegExp(`stream=sub`));
+	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
+});
+
+test('loads timeline metadata as soon as the primary frame is ready', async ({ page }) => {
+	await page.addInitScript(() => {
+		const state = window as Window & { __keeppeekTimelineEvents?: string[] };
+		state.__keeppeekTimelineEvents = [];
+		window.addEventListener('keeppeek:timeline-performance', (event) => {
+			state.__keeppeekTimelineEvents?.push((event as CustomEvent<{ name: string }>).detail.name);
+		});
+	});
+	await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
+
+	const video = page.locator('video');
+	await expect(video).toBeVisible();
+	await video.dispatchEvent('loadeddata');
+	await expect
+		.poll(
+			() =>
+				page.evaluate(() =>
+					(
+						window as Window & { __keeppeekTimelineEvents?: string[] }
+					).__keeppeekTimelineEvents?.includes('TimelineQueryStarted')
+				),
+			{ timeout: 1_000 }
+		)
+		.toBe(true);
+});
+
+test('uses exact recording ranges when a bucketed event falls inside a real gap', async ({
+	page
+}) => {
+	const gapStartMs = dayStartMs + 6 * 60 * 60_000 + 10 * 60_000;
+	const gapEndMs = dayStartMs + 6 * 60 * 60_000 + 15 * 60_000;
+	const requests = await mockKeepTimeline(page, {
+		storedBucketedRanges: [
+			{
+				sourceId: 'front-door',
+				streamId: 'main',
+				startMs: dayStartMs + 6 * 60 * 60_000,
+				endMs: newestMs
+			}
+		],
+		storedEvents: [
+			{
+				sourceId: 'front-door',
+				event: {
+					id: 'gap-person',
+					source: 'camera',
+					kind: 'person',
+					start_time_ms: gapStartMs + 60_000,
+					end_time_ms: null,
+					confidence: 0.9,
+					bbox: null,
+					zone: null,
+					thumbnail_url: null
+				}
+			}
+		]
+	});
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
+	await page.locator('video').dispatchEvent('loadeddata');
+
+	await page.getByRole('button', { name: /person event/i }).click();
+	await expect.poll(() => requests.storedSeeks.at(-1)?.timestampMs).toBe(gapEndMs);
+	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
+});
+
+test('opens an event in a recording gap with one bounded exact-range query', async ({ page }) => {
+	const gapTimestampMs = dayStartMs + 6 * 60 * 60_000 + 12 * 60_000;
+	const nextRecordingMs = dayStartMs + 6 * 60 * 60_000 + 15 * 60_000;
+	const requests = await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}&at=${gapTimestampMs}`);
+
+	await expect(page.locator('video')).toBeVisible();
+	expect(
+		requests.storedTimelineQueries.filter((query) => query.includeAvailability && query.startMs > 0)
+	).toHaveLength(1);
+	expect(requests.storedOpens).toHaveLength(1);
+	expect(requests.storedOpens[0]?.timestampMs).toBe(nextRecordingMs);
+});
+
+test('does not expand or open unrelated footage for an unavailable event timestamp', async ({
+	page
+}) => {
+	const unavailableTimestampMs = dayStartMs + 2 * 60 * 60_000;
+	const requests = await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}&at=${unavailableTimestampMs}`);
+
+	await expect(page.getByText('No indexed footage is available near that time.')).toBeVisible();
+	expect(
+		requests.storedTimelineQueries.filter(
+			(query) =>
+				query.includeAvailability &&
+				query.startMs === unavailableTimestampMs - 5 * 60_000 &&
+				query.endMs === unavailableTimestampMs + 5 * 60_000
+		)
+	).toHaveLength(1);
+	expect(requests.storedOpens).toHaveLength(0);
+	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
+});
+
+test('clears the cold-seek overlay when an exact stored seek is rejected', async ({ page }) => {
+	await mockKeepTimeline(page, { storedSeekError: 'stored media timestamp is unavailable' });
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
+
+	const newestRange = page.locator(`[data-timeline-availability][data-end-ms="${newestMs}"]`);
+	await newestRange.click();
+	await expect(page.getByText('No indexed footage is available at that exact time.')).toBeVisible();
+	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
+});
+
 test('coalesces rapid timeline drag samples onto one stored-media cursor', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 840 });
 	const requests = await mockKeepTimeline(page);
@@ -117,12 +270,13 @@ test('Board 4 renders the newest-at-top timeline with explicit gaps and live fol
 	page
 }) => {
 	await page.setViewportSize({ width: 1440, height: 840 });
-	await mockKeepTimeline(page);
+	const requests = await mockKeepTimeline(page);
 	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
 
 	const timeline = page.getByRole('region', { name: 'Recording timeline', exact: true });
 	await expect(timeline).toHaveAttribute('data-timeline-zoom', '6h');
 	await expect(timeline).toHaveAttribute('data-timeline-following', 'true');
+	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
 	await expect(timeline.getByText('LIVE', { exact: true })).toBeVisible();
 	await expect(timeline.locator('[data-timeline-availability]')).toHaveCount(2);
 	const gapStartMs = dayStartMs + 6 * 60 * 60_000 + 10 * 60_000;
@@ -153,9 +307,29 @@ test('Board 4 renders the newest-at-top timeline with explicit gaps and live fol
 
 	await timeline.getByTitle('Zoom timeline in').click();
 	await expect(timeline).toHaveAttribute('data-timeline-zoom', '1h');
-	const viewport = page.getByRole('region', { name: 'Recording timeline pan viewport' });
-	await viewport.dispatchEvent('wheel', { deltaY: 100 });
+	const viewport = page.getByRole('region', { name: 'Recording timeline scroll viewport' });
+	const scrollControl = timeline.getByRole('button', { name: /scroll recording timeline/i });
+	await expect(viewport).toHaveCSS('cursor', 'default');
+	const viewportBounds = await viewport.boundingBox();
+	if (!viewportBounds) throw new Error('Recording timeline viewport has no bounds');
+	const seekCount = requests.storedSeeks.length;
+	const initialScrollTop = await viewport.evaluate((element) => element.scrollTop);
+	await page.mouse.move(
+		viewportBounds.x + viewportBounds.width / 2,
+		viewportBounds.y + viewportBounds.height / 2
+	);
+	await page.mouse.wheel(0, 180);
+	await expect
+		.poll(() => viewport.evaluate((element) => element.scrollTop))
+		.toBeGreaterThan(initialScrollTop);
+	await expect(scrollControl).toBeFocused();
 	await expect(timeline).toHaveAttribute('data-timeline-following', 'false');
+	const wheelScrollTop = await viewport.evaluate((element) => element.scrollTop);
+	await page.keyboard.press('ArrowDown');
+	await expect
+		.poll(() => viewport.evaluate((element) => element.scrollTop))
+		.toBeGreaterThan(wheelScrollTop);
+	expect(requests.storedSeeks).toHaveLength(seekCount);
 	await expect(timeline.getByRole('button', { name: 'Back to live' })).toBeVisible();
 	await timeline.getByRole('button', { name: 'Back to live' }).click();
 	await expect(timeline).toHaveAttribute('data-timeline-following', 'true');
@@ -215,4 +389,28 @@ test('names a cold seek after 400ms while preserving the current frame', async (
 	await expect.poll(() => video.getAttribute('src')).not.toBe(currentSource);
 	await video.dispatchEvent('loadeddata');
 	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
+});
+
+test('clears a cold seek when the media element rejects playback', async ({ page }) => {
+	let releaseColdSeek!: () => void;
+	const coldSeekGate = new Promise<void>((resolve) => {
+		releaseColdSeek = resolve;
+	});
+	await mockKeepTimeline(page, { storedOpenGates: [Promise.resolve(), coldSeekGate] });
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
+
+	const video = page.locator('video');
+	const currentSource = await video.getAttribute('src');
+	const olderRange = page.locator(
+		`[data-timeline-availability][data-start-ms="${dayStartMs + 6 * 60 * 60_000}"]`
+	);
+	await olderRange.click();
+	await expect(page.locator('[data-cold-seek]')).toBeVisible();
+
+	await video.dispatchEvent('error');
+	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
+	await expect(page.getByText('This recording could not be played.')).toBeVisible();
+	await expect(video).toHaveAttribute('src', currentSource!);
+
+	releaseColdSeek();
 });

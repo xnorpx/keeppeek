@@ -20,13 +20,16 @@
 		previousEventBrowserWindow,
 		type EventBrowserFilters,
 		type EventBrowserRecord,
-		type EventImageFilter
+		type EventImageFilter,
+		type EventPreviewState
 	} from '$lib/event-browser';
 	import type { CameraListItem, RecordingEvent } from '$lib/types';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 
 	const today = new Date().toISOString().slice(0, 10);
+	const LIVE_REFRESH_INTERVAL_MS = 5_000;
 	const eventKinds = ['all', 'person', 'vehicle', 'motion', 'story'] as const;
 	const imageFilters: readonly { value: EventImageFilter; label: string }[] = [
 		{ value: 'all', label: 'Any image' },
@@ -43,19 +46,25 @@
 	let selectedKey = $state<string | null>(null);
 	let focusedKey = $state<string | null>(null);
 	let loading = $state(true);
+	let refreshing = $state(false);
+	let refreshDelayed = $state(false);
+	let currentDate = $state(today);
 	let error = $state<string | null>(null);
 	let requestVersion = 0;
 	let loadController: AbortController | null = null;
+	let refreshController: AbortController | null = null;
 	let previewQueue: EventBrowserRecord[] = [];
 	let activePreviewCount = 0;
 	const previewKeys = new Set<string>();
 	const previewControllers = new Map<string, AbortController>();
+	let previewStates = $state.raw<Record<string, EventPreviewState>>({});
 	const maxConcurrentPreviews = 2;
 	let dayStartMs = $state(0);
 	let loadedStartMs = $state(0);
 	let nextWindowDurationMs = $state(EVENT_BROWSER_INITIAL_WINDOW_MS);
 	let resultPage = $state(0);
 	let loadingEarlier = $state(false);
+	let isToday = $derived(filters.date === currentDate);
 	let filteredRecords = $derived(filterEventBrowserRecords(records, filters));
 	let visibleRecords = $derived(
 		filteredRecords.slice(
@@ -115,8 +124,19 @@
 			selectedKey = `${encodeURIComponent(requestedEventCamera)}:${encodeURIComponent(requestedEventId)}`;
 		}
 		void initialize();
+		const refreshTimer = window.setInterval(() => {
+			currentDate = new Date().toISOString().slice(0, 10);
+			if (!document.hidden) void refreshRecentEvents();
+		}, LIVE_REFRESH_INTERVAL_MS);
+		const handleVisibilityChange = () => {
+			if (!document.hidden) void refreshRecentEvents();
+		};
+		document.addEventListener('visibilitychange', handleVisibilityChange);
 		return () => {
+			window.clearInterval(refreshTimer);
+			document.removeEventListener('visibilitychange', handleVisibilityChange);
 			loadController?.abort();
+			refreshController?.abort();
 			cancelPreviews();
 			releaseRecordPreviews(records);
 		};
@@ -124,10 +144,8 @@
 
 	async function initialize(): Promise<void> {
 		try {
-			const camerasRequest = controlClient.getCameras().then((nextCameras) => {
-				cameras = nextCameras;
-			});
-			await Promise.all([camerasRequest, loadEvents(filters.date)]);
+			cameras = await controlClient.getCameras();
+			await loadEvents(filters.date);
 		} catch (cause) {
 			loadController?.abort();
 			error = cause instanceof Error ? cause.message : 'Failed to load events';
@@ -136,8 +154,48 @@
 		}
 	}
 
+	async function refreshRecentEvents(): Promise<void> {
+		if (!isToday || loading || loadingEarlier || refreshing || cameras.length === 0) return;
+		const refreshDate = filters.date;
+		const controller = new AbortController();
+		refreshController = controller;
+		refreshing = true;
+		const day = eventBrowserDayBounds(filters.date);
+		try {
+			const result = await controlClient.queryStoredTimeline({
+				sourceIds: cameras.map((camera) => camera.id),
+				startMs: Math.max(day.startMs, day.endMs - EVENT_BROWSER_INITIAL_WINDOW_MS),
+				endMs: day.endMs,
+				includeEvents: true,
+				includeAttachments: false,
+				includeAvailability: false,
+				signal: controller.signal,
+				onPage: (page) => {
+					if (controller.signal.aborted || filters.date !== refreshDate) return;
+					records = mergeEventRecords(records, eventRecords(page.events));
+				}
+			});
+			if (controller.signal.aborted || filters.date !== refreshDate) return;
+			records = mergeEventRecords(records, eventRecords(result.events));
+			refreshDelayed = false;
+		} catch {
+			if (!controller.signal.aborted) refreshDelayed = true;
+		} finally {
+			if (refreshController === controller) refreshController = null;
+			refreshing = false;
+		}
+	}
+
+	function refreshEvents(): void {
+		if (isToday) void refreshRecentEvents();
+		else void loadEvents(filters.date);
+	}
+
 	async function loadEvents(date: string): Promise<void> {
 		loadController?.abort();
+		refreshController?.abort();
+		refreshController = null;
+		refreshing = false;
 		cancelPreviews();
 		const controller = new AbortController();
 		loadController = controller;
@@ -167,6 +225,8 @@
 			) {
 				selectedKey = null;
 			}
+			const selected = records.find((record) => eventBrowserRecordKey(record) === selectedKey);
+			if (selected) requestEventPreview(selected);
 			syncUrl();
 		} catch (cause) {
 			if (controller.signal.aborted || version !== requestVersion) return;
@@ -260,6 +320,7 @@
 		if (record.event.thumbnail_url || previewKeys.has(key)) return;
 		if (!record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')) return;
 		previewKeys.add(key);
+		setPreviewState(key, 'queued');
 		previewQueue.push(record);
 		startQueuedPreviews();
 	}
@@ -268,6 +329,7 @@
 		while (activePreviewCount < maxConcurrentPreviews) {
 			const record = previewQueue.shift();
 			if (!record) return;
+			setPreviewState(eventBrowserRecordKey(record), 'loading');
 			activePreviewCount += 1;
 			void loadEventPreview(record).finally(() => {
 				activePreviewCount -= 1;
@@ -294,7 +356,11 @@
 				signal: controller.signal
 			});
 			const event = result.events.find((candidate) => candidate.id === record.event.id);
-			if (!event?.thumbnail_url) return;
+			if (!event?.thumbnail_url) {
+				previewKeys.delete(key);
+				setPreviewState(key, 'unavailable');
+				return;
+			}
 			const shouldKeep =
 				selectedKey === key ||
 				visibleRecords.some((candidate) => eventBrowserRecordKey(candidate) === key);
@@ -308,6 +374,8 @@
 			);
 		} catch (cause) {
 			if (!controller.signal.aborted) {
+				previewKeys.delete(key);
+				setPreviewState(key, 'unavailable');
 				console.warn('Failed to load event preview', cause);
 			}
 		} finally {
@@ -325,6 +393,13 @@
 			controller.abort();
 			previewControllers.delete(key);
 		}
+		previewStates = Object.fromEntries(
+			Object.entries(previewStates).filter(([key]) => retainedKeys.has(key))
+		);
+	}
+
+	function setPreviewState(key: string, state: EventPreviewState): void {
+		previewStates = { ...previewStates, [key]: state };
 	}
 
 	function eventuallyEvictDistantPreviews(): void {
@@ -376,6 +451,7 @@
 
 	function selectRecord(record: EventBrowserRecord): void {
 		selectedKey = eventBrowserRecordKey(record);
+		requestEventPreview(record);
 		syncUrl();
 	}
 
@@ -436,10 +512,30 @@
 	<header class="flex min-h-10 flex-wrap items-center gap-3">
 		<div>
 			<h1 class="text-xl font-semibold">Events</h1>
-			<p class="text-xs text-text-muted">Everything another source reported.</p>
+			<p class="text-xs text-text-muted">Review detections across every camera.</p>
 		</div>
 		<div class="min-w-2 flex-1"></div>
-		<span class="font-mono text-2xs tracking-caps text-text-faint">URL CARRIES THIS QUERY</span>
+		<div class="flex items-center gap-2">
+			{#if isToday}
+				<span
+					class="inline-flex h-8 items-center gap-2 px-1.5 font-mono text-2xs tracking-caps text-text-muted"
+				>
+					<span class="size-1.5 rounded-full {refreshDelayed ? 'bg-destructive' : 'bg-primary'}"
+					></span>
+					{refreshDelayed ? 'UPDATE DELAYED' : refreshing ? 'UPDATING' : 'LIVE'}
+				</span>
+			{/if}
+			<button
+				type="button"
+				class="grid size-8 place-items-center rounded-sm text-text-muted hover:bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-45"
+				title="Refresh events"
+				aria-label="Refresh events"
+				disabled={loading || refreshing}
+				onclick={refreshEvents}
+			>
+				<RefreshCwIcon class="size-3.5 {refreshing ? 'animate-spin' : ''}" />
+			</button>
+		</div>
 	</header>
 
 	<section
@@ -556,8 +652,12 @@
 		</div>
 	</section>
 
-	<div class="flex items-center gap-2 text-xs text-text-muted" role="status">
-		<span>{filteredRecords.length} {filteredRecords.length === 1 ? 'event' : 'events'}</span>
+	<div class="flex items-center gap-2 text-xs text-text-muted" role="status" aria-live="polite">
+		<span
+			>{loading && records.length === 0
+				? 'Loading events'
+				: `${filteredRecords.length} ${filteredRecords.length === 1 ? 'event' : 'events'}`}</span
+		>
 		<span aria-hidden="true">·</span>
 		<span>{eventFilterSummary(filters)}</span>
 	</div>
@@ -611,6 +711,7 @@
 			{#each visibleRecords as record, index (eventBrowserRecordKey(record))}
 				<EventResultCard
 					{record}
+					previewState={previewStates[eventBrowserRecordKey(record)] ?? 'idle'}
 					selected={selectedKey === eventBrowserRecordKey(record)}
 					mobileVariant={index === 0 ? 'hero' : 'row'}
 					tabindex={focusedKey === eventBrowserRecordKey(record) ||
@@ -659,5 +760,10 @@
 		aria-label="Close event detail backdrop"
 		onclick={closeDetail}
 	></button>
-	<EventDetailDrawer record={selectedRecord} onclose={closeDetail} />
+	<EventDetailDrawer
+		record={selectedRecord}
+		previewState={previewStates[eventBrowserRecordKey(selectedRecord)] ?? 'idle'}
+		onclose={closeDetail}
+		onpreviewretry={() => requestEventPreview(selectedRecord)}
+	/>
 {/if}

@@ -1709,6 +1709,7 @@ mod tests {
             uid: None,
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
         };
 
         assert_eq!(upsert_camera(&path, &config).unwrap(), "existing");
