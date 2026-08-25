@@ -1,8 +1,44 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
 import { mockControlPeer } from './fixtures/control-peer';
 
 async function installLoggingMocks(page: Page): Promise<void> {
+	await page.route('**/logs/snapshot', async (route) => {
+		await route.fulfill({
+			contentType: 'application/json',
+			body: JSON.stringify({
+				entries: [
+					{
+						sequence: 1,
+						timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 0),
+						level: 'error',
+						target: 'keeppeek::server',
+						message: 'camera rtsp://operator:camera-secret@192.168.2.44/live token=private-token',
+						fields: { path: '/Users/private-user/recordings' }
+					}
+				],
+				oldest_sequence: 1,
+				newest_sequence: 1,
+				truncated: false,
+				stats: {
+					entry_count: 1,
+					byte_count: 256,
+					evicted_entries: 0,
+					max_entries: 10_000,
+					max_bytes: 8_388_608,
+					active_streams: 1,
+					max_streams: 8
+				}
+			})
+		});
+	});
+	await page.route('**/metrics', async (route) => {
+		await route.fulfill({
+			contentType: 'text/plain',
+			body: 'keeppeek_server_info{host="keeppeek-private.local"} 1\n'
+		});
+	});
 	await mockControlPeer(page, {
 		runtimeConfiguration: {
 			host: '0.0.0.0',
@@ -135,6 +171,27 @@ test('views, filters, captures, persists, clears, and exports logs', async ({ pa
 	expect(contents).toContain('server snapshot ready');
 	expect(contents).toContain('browser capture failed token=[REDACTED]');
 	expect(contents).not.toContain('browser-secret');
+
+	const diagnosticsDownloadPromise = page.waitForEvent('download');
+	await page.getByRole('button', { name: 'Download diagnostics' }).click();
+	const diagnosticsDownload = await diagnosticsDownloadPromise;
+	expect(diagnosticsDownload.suggestedFilename()).toMatch(/^keeppeek-diagnostics-.*\.json\.gz$/);
+	const diagnosticsPath = await diagnosticsDownload.path();
+	expect(diagnosticsPath).not.toBeNull();
+	const diagnostics = gunzipSync(await readFile(diagnosticsPath!)).toString('utf8');
+	const diagnosticPackage = JSON.parse(diagnostics);
+	expect(diagnosticPackage.manifest).toMatchObject({
+		format: 'keeppeek-diagnostics',
+		privacy: 'scrubbed',
+		server_log_entries: 1
+	});
+	expect(diagnosticPackage.server_logs).toHaveLength(1);
+	expect(diagnosticPackage.browser_logs.length).toBeGreaterThan(0);
+	expect(diagnostics).not.toContain('camera-secret');
+	expect(diagnostics).not.toContain('private-token');
+	expect(diagnostics).not.toContain('192.168.2.44');
+	expect(diagnostics).not.toContain('/Users/private-user');
+	expect(diagnostics).not.toContain('keeppeek-private.local');
 
 	await page.getByRole('button', { name: 'Clear log view' }).click();
 	await expect(page.getByText('browser capture failed token=[REDACTED]')).toHaveCount(0);

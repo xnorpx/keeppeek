@@ -3,6 +3,8 @@
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import { waitForMetricsAt } from '$lib/api';
+	import { browserLogStore } from '$lib/browser-logs';
+	import { downloadDiagnosticsBundle } from '$lib/diagnostics-bundle';
 	import type {
 		CameraCatalogInfo,
 		SanitizedConfig,
@@ -57,6 +59,8 @@
 	let pendingStorageMigration = $state(false);
 	let runtimeEditor = $state<RuntimeEditorMode>(null);
 	let savingRuntimeSettings = $state(false);
+	let downloadingDiagnostics = $state(false);
+	let diagnosticsError = $state<string | null>(null);
 	let runtimeSettingsError = $state<string | null>(null);
 	let runtimeSettingsForm = $state<RuntimeSettingsForm>(emptyRuntimeSettingsForm());
 	let restartTargetOrigin = $state<string | null>(null);
@@ -125,6 +129,20 @@
 		await scrollToHashTarget();
 		if (config && page.url.searchParams.get('edit') === 'storage') {
 			await openStorageSettings();
+		}
+	}
+
+	async function exportDiagnostics(): Promise<void> {
+		if (downloadingDiagnostics) return;
+		downloadingDiagnostics = true;
+		diagnosticsError = null;
+		try {
+			await downloadDiagnosticsBundle(controlClient, browserLogStore.snapshot());
+		} catch (cause) {
+			diagnosticsError =
+				cause instanceof Error ? cause.message : 'Unable to create the diagnostics package.';
+		} finally {
+			downloadingDiagnostics = false;
 		}
 	}
 
@@ -494,7 +512,10 @@
 					healthError={serverHealthError}
 					{catalogInfo}
 					{restarting}
+					{downloadingDiagnostics}
+					{diagnosticsError}
 					onrestart={() => void restartRecorder()}
+					ondownloaddiagnostics={exportDiagnostics}
 				/>
 			</div>
 

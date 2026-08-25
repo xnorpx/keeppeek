@@ -247,11 +247,11 @@ test('Board 20 uses real theme, runtime, restart, and log evidence without inven
 	for (const command of [
 		'Update check unavailable',
 		'Config backup unavailable',
-		'Erase unavailable',
-		'Diagnostics bundle unavailable'
+		'Erase unavailable'
 	]) {
 		await expect(section.getByRole('button', { name: command })).toBeDisabled();
 	}
+	await expect(section.getByRole('button', { name: 'Download diagnostics' })).toBeEnabled();
 	await expect(section.getByRole('link', { name: 'Open logs' })).toHaveAttribute(
 		'href',
 		'/settings/logs'
@@ -260,7 +260,7 @@ test('Board 20 uses real theme, runtime, restart, and log evidence without inven
 		'href',
 		'/system-health'
 	);
-	await expect(section).toContainText('FULL DIAGNOSTICS BUNDLE UNAVAILABLE');
+	await expect(section).toContainText('SCRUBBED DIAGNOSTICS PACKAGE');
 	await expect(section.getByText('Europe/Stockholm', { exact: true })).toHaveCount(0);
 	await expect(section.getByText('Stable', { exact: true })).toHaveCount(0);
 	await expect(section.getByText('~/.config/keeppeek.toml', { exact: true })).toHaveCount(0);

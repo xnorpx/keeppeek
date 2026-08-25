@@ -421,19 +421,23 @@ if (
 ) {
 	throw new Error('Board 01 stored-event limitations are missing');
 }
-const expectedHttpPaths = ['/create', '/delete', '/logs', '/metrics'];
+const expectedHttpPaths = ['/create', '/delete', '/logs', '/logs/snapshot', '/metrics'];
 if (positioningContract.httpPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('Board 01 HTTP boundary changed');
 }
 const openApi = await readFile(resolve('..', 'api/openapi.yaml'), 'utf8');
-const openApiPaths = [...openApi.matchAll(/^  (\/[a-z-]+):$/gm)].map((match) => match[1]);
+const openApiPaths = [...openApi.matchAll(/^  (\/[a-z-]+(?:\/[a-z-]+)*):$/gm)].map(
+	(match) => match[1]
+);
 if (openApiPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('OpenAPI exposes a noncanonical Board 01 HTTP path');
 }
 const serverSource = await readFile(resolve('..', 'src/server.rs'), 'utf8');
 const serverPaths = [
 	...new Set(
-		[...serverSource.matchAll(/\((?:GET|POST|OPTIONS)\) \((\/[a-z-]+)\)/g)].map((match) => match[1])
+		[...serverSource.matchAll(/\((?:GET|POST|OPTIONS)\) \((\/[a-z-]+(?:\/[a-z-]+)*)\)/g)].map(
+			(match) => match[1]
+		)
 	)
 ];
 if (serverPaths.join('|') !== expectedHttpPaths.join('|')) {

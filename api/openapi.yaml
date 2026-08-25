@@ -3,7 +3,7 @@ info:
   title: KeepPeek API
   description: >-
     Create WebRTC sessions from gzip-compressed SDP offers, delete sessions, and
-    read server logs through SSE and Prometheus metrics through HTTP.
+    read live and retained server logs plus Prometheus metrics through HTTP.
   version: unversioned
 servers:
   - url: http://{host}:{port}
@@ -144,6 +144,31 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '503':
           $ref: '#/components/responses/Unavailable'
+  /logs/snapshot:
+    get:
+      operationId: logSnapshot
+      summary: Read the complete retained server log buffer
+      description: >-
+        Returns one finite snapshot containing every entry still retained by the
+        bounded in-memory log hub. The response is not cached and is intended
+        for diagnostics package creation rather than polling.
+      responses:
+        '200':
+          description: The complete bounded retained log snapshot.
+          headers:
+            Cache-Control:
+              description: Diagnostics snapshots must not be cached.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogSnapshot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
   /metrics:
     get:
       operationId: metrics
@@ -210,7 +235,7 @@ components:
         non-loopback peer. Same-host loopback requests that did not arrive
         through a reverse proxy skip it and act as Administrator. Every
         configured key has identical access to every endpoint, including /logs
-        and /metrics.
+        /logs/snapshot, and /metrics.
   responses:
     BadRequest:
       description: Bad Request. The request could not be accepted, or validation failed.
@@ -359,6 +384,67 @@ components:
         line:
           type: integer
           minimum: 0
+    LogBufferStats:
+      type: object
+      additionalProperties: false
+      required:
+        - entry_count
+        - byte_count
+        - evicted_entries
+        - max_entries
+        - max_bytes
+        - active_streams
+        - max_streams
+      properties:
+        entry_count:
+          type: integer
+          minimum: 0
+        byte_count:
+          type: integer
+          minimum: 0
+        evicted_entries:
+          type: integer
+          format: uint64
+        max_entries:
+          type: integer
+          minimum: 1
+        max_bytes:
+          type: integer
+          minimum: 1
+        active_streams:
+          type: integer
+          minimum: 0
+        max_streams:
+          type: integer
+          minimum: 1
+    LogSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - entries
+        - oldest_sequence
+        - newest_sequence
+        - truncated
+        - stats
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/LogEntry'
+        oldest_sequence:
+          type:
+            - integer
+            - 'null'
+          format: uint64
+        newest_sequence:
+          type:
+            - integer
+            - 'null'
+          format: uint64
+        truncated:
+          type: boolean
+        stats:
+          $ref: '#/components/schemas/LogBufferStats'
     Status:
       type: object
       additionalProperties: false

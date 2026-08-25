@@ -33,6 +33,13 @@ edition = "2024"
 autobins = false
 license = "AGPL-3.0-only"
 authors = ["xnorpx <xnorpx@outlook.com>"]
+description = "Local-first network video recorder and WebRTC media gateway for IP cameras"
+repository = "https://github.com/xnorpx/keeppeek"
+homepage = "https://xnorpx.github.io/keeppeek/"
+documentation = "https://xnorpx.github.io/keeppeek/"
+readme = "README.md"
+keywords = ["nvr", "ip-camera", "rtsp", "webrtc", "video-surveillance"]
+categories = ["multimedia::video", "network-programming"]
 
 [package.metadata.cargo-machete]
 ignored = ["prost", "prost-types"]
