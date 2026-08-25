@@ -1,28 +1,26 @@
 <script lang="ts">
-	import { replaceState } from '$app/navigation';
+	import { pushState, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
+	import { decodeEventKeyframePreview } from '$lib/event-keyframe-preview';
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventNoResultsState from '$lib/components/EventNoResultsState.svelte';
 	import EventResultCard from '$lib/components/EventResultCard.svelte';
 	import {
-		EVENT_BROWSER_INITIAL_WINDOW_MS,
 		EVENT_BROWSER_PAGE_SIZE,
-		eventBrowserDayBounds,
+		eventBrowserQueryBounds,
 		eventBrowserRecordKey,
 		eventBrowserSearchParams,
 		eventFilterSummary,
-		eventNoResultsSuggestion,
-		filterEventBrowserRecords,
 		parseEventBrowserFilters,
-		previousEventBrowserWindow,
 		type EventBrowserFilters,
 		type EventBrowserRecord,
 		type EventImageFilter,
 		type EventPreviewState
 	} from '$lib/event-browser';
+	import type { EventPreviewHit, EventPreviewPage } from '$lib/control-client';
 	import type { CameraListItem, RecordingEvent } from '$lib/types';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -30,6 +28,9 @@
 
 	const today = new Date().toISOString().slice(0, 10);
 	const LIVE_REFRESH_INTERVAL_MS = 5_000;
+	const SEARCH_DEBOUNCE_MS = 250;
+	const MAX_EVENT_KEYFRAME_BYTES = 4 * 1_048_576;
+	const MAX_RETAINED_PAGE_TOKENS = 32;
 	const eventKinds = ['all', 'person', 'vehicle', 'motion', 'story'] as const;
 	const imageFilters: readonly { value: EventImageFilter; label: string }[] = [
 		{ value: 'all', label: 'Any image' },
@@ -59,40 +60,56 @@
 	const previewControllers = new Map<string, AbortController>();
 	let previewStates = $state.raw<Record<string, EventPreviewState>>({});
 	const maxConcurrentPreviews = 2;
-	let dayStartMs = $state(0);
-	let loadedStartMs = $state(0);
-	let nextWindowDurationMs = $state(EVENT_BROWSER_INITIAL_WINDOW_MS);
-	let resultPage = $state(0);
+	let pageTokens = $state.raw<string[]>(['']);
+	let pageTokenBase = $state(0);
+	let pageIndex = $state(0);
+	let nextPageToken = $state('');
 	let loadingEarlier = $state(false);
+	let searchTimer: number | undefined;
+	let selectedIdentity = $state<{ eventId: string; cameraId: string } | null>(null);
+	let selectedDetachedRecord = $state.raw<EventBrowserRecord | null>(null);
+	let selectionError = $state<string | null>(null);
+	let recoveryNotice = $state<string | null>(null);
+	type EventPageState = {
+		eventPageToken?: string;
+		eventPageTokens?: string[];
+		eventPageTokenBase?: number;
+		eventPageIndex?: number;
+		eventScrollY?: number;
+	};
+	let noResultsSuggestion = $state<{
+		label: string;
+		update: Partial<EventBrowserFilters>;
+	} | null>(null);
 	let isToday = $derived(filters.date === currentDate);
-	let filteredRecords = $derived(filterEventBrowserRecords(records, filters));
-	let visibleRecords = $derived(
-		filteredRecords.slice(
-			resultPage * EVENT_BROWSER_PAGE_SIZE,
-			(resultPage + 1) * EVENT_BROWSER_PAGE_SIZE
-		)
-	);
+	let visibleRecords = $derived(records);
 	let visibleResultStart = $derived(
-		filteredRecords.length === 0 ? 0 : resultPage * EVENT_BROWSER_PAGE_SIZE + 1
+		records.length === 0 ? 0 : pageIndex * EVENT_BROWSER_PAGE_SIZE + 1
 	);
-	let visibleResultEnd = $derived(
-		Math.min((resultPage + 1) * EVENT_BROWSER_PAGE_SIZE, filteredRecords.length)
-	);
+	let visibleResultEnd = $derived(pageIndex * EVENT_BROWSER_PAGE_SIZE + records.length);
 	let selectedRecord = $derived(
 		selectedKey === null
 			? null
-			: (records.find((record) => eventBrowserRecordKey(record) === selectedKey) ?? null)
+			: (records.find((record) => eventBrowserRecordKey(record) === selectedKey) ??
+					(selectedDetachedRecord && eventBrowserRecordKey(selectedDetachedRecord) === selectedKey
+						? selectedDetachedRecord
+						: null))
 	);
 	let availableTypes = $derived(
 		[...new Set(records.map((record) => record.event.kind.toLocaleLowerCase()))].toSorted()
 	);
-	let noResultsSuggestion = $derived(eventNoResultsSuggestion(records, filters));
 	let noResultsClauses = $derived.by(() => {
 		const update = noResultsSuggestion?.update ?? {};
 		const constrains = (key: keyof EventBrowserFilters) =>
 			Object.prototype.hasOwnProperty.call(update, key);
 		const cameraName = cameras.find((camera) => camera.id === filters.cameraId)?.name;
 		return [
+			filters.startTime
+				? { label: `from:${filters.startTime} UTC`, constraining: constrains('startTime') }
+				: null,
+			filters.endTime
+				? { label: `to:${filters.endTime} UTC`, constraining: constrains('endTime') }
+				: null,
 			filters.cameraId
 				? {
 						label: `camera:${cameraName ?? filters.cameraId}`,
@@ -103,6 +120,7 @@
 			filters.source
 				? { label: `source:${filters.source}`, constraining: constrains('source') }
 				: null,
+			filters.zone ? { label: `zone:${filters.zone}`, constraining: constrains('zone') } : null,
 			filters.minimumConfidence === null
 				? null
 				: {
@@ -118,11 +136,7 @@
 	});
 
 	onMount(() => {
-		const requestedEventId = page.url.searchParams.get('event');
-		const requestedEventCamera = page.url.searchParams.get('eventCamera');
-		if (requestedEventId && requestedEventCamera) {
-			selectedKey = `${encodeURIComponent(requestedEventCamera)}:${encodeURIComponent(requestedEventId)}`;
-		}
+		restoreSelection(new URL(window.location.href).searchParams);
 		void initialize();
 		const refreshTimer = window.setInterval(() => {
 			currentDate = new Date().toISOString().slice(0, 10);
@@ -131,21 +145,70 @@
 		const handleVisibilityChange = () => {
 			if (!document.hidden) void refreshRecentEvents();
 		};
+		const handlePopState = () => {
+			const url = new URL(window.location.href);
+			const nextFilters = parseEventBrowserFilters(url.searchParams, currentDate);
+			const filtersChanged =
+				eventBrowserSearchParams(nextFilters).toString() !==
+				eventBrowserSearchParams(filters).toString();
+			filters = nextFilters;
+			restoreSelection(url.searchParams);
+			if (!filtersChanged) return;
+			const state = history.state as EventPageState | null;
+			pageTokens = state?.eventPageTokens ?? [''];
+			pageTokenBase = Number.isInteger(state?.eventPageTokenBase)
+				? Math.max(0, state!.eventPageTokenBase!)
+				: 0;
+			const token = state?.eventPageToken ?? '';
+			const index = Number.isInteger(state?.eventPageIndex) ? state!.eventPageIndex! : 0;
+			void loadPage(token, Math.max(0, index)).then(() => {
+				if (typeof state?.eventScrollY === 'number') window.scrollTo({ top: state.eventScrollY });
+			});
+		};
 		document.addEventListener('visibilitychange', handleVisibilityChange);
+		window.addEventListener('popstate', handlePopState);
 		return () => {
 			window.clearInterval(refreshTimer);
+			if (searchTimer !== undefined) window.clearTimeout(searchTimer);
 			document.removeEventListener('visibilitychange', handleVisibilityChange);
+			window.removeEventListener('popstate', handlePopState);
 			loadController?.abort();
 			refreshController?.abort();
 			cancelPreviews();
-			releaseRecordPreviews(records);
+			const detachedRecords = records;
+			const detachedSelection = selectedDetachedRecord;
+			queueMicrotask(() => {
+				releaseRecordPreviews(detachedRecords);
+				if (detachedSelection) releaseEventPreview(detachedSelection);
+			});
 		};
 	});
 
 	async function initialize(): Promise<void> {
 		try {
 			cameras = await controlClient.getCameras();
-			await loadEvents(filters.date);
+			const state = page.state as EventPageState;
+			const restoredTokens = state.eventPageTokens?.filter(
+				(token): token is string => typeof token === 'string'
+			);
+			const restoredIndex = Number.isInteger(state.eventPageIndex)
+				? Math.max(0, state.eventPageIndex ?? 0)
+				: 0;
+			const restoredBase = Number.isInteger(state.eventPageTokenBase)
+				? Math.max(0, state.eventPageTokenBase ?? 0)
+				: 0;
+			if (restoredTokens?.[restoredIndex - restoredBase] !== undefined) {
+				pageTokens = restoredTokens;
+				pageTokenBase = restoredBase;
+				await loadPage(restoredTokens[restoredIndex - restoredBase]!, restoredIndex);
+			} else {
+				await loadFirstPage();
+			}
+			syncUrl();
+			if (typeof state.eventScrollY === 'number') {
+				await tick();
+				window.scrollTo({ top: state.eventScrollY });
+			}
 		} catch (cause) {
 			loadController?.abort();
 			error = cause instanceof Error ? cause.message : 'Failed to load events';
@@ -155,28 +218,37 @@
 	}
 
 	async function refreshRecentEvents(): Promise<void> {
-		if (!isToday || loading || loadingEarlier || refreshing || cameras.length === 0) return;
-		const refreshDate = filters.date;
+		if (
+			!isToday ||
+			pageIndex !== 0 ||
+			loading ||
+			loadingEarlier ||
+			refreshing ||
+			cameras.length === 0
+		) {
+			return;
+		}
+		const refreshVersion = requestVersion;
 		const controller = new AbortController();
 		refreshController = controller;
 		refreshing = true;
-		const day = eventBrowserDayBounds(filters.date);
 		try {
-			const result = await controlClient.queryStoredTimeline({
-				sourceIds: cameras.map((camera) => camera.id),
-				startMs: Math.max(day.startMs, day.endMs - EVENT_BROWSER_INITIAL_WINDOW_MS),
-				endMs: day.endMs,
-				includeEvents: true,
-				includeAttachments: false,
-				includeAvailability: false,
-				signal: controller.signal,
-				onPage: (page) => {
-					if (controller.signal.aborted || filters.date !== refreshDate) return;
-					records = mergeEventRecords(records, eventRecords(page.events));
+			const result = await queryEventPage(filters, '', controller.signal);
+			if (controller.signal.aborted || refreshVersion !== requestVersion) return;
+			const incoming = eventRecords(result.hits);
+			const previous = records;
+			records = mergeEventRecords(previous, incoming);
+			nextPageToken = result.nextPageToken;
+			await tick();
+			for (const record of previous) {
+				if (
+					!records.some(
+						(candidate) => eventBrowserRecordKey(candidate) === eventBrowserRecordKey(record)
+					)
+				) {
+					releaseEventPreview(record);
 				}
-			});
-			if (controller.signal.aborted || filters.date !== refreshDate) return;
-			records = mergeEventRecords(records, eventRecords(result.events));
+			}
 			refreshDelayed = false;
 		} catch {
 			if (!controller.signal.aborted) refreshDelayed = true;
@@ -188,10 +260,18 @@
 
 	function refreshEvents(): void {
 		if (isToday) void refreshRecentEvents();
-		else void loadEvents(filters.date);
+		else void loadPage(pageTokens[pageIndex - pageTokenBase] ?? '', pageIndex);
 	}
 
-	async function loadEvents(date: string): Promise<void> {
+	async function loadFirstPage(): Promise<void> {
+		pageTokens = [''];
+		pageTokenBase = 0;
+		pageIndex = 0;
+		nextPageToken = '';
+		await loadPage('', 0);
+	}
+
+	async function loadPage(token: string, targetPage: number, recoverToken = true): Promise<void> {
 		loadController?.abort();
 		refreshController?.abort();
 		refreshController = null;
@@ -202,100 +282,150 @@
 		const version = ++requestVersion;
 		loading = true;
 		error = null;
-		releaseRecordPreviews(records);
+		selectionError = null;
+		noResultsSuggestion = null;
+		const detachedRecords = records;
+		const detachedSelection = selectedDetachedRecord;
 		records = [];
-		resultPage = 0;
-		const day = eventBrowserDayBounds(date);
-		dayStartMs = day.startMs;
-		loadedStartMs = day.endMs;
-		nextWindowDurationMs = EVENT_BROWSER_INITIAL_WINDOW_MS;
+		selectedDetachedRecord = null;
+		await tick();
+		releaseRecordPreviews(detachedRecords);
+		if (detachedSelection) releaseEventPreview(detachedSelection);
 		try {
-			do {
-				await loadPreviousWindow(controller, version);
-			} while (
-				loadedStartMs > dayStartMs &&
-				(records.length < EVENT_BROWSER_PAGE_SIZE ||
-					(selectedKey !== null &&
-						!records.some((record) => eventBrowserRecordKey(record) === selectedKey)))
-			);
-			if (version !== requestVersion) return;
-			if (
-				selectedKey !== null &&
-				!records.some((record) => eventBrowserRecordKey(record) === selectedKey)
-			) {
-				selectedKey = null;
+			const result = await queryEventPage(filters, token, controller.signal);
+			if (controller.signal.aborted || version !== requestVersion) return;
+			records = eventRecords(result.hits);
+			pageIndex = targetPage;
+			nextPageToken = result.nextPageToken;
+			const relativePage = targetPage - pageTokenBase;
+			pageTokens = [...pageTokens.slice(0, relativePage), token];
+			if (pageTokens.length > MAX_RETAINED_PAGE_TOKENS) {
+				const removed = pageTokens.length - MAX_RETAINED_PAGE_TOKENS;
+				pageTokens = pageTokens.slice(removed);
+				pageTokenBase += removed;
 			}
-			const selected = records.find((record) => eventBrowserRecordKey(record) === selectedKey);
+			let selected = records.find((record) => eventBrowserRecordKey(record) === selectedKey);
+			if (!selected && selectedIdentity) {
+				const selectedPage = await queryEventPage(filters, '', controller.signal, 1, [
+					selectedIdentity.eventId
+				]);
+				if (controller.signal.aborted || version !== requestVersion) return;
+				selectedDetachedRecord =
+					eventRecords(selectedPage.hits).find(
+						(record) => eventBrowserRecordKey(record) === selectedKey
+					) ?? null;
+				selected = selectedDetachedRecord ?? undefined;
+			}
 			if (selected) requestEventPreview(selected);
-			syncUrl();
+			else if (selectedIdentity)
+				selectionError = 'The selected event is not available on this page.';
+			if (records.length === 0) {
+				loading = false;
+				await findNoResultsSuggestion(version, controller.signal);
+			}
 		} catch (cause) {
 			if (controller.signal.aborted || version !== requestVersion) return;
-			error = cause instanceof Error ? cause.message : 'Failed to load events';
+			const message = cause instanceof Error ? cause.message : 'Failed to load events';
+			if (token && recoverToken && /page token|snapshot changed/i.test(message)) {
+				recoveryNotice = 'Events changed while you were browsing. Refreshed from the newest page.';
+				await loadFirstPage();
+				return;
+			}
+			error = message;
 		} finally {
-			if (version === requestVersion) loading = false;
+			if (version === requestVersion) {
+				loading = false;
+				if (loadController === controller) loadController = null;
+			}
 		}
 	}
 
-	async function loadPreviousWindow(controller: AbortController, version: number): Promise<void> {
-		const window = previousEventBrowserWindow(dayStartMs, loadedStartMs, nextWindowDurationMs);
-		if (!window) return;
-		const result = await controlClient.queryStoredTimeline({
-			sourceIds: cameras.map((camera) => camera.id),
-			startMs: window.startMs,
-			endMs: window.endMs,
-			includeEvents: true,
-			includeAttachments: false,
-			includeAvailability: false,
-			signal: controller.signal,
-			onPage: (page) => {
-				if (version !== requestVersion) return;
-				records = mergeEventRecords(records, eventRecords(page.events));
-			}
+	function queryEventPage(
+		queryFilters: EventBrowserFilters,
+		pageToken: string,
+		signal: AbortSignal,
+		pageSize = EVENT_BROWSER_PAGE_SIZE,
+		eventIds: readonly string[] = []
+	): Promise<EventPreviewPage> {
+		const bounds = eventBrowserQueryBounds(queryFilters);
+		return controlClient.searchEventMetadata({
+			eventIds,
+			sourceIds: queryFilters.cameraId
+				? [queryFilters.cameraId]
+				: cameras.map((camera) => camera.id),
+			streamId: 'main',
+			startMs: bounds.startMs,
+			endMs: bounds.endMs,
+			eventTypes: queryFilters.type ? [queryFilters.type] : [],
+			origins: queryFilters.source ? [queryFilters.source] : [],
+			zones: queryFilters.zone ? [queryFilters.zone] : [],
+			minimumConfidence: queryFilters.minimumConfidence ?? undefined,
+			image: queryFilters.image,
+			text: queryFilters.query || undefined,
+			pageSize,
+			pageToken: pageToken || undefined,
+			signal
 		});
-		if (version !== requestVersion) return;
-		records = mergeEventRecords(records, eventRecords(result.events));
-		loadedStartMs = window.startMs;
-		nextWindowDurationMs = window.nextDurationMs;
 	}
 
 	async function showEarlierEvents(): Promise<void> {
-		const nextPageStart = (resultPage + 1) * EVENT_BROWSER_PAGE_SIZE;
-		if (nextPageStart < filteredRecords.length) {
-			resultPage += 1;
-			eventuallyEvictDistantPreviews();
-			return;
-		}
-		if (loadedStartMs <= dayStartMs || !loadController || loadingEarlier) return;
-		const controller = loadController;
-		const version = requestVersion;
+		if (!nextPageToken || loadingEarlier) return;
 		loadingEarlier = true;
 		try {
-			const previousCount = filteredRecords.length;
-			await loadPreviousWindow(controller, version);
-			if (version !== requestVersion) return;
-			if (filteredRecords.length > previousCount) {
-				resultPage = Math.floor(previousCount / EVENT_BROWSER_PAGE_SIZE);
-				eventuallyEvictDistantPreviews();
-			}
-		} catch (cause) {
-			if (!controller.signal.aborted && version === requestVersion) {
-				error = cause instanceof Error ? cause.message : 'Failed to load earlier events';
-			}
+			const targetPage = pageIndex + 1;
+			const token = pageTokens[targetPage - pageTokenBase] ?? nextPageToken;
+			await loadPage(token, targetPage);
+			syncUrl();
 		} finally {
 			loadingEarlier = false;
 		}
 	}
 
 	function showNewerEvents(): void {
-		resultPage = Math.max(0, resultPage - 1);
-		eventuallyEvictDistantPreviews();
+		if (pageIndex <= pageTokenBase || loading) return;
+		void loadPage(pageTokens[pageIndex - 1 - pageTokenBase] ?? '', pageIndex - 1).then(() =>
+			syncUrl()
+		);
 	}
 
-	function eventRecords(events: readonly RecordingEvent[]): EventBrowserRecord[] {
+	function eventRecords(hits: readonly EventPreviewHit[]): EventBrowserRecord[] {
 		const camerasById = new Map(cameras.map((camera) => [camera.id, camera]));
-		return events.flatMap((event) => {
-			const camera = event.source_id ? camerasById.get(event.source_id) : undefined;
-			return camera ? [{ camera, event }] : [];
+		return hits.flatMap((hit) => {
+			const camera = camerasById.get(hit.sourceId);
+			if (!camera) return [];
+			const previewKeyframe = hit.keyframes
+				.filter((keyframe) => keyframe.byteLength <= MAX_EVENT_KEYFRAME_BYTES)
+				.toSorted(
+					(left, right) =>
+						Math.abs(left.eventTimeMs - hit.startMs) - Math.abs(right.eventTimeMs - hit.startMs)
+				)[0];
+			const hasPreview = hit.hasImageAttachment || previewKeyframe !== undefined;
+			const event: RecordingEvent = {
+				id: hit.eventId,
+				source_id: hit.sourceId,
+				source: hit.origin,
+				kind: hit.eventType,
+				start_time_ms: hit.startMs,
+				end_time_ms: hit.endMs,
+				confidence: hit.confidence,
+				bbox: hit.bbox,
+				zone: hit.zone,
+				text: hit.text,
+				thumbnail_url: null,
+				attachments: hasPreview
+					? [
+							{
+								id: 'canonical-preview',
+								type: 'thumbnail',
+								content_type: 'image/jpeg',
+								byte_length: previewKeyframe?.byteLength ?? null,
+								ordinal: 0,
+								timestamp_ms: previewKeyframe?.eventTimeMs ?? hit.startMs
+							}
+						]
+					: []
+			};
+			return [{ camera, event, previewKeyframe }];
 		});
 	}
 
@@ -309,16 +439,27 @@
 			const existing = merged.get(key);
 			merged.set(
 				key,
-				existing?.event.thumbnail_url && !record.event.thumbnail_url ? existing : record
+				existing?.previewObjectUrl
+					? {
+							...record,
+							event: { ...record.event, thumbnail_url: existing.event.thumbnail_url },
+							previewObjectUrl: true
+						}
+					: record
 			);
 		}
-		return [...merged.values()];
+		return incoming.map((record) => merged.get(eventBrowserRecordKey(record)) ?? record);
 	}
 
 	function requestEventPreview(record: EventBrowserRecord): void {
 		const key = eventBrowserRecordKey(record);
 		if (record.event.thumbnail_url || previewKeys.has(key)) return;
-		if (!record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')) return;
+		if (!record.previewKeyframe) {
+			if (record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')) {
+				setPreviewState(key, 'unavailable');
+			}
+			return;
+		}
 		previewKeys.add(key);
 		setPreviewState(key, 'queued');
 		previewQueue.push(record);
@@ -343,35 +484,35 @@
 		const controller = new AbortController();
 		previewControllers.set(key, controller);
 		try {
-			const result = await controlClient.queryStoredTimeline({
-				sourceIds: [record.camera.id],
-				startMs: record.event.start_time_ms,
-				endMs: Math.max(
-					record.event.end_time_ms ?? record.event.start_time_ms + 1,
-					record.event.start_time_ms + 1
-				),
-				includeEvents: true,
-				includeAttachments: true,
-				includeAvailability: false,
-				signal: controller.signal
-			});
-			const event = result.events.find((candidate) => candidate.id === record.event.id);
-			if (!event?.thumbnail_url) {
-				previewKeys.delete(key);
-				setPreviewState(key, 'unavailable');
-				return;
-			}
+			const media = await controlClient.fetchEventPreviewKeyframe(
+				record.previewKeyframe!,
+				controller.signal
+			);
+			const url = await decodeEventKeyframePreview(media);
 			const shouldKeep =
 				selectedKey === key ||
 				visibleRecords.some((candidate) => eventBrowserRecordKey(candidate) === key);
 			if (!shouldKeep) {
-				releaseEventPreview(event);
+				URL.revokeObjectURL(url);
 				previewKeys.delete(key);
 				return;
 			}
 			records = records.map((candidate) =>
-				eventBrowserRecordKey(candidate) === key ? { ...candidate, event } : candidate
+				eventBrowserRecordKey(candidate) === key
+					? {
+							...candidate,
+							event: { ...candidate.event, thumbnail_url: url },
+							previewObjectUrl: true
+						}
+					: candidate
 			);
+			if (selectedDetachedRecord && eventBrowserRecordKey(selectedDetachedRecord) === key) {
+				selectedDetachedRecord = {
+					...selectedDetachedRecord,
+					event: { ...selectedDetachedRecord.event, thumbnail_url: url },
+					previewObjectUrl: true
+				};
+			}
 		} catch (cause) {
 			if (!controller.signal.aborted) {
 				previewKeys.delete(key);
@@ -402,62 +543,68 @@
 		previewStates = { ...previewStates, [key]: state };
 	}
 
-	function eventuallyEvictDistantPreviews(): void {
-		queueMicrotask(evictDistantPreviews);
-	}
-
-	function evictDistantPreviews(): void {
-		const retainedKeys = new Set(visibleRecords.map(eventBrowserRecordKey));
-		if (selectedKey) retainedKeys.add(selectedKey);
-		records = records.map((record) => {
-			const key = eventBrowserRecordKey(record);
-			if (retainedKeys.has(key) || !record.event.thumbnail_blob) return record;
-			releaseEventPreview(record.event);
-			previewKeys.delete(key);
-			return {
-				...record,
-				event: { ...record.event, thumbnail_url: null, thumbnail_blob: undefined }
-			};
-		});
-	}
-
 	function releaseRecordPreviews(current: readonly EventBrowserRecord[]): void {
-		for (const record of current) releaseEventPreview(record.event);
+		for (const record of current) releaseEventPreview(record);
 	}
 
-	function releaseEventPreview(event: RecordingEvent): void {
-		if (event.thumbnail_blob && event.thumbnail_url?.startsWith('blob:')) {
-			URL.revokeObjectURL(event.thumbnail_url);
+	function releaseEventPreview(record: EventBrowserRecord): void {
+		if (record.previewObjectUrl && record.event.thumbnail_url?.startsWith('blob:')) {
+			URL.revokeObjectURL(record.event.thumbnail_url);
 		}
 	}
 
-	function updateFilters(update: Partial<EventBrowserFilters>): void {
+	function updateFilters(update: Partial<EventBrowserFilters>, debounce = false): void {
 		const next = { ...filters, ...update };
-		const dateChanged = next.date !== filters.date;
-		const retainedPreviewKeys = new Set(
-			filterEventBrowserRecords(records, next)
-				.slice(0, EVENT_BROWSER_PAGE_SIZE)
-				.map(eventBrowserRecordKey)
-		);
-		cancelPreviews(dateChanged ? undefined : retainedPreviewKeys);
+		loadController?.abort();
+		refreshController?.abort();
+		requestVersion += 1;
+		cancelPreviews();
+		const detachedRecords = records;
+		const detachedSelection = selectedDetachedRecord;
+		records = [];
+		selectedDetachedRecord = null;
+		void tick().then(() => {
+			releaseRecordPreviews(detachedRecords);
+			if (detachedSelection) releaseEventPreview(detachedSelection);
+		});
 		filters = next;
-		resultPage = 0;
-		eventuallyEvictDistantPreviews();
 		selectedKey = null;
+		selectedIdentity = null;
+		selectionError = null;
 		focusedKey = null;
-		if (dateChanged) void loadEvents(next.date);
-		else syncUrl();
+		pageTokens = [''];
+		pageTokenBase = 0;
+		pageIndex = 0;
+		nextPageToken = '';
+		loading = true;
+		syncUrl();
+		if (searchTimer !== undefined) window.clearTimeout(searchTimer);
+		if (debounce) {
+			searchTimer = window.setTimeout(() => {
+				searchTimer = undefined;
+				void loadFirstPage();
+			}, SEARCH_DEBOUNCE_MS);
+		} else {
+			void loadFirstPage();
+		}
 	}
 
 	function selectRecord(record: EventBrowserRecord): void {
 		selectedKey = eventBrowserRecordKey(record);
+		selectedIdentity = { eventId: record.event.id, cameraId: record.camera.id };
+		selectionError = null;
 		requestEventPreview(record);
-		syncUrl();
+		syncUrl('push');
 	}
 
 	function closeDetail(): void {
+		const detachedSelection = selectedDetachedRecord;
 		selectedKey = null;
+		selectedIdentity = null;
+		selectedDetachedRecord = null;
+		selectionError = null;
 		syncUrl();
+		if (detachedSelection) void tick().then(() => releaseEventPreview(detachedSelection));
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
@@ -481,9 +628,68 @@
 		document.querySelector<HTMLElement>(`[data-event-card="${CSS.escape(focusedKey)}"]`)?.focus();
 	}
 
-	function syncUrl(): void {
+	function syncUrl(mode: 'push' | 'replace' = 'replace'): void {
 		const search = eventBrowserSearchParams(filters, selectedRecord);
-		replaceState(`${resolve('/events')}?${search}`, {});
+		if (!selectedRecord && selectedIdentity) {
+			search.set('event', selectedIdentity.eventId);
+			search.set('eventCamera', selectedIdentity.cameraId);
+		}
+		const state: EventPageState = {
+			eventPageToken: pageTokens[pageIndex - pageTokenBase] ?? '',
+			eventPageTokens: pageTokens,
+			eventPageTokenBase: pageTokenBase,
+			eventPageIndex: pageIndex,
+			eventScrollY: window.scrollY
+		};
+		const url = `${resolve('/events')}?${search}`;
+		if (mode === 'push') pushState(url, state);
+		else replaceState(url, state);
+	}
+
+	function restoreSelection(params: URLSearchParams): void {
+		const eventId = params.get('event');
+		const cameraId = params.get('eventCamera');
+		selectedIdentity = eventId && cameraId ? { eventId, cameraId } : null;
+		selectedKey = selectedIdentity
+			? `${encodeURIComponent(selectedIdentity.cameraId)}:${encodeURIComponent(selectedIdentity.eventId)}`
+			: null;
+	}
+
+	async function findNoResultsSuggestion(version: number, signal: AbortSignal): Promise<void> {
+		const candidates: Array<{
+			label: string;
+			update: Partial<EventBrowserFilters>;
+		}> = [
+			...(filters.query ? [{ label: `Clear “${filters.query}”`, update: { query: '' } }] : []),
+			...(filters.minimumConfidence !== null
+				? [{ label: 'Remove confidence limit', update: { minimumConfidence: null } }]
+				: []),
+			...(filters.cameraId ? [{ label: 'Any camera', update: { cameraId: null } }] : []),
+			...(filters.type ? [{ label: 'Any event type', update: { type: null } }] : []),
+			...(filters.source ? [{ label: 'Any source', update: { source: null } }] : []),
+			...(filters.zone ? [{ label: 'Any zone', update: { zone: null } }] : []),
+			...(filters.image !== 'all'
+				? [{ label: 'Any image state', update: { image: 'all' as const } }]
+				: []),
+			...(filters.startTime || filters.endTime
+				? [{ label: 'Use the full day', update: { startTime: null, endTime: null } }]
+				: [])
+		];
+		for (const candidate of candidates) {
+			try {
+				const result = await queryEventPage({ ...filters, ...candidate.update }, '', signal);
+				if (signal.aborted || version !== requestVersion) return;
+				if (result.hits.length === 0) continue;
+				const count = result.nextPageToken ? '' : ` · ${result.hits.length} results`;
+				noResultsSuggestion = {
+					label: `${candidate.label}${count}`,
+					update: candidate.update
+				};
+				return;
+			} catch {
+				if (signal.aborted || version !== requestVersion) return;
+			}
+		}
 	}
 
 	function cameraLabel(camera: CameraListItem): string {
@@ -492,12 +698,31 @@
 
 	function clearFilters(): void {
 		updateFilters({
+			startTime: null,
+			endTime: null,
 			cameraId: null,
 			type: null,
 			source: null,
+			zone: null,
 			minimumConfidence: null,
 			image: 'all',
 			query: ''
+		});
+	}
+
+	function updateStartTime(value: string): void {
+		const startTime = value || null;
+		updateFilters({
+			startTime,
+			...(startTime && filters.endTime && startTime >= filters.endTime ? { endTime: null } : {})
+		});
+	}
+
+	function updateEndTime(value: string): void {
+		const endTime = value || null;
+		updateFilters({
+			endTime,
+			...(endTime && filters.startTime && endTime <= filters.startTime ? { startTime: null } : {})
 		});
 	}
 </script>
@@ -542,8 +767,10 @@
 		class="space-y-2 rounded-md border border-hairline bg-surface p-3"
 		aria-label="Event filters"
 	>
-		<div class="grid gap-2 md:grid-cols-[minmax(13rem,1fr)_10rem_10rem_9rem_9rem]">
-			<label class="relative block">
+		<div
+			class="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(13rem,1fr)_9.5rem_8rem_8rem_10rem_9rem_9rem]"
+		>
+			<label class="relative block md:col-span-2 xl:col-span-1">
 				<SearchIcon
 					class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-text-faint"
 				/>
@@ -551,9 +778,9 @@
 				<input
 					type="search"
 					value={filters.query}
-					placeholder="Camera, type, source, zone…"
+					placeholder="Search indexed event text…"
 					class="h-9 w-full rounded-sm border border-hairline bg-raised pr-3 pl-8 text-xs outline-none placeholder:text-text-faint focus:border-ring focus:ring-1 focus:ring-ring"
-					oninput={(event) => updateFilters({ query: event.currentTarget.value })}
+					oninput={(event) => updateFilters({ query: event.currentTarget.value }, true)}
 				/>
 			</label>
 			<label class="grid gap-1 font-mono text-2xs tracking-caps text-text-faint">
@@ -563,6 +790,24 @@
 					value={filters.date}
 					class="h-9 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
 					onchange={(event) => updateFilters({ date: event.currentTarget.value })}
+				/>
+			</label>
+			<label class="grid gap-1 font-mono text-2xs tracking-caps text-text-faint">
+				<span class="sr-only">Start time UTC</span>
+				<input
+					type="time"
+					value={filters.startTime ?? ''}
+					class="h-9 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					onchange={(event) => updateStartTime(event.currentTarget.value)}
+				/>
+			</label>
+			<label class="grid gap-1 font-mono text-2xs tracking-caps text-text-faint">
+				<span class="sr-only">End time UTC</span>
+				<input
+					type="time"
+					value={filters.endTime ?? ''}
+					class="h-9 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					onchange={(event) => updateEndTime(event.currentTarget.value)}
 				/>
 			</label>
 			<label>
@@ -590,6 +835,9 @@
 							{kind === 'all' ? 'All types' : kind.charAt(0).toUpperCase() + kind.slice(1)}
 						</option>
 					{/each}
+					{#if filters.type && !eventKinds.includes(filters.type as (typeof eventKinds)[number]) && !availableTypes.includes(filters.type)}
+						<option value={filters.type}>{filters.type}</option>
+					{/if}
 					{#each availableTypes.filter((kind) => !eventKinds.includes(kind as (typeof eventKinds)[number])) as kind (kind)}
 						<option value={kind}>{kind}</option>
 					{/each}
@@ -628,6 +876,16 @@
 				/>
 			</label>
 			<label class="flex items-center gap-2 text-xs text-text-muted">
+				Zone
+				<input
+					type="text"
+					value={filters.zone ?? ''}
+					placeholder="Any"
+					class="h-8 w-28 rounded-sm border border-hairline bg-raised px-2 text-xs outline-none placeholder:text-text-faint focus:border-ring focus:ring-1 focus:ring-ring"
+					oninput={(event) => updateFilters({ zone: event.currentTarget.value || null }, true)}
+				/>
+			</label>
+			<label class="flex items-center gap-2 text-xs text-text-muted">
 				Reported by
 				<select
 					value={filters.source ?? ''}
@@ -655,12 +913,24 @@
 	<div class="flex items-center gap-2 text-xs text-text-muted" role="status" aria-live="polite">
 		<span
 			>{loading && records.length === 0
-				? 'Loading events'
-				: `${filteredRecords.length} ${filteredRecords.length === 1 ? 'event' : 'events'}`}</span
+				? loadingEarlier
+					? 'Loading earlier events'
+					: 'Loading events'
+				: `${records.length}${nextPageToken ? '+' : ''} ${records.length === 1 && !nextPageToken ? 'event' : 'events'}`}</span
 		>
 		<span aria-hidden="true">·</span>
 		<span>{eventFilterSummary(filters)}</span>
 	</div>
+	{#if recoveryNotice}
+		<div class="border-y border-primary/30 bg-primary/10 px-4 py-2 text-xs" role="status">
+			{recoveryNotice}
+		</div>
+	{/if}
+	{#if selectionError}
+		<div class="border-y border-hairline bg-raised px-4 py-2 text-xs text-text-muted" role="status">
+			{selectionError}
+		</div>
+	{/if}
 
 	{#if error}
 		<div
@@ -671,18 +941,14 @@
 		</div>
 	{:else if loading && records.length === 0}
 		<div class="grid min-h-64 place-items-center border-y border-hairline text-sm text-text-muted">
-			Loading events…
+			{loadingEarlier ? 'Loading earlier events…' : 'Loading events…'}
 		</div>
-	{:else if filteredRecords.length === 0}
+	{:else if records.length === 0}
 		<div class="space-y-3">
 			<EventNoResultsState
 				clauses={noResultsClauses}
-				title={loadedStartMs > dayStartMs
-					? 'No matching events in the loaded window.'
-					: 'No events found.'}
-				description={loadedStartMs > dayStartMs
-					? `No loaded events match ${eventFilterSummary(filters)}.`
-					: `No events found for ${eventFilterSummary(filters)}.`}
+				title="No events found."
+				description={`No events found for ${eventFilterSummary(filters)}.`}
 				suggestionLabel={noResultsSuggestion?.label}
 				onloosen={noResultsSuggestion
 					? () => updateFilters(noResultsSuggestion!.update)
@@ -690,18 +956,6 @@
 				onclear={clearFilters}
 				class="min-h-64 rounded-md border border-dashed border-hairline-strong"
 			/>
-			{#if loadedStartMs > dayStartMs}
-				<div class="flex justify-center">
-					<button
-						type="button"
-						class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
-						disabled={loadingEarlier}
-						onclick={() => void showEarlierEvents()}
-					>
-						{loadingEarlier ? 'Searching earlier...' : 'Search earlier events'}
-					</button>
-				</div>
-			{/if}
 		</div>
 	{:else}
 		<div
@@ -725,25 +979,23 @@
 				/>
 			{/each}
 		</div>
-		{#if filteredRecords.length > EVENT_BROWSER_PAGE_SIZE || loadedStartMs > dayStartMs}
+		{#if pageIndex > pageTokenBase || nextPageToken}
 			<nav class="flex items-center justify-center gap-3 py-2" aria-label="Event result pages">
 				<button
 					type="button"
 					class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
-					disabled={resultPage === 0}
+					disabled={pageIndex <= pageTokenBase || loading}
 					onclick={showNewerEvents}
 				>
 					Newer events
 				</button>
 				<span class="font-mono text-2xs text-text-faint">
-					{visibleResultStart}-{visibleResultEnd} of {filteredRecords.length} loaded
+					{visibleResultStart}-{visibleResultEnd}{nextPageToken ? '+' : ''}
 				</span>
 				<button
 					type="button"
 					class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
-					disabled={loadingEarlier ||
-						((resultPage + 1) * EVENT_BROWSER_PAGE_SIZE >= filteredRecords.length &&
-							loadedStartMs <= dayStartMs)}
+					disabled={loadingEarlier || loading || !nextPageToken}
 					onclick={() => void showEarlierEvents()}
 				>
 					{loadingEarlier ? 'Loading earlier...' : 'Earlier events'}

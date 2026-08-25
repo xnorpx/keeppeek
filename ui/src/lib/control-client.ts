@@ -19,7 +19,9 @@ import {
 	DownloadExportSchema,
 	EventSearchCommandSchema,
 	EventSearchField,
+	EventImageFilter as ProtoEventImageFilter,
 	EventSearchMediaObjectSchema,
+	EventMetadataSearchSchema,
 	EventTextSearchSchema,
 	EventOrigin,
 	ExportCommandSchema,
@@ -90,6 +92,7 @@ import {
 	type StoredMediaState,
 	type MotionDetectionResult,
 	type Request,
+	type QueryEvents,
 	type Response as ControlResponse
 } from './proto/webrtc_pb';
 import type {
@@ -189,8 +192,14 @@ export type EventPreviewHit = {
 	eventId: string;
 	sourceId: string;
 	eventType: string;
+	origin: RecordingEvent['source'];
 	startMs: number;
 	endMs: number | null;
+	confidence: number | null;
+	bbox: [number, number, number, number] | null;
+	zone: string | null;
+	text: string | null;
+	hasImageAttachment: boolean;
 	previewStartMs: number;
 	previewEndMs: number;
 	keyframes: EventPreviewKeyframe[];
@@ -201,6 +210,23 @@ export type EventPreviewPage = {
 	hits: EventPreviewHit[];
 	nextPageToken: string;
 	candidatesTruncated: boolean;
+};
+
+export type EventMetadataSearchOptions = {
+	eventIds?: readonly string[];
+	sourceIds: readonly string[];
+	streamId: 'main' | 'sub';
+	startMs: number;
+	endMs: number;
+	eventTypes?: readonly string[];
+	origins?: readonly RecordingEvent['source'][];
+	zones?: readonly string[];
+	minimumConfidence?: number;
+	image?: 'all' | 'with' | 'without';
+	text?: string;
+	pageSize?: number;
+	pageToken?: string;
+	signal?: AbortSignal;
 };
 
 export type EncodedEventKeyframe = {
@@ -435,12 +461,76 @@ export class ControlClient {
 		pageToken?: string;
 		signal?: AbortSignal;
 	}): Promise<EventPreviewPage> {
-		if (options.signal?.aborted) throw timelineAbortError();
+		return this.runEventSearch(options.signal, (queryId) =>
+			create(QueryEventsSchema, {
+				queryId,
+				search: {
+					case: 'text',
+					value: create(EventTextSearchSchema, {
+						query: options.eventType,
+						field: EventSearchField.EVENT_TYPE
+					})
+				},
+				sourceId: options.sourceId,
+				streamId: options.streamId,
+				startTime: timestampFromDate(new Date(options.startMs)),
+				endTime: timestampFromDate(new Date(options.endMs)),
+				previewBefore: durationFromMs(5_000),
+				previewAfter: durationFromMs(10_000),
+				pageSize: 128,
+				channel: DataChannelKind.RELIABLE_DATA,
+				pageToken: options.pageToken ?? ''
+			})
+		);
+	}
+
+	async searchEventMetadata(options: EventMetadataSearchOptions): Promise<EventPreviewPage> {
+		const image =
+			options.image === 'with'
+				? ProtoEventImageFilter.WITH_IMAGE
+				: options.image === 'without'
+					? ProtoEventImageFilter.WITHOUT_IMAGE
+					: ProtoEventImageFilter.ANY;
+		return this.runEventSearch(options.signal, (queryId) =>
+			create(QueryEventsSchema, {
+				queryId,
+				search: {
+					case: 'metadata',
+					value: create(EventMetadataSearchSchema, {
+						eventIds: [...(options.eventIds ?? [])],
+						sourceIds: [...options.sourceIds],
+						eventTypes: [...(options.eventTypes ?? [])],
+						origins: (options.origins ?? []).map((origin) =>
+							origin === 'keeppeek' ? EventOrigin.KEEPPEEK : EventOrigin.CAMERA
+						),
+						zones: [...(options.zones ?? [])],
+						minimumConfidence: options.minimumConfidence,
+						image,
+						text: options.text?.trim() || undefined
+					})
+				},
+				streamId: options.streamId,
+				startTime: timestampFromDate(new Date(options.startMs)),
+				endTime: timestampFromDate(new Date(options.endMs)),
+				previewBefore: durationFromMs(5_000),
+				previewAfter: durationFromMs(10_000),
+				pageSize: options.pageSize ?? 50,
+				channel: DataChannelKind.RELIABLE_DATA,
+				pageToken: options.pageToken ?? ''
+			})
+		);
+	}
+
+	private async runEventSearch(
+		signal: AbortSignal | undefined,
+		query: (queryId: string) => QueryEvents
+	): Promise<EventPreviewPage> {
+		if (signal?.aborted) throw timelineAbortError();
 		const queryId = `event-search-${this.#nextStoredId++}`;
 		const completed = new Promise<EventPreviewPage>((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.#eventSearchPending.delete(queryId);
-				reject(new Error('Event preview search timed out.'));
+				reject(new Error('Event search timed out.'));
 			}, controlTimeoutMs);
 			this.#eventSearchPending.set(queryId, {
 				hits: [],
@@ -462,30 +552,12 @@ export class ControlClient {
 			}
 			void this.cancelEventSearchQuery(queryId).catch(() => undefined);
 		};
-		options.signal?.addEventListener('abort', abort, { once: true });
+		signal?.addEventListener('abort', abort, { once: true });
 		try {
 			const command = create(EventSearchCommandSchema, {
 				action: {
 					case: 'query',
-					value: create(QueryEventsSchema, {
-						queryId,
-						search: {
-							case: 'text',
-							value: create(EventTextSearchSchema, {
-								query: options.eventType,
-								field: EventSearchField.EVENT_TYPE
-							})
-						},
-						sourceId: options.sourceId,
-						streamId: options.streamId,
-						startTime: timestampFromDate(new Date(options.startMs)),
-						endTime: timestampFromDate(new Date(options.endMs)),
-						previewBefore: durationFromMs(5_000),
-						previewAfter: durationFromMs(10_000),
-						pageSize: 128,
-						channel: DataChannelKind.RELIABLE_DATA,
-						pageToken: options.pageToken ?? ''
-					})
+					value: query(queryId)
 				}
 			});
 			const result = await this.request({ case: 'eventSearchCommand', value: command });
@@ -498,7 +570,7 @@ export class ControlClient {
 			}
 			if (aborted) throw timelineAbortError();
 			awaitingDelivery = true;
-			if (options.signal?.aborted) abort();
+			if (signal?.aborted) abort();
 			return await completed;
 		} catch (error) {
 			const pending = this.#eventSearchPending.get(queryId);
@@ -506,7 +578,7 @@ export class ControlClient {
 			this.#eventSearchPending.delete(queryId);
 			throw error;
 		} finally {
-			options.signal?.removeEventListener('abort', abort);
+			signal?.removeEventListener('abort', abort);
 		}
 	}
 
@@ -2825,12 +2897,27 @@ function eventPreviewHit(hit: ProtoEventSearchHit): EventPreviewHit {
 	if (!hit.startTime || !hit.previewStartTime || !hit.previewEndTime) {
 		throw new Error('Event search result omitted required timestamps.');
 	}
+	const origin =
+		hit.origin === EventOrigin.CAMERA
+			? 'camera'
+			: hit.origin === EventOrigin.KEEPPEEK
+				? 'keeppeek'
+				: null;
+	if (origin === null) throw new Error('Event search result omitted its origin.');
 	return {
 		eventId: hit.eventId,
 		sourceId: hit.sourceId,
 		eventType: hit.eventType,
+		origin,
 		startMs: timestampDate(hit.startTime).getTime(),
 		endMs: hit.endTime ? timestampDate(hit.endTime).getTime() : null,
+		confidence: hit.confidence ?? null,
+		bbox: hit.boundingBox
+			? [hit.boundingBox.x, hit.boundingBox.y, hit.boundingBox.width, hit.boundingBox.height]
+			: null,
+		zone: hit.zone ?? null,
+		text: hit.text ?? null,
+		hasImageAttachment: hit.hasImageAttachment,
 		previewStartMs: timestampDate(hit.previewStartTime).getTime(),
 		previewEndMs: timestampDate(hit.previewEndTime).getTime(),
 		keyframes: hit.keyframes.flatMap((keyframe) =>

@@ -33,7 +33,7 @@ pub use identity::RecordingStreamIdentity;
 pub use media_objects::{EncodedEventKeyframe, EventKeyframeLookup};
 pub use search::{
     DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EncodedEventPreview, EventEmbedding,
-    EventSearch, EventSearchField, EventSearchHit, EventSearchPage, EventSearchTerm,
-    EventSemanticSearchQuery, EventTextSearchQuery,
+    EventImageFilter, EventMetadataQuery, EventSearch, EventSearchField, EventSearchHit,
+    EventSearchPage, EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery,
 };
 pub use segment::RecordingFrame;

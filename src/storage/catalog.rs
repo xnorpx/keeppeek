@@ -1,8 +1,8 @@
 use crate::storage::{
     metadata::{EventSource, TimelineEvent},
     search::{
-        EventEmbedding, EventSearchHit, EventSearchPage, EventSearchTerm, EventSemanticSearchQuery,
-        EventTextSearchQuery, normalize_search_text,
+        EventEmbedding, EventImageFilter, EventMetadataQuery, EventSearchHit, EventSearchPage,
+        EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
     },
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -40,10 +40,25 @@ const RESOLVE_EVENT_KEYFRAME_SQL: &str = "SELECT l.event_id, l.stream_id, e.star
             AND f.sequence = l.fragment_sequence
          JOIN recording_files AS r ON r.id = l.recording_id
          WHERE l.event_id = ?1 AND l.stream_id = ?2";
+const EVENT_SEARCH_COLUMNS: &str = "e.id, e.camera_id, e.stream, e.source, e.kind,
+         e.start_time_ms, e.end_time_ms, e.confidence, e.bbox_json, e.zone,
+         e.thumbnail_filename,
+         (SELECT t.display_value
+          FROM recording_event_search_terms AS t
+          WHERE t.event_id = e.id AND t.field = 'text'
+          ORDER BY t.normalized_value
+          LIMIT 1) AS text";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum EventSearchCursor {
+    Metadata {
+        fingerprint: String,
+        event_snapshot_rowid: i64,
+        search_revision: i64,
+        last_start_time_ms: i64,
+        last_event_id: String,
+    },
     Text {
         fingerprint: String,
         event_snapshot_rowid: i64,
@@ -313,6 +328,10 @@ enum Command {
 }
 
 enum SearchCommand {
+    Metadata {
+        query: EventMetadataQuery,
+        reply: SyncSender<anyhow::Result<EventSearchPage>>,
+    },
     Text {
         query: EventTextSearchQuery,
         reply: SyncSender<anyhow::Result<EventSearchPage>>,
@@ -789,6 +808,19 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub(crate) fn search_event_metadata(
+        &self,
+        query: EventMetadataQuery,
+    ) -> anyhow::Result<EventSearchPage> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.search_tx
+            .send(SearchCommand::Metadata { query, reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
     pub(crate) fn search_event_text(
         &self,
         query: EventTextSearchQuery,
@@ -1038,6 +1070,12 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
 fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>) {
     while let Ok(command) = rx.recv() {
         match command {
+            SearchCommand::Metadata { query, reply } => {
+                let _ = reply.send(pollster::block_on(search_event_metadata(
+                    &connection,
+                    query,
+                )));
+            }
             SearchCommand::Text { query, reply } => {
                 let _ = reply.send(pollster::block_on(search_event_text(&connection, query)));
             }
@@ -2130,6 +2168,159 @@ async fn record_event_search_mutation(
     Ok(())
 }
 
+async fn search_event_metadata(
+    connection: &turso::Connection,
+    query: EventMetadataQuery,
+) -> anyhow::Result<EventSearchPage> {
+    let fingerprint = metadata_search_fingerprint(&query);
+    let cursor = query
+        .page_token
+        .as_deref()
+        .map(decode_search_cursor)
+        .transpose()?;
+    let (event_snapshot_rowid, search_revision, last_start_time_ms, last_event_id) = match cursor {
+        Some(EventSearchCursor::Metadata {
+            fingerprint: token_fingerprint,
+            event_snapshot_rowid,
+            search_revision,
+            last_start_time_ms,
+            last_event_id,
+        }) if token_fingerprint == fingerprint => (
+            event_snapshot_rowid,
+            search_revision,
+            Some(last_start_time_ms),
+            Some(last_event_id),
+        ),
+        Some(_) => anyhow::bail!("event search page token does not match the metadata query"),
+        None => (
+            maximum_rowid(connection, "recording_events").await?,
+            maximum_search_revision(connection).await?,
+            None,
+            None,
+        ),
+    };
+    ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
+
+    let mut sql = format!(
+        "SELECT {EVENT_SEARCH_COLUMNS}
+         FROM recording_events AS e
+         WHERE (e.stream IS NULL OR e.stream = ?)
+           AND e.start_time_ms < ?
+           AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?
+           AND e.rowid <= ?"
+    );
+    let mut params = vec![
+        turso::Value::Text(query.stream_id.clone()),
+        turso::Value::Integer(query.end_time_ms),
+        turso::Value::Integer(query.start_time_ms),
+        turso::Value::Integer(event_snapshot_rowid),
+    ];
+    append_text_filter(&mut sql, "e.camera_id", &query.source_ids, &mut params);
+    append_text_filter(&mut sql, "e.id", &query.event_ids, &mut params);
+    append_text_filter(&mut sql, "lower(e.kind)", &query.event_types, &mut params);
+    let origins = query
+        .origins
+        .iter()
+        .map(|origin| origin.as_str().to_owned())
+        .collect::<Vec<_>>();
+    append_text_filter(&mut sql, "e.source", &origins, &mut params);
+    append_text_filter(&mut sql, "lower(e.zone)", &query.zones, &mut params);
+    if let Some(confidence) = query.minimum_confidence {
+        sql.push_str(" AND e.confidence >= ?");
+        params.push(turso::Value::Real(confidence));
+    }
+    match query.image {
+        EventImageFilter::Any => {}
+        EventImageFilter::WithImage => sql.push_str(" AND e.thumbnail_filename IS NOT NULL"),
+        EventImageFilter::WithoutImage => sql.push_str(" AND e.thumbnail_filename IS NULL"),
+    }
+    if let Some(text) = &query.text {
+        sql.push_str(
+            " AND EXISTS (
+                 SELECT 1 FROM recording_event_search_terms AS t
+                 WHERE t.event_id = e.id
+                   AND t.normalized_value >= ? AND t.normalized_value < ?
+             )",
+        );
+        params.push(turso::Value::Text(text.clone()));
+        params.push(turso::Value::Text(format!("{text}\u{10ffff}")));
+    }
+    if let (Some(last_start_time_ms), Some(last_event_id)) = (last_start_time_ms, last_event_id) {
+        sql.push_str(
+            " AND (
+                 e.start_time_ms < ?
+                 OR (e.start_time_ms = ? AND e.id > ?)
+             )",
+        );
+        params.push(turso::Value::Integer(last_start_time_ms));
+        params.push(turso::Value::Integer(last_start_time_ms));
+        params.push(turso::Value::Text(last_event_id));
+    }
+    sql.push_str(" ORDER BY e.start_time_ms DESC, e.id LIMIT ?");
+    params.push(turso::Value::Integer(i64::from(query.page_size) + 1));
+
+    let mut rows = connection
+        .query(sql, turso::params_from_iter(params))
+        .await?;
+    let mut hits = Vec::with_capacity(query.page_size as usize);
+    let mut has_more = false;
+    while let Some(row) = rows.next().await? {
+        if hits.len() == query.page_size as usize {
+            has_more = true;
+            break;
+        }
+        hits.push(event_search_hit(
+            &row,
+            None,
+            query.preview_before_ms,
+            query.preview_after_ms,
+        )?);
+    }
+    attach_default_previews(connection, &mut hits, &query.stream_id).await?;
+    ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
+    let next_page_token = has_more
+        .then(|| {
+            let last = hits
+                .last()
+                .ok_or_else(|| anyhow::anyhow!("event search page has no cursor row"))?;
+            encode_search_cursor(&EventSearchCursor::Metadata {
+                fingerprint,
+                event_snapshot_rowid,
+                search_revision,
+                last_start_time_ms: last.start_time_ms,
+                last_event_id: last.event_id.clone(),
+            })
+        })
+        .transpose()?;
+    Ok(EventSearchPage {
+        hits,
+        next_page_token,
+        candidates_truncated: false,
+    })
+}
+
+fn append_text_filter(
+    sql: &mut String,
+    column: &str,
+    values: &[String],
+    params: &mut Vec<turso::Value>,
+) {
+    if values.is_empty() {
+        return;
+    }
+    sql.push_str(" AND ");
+    sql.push_str(column);
+    sql.push_str(" IN (");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            sql.push(',');
+        }
+        sql.push('?');
+        params.push(turso::Value::Text(value.clone()));
+    }
+    sql.push(')');
+}
+
 async fn search_event_text(
     connection: &turso::Connection,
     query: EventTextSearchQuery,
@@ -2168,9 +2359,8 @@ async fn search_event_text(
     let prefix_end = format!("{}\u{10ffff}", query.query);
     let field = query.field.map(|field| field.as_str().to_owned());
     let source_id = query.source_id;
-    let mut rows = connection
-        .query(
-            "SELECT e.id, e.camera_id, e.kind, e.start_time_ms, e.end_time_ms
+    let sql = format!(
+        "SELECT {EVENT_SEARCH_COLUMNS}
              FROM recording_event_search_terms AS t
              JOIN recording_events AS e ON e.id = t.event_id
              WHERE t.normalized_value >= ?1 AND t.normalized_value < ?2
@@ -2185,9 +2375,13 @@ async fn search_event_text(
                              OR e.start_time_ms < ?12
                              OR (e.start_time_ms = ?13 AND e.id > ?14)
                              )
-             GROUP BY e.id, e.camera_id, e.kind, e.start_time_ms, e.end_time_ms
+             GROUP BY e.id
              ORDER BY e.start_time_ms DESC, e.id
-                     LIMIT ?15",
+                     LIMIT ?15"
+    );
+    let mut rows = connection
+        .query(
+            sql,
             turso::params![
                 query.query,
                 prefix_end,
@@ -2214,21 +2408,12 @@ async fn search_event_text(
             has_more = true;
             break;
         }
-        hits.push(
-            event_search_hit(
-                connection,
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                None,
-                &query.stream_id,
-                query.preview_before_ms,
-                query.preview_after_ms,
-            )
-            .await?,
-        );
+        hits.push(event_search_hit(
+            &row,
+            None,
+            query.preview_before_ms,
+            query.preview_after_ms,
+        )?);
     }
     attach_default_previews(connection, &mut hits, &query.stream_id).await?;
     ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
@@ -2317,9 +2502,8 @@ async fn search_event_semantic(
     )
     .await?;
     let sql = format!(
-            "WITH candidates AS (
-                 SELECT e.id, e.camera_id, e.kind, e.start_time_ms, e.end_time_ms,
-                        s.embedding
+        "WITH candidates AS (
+                 SELECT {EVENT_SEARCH_COLUMNS}, s.embedding
                                  FROM recording_event_embeddings AS s
                                  JOIN recording_events AS e ON e.id = s.event_id
                                  WHERE s.model_id = ?2 AND s.dimensions = ?3
@@ -2333,11 +2517,15 @@ async fn search_event_semantic(
                                  LIMIT {MAX_SEMANTIC_CANDIDATES}
                          ),
                          scored AS (
-                                 SELECT id, camera_id, kind, start_time_ms, end_time_ms,
-                                                vector_distance_cos(embedding, vector32(?1)) AS distance
+                                 SELECT id, camera_id, stream, source, kind, start_time_ms,
+                                     end_time_ms, confidence, bbox_json, zone,
+                                     thumbnail_filename, text,
+                                     vector_distance_cos(embedding, vector32(?1)) AS distance
                                  FROM candidates
                          )
-                         SELECT id, camera_id, kind, start_time_ms, end_time_ms, distance
+                            SELECT id, camera_id, stream, source, kind, start_time_ms,
+                                end_time_ms, confidence, bbox_json, zone,
+                                thumbnail_filename, text, distance
                          FROM scored
                             WHERE ?11 IS NULL
                                 OR distance > ?12
@@ -2345,7 +2533,7 @@ async fn search_event_semantic(
                                 OR (distance = ?15 AND start_time_ms = ?16 AND id > ?17)
                          ORDER BY distance, start_time_ms DESC, id
                             LIMIT ?18"
-                );
+    );
     let mut rows = connection
         .query(
             sql,
@@ -2378,22 +2566,13 @@ async fn search_event_semantic(
             has_more = true;
             break;
         }
-        let distance = row.get::<f64>(5)?;
-        hits.push(
-            event_search_hit(
-                connection,
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                Some(distance),
-                &query.stream_id,
-                query.preview_before_ms,
-                query.preview_after_ms,
-            )
-            .await?,
-        );
+        let distance = row.get::<f64>(12)?;
+        hits.push(event_search_hit(
+            &row,
+            Some(distance),
+            query.preview_before_ms,
+            query.preview_after_ms,
+        )?);
     }
     attach_default_previews(connection, &mut hits, &query.stream_id).await?;
     ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
@@ -2476,6 +2655,55 @@ async fn semantic_candidates_truncated(
     Ok(count > MAX_SEMANTIC_CANDIDATES)
 }
 
+fn metadata_search_fingerprint(query: &EventMetadataQuery) -> String {
+    let mut hasher = Sha256::new();
+    update_search_fingerprint(&mut hasher, b"metadata");
+    for event_id in &query.event_ids {
+        update_search_fingerprint(&mut hasher, event_id.as_bytes());
+    }
+    update_search_fingerprint(&mut hasher, b"source_ids");
+    for source_id in &query.source_ids {
+        update_search_fingerprint(&mut hasher, source_id.as_bytes());
+    }
+    update_search_fingerprint(&mut hasher, b"event_types");
+    for event_type in &query.event_types {
+        update_search_fingerprint(&mut hasher, event_type.as_bytes());
+    }
+    update_search_fingerprint(&mut hasher, b"origins");
+    for origin in &query.origins {
+        update_search_fingerprint(&mut hasher, origin.as_str().as_bytes());
+    }
+    update_search_fingerprint(&mut hasher, b"zones");
+    for zone in &query.zones {
+        update_search_fingerprint(&mut hasher, zone.as_bytes());
+    }
+    update_search_fingerprint(
+        &mut hasher,
+        &query
+            .minimum_confidence
+            .map(f64::to_bits)
+            .unwrap_or_default()
+            .to_le_bytes(),
+    );
+    let image = match query.image {
+        EventImageFilter::Any => b"any".as_slice(),
+        EventImageFilter::WithImage => b"with".as_slice(),
+        EventImageFilter::WithoutImage => b"without".as_slice(),
+    };
+    update_search_fingerprint(&mut hasher, image);
+    update_search_fingerprint(
+        &mut hasher,
+        query.text.as_deref().unwrap_or_default().as_bytes(),
+    );
+    update_search_fingerprint(&mut hasher, query.stream_id.as_bytes());
+    update_search_fingerprint(&mut hasher, &query.start_time_ms.to_le_bytes());
+    update_search_fingerprint(&mut hasher, &query.end_time_ms.to_le_bytes());
+    update_search_fingerprint(&mut hasher, &query.preview_before_ms.to_le_bytes());
+    update_search_fingerprint(&mut hasher, &query.preview_after_ms.to_le_bytes());
+    update_search_fingerprint(&mut hasher, &query.page_size.to_le_bytes());
+    encode_lower_hex(hasher.finalize())
+}
+
 fn text_search_fingerprint(query: &EventTextSearchQuery) -> String {
     search_fingerprint(&[
         b"text",
@@ -2517,10 +2745,14 @@ fn semantic_search_fingerprint(query: &EventSemanticSearchQuery) -> String {
 fn search_fingerprint(parts: &[&[u8]]) -> String {
     let mut hasher = Sha256::new();
     for part in parts {
-        hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
-        hasher.update(part);
+        update_search_fingerprint(&mut hasher, part);
     }
     encode_lower_hex(hasher.finalize())
+}
+
+fn update_search_fingerprint(hasher: &mut Sha256, part: &[u8]) {
+    hasher.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(part);
 }
 
 fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
@@ -2605,31 +2837,34 @@ async fn ensure_search_snapshot_current(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn event_search_hit(
-    _connection: &turso::Connection,
-    event_id: String,
-    source_id: String,
-    event_type: String,
-    start_time_ms: i64,
-    end_time_ms: Option<i64>,
+fn event_search_hit(
+    row: &turso::Row,
     semantic_distance: Option<f64>,
-    _stream_id: &str,
     preview_before_ms: u64,
     preview_after_ms: u64,
 ) -> anyhow::Result<EventSearchHit> {
-    let preview_start_ms =
-        start_time_ms.saturating_sub(i64::try_from(preview_before_ms).unwrap_or(i64::MAX));
-    let requested_end_ms = end_time_ms
-        .unwrap_or(start_time_ms)
+    let event = event_from_row(row)?;
+    let text = row.get(11)?;
+    let preview_start_ms = event
+        .start_time_ms
+        .saturating_sub(i64::try_from(preview_before_ms).unwrap_or(i64::MAX));
+    let requested_end_ms = event
+        .end_time_ms
+        .unwrap_or(event.start_time_ms)
         .saturating_add(i64::try_from(preview_after_ms).unwrap_or(i64::MAX));
     let preview_end_ms = requested_end_ms.min(preview_start_ms.saturating_add(60_000));
     Ok(EventSearchHit {
-        event_id,
-        source_id,
-        event_type,
-        start_time_ms,
-        end_time_ms,
+        event_id: event.id,
+        source_id: event.camera_id,
+        event_type: event.kind,
+        origin: event.source,
+        start_time_ms: event.start_time_ms,
+        end_time_ms: event.end_time_ms,
+        confidence: event.confidence,
+        bbox: event.bbox,
+        zone: event.zone,
+        text,
+        has_image_attachment: event.thumbnail_filename.is_some(),
         score: semantic_distance.map(|distance| 1.0 - distance),
         semantic_distance,
         preview_start_ms,

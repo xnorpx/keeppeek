@@ -35,9 +35,10 @@ use crate::{
     stats::{HealthRegistry, REPORT_INTERVAL, StreamHealthReport},
     storage::{
         CatalogMediaFragment, DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EventEmbedding,
-        EventSearch, EventSearchField, EventSearchTerm, EventSemanticSearchQuery, EventStore,
-        EventTextSearchQuery, RecordingCatalogHandle, RecordingDemand, RecordingDemandGuard,
-        RecordingHealthRegistry, RecordingStreamHealthSnapshot, StorageConfig,
+        EventImageFilter, EventMetadataQuery, EventSearch, EventSearchField, EventSearchTerm,
+        EventSemanticSearchQuery, EventStore, EventTextSearchQuery, RecordingCatalogHandle,
+        RecordingDemand, RecordingDemandGuard, RecordingHealthRegistry,
+        RecordingStreamHealthSnapshot, StorageConfig,
         metadata::{EventSource, TimelineEvent},
     },
     webrtc::{
@@ -46,7 +47,9 @@ use crate::{
         WebRtc,
     },
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use hmac::{Hmac, KeyInit, Mac};
 use include_dir::{Dir, File as EmbeddedFile, include_dir};
 use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
@@ -88,6 +91,7 @@ const MAX_EVENT_SEARCH_MEDIA_OBJECTS: usize = 64;
 const MAX_EVENT_SEARCH_MEDIA_BYTES: u64 = 32 * 1_024 * 1_024;
 const MAX_EVENT_SEARCH_TASKS_PER_SESSION: usize = 4;
 const MAX_EVENT_SEARCH_TASKS: usize = 64;
+const EVENT_PAGE_TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 type EventSearchTaskKey = (SessionId, String);
 type EventSearchTasks = Arc<Mutex<HashMap<EventSearchTaskKey, Arc<AtomicBool>>>>;
 type CameraDiscoveryTaskKey = (SessionId, String);
@@ -105,6 +109,12 @@ const MAX_CAMERA_METADATA_WORKERS: usize = 4;
 const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
 
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
+
+#[derive(Serialize, Deserialize)]
+struct EventPageToken {
+    cursor: String,
+    expires_at_ms: u64,
+}
 
 #[derive(Default, Deserialize)]
 struct CameraSettingsUpdate {
@@ -4286,26 +4296,7 @@ fn query_events(
     }
     validate_event_search_stream(&request.stream_id)?;
     if let Some(source_id) = request.source_id.as_deref() {
-        validate_client_id(source_id, "event search source ID")?;
-        let camera = state.camera(source_id).ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::NotFound,
-                404,
-                "event search source was not found",
-            )
-        })?;
-        if !camera
-            .info
-            .profiles
-            .iter()
-            .any(|profile| profile.stream == request.stream_id)
-        {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::NotFound,
-                404,
-                "event search stream was not found",
-            ));
-        }
+        validate_event_search_source(state, source_id, &request.stream_id)?;
     }
     let start_ms = required_timestamp_ms(request.start_time.as_ref(), "event search start time")?;
     let end_ms = required_timestamp_ms(request.end_time.as_ref(), "event search end time")?;
@@ -4346,10 +4337,86 @@ fn query_events(
             "event search page size, offset, or page token is invalid",
         ));
     }
+    let page_token = (!request.page_token.is_empty())
+        .then(|| open_event_page_token(state, &request.page_token))
+        .transpose()?;
 
     let catalog = event_search_catalog(state)?;
     let search = EventSearch::new(catalog.clone());
     let mut page = match request.search {
+        Some(proto::query_events::Search::Metadata(metadata)) => {
+            validate_event_metadata_search(&metadata)?;
+            if request.source_id.is_some() {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "metadata search sources must use the metadata filter",
+                ));
+            }
+            let source_ids = if metadata.source_ids.is_empty() {
+                state
+                    .camera_entries()
+                    .into_iter()
+                    .filter(|camera| {
+                        camera
+                            .info
+                            .profiles
+                            .iter()
+                            .any(|profile| profile.stream == request.stream_id)
+                    })
+                    .map(|camera| camera.info.id)
+                    .collect()
+            } else {
+                for source_id in &metadata.source_ids {
+                    validate_event_search_source(state, source_id, &request.stream_id)?;
+                }
+                metadata.source_ids
+            };
+            let origins = metadata
+                .origins
+                .into_iter()
+                .map(storage_event_source)
+                .collect::<Result<Vec<_>, _>>()?;
+            let image = match proto::EventImageFilter::try_from(metadata.image) {
+                Ok(proto::EventImageFilter::Any) => EventImageFilter::Any,
+                Ok(proto::EventImageFilter::WithImage) => EventImageFilter::WithImage,
+                Ok(proto::EventImageFilter::WithoutImage) => EventImageFilter::WithoutImage,
+                Err(_) => {
+                    return Err(ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        "event image filter is invalid",
+                    ));
+                }
+            };
+            if source_ids.is_empty() {
+                crate::storage::EventSearchPage {
+                    hits: Vec::new(),
+                    next_page_token: None,
+                    candidates_truncated: false,
+                }
+            } else {
+                search
+                    .search_metadata(EventMetadataQuery {
+                        event_ids: metadata.event_ids,
+                        source_ids,
+                        event_types: metadata.event_types,
+                        origins,
+                        zones: metadata.zones,
+                        minimum_confidence: metadata.minimum_confidence,
+                        image,
+                        text: metadata.text,
+                        stream_id: request.stream_id.clone(),
+                        start_time_ms: start_ms,
+                        end_time_ms: end_ms,
+                        preview_before_ms,
+                        preview_after_ms,
+                        page_size,
+                        page_token,
+                    })
+                    .map_err(|error| event_search_error("search event metadata", error))?
+            }
+        }
         Some(proto::query_events::Search::Text(text)) => {
             let query_text = text.query.trim();
             if query_text.is_empty() || query_text.len() > 256 {
@@ -4371,8 +4438,7 @@ fn query_events(
                     preview_before_ms,
                     preview_after_ms,
                     page_size,
-                    page_token: (!request.page_token.is_empty())
-                        .then(|| request.page_token.clone()),
+                    page_token,
                 })
                 .map_err(|error| event_search_error("search event metadata", error))?
         }
@@ -4386,7 +4452,7 @@ fn query_events(
                 preview_before_ms,
                 preview_after_ms,
                 page_size,
-                page_token: (!request.page_token.is_empty()).then(|| request.page_token.clone()),
+                page_token,
             })
             .map_err(|error| event_search_error("search event embeddings", error))?,
         None => {
@@ -4398,6 +4464,11 @@ fn query_events(
         }
     };
     remap_event_search_keyframes(state, catalog, &request.stream_id, &mut page.hits)?;
+    let next_page_token = page
+        .next_page_token
+        .take()
+        .map(|cursor| seal_event_page_token(state, cursor))
+        .transpose()?;
 
     let group = format!("event-search-query:{}", request.query_id);
     let mut messages = page
@@ -4424,7 +4495,7 @@ fn query_events(
             query_id: request.query_id.clone(),
             result_count,
             next_offset: None,
-            next_page_token: page.next_page_token.unwrap_or_default(),
+            next_page_token: next_page_token.unwrap_or_default(),
             candidates_truncated: page.candidates_truncated,
         }),
     ));
@@ -4757,6 +4828,78 @@ fn event_search_error(context: &str, error: anyhow::Error) -> ControlCommandErro
     stored_catalog_error(context, error)
 }
 
+fn seal_event_page_token(
+    state: &ServerState,
+    cursor: String,
+) -> Result<String, ControlCommandError> {
+    let ttl_ms = EVENT_PAGE_TOKEN_TTL
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX);
+    seal_event_page_token_until(state, cursor, unix_time_ms().saturating_add(ttl_ms))
+}
+
+fn seal_event_page_token_until(
+    state: &ServerState,
+    cursor: String,
+    expires_at_ms: u64,
+) -> Result<String, ControlCommandError> {
+    let payload = serde_json::to_vec(&EventPageToken {
+        cursor,
+        expires_at_ms,
+    })
+    .map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            "event search page token could not be encoded",
+        )
+    })?;
+    let signature = hmac_sha256(&state.event_page_token_key, &payload);
+    Ok(format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(payload),
+        URL_SAFE_NO_PAD.encode(signature)
+    ))
+}
+
+fn open_event_page_token(state: &ServerState, token: &str) -> Result<String, ControlCommandError> {
+    let invalid = || {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event search page token is invalid",
+        )
+    };
+    let (payload, signature) = token.split_once('.').ok_or_else(invalid)?;
+    let payload = URL_SAFE_NO_PAD.decode(payload).map_err(|_| invalid())?;
+    let signature = URL_SAFE_NO_PAD.decode(signature).map_err(|_| invalid())?;
+    let mut verifier = Hmac::<Sha256>::new_from_slice(state.event_page_token_key.as_ref())
+        .expect("HMAC-SHA256 accepts 32-byte keys");
+    verifier.update(&payload);
+    if verifier.verify_slice(&signature).is_err() {
+        return Err(invalid());
+    }
+    let token: EventPageToken = serde_json::from_slice(&payload).map_err(|_| invalid())?;
+    if token.cursor.is_empty() || token.cursor.len() > 4_096 {
+        return Err(invalid());
+    }
+    if token.expires_at_ms <= unix_time_ms() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "event search page token expired; restart the query",
+        ));
+    }
+    Ok(token.cursor)
+}
+
+fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> [u8; 32] {
+    let mut signer = Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 accepts 32-byte keys");
+    signer.update(message);
+    signer.finalize().into_bytes().into()
+}
+
 fn require_stored_event(
     catalog: &RecordingCatalogHandle,
     event_id: &str,
@@ -4790,6 +4933,70 @@ fn storage_event_search_field(value: i32) -> Result<EventSearchField, ControlCom
             "event search field is invalid",
         )),
     }
+}
+
+fn storage_event_source(value: i32) -> Result<EventSource, ControlCommandError> {
+    match proto::EventOrigin::try_from(value) {
+        Ok(proto::EventOrigin::Camera) => Ok(EventSource::Camera),
+        Ok(proto::EventOrigin::Keeppeek) => Ok(EventSource::KeepPeek),
+        _ => Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event origin filter is invalid",
+        )),
+    }
+}
+
+fn validate_event_metadata_search(
+    search: &proto::EventMetadataSearch,
+) -> Result<(), ControlCommandError> {
+    const MAX_FILTER_VALUES: usize = 64;
+    if search.event_ids.len() > MAX_FILTER_VALUES
+        || search.source_ids.len() > MAX_FILTER_VALUES
+        || search.event_types.len() > MAX_FILTER_VALUES
+        || search.origins.len() > MAX_FILTER_VALUES
+        || search.zones.len() > MAX_FILTER_VALUES
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event metadata filter count exceeds 64",
+        ));
+    }
+    for event_id in &search.event_ids {
+        validate_client_id(event_id, "event metadata event ID")?;
+    }
+    for value in search.event_types.iter().chain(&search.zones) {
+        let value = value.trim();
+        if value.is_empty() || value.len() > 256 {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event metadata filter values must contain 1 to 256 UTF-8 bytes",
+            ));
+        }
+    }
+    if search
+        .minimum_confidence
+        .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event minimum confidence must be between zero and one",
+        ));
+    }
+    if let Some(text) = search.text.as_deref() {
+        let text = text.trim();
+        if text.is_empty() || text.len() > 256 {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event metadata text must contain 1 to 256 UTF-8 bytes",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn proto_event_embedding(
@@ -4852,6 +5059,34 @@ fn validate_event_search_stream(stream_id: &str) -> Result<(), ControlCommandErr
     Ok(())
 }
 
+fn validate_event_search_source(
+    state: &ServerState,
+    source_id: &str,
+    stream_id: &str,
+) -> Result<(), ControlCommandError> {
+    validate_client_id(source_id, "event search source ID")?;
+    let camera = state.camera(source_id).ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "event search source was not found",
+        )
+    })?;
+    if !camera
+        .info
+        .profiles
+        .iter()
+        .any(|profile| profile.stream == stream_id)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "event search stream was not found",
+        ));
+    }
+    Ok(())
+}
+
 fn remap_event_search_keyframes(
     state: &ServerState,
     catalog: &RecordingCatalogHandle,
@@ -4906,8 +5141,24 @@ fn proto_event_search_hit(hit: crate::storage::EventSearchHit) -> proto::EventSe
         event_id: hit.event_id,
         source_id: source_id.clone(),
         event_type: hit.event_type,
+        origin: match hit.origin {
+            EventSource::Camera => proto::EventOrigin::Camera as i32,
+            EventSource::KeepPeek => proto::EventOrigin::Keeppeek as i32,
+        },
         start_time: Some(millis_timestamp(hit.start_time_ms)),
         end_time: hit.end_time_ms.map(millis_timestamp),
+        confidence: hit.confidence,
+        bounding_box: hit
+            .bbox
+            .map(|[x, y, width, height]| proto::EventBoundingBox {
+                x,
+                y,
+                width,
+                height,
+            }),
+        zone: hit.zone,
+        text: hit.text,
+        has_image_attachment: hit.has_image_attachment,
         score: hit.score,
         preview_start_time: Some(millis_timestamp(hit.preview_start_ms)),
         preview_end_time: Some(millis_timestamp(hit.preview_end_ms)),
@@ -6604,6 +6855,7 @@ pub struct ServerState {
     ptz_owners: Arc<Mutex<HashMap<String, SessionId>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     event_search_tasks: EventSearchTasks,
+    event_page_token_key: Arc<[u8; 32]>,
     camera_discovery_tasks: CameraDiscoveryTasks,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
@@ -6663,6 +6915,7 @@ impl ServerState {
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(HashMap::new())),
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
+            event_page_token_key: Arc::new(rand::random()),
             camera_discovery_tasks: Arc::new(Mutex::new(HashMap::new())),
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
@@ -10978,6 +11231,50 @@ mod tests {
     }
 
     #[test]
+    fn event_page_tokens_are_signed_and_expire() {
+        let state = media_test_state();
+        let token = seal_event_page_token_until(
+            &state,
+            "catalog-cursor".to_owned(),
+            unix_time_ms().saturating_add(60_000),
+        )
+        .unwrap();
+        assert_eq!(
+            open_event_page_token(&state, &token).unwrap(),
+            "catalog-cursor"
+        );
+
+        let (payload, signature) = token.split_once('.').unwrap();
+        let mut tampered_payload = payload.as_bytes().to_vec();
+        tampered_payload[0] = if tampered_payload[0] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        let tampered = format!(
+            "{}.{}",
+            String::from_utf8(tampered_payload).unwrap(),
+            signature
+        );
+        let error = open_event_page_token(&state, &tampered).unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "event search page token is invalid");
+
+        let expired = seal_event_page_token_until(
+            &state,
+            "catalog-cursor".to_owned(),
+            unix_time_ms().saturating_sub(1),
+        )
+        .unwrap();
+        let error = open_event_page_token(&state, &expired).unwrap_err();
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert_eq!(
+            error.message,
+            "event search page token expired; restart the query"
+        );
+    }
+
+    #[test]
     fn event_search_queries_and_fetches_encoded_media_objects() {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-event-search-{}", rand::random::<u64>()));
@@ -11031,9 +11328,9 @@ mod tests {
                 start_time_ms: event_time_ms,
                 end_time_ms: Some(event_time_ms + 200),
                 confidence: Some(0.98),
-                bbox: None,
-                zone: None,
-                thumbnail_filename: None,
+                bbox: Some([0.1, 0.2, 0.3, 0.4]),
+                zone: Some("Porch".to_owned()),
+                thumbnail_filename: Some("face-1.jpg".to_owned()),
             })
             .unwrap();
 
@@ -11063,6 +11360,64 @@ mod tests {
                 code,
                 ..
             })) if code == proto::ErrorCode::NotFound as i32
+        ));
+        let unauthorized_page = handler.handle(proto::Request {
+            request_id: 198,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::Query(proto::QueryEvents {
+                        query_id: "unauthorized-metadata".to_owned(),
+                        search: Some(proto::query_events::Search::Metadata(
+                            proto::EventMetadataSearch {
+                                source_ids: vec!["192.0.2.99".to_owned()],
+                                ..Default::default()
+                            },
+                        )),
+                        stream_id: "main".to_owned(),
+                        start_time: Some(millis_timestamp(fragments[0].start_ms - 1_000)),
+                        end_time: Some(millis_timestamp(fragments[1].start_ms + 2_000)),
+                        page_size: 10,
+                        channel: proto::DataChannelKind::ReliableData as i32,
+                        ..Default::default()
+                    })),
+                },
+            )),
+        });
+        assert!(matches!(
+            unauthorized_page.response.result,
+            Some(control_response::Result::Error(proto::Error {
+                code,
+                ..
+            })) if code == proto::ErrorCode::NotFound as i32
+        ));
+        let invalid_confidence = handler.handle(proto::Request {
+            request_id: 197,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::Query(proto::QueryEvents {
+                        query_id: "invalid-confidence".to_owned(),
+                        search: Some(proto::query_events::Search::Metadata(
+                            proto::EventMetadataSearch {
+                                minimum_confidence: Some(f64::NAN),
+                                ..Default::default()
+                            },
+                        )),
+                        stream_id: "main".to_owned(),
+                        start_time: Some(millis_timestamp(fragments[0].start_ms - 1_000)),
+                        end_time: Some(millis_timestamp(fragments[1].start_ms + 2_000)),
+                        page_size: 10,
+                        channel: proto::DataChannelKind::ReliableData as i32,
+                        ..Default::default()
+                    })),
+                },
+            )),
+        });
+        assert!(matches!(
+            invalid_confidence.response.result,
+            Some(control_response::Result::Error(proto::Error {
+                code,
+                ..
+            })) if code == proto::ErrorCode::InvalidRequest as i32
         ));
         let event_type_mutation = handler.handle(proto::Request {
             request_id: 200,
@@ -11096,10 +11451,16 @@ mod tests {
                         proto::ReplaceEventSearchTerms {
                             event_id: "face-1".to_owned(),
                             source_id: "127.0.0.1".to_owned(),
-                            terms: vec![proto::EventSearchTerm {
-                                field: proto::EventSearchField::FaceName as i32,
-                                value: "Alice Example".to_owned(),
-                            }],
+                            terms: vec![
+                                proto::EventSearchTerm {
+                                    field: proto::EventSearchField::FaceName as i32,
+                                    value: "Alice Example".to_owned(),
+                                },
+                                proto::EventSearchTerm {
+                                    field: proto::EventSearchField::Text as i32,
+                                    value: "Front porch visitor".to_owned(),
+                                },
+                            ],
                         },
                     )),
                 },
@@ -11111,6 +11472,60 @@ mod tests {
                 result: Some(control_ok::Result::EventSearchMutation(_))
             }))
         ));
+
+        let metadata = handler.handle(proto::Request {
+            request_id: 202,
+            command: Some(control_request::Command::EventSearchCommand(
+                proto::EventSearchCommand {
+                    action: Some(event_search_command::Action::Query(proto::QueryEvents {
+                        query_id: "metadata-query-1".to_owned(),
+                        search: Some(proto::query_events::Search::Metadata(
+                            proto::EventMetadataSearch {
+                                event_ids: Vec::new(),
+                                source_ids: vec!["127.0.0.1".to_owned()],
+                                event_types: vec!["face".to_owned()],
+                                origins: vec![proto::EventOrigin::Keeppeek as i32],
+                                zones: vec!["porch".to_owned()],
+                                minimum_confidence: Some(0.95),
+                                image: proto::EventImageFilter::WithImage as i32,
+                                text: Some("ali".to_owned()),
+                            },
+                        )),
+                        source_id: None,
+                        stream_id: "main".to_owned(),
+                        start_time: Some(millis_timestamp(fragments[0].start_ms - 1_000)),
+                        end_time: Some(millis_timestamp(fragments[1].start_ms + 2_000)),
+                        preview_before: None,
+                        preview_after: None,
+                        page_size: 10,
+                        offset: 0,
+                        channel: proto::DataChannelKind::ReliableData as i32,
+                        page_token: String::new(),
+                    })),
+                },
+            )),
+        });
+        let Some(proto::message::Message::EventSearch(metadata_message)) =
+            &metadata.data_messages[0].message.message
+        else {
+            panic!("metadata search must emit an event-search result");
+        };
+        let Some(proto::event_search_message::Message::Result(metadata_result)) =
+            &metadata_message.message
+        else {
+            panic!("metadata search must emit a result first");
+        };
+        let metadata_hit = metadata_result.hit.as_ref().unwrap();
+        assert_eq!(metadata_hit.event_id, "face-1");
+        assert_eq!(metadata_hit.origin, proto::EventOrigin::Keeppeek as i32);
+        assert_eq!(metadata_hit.confidence, Some(0.98));
+        assert_eq!(metadata_hit.zone.as_deref(), Some("Porch"));
+        assert_eq!(metadata_hit.text.as_deref(), Some("Front porch visitor"));
+        assert!(metadata_hit.has_image_attachment);
+        assert_eq!(
+            metadata_hit.bounding_box.as_ref().map(|bbox| bbox.width),
+            Some(0.3)
+        );
 
         let embedding = proto::EventSearchEmbedding {
             model_id: "vision-embedding".to_owned(),

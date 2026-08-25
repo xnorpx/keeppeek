@@ -1,8 +1,25 @@
-# Event search and encoded previews
+# Event browsing, search, and encoded previews
 
-The storage event-search API supports structured metadata search and model-scoped semantic
-similarity. Search results contain immutable keyframe descriptors for a bounded preview interval;
-encoded bytes are fetched separately so callers can lazily load, prefetch, cancel, or cache media.
+The storage event-search API supports filtered metadata browsing, structured text search, and
+model-scoped semantic similarity. Search results contain event metadata and immutable keyframe
+descriptors for a bounded preview interval. Encoded bytes are fetched separately so callers can
+lazy-load, prefetch, cancel, or cache media.
+
+## Metadata browsing
+
+`EventSearch::search_metadata` returns events newest-first using a bounded time range and opaque
+keyset continuation token. Ordinary filters compose with `AND` semantics:
+
+- exact event and source IDs;
+- event type and origin;
+- zone and minimum confidence;
+- presence or absence of a stored image attachment;
+- normalized indexed-text prefixes across event type and producer-supplied search terms.
+
+Repeated values within one filter use `OR` semantics. A metadata page contains at most 128 hits,
+does not include attachment or encoded keyframe bytes, and does not compute an unbounded exact
+total. Exact event IDs allow a selected detail deep link to resolve in one bounded query without
+walking continuation pages.
 
 ## Searchable metadata
 
@@ -46,12 +63,18 @@ let hits = search.search_text(query)?;
 # anyhow::Ok(())
 ```
 
-Both search modes return `EventSearchPage`. When `next_page_token` is present, assign it to the
+All query modes return `EventSearchPage`. When `next_page_token` is present, assign it to the
 next query's `page_token` to load another page. The opaque token binds the original query and
 catalog snapshot, so concurrent inserts do not shift later pages. Repeat the original page size
 and preview durations. If an existing snapshotted event's terms, embedding, or end time changes,
 the token expires instead of returning an inconsistent page; restart the query. Pages contain at
 most 128 hits.
+
+WebRTC clients receive a server-signed envelope around the catalog cursor. The envelope expires
+after 15 minutes and is verified in constant time before the catalog cursor is decoded. Modifying
+the token, changing its filter/source/time scope, using it after expiry, or using it after a
+relevant catalog mutation fails closed. Clients should discard retained pages and restart from
+the newest page when the server reports expiry or a changed snapshot.
 
 ## Semantic similarity
 
@@ -122,5 +145,12 @@ The WebRTC protocol advertises `keeppeek.event-search` and exposes this boundary
 initialization ranges, or complete GOP ranges over the selected data channel. Paths and byte
 offsets never cross the wire. Transfers are streamed through a bounded session queue, limited to
 32 MiB, and cancellable between chunks. Stable source/stream identity resolves archived objects
-independently of later storage-label changes. No frontend application currently consumes these
-operations.
+independently of later storage-label changes.
+
+The Events route requests 18 metadata hits at a time and retains one result page. It stores at
+most 32 continuation tokens in browser history state, not in the URL. Date, UTC time range,
+camera, type, origin, zone, confidence, image, indexed text, and selected event remain in the URL.
+Result cards request canonical keyframes only within one viewport of intersection overscan, with
+at most two media transfers active. Filter, date, page, selection, route, and browser-history
+changes abort stale metadata and media work. Object URLs are revoked after their consuming card
+or detail element detaches.
