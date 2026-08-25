@@ -56,12 +56,17 @@
 		displayName: 'Front Gate',
 		username: 'operator',
 		password: '',
+		defaultUsernameConfigured: false,
+		defaultPasswordConfigured: false,
 		onvifPort: '8000',
 		httpPort: '80',
 		mainRtspUrl: '',
 		subRtspUrl: '',
 		backend: 'reo-proto',
 		transport: 'tcp',
+		recordGenericMotionEvents: false,
+		recordingMode: 'event-boost',
+		eventRecordingDurationSeconds: '60',
 		discoveryEvidence: 'Manual camera address supplied'
 	});
 

@@ -242,6 +242,38 @@ export interface CameraStreamProbeResult {
 	main_rtsp_url: string | null;
 	sub_rtsp_url: string | null;
 	onvif_port: number | null;
+	manufacturer: string | null;
+	model: string | null;
+	firmware_version: string | null;
+	serial_number: string | null;
+	hardware_id: string | null;
+	profiles: ProfileSummary[];
+	streams: CameraStreamVerification[];
+	onvif_error: string | null;
+}
+
+export interface CameraStreamVerification {
+	stream: 'main' | 'sub';
+	verified: boolean;
+	codec: string | null;
+	resolution: string | null;
+	declared_fps: number | null;
+	frames_received: number;
+	keyframe_received: boolean;
+	elapsed_ms: number;
+	error: string | null;
+}
+
+export interface CameraOnboardingDefaults {
+	username_configured: boolean;
+	password_configured: boolean;
+	networks: CameraDiscoveryNetwork[];
+}
+
+export interface CameraDiscoveryNetwork {
+	cidr: string;
+	interface_name: string;
+	preferred: boolean;
 }
 
 export interface CameraSettingsUpdate {

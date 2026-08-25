@@ -1,6 +1,38 @@
 import { expect, test } from '@playwright/test';
 import { mockControlPeer } from './fixtures/control-peer';
-import type { CameraHealth, CameraListItem } from '../src/lib/types';
+import type {
+	CameraCatalogCamera,
+	CameraHealth,
+	CameraListItem,
+	CameraSettings
+} from '../src/lib/types';
+
+const CCTV_DATABASE_CAMERA_URL = 'https://www.cctv-database.com/camera/annke-fcd800-i91et/';
+
+function catalogReference(camera: CameraListItem): CameraCatalogCamera {
+	return {
+		id: 'test-camera-rtsp',
+		brand: camera.manufacturer ?? 'Test Camera',
+		model: camera.model ?? 'RTSP Test Camera',
+		aliases: [],
+		camera_type: 'camera',
+		resolution_label: null,
+		megapixels: null,
+		sensor: null,
+		field_of_view: null,
+		night_vision: null,
+		ip_rating: null,
+		ik_rating: null,
+		two_way_audio: null,
+		release_year: null,
+		community_notes_count: 0,
+		protocols: ['onvif', 'rtsp'],
+		codecs: ['h264'],
+		streams: [],
+		sources: [CCTV_DATABASE_CAMERA_URL],
+		stream_hints: null
+	};
+}
 
 function streamHealth(id: string, backend: string, transport: string): CameraHealth {
 	return {
@@ -109,6 +141,29 @@ function mobilePtzCamera(): { camera: CameraListItem; health: CameraHealth } {
 	};
 }
 
+function configuredCamera(camera: CameraListItem): CameraSettings {
+	return {
+		id: camera.id,
+		ip: camera.ip,
+		display_name: camera.name,
+		manufacturer_override: null,
+		username_configured: true,
+		password_configured: true,
+		onvif_port: camera.ports?.onvif ?? null,
+		http_port: camera.ports?.http ?? null,
+		main_rtsp_url: `rtsp://${camera.ip}:554/main`,
+		sub_rtsp_url: `rtsp://${camera.ip}:554/sub`,
+		uid_configured: true,
+		backend: camera.backend === 'retina' ? 'retina' : 'reo-proto',
+		transport: camera.transport === 'udp' ? 'udp' : 'tcp',
+		record_generic_motion_events: false,
+		recording_mode: 'event-boost',
+		event_recording_duration_secs: 60,
+		health: 'online',
+		model: camera.model
+	};
+}
+
 test('shows fake Retina UDP configuration and live stream observations', async ({ page }) => {
 	const health = streamHealth('fake-retina', 'retina', 'udp');
 	const camera: CameraListItem = {
@@ -153,6 +208,7 @@ test('shows fake Retina UDP configuration and live stream observations', async (
 	await mockControlPeer(page, {
 		cameras: [camera],
 		health: { cameras: [{ ...health, configured_profiles: camera.profiles }] },
+		cameraCatalogSearchResults: [catalogReference(camera)],
 		motionDetection: { supported: false, controllable: false, enabled: null, error: null }
 	});
 	await page.goto('/camera?camera=fake-retina');
@@ -177,6 +233,14 @@ test('shows fake Retina UDP configuration and live stream observations', async (
 		'href',
 		'http://192.0.2.41'
 	);
+	await expect(
+		page.getByRole('link', { name: 'Open Test Camera RTSP Test Camera on CCTV Database' })
+	).toHaveAttribute('href', CCTV_DATABASE_CAMERA_URL);
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await expect(
+		page.getByRole('link', { name: 'Open Test Camera RTSP Test Camera on CCTV Database' })
+	).toHaveAttribute('href', CCTV_DATABASE_CAMERA_URL);
 });
 
 test('saves and restores a camera manufacturer override', async ({ page }) => {
@@ -225,6 +289,53 @@ test('saves and restores a camera manufacturer override', async ({ page }) => {
 		{ sourceId: 'fake-retina', manufacturer: 'Hikvision' },
 		{ sourceId: 'fake-retina', manufacturer: null }
 	]);
+});
+
+test('edits this camera configuration without replacing untouched credentials', async ({
+	page
+}) => {
+	const { camera, health } = mobilePtzCamera();
+	const settings = configuredCamera(camera);
+	const updatedSettings = {
+		...settings,
+		display_name: 'Front entrance',
+		transport: 'udp' as const,
+		recording_mode: 'main' as const
+	};
+	const controls = await mockControlPeer(page, {
+		cameras: [camera],
+		health: { cameras: [{ ...health, configured_profiles: camera.profiles }] },
+		cameraSettings: [settings],
+		cameraUpdateResult: { camera: updatedSettings, restart_required: true },
+		motionDetection: { supported: true, controllable: true, enabled: true, error: null }
+	});
+	await page.goto(`/camera?camera=${camera.id}`);
+
+	await page.getByRole('button', { name: 'Edit settings' }).click();
+	const editor = page.locator('[data-camera-configuration-editor]');
+	await expect(editor.getByRole('heading', { name: 'Edit camera settings' })).toBeVisible();
+	await expect(editor.getByLabel('Username')).toHaveAttribute(
+		'placeholder',
+		'Configured · enter to replace'
+	);
+	await editor.getByLabel('Display name').fill('Front entrance');
+	await editor.getByLabel('Transport').selectOption('udp');
+	await editor.getByLabel('Recording mode').selectOption('main');
+	await editor.getByRole('button', { name: 'Save camera settings' }).click();
+
+	await expect(page.getByText('Camera settings saved. Restart KeepPeek')).toBeVisible();
+	await expect(editor).toHaveCount(0);
+	await expect.poll(() => controls.cameraUpdates).toHaveLength(1);
+	const submitted = controls.cameraUpdates[0];
+	expect(submitted?.ip).toBe(camera.ip);
+	expect(submitted?.update).toMatchObject({
+		display_name: 'Front entrance',
+		transport: 'udp',
+		recording_mode: 'main',
+		record_generic_motion_events: false
+	});
+	expect(submitted?.update).not.toHaveProperty('username');
+	expect(submitted?.update).not.toHaveProperty('password');
 });
 
 test('Board 7 operates Reo-Proto PTZ over WebRTC and updates its motion setting', async ({
@@ -472,11 +583,13 @@ test('renders Board 24 mobile PTZ through the shared WebRTC control owner', asyn
 		.toContainEqual({ sourceId: 'fake-reo-proto', action: 'gotoPreset', presetId: 7 });
 });
 
-test('renders Board 24 mobile settings as evidence-safe read-only sections', async ({ page }) => {
+test('renders Board 24 mobile settings as the editable per-camera owner', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	const { camera, health } = mobilePtzCamera();
+	const settings = configuredCamera(camera);
 	const controls = await mockControlPeer(page, {
 		cameras: [camera],
+		cameraSettings: [settings],
 		health: {
 			cameras: [{ ...health, name: camera.name ?? camera.id, configured_profiles: camera.profiles }]
 		},
@@ -485,10 +598,14 @@ test('renders Board 24 mobile settings as evidence-safe read-only sections', asy
 	await page.goto('/camera?camera=fake-reo-proto');
 	await page.getByRole('button', { name: 'Settings', exact: true }).click();
 
-	const mobile = page.locator('[data-mobile-camera-page="settings"]');
-	await expect(mobile).toContainText('READ ONLY · API EVIDENCE');
-	await expect(mobile).toContainText('Inheritance unknown');
-	await expect(mobile).toContainText('Per-camera retention and inheritance are not exposed.');
-	await expect(mobile.getByText('Save', { exact: true })).toHaveCount(0);
+	const editor = page.locator('[data-camera-configuration-editor]');
+	await expect(editor.getByRole('heading', { name: 'Edit camera settings' })).toBeVisible();
+	await expect(editor.getByLabel('Display name')).toHaveValue('Front Door');
+	await expect(editor.getByLabel('Username')).toHaveAttribute(
+		'placeholder',
+		'Configured · enter to replace'
+	);
+	await expect(editor.getByLabel('Recording mode')).toHaveValue('event-boost');
+	await expect(editor.getByRole('button', { name: 'Save camera settings' })).toBeEnabled();
 	expect(controls.cameraUpdates).toEqual([]);
 });

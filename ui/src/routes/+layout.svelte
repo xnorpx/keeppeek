@@ -176,9 +176,7 @@
 	let mobileCameraDetailActive = $derived(page.url.pathname === '/camera');
 	let healthOverviewActive = $derived(page.url.pathname === '/system-health');
 	let cameraDiagnosisActive = $derived(page.url.pathname.startsWith('/system-health/camera/'));
-	let mobileSettingsActionActive = $derived(
-		settingsActive && (page.url.hash === '#camera-defaults' || page.url.hash === '#access')
-	);
+	let mobileSettingsActionActive = $derived(settingsActive && page.url.hash === '#access');
 	let mobileFocusedActionActive = $derived(
 		mobileSettingsActionActive || cameraDiagnosisActive || mobileCameraWizardActive
 	);

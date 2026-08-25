@@ -56,7 +56,7 @@
                 Find and connect
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
-                Scanning this network for five seconds. Nothing is saved yet.
+                Parallel protocol probes usually finish in about five seconds. Nothing is saved yet.
               </div>
             </div>
             <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '7px', padding: '12px' }}>
@@ -183,20 +183,20 @@
           </div>
           <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '12px', padding: '16px' }}>
             <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '150%' }}>
-              Candidate stream probing is unavailable before save. Assign declared roles before review.
+              ONVIF reported endpoints. KeepPeek authenticated both streams and received video keyframes.
             </div>
             <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-primary)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', overflow: 'clip' }}>
               <div style={{ backgroundImage: 'linear-gradient(in oklab 160deg, oklab(30.5% -0.006 -0.015) 0%, oklab(21.1% -0.004 -0.009) 100%)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', height: '170px', justifyContent: 'space-between', padding: '9px', width: '356px' }}>
                 <div style={{ boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
-                    UNPROBED
+                    VERIFIED
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
                     3840×2160 · H.265
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', lineHeight: '12px' }}>
-                  NO PRE-SAVE PROBE
+                  VIDEO + KEYFRAME · 240MS
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px' }}>
@@ -205,7 +205,7 @@
                     Main stream
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '8px', lineHeight: '10px' }}>
-                    UNPROBED
+                    VERIFIED
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', display: 'flex', gap: '7px' }}>
@@ -235,11 +235,11 @@
                     Sub stream
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '8px', lineHeight: '10px' }}>
-                    UNPROBED
+                    VERIFIED
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-                  DECLARED · H.264
+                  H.264 · 640×360 · KEYFRAME
                 </div>
                 <div style={{ boxSizing: 'border-box', display: 'flex', gap: '6px' }}>
                   <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', display: 'flex', height: '24px', paddingInline: '9px' }}>
@@ -255,12 +255,12 @@
                 </div>
               </div>
             </div>
-            <div style={{ alignItems: 'flex-start', backgroundColor: '#E8A33D1A', borderColor: '#E8A33D59', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', padding: '12px' }}>
+            <div style={{ alignItems: 'flex-start', backgroundColor: '#000000', borderColor: '#000000', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '10px', padding: '12px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-                AUDIO
+                PROOF
               </div>
-              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '145%' }}>
-                Codec evidence is unavailable before save.
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '145%' }}>
+                Required video streams and keyframes are verified.
               </div>
             </div>
           </div>
@@ -334,51 +334,51 @@
                   Sign-in
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                  Shared camera login
+                  Configured default
                 </div>
               </div>
               <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', justifyContent: 'space-between' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Record
+                  Recording
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                  Main · 4K H.265
+                  Event boost · 60s
                 </div>
               </div>
               <div style={{ alignItems: 'center', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', justifyContent: 'space-between' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Live
+                  Main proof
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                  Sub · 640 H.264
+                  Video + keyframe
                 </div>
               </div>
               <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', justifyContent: 'space-between' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Retention
+                  Sub proof
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                  Server default
+                  Video + keyframe
                 </div>
               </div>
             </div>
-            <div style={{ backgroundColor: 'var(--color-raised)', borderLeftColor: 'var(--color-primary)', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', padding: '14px' }}>
+            <div style={{ backgroundColor: '#000000', borderLeftColor: '#000000', borderLeftStyle: 'solid', borderLeftWidth: '2px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', padding: '14px' }}>
               <div style={{ boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
-                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                  Retention impact unavailable
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
+                  Required streams verified
                 </div>
-                <div style={{ boxSizing: 'border-box', color: 'var(--color-activity)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
-                  NO API
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', lineHeight: '12px' }}>
+                  MEASURED
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-                The server does not estimate this unsaved camera's recording cost.
+                KeepPeek authenticated main and sub, then received a video keyframe from each endpoint.
               </div>
             </div>
-            <div style={{ alignItems: 'center', backgroundColor: '#E8A33D1A', borderColor: '#E8A33D52', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', padding: '12px' }}>
+            <div style={{ alignItems: 'center', backgroundColor: '#000000', borderColor: '#000000', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', padding: '12px' }}>
               <div style={{ backgroundColor: 'var(--color-activity)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
-              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
-                No stream proof before save.
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '16px' }}>
+                Authenticated video and required keyframes are verified.
               </div>
             </div>
             <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>

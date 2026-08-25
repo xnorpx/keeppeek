@@ -13,7 +13,20 @@ export type CameraFleetPresentation = {
 	gbPerDay: string | null;
 };
 
-function formatStream(camera: CameraListItem): string[] {
+function formatStreams(camera: CameraListItem, health: CameraHealth | null): string[] {
+	const measured = (health?.streams ?? []).filter(
+		(stream) => stream.type === 'main' || stream.type === 'sub' || stream.type.startsWith('video_')
+	);
+	if (measured.length > 0) {
+		return measured.map((stream) => {
+			const role = stream.type.replace(/^video_/, '');
+			const declared = camera.profiles.find((profile) => profile.stream === role);
+			return [role, stream.resolution ?? declared?.resolution, stream.codec ?? declared?.encoding]
+				.filter((value): value is string => Boolean(value))
+				.join(' ')
+				.toUpperCase();
+		});
+	}
 	return camera.profiles.map((profile) =>
 		[profile.stream, profile.resolution, profile.encoding]
 			.filter((value): value is string => Boolean(value))
@@ -57,7 +70,7 @@ export function presentCameraFleetRow(
 				: `${peek.state.toUpperCase()}${peek.detail ? ` · ${peek.detail}` : ''}`,
 		transport,
 		transportDetail,
-		streams: formatStream(camera),
+		streams: formatStreams(camera, health),
 		recording:
 			camera.capabilities?.recording !== true
 				? 'Not reported'

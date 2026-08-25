@@ -2,15 +2,14 @@
 	import { setAppearanceState } from '$lib/appearance-context';
 	import { setCapabilityState } from '$lib/capability-context';
 	import MobileAccessSection from '$lib/components/MobileAccessSection.svelte';
-	import MobileCameraDefaultsSection from '$lib/components/MobileCameraDefaultsSection.svelte';
 	import MobileNavigation from '$lib/components/MobileNavigation.svelte';
 	import MobileSettingsActionBar from '$lib/components/MobileSettingsActionBar.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
 	import MobileSettingsIndex from '$lib/components/MobileSettingsIndex.svelte';
-	import type { CameraSettings, SanitizedConfig } from '$lib/types';
+	import type { SanitizedConfig } from '$lib/types';
 	import MobileDeviceStatusBar from './MobileDeviceStatusBar.svelte';
 
-	type State = 'access' | 'camera-defaults' | 'index';
+	type State = 'access' | 'index';
 	type Props = { state?: State };
 
 	let { state = 'index' }: Props = $props();
@@ -19,7 +18,6 @@
 
 	const scenarioIds: Record<State, string> = {
 		access: 'settings.mobile.access',
-		'camera-defaults': 'settings.mobile.camera-defaults',
 		index: 'settings.mobile.administration'
 	};
 
@@ -47,28 +45,6 @@
 			estimated_retention_days: 11
 		}
 	} satisfies SanitizedConfig;
-
-	const cameraNames = ['Workshop', 'Till', 'Porch'];
-	const cameras: CameraSettings[] = Array.from({ length: 42 }, (_, index) => ({
-		id: `camera-${index + 1}`,
-		ip: `192.0.2.${index + 10}`,
-		display_name: cameraNames[index] ?? `Camera ${index + 1}`,
-		manufacturer_override: null,
-		username_configured: index < 39,
-		password_configured: index < 39,
-		onvif_port: null,
-		http_port: null,
-		main_rtsp_url: null,
-		sub_rtsp_url: null,
-		uid_configured: false,
-		backend: 'auto',
-		transport: 'tcp',
-		record_generic_motion_events: false,
-		recording_mode: 'event-boost',
-		event_recording_duration_secs: 60,
-		health: 'online',
-		model: null
-	}));
 </script>
 
 <main
@@ -79,21 +55,9 @@
 	{#if state === 'index'}
 		<MobileSettingsHeader title="More" />
 		<div class="min-h-0 flex-1 overflow-hidden">
-			<MobileSettingsIndex {config} {cameras} health={null} />
+			<MobileSettingsIndex {config} />
 		</div>
 		<MobileNavigation pathname="/settings" fixed={false} />
-	{:else if state === 'camera-defaults'}
-		<MobileSettingsHeader
-			title="Camera defaults"
-			backHref="/settings"
-			trailing="Save · Server update required"
-		/>
-		<MobileCameraDefaultsSection {cameras} {config} />
-		<MobileSettingsActionBar
-			action="Add an exception"
-			capability="keeppeek.runtime-config.v1"
-			fixed={false}
-		/>
 	{:else}
 		<MobileSettingsHeader title="Access" backHref="/settings" trailing="Target · identity v1" />
 		<MobileAccessSection />

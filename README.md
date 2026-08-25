@@ -25,6 +25,11 @@ other services can consume or publish media.
 
 Read the [KeepPeek Book](https://xnorpx.github.io/keeppeek/).
 
+Reusable private values belong in owner-only [`secrets.toml`](docs/secrets.md) beside
+`config.toml`; camera defaults, per-camera settings, and the remote access key reference those flat
+keys. Add cameras from **Cameras**, edit an existing camera from its **Camera** page, and use
+**Settings** only for server-wide configuration.
+
 ## Ecosystem
 
 The Media Gateway API is implemented over WebRTC and is flexible enough to support a variety of
@@ -42,9 +47,9 @@ implementation, validation, review, and refinement.
 The image supports both `linux/amd64` and `linux/arm64` when built with Docker Buildx. It runs
 the `keeppeek` application directly.
 
-KeepPeek stores its configuration, recordings, recording catalog, thumbnails, and logging settings
-under `/config/keeppeek` in the container. Mount `/config` from the host to persist them. The first
-start creates the configuration there:
+KeepPeek stores its configuration, owner-only secrets, recordings, recording catalog, thumbnails,
+and logging settings under `/config/keeppeek` in the container. Mount `/config` from the host to
+persist them. The first start creates the configuration there:
 
 ```sh
 mkdir -p keeppeek-data

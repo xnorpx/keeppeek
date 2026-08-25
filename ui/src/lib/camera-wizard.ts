@@ -1,6 +1,9 @@
 import type {
 	CameraBackend,
+	CameraCatalogCamera,
+	CameraRecordingMode,
 	CameraCatalogStreamHints,
+	CameraStreamProbeResult,
 	CameraSettingsUpdate,
 	CameraTransport,
 	DiscoveredCameraSettings
@@ -14,12 +17,17 @@ export type CameraWizardDraft = {
 	displayName: string;
 	username: string;
 	password: string;
+	defaultUsernameConfigured: boolean;
+	defaultPasswordConfigured: boolean;
 	onvifPort: string;
 	httpPort: string;
 	mainRtspUrl: string;
 	subRtspUrl: string;
 	backend: CameraBackend;
 	transport: CameraTransport;
+	recordGenericMotionEvents: boolean;
+	recordingMode: CameraRecordingMode;
+	eventRecordingDurationSeconds: string;
 	discoveryEvidence: string | null;
 };
 
@@ -29,12 +37,17 @@ export function emptyCameraWizardDraft(): CameraWizardDraft {
 		displayName: '',
 		username: '',
 		password: '',
+		defaultUsernameConfigured: false,
+		defaultPasswordConfigured: false,
 		onvifPort: '',
 		httpPort: '',
 		mainRtspUrl: '',
 		subRtspUrl: '',
 		backend: 'auto',
 		transport: 'tcp',
+		recordGenericMotionEvents: false,
+		recordingMode: 'event-boost',
+		eventRecordingDurationSeconds: '60',
 		discoveryEvidence: null
 	};
 }
@@ -108,6 +121,57 @@ export function applyCatalogStreamHints(
 	};
 }
 
+export function applyCatalogCameraDefaults(
+	draft: CameraWizardDraft,
+	camera: CameraCatalogCamera
+): CameraWizardDraft {
+	if (camera.brand.toLocaleLowerCase() !== 'reolink' || draft.backend !== 'auto') return draft;
+	return {
+		...draft,
+		backend: 'reo-proto',
+		onvifPort: draft.onvifPort || '8000',
+		httpPort: draft.httpPort || '80'
+	};
+}
+
+export function exactCatalogCameraMatch(
+	cameras: readonly CameraCatalogCamera[],
+	manufacturer: string | null,
+	model: string | null
+): CameraCatalogCamera | null {
+	const normalizedModel = normalizeCameraIdentity(model);
+	if (!normalizedModel) return null;
+	const modelMatches = cameras.filter((camera) =>
+		[camera.model, ...camera.aliases].some(
+			(candidate) => normalizeCameraIdentity(candidate) === normalizedModel
+		)
+	);
+	if (modelMatches.length === 1) return modelMatches[0];
+
+	const normalizedManufacturer = normalizeCameraIdentity(manufacturer);
+	if (!normalizedManufacturer) return null;
+	const brandMatches = modelMatches.filter(
+		(camera) => normalizeCameraIdentity(camera.brand) === normalizedManufacturer
+	);
+	return brandMatches.length === 1 ? brandMatches[0] : null;
+}
+
+export function firstHttpCameraCatalogSource(sources: readonly string[]): string | null {
+	for (const source of sources) {
+		try {
+			const url = new URL(source);
+			if (url.protocol === 'https:' || url.protocol === 'http:') return url.href;
+		} catch {
+			continue;
+		}
+	}
+	return null;
+}
+
+function normalizeCameraIdentity(value: string | null): string {
+	return (value ?? '').toLocaleLowerCase().replaceAll(/[^a-z0-9]/g, '');
+}
+
 export function validateCameraWizardStep(
 	step: CameraWizardStep,
 	draft: CameraWizardDraft
@@ -121,8 +185,10 @@ export function validateCameraWizardStep(
 		}
 	}
 	if (step === 'connect') {
-		if (!draft.username.trim()) return 'Username is required.';
-		if (!draft.password) return 'Password is required.';
+		if (!draft.username.trim() && !draft.defaultUsernameConfigured) {
+			return 'Username is required.';
+		}
+		if (!draft.password && !draft.defaultPasswordConfigured) return 'Password is required.';
 		try {
 			parsePort(draft.onvifPort, 'ONVIF port');
 			parsePort(draft.httpPort, 'HTTP port');
@@ -140,7 +206,42 @@ export function validateCameraWizardStep(
 			}
 		}
 	}
-	if (step === 'recording' && !draft.displayName.trim()) return 'Camera name is required.';
+	if (step === 'recording') {
+		if (!draft.displayName.trim()) return 'Camera name is required.';
+		if (draft.recordingMode === 'event-boost') {
+			try {
+				parseWholeNumber(draft.eventRecordingDurationSeconds, 'Event recording duration', 1, 3_600);
+			} catch (cause) {
+				return cause instanceof Error ? cause.message : 'Event recording duration is invalid.';
+			}
+		}
+	}
+	return null;
+}
+
+export function cameraStreamVerificationError(
+	draft: CameraWizardDraft,
+	probe: CameraStreamProbeResult | null
+): string | null {
+	if (!probe) return 'Verify the camera streams before continuing.';
+	const verified = new Set(
+		probe.streams.filter((stream) => stream.verified).map((stream) => stream.stream)
+	);
+	const required =
+		draft.recordingMode === 'event-boost' || draft.recordingMode === 'both'
+			? (['main', 'sub'] as const)
+			: draft.recordingMode === 'sub'
+				? (['sub'] as const)
+				: draft.recordingMode === 'main'
+					? (['main'] as const)
+					: ([] as const);
+	if (required.length === 0 && verified.size === 0) {
+		return 'Verify at least one camera stream before saving a camera with recording off.';
+	}
+	const missing = required.filter((stream) => !verified.has(stream));
+	if (missing.length > 0) {
+		return `Verify the ${missing.join(' and ')} stream${missing.length === 1 ? '' : 's'} required by ${recordingModeLabel(draft.recordingMode)}.`;
+	}
 	return null;
 }
 
@@ -151,16 +252,32 @@ export function cameraWizardUpdate(draft: CameraWizardDraft): CameraSettingsUpda
 	}
 	return {
 		display_name: draft.displayName.trim(),
-		username: draft.username.trim(),
-		password: draft.password,
+		...(draft.username.trim() ? { username: draft.username.trim() } : {}),
+		...(draft.password ? { password: draft.password } : {}),
 		onvif_port: parsePort(draft.onvifPort, 'ONVIF port'),
 		http_port: parsePort(draft.httpPort, 'HTTP port'),
 		main_rtsp_url: draft.mainRtspUrl.trim() || null,
 		sub_rtsp_url: draft.subRtspUrl.trim() || null,
 		uid: null,
 		backend: draft.backend,
-		transport: draft.transport
+		transport: draft.transport,
+		record_generic_motion_events: draft.recordGenericMotionEvents,
+		recording_mode: draft.recordingMode,
+		event_recording_duration_secs: parseWholeNumber(
+			draft.eventRecordingDurationSeconds,
+			'Event recording duration',
+			1,
+			3_600
+		)
 	};
+}
+
+function recordingModeLabel(mode: CameraRecordingMode): string {
+	if (mode === 'event-boost') return 'event boost';
+	if (mode === 'both') return 'main + sub recording';
+	if (mode === 'main') return 'main-only recording';
+	if (mode === 'sub') return 'sub-only recording';
+	return 'recording off';
 }
 
 function validateAddress(value: string): void {
@@ -179,4 +296,14 @@ function parsePort(value: string, label: string): number | null {
 	const port = Number(value);
 	if (port < 1 || port > 65_535) throw new Error(`${label} must be between 1 and 65535.`);
 	return port;
+}
+
+function parseWholeNumber(value: string, label: string, minimum: number, maximum: number): number {
+	const normalized = value.trim();
+	if (!/^\d+$/.test(normalized)) throw new Error(`${label} must be a whole number.`);
+	const number = Number(normalized);
+	if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+		throw new Error(`${label} must be between ${minimum} and ${maximum}.`);
+	}
+	return number;
 }

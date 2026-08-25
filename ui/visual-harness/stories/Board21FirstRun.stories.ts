@@ -19,7 +19,7 @@ const meta = {
 			frameId: '3D7-0',
 			scenarioId: 'setup.desktop.first-run',
 			reference: 'references/21-first-run-empty-states.png',
-			referenceSha256: '4df4c58bba6272ad07cc6cefc6646377ee9d94046ad06eb1835febadf6b1a650',
+			referenceSha256: '17f8ac229c25d3c53e68ae797e086f8615cc809f5284aa8b6367410f5340725a',
 			exceptions: [
 				'The server reports disk capacity but does not expose a candidate write probe or setup-completion command.',
 				'The browser timezone is labeled as browser evidence because the server does not report its timezone.',

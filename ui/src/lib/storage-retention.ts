@@ -1,6 +1,16 @@
 import type { DiskHealth, SanitizedConfig, ServerHealthResponse } from '$lib/types';
 
 const GIBIBYTE_BYTES = 1_073_741_824;
+const MINIMUM_SUGGESTED_STORAGE_BYTES = 16 * GIBIBYTE_BYTES;
+const NON_PERSISTENT_FILE_SYSTEMS = new Set([
+	'autofs',
+	'devfs',
+	'overlay',
+	'proc',
+	'squashfs',
+	'sysfs',
+	'tmpfs'
+]);
 
 export function formatStorageDuration(seconds: number, locale?: string): string {
 	if (seconds < 1) {
@@ -55,6 +65,38 @@ export function mostSpecificDiskForPath(
 			)
 			.at(0) ?? null
 	);
+}
+
+export function suggestedStorageDisks(
+	disks: readonly DiskHealth[],
+	currentPath: string
+): DiskHealth[] {
+	const current = mostSpecificDiskForPath(currentPath, disks);
+	const byMount = new Map<string, DiskHealth>();
+	for (const disk of disks) {
+		const key = normalizedPath(disk.mount_point);
+		const existing = byMount.get(key);
+		if (
+			!existing ||
+			disk.stores_recordings ||
+			(!existing.stores_recordings && disk.available_bytes > existing.available_bytes)
+		) {
+			byMount.set(key, disk);
+		}
+	}
+	return [...byMount.values()]
+		.filter(
+			(disk) =>
+				disk.mount_point === current?.mount_point ||
+				(disk.total_bytes >= MINIMUM_SUGGESTED_STORAGE_BYTES &&
+					disk.available_bytes > 0 &&
+					!NON_PERSISTENT_FILE_SYSTEMS.has(disk.file_system.toLocaleLowerCase()))
+		)
+		.toSorted((left, right) => {
+			if (left.mount_point === current?.mount_point) return -1;
+			if (right.mount_point === current?.mount_point) return 1;
+			return right.available_bytes - left.available_bytes;
+		});
 }
 
 export type StorageRetentionEvidence = {

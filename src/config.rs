@@ -2,16 +2,59 @@ pub use crate::access::AccessKey;
 use crate::cameras::CameraConfig;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
 };
 use url::Url;
 
 const DEFAULT_CONFIG_NAME: &str = "config.toml";
+const DEFAULT_SECRETS_NAME: &str = "secrets.toml";
+const ACCESS_KEY_SECRET: &str = "KEEPPEEK_ACCESS_KEY";
 const STORAGE_MIGRATION_SECTION: &str = "storage_migration";
+const DEFAULT_SECRETS_TEMPLATE: &str = r#"# Keep this file private. KeepPeek creates it with owner-only permissions.
+# It is a flat string-to-string map. Reference values from config.toml with
+# {secret:KEY}; use {secret:KEY|url} for percent-encoded URL components.
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+# CAMERA_USERNAME = "admin"
+# CAMERA_PASSWORD = "replace-me"
+# FRONT_CAMERA_PASSWORD = "replace-me"
+# KEEPPEEK_ACCESS_KEY = "replace-with-a-UUID"
+# HOME_ASSISTANT_TOKEN = "replace-me"
+"#;
+
+/// Flat private values loaded from `secrets.toml` beside the application configuration.
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Secrets(BTreeMap<String, String>);
+
+impl Secrets {
+    pub(crate) fn redaction_values(&self) -> Vec<String> {
+        self.0
+            .iter()
+            .filter_map(|(key, value)| {
+                environment_secret(key)
+                    .ok()
+                    .flatten()
+                    .or_else(|| Some(value.clone()))
+            })
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
+}
+
+/// Shared camera fields from `[camera_defaults]` in `config.toml`.
+#[derive(Clone, Default, Deserialize)]
+pub struct CameraCredentialDefaults {
+    /// Default camera login username, which may contain a secret reference.
+    #[serde(default)]
+    pub username: String,
+    /// Default camera login password, which may contain a secret reference.
+    #[serde(default)]
+    pub password: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default = "default_host")]
     pub host: String,
@@ -33,6 +76,26 @@ pub struct Config {
 
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    #[serde(skip)]
+    pub(crate) source: toml::Table,
+}
+
+impl Config {
+    /// Returns a raw secret reference for a string field, or its resolved value.
+    pub fn reference_or_value(&self, path: &[&str], resolved: &str) -> String {
+        let mut value = path.first().and_then(|segment| self.source.get(*segment));
+        for segment in path.iter().skip(1) {
+            value = value
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get(*segment));
+        }
+        value
+            .and_then(toml::Value::as_str)
+            .filter(|value| contains_secret_reference(value))
+            .unwrap_or(resolved)
+            .to_owned()
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -454,6 +517,7 @@ impl Default for Config {
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
+            source: toml::Table::new(),
         }
     }
 }
@@ -538,6 +602,217 @@ pub fn config_path() -> PathBuf {
     config_dir().join(DEFAULT_CONFIG_NAME)
 }
 
+/// Returns the secrets file stored beside a KeepPeek configuration.
+pub fn secrets_path(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(DEFAULT_SECRETS_NAME)
+}
+
+/// Loads private credentials stored beside a KeepPeek configuration.
+pub fn load_secrets(config_path: &Path) -> anyhow::Result<Secrets> {
+    let path = secrets_path(config_path);
+    if !path.exists() {
+        return Ok(Secrets::default());
+    }
+    make_file_owner_only(&path)?;
+    let text = std::fs::read_to_string(&path)?;
+    let secrets = toml::from_str(&text).map_err(|_| {
+        anyhow::anyhow!(
+            "unable to parse {}; secrets must be a flat string-to-string TOML table",
+            path.display()
+        )
+    })?;
+    validate_secret_keys(&secrets)?;
+    Ok(secrets)
+}
+
+fn make_file_owner_only(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn ensure_secrets_file(config_path: &Path) -> anyhow::Result<Secrets> {
+    let path = secrets_path(config_path);
+    if path.exists() {
+        return load_secrets(config_path);
+    }
+    write_private_file(&path, DEFAULT_SECRETS_TEMPLATE.as_bytes())?;
+    Ok(Secrets::default())
+}
+
+fn ensure_access_key_secret(
+    config_path: &Path,
+    secrets: &mut Secrets,
+) -> anyhow::Result<AccessKey> {
+    let existing = environment_secret(ACCESS_KEY_SECRET)?
+        .or_else(|| secrets.0.get(ACCESS_KEY_SECRET).cloned());
+    if let Some(existing) = existing {
+        return AccessKey::parse(&existing)
+            .map_err(|error| anyhow::anyhow!("invalid {ACCESS_KEY_SECRET} secret: {error}"));
+    }
+
+    let access_key = AccessKey::generate();
+    secrets
+        .0
+        .insert(ACCESS_KEY_SECRET.to_owned(), access_key.canonical());
+    let serialized = toml::to_string_pretty(secrets)?;
+    write_private_file(&secrets_path(config_path), serialized.as_bytes())?;
+    Ok(access_key)
+}
+
+fn store_access_key_secret(
+    config_path: &Path,
+    secrets: &mut Secrets,
+    access_key: AccessKey,
+) -> anyhow::Result<()> {
+    secrets
+        .0
+        .insert(ACCESS_KEY_SECRET.to_owned(), access_key.canonical());
+    let serialized = toml::to_string_pretty(secrets)?;
+    write_private_file_atomically(&secrets_path(config_path), serialized.as_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn rotate_access_key_secret(config_path: &Path) -> anyhow::Result<AccessKey> {
+    if environment_secret(ACCESS_KEY_SECRET)?.is_some() {
+        anyhow::bail!(
+            "remote access key rotation is unavailable while KEEPPEEK_SECRET_{ACCESS_KEY_SECRET} is set"
+        );
+    }
+    let mut secrets = ensure_secrets_file(config_path)?;
+    let access_key = AccessKey::generate();
+    store_access_key_secret(config_path, &mut secrets, access_key)?;
+    Ok(access_key)
+}
+
+fn validate_secret_keys(secrets: &Secrets) -> anyhow::Result<()> {
+    for key in secrets.0.keys() {
+        if !valid_secret_key(key) {
+            anyhow::bail!(
+                "invalid secret key '{key}'; use uppercase letters, digits, and underscores"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn valid_secret_key(key: &str) -> bool {
+    let mut characters = key.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_uppercase() || character == '_')
+        && characters.all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+/// Resolves `{secret:KEY}` and `{secret:KEY|url}` references in a string.
+pub fn resolve_secret_references(config_path: &Path, value: &str) -> anyhow::Result<String> {
+    let secrets = load_secrets(config_path)?;
+    resolve_secret_references_loaded(value, &secrets)
+}
+
+fn resolve_secret_references_loaded(value: &str, secrets: &Secrets) -> anyhow::Result<String> {
+    resolve_secret_references_with(value, secrets, environment_secret)
+}
+
+fn environment_secret(key: &str) -> anyhow::Result<Option<String>> {
+    match std::env::var(format!("KEEPPEEK_SECRET_{key}")) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("environment override for secret key '{key}' is not valid Unicode")
+        }
+    }
+}
+
+fn resolve_secret_references_with(
+    value: &str,
+    secrets: &Secrets,
+    environment: impl Fn(&str) -> anyhow::Result<Option<String>>,
+) -> anyhow::Result<String> {
+    const PREFIX: &str = "{secret:";
+
+    let mut resolved = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while let Some(offset) = value[cursor..].find(PREFIX) {
+        let reference_start = cursor + offset;
+        resolved.push_str(&value[cursor..reference_start]);
+        let body_start = reference_start + PREFIX.len();
+        let Some(body_end_offset) = value[body_start..].find('}') else {
+            anyhow::bail!("malformed secret reference");
+        };
+        let body_end = body_start + body_end_offset;
+        let body = &value[body_start..body_end];
+        let (key, modifier) = body
+            .split_once('|')
+            .map_or((body, None), |(key, modifier)| (key, Some(modifier)));
+        if !valid_secret_key(key) {
+            anyhow::bail!("invalid secret key '{key}'");
+        }
+        let secret = environment(key)?
+            .or_else(|| secrets.0.get(key).cloned())
+            .ok_or_else(|| anyhow::anyhow!("missing secret key '{key}'"))?;
+        match modifier {
+            None => resolved.push_str(&secret),
+            Some("url") => resolved.push_str(&percent_encode_url_component(&secret)),
+            Some(_) => anyhow::bail!("invalid modifier for secret key '{key}'"),
+        }
+        cursor = body_end + 1;
+    }
+    resolved.push_str(&value[cursor..]);
+    Ok(resolved)
+}
+
+fn percent_encode_url_component(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
+pub(crate) fn contains_secret_reference(value: &str) -> bool {
+    value.contains("{secret:")
+}
+
+fn resolve_toml_secret_references(
+    value: &mut toml::Value,
+    secrets: &Secrets,
+) -> anyhow::Result<()> {
+    match value {
+        toml::Value::String(value) => {
+            *value = resolve_secret_references_loaded(value, secrets)?;
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                resolve_toml_secret_references(value, secrets)?;
+            }
+        }
+        toml::Value::Table(values) => {
+            for (_, value) in values.iter_mut() {
+                resolve_toml_secret_references(value, secrets)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn read_config_arg() -> Option<PathBuf> {
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -584,23 +859,31 @@ fn read_access_key_arg() -> anyhow::Result<Option<AccessKey>> {
 pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     let path = read_config_arg().unwrap_or_else(config_path);
     let config_directory = ensure_config_dir()?;
+    let mut secrets = ensure_secrets_file(&path)?;
 
     let (mut cfg, mut merged, existing_config) = if path.exists() {
         let text = std::fs::read_to_string(&path)?;
         let mut root: toml::Table = toml::from_str(&text)?;
         apply_pending_storage_migration(&mut root)?;
-        let cfg: Config = toml::from_str(&toml::to_string(&root)?)?;
+        let cfg = config_from_table(&root, &secrets)?;
         (cfg, root, true)
     } else {
         (Config::default(), toml::Table::new(), false)
     };
 
-    if let Some(access_key) = read_access_key_arg()?.filter(|key| !key.is_unset()) {
+    let access_key_arg = read_access_key_arg()?.filter(|key| !key.is_unset());
+    if let Some(access_key) = access_key_arg {
         cfg.access_key = access_key;
     }
+    let access_key_is_reference = merged
+        .get("access_key")
+        .and_then(toml::Value::as_str)
+        .is_some_and(contains_secret_reference);
     let generated_access_key = cfg.access_key.is_unset();
     if generated_access_key {
-        cfg.access_key = AccessKey::generate();
+        cfg.access_key = ensure_access_key_secret(&path, &mut secrets)?;
+    } else if !access_key_is_reference || access_key_arg.is_some() {
+        store_access_key_secret(&path, &mut secrets, cfg.access_key)?;
     }
     cfg.direct_card.validate()?;
 
@@ -619,7 +902,18 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     let cfg_table = cfg_value.as_table().cloned().unwrap_or_default();
 
     for (key, value) in cfg_table {
-        merged.insert(key, value);
+        match merged.get_mut(&key) {
+            Some(existing) => merge_preserving_secret_references(existing, value),
+            None => {
+                merged.insert(key, value);
+            }
+        }
+    }
+    if generated_access_key || !access_key_is_reference || access_key_arg.is_some() {
+        merged.insert(
+            "access_key".to_owned(),
+            toml::Value::String(format!("{{secret:{ACCESS_KEY_SECRET}}}")),
+        );
     }
 
     let text = toml::to_string_pretty(&merged)?;
@@ -629,7 +923,9 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
         tracing::info!("created default config at {}", path.display());
     }
     if generated_access_key {
-        println!("KeepPeek access key: {}", cfg.access_key.canonical());
+        tracing::info!("created owner-only remote access key; the value is not logged");
+    } else if !access_key_is_reference || access_key_arg.is_some() {
+        tracing::info!("stored the remote access key in the owner-only secret file");
     }
 
     Ok((cfg, path))
@@ -646,10 +942,8 @@ pub fn update_settings_with_migration(
 ) -> anyhow::Result<Config> {
     let text = std::fs::read_to_string(path)?;
     let mut root: toml::Table = toml::from_str(&text)?;
-    root.insert(
-        "host".to_owned(),
-        toml::Value::String(settings.host.clone()),
-    );
+    let secrets = load_secrets(path)?;
+    set_string_preserving_secret_reference(&mut root, "host", &settings.host, &secrets)?;
     root.insert(
         "port".to_owned(),
         toml::Value::Integer(i64::from(settings.port)),
@@ -660,23 +954,29 @@ pub fn update_settings_with_migration(
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("storage is not a configuration table"))?;
     if let Some(medium_term_path) = &settings.storage.medium_term_path {
-        storage.insert(
-            "medium_term_path".to_owned(),
-            toml::Value::String(medium_term_path.clone()),
-        );
+        set_string_preserving_secret_reference(
+            storage,
+            "medium_term_path",
+            medium_term_path,
+            &secrets,
+        )?;
     }
     if let Some(long_term_path) = &settings.storage.long_term_path {
-        storage.insert(
-            "long_term_path".to_owned(),
-            toml::Value::String(long_term_path.clone()),
-        );
+        set_string_preserving_secret_reference(
+            storage,
+            "long_term_path",
+            long_term_path,
+            &secrets,
+        )?;
     }
     match &settings.storage.recording_catalog_path {
         Some(recording_catalog_path) => {
-            storage.insert(
-                "recording_catalog_path".to_owned(),
-                toml::Value::String(recording_catalog_path.clone()),
-            );
+            set_string_preserving_secret_reference(
+                storage,
+                "recording_catalog_path",
+                recording_catalog_path,
+                &secrets,
+            )?;
         }
         None => {
             storage.remove("recording_catalog_path");
@@ -684,10 +984,12 @@ pub fn update_settings_with_migration(
     }
     match &settings.storage.event_thumbnail_path {
         Some(event_thumbnail_path) => {
-            storage.insert(
-                "event_thumbnail_path".to_owned(),
-                toml::Value::String(event_thumbnail_path.clone()),
-            );
+            set_string_preserving_secret_reference(
+                storage,
+                "event_thumbnail_path",
+                event_thumbnail_path,
+                &secrets,
+            )?;
         }
         None => {
             storage.remove("event_thumbnail_path");
@@ -731,9 +1033,67 @@ pub fn update_settings_with_migration(
     }
 
     let serialized = toml::to_string_pretty(&root)?;
-    let updated: Config = toml::from_str(&serialized)?;
+    let updated = config_from_table(&root, &secrets)?;
     write_private_file_atomically(path, serialized.as_bytes())?;
     Ok(updated)
+}
+
+/// Loads and resolves the application configuration without writing it.
+pub fn load_config(path: &Path) -> anyhow::Result<Config> {
+    let text = std::fs::read_to_string(path)?;
+    let root: toml::Table = toml::from_str(&text)?;
+    let secrets = load_secrets(path)?;
+    config_from_table(&root, &secrets)
+}
+
+fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Config> {
+    let mut resolved = toml::Value::Table(root.clone());
+    resolve_toml_secret_references(&mut resolved, secrets)?;
+    let mut config: Config = resolved.try_into()?;
+    config.source = root.clone();
+    Ok(config)
+}
+
+fn merge_preserving_secret_references(existing: &mut toml::Value, next: toml::Value) {
+    if contains_secret_references(existing) {
+        if let (toml::Value::Table(existing), toml::Value::Table(next)) = (existing, next) {
+            for (key, value) in next {
+                match existing.get_mut(&key) {
+                    Some(existing) => merge_preserving_secret_references(existing, value),
+                    None => {
+                        existing.insert(key, value);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    *existing = next;
+}
+
+fn contains_secret_references(value: &toml::Value) -> bool {
+    match value {
+        toml::Value::String(value) => contains_secret_reference(value),
+        toml::Value::Array(values) => values.iter().any(contains_secret_references),
+        toml::Value::Table(values) => values.values().any(contains_secret_references),
+        _ => false,
+    }
+}
+
+fn set_string_preserving_secret_reference(
+    table: &mut toml::Table,
+    key: &str,
+    next: &str,
+    secrets: &Secrets,
+) -> anyhow::Result<()> {
+    if let Some(existing) = table.get(key).and_then(toml::Value::as_str)
+        && contains_secret_reference(existing)
+        && resolve_secret_references_loaded(existing, secrets)? == next
+    {
+        return Ok(());
+    }
+    table.insert(key.to_owned(), toml::Value::String(next.to_owned()));
+    Ok(())
 }
 
 pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraConfig>>> {
@@ -745,18 +1105,11 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
         .ok_or_else(|| anyhow::anyhow!("cameras config is not a TOML table"))?;
 
     let mut result: HashMap<String, Vec<CameraConfig>> = HashMap::new();
-
-    const RESERVED_SECTIONS: &[&str] = &[
-        "storage",
-        "battery_wake",
-        "direct_card",
-        "homekit",
-        "logging",
-        STORAGE_MIGRATION_SECTION,
-    ];
+    let secrets = load_secrets(path)?;
+    let defaults = camera_defaults_from_table(root_table, &secrets)?;
 
     for (namespace, ns_value) in root_table {
-        if RESERVED_SECTIONS.contains(&namespace.as_str()) {
+        if is_reserved_section(namespace) {
             continue;
         }
 
@@ -766,8 +1119,16 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
 
         let mut cameras = Vec::new();
         for (cam_name, cam_value) in ns_table {
-            let mut config: CameraConfig = cam_value.clone().try_into()?;
+            let mut resolved = cam_value.clone();
+            resolve_toml_secret_references(&mut resolved, &secrets)?;
+            let mut config: CameraConfig = resolved.try_into()?;
             config.name = Some(cam_name.clone());
+            if config.username.is_empty() {
+                config.username.clone_from(&defaults.username);
+            }
+            if config.password.is_empty() {
+                config.password.clone_from(&defaults.password);
+            }
             cameras.push(config);
         }
 
@@ -775,6 +1136,39 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
     }
 
     Ok(result)
+}
+
+/// Loads resolved shared camera credentials from `[camera_defaults]` in `config.toml`.
+pub fn load_camera_defaults(path: &Path) -> anyhow::Result<CameraCredentialDefaults> {
+    let text = std::fs::read_to_string(path)?;
+    let root: toml::Table = toml::from_str(&text)?;
+    let secrets = load_secrets(path)?;
+    camera_defaults_from_table(&root, &secrets)
+}
+
+fn camera_defaults_from_table(
+    root: &toml::Table,
+    secrets: &Secrets,
+) -> anyhow::Result<CameraCredentialDefaults> {
+    let Some(defaults) = root.get("camera_defaults") else {
+        return Ok(CameraCredentialDefaults::default());
+    };
+    let mut resolved = defaults.clone();
+    resolve_toml_secret_references(&mut resolved, secrets)?;
+    resolved.try_into().map_err(Into::into)
+}
+
+fn is_reserved_section(namespace: &str) -> bool {
+    matches!(
+        namespace,
+        "storage"
+            | "battery_wake"
+            | "direct_card"
+            | "homekit"
+            | "logging"
+            | "camera_defaults"
+            | STORAGE_MIGRATION_SECTION
+    )
 }
 
 fn apply_pending_storage_migration(root: &mut toml::Table) -> anyhow::Result<()> {
@@ -941,6 +1335,8 @@ pub fn set_camera_manufacturer(
 pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<String> {
     let text = std::fs::read_to_string(path)?;
     let mut root: toml::Table = toml::from_str(&text)?;
+    let secrets = load_secrets(path)?;
+    let defaults = camera_defaults_from_table(&root, &secrets)?;
     let existing = camera_locations(&root, config.ip)?;
     let (namespace, name) = if let Some((namespace, name)) = existing {
         (namespace, name)
@@ -960,14 +1356,13 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
         .and_then(|cameras| cameras.get_mut(&name))
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| anyhow::anyhow!("camera {} is not a configuration table", config.ip))?;
+    let original = camera.clone();
 
     const MANAGED_CAMERA_KEYS: &[&str] = &[
         "ip",
         "name",
         "display_name",
         "manufacturer",
-        "username",
-        "password",
         "onvif_port",
         "http_port",
         "main_rtsp_url",
@@ -979,18 +1374,73 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
     for key in MANAGED_CAMERA_KEYS {
         camera.remove(*key);
     }
+    set_camera_credential(
+        camera,
+        &original,
+        "username",
+        &config.username,
+        &defaults.username,
+        &secrets,
+    )?;
+    set_camera_credential(
+        camera,
+        &original,
+        "password",
+        &config.password,
+        &defaults.password,
+        &secrets,
+    )?;
     let serialized: toml::Table = toml::Value::try_from(config)?
         .as_table()
         .cloned()
         .unwrap_or_default();
     for (key, value) in serialized {
-        if key != "name" {
+        if !matches!(key.as_str(), "name" | "username" | "password") {
+            let value = preserve_secret_reference(original.get(&key), value, &secrets)?;
             camera.insert(key, value);
         }
     }
 
     write_private_file_atomically(path, toml::to_string_pretty(&root)?.as_bytes())?;
     Ok(name)
+}
+
+fn set_camera_credential(
+    camera: &mut toml::Table,
+    original: &toml::Table,
+    key: &str,
+    next: &str,
+    default: &str,
+    secrets: &Secrets,
+) -> anyhow::Result<()> {
+    if let Some(existing) = original.get(key).and_then(toml::Value::as_str)
+        && contains_secret_reference(existing)
+        && resolve_secret_references_loaded(existing, secrets)? == next
+    {
+        camera.insert(key.to_owned(), toml::Value::String(existing.to_owned()));
+        return Ok(());
+    }
+    if next.is_empty() || next == default {
+        camera.remove(key);
+    } else {
+        camera.insert(key.to_owned(), toml::Value::String(next.to_owned()));
+    }
+    Ok(())
+}
+
+fn preserve_secret_reference(
+    existing: Option<&toml::Value>,
+    next: toml::Value,
+    secrets: &Secrets,
+) -> anyhow::Result<toml::Value> {
+    if let (Some(existing), Some(next_string)) =
+        (existing.and_then(toml::Value::as_str), next.as_str())
+        && contains_secret_reference(existing)
+        && resolve_secret_references_loaded(existing, secrets)? == next_string
+    {
+        return Ok(toml::Value::String(existing.to_owned()));
+    }
+    Ok(next)
 }
 
 pub fn remove_camera(path: &Path, camera_ip: IpAddr) -> anyhow::Result<()> {
@@ -1005,6 +1455,30 @@ pub fn remove_camera(path: &Path, camera_ip: IpAddr) -> anyhow::Result<()> {
         .remove(&name);
     write_private_file_atomically(path, toml::to_string_pretty(&root)?.as_bytes())?;
     Ok(())
+}
+
+/// Returns a raw camera secret reference for API display, or the resolved value.
+pub fn camera_reference_or_value(
+    path: &Path,
+    camera_ip: IpAddr,
+    key: &str,
+    resolved: &str,
+) -> anyhow::Result<String> {
+    let text = std::fs::read_to_string(path)?;
+    let root: toml::Table = toml::from_str(&text)?;
+    let Some((namespace, name)) = camera_locations(&root, camera_ip)? else {
+        return Ok(resolved.to_owned());
+    };
+    Ok(root
+        .get(&namespace)
+        .and_then(toml::Value::as_table)
+        .and_then(|cameras| cameras.get(&name))
+        .and_then(toml::Value::as_table)
+        .and_then(|camera| camera.get(key))
+        .and_then(toml::Value::as_str)
+        .filter(|value| contains_secret_reference(value))
+        .unwrap_or(resolved)
+        .to_owned())
 }
 
 fn camera_locations(
@@ -1084,6 +1558,7 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
         .unwrap_or_default()
         .as_nanos();
     let temporary = parent.join(format!(".{filename}.{unique}.tmp"));
+    #[cfg(not(unix))]
     let permissions = std::fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
@@ -1098,6 +1573,7 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
     let mut file = options.open(&temporary)?;
     file.write_all(bytes)?;
     file.sync_all()?;
+    #[cfg(not(unix))]
     if let Some(permissions) = permissions {
         std::fs::set_permissions(&temporary, permissions)?;
     }
@@ -1246,6 +1722,345 @@ mod tests {
         assert_eq!(config.transport, CameraTransport::Tcp);
         assert_eq!(config.http_port, None);
         assert_eq!(config.uid, None);
+    }
+
+    #[test]
+    fn camera_config_debug_output_is_redacted() {
+        let config: CameraConfig = toml::from_str(
+            r#"
+                ip = "192.168.1.10"
+                username = "operator"
+                password = "camera-password"
+                main_rtsp_url = "rtsp://private-camera.internal/main"
+                uid = "PRIVATE-CAMERA-UID"
+            "#,
+        )
+        .unwrap();
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("username_configured: true"));
+        assert!(debug.contains("password_configured: true"));
+        assert!(!debug.contains("operator"));
+        assert!(!debug.contains("camera-password"));
+        assert!(!debug.contains("private-camera.internal"));
+        assert!(!debug.contains("PRIVATE-CAMERA-UID"));
+    }
+
+    #[test]
+    fn camera_credentials_resolve_from_defaults_and_camera_references() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-secrets-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [camera_defaults]
+                username = "{secret:CAMERA_USERNAME}"
+                password = "{secret:CAMERA_PASSWORD}"
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                password = "{secret:FRONT_CAMERA_PASSWORD}"
+            "#,
+        )
+        .unwrap();
+        write_private_file(
+            &secrets_path(&path),
+            br#"
+                CAMERA_USERNAME = "default-user"
+                CAMERA_PASSWORD = "default-password"
+                FRONT_CAMERA_PASSWORD = " specific password "
+                HOME_ASSISTANT_TOKEN = "integration-token"
+            "#,
+        )
+        .unwrap();
+
+        let cameras = load_cameras(&path).unwrap();
+        let camera = &cameras["cameras"][0];
+        assert_eq!(camera.username, "default-user");
+        assert_eq!(camera.password, " specific password ");
+        let secrets = load_secrets(&path).unwrap();
+        assert_eq!(
+            secrets.0.get("HOME_ASSISTANT_TOKEN").map(String::as_str),
+            Some("integration-token")
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn inline_camera_credentials_override_referenced_defaults() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-inline-secrets-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            r#"
+                [camera_defaults]
+                username = "{secret:CAMERA_USERNAME}"
+                password = "{secret:CAMERA_PASSWORD}"
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                username = "legacy-user"
+                password = "legacy-password"
+            "#
+            .as_bytes(),
+        )
+        .unwrap();
+        write_private_file(
+            &secrets_path(&path),
+            b"CAMERA_USERNAME = \"default-user\"\nCAMERA_PASSWORD = \"default-password\"\n",
+        )
+        .unwrap();
+
+        let cameras = load_cameras(&path).unwrap();
+        assert_eq!(cameras["cameras"][0].username, "legacy-user");
+        assert_eq!(cameras["cameras"][0].password, "legacy-password");
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secrets_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-private-secrets-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(&secrets_path(&path), b"CAMERA_USERNAME = \"operator\"\n").unwrap();
+        load_secrets(&path).unwrap();
+
+        let mode = std::fs::metadata(secrets_path(&path))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn first_start_creates_the_secrets_template() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-secrets-template-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+
+        let secrets = ensure_secrets_file(&path).unwrap();
+
+        assert!(secrets.0.is_empty());
+        let template = std::fs::read_to_string(secrets_path(&path)).unwrap();
+        assert!(template.contains("CAMERA_USERNAME"));
+        assert!(template.contains("FRONT_CAMERA_PASSWORD"));
+        assert!(template.contains("HOME_ASSISTANT_TOKEN"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn generated_access_key_is_stored_only_in_the_secret_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-access-key-secret-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        let mut secrets = ensure_secrets_file(&path).unwrap();
+
+        let access_key = ensure_access_key_secret(&path, &mut secrets).unwrap();
+
+        let secret_file = std::fs::read_to_string(secrets_path(&path)).unwrap();
+        assert!(secret_file.contains("KEEPPEEK_ACCESS_KEY"));
+        assert!(secret_file.contains(&access_key.canonical()));
+        let mut config = toml::Table::new();
+        config.insert(
+            "access_key".to_owned(),
+            toml::Value::String("{secret:KEEPPEEK_ACCESS_KEY}".to_owned()),
+        );
+        write_private_file(&path, toml::to_string_pretty(&config).unwrap().as_bytes()).unwrap();
+        let raw_config = std::fs::read_to_string(&path).unwrap();
+        assert!(raw_config.contains("{secret:KEEPPEEK_ACCESS_KEY}"));
+        assert!(!raw_config.contains(&access_key.canonical()));
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.access_key, access_key);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn existing_access_key_can_be_migrated_to_the_secret_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-access-key-migration-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        let access_key = AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let mut secrets = ensure_secrets_file(&path).unwrap();
+
+        store_access_key_secret(&path, &mut secrets, access_key).unwrap();
+
+        let saved = load_secrets(&path).unwrap();
+        assert_eq!(
+            saved.0.get(ACCESS_KEY_SECRET).map(String::as_str),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn access_key_rotation_replaces_only_the_owner_only_secret() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-access-key-rotation-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(&path, b"access_key = \"{secret:KEEPPEEK_ACCESS_KEY}\"\n").unwrap();
+        write_private_file(
+            &secrets_path(&path),
+            b"CAMERA_PASSWORD = \"camera-secret\"\nKEEPPEEK_ACCESS_KEY = \"550e8400-e29b-41d4-a716-446655440000\"\n",
+        )
+        .unwrap();
+
+        let rotated = rotate_access_key_secret(&path).unwrap();
+
+        assert_ne!(
+            rotated,
+            AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap()
+        );
+        let secrets = load_secrets(&path).unwrap();
+        assert_eq!(
+            secrets.0.get(ACCESS_KEY_SECRET).map(String::as_str),
+            Some(rotated.canonical().as_str())
+        );
+        assert_eq!(
+            secrets.0.get("CAMERA_PASSWORD").map(String::as_str),
+            Some("camera-secret")
+        );
+        let raw_config = std::fs::read_to_string(&path).unwrap();
+        assert!(raw_config.contains("{secret:KEEPPEEK_ACCESS_KEY}"));
+        assert!(!raw_config.contains(&rotated.canonical()));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn secret_references_support_interpolation_url_encoding_and_environment_precedence() {
+        let secrets = Secrets(BTreeMap::from([
+            ("CAMERA_USER".to_owned(), "viewer".to_owned()),
+            (
+                "CAMERA_PASSWORD".to_owned(),
+                "p@ss word/with+specials".to_owned(),
+            ),
+        ]));
+        let resolved = resolve_secret_references_with(
+            "rtsp://{secret:CAMERA_USER}:{secret:CAMERA_PASSWORD|url}@camera.local/live",
+            &secrets,
+            |key| Ok((key == "CAMERA_USER").then(|| "operator".to_owned())),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved,
+            "rtsp://operator:p%40ss%20word%2Fwith%2Bspecials@camera.local/live"
+        );
+    }
+
+    #[test]
+    fn missing_and_malformed_secret_references_fail_without_values() {
+        let secrets = Secrets(BTreeMap::from([(
+            "KNOWN_SECRET".to_owned(),
+            "must-not-appear".to_owned(),
+        )]));
+
+        let missing =
+            resolve_secret_references_with("{secret:MISSING_SECRET}", &secrets, |_| Ok(None))
+                .unwrap_err()
+                .to_string();
+        assert!(missing.contains("MISSING_SECRET"));
+        assert!(!missing.contains("must-not-appear"));
+        assert!(
+            resolve_secret_references_with("{secret:KNOWN_SECRET", &secrets, |_| Ok(None))
+                .unwrap_err()
+                .to_string()
+                .contains("malformed secret reference")
+        );
+    }
+
+    #[test]
+    fn nested_secrets_toml_is_rejected_without_echoing_values() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-nested-secrets-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &secrets_path(&path),
+            b"[nested]\nPASSWORD = \"must-not-appear\"\n",
+        )
+        .unwrap();
+
+        let error = match load_secrets(&path) {
+            Ok(_) => panic!("nested secrets must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("flat string-to-string TOML table"));
+        assert!(!error.contains("must-not-appear"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn settings_round_trip_preserves_references_and_exposes_no_resolved_values() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-secret-roundtrip-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                host = "{secret:BIND_HOST}"
+                port = 8081
+
+                [storage]
+                medium_term_path = "{secret:RECORDING_PATH}"
+                long_term_path = "{secret:RECORDING_PATH}"
+            "#,
+        )
+        .unwrap();
+        write_private_file(
+            &secrets_path(&path),
+            br#"
+                BIND_HOST = "127.0.0.1"
+                RECORDING_PATH = "/private/recordings"
+            "#,
+        )
+        .unwrap();
+
+        let loaded = load_config(&path).unwrap();
+        assert_eq!(loaded.host, "127.0.0.1");
+        assert_eq!(
+            loaded.storage.long_term_path.as_deref(),
+            Some("/private/recordings")
+        );
+        assert_eq!(
+            loaded.reference_or_value(&["host"], &loaded.host),
+            "{secret:BIND_HOST}"
+        );
+
+        update_settings(&path, &loaded).unwrap();
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("host = \"{secret:BIND_HOST}\""));
+        assert!(saved.contains("long_term_path = \"{secret:RECORDING_PATH}\""));
+        assert!(!saved.contains("127.0.0.1"));
+        assert!(!saved.contains("/private/recordings"));
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1691,11 +2506,25 @@ mod tests {
         write_private_file(
             &path,
             br#"
+                [camera_defaults]
+                username = "{secret:CAMERA_USERNAME}"
+
                 [cameras.existing]
                 ip = "192.0.2.10"
-                username = "old"
-                password = "old-secret"
+                password = "{secret:CAMERA_PASSWORD}"
+                main_rtsp_url = "rtsp://{secret:CAMERA_HOST}/main"
+                sub_rtsp_url = "rtsp://{secret:CAMERA_HOST}/sub"
                 custom_option = "preserved"
+            "#,
+        )
+        .unwrap();
+        write_private_file(
+            &secrets_path(&path),
+            br#"
+                CAMERA_USERNAME = "operator"
+                CAMERA_PASSWORD = "camera-password"
+                CAMERA_HOST = "192.0.2.10"
+                SMTP_API_KEY = "mail-key"
             "#,
         )
         .unwrap();
@@ -1705,7 +2534,7 @@ mod tests {
             display_name: Some("Back Yard".to_owned()),
             manufacturer: Some("Hikvision".to_owned()),
             username: "operator".to_owned(),
-            password: "new-secret".to_owned(),
+            password: "camera-password".to_owned(),
             onvif_port: Some(80),
             http_port: None,
             main_rtsp_url: Some("rtsp://192.0.2.10/main".to_owned()),
@@ -1730,11 +2559,35 @@ mod tests {
         );
         assert_eq!(
             saved["cameras"]["existing"]["main_rtsp_url"].as_str(),
-            Some("rtsp://192.0.2.10/main")
+            Some("rtsp://{secret:CAMERA_HOST}/main")
         );
         assert_eq!(
             saved["cameras"]["existing"]["sub_rtsp_url"].as_str(),
-            Some("rtsp://192.0.2.10/sub")
+            Some("rtsp://{secret:CAMERA_HOST}/sub")
+        );
+        let saved_camera = saved["cameras"]["existing"].as_table().unwrap();
+        assert!(!saved_camera.contains_key("username"));
+        assert_eq!(
+            saved_camera["password"].as_str(),
+            Some("{secret:CAMERA_PASSWORD}")
+        );
+        let secrets = load_secrets(&path).unwrap();
+        assert_eq!(
+            secrets.0.get("SMTP_API_KEY").map(String::as_str),
+            Some("mail-key")
+        );
+        let loaded = load_cameras(&path).unwrap();
+        assert_eq!(loaded["cameras"][0].username, "operator");
+        assert_eq!(loaded["cameras"][0].password, "camera-password");
+
+        let mut changed = config;
+        changed.password = "replacement-password".to_owned();
+        upsert_camera(&path, &changed).unwrap();
+        let changed_saved: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            changed_saved["cameras"]["existing"]["password"].as_str(),
+            Some("replacement-password")
         );
 
         remove_camera(&path, "192.0.2.10".parse().unwrap()).unwrap();

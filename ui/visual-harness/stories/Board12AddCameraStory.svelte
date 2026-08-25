@@ -9,12 +9,17 @@
 		displayName: 'Side Gate',
 		username: 'admin',
 		password: 'write-only-password',
+		defaultUsernameConfigured: false,
+		defaultPasswordConfigured: false,
 		onvifPort: '8000',
 		httpPort: '80',
 		mainRtspUrl: 'rtsp://192.168.1.71/main',
 		subRtspUrl: 'rtsp://192.168.1.71/sub',
 		backend: 'reo-proto',
 		transport: 'tcp',
+		recordGenericMotionEvents: false,
+		recordingMode: 'event-boost',
+		eventRecordingDurationSeconds: '60',
 		discoveryEvidence: 'ONVIF · DS-2CD2387G2'
 	} satisfies CameraWizardDraft;
 
@@ -26,7 +31,7 @@
 			state: 'complete'
 		},
 		{ number: 2, label: 'Options', detail: 'AUTO-PROBE · RTSP/TCP', state: 'complete' },
-		{ number: 3, label: 'Streams', detail: 'ONVIF CANDIDATES · UNDECODED', state: 'active' },
+		{ number: 3, label: 'Streams', detail: 'MAIN + SUB · KEYFRAMES', state: 'active' },
 		{ number: 4, label: 'Recording', detail: '', state: 'pending' },
 		{ number: 5, label: 'Review & save', detail: '', state: 'pending' }
 	] as const;
@@ -91,8 +96,8 @@
 			<div class="flex w-[760px] shrink-0 flex-col gap-1.5">
 				<h2 class="text-[28px] leading-[34px] font-semibold">Stream declarations</h2>
 				<p class="text-sm leading-[22px] text-text-muted">
-					ONVIF starts from the first-screen sign-in and can supply candidate endpoints. KeepPeek
-					validates decoded media after the final configuration write.
+					ONVIF reports identity and candidate endpoints. KeepPeek authenticates each stream and
+					requires video plus a keyframe before review.
 				</p>
 			</div>
 			<span class="font-mono text-2xs tracking-caps text-primary-soft"
@@ -100,7 +105,35 @@
 			>
 		</header>
 
-		<DesktopCameraWizardStreamsStep {draft} streamResolution="onvif" paperFrame />
+		<DesktopCameraWizardStreamsStep
+			{draft}
+			streamResolution="onvif"
+			streamEvidence={[
+				{
+					stream: 'main',
+					verified: true,
+					codec: 'h265',
+					resolution: '3840x2160',
+					declared_fps: 25,
+					frames_received: 2,
+					keyframe_received: true,
+					elapsed_ms: 240,
+					error: null
+				},
+				{
+					stream: 'sub',
+					verified: true,
+					codec: 'h264',
+					resolution: '640x360',
+					declared_fps: 10,
+					frames_received: 1,
+					keyframe_received: true,
+					elapsed_ms: 180,
+					error: null
+				}
+			]}
+			paperFrame
+		/>
 
 		<footer
 			class="flex h-[73px] w-[1140px] shrink-0 items-center justify-between border-t border-hairline px-7 py-[18px]"

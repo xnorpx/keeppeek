@@ -6,9 +6,8 @@ import {
 } from '$lib/mobile-settings';
 
 describe('mobile settings navigation', () => {
-	it('lists all ten authored administration sections', () => {
+	it('lists the nine server-wide administration sections', () => {
 		expect(mobileSettingsSections.map((section) => section.label)).toEqual([
-			'Camera defaults',
 			'Storage & retention',
 			'Event sources',
 			'Groups',
@@ -25,10 +24,10 @@ describe('mobile settings navigation', () => {
 		expect(filterMobileSettingsSections('MQTT').map((section) => section.id)).toEqual([
 			'integrations'
 		]);
-		expect(filterMobileSettingsSections('credentials').map((section) => section.id)).toEqual([
-			'camera-defaults'
+		expect(filterMobileSettingsSections('recordings').map((section) => section.id)).toEqual([
+			'storage'
 		]);
-		expect(filterMobileSettingsSections('  ')).toHaveLength(10);
+		expect(filterMobileSettingsSections('  ')).toHaveLength(9);
 	});
 
 	it('maps system to the shared appearance renderer and keeps logs on its route', () => {
@@ -36,7 +35,7 @@ describe('mobile settings navigation', () => {
 			label: 'System & updates',
 			renderTarget: 'appearance'
 		});
-		expect(mobileSettingsFocus('#camera-defaults')?.renderTarget).toBe('camera-defaults');
+		expect(mobileSettingsFocus('#camera-defaults')).toBeNull();
 		expect(mobileSettingsFocus('#logs')).toBeNull();
 		expect(mobileSettingsFocus('')).toBeNull();
 	});

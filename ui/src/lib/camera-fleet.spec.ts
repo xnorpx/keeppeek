@@ -83,6 +83,29 @@ describe('camera fleet presentation', () => {
 		expect(presentation.recordingState).toBe('degraded');
 	});
 
+	it('prefers measured stream format over a conflicting declared profile', () => {
+		const declared = {
+			...camera,
+			profiles: [{ ...camera.profiles[0], encoding: 'h264' }]
+		};
+		const measured = health('online');
+		measured.streams = [
+			{
+				type: 'video_main',
+				codec: 'h265',
+				resolution: '3840x2160',
+				kbps: 18_400,
+				fps: 25,
+				frames: 1_000,
+				drops: 0,
+				updated_at_ms: 1,
+				report_age_ms: 20
+			}
+		];
+
+		expect(presentCameraFleetRow(declared, measured).streams).toEqual(['MAIN 3840X2160 H265']);
+	});
+
 	it('does not synthesize metrics when the server omits them', () => {
 		const presentation = presentCameraFleetRow(camera, null);
 

@@ -1,6 +1,9 @@
 use ipnet::Ipv4Net;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
-use std::{collections::BTreeSet, net::Ipv4Addr};
+use std::{
+    collections::BTreeSet,
+    net::{IpAddr, Ipv4Addr, UdpSocket},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalNetwork {
@@ -13,6 +16,15 @@ pub(super) struct LocalNetwork {
 pub(super) fn local_networks() -> anyhow::Result<Vec<LocalNetwork>> {
     let interfaces = NetworkInterface::show()?;
     Ok(networks_from_interfaces(&interfaces))
+}
+
+pub(super) fn preferred_local_ipv4() -> Option<Ipv4Addr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(1, 1, 1, 1), 80)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) if !ip.is_unspecified() && !ip.is_loopback() => Some(ip),
+        _ => None,
+    }
 }
 
 pub(super) fn scan_networks(extra_subnets: &[u8]) -> anyhow::Result<Vec<LocalNetwork>> {
@@ -42,6 +54,37 @@ pub(super) fn scan_networks(extra_subnets: &[u8]) -> anyhow::Result<Vec<LocalNet
     }
 
     Ok(networks)
+}
+
+pub(super) fn requested_networks(networks: &[Ipv4Net]) -> Vec<LocalNetwork> {
+    let mut requested = networks
+        .iter()
+        .map(|network| LocalNetwork {
+            interface_name: "requested-network".to_owned(),
+            interface_ip: network.network(),
+            network: *network,
+            broadcast: network.broadcast(),
+        })
+        .collect::<Vec<_>>();
+    requested.sort_unstable_by_key(|network| {
+        (
+            u32::from(network.network.network()),
+            network.network.prefix_len(),
+        )
+    });
+    requested.dedup_by_key(|network| network.network);
+    requested
+}
+
+pub(super) fn local_networks_in(networks: &[LocalNetwork]) -> anyhow::Result<Vec<LocalNetwork>> {
+    Ok(local_networks()?
+        .into_iter()
+        .filter(|local| {
+            networks
+                .iter()
+                .any(|requested| requested.network.contains(&local.interface_ip))
+        })
+        .collect())
 }
 
 fn networks_from_interfaces(interfaces: &[NetworkInterface]) -> Vec<LocalNetwork> {
@@ -151,6 +194,21 @@ mod tests {
                 Ipv4Addr::new(10, 0, 0, 6),
             ]
         );
+    }
+
+    #[test]
+    fn requested_networks_scan_only_the_explicit_cidrs() {
+        let networks = requested_networks(&[
+            "192.168.137.0/24".parse().unwrap(),
+            "192.168.137.0/24".parse().unwrap(),
+        ]);
+
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].network.to_string(), "192.168.137.0/24");
+        let targets = scan_targets(&networks);
+        assert_eq!(targets.len(), 254);
+        assert_eq!(targets.first(), Some(&Ipv4Addr::new(192, 168, 137, 1)));
+        assert_eq!(targets.last(), Some(&Ipv4Addr::new(192, 168, 137, 254)));
     }
 
     #[test]

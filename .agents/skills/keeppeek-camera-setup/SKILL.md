@@ -148,7 +148,7 @@ Reject files when:
 
 Do not add generated MP4 files to git.
 
-## Phase 6: Select KeepPeek Settings
+## Phase 6: Select KeepPeek Connection Policy
 
 Choose settings from measured results:
 
@@ -169,7 +169,7 @@ Do not apply these camera-side changes automatically. For each proposed mutation
 
 ## Phase 7: Save Verified Cameras
 
-1. Open KeepPeek Settings and use Camera setup to add or edit only cameras that passed stream and media validation.
+1. Open **Cameras** and use **Add camera** only for cameras that pass stream and media validation. Edit an existing camera from its **Camera** page.
 2. Enter credentials directly in the local UI; never route them through agent messages or shell arguments.
 3. Preserve the existing name and UID for a known camera so historical recording paths remain connected.
 4. Apply the selected backend, transport, and verified stream URLs.

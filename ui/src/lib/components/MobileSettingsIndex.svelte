@@ -1,16 +1,14 @@
 <script lang="ts">
 	import { useAppearanceState } from '$lib/appearance-context';
 	import { filterMobileSettingsSections, type MobileSettingsSection } from '$lib/mobile-settings';
-	import type { CameraSettings, SanitizedConfig, ServerHealthResponse } from '$lib/types';
+	import type { SanitizedConfig } from '$lib/types';
 	import SearchIcon from '@lucide/svelte/icons/search';
 
 	type Props = {
 		config: SanitizedConfig;
-		cameras: readonly CameraSettings[];
-		health: ServerHealthResponse | null;
 	};
 
-	let { config, cameras, health }: Props = $props();
+	let { config }: Props = $props();
 	const appearance = useAppearanceState();
 	let query = $state('');
 	let filtered = $derived(filterMobileSettingsSections(query));
@@ -19,12 +17,6 @@
 
 	function status(section: MobileSettingsSection): string {
 		switch (section.id) {
-			case 'camera-defaults': {
-				const configured = cameras.filter(
-					(camera) => camera.username_configured && camera.password_configured
-				).length;
-				return `${configured} / ${cameras.length}`;
-			}
 			case 'storage':
 				return config.recording_estimate.estimated_retention_days === null
 					? '—'
@@ -82,7 +74,7 @@
 		>
 			<div>
 				<p class="text-sm font-medium">No settings sections match</p>
-				<p class="mt-1 text-xs text-text-muted">Try a camera, storage, access, or system term.</p>
+				<p class="mt-1 text-xs text-text-muted">Try a storage, access, or system term.</p>
 			</div>
 		</div>
 	{:else}

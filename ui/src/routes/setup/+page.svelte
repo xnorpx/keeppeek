@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { useControlClient } from '$lib/control-context';
 	import FirstRunEmptyStates from '$lib/components/FirstRunEmptyStates.svelte';
 	import FirstRunSetupPanel from '$lib/components/FirstRunSetupPanel.svelte';
 	import { detectedBrowserTimeZone } from '$lib/first-run';
+	import type { StorageWriteProbe } from '$lib/first-run';
 	import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
@@ -15,6 +18,8 @@
 	let timeZone = $state<string | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let storageProbe = $state.raw<StorageWriteProbe | null>(null);
+	let probingStorage = $state(false);
 
 	onMount(() => {
 		timeZone = detectedBrowserTimeZone();
@@ -31,11 +36,30 @@
 			]);
 			config = nextConfig;
 			health = nextHealth;
+			await probeStorage(nextConfig.storage.medium_term_path);
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'First-run evidence could not be loaded.';
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function probeStorage(path: string): Promise<void> {
+		probingStorage = true;
+		try {
+			storageProbe = await controlClient.probeStorage(path);
+		} catch (cause) {
+			storageProbe = {
+				writable: false,
+				detail: cause instanceof Error ? cause.message : 'Storage write verification failed.'
+			};
+		} finally {
+			probingStorage = false;
+		}
+	}
+
+	function continueSetup(): void {
+		void goto(config?.camera_count ? resolve('/cameras') : resolve('/cameras/new'));
 	}
 </script>
 
@@ -93,7 +117,15 @@
 		</section>
 	{:else if config}
 		<div class="grid items-start gap-4 lg:grid-cols-[minmax(0,1.18fr)_minmax(22rem,0.82fr)]">
-			<FirstRunSetupPanel {config} {health} {timeZone} />
+			<FirstRunSetupPanel
+				{config}
+				{health}
+				{timeZone}
+				writeProbe={storageProbe}
+				{probingStorage}
+				onretryprobe={() => void probeStorage(config!.storage.medium_term_path)}
+				onstart={continueSetup}
+			/>
 			<FirstRunEmptyStates cameraCount={config.camera_count} />
 		</div>
 	{/if}

@@ -106,6 +106,7 @@ struct HubState {
     next_sequence: u64,
     next_subscriber_id: u64,
     subscribers: HashMap<u64, Subscriber>,
+    sensitive_values: Vec<String>,
     closed: bool,
 }
 
@@ -161,10 +162,24 @@ impl LogHub {
                 next_sequence: 1,
                 next_subscriber_id: 1,
                 subscribers: HashMap::new(),
+                sensitive_values: Vec::new(),
                 closed: false,
             })),
             limits,
         }
+    }
+
+    pub fn set_sensitive_values(&self, values: impl IntoIterator<Item = String>) {
+        let mut values = values
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        values.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+        values.dedup();
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .sensitive_values = values;
     }
 
     pub fn record(
@@ -193,8 +208,11 @@ impl LogHub {
                 .unwrap_or(u64::MAX),
             level,
             target: target.to_owned(),
-            message: redact_text(&truncate_chars(&message, MAX_MESSAGE_CHARS)),
-            fields: sanitize_fields(fields),
+            message: redact_text(
+                &truncate_chars(&message, MAX_MESSAGE_CHARS),
+                &state.sensitive_values,
+            ),
+            fields: sanitize_fields(fields, &state.sensitive_values),
             file: file.map(ToOwned::to_owned),
             line,
         };
@@ -407,7 +425,10 @@ fn serialized_size(entry: &LogEntry) -> usize {
         .unwrap_or(MAX_ENTRY_BYTES)
 }
 
-fn sanitize_fields(fields: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+fn sanitize_fields(
+    fields: BTreeMap<String, Value>,
+    sensitive_values: &[String],
+) -> BTreeMap<String, Value> {
     fields
         .into_iter()
         .take(MAX_FIELDS)
@@ -415,19 +436,25 @@ fn sanitize_fields(fields: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
             let value = if is_sensitive_name(&name) {
                 Value::String("[REDACTED]".to_owned())
             } else {
-                sanitize_value(value)
+                sanitize_value(value, sensitive_values)
             };
             (name, value)
         })
         .collect()
 }
 
-fn sanitize_value(value: Value) -> Value {
+fn sanitize_value(value: Value, sensitive_values: &[String]) -> Value {
     match value {
-        Value::String(value) => {
-            Value::String(redact_text(&truncate_chars(&value, MAX_FIELD_CHARS)))
-        }
-        Value::Array(values) => Value::Array(values.into_iter().map(sanitize_value).collect()),
+        Value::String(value) => Value::String(redact_text(
+            &truncate_chars(&value, MAX_FIELD_CHARS),
+            sensitive_values,
+        )),
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .map(|value| sanitize_value(value, sensitive_values))
+                .collect(),
+        ),
         Value::Object(values) => Value::Object(
             values
                 .into_iter()
@@ -435,7 +462,7 @@ fn sanitize_value(value: Value) -> Value {
                     let value = if is_sensitive_name(&name) {
                         Value::String("[REDACTED]".to_owned())
                     } else {
-                        sanitize_value(value)
+                        sanitize_value(value, sensitive_values)
                     };
                     (name, value)
                 })
@@ -462,7 +489,7 @@ fn is_sensitive_name(name: &str) -> bool {
     .any(|sensitive| name.contains(sensitive))
 }
 
-fn redact_text(text: &str) -> String {
+fn redact_text(text: &str, sensitive_values: &[String]) -> String {
     let mut redacted = redact_url_userinfo(text);
     for marker in [
         "password=",
@@ -491,6 +518,11 @@ fn redact_text(text: &str) -> String {
             if search_from >= redacted.len() {
                 break;
             }
+        }
+    }
+    for sensitive_value in sensitive_values {
+        if !sensitive_value.is_empty() {
+            redacted = redacted.replace(sensitive_value, "[REDACTED]");
         }
     }
     redacted
@@ -645,6 +677,32 @@ mod tests {
             "rtsp://[REDACTED]@192.0.2.1/live"
         );
         assert_eq!(entry.message, "request token=[REDACTED]");
+    }
+
+    #[test]
+    fn redacts_values_resolved_from_secrets() {
+        let hub = LogHub::default();
+        hub.set_sensitive_values(["private-camera.internal".to_owned(), "p@ss word".to_owned()]);
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "endpoint".to_owned(),
+            Value::String("private-camera.internal:554".to_owned()),
+        );
+
+        let entry = hub.record(
+            LogLevel::Error,
+            "keeppeek::test",
+            "connection to private-camera.internal failed for p@ss word".to_owned(),
+            fields,
+            None,
+            None,
+        );
+
+        assert_eq!(entry.fields["endpoint"], "[REDACTED]:554");
+        assert_eq!(
+            entry.message,
+            "connection to [REDACTED] failed for [REDACTED]"
+        );
     }
 
     #[test]

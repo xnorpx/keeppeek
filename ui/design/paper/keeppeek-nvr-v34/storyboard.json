@@ -51,8 +51,8 @@
 			"worldX": 2350,
 			"worldY": -242,
 			"source": "boards/03-information-architecture.jsx.txt",
-			"bytes": 49248,
-			"sha256": "b28ffa79f80938275412c0072f158f8ac5d431149fd73f607032fc042b566eee"
+			"bytes": 48469,
+			"sha256": "4fefd59c48cfabbfed3a22e8f2875b6e92ac95dc5fa99312265802f84e2830c2"
 		},
 		{
 			"index": 4,
@@ -506,8 +506,8 @@
 			"worldX": 5630,
 			"worldY": 2320,
 			"source": "boards/12-add-camera-wizard.jsx.txt",
-			"bytes": 59855,
-			"sha256": "3cef52513626db4a0eb95517ccfa38080fb3cefe495bc6bd27dc119afd8eb0c6",
+			"bytes": 59933,
+			"sha256": "d80b4bf64021c0bc09437e030606826216b7330d2472a9d8280fb0d517165c76",
 			"references": [
 				{
 					"nodeId": "1VQ-0",
@@ -518,20 +518,19 @@
 					"height": 663,
 					"theme": "dark",
 					"fixture": "camera.discovery-results",
-					"bytes": 299583,
-					"sha256": "55a3d3392d9ee75eb3a078209f4b83366f4cdc73046566f580ef39a2327350a7",
+					"bytes": 302686,
+					"sha256": "856fad797c1f0a4aa2897522249551e9a18cfdeaec4922b8506e022301d81201",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-22",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 68986,
+						"mismatchPixels": 135609,
 						"totalPixels": 954720,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 40915,
+						"highContrastMismatchPixels": 42819,
 						"blockers": [
-							"Authenticated ONVIF now yields candidate endpoints before save, but decoded media evidence remains unavailable until the saved camera publishes a stream.",
-							"Audio codec, first-keyframe timing, frame count, bitrate, recording mode, retention impact, and group assignment are unavailable before the final write.",
-							"A permanent source ID exists only after save, and credentials remain write-only browser draft data until the final configuration command."
+							"The production route uses a responsive five-step shell while this Paper reference is a fixed explanatory composition with the same measured Streams state.",
+							"Audio decode proof, unsaved-camera storage projection, group assignment, and the permanent source ID remain unavailable before the final write."
 						]
 					}
 				}
@@ -900,8 +899,8 @@
 			"worldX": 6030,
 			"worldY": 5200,
 			"source": "boards/21-first-run-amp-empty-states.jsx.txt",
-			"bytes": 22545,
-			"sha256": "f3ba936368b2d5d4de6822949e5018689482a4df8ddf5eb0225b49af661b09b1",
+			"bytes": 22342,
+			"sha256": "ba1d79ef21f332245a0e7baec81217211a0f72f4e7f788ca256c691a20caf95a",
 			"references": [
 				{
 					"nodeId": "3D7-0",
@@ -912,18 +911,17 @@
 					"height": 785,
 					"theme": "dark",
 					"fixture": "setup.new-installation",
-					"bytes": 189713,
-					"sha256": "4df4c58bba6272ad07cc6cefc6646377ee9d94046ad06eb1835febadf6b1a650",
+					"bytes": 183660,
+					"sha256": "17f8ac229c25d3c53e68ae797e086f8615cc809f5284aa8b6367410f5340725a",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 75479,
+						"mismatchPixels": 143604,
 						"totalPixels": 1130400,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 43350,
+						"highContrastMismatchPixels": 59634,
 						"blockers": [
-							"The server reports disk capacity but exposes neither a candidate storage write probe nor a setup-completion command, so writability and an enabled Start action cannot be claimed.",
 							"The server does not report or update its timezone; the implementation labels Europe/Stockholm as browser evidence rather than machine evidence.",
 							"Identity fields remain unavailable without keeppeek.identity.v1, so the story renders the exact fail-closed capability gate instead of fixture credentials.",
 							"No event-source registry or configuration command exists, so the implementation cannot claim zero registered sources or offer a working Connect action."
@@ -1025,39 +1023,38 @@
 		{
 			"index": 23,
 			"id": "3VQ-0",
-			"name": "23 — Settings: camera defaults",
+			"name": "23 — Camera: configuration",
 			"childCount": 2,
 			"width": 1600,
 			"height": 1208,
 			"worldX": 9390,
 			"worldY": 5200,
-			"source": "boards/23-settings-camera-defaults.jsx.txt",
-			"bytes": 37833,
-			"sha256": "0afe852a4809ce06dc60cb1da534fe6b319d1ce5092d904103db2c2ee51d103f",
+			"source": "boards/23-camera-configuration.jsx.txt",
+			"bytes": 44882,
+			"sha256": "c1927bc5713b81fa0f1b4ce81daf079d283186e3b3436eb15def6ea0d77b970e",
 			"references": [
 				{
-					"nodeId": "3X7-0",
-					"scenarioId": "settings.desktop.camera-defaults",
-					"storySource": "visual-harness/stories/Board23CameraDefaults.stories.ts",
-					"source": "references/23-camera-defaults-content.png",
+					"nodeId": "9KT-0",
+					"scenarioId": "camera.desktop.configuration",
+					"storySource": "visual-harness/stories/Board23CameraConfiguration.stories.ts",
+					"source": "references/23-camera-configuration.png",
 					"width": 1374,
 					"height": 806,
 					"theme": "dark",
-					"fixture": "settings.camera-defaults",
-					"bytes": 192890,
-					"sha256": "373aa28cc59e1ff1db5ab03a06ff91b4f0ca8c8e3b08ee02b4edcfdc9f3a604f",
+					"fixture": "camera.configuration",
+					"bytes": 123246,
+					"sha256": "b3cbcbd9860d504e8447a3c2d871d5e1f8582289ad1e59d5c820a55c75392f23",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 117826,
+						"mismatchPixels": 161142,
 						"totalPixels": 1107444,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 53146,
+						"highContrastMismatchPixels": 44504,
 						"blockers": [
-							"Runtime configuration exposes per-camera credential-presence booleans but no shared username, shared secret, inheritance marker, override provenance, or reset-to-default command.",
-							"Per-camera recording mode and shared default write semantics are not exposed, so observed configuration cannot be presented as inherited defaults.",
-							"The production section matches Paper's 84/302/312px lanes; strict mismatch was reduced from 27.5% to 10.6% without fabricating inheritance evidence."
+							"Paper uses a static restart-required fixture; the production response can instead report Starting, Online, Degraded, Offline, or Restart required.",
+							"The fixed Paper workspace condenses the responsive production editor while preserving every writable field and secret-safe placeholder."
 						]
 					}
 				}
@@ -1073,8 +1070,8 @@
 			"worldX": -690,
 			"worldY": 6800,
 			"source": "boards/24-mobile-camera-ptz.jsx.txt",
-			"bytes": 51461,
-			"sha256": "f6d31fcb3659341b91b0d8b4af1930128e18f0f87a775ee4bdc11c6eabc1fced",
+			"bytes": 57337,
+			"sha256": "bf4f90473d25fc8da14c0e56eeea4604a9055b57e80c015dac84dababa78e0ae",
 			"references": [
 				{
 					"nodeId": "41Z-0",
@@ -1135,19 +1132,19 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "camera.ptz-supported",
-					"bytes": 55552,
-					"sha256": "97f410b81f772f53a597f8717f6b0a5304a33df9d1a4dc1a894a6ec1baeae0e3",
+					"bytes": 61288,
+					"sha256": "e6ac9f8903530b1d82903b6665763b85a3239f69da32d1f91b3d4dd5e0416215",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 24655,
+						"mismatchPixels": 57271,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 11305,
+						"highContrastMismatchPixels": 21962,
 						"blockers": [
-							"Camera details expose credential presence but not inherited secrets, override provenance, or per-camera retention inheritance.",
-							"The route has no broad camera-settings draft/save contract or measured connection-probe latency, so the compact screen remains read-only evidence."
+							"The Paper phone condenses the full editor into one viewport; production keeps all fields in a scrollable form so no control is hidden or removed.",
+							"Saved changes can require restart or start dynamically, so final operational status is rendered after the update rather than predicted inside the draft."
 						]
 					}
 				}
@@ -1163,8 +1160,8 @@
 			"worldX": 990,
 			"worldY": 6800,
 			"source": "boards/25-mobile-add-camera.jsx.txt",
-			"bytes": 43279,
-			"sha256": "bb74295c6d09e9efd4c0e6c7d18580137fa82af513b7cbe71aa679b8c2e9ee99",
+			"bytes": 43355,
+			"sha256": "6107ee6e3de3a08ba46b334d3dec3b092e6f830cbedc7b2428ab70e2a858b009",
 			"references": [
 				{
 					"nodeId": "481-0",
@@ -1175,19 +1172,19 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "camera.discovery-results",
-					"bytes": 47335,
-					"sha256": "310a61ceca39b8b98071baf2a6449caf8f45ae8d8db7b4abf69969d7f8711214",
+					"bytes": 51434,
+					"sha256": "09a558f2bb7c33e63f5673c4fcc05368da95aafbd358f2bc89a6a171f9c46a92",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 32391,
+						"mismatchPixels": 61936,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 7997,
+						"highContrastMismatchPixels": 20891,
 						"blockers": [
-							"Discovery returns camera identity evidence but no shared-login or inheritance marker; credentials remain a write-only per-camera draft.",
-							"The selected camera is not configured until final review, so no server-backed connection result exists in this stage."
+							"Attached network names and preferred scope are host-specific; the deterministic story uses a fixed test interface and CIDR.",
+							"The selected camera is intentionally not persisted until final Review, so runtime health remains unavailable in this stage."
 						]
 					}
 				},
@@ -1200,19 +1197,19 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "camera.stream-declarations",
-					"bytes": 109767,
-					"sha256": "8d9dfc99c3c4c0e51ca6c79d2294e61fadddff0eed916ae66865a7f74f672f97",
+					"bytes": 111672,
+					"sha256": "3f95c15b81dd2df6446bb9c800b1600ed49551800561490982c5a73846f00f73",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 88136,
+						"mismatchPixels": 139098,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 14212,
+						"highContrastMismatchPixels": 20427,
 						"blockers": [
-							"No candidate-camera authentication or stream-probe command exists before the first configuration write.",
-							"Without decoded candidate media, the UI cannot claim tested stream roles, codecs, resolutions, bitrate, keyframe age, or audio compatibility."
+							"The bounded probe proves authenticated video frames and keyframes but does not decode audio or estimate long-running loss and jitter before save.",
+							"The deterministic story omits camera pixels and shows measured metadata because no approved camera-frame fixture exists."
 						]
 					}
 				},
@@ -1225,19 +1222,19 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "camera.review",
-					"bytes": 56707,
-					"sha256": "35656121bd00c8372eae00bc380ca072c84e43dfb9db57f71ffaa6fa23154cc8",
+					"bytes": 61621,
+					"sha256": "a35256cf3ff08270f819588a49c8816e2d4af10ec21fef28dcf4ce78cd22138b",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 27686,
+						"mismatchPixels": 58203,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 10560,
+						"highContrastMismatchPixels": 17872,
 						"blockers": [
-							"The unsaved camera has no server-backed stream proof, codec assignment, or permanent source ID until the final WebRTC configuration write succeeds.",
-							"No API estimates an unsaved camera's per-day recording cost or projected retention impact."
+							"No API estimates an unsaved camera's per-day recording cost or projected retention impact.",
+							"A permanent source ID and runtime health exist only after the final configuration write; Review labels those boundaries explicitly."
 						]
 					}
 				}
@@ -1349,8 +1346,8 @@
 			"worldX": 4350,
 			"worldY": 6800,
 			"source": "boards/27-mobile-administration.jsx.txt",
-			"bytes": 54971,
-			"sha256": "1152897704cd2734709a69f5080b4a456fdbacadfc08f119b35679ca27bd48da",
+			"bytes": 37357,
+			"sha256": "2d7f96e8ac7a967f6c6df6daae9b7840f4511596f092c170f9ac345b387d8b83",
 			"references": [
 				{
 					"nodeId": "4I6-0",
@@ -1361,51 +1358,27 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "settings.mobile",
-					"bytes": 48884,
-					"sha256": "f2aeeb8edc47fc6e5429c7d37f3b323613fea1780ca74bfbe7e95402e956f771",
+					"bytes": 45812,
+					"sha256": "1e656b06d3599f159daf029cd1fd40faf258cafdb52341affc6acb7a6da4133d",
 					"paperOverlay": {
 						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 2570,
+						"mismatchPixels": 7128,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 1388
+						"highContrastMismatchPixels": 4384,
+						"varianceReason": "Paper and production share the nine-section rows and exact phone frame; the remaining high-contrast variance is text antialiasing and deterministic unavailable-count copy."
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png",
-						"bytes": 36868,
-						"sha256": "6075b070128f6cffe19ad0669b2b421dcff14f9d233ff42c5fbef17379f5d95f",
-						"approvedAt": "2026-08-21",
+						"bytes": 38071,
+						"sha256": "33440fc2c237f35b7d95b06dd24e3bcd96bcaafe17e49bf04694ccc094a52fbc",
+						"approvedAt": "2026-08-24",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
-						"paperReferenceSha256": "f2aeeb8edc47fc6e5429c7d37f3b323613fea1780ca74bfbe7e95402e956f771",
+						"paperReferenceSha256": "1e656b06d3599f159daf029cd1fd40faf258cafdb52341affc6acb7a6da4133d",
 						"storybookStoryId": "settings.mobile.administration"
-					}
-				},
-				{
-					"nodeId": "4KD-0",
-					"scenarioId": "settings.mobile.camera-defaults",
-					"storySource": "visual-harness/stories/Board27MobileAdministration.stories.ts",
-					"source": "references/27-mobile-camera-defaults.png",
-					"width": 390,
-					"height": 844,
-					"theme": "dark",
-					"fixture": "settings.camera-defaults",
-					"bytes": 51666,
-					"sha256": "7313b2c7b8512d3309af907e536c9375de9282a58ec9670eb39298a23d5966df",
-					"paperOverlay": {
-						"status": "candidate",
-						"reviewedAt": "2026-08-20",
-						"comparisonThreshold": 16,
-						"mismatchPixels": 30330,
-						"totalPixels": 329160,
-						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 8381,
-						"blockers": [
-							"Runtime configuration exposes only per-camera credential-presence booleans, not a shared username, shared secret, inheritance marker, or reset-to-default command.",
-							"Per-camera recording mode is not exposed, so the compact screen must render that value as unavailable."
-						]
 					}
 				},
 				{

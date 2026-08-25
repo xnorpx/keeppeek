@@ -4,8 +4,8 @@
 
 - Paper boards: 34/34
 - Token hash: `cf3b1cd7`
-- Scenarios: 56 (6 contracts, 50 rendered scenarios)
-- Paper references: 50 (14 accepted, 36 capability-gated candidates)
+- Scenarios: 55 (6 contracts, 49 rendered scenarios)
+- Paper references: 49 (14 accepted, 35 capability-gated candidates)
 - Approved Linux Loki references: 14/14
 - Board classifications: 6 contract, 5 accepted, 3 mixed, 20 capability-gated
 - Unclassified candidates: 0
@@ -36,11 +36,11 @@
 | 20 Settings: appearance, system, logs  | Capability-gated            | `settings.desktop.appearance-system-logs`                                                                                                                                                |            0/1/1 | `visual-harness/stories/Board20AppearanceSystem.stories.ts`                                                           | `e2e/settings.e2e.ts`                                                                                                                                   | None                                                |
 | 21 First run &amp; empty states        | Capability-gated            | `setup.desktop.first-run`                                                                                                                                                                |            0/1/1 | `visual-harness/stories/Board21FirstRun.stories.ts`                                                                   | `e2e/setup.e2e.ts`                                                                                                                                      | None                                                |
 | 22 Mobile: Peek, Keep, Events          | Capability-gated            | `events.mobile.browse`<br>`keep.mobile.timeline`<br>`peek.mobile.live`                                                                                                                   |            0/3/3 | `visual-harness/stories/Board22MobileMedia.stories.ts`                                                                | `e2e/dashboard.e2e.ts`<br>`e2e/events.e2e.ts`<br>`e2e/keep-events.e2e.ts`                                                                               | None                                                |
-| 23 Settings: camera defaults           | Capability-gated            | `settings.desktop.camera-defaults`                                                                                                                                                       |            0/1/1 | `visual-harness/stories/Board23CameraDefaults.stories.ts`                                                             | `e2e/settings-camera-defaults.e2e.ts`                                                                                                                   | None                                                |
+| 23 Camera: configuration               | Capability-gated            | `camera.desktop.configuration`                                                                                                                                                           |            0/1/1 | `visual-harness/stories/Board23CameraConfiguration.stories.ts`                                                        | `e2e/camera.e2e.ts`                                                                                                                                     | None                                                |
 | 24 Mobile: Camera & PTZ                | Capability-gated            | `camera.mobile.details-ptz`<br>`camera.mobile.ptz`<br>`camera.mobile.settings`                                                                                                           |            0/3/3 | `visual-harness/stories/Board24MobileCamera.stories.ts`                                                               | `e2e/camera.e2e.ts`                                                                                                                                     | None                                                |
 | 25 Mobile: Add camera                  | Capability-gated            | `cameras.mobile.add-review`<br>`cameras.mobile.add-streams`<br>`cameras.mobile.add-wizard`                                                                                               |            0/3/3 | `visual-harness/stories/Board25MobileAddCamera.stories.ts`                                                            | `e2e/add-camera.e2e.ts`                                                                                                                                 | None                                                |
 | 26 Mobile: Health                      | Accepted + capability-gated | `health.mobile.camera-issue`<br>`health.mobile.overview`<br>`health.mobile.stream-evidence`                                                                                              |            1/2/3 | `visual-harness/stories/Board26MobileDiagnosis.stories.ts`<br>`visual-harness/stories/Board26MobileHealth.stories.ts` | `e2e/camera-diagnosis.e2e.ts`<br>`e2e/health.e2e.ts`                                                                                                    | None                                                |
-| 27 Mobile: Administration              | Accepted + capability-gated | `settings.mobile.access`<br>`settings.mobile.administration`<br>`settings.mobile.camera-defaults`                                                                                        |            1/2/3 | `visual-harness/stories/Board27MobileAdministration.stories.ts`                                                       | `e2e/settings-access.e2e.ts`<br>`e2e/settings-camera-defaults.e2e.ts`<br>`e2e/settings.e2e.ts`                                                          | None                                                |
+| 27 Mobile: Administration              | Accepted + capability-gated | `settings.mobile.access`<br>`settings.mobile.administration`                                                                                                                             |            1/1/2 | `visual-harness/stories/Board27MobileAdministration.stories.ts`                                                       | `e2e/settings-access.e2e.ts`<br>`e2e/settings.e2e.ts`                                                                                                   | None                                                |
 | 28 Backend capability contract         | Contract                    | `design.capability-contract`                                                                                                                                                             |            0/0/0 | None                                                                                                                  | None                                                                                                                                                    | `src/lib/capabilities.ts`                           |
 | 29 Keep: export job lifecycle          | Paper accepted              | `keep.desktop.export-lifecycle`                                                                                                                                                          |            1/0/1 | `visual-harness/stories/ExportLifecycle.stories.ts`                                                                   | `e2e/keep-export.e2e.ts`                                                                                                                                | None                                                |
 | 30 Health: diagnose a camera (desktop) | Capability-gated            | `health.desktop.camera-diagnosis`                                                                                                                                                        |            0/1/1 | `visual-harness/stories/Board30CameraDiagnosis.stories.ts`                                                            | `e2e/camera-diagnosis.e2e.ts`                                                                                                                           | None                                                |
@@ -65,7 +65,7 @@
 | `peek.desktop.light-theme`       | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png`       | Approved `c0b04e71e4d62ba2540443ceb6e494b4ca7dde0ef473df93125573c5e4a0be91` |
 | `peek.desktop.live-wall`         | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png`         | Approved `b22a3b2c5344a8d94ec3e8901b3b596bc2990d608dc03905427b819776f072b0` |
 | `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Approved `3d5eb367f51b9d20e74dc3ae346e66034a6bc13428b2a6dfe8f5c3ba49025128` |
-| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `6075b070128f6cffe19ad0669b2b421dcff14f9d233ff42c5fbef17379f5d95f` |
+| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `33440fc2c237f35b7d95b06dd24e3bcd96bcaafe17e49bf04694ccc094a52fbc` |
 | `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Approved `21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509` |
 
 ## Deliberate Capability Gates
@@ -145,9 +145,8 @@ Scenario capability IDs: None
 Scenario capability IDs: `keeppeek.runtime-config.v1`
 
 - `cameras.desktop.add-wizard`
-  - Authenticated ONVIF now yields candidate endpoints before save, but decoded media evidence remains unavailable until the saved camera publishes a stream.
-  - Audio codec, first-keyframe timing, frame count, bitrate, recording mode, retention impact, and group assignment are unavailable before the final write.
-  - A permanent source ID exists only after save, and credentials remain write-only browser draft data until the final configuration command.
+  - The production route uses a responsive five-step shell while this Paper reference is a fixed explanatory composition with the same measured Streams state.
+  - Audio decode proof, unsaved-camera storage projection, group assignment, and the permanent source ID remain unavailable before the final write.
 
 ### 13 Settings: storage &amp; retention
 
@@ -229,7 +228,6 @@ Scenario capability IDs: `keeppeek.runtime-config.v1`
 Scenario capability IDs: `keeppeek.identity.v1`<br>`keeppeek.runtime-config.v1`
 
 - `setup.desktop.first-run`
-  - The server reports disk capacity but exposes neither a candidate storage write probe nor a setup-completion command, so writability and an enabled Start action cannot be claimed.
   - The server does not report or update its timezone; the implementation labels Europe/Stockholm as browser evidence rather than machine evidence.
   - Identity fields remain unavailable without keeppeek.identity.v1, so the story renders the exact fail-closed capability gate instead of fixture credentials.
   - No event-source registry or configuration command exists, so the implementation cannot claim zero registered sources or offer a working Connect action.
@@ -248,14 +246,13 @@ Scenario capability IDs: None
   - No approved deterministic event-thumbnail imagery exists; the story renders the production no-image state instead.
   - The event contract does not provide Paper's descriptive prose, revision number, or multi-frame story summary.
 
-### 23 Settings: camera defaults
+### 23 Camera: configuration
 
 Scenario capability IDs: `keeppeek.runtime-config.v1`
 
-- `settings.desktop.camera-defaults`
-  - Runtime configuration exposes per-camera credential-presence booleans but no shared username, shared secret, inheritance marker, override provenance, or reset-to-default command.
-  - Per-camera recording mode and shared default write semantics are not exposed, so observed configuration cannot be presented as inherited defaults.
-  - The production section matches Paper's 84/302/312px lanes; strict mismatch was reduced from 27.5% to 10.6% without fabricating inheritance evidence.
+- `camera.desktop.configuration`
+  - Paper uses a static restart-required fixture; the production response can instead report Starting, Online, Degraded, Offline, or Restart required.
+  - The fixed Paper workspace condenses the responsive production editor while preserving every writable field and secret-safe placeholder.
 
 ### 24 Mobile: Camera & PTZ
 
@@ -268,22 +265,22 @@ Scenario capability IDs: `keeppeek.runtime-config.v1`
   - The deterministic PTZ story has no approved camera-frame poster; production preserves the native WebRTC video element.
   - The PTZ command contract exposes continuous pan/tilt/zoom and presets, but not Paper's named Wide/Tele modes or a configurable speed value.
 - `camera.mobile.settings`
-  - Camera details expose credential presence but not inherited secrets, override provenance, or per-camera retention inheritance.
-  - The route has no broad camera-settings draft/save contract or measured connection-probe latency, so the compact screen remains read-only evidence.
+  - The Paper phone condenses the full editor into one viewport; production keeps all fields in a scrollable form so no control is hidden or removed.
+  - Saved changes can require restart or start dynamically, so final operational status is rendered after the update rather than predicted inside the draft.
 
 ### 25 Mobile: Add camera
 
 Scenario capability IDs: `keeppeek.runtime-config.v1`
 
 - `cameras.mobile.add-wizard`
-  - Discovery returns camera identity evidence but no shared-login or inheritance marker; credentials remain a write-only per-camera draft.
-  - The selected camera is not configured until final review, so no server-backed connection result exists in this stage.
+  - Attached network names and preferred scope are host-specific; the deterministic story uses a fixed test interface and CIDR.
+  - The selected camera is intentionally not persisted until final Review, so runtime health remains unavailable in this stage.
 - `cameras.mobile.add-streams`
-  - No candidate-camera authentication or stream-probe command exists before the first configuration write.
-  - Without decoded candidate media, the UI cannot claim tested stream roles, codecs, resolutions, bitrate, keyframe age, or audio compatibility.
+  - The bounded probe proves authenticated video frames and keyframes but does not decode audio or estimate long-running loss and jitter before save.
+  - The deterministic story omits camera pixels and shows measured metadata because no approved camera-frame fixture exists.
 - `cameras.mobile.add-review`
-  - The unsaved camera has no server-backed stream proof, codec assignment, or permanent source ID until the final WebRTC configuration write succeeds.
   - No API estimates an unsaved camera's per-day recording cost or projected retention impact.
+  - A permanent source ID and runtime health exist only after the final configuration write; Review labels those boundaries explicitly.
 
 ### 26 Mobile: Health
 
@@ -298,11 +295,8 @@ Scenario capability IDs: `keeppeek.runtime-config.v1`
 
 ### 27 Mobile: Administration
 
-Scenario capability IDs: `keeppeek.identity.v1`<br>`keeppeek.runtime-config.v1`
+Scenario capability IDs: `keeppeek.identity.v1`
 
-- `settings.mobile.camera-defaults`
-  - Runtime configuration exposes only per-camera credential-presence booleans, not a shared username, shared secret, inheritance marker, or reset-to-default command.
-  - Per-camera recording mode is not exposed, so the compact screen must render that value as unavailable.
 - `settings.mobile.access`
   - No identity runtime returns people, assigned roles, invitations, sessions, or current-user evidence.
   - No access-token registry returns token names, scopes, owners, or audit evidence; raw key material must never be fabricated.

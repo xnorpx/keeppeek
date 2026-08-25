@@ -33,7 +33,14 @@ describe('Board 25 mobile Add Camera stories', () => {
 
 	it('renders stream declarations without claiming decoded evidence', async () => {
 		const frame = await renderStage('streams');
-		await expect.element(page.getByText('ONVIF REPORTED', { exact: true })).toBeVisible();
+		await expect
+			.element(
+				page.getByText(
+					'ONVIF reported candidate RTSP endpoints. You can edit either URL before saving.',
+					{ exact: true }
+				)
+			)
+			.toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Review' })).toBeVisible();
 		expect(frame.textContent).not.toContain('DECODING');
 		expect(frame.textContent).not.toContain('TESTED');

@@ -1,8 +1,9 @@
 <script lang="ts">
 	import MobileCameraPage, { type MobileCameraMode } from '$lib/components/MobileCameraPage.svelte';
+	import CameraConfigurationEditor from '$lib/components/CameraConfigurationEditor.svelte';
 	import { setControlClient } from '$lib/control-context';
 	import { ControlClient } from '$lib/control-client';
-	import type { CameraHealth, CameraListItem } from '$lib/types';
+	import type { CameraHealth, CameraListItem, CameraSettings } from '$lib/types';
 	import MobileDeviceStatusBar from './MobileDeviceStatusBar.svelte';
 
 	type Props = { mode: MobileCameraMode };
@@ -106,6 +107,27 @@
 		]
 	} satisfies CameraHealth;
 
+	const settings = {
+		id: camera.id,
+		ip: camera.ip,
+		display_name: camera.name,
+		manufacturer_override: null,
+		username_configured: true,
+		password_configured: true,
+		onvif_port: camera.ports.onvif,
+		http_port: camera.ports.http,
+		main_rtsp_url: 'rtsp://192.168.1.42:554/h265Preview_01_main',
+		sub_rtsp_url: 'rtsp://192.168.1.42:554/h264Preview_01_sub',
+		uid_configured: true,
+		backend: 'reo-proto',
+		transport: 'tcp',
+		record_generic_motion_events: false,
+		recording_mode: 'event-boost',
+		event_recording_duration_secs: 60,
+		health: 'online',
+		model: camera.model
+	} satisfies CameraSettings;
+
 	const scenarioIds: Record<MobileCameraMode, string> = {
 		live: 'camera.mobile.details-ptz',
 		ptz: 'camera.mobile.ptz',
@@ -118,13 +140,19 @@
 	class="flex h-[844px] w-[390px] flex-col overflow-hidden rounded-lg border border-hairline-strong bg-ground [font-synthesis:none]"
 >
 	<MobileDeviceStatusBar />
-	<MobileCameraPage
-		{camera}
-		{health}
-		stream="main"
-		previewAvailable={false}
-		commandTransportAvailable
-		{mode}
-		paperFrame
-	/>
+	{#if mode === 'settings'}
+		<div data-mobile-camera-configuration class="h-[780px] overflow-y-auto p-3">
+			<CameraConfigurationEditor camera={settings} oncancel={() => {}} onsave={() => {}} />
+		</div>
+	{:else}
+		<MobileCameraPage
+			{camera}
+			{health}
+			stream="main"
+			previewAvailable={false}
+			commandTransportAvailable
+			{mode}
+			paperFrame
+		/>
+	{/if}
 </main>

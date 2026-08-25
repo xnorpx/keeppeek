@@ -46,12 +46,11 @@
 			"scenarioIds": [
 				"cameras.desktop.fleet",
 				"cameras.desktop.add-wizard",
-				"camera.desktop.details-ptz"
+				"camera.desktop.details-ptz",
+				"camera.desktop.configuration"
 			],
 			"status": "partial",
-			"blockers": [
-				"Pre-save authentication/probing, published-source lineage, bulk templates, and broad camera settings writes are unavailable."
-			]
+			"blockers": ["Published-source lineage and bulk templates remain unavailable."]
 		},
 		{
 			"label": "Health",
@@ -72,7 +71,6 @@
 			"routeSource": "src/routes/settings/+page.svelte",
 			"scenarioIds": [
 				"settings.desktop.storage-retention",
-				"settings.desktop.camera-defaults",
 				"settings.desktop.event-sources",
 				"groups.desktop.administration",
 				"groups.desktop.participant",
@@ -93,7 +91,6 @@
 		"reason": "The later responsive contract reserves five tabs; camera workflows remain reachable from Peek, camera detail, onboarding, and More rather than adding a sixth tab."
 	},
 	"settingsSections": [
-		"Camera defaults",
 		"Storage & retention",
 		"Event sources",
 		"Groups",
@@ -106,7 +103,8 @@
 	],
 	"constraints": [
 		"Access remains a Settings section, never a seventh primary destination.",
-		"Camera configuration stays on one stacked per-camera page with anchors.",
+		"Camera fleet and Add camera live under Cameras; configuration stays on one stacked per-camera page with anchors.",
+		"Settings contains server-wide concerns only and does not duplicate camera setup or per-camera editing.",
 		"Peek and Keep retain product names and carry plain-language context.",
 		"Application controls remain on canonical WebRTC data channels."
 	]

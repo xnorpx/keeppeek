@@ -69,7 +69,7 @@
                 3 · Streams
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-primary-soft)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
-                2 DECLARED
+                MAIN + SUB · KEYFRAMES
               </div>
             </div>
           </div>
@@ -102,10 +102,10 @@
           <div style={{ alignItems: 'flex-end', borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', justifyContent: 'space-between', paddingBottom: '18px', paddingInline: '28px', paddingTop: '26px', width: '1140px' }}>
             <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '6px', width: '760px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '28px', fontWeight: 600, letterSpacing: 'var(--tracking-snug)', lineHeight: '34px' }}>
-                Candidate streams
+                Verified streams
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '155%' }}>
-                Catalog stream references are optional and remain untested until save. Assign declared roles before continuing.
+                ONVIF reports identity and endpoints. KeepPeek authenticated both streams and received video keyframes before save.
               </div>
             </div>
             <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '8px', height: '30px', paddingInline: '12px' }}>
@@ -114,7 +114,7 @@
                 <polyline points="21 4 21 10 15 10" fill="none" stroke="var(--color-text-muted)" strokeWidth="2" strokeLinecap="round" />
               </svg>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                No probe
+                Verified
               </div>
             </div>
           </div>
@@ -124,8 +124,8 @@
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', gap: '7px', height: '22px', paddingInline: '9px' }}>
                     <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
-                    <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
-                      UNPROBED
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
+                      AUTHENTICATED
                     </div>
                   </div>
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', height: '22px', paddingInline: '9px' }}>
@@ -136,7 +136,7 @@
                 </div>
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
-                    NO PRE-SAVE PROBE
+                    2 FRAMES · 240MS · KEYFRAME
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
                     18.4 Mb/s
@@ -157,7 +157,7 @@
                     <polyline points="20 6 9 17 4 12" fill="none" stroke="var(--color-healthy)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
-                    UNPROBED
+                    VERIFIED
                   </div>
                 </div>
               </div>
@@ -192,8 +192,8 @@
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', gap: '7px', height: '22px', paddingInline: '9px' }}>
                     <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
-                    <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
-                      UNPROBED
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.1em', lineHeight: '12px' }}>
+                      AUTHENTICATED
                     </div>
                   </div>
                   <div style={{ alignItems: 'center', backgroundColor: '#0C0D0FB8', borderRadius: 'var(--radius-xs)', boxSizing: 'border-box', display: 'flex', height: '22px', paddingInline: '9px' }}>
@@ -204,7 +204,7 @@
                 </div>
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', justifyContent: 'space-between' }}>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
-                    NO PRE-SAVE PROBE
+                    1 FRAME · 180MS · KEYFRAME
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.08em', lineHeight: '12px' }}>
                     0.6 Mb/s
@@ -225,7 +225,7 @@
                     <polyline points="20 6 9 17 4 12" fill="none" stroke="var(--color-healthy)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', fontWeight: 500, lineHeight: '16px' }}>
-                    UNPROBED
+                    VERIFIED
                   </div>
                 </div>
               </div>
@@ -260,7 +260,7 @@
             </div>
           </div>
           <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingBottom: '4px', paddingInline: '28px', width: '1140px' }}>
-            <div style={{ alignItems: 'flex-start', backgroundColor: '#E8A33D1A', borderColor: '#E8A33D61', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '12px', paddingBlock: '14px', paddingInline: '16px', width: '1084px' }}>
+            <div style={{ alignItems: 'flex-start', backgroundColor: '#000000', borderColor: '#000000', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '12px', paddingBlock: '14px', paddingInline: '16px', width: '1084px' }}>
               <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
                 <path d="M12 9v5" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" />
                 <path d="M12 17.5v.5" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" />
@@ -268,10 +268,10 @@
               </svg>
               <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '3px' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                  Audio evidence unavailable before save
+                  Main and sub video + keyframe verified
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '155%' }}>
-                  Codec evidence is unavailable until the saved camera publishes a stream.
+                  Measured before the first configuration write; editing a URL requires verification again.
                 </div>
               </div>
             </div>
@@ -315,7 +315,7 @@
                 </div>
               </div>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
-                Find
+                Find & connect
               </div>
             </div>
             <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px' }}>

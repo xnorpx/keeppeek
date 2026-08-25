@@ -24,7 +24,10 @@
 	let probeEvidence = $derived(
 		probesSent !== undefined && totalProbes !== undefined
 			? `${probesSent} of ${totalProbes} probes sent`
-			: `${subnetCount} /24 ${subnetCount === 1 ? 'network' : 'networks'}`
+			: `${subnetCount} /24 ${subnetCount === 1 ? 'network' : 'networks'} · protocols parallel`
+	);
+	let elapsedLabel = $derived(
+		`${(elapsedMs / 1_000).toFixed(1)}s elapsed · ${durationMs / 1_000}s target`
 	);
 </script>
 
@@ -43,10 +46,11 @@
 	<div
 		class="h-1 overflow-hidden rounded-full bg-hairline"
 		role="progressbar"
-		aria-label="Five-second discovery window"
+		aria-label="Discovery time target"
 		aria-valuemin="0"
 		aria-valuemax={durationMs}
 		aria-valuenow={Math.min(durationMs, Math.round(elapsedMs))}
+		aria-valuetext={elapsedLabel}
 	>
 		<div class="h-full bg-primary" style:width={`${progress * 100}%`}></div>
 	</div>
@@ -54,6 +58,6 @@
 		class="flex items-center justify-between font-mono text-2xs leading-3 tracking-caps text-text-faint uppercase"
 	>
 		<span>{probeEvidence}</span>
-		<span>{(elapsedMs / 1_000).toFixed(1)}s of {durationMs / 1_000}s</span>
+		<span>{elapsedLabel}</span>
 	</div>
 </div>

@@ -8,6 +8,7 @@ import {
 	CameraBackend as ProtoCameraBackend,
 	CameraRecordingMode as ProtoCameraRecordingMode,
 	CameraTransport as ProtoCameraTransport,
+	CancelCameraDiscoverySchema,
 	CancelEventSearchMediaSchema,
 	CancelEventSearchQuerySchema,
 	CancelStoredMediaTimelineQuerySchema,
@@ -25,7 +26,10 @@ import {
 	ExportJobStatus,
 	GetExportJobSchema,
 	GetCameraCatalogSchema,
+	GetCameraOnboardingDefaultsSchema,
 	GetCameraConfigurationsSchema,
+	GetCameraDiscoverySchema,
+	GetAccessKeySchema,
 	GetHealthSchema,
 	GetLoggingSettingsSchema,
 	GetMotionDetectionSchema,
@@ -45,12 +49,14 @@ import {
 	PtzPresetGotoSchema,
 	PtzPresetListSchema,
 	PtzStopSchema,
+	ProbeStorageSchema,
 	ProbeCameraStreamsSchema,
 	RemoveCameraConfigurationSchema,
 	RuntimeConfigurationCommandSchema,
 	RuntimeStorageConfigurationSchema,
 	RequestSchema,
 	RestartServerSchema,
+	RotateAccessKeySchema,
 	SearchCameraCatalogSchema,
 	ServerCommandSchema,
 	SeekStoredMediaSchema,
@@ -76,6 +82,7 @@ import {
 	type EventSearchHit as ProtoEventSearchHit,
 	type EventSearchMediaChunk,
 	type ExportJob as ProtoExportJob,
+	type HealthProfileSummary,
 	type ServerCapabilities,
 	type StoredMediaFragment,
 	type StoredMediaInitialization,
@@ -96,6 +103,7 @@ import type { LoggingSettings } from './types';
 import type {
 	CameraCatalogCamera,
 	CameraCatalogInfo,
+	CameraOnboardingDefaults,
 	CameraStreamProbeResult,
 	DiscoveredCameraSettings
 } from './types';
@@ -111,6 +119,7 @@ import type {
 } from './types';
 import type { SanitizedConfig, SettingsConfigUpdate, SettingsConfigUpdateResponse } from './types';
 import type { CameraHealth, ProfileSummary, ServerHealthResponse, StreamHealth } from './types';
+import type { StorageWriteProbe } from './first-run';
 
 const controlTimeoutMs = 10_000;
 const discoveryTimeoutMs = 8 * 60_000;
@@ -938,6 +947,28 @@ export class ControlClient {
 		}
 	}
 
+	async revealAccessKey(): Promise<string> {
+		const command = create(ServerCommandSchema, {
+			action: { case: 'getAccessKey', value: create(GetAccessKeySchema) }
+		});
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (result.case !== 'accessKeyResult' || result.value.rotated || !result.value.accessKey) {
+			throw new Error('Server returned an unexpected access key response.');
+		}
+		return result.value.accessKey;
+	}
+
+	async rotateAccessKey(): Promise<string> {
+		const command = create(ServerCommandSchema, {
+			action: { case: 'rotateAccessKey', value: create(RotateAccessKeySchema) }
+		});
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (result.case !== 'accessKeyResult' || !result.value.rotated || !result.value.accessKey) {
+			throw new Error('Server did not return the rotated access key.');
+		}
+		return result.value.accessKey;
+	}
+
 	async getCameraCatalog(): Promise<CameraCatalogInfo> {
 		const command = create(CameraConfigurationCommandSchema, {
 			action: { case: 'getCatalog', value: create(GetCameraCatalogSchema) }
@@ -947,6 +978,28 @@ export class ControlClient {
 			throw new Error('Server returned an unexpected camera catalog response.');
 		}
 		return cameraCatalogInfo(result.value);
+	}
+
+	async getCameraOnboardingDefaults(): Promise<CameraOnboardingDefaults> {
+		const command = create(CameraConfigurationCommandSchema, {
+			action: {
+				case: 'getOnboardingDefaults',
+				value: create(GetCameraOnboardingDefaultsSchema)
+			}
+		});
+		const result = await this.request({ case: 'cameraConfigurationCommand', value: command });
+		if (result.case !== 'cameraOnboardingDefaults') {
+			throw new Error('Server returned an unexpected camera onboarding defaults response.');
+		}
+		return {
+			username_configured: result.value.usernameConfigured,
+			password_configured: result.value.passwordConfigured,
+			networks: result.value.networks.map((network) => ({
+				cidr: network.cidr,
+				interface_name: network.interfaceName,
+				preferred: network.preferred
+			}))
+		};
 	}
 
 	async searchCameraCatalog(
@@ -970,31 +1023,87 @@ export class ControlClient {
 		return result.value.cameras.map(cameraCatalogCamera);
 	}
 
-	async discoverCameras(subnets: number[]): Promise<DiscoveredCameraSettings[]> {
+	async discoverCameras(
+		networks: string[],
+		options: {
+			signal?: AbortSignal;
+			onProgress?: (cameras: DiscoveredCameraSettings[]) => void;
+		} = {}
+	): Promise<DiscoveredCameraSettings[]> {
+		if (options.signal?.aborted) throw timelineAbortError();
+		const discoveryId = `camera-discovery-${Date.now()}-${this.#nextStoredId++}`;
 		const command = create(CameraConfigurationCommandSchema, {
 			action: {
 				case: 'discover',
-				value: create(DiscoverCamerasSchema, { subnets })
+				value: create(DiscoverCamerasSchema, { networks, discoveryId })
 			}
 		});
-		const result = await this.request(
+		let stopped = false;
+		const completion = this.request(
 			{ case: 'cameraConfigurationCommand', value: command },
 			discoveryTimeoutMs
 		);
+		void completion.catch(() => {});
+		let rejectAborted!: (error: Error) => void;
+		const aborted = new Promise<never>((_, reject) => (rejectAborted = reject));
+		const abort = () => {
+			if (stopped) return;
+			stopped = true;
+			void this.cancelCameraDiscovery(discoveryId).catch(() => {});
+			rejectAborted(timelineAbortError());
+		};
+		options.signal?.addEventListener('abort', abort, { once: true });
+		const poll = (async () => {
+			while (!stopped) {
+				await new Promise((resolve) => setTimeout(resolve, 150));
+				if (stopped) return;
+				try {
+					const snapshot = await this.getCameraDiscovery(discoveryId);
+					options.onProgress?.(discoveredCameras(snapshot));
+					if (snapshot.complete || snapshot.cancelled) return;
+				} catch {
+					// The first poll may arrive before the background handler registers its task.
+				}
+			}
+		})();
+		let result: Awaited<typeof completion>;
+		try {
+			result = await Promise.race([completion, aborted]);
+		} finally {
+			stopped = true;
+			options.signal?.removeEventListener('abort', abort);
+			await poll;
+		}
 		if (result.case !== 'cameraDiscoveryResult') {
 			throw new Error('Server returned an unexpected camera discovery response.');
 		}
-		return result.value.cameras.map((camera) => ({
-			ip: camera.ip,
-			brand: camera.brand,
-			name: camera.name ?? null,
-			model: camera.model ?? null,
-			onvif_port: camera.onvifPort ?? null,
-			sources: camera.sources,
-			configured: camera.configured,
-			health: (camera.health ?? null) as DiscoveredCameraSettings['health'],
-			catalog: camera.catalog ? cameraCatalogCamera(camera.catalog) : null
-		}));
+		const cameras = discoveredCameras(result.value);
+		options.onProgress?.(cameras);
+		return cameras;
+	}
+
+	private async getCameraDiscovery(discoveryId: string) {
+		const command = create(CameraConfigurationCommandSchema, {
+			action: {
+				case: 'getDiscovery',
+				value: create(GetCameraDiscoverySchema, { discoveryId })
+			}
+		});
+		const result = await this.request({ case: 'cameraConfigurationCommand', value: command });
+		if (result.case !== 'cameraDiscoveryResult') {
+			throw new Error('Server returned an unexpected camera discovery progress response.');
+		}
+		return result.value;
+	}
+
+	private async cancelCameraDiscovery(discoveryId: string): Promise<void> {
+		const command = create(CameraConfigurationCommandSchema, {
+			action: {
+				case: 'cancelDiscovery',
+				value: create(CancelCameraDiscoverySchema, { discoveryId })
+			}
+		});
+		await this.request({ case: 'cameraConfigurationCommand', value: command });
 	}
 
 	async probeCameraStreams(input: {
@@ -1002,6 +1111,10 @@ export class ControlClient {
 		username: string;
 		password: string;
 		onvif_port: number | null;
+		main_rtsp_url?: string | null;
+		sub_rtsp_url?: string | null;
+		transport?: CameraTransport;
+		query_onvif?: boolean;
 	}): Promise<CameraStreamProbeResult> {
 		const command = create(CameraConfigurationCommandSchema, {
 			action: {
@@ -1010,7 +1123,11 @@ export class ControlClient {
 					ip: input.ip,
 					username: input.username,
 					password: input.password,
-					onvifPort: input.onvif_port ?? undefined
+					onvifPort: input.onvif_port ?? undefined,
+					mainRtspUrl: input.main_rtsp_url ?? undefined,
+					subRtspUrl: input.sub_rtsp_url ?? undefined,
+					transport: input.transport === undefined ? undefined : protoTransport(input.transport),
+					queryOnvif: input.query_onvif
 				})
 			}
 		});
@@ -1024,7 +1141,25 @@ export class ControlClient {
 		return {
 			main_rtsp_url: result.value.mainRtspUrl ?? null,
 			sub_rtsp_url: result.value.subRtspUrl ?? null,
-			onvif_port: result.value.onvifPort ?? null
+			onvif_port: result.value.onvifPort ?? null,
+			manufacturer: result.value.manufacturer ?? null,
+			model: result.value.model ?? null,
+			firmware_version: result.value.firmwareVersion ?? null,
+			serial_number: result.value.serialNumber ?? null,
+			hardware_id: result.value.hardwareId ?? null,
+			profiles: result.value.profiles.map(healthProfile),
+			streams: result.value.streams.map((stream) => ({
+				stream: stream.stream === 'sub' ? 'sub' : 'main',
+				verified: stream.verified,
+				codec: stream.codec ?? null,
+				resolution: stream.resolution ?? null,
+				declared_fps: stream.declaredFps ?? null,
+				frames_received: stream.framesReceived,
+				keyframe_received: stream.keyframeReceived,
+				elapsed_ms: Number(stream.elapsedMs),
+				error: stream.error ?? null
+			})),
+			onvif_error: result.value.onvifError ?? null
 		};
 	}
 
@@ -1134,6 +1269,17 @@ export class ControlClient {
 			throw new Error('Server returned an unexpected runtime configuration response.');
 		}
 		return runtimeConfiguration(result.value.config);
+	}
+
+	async probeStorage(path: string): Promise<StorageWriteProbe> {
+		const command = create(RuntimeConfigurationCommandSchema, {
+			action: { case: 'probeStorage', value: create(ProbeStorageSchema, { path }) }
+		});
+		const result = await this.request({ case: 'runtimeConfigurationCommand', value: command });
+		if (result.case !== 'storageWriteProbeResult') {
+			throw new Error('Server returned an unexpected storage write probe response.');
+		}
+		return { writable: result.value.writable, detail: result.value.detail };
 	}
 
 	async close(): Promise<void> {
@@ -2902,6 +3048,22 @@ function cameraCatalogInfo(
 	};
 }
 
+function discoveredCameras(
+	result: import('./proto/webrtc_pb').CameraDiscoveryResult
+): DiscoveredCameraSettings[] {
+	return result.cameras.map((camera) => ({
+		ip: camera.ip,
+		brand: camera.brand,
+		name: camera.name ?? null,
+		model: camera.model ?? null,
+		onvif_port: camera.onvifPort ?? null,
+		sources: camera.sources,
+		configured: camera.configured,
+		health: (camera.health ?? null) as DiscoveredCameraSettings['health'],
+		catalog: camera.catalog ? cameraCatalogCamera(camera.catalog) : null
+	}));
+}
+
 function cameraCatalogCamera(
 	camera: import('./proto/webrtc_pb').CameraCatalogCamera
 ): CameraCatalogCamera {
@@ -3184,9 +3346,7 @@ function cameraHealth(camera: ServerHealthSnapshot['cameras'][number]): CameraHe
 	};
 }
 
-function healthProfile(
-	profile: ServerHealthSnapshot['cameras'][number]['configuredProfiles'][number]
-): ProfileSummary {
+function healthProfile(profile: HealthProfileSummary): ProfileSummary {
 	return {
 		name: profile.name,
 		stream: healthStream(profile.stream),

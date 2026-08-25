@@ -10,12 +10,15 @@
 	import UserRoundIcon from '@lucide/svelte/icons/user-round';
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import AccessPaperFrame from './AccessPaperFrame.svelte';
+	import SharedAccessKeyControl from './SharedAccessKeyControl.svelte';
 
 	type Props = {
 		paperFrame?: boolean;
+		onrevealaccesskey?: () => Promise<string>;
+		onrotateaccesskey?: () => Promise<string>;
 	};
 
-	let { paperFrame = false }: Props = $props();
+	let { paperFrame = false, onrevealaccesskey, onrotateaccesskey }: Props = $props();
 
 	const evidence = accessEvidence();
 </script>
@@ -158,6 +161,9 @@
 					</h3>
 					<span class="font-mono text-2xs tracking-caps text-text-faint">COUNT UNAVAILABLE</span>
 				</div>
+				{#if onrevealaccesskey && onrotateaccesskey}
+					<SharedAccessKeyControl onreveal={onrevealaccesskey} onrotate={onrotateaccesskey} />
+				{/if}
 				<div
 					class="grid min-h-36 place-items-center rounded-sm border border-dashed border-hairline-strong bg-raised/40 p-4 text-center"
 				>
@@ -165,8 +171,9 @@
 						<ShieldIcon class="mx-auto size-6 text-text-faint" />
 						<p class="mt-2 text-sm font-medium">Token registry unavailable</p>
 						<p class="mt-1 text-xs leading-5 text-text-muted">
-							The documented shared key has no list, create, rotate, revoke, scope, owner, last-use,
-							or audit endpoint. Raw key material is never rendered.
+							Named token list, create, scope, owner, last-use, revocation history, and audit
+							evidence remain unavailable. The shared bootstrap key above is the only implemented
+							key control.
 						</p>
 					</div>
 				</div>

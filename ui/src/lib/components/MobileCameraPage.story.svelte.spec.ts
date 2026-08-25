@@ -41,14 +41,16 @@ describe('Board 24 mobile Camera stories', () => {
 		await expect.element(page.getByRole('button', { name: 'Front step' })).toBeVisible();
 	});
 
-	it('renders current settings without inherited-secret or save claims', async () => {
+	it('renders editable per-camera configuration without exposing stored secrets', async () => {
 		const frame = await renderMode('settings');
-		const pageOwner = frame.querySelector<HTMLElement>('[data-mobile-camera-page="settings"]');
-		expect(
-			[...pageOwner!.children].map((child) => Math.round(child.getBoundingClientRect().height))
-		).toEqual([52, 674, 54]);
-		expect(frame.textContent).toContain('Inheritance unknown');
-		expect(frame.textContent).toContain('Per-camera retention and inheritance are not exposed.');
-		expect(frame.textContent).not.toContain('Save');
+		const editor = frame.querySelector<HTMLElement>('[data-camera-configuration-editor]');
+		expect(editor).not.toBeNull();
+		await expect.element(page.getByLabelText('Display name')).toHaveValue('Front Door');
+		await expect
+			.element(page.getByLabelText('Username'))
+			.toHaveAttribute('placeholder', 'Configured · enter to replace');
+		await expect.element(page.getByLabelText('Recording mode')).toHaveValue('event-boost');
+		await expect.element(page.getByRole('button', { name: 'Save camera settings' })).toBeEnabled();
+		expect(frame.textContent).not.toContain('write-only-password');
 	});
 });

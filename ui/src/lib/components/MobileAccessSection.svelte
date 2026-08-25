@@ -1,14 +1,17 @@
 <script lang="ts">
-	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import ShieldAlertIcon from '@lucide/svelte/icons/shield-alert';
 	import UsersIcon from '@lucide/svelte/icons/users';
+	import SharedAccessKeyControl from './SharedAccessKeyControl.svelte';
+
+	type Props = {
+		onrevealaccesskey?: () => Promise<string>;
+		onrotateaccesskey?: () => Promise<string>;
+	};
+
+	let { onrevealaccesskey, onrotateaccesskey }: Props = $props();
 </script>
 
-<section
-	data-mobile-access
-	class="h-[660px] overflow-hidden p-4 md:hidden"
-	aria-label="Mobile access"
->
+<section data-mobile-access class="min-h-[660px] p-4 md:hidden" aria-label="Mobile access">
 	<div class="flex h-[81px] gap-2.5 rounded-sm border border-healthy/50 bg-healthy/5 p-3">
 		<ShieldAlertIcon class="mt-0.5 size-3.5 shrink-0 text-healthy" />
 		<div class="min-w-0">
@@ -53,15 +56,18 @@
 		<h3 class="text-lg leading-5 font-semibold">Tokens</h3>
 		<span class="text-sm leading-4 text-text-faint">—</span>
 	</div>
-	<div
-		class="mt-2.5 grid h-[94px] place-items-center rounded-md border border-hairline bg-surface px-4 text-center"
-	>
-		<div class="flex items-center gap-2">
-			<KeyRoundIcon class="size-4 text-text-faint" />
-			<div class="text-left">
+	{#if onrevealaccesskey && onrotateaccesskey}
+		<div class="mt-2.5">
+			<SharedAccessKeyControl onreveal={onrevealaccesskey} onrotate={onrotateaccesskey} compact />
+		</div>
+	{:else}
+		<div
+			class="mt-2.5 grid h-[94px] place-items-center rounded-md border border-hairline bg-surface px-4 text-center"
+		>
+			<div>
 				<p class="text-sm leading-4 font-medium">Token registry unavailable</p>
 				<p class="mt-1 text-xs leading-4 text-text-muted">No key names or scopes are returned.</p>
 			</div>
 		</div>
-	</div>
+	{/if}
 </section>

@@ -35,7 +35,9 @@
 					id="empty-cameras-heading"
 					class="font-semibold {paperFrame ? 'text-xl leading-6' : 'text-lg'}"
 				>
-					{cameraCount === 0 ? 'No cameras yet' : `${cameraCount} cameras configured`}
+					{cameraCount === 0
+						? 'No cameras yet'
+						: `${cameraCount} ${cameraCount === 1 ? 'camera' : 'cameras'} configured`}
 				</h2>
 				<p
 					class="text-sm text-text-muted {paperFrame

@@ -458,17 +458,17 @@
 			"status": "planned"
 		},
 		{
-			"id": "settings.desktop.camera-defaults",
+			"id": "camera.desktop.configuration",
 			"boardId": "3VQ-0",
 			"kind": "screen",
-			"route": "/settings#camera-defaults",
-			"state": "shared-defaults-and-overrides",
-			"fixture": "settings.camera-defaults",
+			"route": "/camera?camera=front-door",
+			"state": "camera-configuration-editor",
+			"fixture": "camera.configuration",
 			"theme": "dark",
 			"viewport": "desktop",
 			"requiredCapabilities": ["keeppeek.runtime-config.v1"],
-			"storybookStoryId": "settings.desktop.camera-defaults",
-			"playwrightOwner": "e2e/settings-camera-defaults.e2e.ts",
+			"storybookStoryId": "camera.desktop.configuration",
+			"playwrightOwner": "e2e/camera.e2e.ts",
 			"status": "planned"
 		},
 		{
@@ -581,20 +581,6 @@
 			"requiredCapabilities": [],
 			"storybookStoryId": "settings.mobile.administration",
 			"playwrightOwner": "e2e/settings.e2e.ts",
-			"status": "planned"
-		},
-		{
-			"id": "settings.mobile.camera-defaults",
-			"boardId": "40J-0",
-			"kind": "screen",
-			"route": "/settings#camera-defaults",
-			"state": "mobile-camera-defaults",
-			"fixture": "settings.camera-defaults",
-			"theme": "dark",
-			"viewport": "mobile",
-			"requiredCapabilities": ["keeppeek.runtime-config.v1"],
-			"storybookStoryId": "settings.mobile.camera-defaults",
-			"playwrightOwner": "e2e/settings-camera-defaults.e2e.ts",
 			"status": "planned"
 		},
 		{

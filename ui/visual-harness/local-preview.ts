@@ -30,7 +30,7 @@ import Board26MobileDiagnosisStory from './stories/Board26MobileDiagnosisStory.s
 import Board30CameraDiagnosisStory from './stories/Board30CameraDiagnosisStory.svelte';
 import Board25MobileAddCameraStory from './stories/Board25MobileAddCameraStory.svelte';
 import Board24MobileCameraStory from './stories/Board24MobileCameraStory.svelte';
-import Board23CameraDefaultsStory from './stories/Board23CameraDefaultsStory.svelte';
+import Board23CameraConfigurationStory from './stories/Board23CameraConfigurationStory.svelte';
 import Board22MobileMediaStory from './stories/Board22MobileMediaStory.svelte';
 
 const target = document.querySelector('#app');
@@ -167,10 +167,10 @@ if (scenarioId === 'keep.desktop.timeline-anatomy') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
 	mount(Board22MobileMediaStory, { target, props: { state: 'events' } });
-} else if (scenarioId === 'settings.desktop.camera-defaults') {
+} else if (scenarioId === 'camera.desktop.configuration') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
-	mount(Board23CameraDefaultsStory, { target });
+	mount(Board23CameraConfigurationStory, { target });
 } else if (scenarioId === 'camera.mobile.details-ptz') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
@@ -211,10 +211,6 @@ if (scenarioId === 'keep.desktop.timeline-anatomy') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
 	mount(Board27MobileAdministrationStory, { target, props: { state: 'index' } });
-} else if (scenarioId === 'settings.mobile.camera-defaults') {
-	document.documentElement.classList.add('dark');
-	document.documentElement.dataset.theme = 'dark';
-	mount(Board27MobileAdministrationStory, { target, props: { state: 'camera-defaults' } });
 } else if (scenarioId === 'settings.mobile.access') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
