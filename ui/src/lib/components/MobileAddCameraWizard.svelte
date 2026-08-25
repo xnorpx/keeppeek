@@ -1,9 +1,13 @@
 <script lang="ts">
 	import type { CameraWizardDraft } from '$lib/camera-wizard';
 	import CameraCatalogEvidence from '$lib/components/CameraCatalogEvidence.svelte';
+	import CameraOnboardingEvidence from '$lib/components/CameraOnboardingEvidence.svelte';
 	import type {
 		CameraCatalogCamera,
 		CameraCatalogInfo,
+		CameraDiscoveryNetwork,
+		CameraStreamVerification,
+		CameraStreamProbeResult,
 		DiscoveredCameraSettings
 	} from '$lib/types';
 	import CheckIcon from '@lucide/svelte/icons/check';
@@ -23,6 +27,7 @@
 		stage: MobileCameraWizardStage;
 		draft: CameraWizardDraft;
 		discovered: readonly DiscoveredCameraSettings[];
+		discoveryNetworks?: readonly CameraDiscoveryNetwork[];
 		selectedCatalogCamera?: CameraCatalogCamera | null;
 		catalogInfo?: CameraCatalogInfo | null;
 		catalogQuery?: string;
@@ -32,6 +37,9 @@
 		streamResolution?: 'unresolved' | 'catalog' | 'probing' | 'onvif' | 'manual';
 		streamProbeMessage?: string | null;
 		streamProbing?: boolean;
+		streamEvidence?: readonly CameraStreamVerification[];
+		probe?: CameraStreamProbeResult | null;
+		streamVerificationError?: string | null;
 		subnetPrefixes: string;
 		manualAddress: string;
 		manualAddressError?: string | null;
@@ -39,12 +47,14 @@
 		discovering: boolean;
 		discoveryElapsedMs: number;
 		discoveryAttempted: boolean;
+		discoveryCancelled?: boolean;
 		error: string | null;
 		saving: boolean;
 		catalogStreamsApplied?: boolean;
 		actionFixed?: boolean;
 		oncancel?: () => void;
 		ondiscover?: () => void | Promise<void>;
+		oncanceldiscovery?: () => void;
 		onselect?: (camera: DiscoveredCameraSettings) => void;
 		onapplycatalogstreams?: () => void;
 		oncatalogquery?: (value: string) => void;
@@ -55,6 +65,7 @@
 		onupdate?: (update: Partial<CameraWizardDraft>) => void;
 		onconnect?: () => void | Promise<void>;
 		onreview?: () => void;
+		onverifystreams?: () => void;
 		onsave?: () => void | Promise<void>;
 	};
 
@@ -62,6 +73,7 @@
 		stage,
 		draft,
 		discovered,
+		discoveryNetworks = [],
 		selectedCatalogCamera = null,
 		catalogInfo = null,
 		catalogQuery = '',
@@ -71,6 +83,9 @@
 		streamResolution = 'unresolved',
 		streamProbeMessage = null,
 		streamProbing = false,
+		streamEvidence = [],
+		probe = null,
+		streamVerificationError = null,
 		subnetPrefixes,
 		manualAddress,
 		manualAddressError = null,
@@ -78,12 +93,14 @@
 		discovering,
 		discoveryElapsedMs,
 		discoveryAttempted,
+		discoveryCancelled = false,
 		error,
 		saving,
 		catalogStreamsApplied = false,
 		actionFixed = true,
 		oncancel,
 		ondiscover,
+		oncanceldiscovery,
 		onselect,
 		onapplycatalogstreams,
 		oncatalogquery,
@@ -94,6 +111,7 @@
 		onupdate,
 		onconnect,
 		onreview,
+		onverifystreams,
 		onsave
 	}: Props = $props();
 
@@ -101,6 +119,15 @@
 	let catalogStreamHints = $derived(selectedCatalogCamera?.stream_hints ?? null);
 	let hasCatalogStreamHints = $derived(
 		Boolean(catalogStreamHints?.main_rtsp_url || catalogStreamHints?.sub_rtsp_url)
+	);
+	let mainStreamEvidence = $derived(streamEvidenceFor('main'));
+	let subStreamEvidence = $derived(streamEvidenceFor('sub'));
+	let credentialSummary = $derived(
+		draft.username || draft.password
+			? 'Credentials provided'
+			: draft.defaultUsernameConfigured && draft.defaultPasswordConfigured
+				? 'Configured default'
+				: 'Missing'
 	);
 
 	const stageDetails: Record<MobileCameraWizardStage, { label: string; number: number }> = {
@@ -123,6 +150,14 @@
 	function selectCatalogCamera(camera: CameraCatalogCamera): void {
 		onselectcatalog?.(camera);
 		catalogPickerOpen = false;
+	}
+
+	function streamEvidenceFor(stream: 'main' | 'sub'): CameraStreamVerification | null {
+		return streamEvidence.find((evidence) => evidence.stream === stream) ?? null;
+	}
+
+	function subnetPrefix(cidr: string): string {
+		return cidr.endsWith('.0/24') ? cidr.slice(0, -5) : cidr;
 	}
 </script>
 
@@ -151,38 +186,43 @@
 	</header>
 
 	{#if stage === 'find-connect'}
-		<div class="flex h-[660px] shrink-0 flex-col gap-[14px] overflow-hidden p-4">
+		<div class="flex h-[660px] shrink-0 flex-col gap-[14px] overflow-y-auto p-4">
 			<div class="h-[49px] shrink-0">
 				<h2 class="text-xl leading-6 font-semibold">Find and connect</h2>
 				<p class="mt-[5px] text-xs leading-5 text-text-muted">
-					Scanning uses a five-second window. Nothing is saved yet.
+					Parallel protocol probes usually finish in about five seconds. Nothing is saved yet.
 				</p>
 			</div>
 
-			<button
-				type="button"
-				class="flex h-12 shrink-0 flex-col gap-2 rounded-sm border border-hairline bg-raised px-3 py-2 text-left disabled:opacity-60"
-				disabled={discovering}
-				onclick={() => void ondiscover?.()}
-				aria-label="Scan this network"
-			>
-				<span
-					class="flex w-full items-center justify-between font-mono text-2xs leading-3 text-text-faint"
-				>
-					<span>{subnetPrefixes}.0/24</span>
-					<span
-						>{discovering
-							? `${Math.max(0, (5_000 - discoveryElapsedMs) / 1_000).toFixed(1)}s`
-							: 'SCAN'}</span
+			<div class="flex h-12 shrink-0 gap-2">
+				<label class="min-w-0 flex-1">
+					<span class="sr-only">Discovery network</span>
+					<select
+						class="h-12 w-full rounded-sm border border-hairline bg-raised px-3 font-mono text-2xs text-text-muted"
+						value={subnetPrefixes.split(',')[0]?.trim()}
+						onchange={(event) => onsubnets?.(event.currentTarget.value)}
 					>
-				</span>
-				<span class="h-[3px] w-full overflow-hidden rounded-full bg-hairline">
-					<span
-						class="block h-full bg-primary"
-						style:width={`${discovering ? Math.min(100, (discoveryElapsedMs / 5_000) * 100) : discoveryAttempted ? 100 : 0}%`}
-					></span>
-				</span>
-			</button>
+						{#each discoveryNetworks as network (network.cidr)}
+							<option value={subnetPrefix(network.cidr)}>
+								{network.cidr} · {network.interface_name}{network.preferred ? ' · active' : ''}
+							</option>
+						{:else}
+							<option value={subnetPrefixes}>{subnetPrefixes}.0/24</option>
+						{/each}
+					</select>
+				</label>
+				<button
+					type="button"
+					class="h-12 shrink-0 rounded-sm bg-primary px-4 font-mono text-2xs font-semibold text-on-primary disabled:opacity-60"
+					onclick={() => (discovering ? oncanceldiscovery?.() : void ondiscover?.())}
+					aria-label={discovering ? 'Cancel camera discovery' : 'Scan this network'}
+				>
+					{discovering ? 'CANCEL' : 'SCAN'}
+				</button>
+			</div>
+			{#if discoveryCancelled}<p class="text-xs text-text-muted" role="status">
+					Discovery cancelled · found cameras remain available
+				</p>{/if}
 
 			<p class="h-3 shrink-0 font-mono text-2xs leading-3 text-text-faint uppercase">
 				{discovered.length} found
@@ -261,7 +301,7 @@
 						<input
 							class="min-w-0 flex-1 bg-transparent font-mono text-xs outline-none"
 							value={draft.username}
-							placeholder="Username"
+							placeholder={draft.defaultUsernameConfigured ? 'Configured default' : 'Username'}
 							autocomplete="username"
 							oninput={(event) => onupdate?.({ username: event.currentTarget.value })}
 						/>
@@ -272,7 +312,7 @@
 							type="password"
 							class="min-w-0 flex-1 bg-transparent font-mono text-xs outline-none"
 							value={draft.password}
-							placeholder="Password"
+							placeholder={draft.defaultPasswordConfigured ? 'Configured default' : 'Password'}
 							autocomplete="new-password"
 							oninput={(event) => onupdate?.({ password: event.currentTarget.value })}
 						/>
@@ -313,9 +353,13 @@
 			<div class="h-[250px] shrink-0 overflow-hidden rounded-md border border-primary bg-surface">
 				<div class="grid h-[170px] place-items-center bg-video">
 					<div class="text-center">
-						<RadioIcon class="mx-auto size-5 text-text-faint" />
+						{#if mainStreamEvidence?.verified}<CheckIcon
+								class="mx-auto size-5 text-healthy"
+							/>{:else}<RadioIcon class="mx-auto size-5 text-text-faint" />{/if}
 						<p class="mt-2 font-mono text-2xs leading-3 text-text-faint">
-							{streamResolution === 'onvif' ? 'ONVIF REPORTED' : 'NOT DECODED'}
+							{mainStreamEvidence?.verified
+								? `${mainStreamEvidence.codec?.toUpperCase()} · ${mainStreamEvidence.resolution} · KEYFRAME`
+								: (mainStreamEvidence?.error ?? 'NOT VERIFIED')}
 						</p>
 					</div>
 				</div>
@@ -333,7 +377,9 @@
 				class="grid h-[90px] shrink-0 grid-cols-[94px_minmax(0,1fr)] gap-3 rounded-md border border-hairline bg-surface p-[14px]"
 			>
 				<span class="grid h-[62px] place-items-center bg-video"
-					><RadioIcon class="size-4 text-text-faint" /></span
+					>{#if subStreamEvidence?.verified}<CheckIcon
+							class="size-4 text-healthy"
+						/>{:else}<RadioIcon class="size-4 text-text-faint" />{/if}</span
 				>
 				<span class="min-w-0 text-sm leading-4 font-semibold">
 					Live stream
@@ -345,12 +391,47 @@
 					/>
 				</span>
 			</label>
+			<label
+				class="flex min-h-[58px] shrink-0 flex-col gap-[5px] font-mono text-2xs leading-3 text-text-faint"
+			>
+				RECORDING MODE
+				<select
+					class="h-10 rounded-sm border border-hairline-strong bg-raised px-3 font-sans text-xs text-text"
+					value={draft.recordingMode}
+					onchange={(event) =>
+						onupdate?.({
+							recordingMode: event.currentTarget.value as CameraWizardDraft['recordingMode']
+						})}
+				>
+					<option value="event-boost">Sub, switch to main on events</option>
+					<option value="sub">Sub only</option>
+					<option value="main">Main only</option>
+					<option value="both">Main + sub</option>
+					<option value="off">Don't record</option>
+				</select>
+			</label>
+			{#if draft.recordingMode === 'event-boost'}
+				<label
+					class="flex min-h-[58px] shrink-0 flex-col gap-[5px] font-mono text-2xs leading-3 text-text-faint"
+				>
+					MAIN AFTER EVENT · SECONDS
+					<input
+						class="h-10 rounded-sm border border-hairline-strong bg-raised px-3 text-xs text-text"
+						value={draft.eventRecordingDurationSeconds}
+						inputmode="numeric"
+						oninput={(event) =>
+							onupdate?.({ eventRecordingDurationSeconds: event.currentTarget.value })}
+					/>
+				</label>
+			{/if}
 			<div
 				class="flex h-[62px] shrink-0 gap-3 rounded-sm border border-activity/40 bg-activity/10 p-3"
 			>
-				<span class="font-mono text-2xs leading-6 text-activity">AUDIO</span>
+				<span class="font-mono text-2xs leading-6 text-activity">PROOF</span>
 				<p class="text-xs-plus leading-[18px] text-text-muted">
-					Codec evidence is unavailable until the saved camera publishes a stream.
+					{streamProbing
+						? 'Authenticating and waiting for main and sub keyframes.'
+						: (streamVerificationError ?? 'Required video streams and keyframes are verified.')}
 				</p>
 			</div>
 		</div>
@@ -368,7 +449,7 @@
 				<span>SOURCE ID ASSIGNED BY SERVER · PERMANENT</span>
 			</label>
 			<dl class="h-[220px] shrink-0 rounded-md border border-hairline bg-surface p-[14px]">
-				{#each [['Address', draft.ip], ['Sign-in', draft.username ? 'Credentials provided' : 'Missing'], ['Record', draft.mainRtspUrl || 'Automatic main'], ['Live', draft.subRtspUrl || 'Automatic sub'], ['Retention', 'Server default']] as item (item[0])}
+				{#each [['Address', draft.ip], ['Sign-in', credentialSummary], ['Recording', draft.recordingMode], ['Main proof', streamEvidenceFor('main')?.verified ? 'Video + keyframe' : 'Not verified'], ['Sub proof', streamEvidenceFor('sub')?.verified ? 'Video + keyframe' : 'Not verified']] as item (item[0])}
 					<div
 						class="flex h-[38px] items-center justify-between border-b border-hairline last:border-b-0"
 					>
@@ -387,18 +468,26 @@
 					<span class="font-mono text-2xs leading-3 text-activity">NO PROJECTION API</span>
 				</div>
 				<p class="text-xs leading-[18px] text-text-muted">
-					The server does not estimate this unsaved camera's recording cost.
+					{draft.recordingMode === 'event-boost'
+						? `Sub normally, main on events for ${draft.eventRecordingDurationSeconds}s.`
+						: `Recording mode: ${draft.recordingMode}.`}
 				</p>
 			</div>
 			<div
 				class="flex h-[42px] shrink-0 items-center gap-2 rounded-sm border border-activity/35 bg-activity/10 px-3 text-xs leading-4 text-text-muted"
 			>
 				<span class="size-1.5 shrink-0 rounded-full bg-activity"></span>
-				Candidate stream endpoints are not decoded until the saved camera starts.
+				{streamVerificationError ?? 'Authenticated video and required keyframes are verified.'}
 			</div>
 			<p class="h-[18px] shrink-0 text-xs-plus leading-[18px] text-text-faint">
 				Saving is the first configuration write.
 			</p>
+			<CameraOnboardingEvidence
+				catalogCamera={selectedCatalogCamera}
+				{catalogInfo}
+				{probe}
+				compact
+			/>
 		</div>
 	{/if}
 
@@ -456,32 +545,25 @@
 					onclick={() => void onconnect?.()}>{streamProbing ? 'Continue' : 'Connect'}</button
 				>
 			{:else if stage === 'streams'}
-				{#if hasCatalogStreamHints}
-					<button
-						type="button"
-						class="inline-flex h-9 items-center gap-1.5 text-xs-plus leading-4 text-primary-soft"
-						aria-pressed={catalogStreamsApplied}
-						onclick={onapplycatalogstreams}
-					>
-						{#if catalogStreamsApplied}<CheckIcon class="size-3.5" />{/if}
-						{catalogStreamsApplied ? 'Catalog streams applied' : 'Restore catalog streams'}
-					</button>
-				{:else}
-					<span
-						class="inline-flex h-9 items-center font-mono text-2xs tracking-caps text-text-faint"
-						>{streamResolution === 'onvif' ? 'ONVIF REPORTED' : 'MANUAL FALLBACK'}</span
-					>
-				{/if}
 				<button
 					type="button"
-					class="ml-auto h-9 rounded-sm bg-primary px-4 text-md leading-[18px] font-semibold text-on-primary"
+					class="inline-flex h-9 items-center gap-1.5 text-xs-plus leading-4 text-primary-soft disabled:opacity-50"
+					disabled={streamProbing}
+					onclick={onverifystreams}
+				>
+					{streamProbing ? 'Verifying streams' : 'Verify streams'}
+				</button>
+				<button
+					type="button"
+					class="ml-auto h-9 rounded-sm bg-primary px-4 text-md leading-[18px] font-semibold text-on-primary disabled:opacity-45"
+					disabled={streamVerificationError !== null}
 					onclick={onreview}>Review</button
 				>
 			{:else}
 				<button
 					type="button"
 					class="h-[38px] w-full rounded-sm bg-primary text-md leading-[18px] font-semibold text-on-primary disabled:opacity-45"
-					disabled={saving}
+					disabled={saving || streamVerificationError !== null}
 					onclick={() => void onsave?.()}
 				>
 					{saving ? 'Saving camera' : 'Save camera'}

@@ -22,7 +22,17 @@ const recordingEstimate = {
 	estimated_retention_days: 2
 };
 
-test('uses a searchable ten-section mobile administration index with focused owners', async ({
+test('redirects the retired Camera defaults bookmark to the Cameras fleet', async ({ page }) => {
+	await mockControlPeer(page, { cameras: [], health: { cameras: [] } });
+
+	await page.goto('/settings#camera-defaults');
+
+	await expect(page).toHaveURL(/\/cameras$/);
+	await expect(page.getByRole('heading', { name: 'Cameras', exact: true })).toBeVisible();
+	await expect(page.getByText('No cameras configured.')).toBeVisible();
+});
+
+test('uses a searchable nine-section mobile administration index with focused owners', async ({
 	page
 }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
@@ -41,26 +51,6 @@ test('uses a searchable ten-section mobile administration index with focused own
 			storage: { ...storage, long_term_max_gb: 2048 },
 			recording_estimate: { ...recordingEstimate, estimated_retention_days: 25.4 }
 		},
-		cameraSettings: ['Front Door', 'Back Yard'].map((name, index) => ({
-			id: `camera-${index}`,
-			ip: `192.0.2.${10 + index}`,
-			display_name: name,
-			manufacturer_override: null,
-			username_configured: true,
-			password_configured: true,
-			onvif_port: null,
-			http_port: null,
-			main_rtsp_url: null,
-			sub_rtsp_url: null,
-			uid_configured: false,
-			backend: 'auto',
-			transport: 'tcp',
-			record_generic_motion_events: false,
-			recording_mode: 'event-boost',
-			event_recording_duration_secs: 60,
-			health: 'online',
-			model: null
-		})),
 		health: {
 			version: '0.4.1-test',
 			system: { disks: [] },
@@ -76,9 +66,8 @@ test('uses a searchable ten-section mobile administration index with focused own
 	await expect(
 		page.locator('[data-mobile-settings-header]').getByRole('heading', { name: 'More' })
 	).toBeVisible();
-	await expect(navigation.getByRole('link')).toHaveCount(10);
+	await expect(navigation.getByRole('link')).toHaveCount(9);
 	for (const label of [
-		'Camera defaults',
 		'Storage & retention',
 		'Event sources',
 		'Groups',
@@ -91,7 +80,6 @@ test('uses a searchable ten-section mobile administration index with focused own
 	]) {
 		await expect(navigation.getByRole('link', { name: new RegExp(label) })).toBeVisible();
 	}
-	await expect(index).toContainText('2 / 2');
 	await expect(index).toContainText('25 days');
 	await expect(index.getByText('—')).toHaveCount(4);
 	await expect(page.getByRole('region', { name: 'Storage & retention' })).toBeHidden();
@@ -111,6 +99,8 @@ test('uses a searchable ten-section mobile administration index with focused own
 	await expect(mobileAccess).toContainText('Identity runtime unavailable');
 	await expect(mobileAccess).toContainText('Identity directory unavailable');
 	await expect(mobileAccess).toContainText('Token registry unavailable');
+	await expect(page.getByRole('button', { name: 'Reveal key' })).toHaveCount(1);
+	await expect(mobileAccess.getByRole('button', { name: 'Reveal key' })).toBeEnabled();
 	await expect(page.locator('[data-shell-mobile-nav]')).toHaveCount(0);
 	await expect(page.locator('[data-mobile-settings-action-bar]')).toContainText(
 		'Server update required · keeppeek.identity.v1'
@@ -120,22 +110,6 @@ test('uses a searchable ten-section mobile administration index with focused own
 	await page.getByRole('link', { name: 'Back to settings sections' }).click();
 	await expect(page).toHaveURL(/\/settings$/);
 	await expect(page.locator('[data-mobile-settings-index]')).toBeVisible();
-	await page
-		.getByRole('navigation', { name: 'Settings sections' })
-		.getByRole('link', { name: /Camera defaults/ })
-		.click();
-	await expect(page).toHaveURL(/\/settings#camera-defaults$/);
-	await expect(page.locator('[data-mobile-settings-focus]')).toContainText('Camera defaults');
-	await expect(page.locator('[data-mobile-settings-focus]')).toBeInViewport();
-	const mobileCameraDefaults = page.locator('[data-mobile-camera-defaults]');
-	await expect(mobileCameraDefaults).toBeVisible();
-	await expect(mobileCameraDefaults).toContainText('Not returned by the API');
-	await expect(mobileCameraDefaults).toContainText('Write-only per camera');
-	await expect(page.locator('[data-shell-mobile-nav]')).toHaveCount(0);
-	await expect(page.locator('[data-mobile-settings-action-bar]')).toContainText(
-		'Server update required · keeppeek.runtime-config.v1'
-	);
-	await page.getByRole('link', { name: 'Back to settings sections' }).click();
 	await page
 		.getByRole('navigation', { name: 'Settings sections' })
 		.getByRole('link', { name: /Storage & retention/ })
@@ -148,6 +122,51 @@ test('uses a searchable ten-section mobile administration index with focused own
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
+});
+
+test('reveals and rotates the shared access key only after explicit local actions', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	const controls = await mockControlPeer(page, {
+		accessKey: '550e8400-e29b-41d4-a716-446655440000',
+		rotatedAccessKey: '3d813cbb-47fb-4a95-953d-1339b8ff7f54',
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			camera_count: 0,
+			storage,
+			recording_estimate: recordingEstimate
+		}
+	});
+
+	await page.goto('/settings#access');
+	const access = page.locator('#access');
+	await expect(access).toBeVisible();
+	await expect(
+		access.getByText('550e8400-e29b-41d4-a716-446655440000', { exact: true })
+	).toHaveCount(0);
+	await expect(
+		access.getByText('3d813cbb-47fb-4a95-953d-1339b8ff7f54', { exact: true })
+	).toHaveCount(0);
+
+	await access.getByRole('button', { name: 'Reveal key' }).click();
+	await expect(
+		access.getByText('550e8400-e29b-41d4-a716-446655440000', { exact: true })
+	).toBeVisible();
+	expect(controls.accessKeyReveals).toBe(1);
+
+	await access.getByRole('button', { name: 'Rotate key' }).click();
+	await expect(access.getByRole('button', { name: 'Confirm rotation' })).toBeVisible();
+	expect(controls.accessKeyRotations).toBe(0);
+	await access.getByRole('button', { name: 'Confirm rotation' }).click();
+	await expect(
+		access.getByText('3d813cbb-47fb-4a95-953d-1339b8ff7f54', { exact: true })
+	).toBeVisible();
+	expect(controls.accessKeyRotations).toBe(1);
+	await expect(access).toContainText(
+		'The shared bootstrap key above is the only implemented key control.'
+	);
 });
 
 test('Board 20 uses real theme, runtime, restart, and log evidence without inventing system controls', async ({
@@ -352,7 +371,7 @@ test('Board 13 shows measured storage evidence without presenting projected rete
 		.toBe(true);
 });
 
-test('discovers and configures a camera without rendering its saved password', async ({ page }) => {
+test('keeps camera discovery and configuration out of Settings', async ({ page }) => {
 	const controls = await mockControlPeer(page, {
 		runtimeConfiguration: {
 			host: '0.0.0.0',
@@ -432,68 +451,14 @@ test('discovers and configures a camera without rendering its saved password', a
 	await page.goto('/settings');
 
 	await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-	await expect(page.getByText('online', { exact: true })).toBeVisible();
-	await expect(page.getByRole('link', { name: 'Open North Garden live view' })).toHaveAttribute(
-		'href',
-		'/?camera=192.0.2.10'
-	);
-	await expect(
-		page.getByRole('link', { name: 'Open North Garden camera information' })
-	).toHaveAttribute('href', '/camera?camera=192.0.2.10');
-	await page.getByLabel('Subnet prefixes').fill('192.168.137, 192.168.138');
-	await page.getByRole('button', { name: 'Discover' }).click();
-	await expect(page.getByText('Front Gate', { exact: true })).toBeVisible();
-	expect(controls.discoverySubnets).toEqual([[137, 138]]);
-	await page.getByRole('button', { name: 'Review' }).click();
-	await expect(page.getByRole('heading', { name: 'Edit camera' })).toBeVisible();
-	await expect(page.getByRole('heading', { name: 'Edit camera' })).toBeInViewport();
-	await expect(page.getByLabel('IP address')).toHaveValue('192.0.2.10');
-	await expect(page.getByLabel('Display name')).toBeFocused();
-	await page.getByRole('button', { name: 'Cancel' }).first().click();
-	await page.getByRole('button', { name: 'Configure' }).click();
-	await expect(page.getByRole('heading', { name: 'Add camera' })).toBeInViewport();
-	await expect(page.getByLabel('IP address')).toHaveValue('192.0.2.77');
-	await expect(page.getByLabel('Username')).toBeFocused();
-	await expect(page.getByLabel('ONVIF port')).toHaveValue('8000');
-	await expect(page.getByLabel('HTTP port')).toHaveValue('80');
-	await expect(page.getByLabel('Main RTSP stream URL')).toHaveValue('');
-	await expect(page.getByLabel('Sub RTSP stream URL')).toHaveValue('');
-	await expect(page.getByLabel('Main RTSP stream URL')).not.toHaveAttribute('placeholder');
-	await expect(page.getByLabel('Sub RTSP stream URL')).not.toHaveAttribute('placeholder');
-	await expect(page.locator('#camera-recording-mode')).toHaveValue('event-boost');
-	await expect(page.getByLabel('Main recording after an event (seconds)')).toHaveValue('60');
-	await expect(page.locator('#camera-password')).toHaveAttribute('type', 'password');
-	await page.getByLabel('Username').fill('operator');
-	await page.getByLabel('Password').fill('write-only-password');
-	await page.getByLabel('Main RTSP stream URL').fill('rtsp://192.0.2.77:8554/live/main');
-	await page.getByLabel('Sub RTSP stream URL').fill('rtsp://192.0.2.77:8554/live/sub');
-	await expect(page.getByLabel('Store generic motion events')).not.toBeChecked();
-	await page.getByLabel('Store generic motion events').check();
-	await page.getByRole('button', { name: 'Save camera' }).click();
-
-	await expect(page.getByText('Camera settings saved.', { exact: true })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Apply changes' })).toBeVisible();
-	await expect(page.getByText('Credentials saved', { exact: true })).toHaveCount(2);
-	await expect(page.getByText('write-only-password', { exact: true })).toHaveCount(0);
-	expect(controls.cameraUpdates).toHaveLength(1);
-	expect(controls.cameraUpdates[0]).toMatchObject({
-		ip: '192.0.2.77',
-		update: {
-			display_name: 'Front Gate',
-			username: 'operator',
-			password: 'write-only-password',
-			backend: 'reo-proto',
-			transport: 'tcp',
-			record_generic_motion_events: true,
-			recording_mode: 'event-boost',
-			event_recording_duration_secs: 60,
-			main_rtsp_url: 'rtsp://192.0.2.77:8554/live/main',
-			sub_rtsp_url: 'rtsp://192.0.2.77:8554/live/sub'
-		}
-	});
+	await expect(page.getByRole('heading', { name: 'Camera setup' })).toHaveCount(0);
+	await expect(page.getByLabel('Subnet prefixes')).toHaveCount(0);
+	await expect(page.getByRole('heading', { name: 'Edit camera' })).toHaveCount(0);
+	expect(controls.discoveryNetworks).toEqual([]);
+	expect(controls.cameraUpdates).toEqual([]);
 });
 
-test('configures one recording stream policy per camera', async ({ page }) => {
+test('keeps per-camera recording policy out of Settings', async ({ page }) => {
 	const camera = {
 		id: '192.0.2.10',
 		ip: '192.0.2.10',
@@ -530,31 +495,9 @@ test('configures one recording stream policy per camera', async ({ page }) => {
 	});
 	await page.goto('/settings');
 
-	await page.getByRole('button', { name: 'Edit', exact: true }).click();
-	const recordingMode = page.locator('#camera-recording-mode');
-	await expect(recordingMode.locator('option')).toHaveCount(5);
-	await expect(recordingMode.locator('option')).toHaveText([
-		'Sub, switch to main on events (recommended)',
-		'Sub only',
-		'Main only',
-		'Main + sub',
-		"Don't record"
-	]);
-	await expect(recordingMode).toHaveValue('event-boost');
-	await expect(page.getByLabel('Main recording after an event (seconds)')).toHaveValue('60');
-	await recordingMode.selectOption('off');
+	await expect(page.locator('#camera-recording-mode')).toHaveCount(0);
 	await expect(page.getByLabel('Main recording after an event (seconds)')).toHaveCount(0);
-	await page.getByRole('button', { name: 'Save camera' }).click();
-
-	await expect(page.getByText('Camera settings saved.', { exact: true })).toBeVisible();
-	expect(controls.cameraUpdates).toHaveLength(1);
-	expect(controls.cameraUpdates[0]).toMatchObject({
-		ip: '192.0.2.10',
-		update: {
-			recording_mode: 'off',
-			event_recording_duration_secs: 60
-		}
-	});
+	expect(controls.cameraUpdates).toEqual([]);
 });
 
 test('reviews and stages safe storage changes before a restart', async ({ page }) => {

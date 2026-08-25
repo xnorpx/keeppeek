@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	formatStorageBufferDuration,
 	formatStorageDuration,
+	suggestedStorageDisks,
 	storageRetentionEvidence
 } from '$lib/storage-retention';
 import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
@@ -145,5 +146,38 @@ describe('storage retention evidence', () => {
 			perCameraOverrides: null,
 			additionalLocations: null
 		});
+	});
+
+	it('suggests one persistent row per mount and excludes tiny helper volumes', () => {
+		const suggestions = suggestedStorageDisks(
+			[
+				...health.system.disks,
+				{
+					...health.system.disks[0]!,
+					name: 'Macintosh HD duplicate',
+					available_bytes: 1_000_000
+				},
+				{
+					...health.system.disks[0]!,
+					name: 'Paper helper',
+					mount_point: '/Volumes/Paper',
+					total_bytes: 8_000_000,
+					available_bytes: 4_000_000,
+					used_bytes: 4_000_000,
+					stores_recordings: false
+				},
+				{
+					...health.system.disks[0]!,
+					name: 'Temporary overlay',
+					file_system: 'tmpfs',
+					mount_point: '/tmp/helper',
+					stores_recordings: false
+				}
+			],
+			'/recordings/archive'
+		);
+
+		expect(suggestions.map((disk) => disk.mount_point)).toEqual(['/recordings', '/']);
+		expect(suggestions.filter((disk) => disk.mount_point === '/')).toHaveLength(1);
 	});
 });

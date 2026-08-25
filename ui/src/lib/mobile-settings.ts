@@ -1,7 +1,6 @@
 export type MobileSettingsRenderTarget =
 	| 'access'
 	| 'appearance'
-	| 'camera-defaults'
 	| 'event-sources'
 	| 'groups'
 	| 'integrations'
@@ -18,14 +17,6 @@ export type MobileSettingsSection = {
 };
 
 export const mobileSettingsSections = Object.freeze<MobileSettingsSection[]>([
-	{
-		id: 'camera-defaults',
-		label: 'Camera defaults',
-		group: 'administration',
-		href: '#camera-defaults',
-		renderTarget: 'camera-defaults',
-		keywords: ['camera', 'credentials', 'protocol', 'transport', 'recording']
-	},
 	{
 		id: 'storage',
 		label: 'Storage & retention',

@@ -6,6 +6,7 @@
 	import type { CameraHealth, CameraListItem } from '$lib/types';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import MicIcon from '@lucide/svelte/icons/mic';
 	import RadioIcon from '@lucide/svelte/icons/radio';
 	import SettingsIcon from '@lucide/svelte/icons/settings-2';
@@ -19,6 +20,7 @@
 		health: CameraHealth | null;
 		stream: 'main' | 'sub';
 		previewAvailable: boolean;
+		catalogUrl?: string | null;
 		commandTransportAvailable: boolean;
 		mode: MobileCameraMode;
 		paperFrame?: boolean;
@@ -30,6 +32,7 @@
 		health,
 		stream,
 		previewAvailable,
+		catalogUrl = null,
 		commandTransportAvailable,
 		mode,
 		paperFrame = false,
@@ -114,7 +117,20 @@
 			</div>
 		</div>
 		{#if mode === 'live'}
-			<EllipsisIcon class="size-[18px] text-text-faint" />
+			{#if catalogUrl}
+				<a
+					href={catalogUrl}
+					target="_blank"
+					rel="noopener noreferrer"
+					class="grid size-8 shrink-0 place-items-center rounded-sm border border-hairline text-text-faint focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+					title="Open CCTV Database"
+					aria-label={`Open ${[camera.manufacturer, camera.model].filter(Boolean).join(' ') || 'camera'} on CCTV Database`}
+				>
+					<ExternalLinkIcon class="size-[18px]" />
+				</a>
+			{:else}
+				<EllipsisIcon class="size-[18px] text-text-faint" />
+			{/if}
 		{:else if mode === 'ptz'}
 			<span
 				class="rounded-full border border-hairline px-2.5 py-1 font-mono text-2xs leading-3 text-text-faint"

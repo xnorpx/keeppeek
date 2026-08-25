@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
     time::{Duration, Instant},
 };
 use ureq::Agent;
@@ -46,11 +48,23 @@ impl CameraBrand for Reolink {
     fn discover_extra(
         &self,
         _already_claimed: &[IpAddr],
-        extra_subnets: &[u8],
+        networks: &[super::network::LocalNetwork],
+        cancelled: &AtomicBool,
     ) -> anyhow::Result<Vec<DiscoveredCamera>> {
-        let http_res = discover_http(extra_subnets);
-        let baichuan_res = discover_baichuan(extra_subnets);
-        let onvif_res = discover_onvif_direct(extra_subnets);
+        let (http_res, baichuan_res, onvif_res) = thread::scope(|scope| {
+            let http = scope.spawn(|| discover_http(networks, cancelled));
+            let baichuan = scope.spawn(|| discover_baichuan(networks, cancelled));
+            let onvif = scope.spawn(|| discover_onvif_direct(networks, cancelled));
+            (
+                http.join().expect("Reolink HTTP discovery must not panic"),
+                baichuan
+                    .join()
+                    .expect("Reolink Baichuan discovery must not panic"),
+                onvif
+                    .join()
+                    .expect("Reolink ONVIF discovery must not panic"),
+            )
+        });
 
         let mut by_ip: HashMap<IpAddr, DiscoveredCamera> = HashMap::new();
 
@@ -142,16 +156,11 @@ fn http_agent(timeout: Duration) -> Agent {
         .into()
 }
 
-fn discover_http(extra_subnets: &[u8]) -> anyhow::Result<Vec<HttpProbeResult>> {
-    let networks = match super::network::scan_networks(extra_subnets) {
-        Ok(networks) => networks,
-        Err(e) => {
-            tracing::warn!("could not detect local networks for HTTP probe: {}", e);
-            return Ok(vec![]);
-        }
-    };
-
-    let ips = super::network::scan_targets(&networks);
+fn discover_http(
+    networks: &[super::network::LocalNetwork],
+    cancelled: &AtomicBool,
+) -> anyhow::Result<Vec<HttpProbeResult>> {
+    let ips = super::network::scan_targets(networks);
     tracing::info!(
         "HTTP probe: scanning {} IPs across {} subnet(s)",
         ips.len(),
@@ -162,6 +171,7 @@ fn discover_http(extra_subnets: &[u8]) -> anyhow::Result<Vec<HttpProbeResult>> {
     Ok(super::parallel_filter_map(
         ips,
         MAX_CONCURRENT_PROBES,
+        cancelled,
         |ip| probe_ip(&agent, ip),
     ))
 }
@@ -216,22 +226,14 @@ struct BaichuanHit {
     model: Option<String>,
 }
 
-fn discover_baichuan(extra_subnets: &[u8]) -> anyhow::Result<Vec<BaichuanHit>> {
-    let networks = match super::network::scan_networks(extra_subnets) {
-        Ok(networks) => networks,
-        Err(e) => {
-            tracing::warn!(
-                "could not detect local networks for Baichuan broadcast: {}",
-                e
-            );
-            return Ok(vec![]);
-        }
-    };
-
+fn discover_baichuan(
+    networks: &[super::network::LocalNetwork],
+    cancelled: &AtomicBool,
+) -> anyhow::Result<Vec<BaichuanHit>> {
     tracing::info!(
-        "Baichuan broadcast: sending discovery to 255.255.255.255:{} and {} subnet(s)",
+        "Baichuan broadcast: sending discovery to {} requested subnet(s) on port {}",
+        networks.len(),
         BAICHUAN_PORT,
-        networks.len()
     );
 
     let socket = UdpSocket::bind("0.0.0.0:0")?;
@@ -239,12 +241,7 @@ fn discover_baichuan(extra_subnets: &[u8]) -> anyhow::Result<Vec<BaichuanHit>> {
 
     let probe = baichuan_discovery_packet();
 
-    let _ = socket.send_to(
-        &probe,
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), BAICHUAN_PORT),
-    );
-
-    for network in &networks {
+    for network in networks {
         let _ = socket.send_to(
             &probe,
             SocketAddr::new(IpAddr::V4(network.broadcast), BAICHUAN_PORT),
@@ -257,11 +254,14 @@ fn discover_baichuan(extra_subnets: &[u8]) -> anyhow::Result<Vec<BaichuanHit>> {
     let deadline = Instant::now() + BAICHUAN_LISTEN_TIMEOUT;
 
     loop {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
-        socket.set_read_timeout(Some(remaining))?;
+        socket.set_read_timeout(Some(remaining.min(Duration::from_millis(100))))?;
 
         match socket.recv_from(&mut buf) {
             Ok((len, addr)) => {
@@ -284,8 +284,13 @@ fn discover_baichuan(extra_subnets: &[u8]) -> anyhow::Result<Vec<BaichuanHit>> {
                 }
             }
             Err(e) => {
-                tracing::trace!("Baichuan recv error: {}", e);
-                break;
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) {
+                    continue;
+                }
+                return Err(e.into());
             }
         }
     }
@@ -321,27 +326,20 @@ struct OnvifDirectResult {
     onvif_url: Url,
 }
 
-fn discover_onvif_direct(extra_subnets: &[u8]) -> anyhow::Result<Vec<OnvifDirectResult>> {
-    let networks = match super::network::scan_networks(extra_subnets) {
-        Ok(networks) => networks,
-        Err(e) => {
-            tracing::warn!(
-                "could not detect local networks for ONVIF direct probe: {}",
-                e
-            );
-            return Ok(vec![]);
-        }
-    };
-
-    let ips = super::network::scan_targets(&networks);
+fn discover_onvif_direct(
+    networks: &[super::network::LocalNetwork],
+    cancelled: &AtomicBool,
+) -> anyhow::Result<Vec<OnvifDirectResult>> {
+    let ips = super::network::scan_targets(networks);
     tracing::info!(
         "ONVIF direct probe: scanning {} IPs on port {}",
         ips.len(),
         ONVIF_PORT
     );
     let agent = http_agent(HTTP_TIMEOUT);
-    let found =
-        super::parallel_filter_map(ips, MAX_CONCURRENT_PROBES, |ip| probe_onvif(&agent, ip));
+    let found = super::parallel_filter_map(ips, MAX_CONCURRENT_PROBES, cancelled, |ip| {
+        probe_onvif(&agent, ip)
+    });
 
     tracing::info!("ONVIF direct probe: found {} Reolink cameras", found.len());
     Ok(found)

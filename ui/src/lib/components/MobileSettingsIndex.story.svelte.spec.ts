@@ -4,7 +4,7 @@ import { render } from 'vitest-browser-svelte';
 import '../../app.css';
 import Board27MobileAdministrationStory from '../../../visual-harness/stories/Board27MobileAdministrationStory.svelte';
 
-type State = 'access' | 'camera-defaults' | 'index';
+type State = 'access' | 'index';
 
 async function renderState(state: State) {
 	await page.viewport(390, 900);
@@ -32,21 +32,10 @@ describe('Board 27 mobile administration story', () => {
 		const settingsLinks = [
 			...frame!.querySelectorAll<HTMLElement>('[aria-label="Settings sections"] a')
 		];
-		expect(settingsLinks).toHaveLength(10);
+		expect(settingsLinks).toHaveLength(9);
 		expect(settingsLinks.map((link) => Math.round(link.getBoundingClientRect().height))).toEqual([
-			52, 52, 52, 52, 52, 52, 46, 46, 46, 46
+			52, 52, 52, 52, 52, 46, 46, 46, 46
 		]);
-	});
-
-	it('renders evidence-safe camera defaults in the focused Paper lanes', async () => {
-		const { frame } = await renderState('camera-defaults');
-		expect(
-			[...frame.children].map((child) => Math.round(child.getBoundingClientRect().height))
-		).toEqual([62, 52, 660, 68]);
-		await expect.element(page.getByText('Not returned by the API', { exact: true })).toBeVisible();
-		await expect.element(page.getByText('Write-only per camera', { exact: true })).toBeVisible();
-		await expect.element(page.getByText('admin', { exact: true })).not.toBeInTheDocument();
-		expect(frame.textContent).toContain('Server update required · keeppeek.runtime-config.v1');
 	});
 
 	it('renders unavailable identity evidence without Paper fixture people or tokens', async () => {

@@ -440,6 +440,13 @@ impl HealthRegistry {
         reports.sort_unstable_by_key(|report| report.ip);
         reports
     }
+
+    pub(crate) fn remove(&self, camera_ip: IpAddr) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&camera_ip);
+    }
 }
 
 pub(crate) fn video_report(

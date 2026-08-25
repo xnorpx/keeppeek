@@ -38,22 +38,26 @@ describe('Board 21 first-run and empty-state story', () => {
 		]);
 	});
 
-	it('keeps unavailable backend evidence explicit and all unsupported actions blocked', async () => {
+	it('shows verified local storage while unsupported remote identity actions stay blocked', async () => {
 		await page.viewport(1440, 900);
 		const { container } = await render(Board21FirstRunStory);
 		const frame = container.querySelector<HTMLElement>('[data-paper-scenario]');
 		expect(frame).not.toBeNull();
 
-		await expect.element(page.getByText('WRITE PROOF UNAVAILABLE', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('WRITE PROOF VERIFIED', { exact: true })).toBeVisible();
+		await expect
+			.element(page.getByText('Write, flush, rename, and cleanup succeeded.', { exact: true }))
+			.toBeVisible();
 		await expect
 			.element(page.getByText('DETECTED FROM THIS BROWSER', { exact: true }))
 			.toBeVisible();
 		await expect
 			.element(page.getByText(/Server update required · keeppeek\.identity\.v1/))
 			.toBeVisible();
-		await expect.element(page.getByRole('button', { name: 'Start the recorder' })).toBeDisabled();
+		await expect
+			.element(page.getByRole('button', { name: 'Continue to camera setup' }))
+			.toBeEnabled();
 		await expect.element(page.getByRole('button', { name: 'Registry unavailable' })).toBeDisabled();
-		expect(frame!.textContent).not.toContain('WRITABLE');
 		expect(frame!.textContent).not.toContain('DETECTED FROM THIS MACHINE');
 		expect(frame!.textContent).not.toContain('0 EVENT SOURCES REGISTERED');
 	});

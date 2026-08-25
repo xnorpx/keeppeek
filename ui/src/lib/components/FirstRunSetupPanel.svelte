@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { capabilityActions } from '$lib/capability-actions';
 	import { firstRunStorageEvidence } from '$lib/first-run';
+	import type { StorageWriteProbe } from '$lib/first-run';
 	import type { DiskHealth, SanitizedConfig } from '$lib/types';
 	import ArrowRightIcon from '@lucide/svelte/icons/arrow-right';
 	import ClockIcon from '@lucide/svelte/icons/clock-3';
@@ -15,11 +16,24 @@
 		health: { version: string; system: { disks: readonly DiskHealth[] } } | null;
 		timeZone: string | null;
 		paperFrame?: boolean;
+		writeProbe?: StorageWriteProbe | null;
+		probingStorage?: boolean;
+		onretryprobe?: () => void;
+		onstart?: () => void;
 	};
 
-	let { config, health, timeZone, paperFrame = false }: Props = $props();
+	let {
+		config,
+		health,
+		timeZone,
+		paperFrame = false,
+		writeProbe = null,
+		probingStorage = false,
+		onretryprobe,
+		onstart
+	}: Props = $props();
 	let storageEvidence = $derived(
-		firstRunStorageEvidence(config.storage.medium_term_path, health?.system.disks ?? [], null)
+		firstRunStorageEvidence(config.storage.medium_term_path, health?.system.disks ?? [], writeProbe)
 	);
 	let storageCapacityLabel = $derived.by(() => {
 		if (storageEvidence.availableBytes === null) return 'CAPACITY UNAVAILABLE';
@@ -124,14 +138,29 @@
 					</p>
 				{/if}
 				<div
-					class="rounded-sm border border-live/40 bg-live/5 {paperFrame
+					class="rounded-sm border {storageEvidence.writeStatus === 'verified'
+						? 'border-healthy/40 bg-healthy/5'
+						: 'border-live/40 bg-live/5'} {paperFrame
 						? 'flex h-[125px] shrink-0 flex-col gap-[7px] px-3.5 py-3'
 						: 'px-3 py-2.5'}"
 					role="status"
 					data-storage-write-status={storageEvidence.writeStatus}
 				>
-					<div class="flex items-center gap-2 font-mono text-2xs tracking-caps text-live-text">
-						<TriangleAlertIcon class="size-3.5 shrink-0" /> WRITE PROOF UNAVAILABLE
+					<div
+						class="flex items-center gap-2 font-mono text-2xs tracking-caps {storageEvidence.writeStatus ===
+						'verified'
+							? 'text-healthy'
+							: 'text-live-text'}"
+					>
+						{#if storageEvidence.writeStatus !== 'verified'}<TriangleAlertIcon
+								class="size-3.5 shrink-0"
+							/>{/if}{probingStorage
+							? 'VERIFYING STORAGE'
+							: storageEvidence.writeStatus === 'verified'
+								? 'WRITE PROOF VERIFIED'
+								: storageEvidence.writeStatus === 'failed'
+									? 'WRITE PROOF FAILED'
+									: 'WRITE PROOF UNAVAILABLE'}
 					</div>
 					<p class="text-xs leading-[18px] text-text-muted">{storageEvidence.detail}</p>
 					{#if paperFrame}
@@ -139,11 +168,20 @@
 					{/if}
 				</div>
 				{#if !paperFrame}
-					<a
-						href={`${resolve('/settings')}?edit=storage#storage`}
-						class="inline-flex h-7 items-center rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
-						>Set up recording storage</a
-					>
+					<div class="flex flex-wrap gap-2">
+						<button
+							type="button"
+							class="inline-flex h-7 items-center rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium disabled:opacity-50"
+							disabled={probingStorage}
+							onclick={onretryprobe}
+							>{probingStorage ? 'Verifying storage' : 'Verify storage again'}</button
+						>
+						<a
+							href={`${resolve('/settings')}?edit=storage#storage`}
+							class="inline-flex h-7 items-center rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
+							>Change recording storage</a
+						>
+					</div>
 				{/if}
 			</div>
 		</li>
@@ -224,8 +262,9 @@
 				: 'h-9 px-4 text-xs'}"
 			disabled={!storageEvidence.canStartRecorder}
 			title={storageEvidence.detail}
+			onclick={onstart}
 		>
-			Start the recorder <ArrowRightIcon class="size-3.5" />
+			Continue to camera setup <ArrowRightIcon class="size-3.5" />
 		</button>
 	</footer>
 </section>

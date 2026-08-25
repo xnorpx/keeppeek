@@ -31,9 +31,7 @@ export function firstRunStorageEvidence(
 		mountPoint: disk?.mount_point ?? null,
 		availableBytes: disk?.available_bytes ?? null,
 		writeStatus,
-		detail:
-			writeProbe?.detail ??
-			'KeepPeek does not expose a candidate storage write probe, so recording cannot be started from this screen.',
+		detail: writeProbe?.detail ?? 'Storage write verification has not run yet.',
 		canStartRecorder: writeProbe?.writable === true
 	};
 }

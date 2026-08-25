@@ -185,6 +185,8 @@ pub fn run(
 
     keeppeek.add_cameras(&cameras)?;
     let server_state = server_state.with_camera_runtime(keeppeek.control());
+    server_state
+        .enrich_camera_metadata_in_background(camera_configs.values().flatten().cloned().collect());
 
     let keeppeek_handle = std::thread::Builder::new()
         .name("keeppeek".to_string())

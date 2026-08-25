@@ -240,12 +240,17 @@ message CameraConfigurationCommand {
     GetCameraCatalog get_catalog = 5;
     SearchCameraCatalog search_catalog = 6;
     ProbeCameraStreams probe_streams = 7;
+    GetCameraOnboardingDefaults get_onboarding_defaults = 8;
+    GetCameraDiscovery get_discovery = 9;
+    CancelCameraDiscovery cancel_discovery = 10;
   }
 }
 
 message GetCameraConfigurations {}
 
 message GetCameraCatalog {}
+
+message GetCameraOnboardingDefaults {}
 
 message SearchCameraCatalog {
   string query = 1;
@@ -258,10 +263,24 @@ message ProbeCameraStreams {
   string username = 2;
   string password = 3;
   optional uint32 onvif_port = 4;
+  optional string main_rtsp_url = 5;
+  optional string sub_rtsp_url = 6;
+  optional CameraTransport transport = 7;
+  optional bool query_onvif = 8;
 }
 
 message DiscoverCameras {
   repeated uint32 subnets = 1;
+  repeated string networks = 2;
+  string discovery_id = 3;
+}
+
+message GetCameraDiscovery {
+  string discovery_id = 1;
+}
+
+message CancelCameraDiscovery {
+  string discovery_id = 1;
 }
 
 message UpdateCameraConfiguration {
@@ -325,10 +344,15 @@ message RuntimeConfigurationCommand {
   oneof action {
     UpdateRuntimeConfiguration update = 1;
     GetRuntimeConfiguration get = 2;
+    ProbeStorage probe_storage = 3;
   }
 }
 
 message GetRuntimeConfiguration {}
+
+message ProbeStorage {
+  string path = 1;
+}
 
 message HealthCommand {
   oneof action {
@@ -575,10 +599,16 @@ message GetLoggingSettings {}
 message ServerCommand {
   oneof action {
     RestartServer restart = 1;
+    GetAccessKey get_access_key = 2;
+    RotateAccessKey rotate_access_key = 3;
   }
 }
 
 message RestartServer {}
+
+message GetAccessKey {}
+
+message RotateAccessKey {}
 
 message SourceSession {
   string source_session_id = 1;
@@ -1411,6 +1441,9 @@ message Ok {
     CameraCatalogInfo camera_catalog_info = 26;
     CameraCatalogSearchResult camera_catalog_search_result = 27;
     CameraStreamProbeResult camera_stream_probe_result = 28;
+    CameraOnboardingDefaults camera_onboarding_defaults = 29;
+    StorageWriteProbeResult storage_write_probe_result = 30;
+    AccessKeyResult access_key_result = 31;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -1430,6 +1463,9 @@ message CameraManufacturerResult {
 
 message CameraDiscoveryResult {
   repeated DiscoveredCamera cameras = 1;
+  string discovery_id = 2;
+  bool complete = 3;
+  bool cancelled = 4;
 }
 
 message DiscoveredCamera {
@@ -1495,6 +1531,43 @@ message CameraStreamProbeResult {
   optional string main_rtsp_url = 1;
   optional string sub_rtsp_url = 2;
   optional uint32 onvif_port = 3;
+  optional string manufacturer = 4;
+  optional string model = 5;
+  optional string firmware_version = 6;
+  optional string serial_number = 7;
+  optional string hardware_id = 8;
+  repeated HealthProfileSummary profiles = 9;
+  repeated CameraStreamVerification streams = 10;
+  optional string onvif_error = 11;
+}
+
+message CameraStreamVerification {
+  string stream = 1;
+  bool verified = 2;
+  optional string codec = 3;
+  optional string resolution = 4;
+  optional double declared_fps = 5;
+  uint32 frames_received = 6;
+  bool keyframe_received = 7;
+  uint64 elapsed_ms = 8;
+  optional string error = 9;
+}
+
+message CameraOnboardingDefaults {
+  bool username_configured = 1;
+  bool password_configured = 2;
+  repeated CameraDiscoveryNetwork networks = 3;
+}
+
+message CameraDiscoveryNetwork {
+  string cidr = 1;
+  string interface_name = 2;
+  bool preferred = 3;
+}
+
+message StorageWriteProbeResult {
+  bool writable = 1;
+  string detail = 2;
 }
 
 message CameraConfigurationResult {
@@ -1843,6 +1916,11 @@ message LogBufferStats {
 
 message RestartResult {
   bool restarting = 1;
+}
+
+message AccessKeyResult {
+  string access_key = 1;
+  bool rotated = 2;
 }
 
 message Error {

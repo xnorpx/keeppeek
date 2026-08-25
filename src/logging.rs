@@ -54,6 +54,7 @@ pub fn initialize_global_logging(config_path: &Path) -> anyhow::Result<LoggingSe
     let env_filter = EnvFilter::try_new(&initial_filter.directive)?;
     let (filter_layer, reload_handle) = reload::Layer::new(env_filter);
     let hub = LogHub::default();
+    configure_secret_redaction(&hub, config_path)?;
 
     Registry::default()
         .with(filter_layer)
@@ -80,6 +81,7 @@ pub fn initialize_service_logging(
     let env_filter = EnvFilter::try_new(&initial_filter.directive)?;
     let (filter_layer, reload_handle) = reload::Layer::new(env_filter);
     let hub = LogHub::default();
+    configure_secret_redaction(&hub, config_path)?;
 
     match destination {
         ServiceLogDestination::EventLog => {
@@ -115,6 +117,11 @@ pub fn initialize_service_logging(
         initial_filter.directive,
         initial_filter.error,
     ))
+}
+
+fn configure_secret_redaction(hub: &LogHub, config_path: &Path) -> anyhow::Result<()> {
+    hub.set_sensitive_values(config::load_secrets(config_path)?.redaction_values());
+    Ok(())
 }
 
 fn logging_service(

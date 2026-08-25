@@ -44,7 +44,6 @@
 		})),
 		...[
 			['Storage & retention', 'storage'],
-			['Camera defaults', 'camera-defaults'],
 			['Event sources', 'event-sources'],
 			['Groups', 'groups'],
 			['Access & roles', 'access'],

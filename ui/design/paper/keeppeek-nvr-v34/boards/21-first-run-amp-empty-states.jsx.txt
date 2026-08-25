@@ -14,11 +14,11 @@
         </div>
         <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingTop: '44px', width: '700px' }}>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '155%' }}>
-            On the LAN you can start without an account. Two of these three answers are already filled in correctly — where footage goes and what time it is here — and both are expensive to change later. The remote key is last because most people should skip it.
+            On the LAN you can start without an account. Storage is verified locally before setup continues; camera discovery and stream proof come next.
           </div>
         </div>
       </div>
-      <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '24px', width: '1440px' }}>
+      <div style={{ alignItems: 'flex-start', backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '24px', height: '785px', width: '1440px' }}>
         <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-lg)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', overflow: 'clip', width: '708px' }}>
           <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '12px', paddingBottom: '24px', paddingInline: '32px', paddingTop: '32px' }}>
             <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
@@ -57,24 +57,24 @@
                     /mnt/keeppeek
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
-                    7.9 TB FREE · WRITABLE
+                    7.9 TB FREE · CAPACITY OBSERVED
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
-                  Checked for space and write permission before this screen let you continue. At four cameras that is roughly six weeks.
+                  Capacity is observed from the recording disk. A non-destructive write, flush, rename, and cleanup probe passed.
                 </div>
-                <div style={{ backgroundColor: '#C93B4017', borderColor: '#C93B4066', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '7px', paddingBlock: '12px', paddingInline: '14px' }}>
+                <div style={{ backgroundColor: '#000000', borderColor: '#000000', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '7px', paddingBlock: '12px', paddingInline: '14px' }}>
                   <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '8px' }}>
-                    <div style={{ backgroundColor: 'var(--color-live)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
-                    <div style={{ boxSizing: 'border-box', color: 'var(--color-live-text)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
-                      If the path will not do — you cannot continue past this
+                    <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '6px', width: '6px' }} />
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-2xs)', letterSpacing: 'var(--tracking-caps)', lineHeight: '12px', textTransform: 'uppercase' }}>
+                      WRITE PROOF VERIFIED
                     </div>
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-sm)', lineHeight: '19px' }}>
-                    KeepPeek can see /mnt/keeppeek but cannot write to it. It runs as the user keeppeek, and that folder belongs to root. Either choose a folder you own, or give this one to that user. Nothing starts recording until a real write succeeds here.
+                    KeepPeek created, flushed, renamed, and removed a private probe file in /mnt/keeppeek.
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: 'var(--text-xs)', lineHeight: '16px' }}>
-                    sudo chown -R keeppeek /mnt/keeppeek
+                    CREATE · FLUSH · RENAME · DELETE · CLEAN
                   </div>
                 </div>
               </div>
@@ -94,7 +94,7 @@
                     Europe/Stockholm
                   </div>
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', lineHeight: '14px' }}>
-                    DETECTED FROM THIS MACHINE
+                    DETECTED FROM THIS BROWSER
                   </div>
                 </div>
               </div>
@@ -112,12 +112,12 @@
                 <div style={{ boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
                   <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', paddingInline: '12px', width: '296px' }}>
                     <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', lineHeight: '18px' }}>
-                      marcus
+                      Identity runtime unavailable
                     </div>
                   </div>
                   <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '38px', paddingInline: '12px', width: '296px' }}>
                     <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '14px', letterSpacing: '0.18em', lineHeight: '18px' }}>
-                      ••••••••••••
+                      Optional · no secret shown
                     </div>
                   </div>
                 </div>
@@ -133,7 +133,7 @@
             </div>
             <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '38px', paddingInline: '20px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '14px', fontWeight: 600, lineHeight: '18px' }}>
-                Start the recorder
+                Continue to camera setup
               </div>
               <svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
                 <path d="M5 12h13" fill="none" stroke="var(--color-on-primary)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -199,11 +199,11 @@
             </div>
             <div style={{ boxSizing: 'border-box', display: 'flex', flexBasis: '0%', flexDirection: 'column', flexGrow: '1', gap: '8px' }}>
               <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.1em', lineHeight: '14px' }}>
-                0 EVENT SOURCES REGISTERED
+                EVENT SOURCE REGISTRY UNAVAILABLE
               </div>
               <div style={{ alignItems: 'center', alignSelf: 'flex-start', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '32px', paddingInline: '12px' }}>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                  Connect a detection service
+                  Registry unavailable
                 </div>
               </div>
             </div>

@@ -1,14 +1,19 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import CameraConfigurationEditor from '$lib/components/CameraConfigurationEditor.svelte';
 	import CameraOverview from '$lib/components/CameraOverview.svelte';
 	import MobileCameraPage, { type MobileCameraMode } from '$lib/components/MobileCameraPage.svelte';
+	import { exactCatalogCameraMatch, firstHttpCameraCatalogSource } from '$lib/camera-wizard';
 	import { useControlClient } from '$lib/control-context';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type {
 		CameraDetailsResponse,
 		CameraHealth,
+		CameraListItem,
+		CameraSettings,
+		CameraSettingsUpdate,
 		MotionDetection,
 		StreamHealth
 	} from '$lib/types';
@@ -18,6 +23,7 @@
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+	import SettingsIcon from '@lucide/svelte/icons/settings-2';
 	import XIcon from '@lucide/svelte/icons/x';
 
 	const REFRESH_INTERVAL_MS = 5_000;
@@ -30,8 +36,13 @@
 	const controlClient = useControlClient();
 
 	let details = $state.raw<CameraDetailsResponse | null>(null);
+	let cameraSettings = $state.raw<CameraSettings | null>(null);
 	let serverHealth = $state.raw<CameraHealth | null>(null);
 	let error = $state<string | null>(null);
+	let configurationError = $state<string | null>(null);
+	let configurationStatus = $state<string | null>(null);
+	let editingConfiguration = $state(false);
+	let savingConfiguration = $state(false);
 	let motionError = $state<string | null>(null);
 	let loading = $state(true);
 	let refreshing = $state(false);
@@ -42,8 +53,10 @@
 	let manufacturerDraft = $state('');
 	let manufacturerError = $state<string | null>(null);
 	let updatingManufacturer = $state(false);
+	let catalogUrl = $state<string | null>(null);
 	let mobileViewport = $state(false);
 	let mobileMode = $state<MobileCameraMode>('live');
+	let catalogLookupSequence = 0;
 	let cameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let camera = $derived(details?.camera ?? null);
 	let liveHealth = $derived(serverHealth ?? details?.health ?? null);
@@ -111,6 +124,9 @@
 		error = null;
 		motionError = null;
 		manufacturerError = null;
+		configurationError = null;
+		configurationStatus = null;
+		editingConfiguration = false;
 		editingManufacturer = false;
 		void loadCamera(id, controller.signal);
 		const timer = window.setInterval(() => {
@@ -124,10 +140,27 @@
 
 	async function loadCamera(id: string, signal?: AbortSignal): Promise<boolean> {
 		try {
-			const nextDetails = await controlClient.getCameraDetails(id, signal);
+			const [nextDetails, settingsResult] = await Promise.all([
+				controlClient.getCameraDetails(id, signal),
+				controlClient.getCameraSettings().then(
+					(value) => ({ value, error: null }),
+					(cause: unknown) => ({
+						value: [] as CameraSettings[],
+						error: cause instanceof Error ? cause.message : 'Camera configuration is unavailable.'
+					})
+				)
+			]);
 			if (signal?.aborted || id !== cameraId) return false;
 			details = nextDetails;
 			serverHealth = nextDetails.health;
+			cameraSettings =
+				settingsResult.value.find(
+					(candidate) => candidate.id === id || candidate.ip === nextDetails.camera.ip
+				) ?? null;
+			configurationError =
+				settingsResult.error ??
+				(cameraSettings === null ? 'Camera configuration is unavailable for this source.' : null);
+			void loadCatalogReference(nextDetails.camera, id, signal);
 			error = null;
 			return true;
 		} catch (cause) {
@@ -136,6 +169,30 @@
 			return false;
 		} finally {
 			if (!signal?.aborted && id === cameraId) loading = false;
+		}
+	}
+
+	async function loadCatalogReference(
+		camera: CameraListItem,
+		id: string,
+		signal?: AbortSignal
+	): Promise<void> {
+		const sequence = ++catalogLookupSequence;
+		catalogUrl = null;
+		const model = camera.model?.trim();
+		if (!model) return;
+		try {
+			const matches = await controlClient.searchCameraCatalog(model, {
+				limit: 20,
+				ip: camera.ip
+			});
+			if (signal?.aborted || id !== cameraId || sequence !== catalogLookupSequence) return;
+			const match = exactCatalogCameraMatch(matches, camera.manufacturer, model);
+			catalogUrl = match ? firstHttpCameraCatalogSource(match.sources) : null;
+		} catch {
+			if (!signal?.aborted && id === cameraId && sequence === catalogLookupSequence) {
+				catalogUrl = null;
+			}
 		}
 	}
 
@@ -154,6 +211,48 @@
 		refreshing = true;
 		await loadCamera(cameraId);
 		refreshing = false;
+	}
+
+	async function openConfiguration(): Promise<void> {
+		if (!cameraSettings) return;
+		configurationError = null;
+		configurationStatus = null;
+		editingConfiguration = true;
+		await tick();
+		document.getElementById('configuration')?.scrollIntoView({
+			behavior: 'smooth',
+			block: 'start'
+		});
+	}
+
+	function closeConfiguration(): void {
+		editingConfiguration = false;
+		if (mobileMode === 'settings') mobileMode = 'live';
+	}
+
+	function setMobileMode(mode: MobileCameraMode): void {
+		mobileMode = mode;
+		if (mode === 'settings') void openConfiguration();
+	}
+
+	async function saveConfiguration(update: CameraSettingsUpdate): Promise<void> {
+		if (!cameraSettings || savingConfiguration) return;
+		savingConfiguration = true;
+		configurationError = null;
+		configurationStatus = null;
+		try {
+			const result = await controlClient.updateCamera(cameraSettings.ip, update);
+			cameraSettings = result.camera;
+			configurationStatus = result.restart_required
+				? 'Camera settings saved. Restart KeepPeek from System settings to apply them.'
+				: 'Camera settings saved.';
+			closeConfiguration();
+		} catch (cause) {
+			configurationError =
+				cause instanceof Error ? cause.message : 'Camera settings were not saved.';
+		} finally {
+			savingConfiguration = false;
+		}
 	}
 
 	async function testConnection(): Promise<void> {
@@ -344,8 +443,37 @@
 				<ExternalLinkIcon class="size-3.5" />
 				Open camera UI
 			</a>
+			{#if catalogUrl}
+				<a
+					href={catalogUrl}
+					target="_blank"
+					rel="noopener noreferrer"
+					aria-label={`Open ${[camera.manufacturer, camera.model].filter(Boolean).join(' ') || 'camera'} on CCTV Database`}
+					class="inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-medium text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>
+					<ExternalLinkIcon class="size-3.5" />
+					CCTV Database
+				</a>
+			{/if}
 			<!-- eslint-enable svelte/no-navigation-without-resolve -->
 			<p>The camera UI link works only from a device on the same network as the camera.</p>
+		</div>
+	{/if}
+
+	{#if configurationStatus}
+		<div
+			class="mx-4 flex flex-wrap items-center justify-between gap-3 border-y border-primary/30 bg-primary/5 px-3 py-2 text-sm md:mx-0 md:rounded-md md:border"
+			role="status"
+		>
+			<p>{configurationStatus}</p>
+			{#if configurationStatus.includes('Restart')}
+				<a
+					href={`${resolve('/settings')}#appearance`}
+					class="text-xs font-semibold text-primary-soft hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>
+					Open System settings
+				</a>
+			{/if}
 		</div>
 	{/if}
 
@@ -362,15 +490,43 @@
 		</div>
 	{:else if details && camera}
 		{#if mobileViewport}
-			<MobileCameraPage
-				{camera}
-				health={liveHealth}
-				stream={previewStream}
-				{previewAvailable}
-				commandTransportAvailable
-				mode={mobileMode}
-				onmode={(mode) => (mobileMode = mode)}
-			/>
+			{#if mobileMode === 'settings'}
+				<div id="configuration" class="p-3">
+					{#if cameraSettings}
+						<CameraConfigurationEditor
+							camera={cameraSettings}
+							saving={savingConfiguration}
+							error={configurationError}
+							oncancel={closeConfiguration}
+							onsave={saveConfiguration}
+						/>
+					{:else}
+						<div class="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm">
+							<p class="text-destructive" role="alert">
+								{configurationError ?? 'Camera configuration is unavailable.'}
+							</p>
+							<button
+								type="button"
+								class="mt-3 text-xs font-semibold text-primary-soft"
+								onclick={closeConfiguration}
+							>
+								Back to camera
+							</button>
+						</div>
+					{/if}
+				</div>
+			{:else}
+				<MobileCameraPage
+					{camera}
+					health={liveHealth}
+					stream={previewStream}
+					{previewAvailable}
+					{catalogUrl}
+					commandTransportAvailable
+					mode={mobileMode}
+					onmode={setMobileMode}
+				/>
+			{/if}
 		{:else}
 			<div class="grid gap-4 lg:grid-cols-[10rem_minmax(0,1fr)]" data-desktop-camera-page>
 				<aside class="hidden lg:block">
@@ -378,7 +534,7 @@
 						class="sticky top-4 space-y-1 border-l border-hairline py-1"
 						aria-label="Camera sections"
 					>
-						{#each [['overview', 'Overview'], ['connection', 'Connection'], ['events', 'Events'], ['streams', 'Streams'], ['audio', 'Audio'], ['advanced', 'Advanced']] as [id, label] (id)}
+						{#each [['overview', 'Overview'], ['configuration', 'Configuration'], ['connection', 'Connection'], ['events', 'Events'], ['streams', 'Streams'], ['audio', 'Audio'], ['advanced', 'Advanced']] as [id, label] (id)}
 							<a
 								href={`#${id}`}
 								class="block border-l-2 border-transparent px-3 py-2 text-xs text-text-muted hover:border-primary hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -395,6 +551,41 @@
 						{previewAvailable}
 						commandTransportAvailable
 					/>
+					{#if editingConfiguration && cameraSettings}
+						<div id="configuration">
+							<CameraConfigurationEditor
+								camera={cameraSettings}
+								saving={savingConfiguration}
+								error={configurationError}
+								oncancel={closeConfiguration}
+								onsave={saveConfiguration}
+							/>
+						</div>
+					{:else}
+						<section
+							id="configuration"
+							class="flex scroll-mt-16 flex-wrap items-center justify-between gap-4 rounded-md border border-hairline bg-surface p-4"
+							aria-labelledby="camera-configuration-heading"
+						>
+							<div>
+								<h2 id="camera-configuration-heading" class="text-sm font-semibold">
+									Camera configuration
+								</h2>
+								<p class="mt-1 text-xs text-text-muted">
+									Connection, credentials, streams, and recording policy for this camera.
+								</p>
+							</div>
+							<button
+								type="button"
+								class="inline-flex h-8 items-center gap-2 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+								disabled={!cameraSettings}
+								onclick={() => void openConfiguration()}
+							>
+								<SettingsIcon class="size-3.5" />
+								Edit settings
+							</button>
+						</section>
+					{/if}
 					<section
 						id="connection"
 						class="grid scroll-mt-16 gap-x-8 gap-y-5 rounded-md border border-hairline bg-surface p-4 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,0.7fr)]"

@@ -22,7 +22,7 @@ use url::Url;
 
 const CHANNEL_BUFFER: usize = 256;
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const CAMERA_START_TIMEOUT: Duration = Duration::from_secs(2);
+const CAMERA_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CameraRoute {
@@ -132,9 +132,13 @@ enum KeepPeekCommand {
         camera: Camera,
         reply: SyncSender<anyhow::Result<()>>,
     },
+    RestartCamera {
+        camera: Camera,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
 }
 
-/// Requests camera starts from the running KeepPeek loop.
+/// Controls cameras owned by the running KeepPeek loop.
 #[derive(Clone)]
 pub struct KeepPeekControl {
     tx: Sender<KeepPeekCommand>,
@@ -150,10 +154,55 @@ impl KeepPeekControl {
             })
             .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
         reply_rx
-            .recv_timeout(CAMERA_START_TIMEOUT)
+            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
             .map_err(|error| {
                 anyhow::anyhow!("KeepPeek loop did not accept the camera start request: {error}")
             })?
+    }
+
+    pub fn restart_camera(&self, camera: Camera) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.tx
+            .send(KeepPeekCommand::RestartCamera {
+                camera,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
+        reply_rx
+            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
+            .map_err(|error| {
+                anyhow::anyhow!("KeepPeek loop did not accept the camera restart request: {error}")
+            })?
+    }
+}
+
+struct CameraWorkers {
+    shutdown: Shutdown,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl CameraWorkers {
+    fn new() -> Self {
+        Self {
+            shutdown: Shutdown::new(),
+            handles: Vec::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.shutdown.cancel();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.handles.iter().all(JoinHandle::is_finished)
+    }
+
+    fn join(self, camera_ip: IpAddr) {
+        for handle in self.handles {
+            if handle.join().is_err() {
+                tracing::warn!(%camera_ip, "camera worker panicked");
+            }
+        }
     }
 }
 
@@ -218,7 +267,7 @@ pub struct KeepPeekLoop {
     command_rx: Receiver<KeepPeekCommand>,
     command_tx: Sender<KeepPeekCommand>,
     shutdown: Shutdown,
-    handles: Vec<JoinHandle<()>>,
+    camera_workers: HashMap<IpAddr, CameraWorkers>,
     storage: Option<StorageHandle>,
     events: Option<EventStore>,
     live: Option<Publisher>,
@@ -238,7 +287,7 @@ impl KeepPeekLoop {
             command_rx,
             command_tx,
             shutdown,
-            handles: Vec::new(),
+            camera_workers: HashMap::new(),
             storage,
             events: None,
             live: None,
@@ -333,6 +382,11 @@ impl KeepPeekLoop {
                 camera.config.name.as_deref().unwrap_or("unnamed"),
             )
         })?;
+        if self.camera_workers.contains_key(&camera.config.ip) {
+            anyhow::bail!("camera '{}' is already running", camera.config.ip)
+        }
+        self.camera_workers
+            .insert(camera.config.ip, CameraWorkers::new());
         match route {
             CameraRoute::Retina(transport) => {
                 self.add_rtsp_camera(camera, enable_main, enable_sub, transport);
@@ -438,6 +492,12 @@ impl KeepPeekLoop {
         enable_sub: bool,
         transport: RtspTransport,
     ) {
+        let worker_shutdown = self
+            .camera_workers
+            .entry(camera.config.ip)
+            .or_insert_with(CameraWorkers::new)
+            .shutdown
+            .clone();
         for (i, profile) in camera.profiles.iter().enumerate() {
             let stream_kind = if i == 0 {
                 StreamKind::Main
@@ -511,15 +571,18 @@ impl KeepPeekLoop {
                 live: self.live.clone(),
                 health: self.health.clone(),
                 tx: self.tx.clone(),
-                shutdown: self.shutdown.clone(),
+                shutdown: worker_shutdown.clone(),
             };
 
-            self.handles.push(
-                std::thread::Builder::new()
-                    .name(format!("rtsp-{}-{stream_kind}", camera.config.ip))
-                    .spawn(move || camera_loop.run())
-                    .expect("failed to spawn RTSP camera worker"),
-            );
+            let handle = std::thread::Builder::new()
+                .name(format!("rtsp-{}-{stream_kind}", camera.config.ip))
+                .spawn(move || camera_loop.run())
+                .expect("failed to spawn RTSP camera worker");
+            self.camera_workers
+                .get_mut(&camera.config.ip)
+                .expect("camera worker group was registered before spawning")
+                .handles
+                .push(handle);
         }
     }
 
@@ -544,6 +607,12 @@ impl KeepPeekLoop {
         sub_expected_fps: f64,
         record_generic_motion_events: bool,
     ) {
+        let worker_shutdown = self
+            .camera_workers
+            .entry(camera_ip)
+            .or_insert_with(CameraWorkers::new)
+            .shutdown
+            .clone();
         if enable_main {
             self.expect_stream(camera_ip, camera_name.as_deref(), StreamKind::Main);
         }
@@ -578,15 +647,46 @@ impl KeepPeekLoop {
             live: self.live.clone(),
             health: self.health.clone(),
             tx: self.tx.clone(),
-            shutdown: self.shutdown.clone(),
+            shutdown: worker_shutdown,
             battery_wake: self.battery_wake.clone(),
         };
-        self.handles.push(
-            std::thread::Builder::new()
-                .name(format!("baichuan-{camera_ip}"))
-                .spawn(move || reolink.run())
-                .expect("failed to spawn Baichuan camera worker"),
-        );
+        let handle = std::thread::Builder::new()
+            .name(format!("baichuan-{camera_ip}"))
+            .spawn(move || reolink.run())
+            .expect("failed to spawn Baichuan camera worker");
+        self.camera_workers
+            .get_mut(&camera_ip)
+            .expect("camera worker group was registered before spawning")
+            .handles
+            .push(handle);
+    }
+
+    fn restart_camera(&mut self, camera: &Camera) -> anyhow::Result<()> {
+        resolve_configured_camera_route(&camera.config, camera.is_reolink)?;
+        self.stop_camera(camera.config.ip);
+        self.add_camera(camera, true, true)
+    }
+
+    fn stop_camera(&mut self, camera_ip: IpAddr) {
+        if let Some(workers) = self.camera_workers.remove(&camera_ip) {
+            workers.cancel();
+            while !workers.is_finished() {
+                match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
+                    Ok(event) => self.handle_event_while_stopping(camera_ip, event),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            while let Ok(event) = self.rx.try_recv() {
+                self.handle_event_while_stopping(camera_ip, event);
+            }
+            workers.join(camera_ip);
+        }
+        self.stream_statuses.remove(&camera_ip);
+        self.health.remove(camera_ip);
+        if let Some(live) = &self.live {
+            live.reset_camera(camera_ip);
+        }
     }
 
     pub fn run(mut self) {
@@ -595,76 +695,111 @@ impl KeepPeekLoop {
         while !self.shutdown.is_cancelled() {
             self.handle_commands();
             match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
-                Ok(KeepPeekEvent::StreamConnected { camera_ip, stream }) => {
-                    tracing::info!(%camera_ip, %stream, "stream connected");
-                    let status = self
-                        .stream_statuses
-                        .get_mut(&camera_ip)
-                        .map(|status| status.connected(stream));
-                    if let Some(status) = status {
-                        self.publish_status(status);
-                    }
-                }
-                Ok(KeepPeekEvent::StreamError {
-                    camera_ip,
-                    stream,
-                    error,
-                }) => {
-                    tracing::warn!(%camera_ip, %stream, %error, "stream error");
-                    let status = self
-                        .stream_statuses
-                        .get_mut(&camera_ip)
-                        .map(|status| status.error(stream, error));
-                    if let Some(status) = status {
-                        self.publish_status(status);
-                    }
-                }
-                Ok(KeepPeekEvent::TimelineEventStarted { event }) => {
-                    if let Some(storage) = &self.storage {
-                        storage.note_camera_event(&event.camera_id);
-                    }
-                    if let Some(events) = &self.events {
-                        let event_id = event.id.clone();
-                        let camera_id = event.camera_id.clone();
-                        let kind = event.kind.clone();
-                        if let Err(error) = events.insert(event) {
-                            tracing::warn!(%event_id, %camera_id, %kind, %error, "unable to store camera event");
-                        }
-                    }
-                }
-                Ok(KeepPeekEvent::TimelineEventEnded { id, end_time_ms }) => {
-                    if let Some(events) = &self.events
-                        && let Err(error) = events.close(&id, end_time_ms)
-                    {
-                        tracing::warn!(event_id = %id, %error, "unable to close camera event");
-                    }
-                }
-                Ok(KeepPeekEvent::TimelineEventThumbnail {
-                    camera_id,
-                    event_id,
-                    jpeg,
-                }) => {
-                    if let Some(events) = &self.events
-                        && let Err(error) = events.save_thumbnail(&camera_id, &event_id, &jpeg)
-                    {
-                        tracing::warn!(%camera_id, %event_id, %error, "unable to store event thumbnail");
-                    }
-                }
+                Ok(event) => self.handle_event(event),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
         tracing::info!("KeepPeek loop shutting down");
-        drop(self.tx);
 
-        for handle in self.handles {
-            if handle.join().is_err() {
-                tracing::warn!("camera worker panicked");
+        let camera_workers = std::mem::take(&mut self.camera_workers);
+        for workers in camera_workers.values() {
+            workers.cancel();
+        }
+        while camera_workers
+            .values()
+            .any(|workers| !workers.is_finished())
+        {
+            match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
+                Ok(event) => self.handle_event(event),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
+        while let Ok(event) = self.rx.try_recv() {
+            self.handle_event(event);
+        }
+        for (camera_ip, workers) in camera_workers {
+            workers.join(camera_ip);
+        }
+        drop(self.tx);
 
         tracing::info!("KeepPeek loop stopped");
+    }
+
+    fn handle_event(&mut self, event: KeepPeekEvent) {
+        match event {
+            KeepPeekEvent::StreamConnected { camera_ip, stream } => {
+                tracing::info!(%camera_ip, %stream, "stream connected");
+                let status = self
+                    .stream_statuses
+                    .get_mut(&camera_ip)
+                    .map(|status| status.connected(stream));
+                if let Some(status) = status {
+                    self.publish_status(status);
+                }
+            }
+            KeepPeekEvent::StreamError {
+                camera_ip,
+                stream,
+                error,
+            } => {
+                tracing::warn!(%camera_ip, %stream, %error, "stream error");
+                let status = self
+                    .stream_statuses
+                    .get_mut(&camera_ip)
+                    .map(|status| status.error(stream, error));
+                if let Some(status) = status {
+                    self.publish_status(status);
+                }
+            }
+            KeepPeekEvent::TimelineEventStarted { event } => {
+                if let Some(storage) = &self.storage {
+                    storage.note_camera_event(&event.camera_id);
+                }
+                if let Some(events) = &self.events {
+                    let event_id = event.id.clone();
+                    let camera_id = event.camera_id.clone();
+                    let kind = event.kind.clone();
+                    if let Err(error) = events.insert(event) {
+                        tracing::warn!(%event_id, %camera_id, %kind, %error, "unable to store camera event");
+                    }
+                }
+            }
+            KeepPeekEvent::TimelineEventEnded { id, end_time_ms } => {
+                if let Some(events) = &self.events
+                    && let Err(error) = events.close(&id, end_time_ms)
+                {
+                    tracing::warn!(event_id = %id, %error, "unable to close camera event");
+                }
+            }
+            KeepPeekEvent::TimelineEventThumbnail {
+                camera_id,
+                event_id,
+                jpeg,
+            } => {
+                if let Some(events) = &self.events
+                    && let Err(error) = events.save_thumbnail(&camera_id, &event_id, &jpeg)
+                {
+                    tracing::warn!(%camera_id, %event_id, %error, "unable to store event thumbnail");
+                }
+            }
+        }
+    }
+
+    fn handle_event_while_stopping(&mut self, camera_ip: IpAddr, event: KeepPeekEvent) {
+        match event {
+            KeepPeekEvent::StreamConnected {
+                camera_ip: event_ip,
+                ..
+            }
+            | KeepPeekEvent::StreamError {
+                camera_ip: event_ip,
+                ..
+            } if event_ip == camera_ip => {}
+            event => self.handle_event(event),
+        }
     }
 
     fn handle_commands(&mut self) {
@@ -678,6 +813,10 @@ impl KeepPeekLoop {
                     let result = self.add_camera(&camera, true, true);
                     let _ = reply.send(result);
                 }
+                KeepPeekCommand::RestartCamera { camera, reply } => {
+                    let result = self.restart_camera(&camera);
+                    let _ = reply.send(result);
+                }
             }
         }
     }
@@ -688,9 +827,66 @@ mod tests {
     use super::*;
     use crate::cameras::{CameraCapabilities, CameraConfig, CameraPorts, DeviceInfo, MediaProfile};
     use std::{
-        net::{Ipv4Addr, TcpListener},
+        net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
         time::Instant,
     };
+
+    fn runtime_rtsp_camera(address: SocketAddr) -> Camera {
+        Camera {
+            config: CameraConfig {
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                name: Some("runtime-rtsp".to_owned()),
+                display_name: None,
+                manufacturer: None,
+                username: "operator".to_owned(),
+                password: "secret".to_owned(),
+                onvif_port: None,
+                http_port: None,
+                main_rtsp_url: Some(format!("rtsp://{address}/main")),
+                sub_rtsp_url: None,
+                uid: None,
+                backend: CameraBackend::Retina,
+                transport: CameraTransport::Tcp,
+                record_generic_motion_events: false,
+                recording_mode: Default::default(),
+                event_recording_duration_secs: 60,
+            },
+            device: DeviceInfo::default(),
+            reported_manufacturer: None,
+            hostname: None,
+            mac_address: None,
+            ports: CameraPorts {
+                rtsp: Some(address.port()),
+                ..CameraPorts::default()
+            },
+            capabilities: CameraCapabilities::default(),
+            profiles: vec![MediaProfile {
+                token: "main".to_owned(),
+                name: "Main".to_owned(),
+                stream_uri: None,
+                snapshot_uri: None,
+                video: None,
+                audio: None,
+            }],
+            is_reolink: false,
+            ptz: None,
+            imaging: None,
+        }
+    }
+
+    fn accept_rtsp_connection(listener: &TcpListener) -> TcpStream {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "RTSP worker did not connect");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("RTSP listener failed: {error}"),
+            }
+        }
+    }
 
     #[test]
     fn automatic_backend_uses_reo_proto_for_reolink() {
@@ -897,6 +1093,30 @@ mod tests {
             })
             .unwrap();
 
+        shutdown.cancel();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn control_restarts_camera_workers_without_stopping_the_loop() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let camera = runtime_rtsp_camera(listener.local_addr().unwrap());
+        let shutdown = Shutdown::new();
+        let loop_ = KeepPeekLoop::new(shutdown.clone(), None);
+        let control = loop_.control();
+        let handle = std::thread::spawn(move || loop_.run());
+
+        control.start_camera(camera.clone()).unwrap();
+        let first_connection = accept_rtsp_connection(&listener);
+
+        control.restart_camera(camera).unwrap();
+        let second_connection = accept_rtsp_connection(&listener);
+
+        assert_ne!(
+            first_connection.peer_addr().unwrap(),
+            second_connection.peer_addr().unwrap()
+        );
         shutdown.cancel();
         handle.join().unwrap();
     }

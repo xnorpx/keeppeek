@@ -466,6 +466,83 @@ fn now() -> Time {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RtspVideoProbe {
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+    pub declared_fps: Option<f64>,
+    pub frames_received: u32,
+    pub keyframe_received: bool,
+    pub elapsed: Duration,
+}
+
+pub fn probe_rtsp_video(
+    rtsp_url: &str,
+    username: &str,
+    password: &str,
+    transport: RtspTransport,
+    timeout: Duration,
+) -> anyhow::Result<RtspVideoProbe> {
+    let mut url = Url::parse(rtsp_url)?;
+    url.set_username("").ok();
+    url.set_password(None).ok();
+    let started = Instant::now();
+    let mut driver = BlockingRtsp::describe_with_shutdown(
+        url,
+        Credentials {
+            username: username.to_owned(),
+            password: password.to_owned(),
+        },
+        Shutdown::new(),
+    )?;
+    let video_stream = driver
+        .streams()
+        .iter()
+        .position(|stream| matches!(stream.parameters(), Some(ParametersRef::Video(_))))
+        .ok_or_else(|| anyhow::anyhow!("RTSP endpoint did not describe a video stream"))?;
+    let (codec, width, height, declared_fps) = match driver.streams()[video_stream].parameters() {
+        Some(ParametersRef::Video(parameters)) => {
+            let codec = match parameters.codec_params() {
+                VideoParametersCodec::H264 { .. } => "h264",
+                VideoParametersCodec::H265 { .. } => "h265",
+                VideoParametersCodec::Jpeg => "jpeg",
+                _ => "unknown",
+            }
+            .to_owned();
+            let (width, height) = parameters.pixel_dimensions();
+            let declared_fps = parameters
+                .frame_rate()
+                .filter(|(numerator, _)| *numerator > 0)
+                .map(|(numerator, denominator)| f64::from(denominator) / f64::from(numerator));
+            (codec, width, height, declared_fps)
+        }
+        _ => unreachable!("selected RTSP stream must retain video parameters"),
+    };
+    driver.setup(video_stream, transport)?;
+    driver.play()?;
+    let deadline = Instant::now() + timeout;
+    let shutdown = Shutdown::new();
+    let mut frames_received = 0_u32;
+    while let Some(item) = driver.next_item(&shutdown, Some(deadline))? {
+        if let CodecItem::VideoFrame(frame) = item {
+            frames_received = frames_received.saturating_add(1);
+            if frame.is_random_access_point() {
+                return Ok(RtspVideoProbe {
+                    codec,
+                    width,
+                    height,
+                    declared_fps,
+                    frames_received,
+                    keyframe_received: true,
+                    elapsed: started.elapsed(),
+                });
+            }
+        }
+    }
+    anyhow::bail!("RTSP endpoint ended before delivering a video keyframe")
+}
+
 pub struct RtspLoop {
     pub camera_ip: IpAddr,
     pub camera_name: Option<String>,
@@ -788,7 +865,7 @@ impl RtspLoop {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlockingRtsp, RtspTransport, VideoContinuity};
+    use super::{BlockingRtsp, RtspTransport, VideoContinuity, probe_rtsp_video};
     use crate::shutdown::Shutdown;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use bytes::Bytes;
@@ -1056,6 +1133,35 @@ mod tests {
             .map(|request| request.headers.get("CSeq").unwrap().to_string())
             .collect::<Vec<_>>();
         assert_eq!(cseqs, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn bounded_probe_proves_video_and_keyframe_delivery() {
+        let camera = RtspServer::start().unwrap();
+        let evidence = probe_rtsp_video(
+            camera.url().as_str(),
+            "operator",
+            "swordfish",
+            RtspTransport::Tcp,
+            Duration::from_secs(2),
+        )
+        .unwrap();
+
+        assert_eq!(evidence.codec, "h264");
+        assert!(evidence.width > 0);
+        assert!(evidence.height > 0);
+        assert!(evidence.frames_received > 0);
+        assert!(evidence.keyframe_received);
+        assert!(evidence.elapsed < Duration::from_secs(2));
+        let transcript = camera.finish().unwrap();
+        assert_eq!(
+            transcript
+                .requests()
+                .iter()
+                .map(|request| request.method.to_string())
+                .collect::<Vec<_>>(),
+            ["DESCRIBE", "SETUP", "PLAY"]
+        );
     }
 
     #[test]

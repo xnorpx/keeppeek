@@ -1720,6 +1720,32 @@ pub struct Publisher {
 }
 
 impl Publisher {
+    pub(crate) fn reset_camera(&self, camera_ip: IpAddr) {
+        self.inner
+            .camera_preview_keyframes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&camera_ip);
+        let mut sources = self
+            .inner
+            .sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (source, state) in sources.iter_mut() {
+            if source.camera_ip == camera_ip {
+                state.keyframe = None;
+                state.bitrate = SourceBitrate::new();
+                state.next_sequence = state.next_sequence.wrapping_add(1);
+                for subscriber in &state.subscribers {
+                    *subscriber
+                        .latest_keyframe
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                }
+            }
+        }
+    }
+
     pub fn publish(
         &self,
         source: Source,
@@ -2704,6 +2730,8 @@ fn drive_track_runtime(
             .keyframe_gate
             .observe_sequence(&mut track.last_frame_sequence, sequence)
         {
+            track.media_clock.reset_source();
+            track.received_source_frame = false;
             track.recovering_queue_gap = true;
             tracing::debug!(track_id = %track.track_id, sequence, "API WebRTC track queue gap; waiting for keyframe");
         }
@@ -3089,6 +3117,8 @@ fn drive_session(
                         continue;
                     }
                     if !keyframe_gate.observe_sequence(&mut last_frame_sequence, sequence) {
+                        media_clock.reset_source();
+                        received_source_frame = false;
                         recovering_queue_gap = true;
                         tracing::debug!(sequence, "WebRTC frame queue gap; waiting for keyframe");
                     }
@@ -4017,6 +4047,59 @@ mod tests {
     }
 
     #[test]
+    fn camera_reset_invalidates_cached_frames_and_advances_source_sequences() {
+        let publisher = Publisher::default();
+        let source = test_source();
+        let other_source = Source {
+            camera_ip: "192.0.2.2".parse().unwrap(),
+            stream: StreamKind::Sub,
+        };
+        for source in [source, other_source] {
+            publisher.publish(
+                source,
+                VideoCodec::H264,
+                true,
+                Instant::now(),
+                None,
+                Bytes::from_static(&[1]),
+            );
+        }
+        let (tx, _rx) = bounded(1);
+        let subscriber_keyframe = Arc::new(Mutex::new(Some(live_frame(true))));
+        publisher
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .get_mut(&source)
+            .unwrap()
+            .subscribers
+            .push(SessionSender {
+                id: SessionId(1),
+                track_id: None,
+                tx,
+                queue_stats: Arc::new(SessionQueueStats::default()),
+                queue_high_water: publisher.inner.queue_high_water.clone(),
+                latest_keyframe: subscriber_keyframe.clone(),
+                poller: Arc::new(Poller::new().unwrap()),
+                shutdown: Arc::new(AtomicBool::new(false)),
+            });
+
+        publisher.reset_camera(source.camera_ip);
+
+        let sources = publisher.inner.sources.lock().unwrap();
+        assert_eq!(sources[&source].next_sequence, 2);
+        assert!(sources[&source].keyframe.is_none());
+        assert_eq!(sources[&other_source].next_sequence, 1);
+        assert!(sources[&other_source].keyframe.is_some());
+        drop(sources);
+        assert!(subscriber_keyframe.lock().unwrap().is_none());
+        let previews = publisher.inner.camera_preview_keyframes.lock().unwrap();
+        assert!(!previews.contains_key(&source.camera_ip));
+        assert!(previews.contains_key(&other_source.camera_ip));
+    }
+
+    #[test]
     fn cached_keyframe_waits_for_a_contiguous_live_gop() {
         let mut gate = KeyframeGate::new();
         let cached_keyframe = live_frame(true);
@@ -4391,7 +4474,11 @@ mod tests {
             command: Some(request::Command::CameraConfigurationCommand(
                 CameraConfigurationCommand {
                     action: Some(camera_configuration_command::Action::Discover(
-                        DiscoverCameras { subnets: vec![137] },
+                        DiscoverCameras {
+                            subnets: vec![137],
+                            networks: Vec::new(),
+                            discovery_id: String::new(),
+                        },
                     )),
                 },
             )),
@@ -4407,6 +4494,7 @@ mod tests {
                             username: "operator".to_owned(),
                             password: "secret".to_owned(),
                             onvif_port: Some(8000),
+                            ..Default::default()
                         },
                     )),
                 },

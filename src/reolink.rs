@@ -113,7 +113,11 @@ impl UdpBaichuanTransport {
         camera_ip: IpAddr,
         uid: &str,
         battery_wake: Option<&BatteryWakeHandle>,
+        shutdown: &Shutdown,
     ) -> anyhow::Result<Self> {
+        if shutdown.is_cancelled() {
+            anyhow::bail!("BCUDP discovery cancelled for {camera_ip}");
+        }
         let socket = UdpSocket::bind(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0))?;
         socket.set_broadcast(true)?;
         socket2::SockRef::from(&socket).set_recv_buffer_size(UDP_RECEIVE_BUFFER_SIZE)?;
@@ -152,6 +156,9 @@ impl UdpBaichuanTransport {
         destinations.dedup();
         let mut datagram = [0u8; 65_535];
         let (connection, camera_addr) = loop {
+            if shutdown.is_cancelled() {
+                anyhow::bail!("BCUDP discovery cancelled for {camera_ip}");
+            }
             let now = Instant::now();
             if now >= discovery_deadline {
                 anyhow::bail!("BCUDP discovery timed out for {camera_ip}");
@@ -171,6 +178,7 @@ impl UdpBaichuanTransport {
             let timeout = next_send
                 .min(discovery_deadline)
                 .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(250))
                 .max(Duration::from_millis(1));
             socket.set_read_timeout(Some(timeout))?;
             match socket.recv_from(&mut datagram) {
@@ -545,6 +553,7 @@ impl ReolinkLoop {
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("BCUDP requires the camera UID"))?,
                 self.battery_wake.as_ref(),
+                &self.shutdown,
             )?),
         };
 
@@ -1276,6 +1285,24 @@ fn drain_outputs_simple(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bcudp_discovery_observes_pre_cancelled_shutdown() {
+        let shutdown = Shutdown::new();
+        shutdown.cancel();
+
+        let result = UdpBaichuanTransport::connect(
+            "192.0.2.1".parse().unwrap(),
+            "camera-uid",
+            None,
+            &shutdown,
+        );
+
+        let Err(error) = result else {
+            panic!("cancelled BCUDP discovery unexpectedly connected");
+        };
+        assert!(error.to_string().contains("cancelled"));
+    }
 
     #[test]
     fn alarm_kinds_are_normalized_without_discarding_unknown_types() {

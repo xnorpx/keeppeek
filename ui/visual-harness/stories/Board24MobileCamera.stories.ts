@@ -61,7 +61,7 @@ export const Settings: Story = {
 			frameId: '43E-0',
 			scenarioId: 'camera.mobile.settings',
 			reference: 'references/24-mobile-camera-settings.png',
-			referenceSha256: '97f410b81f772f53a597f8717f6b0a5304a33df9d1a4dc1a894a6ec1baeae0e3'
+			referenceSha256: 'e6ac9f8903530b1d82903b6665763b85a3239f69da32d1f91b3d4dd5e0416215'
 		}
 	}
 };

@@ -3,6 +3,7 @@ mod network;
 pub mod reolink;
 
 use crate::camera_catalog::common_onvif_probe_ports;
+use ipnet::Ipv4Net;
 use onvif::{
     discovery,
     soap::client::{AuthType, ClientBuilder, Credentials},
@@ -10,16 +11,20 @@ use onvif::{
 use schema::{devicemgmt, media as onvif_media, onvif as onvif_xsd};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
+    fmt,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
 use url::Url;
 
 const DEFAULT_DISCOVERY_DURATION: Duration = Duration::from_secs(5);
-const CANDIDATE_STREAM_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_CONCURRENT_CANDIDATE_STREAM_PROBES: usize = 4;
 pub(crate) const BAICHUAN_PORT: u16 = 9000;
 const RTSP_PORT: u16 = 554;
@@ -83,7 +88,57 @@ pub(crate) fn local_broadcasts() -> anyhow::Result<Vec<Ipv4Addr>> {
         .collect())
 }
 
-pub(crate) fn parallel_filter_map<T, F>(ips: Vec<Ipv4Addr>, max_workers: usize, probe: F) -> Vec<T>
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CameraDiscoveryNetwork {
+    pub(crate) cidr: String,
+    pub(crate) interface_name: String,
+    pub(crate) preferred: bool,
+}
+
+pub(crate) fn camera_discovery_networks() -> anyhow::Result<Vec<CameraDiscoveryNetwork>> {
+    let preferred_ip = network::preferred_local_ipv4();
+    let mut networks = BTreeMap::<Ipv4Net, CameraDiscoveryNetwork>::new();
+    for local in network::local_networks()? {
+        if !local.interface_ip.is_private() {
+            continue;
+        }
+        let network = Ipv4Net::new(local.interface_ip, 24)?.trunc();
+        let preferred = preferred_ip.is_some_and(|ip| network.contains(&ip));
+        networks
+            .entry(network)
+            .and_modify(|existing| {
+                existing.preferred |= preferred;
+                if !existing
+                    .interface_name
+                    .split(", ")
+                    .any(|name| name == local.interface_name)
+                {
+                    existing.interface_name.push_str(", ");
+                    existing.interface_name.push_str(&local.interface_name);
+                }
+            })
+            .or_insert_with(|| CameraDiscoveryNetwork {
+                cidr: network.to_string(),
+                interface_name: local.interface_name,
+                preferred,
+            });
+    }
+    let mut networks = networks.into_values().collect::<Vec<_>>();
+    networks.sort_by(|left, right| {
+        right
+            .preferred
+            .cmp(&left.preferred)
+            .then_with(|| left.cidr.cmp(&right.cidr))
+    });
+    Ok(networks)
+}
+
+pub(crate) fn parallel_filter_map<T, F>(
+    ips: Vec<Ipv4Addr>,
+    max_workers: usize,
+    cancelled: &AtomicBool,
+    probe: F,
+) -> Vec<T>
 where
     T: Send,
     F: Fn(Ipv4Addr) -> Option<T> + Sync,
@@ -100,6 +155,9 @@ where
         for _ in 0..worker_count {
             scope.spawn(|| {
                 loop {
+                    if cancelled.load(Ordering::Acquire) {
+                        break;
+                    }
                     let ip = match jobs.lock() {
                         Ok(mut jobs) => jobs.pop_front(),
                         Err(poisoned) => poisoned.into_inner().pop_front(),
@@ -143,7 +201,7 @@ pub struct OnvifDevice {
     pub urls: Vec<Url>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CameraConfig {
     pub ip: IpAddr,
     /// Stable configuration key used for recording storage identity.
@@ -154,7 +212,9 @@ pub struct CameraConfig {
     /// User-selected manufacturer label that takes precedence over camera discovery.
     #[serde(default)]
     pub manufacturer: Option<String>,
+    #[serde(default)]
     pub username: String,
+    #[serde(default)]
     pub password: String,
     /// ONVIF service port (defaults to 8000 when `None`).
     pub onvif_port: Option<u16>,
@@ -180,6 +240,36 @@ pub struct CameraConfig {
     pub recording_mode: CameraRecordingMode,
     #[serde(default = "default_event_recording_duration_secs")]
     pub event_recording_duration_secs: u64,
+}
+
+impl fmt::Debug for CameraConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CameraConfig")
+            .field("ip", &self.ip)
+            .field("name", &self.name)
+            .field("display_name", &self.display_name)
+            .field("manufacturer", &self.manufacturer)
+            .field("username_configured", &!self.username.is_empty())
+            .field("password_configured", &!self.password.is_empty())
+            .field("onvif_port", &self.onvif_port)
+            .field("http_port", &self.http_port)
+            .field("main_rtsp_url_configured", &self.main_rtsp_url.is_some())
+            .field("sub_rtsp_url_configured", &self.sub_rtsp_url.is_some())
+            .field("uid_configured", &self.uid.is_some())
+            .field("backend", &self.backend)
+            .field("transport", &self.transport)
+            .field(
+                "record_generic_motion_events",
+                &self.record_generic_motion_events,
+            )
+            .field("recording_mode", &self.recording_mode)
+            .field(
+                "event_recording_duration_secs",
+                &self.event_recording_duration_secs,
+            )
+            .finish()
+    }
 }
 
 impl CameraConfig {
@@ -296,6 +386,15 @@ pub struct MediaProfile {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProbedStreamUrls {
     pub(crate) onvif_port: Option<u16>,
+    pub(crate) main_rtsp_url: Option<String>,
+    pub(crate) sub_rtsp_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProbedOnvifCamera {
+    pub(crate) onvif_port: u16,
+    pub(crate) device: DeviceInfo,
+    pub(crate) profiles: Vec<MediaProfile>,
     pub(crate) main_rtsp_url: Option<String>,
     pub(crate) sub_rtsp_url: Option<String>,
 }
@@ -418,13 +517,14 @@ impl Serialize for IrCutMode {
     }
 }
 
-pub trait CameraBrand {
+trait CameraBrand {
     fn name(&self) -> &'static str;
     fn claims_device(&self, name: &str, hardware: &str) -> bool;
     fn discover_extra(
         &self,
         already_claimed: &[IpAddr],
-        extra_subnets: &[u8],
+        networks: &[network::LocalNetwork],
+        cancelled: &AtomicBool,
     ) -> anyhow::Result<Vec<DiscoveredCamera>>;
 }
 
@@ -432,125 +532,176 @@ pub fn discover(
     duration: Option<Duration>,
     extra_subnets: &[u8],
 ) -> anyhow::Result<Vec<DiscoveredCamera>> {
-    let reolink = reolink::Reolink;
-    let (onvif_result, reolink_result, hikvision_result) = thread::scope(|scope| {
-        let onvif = scope.spawn(|| run_onvif(duration));
-        let reolink_discovery = scope.spawn(|| reolink.discover_extra(&[], extra_subnets));
-        let hikvision_discovery =
-            scope.spawn(|| hikvision::discover(duration.unwrap_or(DEFAULT_DISCOVERY_DURATION)));
-        (
-            onvif.join().expect("ONVIF discovery worker must not panic"),
-            reolink_discovery
-                .join()
-                .expect("Reolink discovery worker must not panic"),
-            hikvision_discovery
-                .join()
-                .expect("Hikvision discovery worker must not panic"),
-        )
-    });
+    let targets = network::scan_networks(extra_subnets)?;
+    let listeners = network::local_networks()?;
+    let cancelled = AtomicBool::new(false);
+    discover_scoped(duration, &targets, &listeners, &cancelled, &mut |_| {})
+}
 
-    let onvif_devices = onvif_result.unwrap_or_else(|e| {
-        tracing::warn!("ONVIF discovery failed: {}", e);
-        vec![]
-    });
+pub(crate) fn discover_on_networks_with_progress(
+    duration: Option<Duration>,
+    networks: &[Ipv4Net],
+    cancelled: &AtomicBool,
+    mut on_progress: impl FnMut(&[DiscoveredCamera]),
+) -> anyhow::Result<Vec<DiscoveredCamera>> {
+    let targets = network::requested_networks(networks);
+    let listeners = network::local_networks_in(&targets)?;
+    discover_scoped(duration, &targets, &listeners, cancelled, &mut on_progress)
+}
 
-    let mut all = Vec::new();
+fn discover_scoped(
+    duration: Option<Duration>,
+    targets: &[network::LocalNetwork],
+    listeners: &[network::LocalNetwork],
+    cancelled: &AtomicBool,
+    on_progress: &mut impl FnMut(&[DiscoveredCamera]),
+) -> anyhow::Result<Vec<DiscoveredCamera>> {
+    let (batch_tx, batch_rx) = mpsc::channel::<Vec<DiscoveredCamera>>();
+    let all = thread::scope(|scope| {
+        let tx = batch_tx.clone();
+        scope.spawn(move || {
+            let reolink = reolink::Reolink;
+            let cameras = run_onvif(duration, listeners, cancelled)
+                .map(|devices| {
+                    devices
+                        .into_iter()
+                        .map(|device| {
+                            let name = device.name.as_deref().unwrap_or("");
+                            let hardware = device.hardware.as_deref().unwrap_or("");
+                            DiscoveredCamera {
+                                ip: device.ip,
+                                brand: if reolink.claims_device(name, hardware) {
+                                    reolink.name()
+                                } else {
+                                    "unknown"
+                                },
+                                name: device.name,
+                                model: device.hardware,
+                                onvif_urls: device.urls,
+                                sources: vec!["onvif"],
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "ONVIF discovery failed");
+                    Vec::new()
+                });
+            let _ = tx.send(cameras);
+        });
 
-    process_brand(&reolink, &onvif_devices, reolink_result, &mut all);
+        let tx = batch_tx.clone();
+        scope.spawn(move || {
+            let cameras = reolink::Reolink
+                .discover_extra(&[], targets, cancelled)
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "Reolink discovery failed");
+                    Vec::new()
+                });
+            let _ = tx.send(cameras);
+        });
 
-    match hikvision_result {
-        Ok(cameras) => {
+        let tx = batch_tx.clone();
+        scope.spawn(move || {
+            let cameras = hikvision::discover(
+                duration.unwrap_or(DEFAULT_DISCOVERY_DURATION),
+                listeners,
+                cancelled,
+            )
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Hikvision SADP discovery failed");
+                Vec::new()
+            });
+            let _ = tx.send(cameras);
+        });
+
+        for (port, label, brand, source) in [
+            (BAICHUAN_PORT, "Baichuan", "reolink", "baichuan"),
+            (RTSP_PORT, "RTSP", "unknown", "rtsp"),
+        ] {
+            let tx = batch_tx.clone();
+            scope.spawn(move || {
+                let cameras = run_port_scan(port, label, targets, cancelled)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|ip| DiscoveredCamera {
+                        ip,
+                        brand,
+                        name: None,
+                        model: None,
+                        onvif_urls: Vec::new(),
+                        sources: vec![source],
+                    })
+                    .collect();
+                let _ = tx.send(cameras);
+            });
+        }
+        drop(batch_tx);
+
+        let mut all = Vec::new();
+        for cameras in batch_rx {
+            if cancelled.load(Ordering::Acquire) {
+                break;
+            }
             for camera in cameras {
-                match all.iter_mut().find(|existing| existing.ip == camera.ip) {
+                match all
+                    .iter_mut()
+                    .find(|existing: &&mut DiscoveredCamera| existing.ip == camera.ip)
+                {
                     Some(existing) => merge_camera(existing, camera),
                     None => all.push(camera),
                 }
             }
-        }
-        Err(error) => tracing::warn!(%error, "Hikvision SADP discovery failed"),
-    }
-
-    let claimed_ips: std::collections::HashSet<IpAddr> = all.iter().map(|c| c.ip).collect();
-    for dev in &onvif_devices {
-        if !claimed_ips.contains(&dev.ip) {
-            all.push(DiscoveredCamera {
-                ip: dev.ip,
-                brand: "unknown",
-                name: dev.name.clone(),
-                model: dev.hardware.clone(),
-                onvif_urls: dev.urls.clone(),
-                sources: vec!["onvif"],
+            all.retain(|camera| {
+                let IpAddr::V4(ip) = camera.ip else {
+                    return false;
+                };
+                targets.iter().any(|target| target.network.contains(&ip))
             });
-        }
-    }
-
-    let bc_ips = run_port_scan(BAICHUAN_PORT, "Baichuan", extra_subnets).unwrap_or_default();
-    for ip in bc_ips {
-        if let Some(cam) = all.iter_mut().find(|c| c.ip == ip) {
-            if !cam.sources.contains(&"baichuan") {
-                cam.sources.push("baichuan");
-            }
-        } else {
-            all.push(DiscoveredCamera {
-                ip,
-                brand: "reolink",
-                name: None,
-                model: None,
-                onvif_urls: vec![],
-                sources: vec!["baichuan"],
+            all.sort_by_key(|camera| match camera.ip {
+                IpAddr::V4(ip) => u32::from(ip),
+                IpAddr::V6(_) => u32::MAX,
             });
+            on_progress(&all);
         }
-    }
-
-    let rtsp_ips = run_port_scan(RTSP_PORT, "RTSP", extra_subnets).unwrap_or_default();
-    for ip in rtsp_ips {
-        if let Some(cam) = all.iter_mut().find(|c| c.ip == ip) {
-            if !cam.sources.contains(&"rtsp") {
-                cam.sources.push("rtsp");
-            }
-        } else {
-            all.push(DiscoveredCamera {
-                ip,
-                brand: "unknown",
-                name: None,
-                model: None,
-                onvif_urls: vec![],
-                sources: vec!["rtsp"],
-            });
-        }
-    }
-
-    all.sort_by_key(|c| match c.ip {
-        IpAddr::V4(v4) => u32::from(v4),
-        IpAddr::V6(_) => u32::MAX,
+        all
     });
-
     Ok(all)
 }
 
-fn run_onvif(duration: Option<Duration>) -> anyhow::Result<Vec<OnvifDevice>> {
+fn run_onvif(
+    duration: Option<Duration>,
+    networks: &[network::LocalNetwork],
+    cancelled: &AtomicBool,
+) -> anyhow::Result<Vec<OnvifDevice>> {
     let duration = duration.unwrap_or(DEFAULT_DISCOVERY_DURATION);
-    let networks = network::local_networks()?;
     let devices = Mutex::new(Vec::new());
 
     thread::scope(|scope| {
-        for local in &networks {
+        for local in networks {
             let devices = &devices;
             scope.spawn(move || {
-                let result = discovery::DiscoveryBuilder::default()
-                    .duration(duration)
-                    .listen_address(IpAddr::V4(local.interface_ip))
-                    .discover();
-                match result {
-                    Ok(found) => match devices.lock() {
-                        Ok(mut devices) => devices.extend(found),
-                        Err(poisoned) => poisoned.into_inner().extend(found),
-                    },
-                    Err(error) => tracing::warn!(
-                        interface = local.interface_name,
-                        ip = %local.interface_ip,
-                        "ONVIF discovery failed: {error}"
-                    ),
+                let deadline = std::time::Instant::now() + duration;
+                while !cancelled.load(Ordering::Acquire) {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    let result = discovery::DiscoveryBuilder::default()
+                        .duration(remaining.min(Duration::from_millis(500)))
+                        .listen_address(IpAddr::V4(local.interface_ip))
+                        .discover();
+                    match result {
+                        Ok(found) => match devices.lock() {
+                            Ok(mut devices) => devices.extend(found),
+                            Err(poisoned) => poisoned.into_inner().extend(found),
+                        },
+                        Err(error) => tracing::debug!(
+                            interface = local.interface_name,
+                            ip = %local.interface_ip,
+                            "ONVIF discovery attempt failed: {error}"
+                        ),
+                    }
                 }
             });
         }
@@ -586,52 +737,10 @@ fn run_onvif(duration: Option<Duration>) -> anyhow::Result<Vec<OnvifDevice>> {
     Ok(by_ip.into_values().collect())
 }
 
-fn process_brand(
-    brand: &(impl CameraBrand + Sync),
-    onvif_devices: &[OnvifDevice],
-    extras: anyhow::Result<Vec<DiscoveredCamera>>,
-    out: &mut Vec<DiscoveredCamera>,
-) {
-    let mut brand_cameras: HashMap<IpAddr, DiscoveredCamera> = HashMap::new();
-
-    for dev in onvif_devices {
-        let name = dev.name.as_deref().unwrap_or("");
-        let hw = dev.hardware.as_deref().unwrap_or("");
-        if brand.claims_device(name, hw) {
-            brand_cameras.insert(
-                dev.ip,
-                DiscoveredCamera {
-                    ip: dev.ip,
-                    brand: brand.name(),
-                    name: dev.name.clone(),
-                    model: dev.hardware.clone(),
-                    onvif_urls: dev.urls.clone(),
-                    sources: vec!["onvif"],
-                },
-            );
-        }
-    }
-
-    match extras {
-        Ok(extras) => {
-            for extra in extras {
-                match brand_cameras.get_mut(&extra.ip) {
-                    Some(existing) => merge_camera(existing, extra),
-                    None => {
-                        brand_cameras.insert(extra.ip, extra);
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("brand '{}' extra discovery failed: {}", brand.name(), e);
-        }
-    }
-
-    out.extend(brand_cameras.into_values());
-}
-
 fn merge_camera(existing: &mut DiscoveredCamera, new: DiscoveredCamera) {
+    if existing.brand == "unknown" && new.brand != "unknown" {
+        existing.brand = new.brand;
+    }
     if existing.name.is_none() {
         existing.name = new.name;
     }
@@ -650,23 +759,20 @@ fn merge_camera(existing: &mut DiscoveredCamera, new: DiscoveredCamera) {
     }
 }
 
-fn run_port_scan(port: u16, label: &str, extra_subnets: &[u8]) -> anyhow::Result<Vec<IpAddr>> {
-    let networks = match network::scan_networks(extra_subnets) {
-        Ok(networks) => networks,
-        Err(e) => {
-            tracing::warn!("could not detect local networks for {} scan: {}", label, e);
-            return Ok(vec![]);
-        }
-    };
-
-    let ips = network::scan_targets(&networks);
+fn run_port_scan(
+    port: u16,
+    label: &str,
+    networks: &[network::LocalNetwork],
+    cancelled: &AtomicBool,
+) -> anyhow::Result<Vec<IpAddr>> {
+    let ips = network::scan_targets(networks);
     tracing::info!(
         "{} port scan: scanning {} IPs on port {}",
         label,
         ips.len(),
         port
     );
-    let found = parallel_filter_map(ips, MAX_CONCURRENT_PORT_PROBES, |ip| {
+    let found = parallel_filter_map(ips, MAX_CONCURRENT_PORT_PROBES, cancelled, |ip| {
         probe_tcp_port(ip, port)
     });
 
@@ -1004,7 +1110,7 @@ fn retain_discovered_rtsp_urls(camera: &mut Camera) {
     }
 }
 
-pub(crate) fn probe_onvif_streams(config: &CameraConfig) -> anyhow::Result<ProbedStreamUrls> {
+pub(crate) fn probe_onvif_camera(config: &CameraConfig) -> anyhow::Result<ProbedOnvifCamera> {
     let candidate_ports = candidate_stream_probe_ports(config.onvif_port);
     if let [port] = candidate_ports.as_slice() {
         return probe_onvif_streams_on_port(config, *port);
@@ -1102,72 +1208,17 @@ fn candidate_stream_probe_ports(onvif_port: Option<u16>) -> Vec<u16> {
 fn probe_onvif_streams_on_port(
     config: &CameraConfig,
     port: u16,
-) -> anyhow::Result<ProbedStreamUrls> {
-    let url = Url::parse(&format!("http://{}:{port}/onvif/device_service", config.ip))?;
-    let credentials = Some(Credentials {
-        username: config.username.clone(),
-        password: config.password.clone(),
-    });
-    let client = ClientBuilder::new(&url)
-        .credentials(credentials.clone())
-        .auth_type(AuthType::Any)
-        .timeout(CANDIDATE_STREAM_PROBE_TIMEOUT)
-        .build();
-    let services = devicemgmt::get_services(
-        &client,
-        &devicemgmt::GetServices {
-            include_capability: false,
-        },
-    )
-    .map_err(|error| anyhow::anyhow!("ONVIF get_services: {error}"))?;
-    let media_url = services
-        .service
-        .iter()
-        .find(|service| service.namespace.contains("media/wsdl"))
-        .map(|service| service.x_addr.as_str())
-        .ok_or_else(|| anyhow::anyhow!("ONVIF media service is unavailable"))?;
-    let media_url = Url::parse(media_url)?;
-    let media_client = ClientBuilder::new(&media_url)
-        .credentials(credentials)
-        .auth_type(AuthType::Any)
-        .timeout(CANDIDATE_STREAM_PROBE_TIMEOUT)
-        .build();
-    let profiles = onvif_media::get_profiles(&media_client, &onvif_media::GetProfiles {})
-        .map_err(|error| anyhow::anyhow!("ONVIF get_profiles: {error}"))?;
-    let profiles = profiles
-        .profiles
-        .iter()
-        .map(|profile| (profile.token.0.as_str(), profile.name.0.as_str()))
-        .collect::<Vec<_>>();
-    let main = profiles
-        .iter()
-        .find(|(token, name)| profile_stream_from_name(name, token) == Some(ProfileStream::Main))
-        .or_else(|| profiles.first());
-    let sub = profiles
-        .iter()
-        .find(|(token, name)| profile_stream_from_name(name, token) == Some(ProfileStream::Sub))
-        .or_else(|| profiles.get(1));
-    let stream_uri = |token: &str| {
-        onvif_media::get_stream_uri(
-            &media_client,
-            &onvif_media::GetStreamUri {
-                stream_setup: onvif_xsd::StreamSetup {
-                    stream: onvif_xsd::StreamType::RtpUnicast,
-                    transport: onvif_xsd::Transport {
-                        protocol: onvif_xsd::TransportProtocol::Rtsp,
-                        tunnel: vec![],
-                    },
-                },
-                profile_token: onvif_xsd::ReferenceToken(token.to_owned()),
-            },
-        )
-        .ok()
-        .and_then(|response| credential_free_rtsp_url(&response.media_uri.uri))
-    };
-    Ok(ProbedStreamUrls {
-        onvif_port: Some(port),
-        main_rtsp_url: main.and_then(|(token, _)| stream_uri(token)),
-        sub_rtsp_url: sub.and_then(|(token, _)| stream_uri(token)),
+) -> anyhow::Result<ProbedOnvifCamera> {
+    let mut probe_config = config.clone();
+    probe_config.onvif_port = Some(port);
+    let camera = query_onvif(&probe_config)?;
+    let streams = probed_stream_urls(&camera.profiles);
+    Ok(ProbedOnvifCamera {
+        onvif_port: port,
+        device: camera.device,
+        profiles: camera.profiles,
+        main_rtsp_url: streams.main_rtsp_url,
+        sub_rtsp_url: streams.sub_rtsp_url,
     })
 }
 

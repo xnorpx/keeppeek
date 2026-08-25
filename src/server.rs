@@ -14,7 +14,7 @@ use crate::{
     camera_database::{CameraDatabase, CameraMatch, CatalogCamera, StreamHints},
     cameras::{
         Camera, CameraBackend, CameraConfig, CameraPorts, CameraRecordingMode, CameraTransport,
-        probe_onvif_streams,
+        MediaProfile, probe_onvif_camera,
         reolink::{PtzOp, ReolinkClient},
     },
     config::{self, Config, StorageMigration, StorageMigrationPaths, StorageToml},
@@ -23,6 +23,7 @@ use crate::{
     },
     keeppeek::{KeepPeekControl, StreamKind},
     logging::{LogStreamError, LoggingService, LoggingSettings},
+    rtsp::{RtspTransport, probe_rtsp_video},
     runtime::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
     },
@@ -46,10 +47,10 @@ use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom, Write},
-    net::{IpAddr, TcpListener, ToSocketAddrs},
+    net::{IpAddr, Ipv4Addr, TcpListener, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
@@ -83,12 +84,17 @@ const MAX_EVENT_SEARCH_TASKS_PER_SESSION: usize = 4;
 const MAX_EVENT_SEARCH_TASKS: usize = 64;
 type EventSearchTaskKey = (SessionId, String);
 type EventSearchTasks = Arc<Mutex<HashMap<EventSearchTaskKey, Arc<AtomicBool>>>>;
+type CameraDiscoveryTaskKey = (SessionId, String);
+type CameraDiscoveryTasks = Arc<Mutex<HashMap<CameraDiscoveryTaskKey, CameraDiscoveryTask>>>;
 const PTZ_STOP_SPEED: u32 = 32;
 const EXPORT_JOB_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_EXPORT_DURATION: Duration = Duration::from_secs(2 * 60);
 const MAX_EXPORT_DOWNLOAD_BYTES: u64 = 512 * 1_024 * 1_024;
 const CAMERA_CATALOG_WEBSITE: &str = "https://www.cctv-database.com/";
 const DEFAULT_CAMERA_CATALOG_SEARCH_LIMIT: usize = 20;
+const CAMERA_STREAM_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_CAMERA_DISCOVERY_TASKS: usize = 16;
+const MAX_CAMERA_METADATA_WORKERS: usize = 4;
 // Limits user-provided search text before it becomes part of in-memory matching work.
 const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
 
@@ -176,6 +182,13 @@ struct DiscoveredCameraCatalog {
     stream_hints: Option<StreamHints>,
 }
 
+#[derive(Clone)]
+struct CameraDiscoveryTask {
+    cameras: Vec<crate::cameras::DiscoveredCamera>,
+    complete: bool,
+    cancelled: Arc<AtomicBool>,
+}
+
 #[derive(Serialize)]
 struct CameraSettingsUpdateResponse {
     camera: CameraSettings,
@@ -251,14 +264,14 @@ impl ControlRequestHandler for ServerControlHandler {
             Some(control_request::Command::CameraControlCommand(command)) => {
                 self.handle_camera_control(session_id, command).map(Some)
             }
-            Some(control_request::Command::CameraConfigurationCommand(command)) => {
-                self.handle_camera_configuration(command).map(Some)
-            }
+            Some(control_request::Command::CameraConfigurationCommand(command)) => self
+                .handle_camera_configuration(session_id, command)
+                .map(Some),
             Some(control_request::Command::LoggingCommand(command)) => {
                 self.handle_logging(command).map(Some)
             }
             Some(control_request::Command::ServerCommand(command)) => {
-                match self.handle_server(command) {
+                match self.handle_server(session_id, command) {
                     Ok((result, action)) => {
                         after_send = Some(action);
                         Ok(Some(result))
@@ -340,6 +353,23 @@ impl ControlRequestHandler for ServerControlHandler {
             .map(|(_, cancelled)| cancelled.clone())
             .collect::<Vec<_>>();
         for token in cancelled {
+            token.store(true, Ordering::Release);
+        }
+        let discovery_tasks = {
+            let mut tasks = self
+                .state
+                .camera_discovery_tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let cancelled = tasks
+                .iter()
+                .filter(|((owner_session_id, _), _)| *owner_session_id == session_id)
+                .map(|(_, task)| task.cancelled.clone())
+                .collect::<Vec<_>>();
+            tasks.retain(|(owner_session_id, _), _| *owner_session_id != session_id);
+            cancelled
+        };
+        for token in discovery_tasks {
             token.store(true, Ordering::Release);
         }
         self.state
@@ -947,6 +977,7 @@ impl ServerControlHandler {
 
     fn handle_camera_configuration(
         &self,
+        session_id: SessionId,
         command: proto::CameraConfigurationCommand,
     ) -> Result<control_ok::Result, ControlCommandError> {
         match command.action {
@@ -962,6 +993,59 @@ impl ServerControlHandler {
                 }),
             ),
             Some(camera_configuration_command::Action::Discover(request)) => {
+                let discovery_id = request.discovery_id.trim().to_owned();
+                if discovery_id.len() > 128 || discovery_id.chars().any(char::is_control) {
+                    return Err(ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        "camera discovery ID must be at most 128 printable characters",
+                    ));
+                }
+                let task_key =
+                    (!discovery_id.is_empty()).then(|| (session_id, discovery_id.clone()));
+                if let Some(key) = &task_key {
+                    let mut tasks = self
+                        .state
+                        .camera_discovery_tasks
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if tasks.len() >= MAX_CAMERA_DISCOVERY_TASKS && !tasks.contains_key(key) {
+                        return Err(ControlCommandError::new(
+                            proto::ErrorCode::Rejected,
+                            429,
+                            "too many camera discovery tasks are active",
+                        ));
+                    }
+                    tasks.insert(
+                        key.clone(),
+                        CameraDiscoveryTask {
+                            cameras: Vec::new(),
+                            complete: false,
+                            cancelled: Arc::new(AtomicBool::new(false)),
+                        },
+                    );
+                }
+                let networks = request
+                    .networks
+                    .iter()
+                    .map(|network| {
+                        let network = network.parse::<ipnet::Ipv4Net>().map_err(|_| {
+                            ControlCommandError::new(
+                                proto::ErrorCode::InvalidRequest,
+                                400,
+                                "camera discovery networks must be IPv4 CIDRs",
+                            )
+                        })?;
+                        if network.prefix_len() != 24 || !network.network().is_private() {
+                            return Err(ControlCommandError::new(
+                                proto::ErrorCode::InvalidRequest,
+                                400,
+                                "camera discovery networks must be private IPv4 /24 CIDRs",
+                            ));
+                        }
+                        Ok(network)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 let subnets = request
                     .subnets
                     .into_iter()
@@ -975,11 +1059,86 @@ impl ServerControlHandler {
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let cameras = discover_camera_settings(subnets, &self.router_tx, &self.state)?;
+                let cameras = discover_camera_settings(
+                    networks,
+                    subnets,
+                    &self.router_tx,
+                    &self.state,
+                    task_key.as_ref(),
+                )?;
+                let cancelled = task_key
+                    .as_ref()
+                    .and_then(|key| {
+                        self.state
+                            .camera_discovery_tasks
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get_mut(key)
+                            .map(|task| {
+                                task.complete = true;
+                                task.cancelled.load(Ordering::Acquire)
+                            })
+                    })
+                    .unwrap_or(false);
+                if let Some(key) = &task_key {
+                    self.state
+                        .camera_discovery_tasks
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(key);
+                }
                 Ok(control_ok::Result::CameraDiscoveryResult(
-                    proto::CameraDiscoveryResult {
-                        cameras: cameras.into_iter().map(proto_discovered_camera).collect(),
-                    },
+                    proto_camera_discovery_result(discovery_id, cameras, true, cancelled),
+                ))
+            }
+            Some(camera_configuration_command::Action::GetDiscovery(request)) => {
+                let key = (session_id, request.discovery_id.clone());
+                let task = self
+                    .state
+                    .camera_discovery_tasks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            404,
+                            "camera discovery task was not found",
+                        )
+                    })?;
+                let cameras =
+                    present_discovered_cameras(task.cameras, &self.router_tx, &self.state);
+                Ok(control_ok::Result::CameraDiscoveryResult(
+                    proto_camera_discovery_result(
+                        request.discovery_id,
+                        cameras,
+                        task.complete,
+                        task.cancelled.load(Ordering::Acquire),
+                    ),
+                ))
+            }
+            Some(camera_configuration_command::Action::CancelDiscovery(request)) => {
+                let key = (session_id, request.discovery_id.clone());
+                let task = self
+                    .state
+                    .camera_discovery_tasks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            404,
+                            "camera discovery task was not found",
+                        )
+                    })?;
+                task.cancelled.store(true, Ordering::Release);
+                let cameras =
+                    present_discovered_cameras(task.cameras, &self.router_tx, &self.state);
+                Ok(control_ok::Result::CameraDiscoveryResult(
+                    proto_camera_discovery_result(request.discovery_id, cameras, false, true),
                 ))
             }
             Some(camera_configuration_command::Action::ProbeStreams(request)) => {
@@ -988,6 +1147,77 @@ impl ServerControlHandler {
             Some(camera_configuration_command::Action::GetCatalog(_)) => {
                 Ok(control_ok::Result::CameraCatalogInfo(
                     proto_camera_catalog_info(self.camera_database()?),
+                ))
+            }
+            Some(camera_configuration_command::Action::GetOnboardingDefaults(_)) => {
+                let defaults = self
+                    .state
+                    .camera_config_path
+                    .as_deref()
+                    .map(config::load_camera_defaults)
+                    .transpose()
+                    .map_err(|error| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::Internal,
+                            500,
+                            format!("unable to load camera credential defaults: {error}"),
+                        )
+                    })?
+                    .unwrap_or_default();
+                let mut networks =
+                    crate::cameras::camera_discovery_networks().unwrap_or_else(|error| {
+                        tracing::debug!(%error, "camera discovery networks are unavailable");
+                        Vec::new()
+                    });
+                let configured_networks = self
+                    .state
+                    .camera_entries()
+                    .into_iter()
+                    .filter_map(|camera| camera.info.ip.parse::<Ipv4Addr>().ok())
+                    .filter(Ipv4Addr::is_private)
+                    .filter_map(|ip| {
+                        ipnet::Ipv4Net::new(ip, 24)
+                            .ok()
+                            .map(|network| network.trunc())
+                    })
+                    .collect::<HashSet<_>>();
+                if !configured_networks.is_empty() {
+                    for network in &mut networks {
+                        network.preferred = false;
+                    }
+                    for network in configured_networks {
+                        let cidr = network.to_string();
+                        if let Some(existing) = networks.iter_mut().find(|item| item.cidr == cidr) {
+                            existing.preferred = true;
+                        } else {
+                            networks.push(crate::cameras::CameraDiscoveryNetwork {
+                                cidr,
+                                interface_name: "configured cameras".to_owned(),
+                                preferred: true,
+                            });
+                        }
+                    }
+                    networks.sort_by(|left, right| {
+                        right
+                            .preferred
+                            .cmp(&left.preferred)
+                            .then_with(|| left.cidr.cmp(&right.cidr))
+                    });
+                }
+                let networks = networks
+                    .into_iter()
+                    .map(|network| proto::CameraDiscoveryNetwork {
+                        cidr: network.cidr,
+                        interface_name: network.interface_name,
+                        preferred: network.preferred,
+                    })
+                    .collect();
+                Ok(control_ok::Result::CameraOnboardingDefaults(
+                    proto::CameraOnboardingDefaults {
+                        username_configured: !defaults.username.is_empty(),
+                        password_configured: !defaults.password.is_empty(),
+                        networks,
+                    },
                 ))
             }
             Some(camera_configuration_command::Action::SearchCatalog(request)) => {
@@ -1073,13 +1303,6 @@ impl ServerControlHandler {
                 "camera stream probe requires a valid IP address",
             )
         })?;
-        if request.username.trim().is_empty() || request.password.is_empty() {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "camera stream probe requires a username and password",
-            ));
-        }
         let onvif_port = request
             .onvif_port
             .map(|port| {
@@ -1100,43 +1323,233 @@ impl ServerControlHandler {
                 Ok(port)
             })
             .transpose()?;
+        let resolve = |field: &str, value: String| {
+            if let Some(config_path) = &self.state.camera_config_path {
+                resolve_setting_secret(config_path, field, &value)
+            } else if config::contains_secret_reference(&value) {
+                Err(ControlCommandError::new(
+                    proto::ErrorCode::Unavailable,
+                    409,
+                    format!("{field} secret references require configuration persistence"),
+                ))
+            } else {
+                Ok(value)
+            }
+        };
+        let defaults = self
+            .state
+            .camera_config_path
+            .as_deref()
+            .map(config::load_camera_defaults)
+            .transpose()
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Internal,
+                    500,
+                    format!("unable to load camera credential defaults: {error}"),
+                )
+            })?
+            .unwrap_or_default();
+        let username = if request.username.trim().is_empty() {
+            defaults.username
+        } else {
+            resolve("username", request.username.trim().to_owned())?
+        };
+        let password = if request.password.is_empty() {
+            defaults.password
+        } else {
+            resolve("password", request.password)?
+        };
+        if username.is_empty() || password.is_empty() {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "camera stream probe requires an effective username and password",
+            ));
+        }
+        let requested_main_rtsp_url = request
+            .main_rtsp_url
+            .map(|value| resolve("main RTSP URL", value))
+            .transpose()?
+            .map(Some)
+            .map(normalize_rtsp_url)
+            .transpose()
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    format!("main RTSP URL {error}"),
+                )
+            })?
+            .flatten();
+        let requested_sub_rtsp_url = request
+            .sub_rtsp_url
+            .map(|value| resolve("sub RTSP URL", value))
+            .transpose()?
+            .map(Some)
+            .map(normalize_rtsp_url)
+            .transpose()
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    format!("sub RTSP URL {error}"),
+                )
+            })?
+            .flatten();
+        let transport = optional_camera_transport(request.transport)?.unwrap_or_default();
+        let rtsp_transport = match transport {
+            CameraTransport::Tcp => RtspTransport::Tcp,
+            CameraTransport::Udp => RtspTransport::Udp,
+        };
         let config = CameraConfig {
             ip,
             name: None,
             display_name: None,
             manufacturer: None,
-            username: request.username,
-            password: request.password,
+            username: username.clone(),
+            password: password.clone(),
             onvif_port,
             http_port: None,
             main_rtsp_url: None,
             sub_rtsp_url: None,
             uid: None,
             backend: CameraBackend::Retina,
-            transport: CameraTransport::Tcp,
+            transport,
             record_generic_motion_events: false,
             recording_mode: Default::default(),
             event_recording_duration_secs: 60,
         };
-        let streams = probe_onvif_streams(&config).map_err(|error| {
-            tracing::debug!(%error, %ip, "candidate ONVIF stream probe failed");
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                502,
-                "ONVIF could not retrieve stream endpoints for these credentials",
-            )
-        })?;
+        let (camera, onvif_error) = if request.query_onvif.unwrap_or(true) {
+            match probe_onvif_camera(&config) {
+                Ok(camera) => (Some(camera), None),
+                Err(error) => {
+                    tracing::debug!(%error, %ip, "candidate ONVIF stream probe failed");
+                    if requested_main_rtsp_url.is_none() && requested_sub_rtsp_url.is_none() {
+                        return Err(ControlCommandError::new(
+                            proto::ErrorCode::Unavailable,
+                            502,
+                            "ONVIF could not retrieve stream endpoints for these credentials",
+                        ));
+                    }
+                    (
+                        None,
+                        Some(
+                            "ONVIF did not respond; supplied RTSP endpoints were verified directly."
+                                .to_owned(),
+                        ),
+                    )
+                }
+            }
+        } else {
+            (None, None)
+        };
+        let main_rtsp_url = requested_main_rtsp_url.or_else(|| {
+            camera
+                .as_ref()
+                .and_then(|camera| camera.main_rtsp_url.clone())
+        });
+        let sub_rtsp_url = requested_sub_rtsp_url.or_else(|| {
+            camera
+                .as_ref()
+                .and_then(|camera| camera.sub_rtsp_url.clone())
+        });
+        let stream_requests = [
+            ("main", main_rtsp_url.as_deref()),
+            ("sub", sub_rtsp_url.as_deref()),
+        ];
+        let username = username.as_str();
+        let password = password.as_str();
+        let streams = std::thread::scope(|scope| {
+            let handles = stream_requests.map(|(stream, rtsp_url)| {
+                scope.spawn(move || {
+                    proto_camera_stream_verification(
+                        stream,
+                        rtsp_url,
+                        username,
+                        password,
+                        rtsp_transport,
+                    )
+                })
+            });
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .expect("camera stream verification worker must not panic")
+                })
+                .collect::<Vec<_>>()
+        });
+        let profiles = camera
+            .as_ref()
+            .map(|camera| {
+                camera
+                    .profiles
+                    .iter()
+                    .enumerate()
+                    .map(|(index, profile)| {
+                        proto_health_profile(ProfileSummary {
+                            name: profile.name.clone(),
+                            stream: if index == 0 { "main" } else { "sub" }.to_owned(),
+                            encoding: profile
+                                .video
+                                .as_ref()
+                                .map(|video| video.encoding.to_string()),
+                            resolution: profile
+                                .video
+                                .as_ref()
+                                .map(|video| format!("{}x{}", video.width, video.height)),
+                            framerate: profile.video.as_ref().map(|video| video.framerate),
+                            bitrate_kbps: profile
+                                .video
+                                .as_ref()
+                                .and_then(|video| video.bitrate_kbps),
+                            gop: profile.video.as_ref().and_then(|video| video.gov_length),
+                            h264_profile: profile
+                                .video
+                                .as_ref()
+                                .and_then(|video| video.h264_profile.clone()),
+                            audio: profile.audio.as_ref().map(|audio| AudioProfileSummary {
+                                encoding: audio.encoding.to_string(),
+                                sample_rate: audio.sample_rate,
+                                bitrate_kbps: audio.bitrate_kbps,
+                            }),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(control_ok::Result::CameraStreamProbeResult(
             proto::CameraStreamProbeResult {
-                main_rtsp_url: streams.main_rtsp_url,
-                sub_rtsp_url: streams.sub_rtsp_url,
-                onvif_port: streams.onvif_port.map(u32::from),
+                main_rtsp_url,
+                sub_rtsp_url,
+                onvif_port: camera.as_ref().map(|camera| u32::from(camera.onvif_port)),
+                manufacturer: camera
+                    .as_ref()
+                    .and_then(|camera| camera.device.manufacturer.clone()),
+                model: camera
+                    .as_ref()
+                    .and_then(|camera| camera.device.model.clone()),
+                firmware_version: camera
+                    .as_ref()
+                    .and_then(|camera| camera.device.firmware_version.clone()),
+                serial_number: camera
+                    .as_ref()
+                    .and_then(|camera| camera.device.serial_number.clone()),
+                hardware_id: camera
+                    .as_ref()
+                    .and_then(|camera| camera.device.hardware_id.clone()),
+                profiles,
+                streams,
+                onvif_error,
             },
         ))
     }
 
     fn handle_server(
         &self,
+        session_id: SessionId,
         command: proto::ServerCommand,
     ) -> Result<(control_ok::Result, PostSendAction), ControlCommandError> {
         match command.action {
@@ -1157,12 +1570,115 @@ impl ServerControlHandler {
                     action,
                 ))
             }
+            Some(server_command::Action::GetAccessKey(_)) => {
+                self.require_loopback_administrator(session_id)?;
+                let access_key = *self
+                    .state
+                    .access_key
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if access_key.is_unset() {
+                    return Err(ControlCommandError::new(
+                        proto::ErrorCode::Unavailable,
+                        409,
+                        "remote access key is not configured",
+                    ));
+                }
+                Ok((
+                    control_ok::Result::AccessKeyResult(proto::AccessKeyResult {
+                        access_key: access_key.canonical(),
+                        rotated: false,
+                    }),
+                    Box::new(|| {}),
+                ))
+            }
+            Some(server_command::Action::RotateAccessKey(_)) => {
+                self.require_loopback_administrator(session_id)?;
+                let Some(config_path) = &self.state.camera_config_path else {
+                    return Err(ControlCommandError::new(
+                        proto::ErrorCode::Unavailable,
+                        409,
+                        "remote access key rotation requires a persisted configuration",
+                    ));
+                };
+                let _update = self
+                    .state
+                    .config_update
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let access_key =
+                    config::rotate_access_key_secret(config_path).map_err(|error| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::Unavailable,
+                            409,
+                            format!("remote access key could not be rotated: {error}"),
+                        )
+                    })?;
+                *self
+                    .state
+                    .access_key
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = access_key;
+                let remote_sessions = {
+                    let mut owners = self
+                        .state
+                        .api_session_owners
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let sessions = owners
+                        .iter()
+                        .filter_map(|(session_id, principal)| {
+                            matches!(principal, ApiPrincipal::AccessKey(_)).then_some(*session_id)
+                        })
+                        .collect::<Vec<_>>();
+                    owners.retain(|_, principal| !matches!(principal, ApiPrincipal::AccessKey(_)));
+                    sessions
+                };
+                let webrtc = self.state.webrtc.clone();
+                tracing::info!(
+                    revoked_sessions = remote_sessions.len(),
+                    "remote access key rotated by loopback administrator"
+                );
+                Ok((
+                    control_ok::Result::AccessKeyResult(proto::AccessKeyResult {
+                        access_key: access_key.canonical(),
+                        rotated: true,
+                    }),
+                    Box::new(move || {
+                        for session_id in remote_sessions {
+                            webrtc.close_api_session(session_id);
+                        }
+                    }),
+                ))
+            }
             None => Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
                 400,
                 "server command has no action",
             )),
         }
+    }
+
+    fn require_loopback_administrator(
+        &self,
+        session_id: SessionId,
+    ) -> Result<(), ControlCommandError> {
+        let owners = self
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(
+            owners.get(&session_id),
+            Some(ApiPrincipal::LoopbackAdministrator)
+        ) {
+            return Ok(());
+        }
+        Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            "remote access key material is available only to a loopback administrator session",
+        ))
     }
 
     fn handle_runtime_configuration(
@@ -1223,6 +1739,38 @@ impl ServerControlHandler {
                 )?;
                 Ok(control_ok::Result::RuntimeConfigurationResult(
                     proto_runtime_configuration_result(result),
+                ))
+            }
+            Some(runtime_configuration_command::Action::ProbeStorage(request)) => {
+                let path = if let Some(config_path) = &self.state.camera_config_path {
+                    config::resolve_secret_references(config_path, &request.path).map_err(
+                        |error| {
+                            ControlCommandError::new(
+                                proto::ErrorCode::InvalidRequest,
+                                400,
+                                format!("storage path secret reference is invalid: {error}"),
+                            )
+                        },
+                    )?
+                } else {
+                    request.path
+                };
+                let path = normalize_storage_path(&path).ok_or_else(|| {
+                    ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        "storage path must be nonempty and cannot contain NUL",
+                    )
+                })?;
+                let result = storage_write_probe(Path::new(&path));
+                Ok(control_ok::Result::StorageWriteProbeResult(
+                    proto::StorageWriteProbeResult {
+                        writable: result.is_ok(),
+                        detail: match result {
+                            Ok(()) => "Write, flush, rename, and cleanup succeeded.".to_owned(),
+                            Err(error) => format!("Storage write verification failed: {error}"),
+                        },
+                    },
                 ))
             }
             None => Err(ControlCommandError::new(
@@ -1477,6 +2025,35 @@ impl ServerControlHandler {
             )),
         }
     }
+}
+
+fn storage_write_probe(path: &Path) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    std::fs::create_dir_all(path)?;
+    let nonce = rand::random::<u64>();
+    let pending = path.join(format!(".keeppeek-write-probe-{nonce}.pending"));
+    let renamed = path.join(format!(".keeppeek-write-probe-{nonce}.complete"));
+    let cleanup = || {
+        let _ = std::fs::remove_file(&pending);
+        let _ = std::fs::remove_file(&renamed);
+    };
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&pending)?;
+        file.write_all(b"keeppeek storage write probe\n")?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&pending, &renamed)?;
+        std::fs::remove_file(&renamed)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        cleanup();
+    }
+    result
 }
 
 #[derive(Clone)]
@@ -4885,6 +5462,74 @@ fn proto_health_profile(profile: ProfileSummary) -> proto::HealthProfileSummary 
     }
 }
 
+fn proto_camera_stream_verification(
+    stream: &str,
+    rtsp_url: Option<&str>,
+    username: &str,
+    password: &str,
+    transport: RtspTransport,
+) -> proto::CameraStreamVerification {
+    let Some(rtsp_url) = rtsp_url else {
+        return proto::CameraStreamVerification {
+            stream: stream.to_owned(),
+            verified: false,
+            codec: None,
+            resolution: None,
+            declared_fps: None,
+            frames_received: 0,
+            keyframe_received: false,
+            elapsed_ms: 0,
+            error: Some("No RTSP endpoint is available for this stream.".to_owned()),
+        };
+    };
+    match probe_rtsp_video(
+        rtsp_url,
+        username,
+        password,
+        transport,
+        CAMERA_STREAM_VERIFICATION_TIMEOUT,
+    ) {
+        Ok(evidence) => proto::CameraStreamVerification {
+            stream: stream.to_owned(),
+            verified: true,
+            codec: Some(evidence.codec),
+            resolution: Some(format!("{}x{}", evidence.width, evidence.height)),
+            declared_fps: evidence.declared_fps,
+            frames_received: evidence.frames_received,
+            keyframe_received: evidence.keyframe_received,
+            elapsed_ms: evidence.elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+            error: None,
+        },
+        Err(error) => {
+            tracing::debug!(%error, stream, "candidate RTSP media verification failed");
+            let detail = error.to_string().to_ascii_lowercase();
+            let message = if detail.contains("unauthorized")
+                || detail.contains("authentication")
+                || detail.contains("401")
+            {
+                "RTSP authentication was rejected."
+            } else if detail.contains("keyframe") || detail.contains("no media progress") {
+                "No video keyframe arrived before the verification deadline."
+            } else if detail.contains("did not describe a video stream") {
+                "The RTSP endpoint did not describe a video stream."
+            } else {
+                "RTSP connection or media verification failed."
+            };
+            proto::CameraStreamVerification {
+                stream: stream.to_owned(),
+                verified: false,
+                codec: None,
+                resolution: None,
+                declared_fps: None,
+                frames_received: 0,
+                keyframe_received: false,
+                elapsed_ms: 0,
+                error: Some(message.to_owned()),
+            }
+        }
+    }
+}
+
 fn proto_stream_health(stream: crate::stats::StreamHealthReport) -> proto::StreamHealthSnapshot {
     let report = stream.report;
     proto::StreamHealthSnapshot {
@@ -5138,6 +5783,20 @@ fn proto_discovered_camera(camera: DiscoveredCameraSettings) -> proto::Discovere
         catalog: camera
             .catalog
             .map(|catalog| proto_camera_catalog_camera(catalog.camera, catalog.stream_hints)),
+    }
+}
+
+fn proto_camera_discovery_result(
+    discovery_id: String,
+    cameras: Vec<DiscoveredCameraSettings>,
+    complete: bool,
+    cancelled: bool,
+) -> proto::CameraDiscoveryResult {
+    proto::CameraDiscoveryResult {
+        cameras: cameras.into_iter().map(proto_discovered_camera).collect(),
+        discovery_id,
+        complete,
+        cancelled,
     }
 }
 
@@ -5488,6 +6147,37 @@ fn proto_logging_settings(settings: LoggingSettings) -> proto::LoggingSettingsRe
     }
 }
 
+fn profile_summaries(profiles: &[MediaProfile]) -> Vec<ProfileSummary> {
+    profiles
+        .iter()
+        .enumerate()
+        .map(|(index, profile)| ProfileSummary {
+            name: profile.name.clone(),
+            stream: if index == 0 { "main" } else { "sub" }.to_owned(),
+            encoding: profile
+                .video
+                .as_ref()
+                .map(|video| video.encoding.to_string()),
+            resolution: profile
+                .video
+                .as_ref()
+                .map(|video| format!("{}x{}", video.width, video.height)),
+            framerate: profile.video.as_ref().map(|video| video.framerate),
+            bitrate_kbps: profile.video.as_ref().and_then(|video| video.bitrate_kbps),
+            gop: profile.video.as_ref().and_then(|video| video.gov_length),
+            h264_profile: profile
+                .video
+                .as_ref()
+                .and_then(|video| video.h264_profile.clone()),
+            audio: profile.audio.as_ref().map(|audio| AudioProfileSummary {
+                encoding: audio.encoding.to_string(),
+                sample_rate: audio.sample_rate,
+                bitrate_kbps: audio.bitrate_kbps,
+            }),
+        })
+        .collect()
+}
+
 fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> CameraEntry {
     let id = camera_config.ip.to_string();
     let reported_manufacturer = camera.and_then(|camera| camera.reported_manufacturer.clone());
@@ -5524,37 +6214,7 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
                 })
                 .collect()
         },
-        |camera| {
-            camera
-                .profiles
-                .iter()
-                .enumerate()
-                .map(|(index, profile)| ProfileSummary {
-                    name: profile.name.clone(),
-                    stream: if index == 0 { "main" } else { "sub" }.to_owned(),
-                    encoding: profile
-                        .video
-                        .as_ref()
-                        .map(|video| video.encoding.to_string()),
-                    resolution: profile
-                        .video
-                        .as_ref()
-                        .map(|video| format!("{}x{}", video.width, video.height)),
-                    framerate: profile.video.as_ref().map(|video| video.framerate),
-                    bitrate_kbps: profile.video.as_ref().and_then(|video| video.bitrate_kbps),
-                    gop: profile.video.as_ref().and_then(|video| video.gov_length),
-                    h264_profile: profile
-                        .video
-                        .as_ref()
-                        .and_then(|video| video.h264_profile.clone()),
-                    audio: profile.audio.as_ref().map(|audio| AudioProfileSummary {
-                        encoding: audio.encoding.to_string(),
-                        sample_rate: audio.sample_rate,
-                        bitrate_kbps: audio.bitrate_kbps,
-                    }),
-                })
-                .collect()
-        },
+        |camera| profile_summaries(&camera.profiles),
     );
     let mut capabilities = camera
         .map(|camera| camera.capabilities.clone())
@@ -5630,13 +6290,14 @@ struct ExportJobRecord {
 pub struct ServerState {
     host: String,
     port: u16,
-    access_key: AccessKey,
+    access_key: Arc<RwLock<AccessKey>>,
     allowed_origins: Arc<HashSet<String>>,
     api_session_owners: Arc<Mutex<HashMap<SessionId, ApiPrincipal>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     ptz_owners: Arc<Mutex<HashMap<String, SessionId>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     event_search_tasks: EventSearchTasks,
+    camera_discovery_tasks: CameraDiscoveryTasks,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
@@ -5686,13 +6347,14 @@ impl ServerState {
         Self {
             host: config.host.clone(),
             port: config.port,
-            access_key: config.access_key,
+            access_key: Arc::new(RwLock::new(config.access_key)),
             allowed_origins: Arc::new(config.direct_card.allowed_origins.iter().cloned().collect()),
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(HashMap::new())),
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
+            camera_discovery_tasks: Arc::new(Mutex::new(HashMap::new())),
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
             recording_demand,
@@ -5775,6 +6437,84 @@ impl ServerState {
         info
     }
 
+    pub(crate) fn enrich_camera_metadata_in_background(&self, configs: Vec<CameraConfig>) {
+        let pending = Arc::new(Mutex::new(VecDeque::from(configs)));
+        let worker_count = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            .min(MAX_CAMERA_METADATA_WORKERS);
+        for worker_index in 0..worker_count {
+            let state = self.clone();
+            let pending = pending.clone();
+            let spawn = std::thread::Builder::new()
+                .name(format!("camera-metadata-{worker_index}"))
+                .spawn(move || {
+                    loop {
+                        let config = pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop_front();
+                        let Some(config) = config else {
+                            break;
+                        };
+                        match probe_onvif_camera(&config) {
+                            Ok(probe) => state.apply_camera_metadata(config.ip, &probe),
+                            Err(_) => tracing::debug!(
+                                ip = %config.ip,
+                                "configured camera did not provide ONVIF metadata"
+                            ),
+                        }
+                    }
+                });
+            if let Err(error) = spawn {
+                tracing::warn!(%error, "camera metadata worker could not start");
+            }
+        }
+    }
+
+    fn apply_camera_metadata(&self, ip: IpAddr, probe: &crate::cameras::ProbedOnvifCamera) {
+        let catalog_brand = self.camera_database.as_ref().and_then(|database| {
+            let model = probe.device.model.as_deref()?;
+            let manufacturer = probe.device.manufacturer.as_deref().unwrap_or_default();
+            match database.match_camera(manufacturer, model) {
+                CameraMatch::Exact(camera) => Some(camera.brand),
+                CameraMatch::Ambiguous | CameraMatch::Missing => None,
+            }
+        });
+        let manufacturer = catalog_brand.or_else(|| probe.device.manufacturer.clone());
+        let profiles = profile_summaries(&probe.profiles);
+        let mut cameras = self
+            .cameras
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(camera) = cameras
+            .iter_mut()
+            .find(|camera| camera.info.ip == ip.to_string())
+        else {
+            return;
+        };
+        camera.reported_manufacturer = manufacturer.clone();
+        camera.info.manufacturer = manufacturer;
+        camera.info.model.clone_from(&probe.device.model);
+        camera
+            .info
+            .firmware_version
+            .clone_from(&probe.device.firmware_version);
+        camera
+            .info
+            .serial_number
+            .clone_from(&probe.device.serial_number);
+        camera
+            .info
+            .hardware_id
+            .clone_from(&probe.device.hardware_id);
+        camera.info.ports.onvif = Some(probe.onvif_port);
+        if !profiles.is_empty() {
+            camera.info.profiles = profiles;
+        }
+    }
+
     pub fn with_camera_config_path(mut self, config_path: PathBuf) -> Self {
         self.camera_config_path = Some(config_path);
         self
@@ -5831,23 +6571,46 @@ fn sanitized_config(
     camera_count: usize,
     cameras: &[CameraEntry],
 ) -> SanitizedConfig {
+    let resolved_medium_term_path = storage_config.medium_term_path.to_string_lossy();
+    let resolved_long_term_path = storage_config.long_term_path.to_string_lossy();
+    let medium_term_path =
+        config.reference_or_value(&["storage", "medium_term_path"], &resolved_medium_term_path);
+    let long_term_path =
+        config.reference_or_value(&["storage", "long_term_path"], &resolved_long_term_path);
+    let recording_catalog_path = if config.storage.recording_catalog_path.is_none()
+        && long_term_path != resolved_long_term_path
+    {
+        format!(
+            "{}/recordings.db",
+            long_term_path.trim_end_matches(['/', '\\'])
+        )
+    } else {
+        config.reference_or_value(
+            &["storage", "recording_catalog_path"],
+            &storage_config.recording_catalog_path.to_string_lossy(),
+        )
+    };
+    let event_thumbnail_path = if config.storage.event_thumbnail_path.is_none()
+        && long_term_path != resolved_long_term_path
+    {
+        format!(
+            "{}/.event-thumbnails",
+            long_term_path.trim_end_matches(['/', '\\'])
+        )
+    } else {
+        config.reference_or_value(
+            &["storage", "event_thumbnail_path"],
+            &storage_config.event_thumbnail_path.to_string_lossy(),
+        )
+    };
     SanitizedConfig {
-        host: config.host.clone(),
+        host: config.reference_or_value(&["host"], &config.host),
         port: config.port,
         storage: SanitizedStorage {
-            medium_term_path: storage_config
-                .medium_term_path
-                .to_string_lossy()
-                .into_owned(),
-            long_term_path: storage_config.long_term_path.to_string_lossy().into_owned(),
-            recording_catalog_path: storage_config
-                .recording_catalog_path
-                .to_string_lossy()
-                .into_owned(),
-            event_thumbnail_path: storage_config
-                .event_thumbnail_path
-                .to_string_lossy()
-                .into_owned(),
+            medium_term_path,
+            long_term_path,
+            recording_catalog_path,
+            event_thumbnail_path,
             event_thumbnail_max_mb: config.storage.event_thumbnail_max_mb,
             short_term_secs: config.storage.short_term_secs,
             medium_term_secs: config.storage.medium_term_secs,
@@ -5940,7 +6703,7 @@ fn current_config(state: &ServerState) -> SanitizedConfig {
         return state.config.clone();
     };
     let loaded = (|| -> anyhow::Result<SanitizedConfig> {
-        let config: Config = toml::from_str(&std::fs::read_to_string(path)?)?;
+        let config = config::load_config(path)?;
         let camera_count = config::load_cameras(path)?.values().map(Vec::len).sum();
         let storage = StorageConfig::from_toml(&config.storage);
         Ok(sanitized_config(
@@ -6123,16 +6886,17 @@ fn api_principal(request: &Request, state: &ServerState) -> Result<ApiPrincipal,
     let (Some(scheme), Some(value), None) = (parts.next(), parts.next(), parts.next()) else {
         return Err(api_status(401, "Bearer access key is invalid"));
     };
-    if !scheme.eq_ignore_ascii_case("Bearer") || state.access_key.is_unset() {
+    let access_key = *state
+        .access_key
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !scheme.eq_ignore_ascii_case("Bearer") || access_key.is_unset() {
         return Err(api_status(401, "Bearer access key is invalid"));
     }
     let Ok(candidate) = AccessKey::parse(value) else {
         return Err(api_status(401, "Bearer access key is invalid"));
     };
-    if !candidate
-        .fingerprint()
-        .matches(state.access_key.fingerprint())
-    {
+    if !candidate.fingerprint().matches(access_key.fingerprint()) {
         return Err(api_status(401, "Bearer access key is invalid"));
     }
     Ok(ApiPrincipal::AccessKey(candidate.fingerprint()))
@@ -6628,16 +7392,8 @@ fn server_health(
         .ok()
         .map(|metadata| metadata.len());
     let storage = StorageHealth {
-        medium_term_path: state
-            .storage_config
-            .medium_term_path
-            .to_string_lossy()
-            .into_owned(),
-        long_term_path: state
-            .storage_config
-            .long_term_path
-            .to_string_lossy()
-            .into_owned(),
+        medium_term_path: state.config.storage.medium_term_path.clone(),
+        long_term_path: state.config.storage.long_term_path.clone(),
         paths_are_same: state.storage_config.medium_term_path
             == state.storage_config.long_term_path,
         short_term_seconds: state.storage_config.short_term_duration.as_secs(),
@@ -6762,6 +7518,7 @@ fn camera_settings(
                             config,
                             None,
                             health.get(&config.ip.to_string()).cloned(),
+                            state.camera_config_path.as_deref(),
                         )
                     },
                     |camera| {
@@ -6769,6 +7526,7 @@ fn camera_settings(
                             config,
                             Some(camera),
                             health.get(&camera.info.id).cloned(),
+                            state.camera_config_path.as_deref(),
                         )
                     },
                 )
@@ -6780,6 +7538,7 @@ fn camera_settings_entry(
     configuration: &CameraConfig,
     camera: Option<&CameraEntry>,
     health: Option<String>,
+    config_path: Option<&Path>,
 ) -> CameraSettings {
     CameraSettings {
         id: configuration.ip.to_string(),
@@ -6790,8 +7549,18 @@ fn camera_settings_entry(
         password_configured: !configuration.password.is_empty(),
         onvif_port: configuration.onvif_port,
         http_port: configuration.http_port,
-        main_rtsp_url: configuration.main_rtsp_url.clone(),
-        sub_rtsp_url: configuration.sub_rtsp_url.clone(),
+        main_rtsp_url: camera_setting_for_output(
+            config_path,
+            configuration,
+            "main_rtsp_url",
+            configuration.main_rtsp_url.as_deref(),
+        ),
+        sub_rtsp_url: camera_setting_for_output(
+            config_path,
+            configuration,
+            "sub_rtsp_url",
+            configuration.sub_rtsp_url.as_deref(),
+        ),
         uid_configured: configuration.uid.is_some(),
         backend: camera_backend_name(configuration.backend).to_owned(),
         transport: camera_transport_name(configuration.transport).to_owned(),
@@ -6810,10 +7579,26 @@ fn camera_settings_entry(
     }
 }
 
+fn camera_setting_for_output(
+    config_path: Option<&Path>,
+    configuration: &CameraConfig,
+    key: &str,
+    resolved: Option<&str>,
+) -> Option<String> {
+    let resolved = resolved?;
+    config_path
+        .and_then(|path| {
+            config::camera_reference_or_value(path, configuration.ip, key, resolved).ok()
+        })
+        .or_else(|| Some(resolved.to_owned()))
+}
+
 fn discover_camera_settings(
+    networks: Vec<ipnet::Ipv4Net>,
     mut subnets: Vec<u8>,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
+    task_key: Option<&CameraDiscoveryTaskKey>,
 ) -> Result<Vec<DiscoveredCameraSettings>, ControlCommandError> {
     subnets.sort_unstable();
     subnets.dedup();
@@ -6824,6 +7609,55 @@ fn discover_camera_settings(
             "at most 32 additional subnets may be scanned at once",
         ));
     }
+    let discovered = match if networks.is_empty() {
+        crate::cameras::discover(Some(Duration::from_secs(5)), &subnets)
+    } else {
+        let cancelled = task_key
+            .and_then(|key| {
+                state
+                    .camera_discovery_tasks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(key)
+                    .map(|task| task.cancelled.clone())
+            })
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        crate::cameras::discover_on_networks_with_progress(
+            Some(Duration::from_secs(5)),
+            &networks,
+            &cancelled,
+            |cameras| {
+                let Some(key) = task_key else {
+                    return;
+                };
+                if let Some(task) = state
+                    .camera_discovery_tasks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get_mut(key)
+                {
+                    task.cameras = cameras.to_vec();
+                }
+            },
+        )
+    } {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                502,
+                format!("camera discovery failed: {error}"),
+            ));
+        }
+    };
+    Ok(present_discovered_cameras(discovered, router_tx, state))
+}
+
+fn present_discovered_cameras(
+    discovered: Vec<crate::cameras::DiscoveredCamera>,
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> Vec<DiscoveredCameraSettings> {
     let health = server_health(router_tx, state)
         .cameras
         .into_iter()
@@ -6834,17 +7668,7 @@ fn discover_camera_settings(
         .into_iter()
         .map(|camera| camera.info.ip)
         .collect::<HashSet<_>>();
-    let discovered = match crate::cameras::discover(Some(Duration::from_secs(3)), &subnets) {
-        Ok(discovered) => discovered,
-        Err(error) => {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                502,
-                format!("camera discovery failed: {error}"),
-            ));
-        }
-    };
-    let cameras = discovered
+    discovered
         .into_iter()
         .map(|camera| {
             let catalog = camera.model.as_deref().and_then(|model| {
@@ -6877,15 +7701,31 @@ fn discover_camera_settings(
                 catalog,
             }
         })
-        .collect::<Vec<_>>();
-    Ok(cameras)
+        .collect::<Vec<_>>()
 }
 
 fn save_runtime_settings(
     update: RuntimeSettingsUpdate,
     state: &ServerState,
 ) -> Result<RuntimeSettingsUpdateResponse, ControlCommandError> {
-    let Some(host) = normalize_server_host(&update.host) else {
+    let Some(config_path) = &state.camera_config_path else {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            409,
+            "settings persistence is unavailable",
+        ));
+    };
+    let resolve = |field: &str, value: &str| {
+        config::resolve_secret_references(config_path, value).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("{field} secret reference is invalid: {error}"),
+            )
+        })
+    };
+    let resolved_host = resolve("host", &update.host)?;
+    let Some(host) = normalize_server_host(&resolved_host) else {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
@@ -6932,31 +7772,39 @@ fn save_runtime_settings(
             "event thumbnail storage limit is too large",
         ));
     }
-    let Some(medium_term_path) = normalize_storage_path(&update.storage.medium_term_path) else {
+    let medium_term_path_value =
+        resolve("medium-term storage path", &update.storage.medium_term_path)?;
+    let Some(medium_term_path) = normalize_storage_path(&medium_term_path_value) else {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
             "medium-term storage path must be nonempty and cannot contain NUL",
         ));
     };
-    let Some(long_term_path) = normalize_storage_path(&update.storage.long_term_path) else {
+    let long_term_path_value = resolve("long-term storage path", &update.storage.long_term_path)?;
+    let Some(long_term_path) = normalize_storage_path(&long_term_path_value) else {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
             "long-term storage path must be nonempty and cannot contain NUL",
         ));
     };
-    let Some(recording_catalog_path) =
-        normalize_storage_path(&update.storage.recording_catalog_path)
-    else {
+    let recording_catalog_path_value = resolve(
+        "recording metadata database path",
+        &update.storage.recording_catalog_path,
+    )?;
+    let Some(recording_catalog_path) = normalize_storage_path(&recording_catalog_path_value) else {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
             "recording metadata database path must be nonempty and cannot contain NUL",
         ));
     };
-    let Some(event_thumbnail_path) = normalize_storage_path(&update.storage.event_thumbnail_path)
-    else {
+    let event_thumbnail_path_value = resolve(
+        "event thumbnail storage path",
+        &update.storage.event_thumbnail_path,
+    )?;
+    let Some(event_thumbnail_path) = normalize_storage_path(&event_thumbnail_path_value) else {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
@@ -6976,13 +7824,6 @@ fn save_runtime_settings(
     let event_thumbnail_path = (!event_thumbnail_is_default
         || Path::new(&event_thumbnail_path) != state.storage_config.event_thumbnail_path)
         .then_some(event_thumbnail_path);
-    let Some(config_path) = &state.camera_config_path else {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            409,
-            "settings persistence is unavailable",
-        ));
-    };
     let settings = Config {
         host,
         port: update.port,
@@ -7054,7 +7895,7 @@ fn save_runtime_settings(
 }
 
 fn save_camera_settings(
-    update: CameraSettingsUpdate,
+    mut update: CameraSettingsUpdate,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
     camera_id: &str,
@@ -7080,6 +7921,31 @@ fn save_camera_settings(
             "camera configuration persistence is unavailable",
         ));
     };
+    let credential_defaults = config::load_camera_defaults(config_path).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            format!("unable to load camera credential defaults: {error}"),
+        )
+    })?;
+    let submitted_username = update.username.clone();
+    let submitted_password = update.password.clone();
+    let submitted_main_rtsp_url = update.main_rtsp_url.clone().flatten();
+    let submitted_sub_rtsp_url = update.sub_rtsp_url.clone().flatten();
+    let submitted_uid = update.uid.clone().flatten();
+    update.username = update
+        .username
+        .map(|value| resolve_setting_secret(config_path, "username", &value))
+        .transpose()?;
+    update.password = update
+        .password
+        .map(|value| resolve_setting_secret(config_path, "password", &value))
+        .transpose()?;
+    update.main_rtsp_url =
+        resolve_optional_setting_secret(config_path, "main RTSP URL", update.main_rtsp_url)?;
+    update.sub_rtsp_url =
+        resolve_optional_setting_secret(config_path, "sub RTSP URL", update.sub_rtsp_url)?;
+    update.uid = resolve_optional_setting_secret(config_path, "UID", update.uid)?;
     let _config_update = state
         .config_update
         .lock()
@@ -7103,16 +7969,20 @@ fn save_camera_settings(
         .map(|camera| camera.configuration.clone())
         .or(persisted);
     let is_new_camera = existing_config.is_none();
-    let username = nonempty_setting(update.username).or_else(|| {
-        existing_config
-            .as_ref()
-            .map(|camera| camera.username.clone())
-    });
-    let password = nonempty_setting(update.password).or_else(|| {
-        existing_config
-            .as_ref()
-            .map(|camera| camera.password.clone())
-    });
+    let username = nonempty_setting(update.username)
+        .or_else(|| {
+            existing_config
+                .as_ref()
+                .map(|camera| camera.username.clone())
+        })
+        .or_else(|| nonempty_setting(Some(credential_defaults.username.clone())));
+    let password = nonempty_setting(update.password)
+        .or_else(|| {
+            existing_config
+                .as_ref()
+                .map(|camera| camera.password.clone())
+        })
+        .or_else(|| nonempty_setting(Some(credential_defaults.password.clone())));
     let (Some(username), Some(password)) = (username, password) else {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -7238,16 +8108,36 @@ fn save_camera_settings(
             "event recording duration must be between 1 and 3600 seconds",
         ));
     }
-    if let Err(error) = config::upsert_camera(config_path, &config) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            format!("unable to save camera configuration: {error}"),
-        ));
+    let mut persisted_config = config.clone();
+    for (submitted, persisted) in [
+        (submitted_username, &mut persisted_config.username),
+        (submitted_password, &mut persisted_config.password),
+    ] {
+        if let Some(reference) = submitted.filter(|value| config::contains_secret_reference(value))
+        {
+            *persisted = reference;
+        }
     }
-    let started_config = is_new_camera
-        .then(|| start_runtime_camera(state, &config))
-        .flatten();
+    for (submitted, persisted) in [
+        (submitted_main_rtsp_url, &mut persisted_config.main_rtsp_url),
+        (submitted_sub_rtsp_url, &mut persisted_config.sub_rtsp_url),
+        (submitted_uid, &mut persisted_config.uid),
+    ] {
+        if let Some(reference) = submitted.filter(|value| config::contains_secret_reference(value))
+        {
+            *persisted = Some(reference);
+        }
+    }
+    let persisted_name =
+        config::upsert_camera(config_path, &persisted_config).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to save camera configuration: {error}"),
+            )
+        })?;
+    config.name = Some(persisted_name);
+    let started_config = start_runtime_camera(state, &config, !is_new_camera);
     let dynamically_started = started_config.is_some();
     if let Some(started_config) = started_config {
         config = started_config;
@@ -7257,6 +8147,12 @@ fn save_camera_settings(
         .into_iter()
         .find(|camera| camera.ip == config.ip.to_string())
         .map(|camera| camera.state);
+    let health = if dynamically_started && health.as_deref().is_none_or(|state| state == "offline")
+    {
+        Some("starting".to_owned())
+    } else {
+        health
+    };
     let camera = CameraSettings {
         id: config.ip.to_string(),
         ip: config.ip.to_string(),
@@ -7266,8 +8162,18 @@ fn save_camera_settings(
         password_configured: true,
         onvif_port: config.onvif_port,
         http_port: config.http_port,
-        main_rtsp_url: config.main_rtsp_url.clone(),
-        sub_rtsp_url: config.sub_rtsp_url.clone(),
+        main_rtsp_url: camera_setting_for_output(
+            Some(config_path),
+            &config,
+            "main_rtsp_url",
+            config.main_rtsp_url.as_deref(),
+        ),
+        sub_rtsp_url: camera_setting_for_output(
+            Some(config_path),
+            &config,
+            "sub_rtsp_url",
+            config.sub_rtsp_url.as_deref(),
+        ),
         uid_configured: config.uid.is_some(),
         backend: camera_backend_name(config.backend).to_owned(),
         transport: camera_transport_name(config.transport).to_owned(),
@@ -7292,7 +8198,39 @@ fn save_camera_settings(
     })
 }
 
-fn start_runtime_camera(state: &ServerState, config: &CameraConfig) -> Option<CameraConfig> {
+fn resolve_optional_setting_secret(
+    config_path: &Path,
+    field: &str,
+    value: Option<Option<String>>,
+) -> Result<Option<Option<String>>, ControlCommandError> {
+    value
+        .map(|value| {
+            value
+                .map(|value| resolve_setting_secret(config_path, field, &value))
+                .transpose()
+        })
+        .transpose()
+}
+
+fn resolve_setting_secret(
+    config_path: &Path,
+    field: &str,
+    value: &str,
+) -> Result<String, ControlCommandError> {
+    config::resolve_secret_references(config_path, value).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            format!("{field} secret reference is invalid: {error}"),
+        )
+    })
+}
+
+fn start_runtime_camera(
+    state: &ServerState,
+    config: &CameraConfig,
+    restart: bool,
+) -> Option<CameraConfig> {
     let Some(runtime) = &state.camera_runtime else {
         return None;
     };
@@ -7315,8 +8253,13 @@ fn start_runtime_camera(state: &ServerState, config: &CameraConfig) -> Option<Ca
         tracing::warn!(ip = %config.ip, %error, "discovered camera endpoints could not be persisted");
         return None;
     }
-    if let Err(error) = runtime.start_camera(camera.clone()) {
-        tracing::warn!(ip = %config.ip, %error, "new camera could not be started live");
+    let runtime_result = if restart {
+        runtime.restart_camera(camera.clone())
+    } else {
+        runtime.start_camera(camera.clone())
+    };
+    if let Err(error) = runtime_result {
+        tracing::warn!(ip = %config.ip, %error, "camera configuration could not be applied live");
         return None;
     }
     state.upsert_camera(camera_entry(&camera.config, Some(&camera)));
@@ -8005,10 +8948,7 @@ mod tests {
         metadata::{EventSource, TimelineEvent},
     };
     use crate::test_support::TestCameraCatalog;
-    use std::{
-        io,
-        net::{Ipv4Addr, SocketAddr},
-    };
+    use std::{io, net::SocketAddr};
     fn response_data(response: Response) -> Vec<u8> {
         let (mut reader, _) = response.data.into_reader_and_size();
         let mut data = Vec::new();
@@ -8030,7 +8970,9 @@ mod tests {
 
     fn secured_test_state() -> ServerState {
         let mut state = ServerState::empty();
-        state.access_key = AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        state.access_key = Arc::new(RwLock::new(
+            AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+        ));
         state.allowed_origins = Arc::new(HashSet::from(["https://home.example.net".to_owned()]));
         state
     }
@@ -10076,6 +11018,153 @@ mod tests {
     }
 
     #[test]
+    fn data_channel_access_key_management_is_loopback_only_and_rotates_live_state() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-server-access-key-{}",
+            rand::random::<u64>()
+        ));
+        let config_path = directory.join("config.toml");
+        config::write_private_file(
+            &config_path,
+            b"access_key = \"{secret:KEEPPEEK_ACCESS_KEY}\"\n",
+        )
+        .unwrap();
+        config::write_private_file(
+            &config::secrets_path(&config_path),
+            b"KEEPPEEK_ACCESS_KEY = \"550e8400-e29b-41d4-a716-446655440000\"\n",
+        )
+        .unwrap();
+        let access_key = AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let state = ServerState::empty().with_camera_config_path(config_path.clone());
+        *state.access_key.write().unwrap() = access_key;
+        let loopback_session = SessionId::from_u64(81);
+        let remote_session = SessionId::from_u64(82);
+        state.api_session_owners.lock().unwrap().extend([
+            (loopback_session, ApiPrincipal::LoopbackAdministrator),
+            (
+                remote_session,
+                ApiPrincipal::AccessKey(access_key.fingerprint()),
+            ),
+        ]);
+        let handler = test_control_handler(state.clone());
+
+        let remote = handler.handle_for_session(
+            remote_session,
+            proto::Request {
+                request_id: 80,
+                command: Some(control_request::Command::ServerCommand(
+                    proto::ServerCommand {
+                        action: Some(server_command::Action::GetAccessKey(proto::GetAccessKey {})),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            remote.response.result,
+            Some(control_response::Result::Error(proto::Error {
+                code,
+                ..
+            })) if code == proto::ErrorCode::Rejected as i32
+        ));
+
+        let reveal = handler.handle_for_session(
+            loopback_session,
+            proto::Request {
+                request_id: 81,
+                command: Some(control_request::Command::ServerCommand(
+                    proto::ServerCommand {
+                        action: Some(server_command::Action::GetAccessKey(proto::GetAccessKey {})),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(reveal)) = reveal.response.result else {
+            panic!("loopback access key reveal must succeed");
+        };
+        assert!(matches!(
+            reveal.result,
+            Some(control_ok::Result::AccessKeyResult(proto::AccessKeyResult {
+                access_key: ref value,
+                rotated: false,
+            })) if value == "550e8400-e29b-41d4-a716-446655440000"
+        ));
+
+        let rotation = handler.handle_for_session(
+            loopback_session,
+            proto::Request {
+                request_id: 82,
+                command: Some(control_request::Command::ServerCommand(
+                    proto::ServerCommand {
+                        action: Some(server_command::Action::RotateAccessKey(
+                            proto::RotateAccessKey {},
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(rotation_result)) = rotation.response.result else {
+            panic!("loopback access key rotation must succeed");
+        };
+        let Some(control_ok::Result::AccessKeyResult(result)) = rotation_result.result else {
+            panic!("rotation must return the replacement access key");
+        };
+        assert!(result.rotated);
+        assert_ne!(result.access_key, access_key.canonical());
+        let rotated = AccessKey::parse(&result.access_key).unwrap();
+        assert_eq!(*state.access_key.read().unwrap(), rotated);
+        assert_eq!(
+            state
+                .api_session_owners
+                .lock()
+                .unwrap()
+                .get(&remote_session),
+            None
+        );
+        let secret_file = std::fs::read_to_string(config::secrets_path(&config_path)).unwrap();
+        assert!(secret_file.contains(&result.access_key));
+        assert!(!secret_file.contains(&access_key.canonical()));
+        rotation
+            .after_send
+            .expect("rotation must defer remote session closure")();
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn data_channel_access_key_reveal_rejects_an_unset_key() {
+        let state = ServerState::empty();
+        let loopback_session = SessionId::from_u64(83);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(loopback_session, ApiPrincipal::LoopbackAdministrator);
+        let response = test_control_handler(state)
+            .handle_for_session(
+                loopback_session,
+                proto::Request {
+                    request_id: 83,
+                    command: Some(control_request::Command::ServerCommand(
+                        proto::ServerCommand {
+                            action: Some(server_command::Action::GetAccessKey(
+                                proto::GetAccessKey {},
+                            )),
+                        },
+                    )),
+                },
+            )
+            .response;
+
+        assert!(matches!(
+            response.result,
+            Some(control_response::Result::Error(proto::Error {
+                code,
+                ..
+            })) if code == proto::ErrorCode::Unavailable as i32
+        ));
+    }
+
+    #[test]
     fn data_channel_camera_discovery_rejects_out_of_range_prefix() {
         let handler = test_control_handler(ServerState::empty());
         let response = handler
@@ -10084,7 +11173,11 @@ mod tests {
                 command: Some(control_request::Command::CameraConfigurationCommand(
                     proto::CameraConfigurationCommand {
                         action: Some(camera_configuration_command::Action::Discover(
-                            proto::DiscoverCameras { subnets: vec![256] },
+                            proto::DiscoverCameras {
+                                subnets: vec![256],
+                                networks: Vec::new(),
+                                discovery_id: String::new(),
+                            },
                         )),
                     },
                 )),
@@ -10113,6 +11206,7 @@ mod tests {
                                 username: String::new(),
                                 password: String::new(),
                                 onvif_port: Some(8000),
+                                ..Default::default()
                             },
                         )),
                     },
@@ -10203,12 +11297,23 @@ mod tests {
         crate::config::write_private_file(
             &config_path,
             br#"
+                [camera_defaults]
+                username = "{secret:CAMERA_USERNAME}"
+
                 [cameras.gate]
                 ip = "192.0.2.77"
-                username = "operator"
-                password = "preserved-secret"
+                password = "{secret:GATE_PASSWORD}"
                 main_rtsp_url = "rtsp://192.0.2.77/main"
-                sub_rtsp_url = "rtsp://192.0.2.77/sub"
+                sub_rtsp_url = "rtsp://{secret:GATE_HOST}/sub"
+            "#,
+        )
+        .unwrap();
+        crate::config::write_private_file(
+            &crate::config::secrets_path(&config_path),
+            br#"
+                CAMERA_USERNAME = "operator"
+                GATE_PASSWORD = "preserved-secret"
+                GATE_HOST = "192.0.2.77"
             "#,
         )
         .unwrap();
@@ -10266,7 +11371,7 @@ mod tests {
         assert_eq!(camera.main_rtsp_url, None);
         assert_eq!(
             camera.sub_rtsp_url.as_deref(),
-            Some("rtsp://192.0.2.77/sub")
+            Some("rtsp://{secret:GATE_HOST}/sub")
         );
         assert_eq!(
             camera.recording_mode,
@@ -10280,6 +11385,10 @@ mod tests {
             CameraRecordingMode::Off
         );
         assert_eq!(persisted["cameras"][0].event_recording_duration_secs, 90);
+        let raw = std::fs::read_to_string(&config_path).unwrap();
+        assert!(raw.contains("password = \"{secret:GATE_PASSWORD}\""));
+        assert!(raw.contains("sub_rtsp_url = \"rtsp://{secret:GATE_HOST}/sub\""));
+        assert!(!raw.contains("preserved-secret"));
 
         let removed = handler
             .handle(proto::Request {
@@ -10314,6 +11423,97 @@ mod tests {
     }
 
     #[test]
+    fn data_channel_new_camera_update_persists_references_without_resolved_values() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-control-new-camera-secret-{}",
+            rand::random::<u64>()
+        ));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(&config_path, b"").unwrap();
+        crate::config::write_private_file(
+            &crate::config::secrets_path(&config_path),
+            br#"
+                CAMERA_USERNAME = "operator"
+                CAMERA_PASSWORD = "resolved-camera-password"
+                CAMERA_HOST = "192.0.2.88"
+            "#,
+        )
+        .unwrap();
+        let state = ServerState::empty().with_camera_config_path(config_path.clone());
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let handler = ServerControlHandler::new(state, router_tx);
+        let response = handler
+            .handle(proto::Request {
+                request_id: 82,
+                command: Some(control_request::Command::CameraConfigurationCommand(
+                    proto::CameraConfigurationCommand {
+                        action: Some(camera_configuration_command::Action::Update(
+                            proto::UpdateCameraConfiguration {
+                                ip: "192.0.2.88".to_owned(),
+                                display_name: Some(proto::OptionalStringUpdate {
+                                    value: Some(optional_string_update::Value::Set(
+                                        "Front Gate".to_owned(),
+                                    )),
+                                }),
+                                manufacturer: None,
+                                username: Some("{secret:CAMERA_USERNAME}".to_owned()),
+                                password: Some("{secret:CAMERA_PASSWORD}".to_owned()),
+                                onvif_port: None,
+                                http_port: None,
+                                main_rtsp_url: Some(proto::OptionalStringUpdate {
+                                    value: Some(optional_string_update::Value::Set(
+                                        "rtsp://{secret:CAMERA_HOST}/main".to_owned(),
+                                    )),
+                                }),
+                                sub_rtsp_url: None,
+                                uid: None,
+                                backend: None,
+                                transport: None,
+                                record_generic_motion_events: None,
+                                recording_mode: None,
+                                event_recording_duration_secs: None,
+                            },
+                        )),
+                    },
+                )),
+            })
+            .response;
+
+        assert_eq!(router_thread.join().unwrap(), 1);
+        let Some(control_response::Result::Ok(ok)) = response.result else {
+            panic!("new camera update with valid references must succeed");
+        };
+        let Some(control_ok::Result::CameraConfigurationResult(result)) = ok.result else {
+            panic!("new camera update must return camera configuration");
+        };
+        let camera = result
+            .camera
+            .expect("new camera result must include the camera");
+        assert_eq!(
+            camera.main_rtsp_url.as_deref(),
+            Some("rtsp://{secret:CAMERA_HOST}/main")
+        );
+        let raw = std::fs::read_to_string(&config_path).unwrap();
+        assert!(raw.contains("username = \"{secret:CAMERA_USERNAME}\""));
+        assert!(raw.contains("password = \"{secret:CAMERA_PASSWORD}\""));
+        assert!(raw.contains("main_rtsp_url = \"rtsp://{secret:CAMERA_HOST}/main\""));
+        assert!(!raw.contains("operator"));
+        assert!(!raw.contains("resolved-camera-password"));
+        let loaded = crate::config::load_cameras(&config_path).unwrap();
+        let camera = &loaded["cameras"][0];
+        assert_eq!(camera.username, "operator");
+        assert_eq!(camera.password, "resolved-camera-password");
+        assert_eq!(
+            camera.main_rtsp_url.as_deref(),
+            Some("rtsp://192.0.2.88/main")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn data_channel_runtime_configuration_requires_storage_contract() {
         let handler = test_control_handler(ServerState::empty());
         let response = handler
@@ -10340,6 +11540,19 @@ mod tests {
         };
         assert_eq!(error.code, proto::ErrorCode::InvalidRequest as i32);
         assert!(error.message.contains("requires storage"));
+    }
+
+    #[test]
+    fn storage_write_probe_flushes_renames_and_cleans_up() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-storage-write-probe-{}",
+            rand::random::<u64>()
+        ));
+
+        storage_write_probe(&directory).unwrap();
+
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -10372,6 +11585,69 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert!(config.storage.is_some());
         assert!(config.recording_estimate.is_some());
+    }
+
+    #[test]
+    fn runtime_configuration_returns_references_instead_of_secret_values() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-runtime-secret-response-{}",
+            rand::random::<u64>()
+        ));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(
+            &config_path,
+            br#"
+                host = "{secret:BIND_HOST}"
+
+                [storage]
+                medium_term_path = "{secret:RECORDING_PATH}"
+                long_term_path = "{secret:RECORDING_PATH}"
+            "#,
+        )
+        .unwrap();
+        crate::config::write_private_file(
+            &crate::config::secrets_path(&config_path),
+            br#"
+                BIND_HOST = "127.0.0.1"
+                RECORDING_PATH = "/private/recordings"
+            "#,
+        )
+        .unwrap();
+        let handler =
+            test_control_handler(ServerState::empty().with_camera_config_path(config_path));
+
+        let response = handler
+            .handle(proto::Request {
+                request_id: 871,
+                command: Some(control_request::Command::RuntimeConfigurationCommand(
+                    proto::RuntimeConfigurationCommand {
+                        action: Some(runtime_configuration_command::Action::Get(
+                            proto::GetRuntimeConfiguration {},
+                        )),
+                    },
+                )),
+            })
+            .response;
+        let Some(control_response::Result::Ok(ok)) = response.result else {
+            panic!("runtime configuration get must succeed");
+        };
+        let Some(control_ok::Result::RuntimeConfigurationResult(result)) = ok.result else {
+            panic!("runtime configuration get must return sanitized configuration");
+        };
+        let config = result
+            .config
+            .expect("runtime configuration must be present");
+        let storage = config
+            .storage
+            .as_ref()
+            .expect("storage configuration must be present");
+        assert_eq!(config.host, "{secret:BIND_HOST}");
+        assert_eq!(storage.long_term_path, "{secret:RECORDING_PATH}");
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("127.0.0.1"));
+        assert!(!debug.contains("/private/recordings"));
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -10928,6 +12204,89 @@ mod tests {
     }
 
     #[test]
+    fn onvif_metadata_enrichment_updates_camera_identity_and_profiles() {
+        let config = CameraConfig {
+            ip: "192.0.2.81".parse().unwrap(),
+            name: Some("front_gate".to_owned()),
+            display_name: Some("Front Gate".to_owned()),
+            manufacturer: None,
+            username: "operator".to_owned(),
+            password: "camera-password".to_owned(),
+            onvif_port: Some(8000),
+            http_port: Some(80),
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: CameraBackend::ReoProto,
+            transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
+            recording_mode: Default::default(),
+            event_recording_duration_secs: 60,
+        };
+        let configs = HashMap::from([("cameras".to_owned(), vec![config.clone()])]);
+        let state = ServerState::new(
+            &Config::default(),
+            &configs,
+            &HashMap::new(),
+            &StorageConfig::default(),
+            RecordingDemand::new(TEST_RECORDING_DEMAND_GRACE),
+            WebRtc::new(),
+        )
+        .with_test_camera_catalog(
+            TestCameraCatalog::new([crate::test_support::TestCatalogCamera::new(
+                "reolink-rlc-820a",
+                "Reolink",
+                "RLC-820A",
+            )])
+            .unwrap(),
+        );
+        let probe = crate::cameras::ProbedOnvifCamera {
+            onvif_port: 8000,
+            device: crate::cameras::DeviceInfo {
+                manufacturer: Some("Manufacturer".to_owned()),
+                model: Some("RLC-820A".to_owned()),
+                firmware_version: Some("v3.1".to_owned()),
+                serial_number: Some("serial-81".to_owned()),
+                hardware_id: Some("IPC".to_owned()),
+                p2p_uid: None,
+            },
+            profiles: vec![crate::cameras::MediaProfile {
+                token: "main".to_owned(),
+                name: "Main".to_owned(),
+                stream_uri: None,
+                snapshot_uri: None,
+                video: Some(crate::cameras::VideoConfig {
+                    encoding: crate::cameras::VideoEncoding::H265,
+                    width: 3840,
+                    height: 2160,
+                    framerate: 25.0,
+                    bitrate_kbps: Some(8192),
+                    quality: None,
+                    gov_length: Some(25),
+                    h264_profile: None,
+                }),
+                audio: None,
+            }],
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+        };
+
+        state.apply_camera_metadata(config.ip, &probe);
+
+        let camera = state.camera("192.0.2.81").unwrap();
+        assert_eq!(camera.info.manufacturer.as_deref(), Some("Reolink"));
+        assert_eq!(camera.info.model.as_deref(), Some("RLC-820A"));
+        assert_eq!(camera.info.firmware_version.as_deref(), Some("v3.1"));
+        assert_eq!(camera.info.serial_number.as_deref(), Some("serial-81"));
+        assert_eq!(camera.info.hardware_id.as_deref(), Some("IPC"));
+        assert_eq!(camera.info.profiles[0].encoding.as_deref(), Some("h265"));
+        assert_eq!(
+            camera.info.profiles[0].resolution.as_deref(),
+            Some("3840x2160")
+        );
+    }
+
+    #[test]
     fn recording_capacity_estimate_includes_video_and_audio_bitrates() {
         let profiles = [
             ProfileSummary {
@@ -11333,6 +12692,76 @@ mod tests {
     }
 
     #[test]
+    fn runtime_camera_starts_and_restarts_without_process_restart() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-runtime-camera-{}", rand::random::<u64>()));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(&config_path, b"[cameras]\n").unwrap();
+
+        let shutdown = Shutdown::new();
+        let loop_ = crate::keeppeek::KeepPeekLoop::new(shutdown.clone(), None);
+        let runtime = loop_.control();
+        let runtime_thread = std::thread::spawn(move || loop_.run());
+        let state = ServerState::empty()
+            .with_camera_config_path(config_path)
+            .with_camera_runtime(runtime);
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+
+        let saved = save_camera_settings(
+            CameraSettingsUpdate {
+                display_name: Some(Some("Front Gate".to_owned())),
+                username: Some("operator".to_owned()),
+                password: Some("camera-password".to_owned()),
+                backend: Some(CameraBackend::ReoProto),
+                ..CameraSettingsUpdate::default()
+            },
+            &router_tx,
+            &state,
+            "192.0.2.79",
+        )
+        .unwrap();
+
+        assert!(!saved.restart_required);
+        assert_eq!(saved.camera.health.as_deref(), Some("starting"));
+        let camera = state.camera("192.0.2.79").unwrap();
+        assert_eq!(camera.recording_label, "front_gate");
+        assert_eq!(camera.configuration.name.as_deref(), Some("front_gate"));
+        assert_eq!(router_thread.join().unwrap(), 1);
+
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let updated = save_camera_settings(
+            CameraSettingsUpdate {
+                display_name: Some(Some("Front Gate Updated".to_owned())),
+                recording_mode: Some(CameraRecordingMode::Main),
+                event_recording_duration_secs: Some(90),
+                ..CameraSettingsUpdate::default()
+            },
+            &router_tx,
+            &state,
+            "192.0.2.79",
+        )
+        .unwrap();
+
+        assert!(!updated.restart_required);
+        assert_eq!(
+            updated.camera.display_name.as_deref(),
+            Some("Front Gate Updated")
+        );
+        assert_eq!(updated.camera.recording_mode, "main");
+
+        shutdown.cancel();
+        runtime_thread.join().unwrap();
+        router_thread.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn rtsp_url_settings_require_credential_free_rtsp_endpoints() {
         assert_eq!(
             normalize_rtsp_url(Some(" rtsp://192.0.2.77:8554/live ".to_owned())).unwrap(),
@@ -11678,7 +13107,8 @@ mod tests {
         let state = ServerState::empty();
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
 
-        let Err(error) = discover_camera_settings(subnets, &router_tx, &state) else {
+        let Err(error) = discover_camera_settings(Vec::new(), subnets, &router_tx, &state, None)
+        else {
             panic!("excessive discovery subnets must be rejected");
         };
 

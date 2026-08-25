@@ -16,7 +16,14 @@ const fontSourceRoots = [
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
 	optimizeDeps: {
-		include: ['@lucide/svelte/icons/arrow-up', '@lucide/svelte/icons/loader-circle']
+		include: [
+			'@lucide/svelte/icons/arrow-up',
+			'@lucide/svelte/icons/copy',
+			'@lucide/svelte/icons/eye',
+			'@lucide/svelte/icons/eye-off',
+			'@lucide/svelte/icons/loader-circle',
+			'@lucide/svelte/icons/rotate-cw'
+		]
 	},
 	server: {
 		fs: {

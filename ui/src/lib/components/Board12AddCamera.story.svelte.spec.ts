@@ -38,7 +38,7 @@ describe('Board 12 desktop Add Camera story', () => {
 		]);
 	});
 
-	it('shows ONVIF candidates without claiming decoded media evidence before save', async () => {
+	it('shows authenticated main and sub keyframe evidence before save', async () => {
 		await page.viewport(1440, 900);
 		const { container } = await render(Board12AddCameraStory);
 		const frame = container.querySelector<HTMLElement>('[data-paper-scenario]');
@@ -50,17 +50,14 @@ describe('Board 12 desktop Add Camera story', () => {
 		await expect.element(page.getByText('1 · Find & connect', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('ONVIF LOOKUP FROM STEP 1', { exact: true })).toBeVisible();
 		await expect
-			.element(page.getByText('ENDPOINT DECLARATION', { exact: true }).first())
+			.element(page.getByText('AUTHENTICATED MEDIA', { exact: true }).first())
 			.toBeVisible();
-		await expect.element(page.getByText('ONVIF REPORTED', { exact: true }).first()).toBeVisible();
+		await expect.element(page.getByText('VERIFIED', { exact: true }).first()).toBeVisible();
 		await expect
-			.element(
-				page.getByText('Decoded stream evidence is unavailable before save', { exact: true })
-			)
+			.element(page.getByText('Main and sub video + keyframe verified', { exact: true }))
 			.toBeVisible();
-		expect(frame!.textContent).not.toContain('DECODING');
-		expect(frame!.textContent).not.toContain('FIRST KEYFRAME');
-		expect(frame!.textContent).not.toContain('AUTHENTICATED');
+		expect(frame!.textContent).toContain('FIRST KEYFRAME');
+		expect(frame!.textContent).toContain('H265 · 3840x2160');
 		expect(frame!.textContent).not.toContain('write-only-password');
 	});
 });

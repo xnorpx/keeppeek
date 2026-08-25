@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import type { CameraStreamVerification } from '../src/lib/types';
 import { mockControlPeer } from './fixtures/control-peer';
 
 const discoveredCamera = {
@@ -72,10 +73,14 @@ async function completeThroughReview(page: Page): Promise<void> {
 	await expect(page.getByRole('heading', { name: 'Connection options' })).toBeVisible();
 	await page.getByRole('button', { name: 'Continue' }).click();
 	await expect(
-		page.getByText('ONVIF reported candidate RTSP endpoints.', { exact: true })
+		page.getByText('KeepPeek received authenticated video evidence.', { exact: true })
 	).toBeVisible();
 	await desktopWizard.getByLabel(/Recording stream/).fill('rtsp://192.0.2.77:8554/live/main');
 	await desktopWizard.getByLabel(/Live stream/).fill('rtsp://192.0.2.77:8554/live/sub');
+	await desktopWizard.getByRole('button', { name: 'Verify streams' }).click();
+	await expect(
+		desktopWizard.getByText('KeepPeek received authenticated video evidence.', { exact: true })
+	).toBeVisible();
 	await page.getByRole('button', { name: 'Continue' }).click();
 	await expect(desktopWizard.getByLabel('Camera name')).toHaveValue('Front Gate');
 	await page.getByRole('button', { name: 'Continue' }).click();
@@ -92,6 +97,22 @@ async function reachMobileStreams(page: Page): Promise<void> {
 	await findStage.getByRole('button', { name: 'Connect' }).click();
 	await expect(page.locator('[data-mobile-camera-wizard="streams"]')).toBeVisible();
 }
+
+test('renders exactly one accessible wizard owner at each responsive breakpoint', async ({
+	page
+}) => {
+	await mockControlPeer(page);
+	await page.goto('/cameras/new');
+	await expect(page.getByLabel('Address or RTSP URL')).toHaveCount(1);
+	await expect(page.getByLabel('Username')).toHaveCount(1);
+	await expect(page.getByLabel('Password')).toHaveCount(1);
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	await expect(page.locator('[data-mobile-camera-wizard="find-connect"]')).toBeVisible();
+	await expect(page.getByLabel('Address or RTSP URL')).toHaveCount(1);
+	await expect(page.getByLabel('Username')).toHaveCount(1);
+	await expect(page.getByLabel('Password')).toHaveCount(1);
+});
 
 test('Board 12 discovers and saves a camera only after the fifth-step review', async ({ page }) => {
 	let releaseDiscovery!: () => void;
@@ -111,13 +132,14 @@ test('Board 12 discovers and saves a camera only after the fifth-step review', a
 	const progress = page.getByRole('status', { name: 'Camera discovery progress' });
 	await expect(progress).toContainText('0 devices answered so far');
 	await expect(progress).toContainText('1 /24 network');
-	await expect(
-		page.getByRole('progressbar', { name: 'Five-second discovery window' })
-	).toHaveAttribute('aria-valuemax', '5000');
+	await expect(page.getByRole('progressbar', { name: 'Discovery time target' })).toHaveAttribute(
+		'aria-valuemax',
+		'5000'
+	);
 	releaseDiscovery();
 	await expect(page.getByRole('button', { name: /Front Gate/ })).toBeVisible();
 	await expect(progress).toHaveCount(0);
-	expect(controls.discoverySubnets).toEqual([[1]]);
+	expect(controls.discoveryNetworks).toEqual([['192.168.1.0/24']]);
 
 	await completeThroughReview(page);
 	expect(controls.cameraUpdates).toEqual([]);
@@ -125,7 +147,16 @@ test('Board 12 discovers and saves a camera only after the fifth-step review', a
 	await page.getByRole('button', { name: 'Save camera' }).click();
 
 	await expect(page.getByRole('region', { name: 'Camera saved' })).toBeVisible();
-	await expect(page.getByText('The server reported that a restart is required')).toBeVisible();
+	await expect(page.getByText('RESTART REQUIRED', { exact: true })).toBeVisible();
+	await expect(page.getByText('Saved to configuration. Restart KeepPeek')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Open camera' })).toHaveAttribute(
+		'href',
+		'/camera?camera=192.0.2.77'
+	);
+	await expect(page.getByRole('link', { name: 'Restart KeepPeek' })).toHaveAttribute(
+		'href',
+		'/settings#appearance'
+	);
 	expect(controls.cameraUpdates).toEqual([
 		{
 			ip: '192.0.2.77',
@@ -139,11 +170,199 @@ test('Board 12 discovers and saves a camera only after the fifth-step review', a
 				sub_rtsp_url: 'rtsp://192.0.2.77:8554/live/sub',
 				uid: null,
 				backend: 'reo-proto',
-				transport: 'tcp'
+				transport: 'tcp',
+				record_generic_motion_events: false,
+				recording_mode: 'event-boost',
+				event_recording_duration_secs: 60
 			}
 		}
 	]);
 	await expect(page.getByText('write-only-password', { exact: true })).toHaveCount(0);
+});
+
+test('streams partial discovery rows and cancels without discarding them', async ({ page }) => {
+	let releaseDiscovery!: () => void;
+	const discoveryGate = new Promise<void>((resolve) => {
+		releaseDiscovery = resolve;
+	});
+	const controls = await mockControlPeer(page, {
+		discoveryGate,
+		discoveryPartialCameras: [discoveredCamera],
+		discoveredCameras: [discoveredCamera]
+	});
+
+	await page.goto('/cameras/new');
+	const wizard = page.locator('[data-desktop-camera-wizard]');
+	await wizard.getByRole('button', { name: 'Discover cameras' }).click();
+	await expect(wizard.getByRole('button', { name: /Front Gate/ })).toBeVisible();
+	await expect(wizard.getByRole('status', { name: 'Camera discovery progress' })).toBeVisible();
+	await expect.poll(() => controls.discoveryPolls).toBeGreaterThan(0);
+
+	await wizard.getByRole('button', { name: 'Cancel discovery' }).click();
+	await expect(
+		wizard.getByText('Discovery cancelled. Cameras already found remain available.')
+	).toBeVisible();
+	await expect.poll(() => controls.discoveryCancelIds).toHaveLength(1);
+	await wizard.getByRole('button', { name: /Front Gate/ }).click();
+	await expect(wizard.getByText('Selected 192.0.2.77')).toBeVisible();
+	expect(controls.cameraUpdates).toEqual([]);
+	releaseDiscovery();
+});
+
+test('uses the preferred attached network and configured credential defaults without exposing them', async ({
+	page
+}) => {
+	const controls = await mockControlPeer(page, {
+		onboardingDefaults: {
+			username_configured: true,
+			password_configured: true,
+			networks: [
+				{ cidr: '192.168.137.0/24', interface_name: 'en0', preferred: true },
+				{ cidr: '192.168.1.0/24', interface_name: 'bridge0', preferred: false }
+			]
+		},
+		discoveredCameras: [discoveredCamera],
+		cameraUpdateResult: {
+			camera: {
+				...savedCamera,
+				main_rtsp_url: 'rtsp://192.0.2.77:554/onvif-main',
+				sub_rtsp_url: 'rtsp://192.0.2.77:554/onvif-sub'
+			},
+			restart_required: true
+		}
+	});
+
+	await page.goto('/cameras/new');
+	const wizard = page.locator('[data-desktop-camera-wizard]');
+	await expect(wizard.getByLabel('Subnet prefixes')).toHaveValue('192.168.137');
+	await expect(
+		wizard.getByRole('button', { name: /192\.168\.137\.0\/24.*ACTIVE/ })
+	).toHaveAttribute('aria-pressed', 'true');
+	await expect(wizard.getByRole('button', { name: /192\.168\.1\.0\/24/ })).toHaveAttribute(
+		'aria-pressed',
+		'false'
+	);
+	await wizard.getByRole('button', { name: 'Discover cameras' }).click();
+	await wizard.getByRole('button', { name: /Front Gate/ }).click();
+	await expect(wizard.getByLabel('Username')).toHaveValue('');
+	await expect(wizard.getByLabel('Username')).toHaveAttribute('placeholder', 'Configured default');
+	await expect(wizard.getByLabel('Password')).toHaveValue('');
+	await expect(wizard.getByLabel('Password')).toHaveAttribute('placeholder', 'Configured default');
+	await expect(wizard).toContainText(
+		'Configured camera defaults are used without exposing their values.'
+	);
+	await expect(wizard.locator('[data-onvif-probe-status]')).toContainText(
+		'ONVIF stream endpoints are ready on port 8000.'
+	);
+
+	await wizard.getByRole('button', { name: 'Continue' }).click();
+	await wizard.getByRole('button', { name: 'Continue' }).click();
+	await expect(wizard).toContainText('KeepPeek received authenticated video evidence.');
+	await wizard.getByRole('button', { name: 'Continue' }).click();
+	await wizard.getByRole('button', { name: 'Continue' }).click();
+	await wizard.getByRole('button', { name: 'Save camera' }).click();
+
+	await expect(page.getByRole('region', { name: 'Camera saved' })).toBeVisible();
+	expect(controls.discoveryNetworks).toEqual([['192.168.137.0/24']]);
+	expect(controls.cameraUpdates).toHaveLength(1);
+	expect(controls.cameraUpdates[0]?.update).not.toHaveProperty('username');
+	expect(controls.cameraUpdates[0]?.update).not.toHaveProperty('password');
+	await expect(page.getByText('operator', { exact: true })).toHaveCount(0);
+});
+
+test('preserves a manually entered subnet when navigating back', async ({ page }) => {
+	await mockControlPeer(page);
+	await page.goto('/cameras/new');
+	const wizard = page.locator('[data-desktop-camera-wizard]');
+	await wizard.getByLabel('Subnet prefixes').fill('10.42.7');
+	await wizard.getByLabel('Address or RTSP URL').fill('192.0.2.77');
+	await wizard.getByLabel('Username').fill('operator');
+	await wizard.getByLabel('Password').fill('write-only-password');
+	await wizard.getByRole('button', { name: 'Continue' }).click();
+	await expect(wizard.getByRole('heading', { name: 'Connection options' })).toBeVisible();
+
+	await wizard.getByRole('button', { name: 'Back' }).click();
+
+	await expect(wizard.getByLabel('Subnet prefixes')).toHaveValue('10.42.7');
+});
+
+test('blocks review and save until required media and keyframes are verified', async ({ page }) => {
+	const failedStreams: CameraStreamVerification[] = [
+		{
+			stream: 'main',
+			verified: false,
+			codec: 'h264',
+			resolution: '1920x1080',
+			declared_fps: 25,
+			frames_received: 4,
+			keyframe_received: false,
+			elapsed_ms: 500,
+			error: 'No keyframe arrived.'
+		},
+		{
+			stream: 'sub',
+			verified: true,
+			codec: 'h264',
+			resolution: '640x360',
+			declared_fps: 15,
+			frames_received: 4,
+			keyframe_received: true,
+			elapsed_ms: 500,
+			error: null
+		}
+	];
+	const streamProbeResult = { streams: failedStreams };
+	await mockControlPeer(page, { discoveredCameras: [discoveredCamera], streamProbeResult });
+	await page.goto('/cameras/new');
+	const wizard = page.locator('[data-desktop-camera-wizard]');
+	await wizard.getByRole('button', { name: 'Discover cameras' }).click();
+	await wizard.getByRole('button', { name: /Front Gate/ }).click();
+	await wizard.getByLabel('Username').fill('operator');
+	await wizard.getByLabel('Password').fill('write-only-password');
+	await wizard.getByRole('button', { name: 'Continue' }).click();
+	await wizard.getByRole('button', { name: 'Continue' }).click();
+
+	await expect(wizard.getByText('No keyframe arrived.', { exact: true })).toBeVisible();
+	await expect(wizard.getByText('Main · NOT VERIFIED', { exact: true })).toBeVisible();
+	await expect(wizard.getByRole('button', { name: 'Continue' })).toBeDisabled();
+	await expect(page.getByRole('heading', { name: 'Review & save' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Save camera' })).toHaveCount(0);
+
+	streamProbeResult.streams = failedStreams.map((stream) => ({
+		...stream,
+		verified: true,
+		keyframe_received: true,
+		error: null
+	}));
+	await wizard.getByRole('button', { name: 'Verify streams' }).click();
+	await expect(
+		wizard.getByText('KeepPeek received authenticated video evidence.', { exact: true })
+	).toBeVisible();
+	await expect(wizard.getByRole('button', { name: 'Continue' })).toBeEnabled();
+});
+
+test('reports a dynamically started camera as online without asking for a restart', async ({
+	page
+}) => {
+	const controls = await mockControlPeer(page, {
+		discoveredCameras: [discoveredCamera],
+		cameraUpdateResult: {
+			camera: { ...savedCamera, health: 'online' },
+			restart_required: false
+		}
+	});
+
+	await page.goto('/cameras/new');
+	await page.getByRole('button', { name: 'Discover cameras' }).click();
+	await completeThroughReview(page);
+	await page.getByRole('button', { name: 'Save camera' }).click();
+
+	const saved = page.getByRole('region', { name: 'Camera saved' });
+	await expect(saved.getByText('ONLINE', { exact: true })).toBeVisible();
+	await expect(saved).toContainText('Saved, started, and reporting online.');
+	await expect(saved.getByRole('link', { name: 'Restart KeepPeek' })).toHaveCount(0);
+	await expect(saved.getByRole('link', { name: 'Open diagnostics' })).toHaveCount(0);
+	expect(controls.cameraUpdates).toHaveLength(1);
 });
 
 test('preserves the reviewed draft when the final config write is unavailable', async ({
@@ -162,11 +381,9 @@ test('preserves the reviewed draft when the final config write is unavailable', 
 	await expect(page.getByRole('alert')).toContainText('camera config is not writable');
 	await expect(page.getByRole('heading', { name: 'Review & save' })).toBeVisible();
 	await expect(page.getByText('Front Gate', { exact: true })).toBeVisible();
-	await expect(
-		page
-			.locator('[data-desktop-camera-wizard]')
-			.getByText('rtsp://192.0.2.77:8554/live/main', { exact: true })
-	).toBeVisible();
+	const review = page.locator('[data-desktop-camera-wizard]');
+	await expect(review.getByText('event-boost', { exact: true })).toBeVisible();
+	await expect(review.getByText('Video + keyframe verified', { exact: true })).toHaveCount(2);
 	await expect(page.getByRole('button', { name: 'Save camera' })).toBeEnabled();
 	expect(controls.cameraUpdates).toHaveLength(1);
 });
@@ -208,10 +425,53 @@ test('uses catalog references when ONVIF does not report stream endpoints', asyn
 		'rtsp://192.0.2.77:554/Preview_01_sub'
 	);
 	await expect(
-		desktopWizard.getByText('Catalog candidate RTSP endpoints are applied.')
+		desktopWizard.getByText('KeepPeek received authenticated video evidence.')
 	).toBeVisible();
 	expect(controls.streamProbes).toEqual([{ ip: '192.0.2.77', onvifPort: 8000 }]);
 	expect(controls.cameraUpdates).toEqual([]);
+});
+
+test('reviews database, ONVIF, and measured stream evidence as separate sources', async ({
+	page
+}) => {
+	await mockControlPeer(page, {
+		discoveredCameras: [{ ...discoveredCamera, catalog: catalogCamera }],
+		streamProbeResult: {
+			manufacturer: 'Reolink',
+			model: 'RLC-811A',
+			firmware_version: 'v3.1.0',
+			serial_number: 'SERIAL-REDACTED',
+			hardware_id: 'IPC_523128M8MP',
+			profiles: [
+				{
+					name: 'mainStream',
+					stream: 'main',
+					encoding: 'h265',
+					resolution: '3840x2160',
+					framerate: 25,
+					bitrate_kbps: 8192,
+					gop: 25,
+					h264_profile: null,
+					audio: null
+				}
+			]
+		}
+	});
+
+	await page.goto('/cameras/new');
+	await page.getByRole('button', { name: 'Discover cameras' }).click();
+	await completeThroughReview(page);
+	const review = page.locator('[data-desktop-camera-wizard]');
+	await expect(review.getByText('DATABASE REFERENCE', { exact: true })).toBeVisible();
+	await expect(review.getByText('ONVIF report', { exact: true })).toBeVisible();
+	await expect(review.getByText('CAMERA REPORTED', { exact: true })).toBeVisible();
+	await expect(review.getByText('Live media proof', { exact: true })).toBeVisible();
+	await expect(review.getByText('MEASURED BY KEEPPEEK', { exact: true })).toBeVisible();
+	await expect(review).toContainText('Firmware v3.1.0');
+	await expect(review).toContainText('MAIN · H265 · 3840x2160 · 25 fps · 8192 kbps · GOP 25');
+	await expect(review).toContainText('Field of view 105-31 horizontal');
+	await expect(review).toContainText('Night vision hybrid');
+	await expect(review).toContainText('Two-way audio');
 });
 
 test('tries a candidate camera automatically from the first screen', async ({ page }) => {
@@ -247,17 +507,17 @@ test('tries ONVIF from the first screen after direct address, model, and credent
 	await manualCamera.getByLabel('Password').fill('write-only-password');
 
 	await expect(manualCamera.locator('[data-onvif-probe-status]')).toContainText(
-		'ONVIF stream endpoints are ready on port 80.'
+		'ONVIF stream endpoints are ready on port 8000.'
 	);
 	await page.getByRole('button', { name: 'Continue' }).click();
 	await expect(page.getByRole('heading', { name: 'Connection options' })).toBeVisible();
 	await expect(page.locator('[data-desktop-camera-wizard]').getByLabel('ONVIF port')).toHaveValue(
-		'80'
+		'8000'
 	);
 	expect(controls.catalogSearches).toEqual([
 		{ query: 'RLC-811A', limit: undefined, ip: '192.0.2.88' }
 	]);
-	expect(controls.streamProbes).toEqual([{ ip: '192.0.2.88', onvifPort: null }]);
+	expect(controls.streamProbes).toEqual([{ ip: '192.0.2.88', onvifPort: 8000 }]);
 	expect(controls.cameraUpdates).toEqual([]);
 });
 
@@ -284,14 +544,14 @@ test('keeps manual stream entry available while ONVIF lookup is pending', async 
 	await page.getByRole('button', { name: 'Continue to streams' }).click();
 	await page.getByRole('button', { name: 'Continue to streams' }).click();
 	await expect(
-		desktopWizard.getByText('ONVIF lookup is in progress.', { exact: true })
+		desktopWizard.getByText('Authenticating and waiting for video keyframes.', { exact: true })
 	).toBeVisible();
 	await expect(desktopWizard.getByLabel(/Recording stream/)).toBeEditable();
 	await expect(desktopWizard.getByLabel(/Live stream/)).toBeEditable();
 
 	releaseProbe();
 	await expect(
-		desktopWizard.getByText('ONVIF reported candidate RTSP endpoints.', { exact: true })
+		desktopWizard.getByText('KeepPeek received authenticated video evidence.', { exact: true })
 	).toBeVisible();
 	await expect(desktopWizard.getByLabel(/Recording stream/)).toHaveValue(
 		'rtsp://192.0.2.77:554/onvif-main'
@@ -315,7 +575,9 @@ test('auto-fills ONVIF stream endpoints before manual stream entry', async ({ pa
 	await page.getByRole('button', { name: 'Continue' }).click();
 	await page.getByRole('button', { name: 'Continue' }).click();
 
-	await expect(desktopWizard.getByText('ONVIF reported candidate RTSP endpoints.')).toBeVisible();
+	await expect(
+		desktopWizard.getByText('KeepPeek received authenticated video evidence.')
+	).toBeVisible();
 	await expect(desktopWizard.getByLabel(/Recording stream/)).toHaveValue(
 		'rtsp://192.0.2.77:554/onvif-main'
 	);
@@ -396,9 +658,9 @@ test('tries ONVIF on mobile before opening streams', async ({ page }) => {
 	await mobileWizard.getByLabel('Password').fill('write-only-password');
 
 	await expect(
-		mobileWizard.getByText('ONVIF stream endpoints are ready on port 80', { exact: true })
+		mobileWizard.getByText('ONVIF stream endpoints are ready on port 8000', { exact: true })
 	).toBeVisible();
-	expect(controls.streamProbes).toEqual([{ ip: '192.0.2.88', onvifPort: null }]);
+	expect(controls.streamProbes).toEqual([{ ip: '192.0.2.88', onvifPort: 8000 }]);
 	await expect(page.locator('[data-mobile-camera-wizard="streams"]')).toHaveCount(0);
 	expect(controls.cameraUpdates).toEqual([]);
 });
@@ -469,14 +731,14 @@ test('applies mobile catalog stream suggestions with visible confirmation', asyn
 	await findStage.getByRole('button', { name: 'Connect' }).click();
 
 	const streams = page.locator('[data-mobile-camera-wizard="streams"]');
-	await expect(streams.locator('button[aria-pressed="true"]')).toHaveCount(2);
+	await expect(streams.locator('button[aria-pressed="true"]')).toHaveCount(1);
 	await expect(streams.getByLabel('Recording stream')).toHaveValue(
 		'rtsp://192.0.2.88:554/Preview_01_main'
 	);
 	await expect(streams.getByLabel('Live stream')).toHaveValue(
 		'rtsp://192.0.2.88:554/Preview_01_sub'
 	);
-	expect(controls.streamProbes).toEqual([{ ip: '192.0.2.88', onvifPort: null }]);
+	expect(controls.streamProbes).toEqual([{ ip: '192.0.2.88', onvifPort: 8000 }]);
 	expect(controls.cameraUpdates).toEqual([]);
 });
 
@@ -527,21 +789,17 @@ test('renders Board 25 mobile find and connect without writing configuration', a
 	expect(controls.cameraUpdates).toEqual([]);
 });
 
-test('renders Board 25 ONVIF candidate streams without claiming decoded proof', async ({
-	page
-}) => {
+test('renders Board 25 with authenticated video and keyframe proof', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	const controls = await mockControlPeer(page, { discoveredCameras: [discoveredCamera] });
 	await reachMobileStreams(page);
 
 	const stage = page.locator('[data-mobile-camera-wizard="streams"]');
-	await expect(stage).toContainText('ONVIF REPORTED');
+	await expect(stage).toContainText('H264 · 1920x1080 · KEYFRAME');
 	await expect(stage.getByLabel('Recording stream')).toHaveValue(
 		'rtsp://192.0.2.77:554/onvif-main'
 	);
-	await expect(stage).toContainText('Codec evidence is unavailable');
-	await expect(stage).not.toContainText('DECODING');
-	await expect(stage).not.toContainText('TESTED');
+	await expect(stage).toContainText('Required video streams and keyframes are verified.');
 	await expect(stage.getByRole('button', { name: 'Review' })).toBeInViewport();
 	expect(controls.cameraUpdates).toEqual([]);
 });
@@ -557,13 +815,15 @@ test('renders Board 25 mobile review and writes only from the final action', asy
 	const streams = page.locator('[data-mobile-camera-wizard="streams"]');
 	await streams.getByLabel('Recording stream').fill('rtsp://192.0.2.77:8554/live/main');
 	await streams.getByLabel('Live stream').fill('rtsp://192.0.2.77:8554/live/sub');
+	await streams.getByRole('button', { name: 'Verify streams' }).click();
+	await expect(streams).toContainText('Required video streams and keyframes are verified.');
 	await streams.getByRole('button', { name: 'Review' }).click();
 
 	const review = page.locator('[data-mobile-camera-wizard="review"]');
 	await expect(review.getByLabel('CAMERA NAME')).toHaveValue('Front Gate');
 	await expect(review).toContainText('Retention impact unavailable');
 	await expect(review).toContainText('Saving is the first configuration write.');
-	await expect(review).not.toContainText('Connection and both streams passed.');
+	await expect(review).toContainText('Authenticated video and required keyframes are verified.');
 	expect(controls.cameraUpdates).toEqual([]);
 	await review.getByRole('button', { name: 'Save camera' }).click();
 	await expect(page.getByRole('region', { name: 'Camera saved' })).toBeVisible();
@@ -580,7 +840,10 @@ test('renders Board 25 mobile review and writes only from the final action', asy
 				sub_rtsp_url: 'rtsp://192.0.2.77:8554/live/sub',
 				uid: null,
 				backend: 'reo-proto',
-				transport: 'tcp'
+				transport: 'tcp',
+				record_generic_motion_events: false,
+				recording_mode: 'event-boost',
+				event_recording_duration_secs: 60
 			}
 		}
 	]);

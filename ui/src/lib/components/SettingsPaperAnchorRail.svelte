@@ -2,7 +2,6 @@
 	type SectionId =
 		| 'access'
 		| 'appearance'
-		| 'camera-defaults'
 		| 'event-sources'
 		| 'groups'
 		| 'integrations'
@@ -17,7 +16,6 @@
 	let { active }: Props = $props();
 	const sections: Array<{ id: SectionId; label: string }> = [
 		{ id: 'storage', label: 'Storage & retention' },
-		{ id: 'camera-defaults', label: 'Camera defaults' },
 		{ id: 'event-sources', label: 'Event sources' },
 		{ id: 'groups', label: 'Groups' },
 		{ id: 'integrations', label: 'Integrations' },

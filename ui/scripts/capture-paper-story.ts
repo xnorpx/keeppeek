@@ -229,12 +229,12 @@ const captures: Record<string, CaptureConfig> = {
 		candidatePath: 'test-results/board-22-mobile-events-candidate.png',
 		referencePath: 'design/paper/keeppeek-nvr-v34/references/22-mobile-events.png'
 	},
-	'settings.desktop.camera-defaults': {
+	'camera.desktop.configuration': {
 		width: 1374,
 		height: 806,
 		theme: 'dark',
-		candidatePath: 'test-results/board-23-camera-defaults-candidate.png',
-		referencePath: 'design/paper/keeppeek-nvr-v34/references/23-camera-defaults-content.png'
+		candidatePath: 'test-results/board-23-camera-configuration-candidate.png',
+		referencePath: 'design/paper/keeppeek-nvr-v34/references/23-camera-configuration.png'
 	},
 	'camera.mobile.details-ptz': {
 		width: 390,
@@ -305,13 +305,6 @@ const captures: Record<string, CaptureConfig> = {
 		theme: 'dark',
 		candidatePath: 'test-results/board-27-mobile-administration-candidate.png',
 		referencePath: 'design/paper/keeppeek-nvr-v34/references/27-mobile-administration-index.png'
-	},
-	'settings.mobile.camera-defaults': {
-		width: 390,
-		height: 844,
-		theme: 'dark',
-		candidatePath: 'test-results/board-27-mobile-camera-defaults-candidate.png',
-		referencePath: 'design/paper/keeppeek-nvr-v34/references/27-mobile-camera-defaults.png'
 	},
 	'settings.mobile.access': {
 		width: 390,

@@ -7,7 +7,7 @@
 		ServerHealthResponse,
 		SettingsConfigUpdate
 	} from '$lib/types';
-	import { mostSpecificDiskForPath } from '$lib/storage-retention';
+	import { mostSpecificDiskForPath, suggestedStorageDisks } from '$lib/storage-retention';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
@@ -59,6 +59,7 @@
 	let reviewHeading = $state<HTMLHeadingElement | null>(null);
 
 	let disks = $derived(health?.system.disks ?? []);
+	let suggestedDisks = $derived(suggestedStorageDisks(disks, config.storage.long_term_path));
 	let sourceDisk = $derived(mostSpecificDiskForPath(config.storage.long_term_path, disks));
 	let destinationDisk = $derived(mostSpecificDiskForPath(draft.longTermPath, disks));
 	let locationsChanged = $derived(
@@ -414,9 +415,9 @@
 								{diskSummary(destinationDisk)}
 							</p>
 						{/if}
-						{#if disks.length > 1}
+						{#if suggestedDisks.length > 1}
 							<div class="mt-3 flex flex-wrap gap-2" aria-label="Reported storage devices">
-								{#each disks as disk (disk.mount_point)}
+								{#each suggestedDisks as disk (disk.mount_point)}
 									<Button
 										type="button"
 										variant="outline"
@@ -427,6 +428,10 @@
 									</Button>
 								{/each}
 							</div>
+							<p class="mt-2 text-xs text-text-faint">
+								Suggested devices are deduplicated persistent mounts with at least 16 GiB. Enter
+								another path manually when needed.
+							</p>
 						{/if}
 					</section>
 

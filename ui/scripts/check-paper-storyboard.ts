@@ -555,9 +555,10 @@ if (
 	throw new Error('Board 03 must explain responsive Camera access');
 }
 if (
-	architectureManifest.settingsSections.length !== 10 ||
-	new Set(architectureManifest.settingsSections).size !== 10 ||
+	architectureManifest.settingsSections.length !== 9 ||
+	new Set(architectureManifest.settingsSections).size !== 9 ||
 	!architectureManifest.settingsSections.includes('Access') ||
+	architectureManifest.settingsSections.includes('Camera defaults') ||
 	architectureManifest.constraints.length === 0
 ) {
 	throw new Error('Board 03 Settings architecture is incomplete');

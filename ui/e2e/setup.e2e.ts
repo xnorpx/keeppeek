@@ -45,23 +45,23 @@ const health = {
 	}
 };
 
-async function mockFirstRun(page: Page): Promise<string[]> {
+async function mockFirstRun(page: Page) {
 	const writes: string[] = [];
-	await mockControlPeer(page, { runtimeConfiguration: config, health });
+	const controls = await mockControlPeer(page, { runtimeConfiguration: config, health });
 	page.on('request', (request) => {
 		const pathname = new URL(request.url()).pathname;
 		if (request.method() !== 'GET' && pathname !== '/create' && pathname !== '/delete') {
 			writes.push(`${request.method()} ${request.url()}`);
 		}
 	});
-	return writes;
+	return { controls, writes };
 }
 
-test('Board 21 keeps first run blocked, names empty states, and opens camera onboarding', async ({
+test('Board 21 verifies storage, names empty states, and opens camera onboarding', async ({
 	page
 }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
-	const writes = await mockFirstRun(page);
+	const { controls, writes } = await mockFirstRun(page);
 
 	await page.goto('/setup');
 
@@ -72,19 +72,20 @@ test('Board 21 keeps first run blocked, names empty states, and opens camera onb
 	await expect(page.getByText('7.9 TB FREE · CAPACITY OBSERVED')).toBeVisible();
 	await expect(page.locator('[data-storage-write-status]')).toHaveAttribute(
 		'data-storage-write-status',
-		'unavailable'
+		'verified'
 	);
-	await expect(page.getByText('WRITE PROOF UNAVAILABLE')).toBeVisible();
+	await expect(page.getByText('WRITE PROOF VERIFIED')).toBeVisible();
+	await expect(page.getByText('Write, flush, rename, and cleanup succeeded.')).toBeVisible();
 	await expect(page.getByText('DETECTED FROM THIS BROWSER')).toBeVisible();
 	await expect(page.getByText(/Server update required · keeppeek\.identity\.v1/)).toBeVisible();
-	const startRecorder = page.getByRole('button', { name: 'Start the recorder' });
-	await expect(startRecorder).toBeDisabled();
+	const startRecorder = page.getByRole('button', { name: 'Continue to camera setup' });
+	await expect(startRecorder).toBeEnabled();
 	await expect(startRecorder).toBeInViewport();
 	await expect(page.getByRole('heading', { name: 'No cameras yet' })).toBeVisible();
 	await expect(page.locator('[data-first-run-empty-states] [data-empty-state]')).toHaveCount(3);
 	await expect(page.getByText('NO FOOTAGE YET')).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Registry unavailable' })).toBeDisabled();
-	await expect(page.locator('[data-first-run-panel]')).not.toContainText('WRITABLE');
+	expect(controls.storageProbePaths).toEqual(['/mnt/keeppeek']);
 	await expect(page.locator('[data-first-run-panel]')).not.toContainText(
 		'DETECTED FROM THIS MACHINE'
 	);
@@ -93,11 +94,17 @@ test('Board 21 keeps first run blocked, names empty states, and opens camera onb
 	);
 	expect(writes).toEqual([]);
 
-	await page.getByRole('link', { name: 'Set up recording storage' }).click();
+	await page.getByRole('link', { name: 'Change recording storage' }).click();
 	await expect(page).toHaveURL(/\/settings\?edit=storage#storage$/);
 	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
 	await expect(page.getByLabel('Folder path')).toHaveValue('/mnt/keeppeek');
 	await expect(page.getByText('Confirm unlimited storage before continuing.')).toBeVisible();
+	expect(writes).toEqual([]);
+
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Continue to camera setup' }).click();
+	await expect(page).toHaveURL(/\/cameras\/new$/);
+	await expect(page.getByRole('heading', { name: 'Add camera' })).toBeVisible();
 	expect(writes).toEqual([]);
 
 	await page.goto('/setup');

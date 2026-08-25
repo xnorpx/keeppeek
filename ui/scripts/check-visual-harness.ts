@@ -47,10 +47,11 @@ const require = createRequire(import.meta.url);
 const loki = require(resolve('visual-harness/loki.config.cjs')) as LokiConfig;
 const packageManifest = JSON.parse(
 	await readFile(resolve('visual-harness/package.json'), 'utf8')
-) as { scripts: Record<string, string> };
+) as { scripts: Record<string, string>; devDependencies: Record<string, string> };
 const workflow = await readFile(resolve('..', '.github/workflows/visual-regression.yml'), 'utf8');
 const localPreviewHtml = await readFile(resolve('visual-harness/local-preview.html'), 'utf8');
 const localPreviewCss = await readFile(resolve('visual-harness/local-preview.css'), 'utf8');
+const storybookReadiness = await readFile(resolve('visual-harness/storybook-readiness.ts'), 'utf8');
 
 if (
 	!localPreviewHtml.includes('data-visual-fixture-notice') ||
@@ -64,6 +65,12 @@ if (
 	)
 ) {
 	throw new Error('Demo captures must hide the local fixture-data notice.');
+}
+if (
+	!storybookReadiness.includes('waitForStorybookIndexBeforeExtract') ||
+	!storybookReadiness.includes('await storybookPreview.ready()')
+) {
+	throw new Error('Loki story extraction must wait for the Storybook index to be ready.');
 }
 
 for (const skippedStory of ['Foundation/Capability Gate Unsupported', 'Demos/Peek History']) {
@@ -112,6 +119,9 @@ for (const reference of references) {
 }
 
 const ciCommand = packageManifest.scripts['loki:test:ci'];
+if (packageManifest.devDependencies['@ferocia-oss/osnap'] !== '1.3.5') {
+	throw new Error("The visual harness must pin Loki's eagerly required osnap runtime.");
+}
 if (
 	!ciCommand?.includes("--configurationFilter '^chrome\\.'") ||
 	!ciCommand.includes('--requireReference=false') ||

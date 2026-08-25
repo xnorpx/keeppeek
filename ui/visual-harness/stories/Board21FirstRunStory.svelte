@@ -55,6 +55,12 @@
 	data-paper-scenario="setup.desktop.first-run"
 	class="flex h-[785px] w-[1440px] items-start gap-6 overflow-hidden bg-ground [font-synthesis:none]"
 >
-	<FirstRunSetupPanel {config} {health} timeZone="Europe/Stockholm" paperFrame />
+	<FirstRunSetupPanel
+		{config}
+		{health}
+		timeZone="Europe/Stockholm"
+		writeProbe={{ writable: true, detail: 'Write, flush, rename, and cleanup succeeded.' }}
+		paperFrame
+	/>
 	<FirstRunEmptyStates cameraCount={config.camera_count} emptyDayLabel="18 AUG" paperFrame />
 </main>

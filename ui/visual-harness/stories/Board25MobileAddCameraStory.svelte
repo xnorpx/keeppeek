@@ -18,12 +18,17 @@
 		displayName: 'Side Gate',
 		username: 'admin',
 		password: 'write-only-password',
+		defaultUsernameConfigured: false,
+		defaultPasswordConfigured: false,
 		onvifPort: '8000',
 		httpPort: '80',
 		mainRtspUrl: 'rtsp://192.168.1.71/main',
 		subRtspUrl: 'rtsp://192.168.1.71/sub',
 		backend: 'reo-proto',
 		transport: 'tcp',
+		recordGenericMotionEvents: false,
+		recordingMode: 'event-boost',
+		eventRecordingDurationSeconds: '60',
 		discoveryEvidence: 'ONVIF · DS-2CD2387G2'
 	} satisfies CameraWizardDraft;
 

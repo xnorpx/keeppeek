@@ -836,11 +836,22 @@ fn credential_candidates(
     extend_unique(&mut passwords, cli_passwords.iter().map(String::as_str));
 
     for config_path in config_paths {
+        let defaults = config::load_camera_defaults(config_path)?;
+        extend_credentials_from_defaults(&mut usernames, &mut passwords, &defaults);
         let configured = config::load_cameras(config_path)?;
         extend_credentials_from_config(&mut usernames, &mut passwords, &configured);
     }
 
     Ok((usernames, passwords))
+}
+
+fn extend_credentials_from_defaults(
+    usernames: &mut Vec<String>,
+    passwords: &mut Vec<String>,
+    defaults: &config::CameraCredentialDefaults,
+) {
+    extend_unique(usernames, std::iter::once(defaults.username.as_str()));
+    extend_unique(passwords, std::iter::once(defaults.password.as_str()));
 }
 
 fn extend_credentials_from_config(
@@ -936,5 +947,20 @@ mod tests {
 
         assert_eq!(usernames, ["operator", "admin"]);
         assert_eq!(passwords, ["known-one", "known-two"]);
+    }
+
+    #[test]
+    fn camera_defaults_supply_discovery_candidates_without_configured_cameras() {
+        let defaults = config::CameraCredentialDefaults {
+            username: "admin".to_owned(),
+            password: "shared-password".to_owned(),
+        };
+        let mut usernames = Vec::new();
+        let mut passwords = Vec::new();
+
+        extend_credentials_from_defaults(&mut usernames, &mut passwords, &defaults);
+
+        assert_eq!(usernames, ["admin"]);
+        assert_eq!(passwords, ["shared-password"]);
     }
 }

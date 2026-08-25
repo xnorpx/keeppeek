@@ -29,8 +29,7 @@ describe('first-run storage evidence', () => {
 			mountPoint: '/mnt/keeppeek',
 			availableBytes: 7_900_000_000_000,
 			writeStatus: 'unavailable',
-			detail:
-				'KeepPeek does not expose a candidate storage write probe, so recording cannot be started from this screen.',
+			detail: 'Storage write verification has not run yet.',
 			canStartRecorder: false
 		});
 	});

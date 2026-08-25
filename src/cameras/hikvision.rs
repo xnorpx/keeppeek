@@ -3,9 +3,12 @@ use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const SADP_MULTICAST: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
@@ -51,25 +54,30 @@ struct SadpDevice {
     activated: Option<bool>,
 }
 
-pub(super) fn discover(duration: Duration) -> anyhow::Result<Vec<DiscoveredCamera>> {
-    let networks = network::local_networks()?;
+pub(super) fn discover(
+    duration: Duration,
+    networks: &[network::LocalNetwork],
+    cancelled: &AtomicBool,
+) -> anyhow::Result<Vec<DiscoveredCamera>> {
     let devices = Mutex::new(Vec::new());
 
     thread::scope(|scope| {
-        for local in &networks {
+        for local in networks {
             let devices = &devices;
-            scope.spawn(move || match discover_on_interface(local, duration) {
-                Ok(found) => match devices.lock() {
-                    Ok(mut devices) => devices.extend(found),
-                    Err(poisoned) => poisoned.into_inner().extend(found),
+            scope.spawn(
+                move || match discover_on_interface(local, duration, cancelled) {
+                    Ok(found) => match devices.lock() {
+                        Ok(mut devices) => devices.extend(found),
+                        Err(poisoned) => poisoned.into_inner().extend(found),
+                    },
+                    Err(error) => tracing::debug!(
+                        interface = local.interface_name,
+                        ip = %local.interface_ip,
+                        %error,
+                        "Hikvision SADP discovery failed on interface"
+                    ),
                 },
-                Err(error) => tracing::debug!(
-                    interface = local.interface_name,
-                    ip = %local.interface_ip,
-                    %error,
-                    "Hikvision SADP discovery failed on interface"
-                ),
-            });
+            );
         }
     });
 
@@ -117,10 +125,10 @@ pub(super) fn discover(duration: Duration) -> anyhow::Result<Vec<DiscoveredCamer
 fn discover_on_interface(
     local: &network::LocalNetwork,
     duration: Duration,
+    cancelled: &AtomicBool,
 ) -> anyhow::Result<Vec<SadpDevice>> {
     let socket = UdpSocket::bind(SocketAddrV4::new(local.interface_ip, 0))?;
     socket.set_broadcast(true)?;
-    socket.set_read_timeout(Some(duration))?;
 
     let uuid = probe_uuid();
     let probes = [
@@ -133,7 +141,6 @@ fn discover_on_interface(
     ];
     let destinations = HashSet::from([
         SocketAddrV4::new(SADP_MULTICAST, SADP_PORT),
-        SocketAddrV4::new(Ipv4Addr::BROADCAST, SADP_PORT),
         SocketAddrV4::new(local.broadcast, SADP_PORT),
     ]);
     for probe in &probes {
@@ -151,7 +158,16 @@ fn discover_on_interface(
 
     let mut devices = Vec::new();
     let mut buffer = vec![0; MAX_PACKET_SIZE];
+    let deadline = Instant::now() + duration;
     loop {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        socket.set_read_timeout(Some(remaining.min(Duration::from_millis(100))))?;
         match socket.recv_from(&mut buffer) {
             Ok((length, remote)) => {
                 let Ok(response) = std::str::from_utf8(&buffer[..length]) else {
@@ -167,7 +183,7 @@ fn discover_on_interface(
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                break;
+                continue;
             }
             Err(error) => return Err(error.into()),
         }

@@ -50,10 +50,10 @@ The initial API has four operations:
 
 ## Access key
 
-KeepPeek uses one operator GUID as the HTTP Bearer secret. The value is a 128-bit integer.
-On the wire and in `config.toml` it is the usual hyphenated UUID string. The integer `0` is
-reserved: it means unset, and tests may use `access_key = 0` / `AccessKey(0)` without minting a
-real secret.
+KeepPeek uses one operator GUID as the HTTP Bearer secret. The value is a 128-bit integer. On the
+wire it is the usual hyphenated UUID string; `config.toml` stores
+`{secret:KEEPPEEK_ACCESS_KEY}`. The integer `0` is reserved: it means unset, and tests may use
+`access_key = 0` / `AccessKey(0)` without minting a real secret.
 
 Direct same-host loopback requests skip the key and act as Administrator. Every non-loopback
 peer, including private LAN and link-local clients, must send Bearer. Requests carrying reverse
@@ -66,17 +66,17 @@ a remote browser.
 Resolution order at process start:
 
 1. `keeppeek --access-key <guid>` when the value is not `0`
-2. `access_key` in the loaded `config.toml` when the value is not `0`
-3. Otherwise generate a random non-zero master GUID, persist it as `access_key` in that config
-   file, and print the hyphenated form once to stdout
+2. `access_key` in the loaded `config.toml` when the value is not `0`, including a secret reference
+3. `KEEPPEEK_SECRET_KEEPPEEK_ACCESS_KEY` or `KEEPPEEK_ACCESS_KEY` in owner-only `secrets.toml`
+4. Otherwise generate a random non-zero master GUID in owner-only `secrets.toml`
 
-A later start with neither a CLI key nor a config key must not mint a new secret. The persisted
-master key is reused until an operator replaces it.
+CLI and existing inline config values are migrated into `secrets.toml`; `config.toml` retains only
+the reference. A later start reuses that secret and never prints its value.
 
 ```toml
 host = "0.0.0.0"
 port = 8081
-access_key = "550e8400-e29b-41d4-a716-446655440000"
+access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
 ```
 
 ```text
@@ -89,8 +89,11 @@ writes it back to `access_key` so a restart without the flag still authenticates
 updates that do not set a key must leave the stored value alone. The settings HTTP JSON must
 never include the raw key.
 
-No HTTP endpoint creates, rotates, or lists keys in this draft. Rotation is rewriting
-`access_key` or passing a new `--access-key`. Debug logs must not print the GUID.
+No HTTP endpoint creates, rotates, or lists keys. A loopback Administrator session may explicitly
+reveal or rotate the shared key through the in-band control channel. Remote sessions cannot use
+either command. Rotation atomically replaces `KEEPPEEK_ACCESS_KEY` in the owner-only secret file,
+updates future Bearer authentication immediately, and closes sessions authenticated with the old
+key. Debug logs must not print either GUID.
 
 Until per-key scopes exist, every configured GUID has the same rights to `/create`, `/delete`,
 `/logs`, and `/metrics`. A Home Assistant card token is therefore also a metrics and log

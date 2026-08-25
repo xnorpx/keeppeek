@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { firstHttpCameraCatalogSource } from '$lib/camera-wizard';
 	import type { CameraCatalogCamera, CameraCatalogInfo } from '$lib/types';
 	import DatabaseIcon from '@lucide/svelte/icons/database';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
@@ -15,35 +16,28 @@
 			camera.camera_type,
 			camera.resolution_label,
 			camera.megapixels === null ? null : `${camera.megapixels} MP`,
-			camera.sensor
+			camera.sensor,
+			camera.release_year === null ? null : `Released ${camera.release_year}`
 		].filter((value): value is string => Boolean(value))
 	);
-	let streams = $derived(
-		camera.streams
-			.slice(0, 2)
-			.map((stream) =>
-				[stream.name, stream.resolution, stream.codec]
-					.filter((value): value is string => Boolean(value))
-					.join(' ')
-			)
-			.filter(Boolean)
-			.join(' · ')
+	let physicalFacts = $derived(
+		[
+			camera.field_of_view && `Field of view ${camera.field_of_view}`,
+			camera.night_vision && `Night vision ${camera.night_vision}`,
+			[camera.ip_rating, camera.ik_rating].filter(Boolean).join(' · ') || null,
+			camera.two_way_audio === null
+				? null
+				: camera.two_way_audio
+					? 'Two-way audio'
+					: 'No two-way audio reported',
+			camera.community_notes_count > 0
+				? `${camera.community_notes_count} community note${camera.community_notes_count === 1 ? '' : 's'}`
+				: null
+		].filter((value): value is string => Boolean(value))
 	);
 	let protocols = $derived(camera.protocols.map((protocol) => protocol.toUpperCase()).join(' · '));
 	let sourceUrl = $derived(catalogInfo?.website_url ?? 'https://www.cctv-database.com/');
-	let modelSourceUrl = $derived(firstExternalSource(camera.sources));
-
-	function firstExternalSource(sources: string[]): string | null {
-		for (const source of sources) {
-			try {
-				const url = new URL(source);
-				if (url.protocol === 'https:' || url.protocol === 'http:') return url.href;
-			} catch {
-				continue;
-			}
-		}
-		return null;
-	}
+	let modelSourceUrl = $derived(firstHttpCameraCatalogSource(camera.sources));
 </script>
 
 <section
@@ -79,10 +73,32 @@
 				<dd class="mt-1 truncate font-mono text-text-muted">{protocols || 'Not declared'}</dd>
 			</div>
 			<div class="min-w-0 py-2 pl-3">
-				<dt class="font-mono text-2xs tracking-caps text-text-faint">DECLARED STREAMS</dt>
-				<dd class="mt-1 truncate font-mono text-text-muted">{streams || 'Not declared'}</dd>
+				<dt class="font-mono text-2xs tracking-caps text-text-faint">CODECS</dt>
+				<dd class="mt-1 truncate font-mono text-text-muted">
+					{camera.codecs.join(' · ') || 'Not declared'}
+				</dd>
 			</div>
 		</dl>
+		{#if physicalFacts.length > 0}
+			<p class="text-xs leading-5 text-text-muted">{physicalFacts.join(' · ')}</p>
+		{/if}
+		{#if camera.streams.length > 0}
+			<div>
+				<p class="font-mono text-2xs tracking-caps text-text-faint">DECLARED STREAMS</p>
+				<ul class="mt-1 divide-y divide-hairline border-y border-hairline">
+					{#each camera.streams as stream (`${stream.name}-${stream.resolution}-${stream.codec}`)}
+						<li class="flex min-h-7 items-center justify-between gap-3 py-1 text-xs">
+							<span class="font-medium">{stream.name}</span>
+							<span class="text-right font-mono text-2xs text-text-muted">
+								{[stream.resolution, stream.fps === null ? null : `${stream.fps} fps`, stream.codec]
+									.filter(Boolean)
+									.join(' · ') || 'No format declared'}
+							</span>
+						</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
 	{/if}
 	<div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
 		<span class="font-mono text-2xs text-text-faint">REFERENCE ONLY · NO CREDENTIALS</span>
