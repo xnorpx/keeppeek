@@ -164,6 +164,12 @@ jobs:
           python-version-file: example/object_detection_service/.python-version
           cache: pip
           cache-dependency-path: example/object_detection_service/requirements.txt
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install FFmpeg
