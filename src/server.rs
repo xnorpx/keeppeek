@@ -8015,6 +8015,17 @@ fn project_camera_snapshot(
     }
 }
 
+fn server_health_status(issues: &[HealthIssue]) -> &'static str {
+    if issues
+        .iter()
+        .any(|issue| matches!(issue.severity.as_str(), "critical" | "warning"))
+    {
+        "degraded"
+    } else {
+        "healthy"
+    }
+}
+
 fn server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
@@ -8249,14 +8260,7 @@ fn server_health(
             ),
         });
     }
-    let status = if issues
-        .iter()
-        .any(|issue| matches!(issue.severity.as_str(), "critical" | "warning"))
-    {
-        "degraded"
-    } else {
-        "healthy"
-    };
+    let status = server_health_status(&issues);
 
     ServerHealthResponse {
         status: status.to_owned(),
@@ -9836,6 +9840,34 @@ mod tests {
             connected_video_stream_ids(Some(&known_empty)),
             Some(Vec::new())
         );
+    }
+
+    #[test]
+    fn detector_failure_does_not_demote_healthy_camera_recording() {
+        let camera = project_camera_health(&CameraHealthEvidence {
+            expected: true,
+            lifecycle: Some(CameraLifecycle::Connected),
+            startup_grace: false,
+            report_age_ms: Some(100),
+            frames_fresh: Some(true),
+            decodable: Some(true),
+            frame_rate_healthy: Some(true),
+            recent_reconnects: 0,
+            recent_drops: 0,
+            recent_errors: 0,
+            recording_requested: true,
+            recording_progressing: Some(true),
+            battery_sleeping: None,
+        });
+        let external_findings = [HealthIssue {
+            severity: "warning".to_owned(),
+            scope: "object-detector".to_owned(),
+            message: "External detector is unavailable".to_owned(),
+        }];
+
+        assert_eq!(camera.state, CameraHealthState::Healthy);
+        assert_eq!(camera.reason, CameraHealthReason::Healthy);
+        assert_eq!(server_health_status(&external_findings), "degraded");
     }
 
     #[test]

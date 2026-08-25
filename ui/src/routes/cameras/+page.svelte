@@ -79,12 +79,15 @@
 
 	async function loadFleet(): Promise<void> {
 		try {
+			const camerasPromise = controlClient.getCameras().then((nextCameras) => {
+				cameras = nextCameras;
+				return nextCameras;
+			});
 			const [camerasResult, healthResult] = await Promise.allSettled([
-				controlClient.getCameras(),
+				camerasPromise,
 				controlClient.getHealth()
 			]);
 			if (camerasResult.status === 'rejected') throw camerasResult.reason;
-			cameras = camerasResult.value;
 			serverHealth = healthResult.status === 'fulfilled' ? healthResult.value : null;
 			error = null;
 		} catch (cause) {

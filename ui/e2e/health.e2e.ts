@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Locator } from '@playwright/test';
+import { canonicalStaleCamera, canonicalStaleHealth } from './fixtures/canonical-health';
 import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 
 const healthSnapshot: HealthFixture = {
@@ -662,6 +663,47 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 	await page.setViewportSize({ width: 390, height: 844 });
 	await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
 	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+});
+
+test('uses one canonical stale fixture across every health surface', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await mockControlPeer(page, {
+		cameras: [canonicalStaleCamera],
+		health: canonicalStaleHealth
+	});
+
+	await page.goto('/');
+	const peekTile = page.locator('[data-peek-camera="front-door"]');
+	await expect(peekTile).toHaveAttribute('data-peek-camera-state', 'stale');
+	await expect(peekTile).toContainText('STALE — Video frames are not arriving');
+	await expect(page.locator('[data-peek-fleet-status]')).toContainText(
+		'1 configured · 1 connected · 0 fresh · 0 decodable · 0/0 recording'
+	);
+
+	await page.goto('/cameras');
+	const fleetRow = page.locator('[data-fleet-row="front-door"]');
+	await expect(fleetRow).toContainText('STALE · Video frames are not arriving');
+	await expect(page.getByRole('button', { name: /Not healthy/ })).toContainText('1');
+
+	await page.goto('/system-health');
+	const dimensions = page.getByRole('region', { name: 'Camera health dimensions' });
+	await expect(dimensions.locator('[data-health-dimension="Connected"]')).toContainText('1 / 1');
+	await expect(dimensions.locator('[data-health-dimension="Fresh"]')).toContainText('0 / 1');
+	const streams = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Camera streams' })
+	});
+	await expect(streams).toContainText('stale');
+	await expect(streams).toContainText('frames_not_arriving');
+
+	await page.goto('/system-health/camera/front-door');
+	await expect(page.getByRole('heading', { name: 'Front Door', exact: true })).toBeVisible();
+	await expect(page.getByText('stale', { exact: true })).toBeVisible();
+	const diagnosis = page.getByRole('region', { name: 'Video frames are not arriving' });
+	await expect(diagnosis).toContainText('Reason frames_not_arriving');
+	await expect(diagnosis).toContainText('TRANSPORT');
+	await expect(diagnosis).toContainText('FRAMES');
+	await expect(diagnosis).toContainText('DECODABLE');
+	await expect(diagnosis).toContainText('RECORDING');
 });
 
 test('recovers connected stale media only after fresh server evidence', async ({ page }) => {

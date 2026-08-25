@@ -341,7 +341,7 @@ test('blocks review and save until required media and keyframes are verified', a
 	await expect(wizard.getByRole('button', { name: 'Continue' })).toBeEnabled();
 });
 
-test('reports a dynamically started camera as online without asking for a restart', async ({
+test('reports a dynamically started camera as healthy without asking for a restart', async ({
 	page
 }) => {
 	const controls = await mockControlPeer(page, {
@@ -359,7 +359,7 @@ test('reports a dynamically started camera as online without asking for a restar
 
 	const saved = page.getByRole('region', { name: 'Camera saved' });
 	await expect(saved.getByText('HEALTHY', { exact: true })).toBeVisible();
-	await expect(saved).toContainText('Saved, started, and reporting online.');
+	await expect(saved).toContainText('Saved, started, and healthy.');
 	await expect(saved.getByRole('link', { name: 'Restart KeepPeek' })).toHaveCount(0);
 	await expect(saved.getByRole('link', { name: 'Open diagnostics' })).toHaveCount(0);
 	expect(controls.cameraUpdates).toHaveLength(1);

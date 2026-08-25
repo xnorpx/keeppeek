@@ -80,6 +80,11 @@ Ingress publishes every 10 seconds.
   seconds.
 - Initial startup grace is two ingress report intervals, currently 20 seconds.
 
+These thresholds are the bounded debounce window. One missed 10-second ingress report does not
+change a camera to `stale`; report evidence must age beyond 30 seconds. Recovery is intentionally
+asymmetric: a new advancing frame or keyframe counter can recover the state immediately. The API
+still returns the actual evidence ages, and clients do not add another timer or rewrite the state.
+
 These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.
 

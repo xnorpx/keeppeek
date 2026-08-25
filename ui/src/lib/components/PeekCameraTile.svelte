@@ -77,7 +77,8 @@
 		visualState === 'starting' ||
 			visualState === 'healthy' ||
 			visualState === 'degraded' ||
-			visualState === 'stale'
+			visualState === 'stale' ||
+			visualState === 'reconnecting'
 	);
 	let mobileSizeClass = $derived(
 		compactStatus
