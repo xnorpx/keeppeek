@@ -51,6 +51,7 @@ const packageManifest = JSON.parse(
 const workflow = await readFile(resolve('..', '.github/workflows/visual-regression.yml'), 'utf8');
 const localPreviewHtml = await readFile(resolve('visual-harness/local-preview.html'), 'utf8');
 const localPreviewCss = await readFile(resolve('visual-harness/local-preview.css'), 'utf8');
+const storybookReadiness = await readFile(resolve('visual-harness/storybook-readiness.ts'), 'utf8');
 
 if (
 	!localPreviewHtml.includes('data-visual-fixture-notice') ||
@@ -64,6 +65,12 @@ if (
 	)
 ) {
 	throw new Error('Demo captures must hide the local fixture-data notice.');
+}
+if (
+	!storybookReadiness.includes('waitForStorybookIndexBeforeExtract') ||
+	!storybookReadiness.includes('await storybookPreview.ready()')
+) {
+	throw new Error('Loki story extraction must wait for the Storybook index to be ready.');
 }
 
 for (const skippedStory of ['Foundation/Capability Gate Unsupported', 'Demos/Peek History']) {

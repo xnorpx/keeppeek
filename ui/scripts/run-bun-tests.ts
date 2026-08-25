@@ -3,7 +3,7 @@ import { isBunCompatibleTest, normalizeTestPath } from './bun-test-selection';
 
 const workspaceRoot = resolve(import.meta.dir, '..');
 const testGlob = new Bun.Glob('src/**/*.{test,spec}.{js,ts}');
-const testFiles = ['scripts/bun-test-selection.spec.ts'];
+const testFiles = ['scripts/bun-test-selection.spec.ts', 'scripts/storybook-readiness.spec.ts'];
 
 for await (const testFile of testGlob.scan({ cwd: workspaceRoot, onlyFiles: true })) {
 	if (!isBunCompatibleTest(testFile)) continue;
