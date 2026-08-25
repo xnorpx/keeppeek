@@ -1,0 +1,11 @@
+aiohttp==3.14.3
+aiortc==1.15.0
+black==26.5.1
+grpcio-tools==1.83.0
+mypy==2.3.1
+mypy-protobuf==5.1.0
+numpy==2.5.2
+protobuf==7.35.1
+pytest==9.1.1
+ruff==0.16.3
+ultralytics==8.4.121

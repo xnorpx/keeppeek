@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # KeepPeek API
 
 This directory defines the initial public HTTP API used by viewer clients and services.
@@ -8,6 +10,12 @@ This directory defines the initial public HTTP API used by viewer clients and se
 The in-band WebRTC data-channel contract is defined by [webrtc.proto](webrtc.proto) and
 [webrtc.md](webrtc.md). The SDP data-channel topology required to establish a session is defined
 in [sdp-offer.md](sdp-offer.md).
+
+## License
+
+All API definitions and documentation in this directory are licensed under the MIT License. See
+[LICENSE](LICENSE). This includes generated bindings derived solely from these files; using those
+bindings does not impose KeepPeek's repository-wide AGPL license on an API client.
 
 ## Status
 

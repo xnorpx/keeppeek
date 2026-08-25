@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 syntax = "proto3";
 
 package keeppeek.webrtc.v1;

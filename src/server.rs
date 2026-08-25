@@ -34,6 +34,7 @@ use crate::{
         EventSearch, EventSearchField, EventSearchTerm, EventSemanticSearchQuery, EventStore,
         EventTextSearchQuery, RecordingCatalogHandle, RecordingDemand, RecordingDemandGuard,
         StorageConfig,
+        metadata::{EventSource, TimelineEvent},
     },
     webrtc::{
         ControlDispatch, ControlHandlerError, ControlRequestHandler, DataChannelTarget,
@@ -71,6 +72,7 @@ const MAX_LOG_STREAM_TAIL: usize = 1_000;
 const MEBIBYTE_BYTES: u64 = 1_048_576;
 const GIBIBYTE_BYTES: u64 = 1_073_741_824;
 const MAX_CREATE_BODY_BYTES: u64 = 4 * 1_024 * 1_024;
+const PUBLISHED_DETECTION_EVENT_TYPES: [&str; 2] = ["person", "vehicle"];
 const STORED_QUERY_PAGE_ITEMS: usize = 128;
 const DATA_MESSAGE_CHUNK_BYTES: usize = 32 * 1_024;
 const DEFAULT_STORED_MEDIA_BUFFER: Duration = Duration::from_secs(120);
@@ -313,6 +315,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Err(error) => Err(error),
                 }
             }
+            Some(control_request::Command::PublishEvent(command)) => {
+                self.handle_publish_event(command).map(|()| None)
+            }
             Some(_) => Err(ControlCommandError::new(
                 proto::ErrorCode::UnsupportedRequest,
                 501,
@@ -442,6 +447,7 @@ impl ControlRequestHandler for ServerControlHandler {
             capability_ids: vec![
                 "keeppeek.media-export.v1".to_owned(),
                 "keeppeek.event-search".to_owned(),
+                "keeppeek.event-publication.v1".to_owned(),
                 "stored-media-keyframe-preview.v1".to_owned(),
             ],
         })
@@ -457,12 +463,22 @@ impl ControlRequestHandler for ServerControlHandler {
                 "only video media subscriptions are currently supported",
             ));
         }
-        if proto::DeliveryTransport::try_from(request.requested_delivery_transport)
-            != Ok(proto::DeliveryTransport::Rtp)
-        {
+        let delivery_transport = proto::DeliveryTransport::try_from(
+            request.requested_delivery_transport,
+        )
+        .map_err(|_| {
+            ControlHandlerError::new(
+                proto::ErrorCode::InvalidRequest,
+                "video delivery transport is invalid",
+            )
+        })?;
+        if !matches!(
+            delivery_transport,
+            proto::DeliveryTransport::Rtp | proto::DeliveryTransport::ReliableData
+        ) {
             return Err(ControlHandlerError::new(
                 proto::ErrorCode::InvalidRequest,
-                "camera video currently requires RTP delivery",
+                "camera video requires RTP or reliable data delivery",
             ));
         }
         let camera = self
@@ -483,22 +499,12 @@ impl ControlRequestHandler for ServerControlHandler {
             )
         })?;
         let live_sources = self.state.webrtc.live_video_sources(camera_ip);
-        let has_main_stream = camera
-            .info
-            .profiles
+        let has_main_stream = live_sources
             .iter()
-            .any(|profile| profile.stream == "main" && supported_video_profile(profile))
-            || live_sources
-                .iter()
-                .any(|source| source.stream == StreamKind::Main);
-        let has_sub_stream = camera
-            .info
-            .profiles
+            .any(|source| source.stream == StreamKind::Main);
+        let has_sub_stream = live_sources
             .iter()
-            .any(|profile| profile.stream == "sub" && supported_video_profile(profile))
-            || live_sources
-                .iter()
-                .any(|source| source.stream == StreamKind::Sub);
+            .any(|source| source.stream == StreamKind::Sub);
         if !has_main_stream && !has_sub_stream {
             return Err(ControlHandlerError::new(
                 proto::ErrorCode::NotFound,
@@ -554,12 +560,41 @@ impl ControlRequestHandler for ServerControlHandler {
                 }
             }
         };
+        let selected_variant = proto_camera_source_session(&camera.info, &self.state.webrtc)
+            .and_then(|source| source.video)
+            .and_then(|video| {
+                video
+                    .variants
+                    .into_iter()
+                    .find(|variant| variant.variant_id == selected_variant_id)
+            })
+            .ok_or_else(|| {
+                ControlHandlerError::new(
+                    proto::ErrorCode::NotFound,
+                    "selected video variant is no longer available",
+                )
+            })?;
+        let codec = selected_variant.codec.ok_or_else(|| {
+            ControlHandlerError::new(
+                proto::ErrorCode::Internal,
+                "selected video variant has no codec",
+            )
+        })?;
+        let format = selected_variant.format.ok_or_else(|| {
+            ControlHandlerError::new(
+                proto::ErrorCode::Internal,
+                "selected video variant has no format",
+            )
+        })?;
         Ok(MediaSubscriptionPlan {
             source_session_id: request.source_session_id.clone(),
             camera_ip,
             has_sub_stream,
             recording_label: camera.recording_label,
             quality,
+            delivery_transport,
+            codec,
+            format,
             selected_variant_id,
         })
     }
@@ -567,12 +602,6 @@ impl ControlRequestHandler for ServerControlHandler {
 
 fn camera_source_session_id(source_id: &str) -> String {
     format!("camera:{source_id}")
-}
-
-fn supported_video_profile(profile: &ProfileSummary) -> bool {
-    profile.encoding.as_deref().is_some_and(|encoding| {
-        encoding.eq_ignore_ascii_case("h264") || encoding.eq_ignore_ascii_case("h265")
-    })
 }
 
 fn proto_camera_source_session(
@@ -584,6 +613,9 @@ fn proto_camera_source_session(
     let variants = ["main", "sub"]
         .into_iter()
         .filter_map(|stream| {
+            let live_source = live_sources
+                .iter()
+                .find(|source| source.stream.to_string() == stream)?;
             let profile = camera
                 .profiles
                 .iter()
@@ -594,12 +626,7 @@ fn proto_camera_source_session(
                     encoding.eq_ignore_ascii_case("h264") || encoding.eq_ignore_ascii_case("h265")
                 })
                 .map(str::to_lowercase)
-                .or_else(|| {
-                    live_sources
-                        .iter()
-                        .find(|source| source.stream.to_string() == stream)
-                        .map(|source| source.codec.to_owned())
-                })?;
+                .unwrap_or_else(|| live_source.codec.to_owned());
             let (width, height) = profile
                 .and_then(|profile| profile.resolution.as_deref())
                 .and_then(|resolution| resolution.split_once('x'))
@@ -620,7 +647,10 @@ fn proto_camera_source_session(
                         },
                     )),
                 }),
-                delivery_transports: vec![proto::DeliveryTransport::Rtp as i32],
+                delivery_transports: vec![
+                    proto::DeliveryTransport::Rtp as i32,
+                    proto::DeliveryTransport::ReliableData as i32,
+                ],
                 nominal_bitrate_bps: u64::from(
                     profile
                         .and_then(|profile| profile.bitrate_kbps)
@@ -639,7 +669,14 @@ fn proto_camera_source_session(
         audio: None,
         video: Some(proto::MediaStreamCapability { variants }),
         data_payloads: Vec::new(),
-        event_types: Vec::new(),
+        event_types: PUBLISHED_DETECTION_EVENT_TYPES
+            .into_iter()
+            .map(|event_type| proto::EventType {
+                event_type: event_type.to_owned(),
+                metadata: None,
+                attachments: Vec::new(),
+            })
+            .collect(),
         publication_capabilities: Vec::new(),
     })
 }
@@ -710,6 +747,174 @@ fn proto_camera_info(camera: &CameraInfo, control_available: bool) -> proto::Cam
 impl ServerControlHandler {
     const fn new(state: ServerState, router_tx: FacadeSender<RouterMessage>) -> Self {
         Self { state, router_tx }
+    }
+
+    fn handle_publish_event(
+        &self,
+        command: proto::PublishEvent,
+    ) -> Result<(), ControlCommandError> {
+        let event = command.event.ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "published event is missing",
+            )
+        })?;
+        validate_client_id(&event.event_id, "event ID")?;
+        validate_client_id(&event.source_id, "event source ID")?;
+        if event.revision != 1 {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "envelope-only event revision must be one",
+            ));
+        }
+        if event.subscription_id.is_some() || !event.attachments.is_empty() {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "envelope-only event publication cannot include subscription or attachment data",
+            ));
+        }
+        if !PUBLISHED_DETECTION_EVENT_TYPES.contains(&event.event_type.as_str()) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::UnsupportedRequest,
+                400,
+                "published event type must be person or vehicle",
+            ));
+        }
+        if let Some(media_kind) = event.media_kind
+            && proto::MediaKind::try_from(media_kind) != Ok(proto::MediaKind::Video)
+        {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "published detection media kind must be video",
+            ));
+        }
+        let source_session_id = event.source_session_id.as_deref().ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "published event source session is missing",
+            )
+        })?;
+        let camera = self
+            .state
+            .camera_entries()
+            .into_iter()
+            .find(|camera| camera.info.id == event.source_id)
+            .ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::NotFound,
+                    404,
+                    "published event source was not found",
+                )
+            })?;
+        if camera_source_session_id(&camera.info.id) != source_session_id
+            || proto_camera_source_session(&camera.info, &self.state.webrtc).is_none()
+        {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "published event source session is not active",
+            ));
+        }
+        let start_time_ms = required_timestamp_ms(event.start_time.as_ref(), "event start time")?;
+        let end_time_ms = event
+            .end_time
+            .as_ref()
+            .map(|timestamp| required_timestamp_ms(Some(timestamp), "event end time"))
+            .transpose()?;
+        if end_time_ms.is_some_and(|end| end < start_time_ms) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event end time precedes its start time",
+            ));
+        }
+        if event
+            .confidence
+            .is_some_and(|confidence| !confidence.is_finite() || !(0.0..=1.0).contains(&confidence))
+        {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event confidence must be between zero and one",
+            ));
+        }
+        let bbox = event
+            .bounding_box
+            .as_ref()
+            .map(|bbox| [bbox.x, bbox.y, bbox.width, bbox.height]);
+        if bbox.is_some_and(|[x, y, width, height]| {
+            [x, y, width, height]
+                .into_iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+                || x + width > 1.0
+                || y + height > 1.0
+        }) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event bounding box must be normalized within the frame",
+            ));
+        }
+        let stream = event
+            .payload
+            .as_ref()
+            .and_then(|payload| payload.fields.get("stream_id"))
+            .and_then(|value| value.kind.as_ref())
+            .and_then(|kind| match kind {
+                prost_types::value::Kind::StringValue(stream) => Some(stream.as_str()),
+                _ => None,
+            })
+            .filter(|stream| matches!(*stream, "main" | "sub"))
+            .map(str::to_owned);
+        let stored_event = TimelineEvent {
+            id: event.event_id,
+            camera_id: event.source_id,
+            stream,
+            source: EventSource::KeepPeek,
+            kind: event.event_type,
+            start_time_ms,
+            end_time_ms,
+            confidence: event.confidence,
+            bbox,
+            zone: event.zone,
+            thumbnail_filename: None,
+        };
+        let events = self.state.events.as_ref().ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "event storage is unavailable",
+            )
+        })?;
+        if let Some(existing) = events.event_by_id(&stored_event.id).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                format!("unable to read existing event: {error}"),
+            )
+        })? {
+            return if existing == stored_event {
+                Ok(())
+            } else {
+                Err(ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    409,
+                    "event ID already exists with different content",
+                ))
+            };
+        }
+        events.insert(stored_event).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                format!("unable to store published event: {error}"),
+            )
+        })
     }
 
     fn camera_database(&self) -> Result<&CameraDatabase, ControlCommandError> {
@@ -8955,10 +9160,7 @@ mod tests {
     }
 
     use crate::logging::LogFilterFile;
-    use crate::storage::{
-        RecordingCatalog,
-        metadata::{EventSource, TimelineEvent},
-    };
+    use crate::storage::RecordingCatalog;
     use crate::test_support::TestCameraCatalog;
     use std::{io, net::SocketAddr};
     fn response_data(response: Response) -> Vec<u8> {
@@ -9575,6 +9777,7 @@ mod tests {
             [
                 "keeppeek.media-export.v1",
                 "keeppeek.event-search",
+                "keeppeek.event-publication.v1",
                 "stored-media-keyframe-preview.v1"
             ]
         );
@@ -9663,6 +9866,146 @@ mod tests {
 
         assert_eq!(plan.selected_variant_id, "sub");
         assert_eq!(plan.quality, StreamQuality::Low);
+        assert_eq!(plan.delivery_transport, proto::DeliveryTransport::Rtp);
+    }
+
+    #[test]
+    fn media_subscription_accepts_reliable_data_delivery() {
+        let state = media_test_state();
+        state.webrtc.live().publish(
+            crate::webrtc::Source {
+                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                stream: StreamKind::Sub,
+            },
+            crate::storage::VideoCodec::H264,
+            true,
+            Instant::now(),
+            None,
+            bytes::Bytes::from_static(&[0, 0, 0, 1]),
+        );
+        let handler = test_control_handler(state);
+
+        let plan = handler
+            .resolve_media_subscription(&media_request(
+                proto::MediaKind::Video,
+                proto::DeliveryTransport::ReliableData,
+                proto::VideoQuality::Low,
+                "",
+            ))
+            .unwrap();
+
+        assert_eq!(plan.selected_variant_id, "sub");
+        assert_eq!(plan.quality, StreamQuality::Low);
+        assert_eq!(
+            plan.delivery_transport,
+            proto::DeliveryTransport::ReliableData
+        );
+    }
+
+    #[test]
+    fn published_detection_is_persisted_and_retry_is_idempotent() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-published-event-{}",
+            rand::random::<u64>()
+        ));
+        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let events = EventStore::new(handle.clone(), &directory.join("thumbnails"), 0).unwrap();
+        let mut state = media_test_state();
+        state.events = Some(events);
+        state.catalog = Some(handle.clone());
+        state.webrtc.live().publish(
+            crate::webrtc::Source {
+                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                stream: StreamKind::Sub,
+            },
+            crate::storage::VideoCodec::H264,
+            true,
+            Instant::now(),
+            None,
+            bytes::Bytes::from_static(&[0, 0, 0, 1]),
+        );
+        let handler = test_control_handler(state);
+        let capabilities = handler
+            .initial_capabilities(SessionId::from_u64(7))
+            .unwrap();
+        let source = capabilities
+            .source_sessions
+            .iter()
+            .find(|source| source.source_id == "127.0.0.1")
+            .unwrap();
+        assert_eq!(
+            source
+                .event_types
+                .iter()
+                .map(|event_type| event_type.event_type.as_str())
+                .collect::<Vec<_>>(),
+            ["person", "vehicle"]
+        );
+        let event = proto::Event {
+            event_id: "detector-event-1".to_owned(),
+            revision: 1,
+            source_id: "127.0.0.1".to_owned(),
+            media_kind: Some(proto::MediaKind::Video as i32),
+            origin: proto::EventOrigin::Camera as i32,
+            event_type: "person".to_owned(),
+            start_time: Some(millis_timestamp(12_345)),
+            end_time: None,
+            confidence: Some(0.91),
+            bounding_box: Some(proto::EventBoundingBox {
+                x: 0.1,
+                y: 0.2,
+                width: 0.3,
+                height: 0.4,
+            }),
+            zone: Some("porch".to_owned()),
+            text: None,
+            payload: Some(prost_types::Struct {
+                fields: std::collections::BTreeMap::from([(
+                    "stream_id".to_owned(),
+                    prost_types::Value {
+                        kind: Some(prost_types::value::Kind::StringValue("sub".to_owned())),
+                    },
+                )]),
+            }),
+            attachments: Vec::new(),
+            source_session_id: Some(camera_source_session_id("127.0.0.1")),
+            subscription_id: None,
+        };
+        let request = proto::Request {
+            request_id: 41,
+            command: Some(control_request::Command::PublishEvent(
+                proto::PublishEvent { event: Some(event) },
+            )),
+        };
+
+        for request_id in [41, 43] {
+            let dispatch = handler.handle_for_session(
+                SessionId::from_u64(7),
+                proto::Request {
+                    request_id,
+                    ..request.clone()
+                },
+            );
+            assert!(matches!(
+                dispatch.response.result,
+                Some(control_response::Result::Ok(proto::Ok { result: None }))
+            ));
+        }
+
+        let stored = handle.event_by_id("detector-event-1").unwrap().unwrap();
+        assert_eq!(stored.source, EventSource::KeepPeek);
+        assert_eq!(stored.camera_id, "127.0.0.1");
+        assert_eq!(stored.stream.as_deref(), Some("sub"));
+        assert_eq!(stored.kind, "person");
+        assert_eq!(stored.start_time_ms, 12_345);
+        assert_eq!(stored.confidence, Some(0.91));
+        assert_eq!(stored.bbox, Some([0.1, 0.2, 0.3, 0.4]));
+
+        drop(handler);
+        drop(handle);
+        drop(catalog);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -9685,15 +10028,6 @@ mod tests {
                 media_request(
                     proto::MediaKind::Audio,
                     proto::DeliveryTransport::Rtp,
-                    proto::VideoQuality::Auto,
-                    "",
-                ),
-                proto::ErrorCode::InvalidRequest,
-            ),
-            (
-                media_request(
-                    proto::MediaKind::Video,
-                    proto::DeliveryTransport::ReliableData,
                     proto::VideoQuality::Auto,
                     "",
                 ),

@@ -42,6 +42,10 @@ that interoperate with the Media Gateway may be open or closed source.
 KeepPeek is developed with AI assistance through an iterative, human-directed process of
 implementation, validation, review, and refinement.
 
+Repository formatting and validation require Python 3.12 plus the exact tools in
+`example/object_detection_service/requirements.txt`, including Black. The root `fix` and `check`
+scripts use `KEEPPEEK_PYTHON` when set, otherwise the example `.venv`, then the system Python.
+
 ## Docker
 
 The image supports both `linux/amd64` and `linux/arm64` when built with Docker Buildx. It runs

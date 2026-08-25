@@ -24,7 +24,7 @@ use std::{
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig,
@@ -62,6 +62,7 @@ const CONTROL_CHANNEL_LABEL: &str = "control-channel";
 const RELIABLE_DATA_CHANNEL_LABEL: &str = "reliable-data";
 const UNRELIABLE_DATA_CHANNEL_LABEL: &str = "unreliable-data";
 const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1_024;
+const API_MEDIA_FRAME_CHUNK_BYTES: usize = 48 * 1_024;
 
 #[derive(Debug, Clone, Copy)]
 struct SessionChannels {
@@ -156,6 +157,9 @@ pub(crate) struct MediaSubscriptionPlan {
     pub(crate) has_sub_stream: bool,
     pub(crate) recording_label: String,
     pub(crate) quality: StreamQuality,
+    pub(crate) delivery_transport: crate::api::proto::DeliveryTransport,
+    pub(crate) codec: crate::api::proto::CodecDescriptor,
+    pub(crate) format: crate::api::proto::MediaDataFormat,
     pub(crate) selected_variant_id: String,
 }
 
@@ -297,6 +301,7 @@ pub(crate) struct TrackPlan {
     pub(crate) track_id: TrackId,
     pub(crate) camera_ip: IpAddr,
     pub(crate) has_sub_stream: bool,
+    pub(crate) selected_stream: StreamKind,
     pub(crate) recording_label: String,
 }
 
@@ -677,6 +682,49 @@ struct ApiMediaTrack {
     runtime: TrackRuntime,
 }
 
+enum TrackDelivery {
+    Rtp(Mid),
+    ReliableData(DataMediaBinding),
+}
+
+struct DataMediaBinding {
+    stream_binding_id: String,
+    codec: crate::api::proto::CodecDescriptor,
+    format: crate::api::proto::MediaDataFormat,
+    configuration_revision: u64,
+    next_frame_id: u64,
+}
+
+impl TrackDelivery {
+    const fn mid(&self) -> Option<Mid> {
+        match self {
+            Self::Rtp(mid) => Some(*mid),
+            Self::ReliableData(_) => None,
+        }
+    }
+
+    fn result(&self) -> crate::api::proto::subscription_result::Delivery {
+        match self {
+            Self::Rtp(mid) => crate::api::proto::subscription_result::Delivery::Rtp(
+                crate::api::proto::RtpDelivery {
+                    mid: mid.to_string(),
+                },
+            ),
+            Self::ReliableData(binding) => {
+                crate::api::proto::subscription_result::Delivery::MediaData(
+                    crate::api::proto::MediaDataDelivery {
+                        stream_binding_id: binding.stream_binding_id.clone(),
+                        channel: crate::api::proto::DataChannelKind::ReliableData as i32,
+                        codec: Some(binding.codec.clone()),
+                        format: Some(binding.format.clone()),
+                        configuration_revision: binding.configuration_revision,
+                    },
+                )
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct ApiMediaRuntime {
     available_video_mids: Vec<Mid>,
@@ -858,35 +906,87 @@ impl ApiMediaRuntime {
                     "a media subscription replacement must keep the same source session",
                 ));
             }
-            let mid = self.tracks[index].runtime.mid;
+            let transport_matches = matches!(
+                (
+                    &self.tracks[index].runtime.delivery,
+                    plan.delivery_transport
+                ),
+                (
+                    TrackDelivery::Rtp(_),
+                    crate::api::proto::DeliveryTransport::Rtp
+                ) | (
+                    TrackDelivery::ReliableData(_),
+                    crate::api::proto::DeliveryTransport::ReliableData
+                )
+            );
+            if !transport_matches {
+                return Err(ControlHandlerError::new(
+                    ErrorCode::InvalidRequest,
+                    "a media subscription replacement must keep its delivery transport",
+                ));
+            }
             self.tracks[index]
                 .runtime
                 .subscription
                 .set_requested_quality(plan.quality);
             return Ok(subscription_result(
                 request.subscription_id.clone(),
-                mid,
+                &self.tracks[index].runtime.delivery,
                 plan.selected_variant_id,
             ));
         }
 
-        let mid = self.available_video_mids.pop().ok_or_else(|| {
-            ControlHandlerError::new(
-                ErrorCode::Unavailable,
-                "no negotiated video MID is available",
-            )
-        })?;
+        let delivery = match plan.delivery_transport {
+            crate::api::proto::DeliveryTransport::Rtp => {
+                TrackDelivery::Rtp(self.available_video_mids.pop().ok_or_else(|| {
+                    ControlHandlerError::new(
+                        ErrorCode::Unavailable,
+                        "no negotiated video MID is available",
+                    )
+                })?)
+            }
+            crate::api::proto::DeliveryTransport::ReliableData => {
+                TrackDelivery::ReliableData(DataMediaBinding {
+                    stream_binding_id: format!("media:{}", request.subscription_id),
+                    codec: plan.codec.clone(),
+                    format: plan.format.clone(),
+                    configuration_revision: 1,
+                    next_frame_id: 1,
+                })
+            }
+            _ => {
+                return Err(ControlHandlerError::new(
+                    ErrorCode::InvalidRequest,
+                    "media subscription plan has an unsupported delivery transport",
+                ));
+            }
+        };
         let selected_variant_id = plan.selected_variant_id.clone();
-        let initial_stream = initial_stream(plan.has_sub_stream);
+        let selected_stream = match selected_variant_id.as_str() {
+            "main" => StreamKind::Main,
+            "sub" => StreamKind::Sub,
+            _ => {
+                return Err(ControlHandlerError::new(
+                    ErrorCode::Internal,
+                    "media subscription plan selected an invalid variant",
+                ));
+            }
+        };
+        let initial_stream = if matches!(delivery, TrackDelivery::ReliableData(_)) {
+            selected_stream
+        } else {
+            initial_stream(plan.has_sub_stream)
+        };
         let control = Arc::new(SessionControl::new(plan.quality, initial_stream));
         let runtime = TrackRuntime::new(
             TrackPlan {
                 track_id: track_id.clone(),
                 camera_ip: plan.camera_ip,
                 has_sub_stream: plan.has_sub_stream,
+                selected_stream,
                 recording_label: plan.recording_label,
             },
-            mid,
+            delivery,
             TrackDeps {
                 inner: session.inner.clone(),
                 session_id: session.session_id,
@@ -904,7 +1004,12 @@ impl ApiMediaRuntime {
         self.enqueue_stream_state(&track_id, initial_stream);
         Ok(subscription_result(
             request.subscription_id.clone(),
-            mid,
+            &self
+                .tracks
+                .last()
+                .expect("media track was inserted before result creation")
+                .runtime
+                .delivery,
             selected_variant_id,
         ))
     }
@@ -917,7 +1022,9 @@ impl ApiMediaRuntime {
                 .position(|track| track.runtime.track_id.0 == *subscription_id)
             {
                 let track = self.tracks.swap_remove(index);
-                self.available_video_mids.push(track.runtime.mid);
+                if let TrackDelivery::Rtp(mid) = track.runtime.delivery {
+                    self.available_video_mids.push(mid);
+                }
             }
         }
     }
@@ -925,16 +1032,12 @@ impl ApiMediaRuntime {
 
 fn subscription_result(
     subscription_id: String,
-    mid: Mid,
+    delivery: &TrackDelivery,
     selected_variant_id: String,
 ) -> crate::api::proto::SubscriptionResult {
     crate::api::proto::SubscriptionResult {
         subscription_id,
-        delivery: Some(crate::api::proto::subscription_result::Delivery::Rtp(
-            crate::api::proto::RtpDelivery {
-                mid: mid.to_string(),
-            },
-        )),
+        delivery: Some(delivery.result()),
         selected_variant_id,
         selected_lineage: Vec::new(),
     }
@@ -1642,7 +1745,7 @@ struct TrackDeps {
 
 struct TrackRuntime {
     track_id: TrackId,
-    mid: Mid,
+    delivery: TrackDelivery,
     rx: Receiver<SessionCommand>,
     subscription: SourceSubscription,
     keyframe_gate: KeyframeGate,
@@ -1654,7 +1757,7 @@ struct TrackRuntime {
 }
 
 impl TrackRuntime {
-    fn new(plan: TrackPlan, mid: Mid, deps: TrackDeps) -> Self {
+    fn new(plan: TrackPlan, delivery: TrackDelivery, deps: TrackDeps) -> Self {
         let TrackDeps {
             inner,
             session_id,
@@ -1682,18 +1785,30 @@ impl TrackRuntime {
             camera_ip: plan.camera_ip,
             stream: StreamKind::Sub,
         });
-        let subscription = SourceSubscription::adaptive(
-            inner,
-            sender,
-            high_source,
-            low_source,
-            control,
-            recording_demand,
-            plan.recording_label,
-        );
+        let subscription = match &delivery {
+            TrackDelivery::ReliableData(_) => {
+                let source = Source {
+                    camera_ip: plan.camera_ip,
+                    stream: plan.selected_stream,
+                };
+                let demand_guard = recording_demand.as_ref().map(|demand| {
+                    demand.acquire(format!("{}/{}", plan.recording_label, source.stream))
+                });
+                SourceSubscription::fixed(inner, sender, source, demand_guard)
+            }
+            TrackDelivery::Rtp(_) => SourceSubscription::adaptive(
+                inner,
+                sender,
+                high_source,
+                low_source,
+                control,
+                recording_demand,
+                plan.recording_label,
+            ),
+        };
         Self {
             track_id: plan.track_id,
-            mid,
+            delivery,
             rx,
             subscription,
             keyframe_gate: KeyframeGate::new(),
@@ -2552,12 +2667,17 @@ fn drive_api_session(
         let now = Instant::now();
         let mut wrote_media = false;
         let mut applied_streams = Vec::new();
+        let mut media_data_messages = Vec::new();
         for track in &mut media.tracks {
             let result = drive_track_runtime(rtc, &mut track.runtime, connected, now)?;
             wrote_media |= result.wrote_media;
+            media_data_messages.extend(result.data_messages);
             if let Some(stream) = result.applied_stream {
                 applied_streams.push((track.runtime.track_id.clone(), stream));
             }
+        }
+        if !media_data_messages.is_empty() {
+            media.enqueue(media_data_messages)?;
         }
         for (track_id, stream) in applied_streams {
             media.enqueue_stream_state(&track_id, stream);
@@ -2665,6 +2785,7 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
 struct TrackDriveResult {
     wrote_media: bool,
     applied_stream: Option<StreamKind>,
+    data_messages: Vec<OutboundDataMessage>,
 }
 
 fn drive_track_runtime(
@@ -2675,12 +2796,12 @@ fn drive_track_runtime(
 ) -> anyhow::Result<TrackDriveResult> {
     let mut wrote_media = false;
     let mut applied_stream = None;
+    let mut data_messages = Vec::new();
+    let mid = track.delivery.mid();
     if track.keyframe_gate.has_live_gop() {
-        track.subscription.select_source(rtc, Some(track.mid), now);
+        track.subscription.select_source(rtc, mid, now);
     } else {
-        track
-            .subscription
-            .arm_startup_fallback(rtc, Some(track.mid));
+        track.subscription.arm_startup_fallback(rtc, mid);
     }
     if connected && !track.keyframe_prepared {
         track.subscription.prepare_keyframe(&track.rx);
@@ -2700,9 +2821,12 @@ fn drive_track_runtime(
             track.subscription.discard_queued_frames(&track.rx);
             track.last_frame_sequence = None;
             track.recovering_queue_gap = false;
-            if write_frame(rtc, Some(track.mid), &keyframe, &mut track.media_clock)? {
+            let (wrote_frame, messages) =
+                write_track_frame(rtc, &mut track.delivery, &keyframe, &mut track.media_clock)?;
+            if wrote_frame {
                 track.keyframe_gate.mark_written(FrameOrigin::Cached);
                 wrote_media = true;
+                data_messages.extend(messages);
             }
         }
     }
@@ -2747,14 +2871,17 @@ fn drive_track_runtime(
         let frame_allowed = track
             .keyframe_gate
             .allows(FrameOrigin::Live, frame.is_keyframe);
-        let wrote_frame = connected
-            && frame_allowed
-            && write_frame(rtc, Some(track.mid), &frame, &mut track.media_clock)?;
+        let (wrote_frame, messages) = if connected && frame_allowed {
+            write_track_frame(rtc, &mut track.delivery, &frame, &mut track.media_clock)?
+        } else {
+            (false, Vec::new())
+        };
         if wrote_frame {
             track.keyframe_gate.mark_written(FrameOrigin::Live);
             track.recovering_queue_gap = false;
             track.subscription.record_written_frame();
             wrote_media = true;
+            data_messages.extend(messages);
             applied_stream = applied_stream.or(switched_stream);
         } else if connected && track.recovering_queue_gap && !frame_allowed {
             track.subscription.record_discarded_frames(1);
@@ -2776,7 +2903,87 @@ fn drive_track_runtime(
     Ok(TrackDriveResult {
         wrote_media,
         applied_stream,
+        data_messages,
     })
+}
+
+fn write_track_frame(
+    rtc: &mut Rtc,
+    delivery: &mut TrackDelivery,
+    frame: &MediaFrame,
+    media_clock: &mut MediaClock,
+) -> anyhow::Result<(bool, Vec<OutboundDataMessage>)> {
+    match delivery {
+        TrackDelivery::Rtp(mid) => Ok((
+            write_frame(rtc, Some(*mid), frame, media_clock)?,
+            Vec::new(),
+        )),
+        TrackDelivery::ReliableData(binding) => {
+            let messages = encode_media_data_frame(binding, frame)?;
+            Ok((!messages.is_empty(), messages))
+        }
+    }
+}
+
+fn encode_media_data_frame(
+    binding: &mut DataMediaBinding,
+    frame: &MediaFrame,
+) -> anyhow::Result<Vec<OutboundDataMessage>> {
+    let codec_matches = match frame.codec {
+        VideoCodec::H264 => binding.codec.name.eq_ignore_ascii_case("h264"),
+        VideoCodec::H265 => binding.codec.name.eq_ignore_ascii_case("h265"),
+    };
+    if !codec_matches || frame.data.avcc.is_empty() {
+        return Ok(Vec::new());
+    }
+    let chunk_count = u32::try_from(frame.data.avcc.len().div_ceil(API_MEDIA_FRAME_CHUNK_BYTES))
+        .map_err(|_| anyhow::anyhow!("media frame has too many data-channel fragments"))?;
+    let frame_id = binding.next_frame_id;
+    binding.next_frame_id = binding.next_frame_id.saturating_add(1);
+    let timestamp = protobuf_timestamp(frame.received_at);
+    let messages = frame
+        .data
+        .avcc
+        .chunks(API_MEDIA_FRAME_CHUNK_BYTES)
+        .enumerate()
+        .map(|(fragment_index, payload)| OutboundDataMessage {
+            target: DataChannelTarget::Reliable,
+            group: binding.stream_binding_id.clone(),
+            message: crate::api::proto::Message {
+                message: Some(crate::api::proto::message::Message::Video(
+                    crate::api::proto::VideoMessage {
+                        message: Some(crate::api::proto::video_message::Message::Frame(
+                            crate::api::proto::VideoDataFrame {
+                                stream_binding_id: binding.stream_binding_id.clone(),
+                                frame_id,
+                                timestamp: Some(timestamp),
+                                fragment_index: u32::try_from(fragment_index).unwrap_or(u32::MAX),
+                                fragment_count: chunk_count,
+                                key_frame: frame.is_keyframe,
+                                payload: payload.to_vec(),
+                                decode_time: None,
+                                configuration_revision: binding.configuration_revision,
+                            },
+                        )),
+                    },
+                )),
+            },
+        })
+        .collect();
+    Ok(messages)
+}
+
+fn protobuf_timestamp(received_at: Instant) -> prost_types::Timestamp {
+    let elapsed = Instant::now().saturating_duration_since(received_at);
+    let source_time = SystemTime::now()
+        .checked_sub(elapsed)
+        .unwrap_or(UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    prost_types::Timestamp {
+        seconds: i64::try_from(source_time.as_secs()).unwrap_or(i64::MAX),
+        nanos: i32::try_from(source_time.subsec_nanos()).unwrap_or(i32::MAX),
+    }
 }
 
 fn drain_api_outputs(
@@ -2820,7 +3027,7 @@ fn drain_api_outputs(
                     && !media
                         .tracks
                         .iter()
-                        .any(|track| track.runtime.mid == added.mid)
+                        .any(|track| track.runtime.delivery.mid() == Some(added.mid))
                 {
                     media.available_video_mids.push(added.mid);
                 }
@@ -4706,6 +4913,12 @@ mod tests {
                     has_sub_stream: true,
                     recording_label: "front-door".to_owned(),
                     quality: StreamQuality::Auto,
+                    delivery_transport: crate::api::proto::DeliveryTransport::Rtp,
+                    codec: crate::api::proto::CodecDescriptor {
+                        name: "h264".to_owned(),
+                        parameters: HashMap::new(),
+                    },
+                    format: crate::api::proto::MediaDataFormat::default(),
                     selected_variant_id: "sub".to_owned(),
                 },
             )
@@ -4753,6 +4966,12 @@ mod tests {
                     has_sub_stream: true,
                     recording_label: "front-door".to_owned(),
                     quality: StreamQuality::High,
+                    delivery_transport: crate::api::proto::DeliveryTransport::Rtp,
+                    codec: crate::api::proto::CodecDescriptor {
+                        name: "h264".to_owned(),
+                        parameters: HashMap::new(),
+                    },
+                    format: crate::api::proto::MediaDataFormat::default(),
                     selected_variant_id: "main".to_owned(),
                 },
             )
@@ -4799,6 +5018,144 @@ mod tests {
                 .unwrap()
                 .values()
                 .all(|source| source.subscribers.is_empty())
+        );
+    }
+
+    #[test]
+    fn reliable_data_media_subscription_binds_and_fragments_encoded_frames() {
+        let inner = Arc::new(Inner::default());
+        let poller = Arc::new(Poller::new().unwrap());
+        let camera_ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let session = ApiSessionControl {
+            session_id: SessionId(1),
+            inner,
+            recording_demand: None,
+            poller,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            completion: SessionCompletion::default(),
+            control_handler: Arc::new(RwLock::new(None)),
+            data_tx: bounded(1).0,
+            camera_operation_in_flight: Arc::new(AtomicBool::new(false)),
+        };
+        let mut media = ApiMediaRuntime::default();
+        let request = crate::api::proto::SubscribeMedia {
+            subscription_id: "detector-input".to_owned(),
+            source_session_id: "camera:front-door".to_owned(),
+            kind: crate::api::proto::MediaKind::Video as i32,
+            requested_delivery_transport: crate::api::proto::DeliveryTransport::ReliableData as i32,
+            video_quality: crate::api::proto::VideoQuality::Low as i32,
+            variant_id: String::new(),
+        };
+        let format = crate::api::proto::MediaDataFormat {
+            format: Some(crate::api::proto::media_data_format::Format::Video(
+                crate::api::proto::VideoDataFormat {
+                    width: 640,
+                    height: 360,
+                    decoder_config: Vec::new(),
+                },
+            )),
+        };
+
+        let result = media
+            .subscribe(
+                &session,
+                &request,
+                MediaSubscriptionPlan {
+                    source_session_id: request.source_session_id.clone(),
+                    camera_ip,
+                    has_sub_stream: true,
+                    recording_label: "front-door".to_owned(),
+                    quality: StreamQuality::Low,
+                    delivery_transport: crate::api::proto::DeliveryTransport::ReliableData,
+                    codec: crate::api::proto::CodecDescriptor {
+                        name: "h264".to_owned(),
+                        parameters: HashMap::new(),
+                    },
+                    format: format.clone(),
+                    selected_variant_id: "sub".to_owned(),
+                },
+            )
+            .unwrap();
+
+        let Some(crate::api::proto::subscription_result::Delivery::MediaData(delivery)) =
+            result.delivery
+        else {
+            panic!("reliable media subscription must return a data binding");
+        };
+        assert_eq!(delivery.stream_binding_id, "media:detector-input");
+        assert_eq!(
+            delivery.channel,
+            crate::api::proto::DataChannelKind::ReliableData as i32
+        );
+        assert_eq!(delivery.format, Some(format));
+        assert!(media.available_video_mids.is_empty());
+        assert_eq!(
+            media.tracks[0].runtime.subscription.active_source.stream,
+            StreamKind::Sub
+        );
+
+        let TrackDelivery::ReliableData(binding) = &mut media.tracks[0].runtime.delivery else {
+            panic!("reliable media track must retain its data binding");
+        };
+        let frame = live_frame_at(
+            true,
+            Instant::now() - Duration::from_millis(25),
+            API_MEDIA_FRAME_CHUNK_BYTES + 7,
+        );
+        let messages = encode_media_data_frame(binding, &frame).unwrap();
+        assert_eq!(messages.len(), 2);
+        let mut payload = Vec::new();
+        for (index, message) in messages.into_iter().enumerate() {
+            assert_eq!(message.target, DataChannelTarget::Reliable);
+            let Some(crate::api::proto::message::Message::Video(video)) = message.message.message
+            else {
+                panic!("media data must use the video envelope");
+            };
+            let Some(crate::api::proto::video_message::Message::Frame(fragment)) = video.message
+            else {
+                panic!("video data must contain a frame fragment");
+            };
+            assert_eq!(fragment.stream_binding_id, delivery.stream_binding_id);
+            assert_eq!(fragment.frame_id, 1);
+            assert_eq!(fragment.fragment_index, u32::try_from(index).unwrap());
+            assert_eq!(fragment.fragment_count, 2);
+            assert!(fragment.key_frame);
+            assert_eq!(fragment.configuration_revision, 1);
+            assert!(fragment.timestamp.is_some());
+            payload.extend(fragment.payload);
+        }
+        assert_eq!(payload, frame.data.avcc);
+        assert_eq!(binding.next_frame_id, 2);
+
+        media.unsubscribe(&[request.subscription_id]);
+        let main_request = crate::api::proto::SubscribeMedia {
+            subscription_id: "detector-main".to_owned(),
+            video_quality: crate::api::proto::VideoQuality::High as i32,
+            ..request
+        };
+        media
+            .subscribe(
+                &session,
+                &main_request,
+                MediaSubscriptionPlan {
+                    source_session_id: main_request.source_session_id.clone(),
+                    camera_ip,
+                    has_sub_stream: true,
+                    recording_label: "front-door".to_owned(),
+                    quality: StreamQuality::High,
+                    delivery_transport: crate::api::proto::DeliveryTransport::ReliableData,
+                    codec: crate::api::proto::CodecDescriptor {
+                        name: "h265".to_owned(),
+                        parameters: HashMap::new(),
+                    },
+                    format: crate::api::proto::MediaDataFormat::default(),
+                    selected_variant_id: "main".to_owned(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            media.tracks[0].runtime.subscription.active_source.stream,
+            StreamKind::Main
         );
     }
 

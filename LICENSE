@@ -1,3 +1,11 @@
+        KeepPeek licensing notice
+
+        Except for the public API definitions and documentation under api/, which are
+        licensed under the MIT License in api/LICENSE, KeepPeek is licensed under the
+        GNU Affero General Public License, version 3 only (AGPL-3.0-only), reproduced
+        below. Generated bindings derived solely from files under api/ remain covered
+        by that directory's MIT License.
+
                     GNU AFFERO GENERAL PUBLIC LICENSE
                        Version 3, 19 November 2007
 

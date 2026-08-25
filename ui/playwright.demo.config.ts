@@ -1,7 +1,9 @@
 import { defineConfig } from '@playwright/test';
 
-const backendURL = 'http://127.0.0.1:4317';
-const baseURL = 'http://127.0.0.1:4174';
+const backendPort = process.env.KEEPPEEK_E2E_BACKEND_PORT ?? '4317';
+const backendURL = `http://127.0.0.1:${backendPort}`;
+const frontendPort = process.env.KEEPPEEK_E2E_FRONTEND_PORT ?? '4174';
+const baseURL = `http://127.0.0.1:${frontendPort}`;
 const environment = Object.fromEntries(
 	Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
 );
@@ -30,7 +32,7 @@ export default defineConfig({
 			timeout: 180_000
 		},
 		{
-			command: 'bun run dev -- --host 127.0.0.1 --port 4174',
+			command: `bun run dev -- --host 127.0.0.1 --port ${frontendPort}`,
 			url: baseURL,
 			env: { ...environment, KEEPPEEK_API_TARGET: backendURL },
 			reuseExistingServer: false

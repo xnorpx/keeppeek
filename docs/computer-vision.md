@@ -35,6 +35,11 @@ encoding, and publication retry. KeepPeek is responsible for source authorizatio
 identity and revision validation, attachment limits, atomic persistence, timeline queries,
 capability updates, and subscriber routing.
 
+This repository owns the vendor-neutral API, server-side enforcement, conformance fixtures, and
+small implementation examples. Detector products, model services, provider integrations, and
+deployment tooling remain independent API clients outside this repository. An example demonstrates
+interoperability; it does not define a supported detector product or product roadmap.
+
 ## Discover and subscribe to media
 
 The service establishes the standard HTTP/WebRTC session and creates all three pre-negotiated

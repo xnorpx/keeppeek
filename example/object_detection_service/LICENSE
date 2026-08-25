@@ -1,0 +1,11 @@
+SPDX-License-Identifier: AGPL-3.0-only
+
+The handwritten KeepPeek object-detection service example is licensed under
+the GNU Affero General Public License, version 3 only (AGPL-3.0-only). The
+complete license text is available in ../../LICENSE.
+
+The generated `generated/webrtc_pb2.py` and `generated/webrtc_pb2.pyi` bindings
+are derived solely from the API definitions in ../../api and remain licensed
+under the MIT License in ../../api/LICENSE. Generating or using those bindings
+does not relicense the API definition as AGPL or impose the example's AGPL
+license on an independent API client.
