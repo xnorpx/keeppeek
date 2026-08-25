@@ -5,7 +5,7 @@ grpcio-tools==1.83.0
 mypy==2.3.1
 mypy-protobuf==5.1.0
 numpy==2.5.2
-protobuf==7.35.1
+protobuf==7.36.0
 pytest==9.1.1
-ruff==0.16.3
-ultralytics==8.4.121
+ruff==0.16.4
+ultralytics==8.4.126
