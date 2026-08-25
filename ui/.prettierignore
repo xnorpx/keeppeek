@@ -8,6 +8,7 @@ bun.lockb
 # Miscellaneous
 /static/
 ../target/
+../data/sample-videos/
 
 # Generated component primitives
 /src/lib/components/ui/

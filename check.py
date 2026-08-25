@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
-
+import importlib.util
 import json
 import os
 import platform
@@ -165,9 +164,7 @@ def nextest_timing_data() -> dict[str, Any] | None:
     if not log_path.is_file():
         return None
     tests: list[dict[str, Any]] = []
-    pattern = re.compile(
-        r"^\s*(?:PASS|FAIL|SLOW|LEAK|TIMEOUT)\s+\[\s*([0-9.]+)s\]\s+(.+?)\s*$"
-    )
+    pattern = re.compile(r"^\s*(?:PASS|FAIL|SLOW|LEAK|TIMEOUT)\s+\[\s*([0-9.]+)s\]\s+(.+?)\s*$")
     for line in log_path.read_text(encoding="utf-8").splitlines():
         match = pattern.match(ANSI_ESCAPE.sub("", line))
         if match is None:
@@ -297,9 +294,7 @@ def write_reports(status: str = "running") -> None:
         "cargoBuild": cargo_timing,
         "rustTests": nextest_timing,
     }
-    (REPORT_ROOT / "report.json").write_text(
-        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
-    )
+    (REPORT_ROOT / "report.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     (REPORT_ROOT / "report.md").write_text(
         markdown_report(status, cargo_timing, nextest_timing), encoding="utf-8"
     )
@@ -311,11 +306,39 @@ def phase_commands() -> list[tuple[str, list[str], Path]]:
     return [
         ("Rust build", ["cargo", "build", "--all", "--timings"], REPOSITORY_ROOT),
         ("Rust tests", nextest, REPOSITORY_ROOT),
-        ("Rust Clippy", ["cargo", "clippy", "--all", "--all-targets", "--", "-D", "warnings"], REPOSITORY_ROOT),
+        (
+            "Rust Clippy",
+            ["cargo", "clippy", "--all", "--all-targets", "--", "-D", "warnings"],
+            REPOSITORY_ROOT,
+        ),
         ("Unused Rust dependencies", ["cargo", "machete"], REPOSITORY_ROOT),
         ("Rust formatting", ["cargo", "fmt", "--all", "--", "--check"], REPOSITORY_ROOT),
         ("TOML formatting", ["bunx", "@taplo/cli", "fmt", "--check"], REPOSITORY_ROOT),
-        ("Markdown formatting", ["bunx", "prettier", "--check", "**/*.md", "!ui/**/*.md"], REPOSITORY_ROOT),
+        (
+            "Python formatting",
+            [
+                sys.executable,
+                "-m",
+                "black",
+                "--check",
+                "--config",
+                "example/object_detection_service/pyproject.toml",
+                ".",
+            ],
+            REPOSITORY_ROOT,
+        ),
+        (
+            "Markdown formatting",
+            [
+                "bunx",
+                "prettier",
+                "--check",
+                "**/*.md",
+                "!ui/**/*.md",
+                "!data/sample-videos/**/*.md",
+            ],
+            REPOSITORY_ROOT,
+        ),
         ("UI registry policy", ["bun", "run", "registry:check"], UI_ROOT),
         ("Paper typecheck", ["bun", "run", "paper:typecheck"], UI_ROOT),
         ("Paper contract", ["bun", "run", "paper:check"], UI_ROOT),
@@ -343,6 +366,11 @@ def main() -> int:
         ("cargo-nextest", "cargo install cargo-nextest"),
     ]:
         require_command(command, installation)
+    if importlib.util.find_spec("black") is None:
+        raise RuntimeError(
+            "Black is required: python -m pip install -r "
+            "example/object_detection_service/requirements.txt"
+        )
     REPORT_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     try:

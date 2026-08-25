@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # WebRTC Data Channel Protocol
 
 `webrtc.proto` defines messages exchanged after the pre-negotiated WebRTC data

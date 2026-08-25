@@ -51,6 +51,10 @@ impl EventStore {
         self.catalog.events_in_range(camera_id, start_ms, end_ms)
     }
 
+    pub fn event_by_id(&self, id: &str) -> anyhow::Result<Option<TimelineEvent>> {
+        self.catalog.event_by_id(id)
+    }
+
     pub fn save_thumbnail(
         &self,
         camera_id: &str,

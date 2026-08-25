@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 openapi: 3.1.1
 info:
   title: KeepPeek API
@@ -5,6 +6,9 @@ info:
     Create WebRTC sessions from gzip-compressed SDP offers, delete sessions, and
     read live and retained server logs plus Prometheus metrics through HTTP.
   version: unversioned
+  license:
+    name: MIT
+    identifier: MIT
 servers:
   - url: http://{host}:{port}
     variables:

@@ -13,6 +13,14 @@ const releaseRoot = path.join(repositoryRoot, 'target', 'release');
 const keeppeekBinary = requiredBinary('keeppeek');
 const testCameraBinary = requiredBinary('test_camera');
 const startWithEmptyFleet = process.env.KEEPPEEK_E2E_EMPTY_FLEET === '1';
+const backendPort = Number(process.env.KEEPPEEK_E2E_BACKEND_PORT ?? '4317');
+const frontendPort = Number(process.env.KEEPPEEK_E2E_FRONTEND_PORT ?? '4174');
+if (!Number.isInteger(backendPort) || backendPort < 1 || backendPort > 65_535) {
+	throw new Error('KEEPPEEK_E2E_BACKEND_PORT must be an integer from 1 through 65535');
+}
+if (!Number.isInteger(frontendPort) || frontendPort < 1 || frontendPort > 65_535) {
+	throw new Error('KEEPPEEK_E2E_FRONTEND_PORT must be an integer from 1 through 65535');
+}
 
 type TestCamera = {
 	name: string;
@@ -113,10 +121,10 @@ const tomlString = (value: string) => JSON.stringify(value);
 await writeFile(
 	configPath,
 	`host = "127.0.0.1"
-port = 4317
+port = ${backendPort}
 
 [direct_card]
-allowed_origins = ["http://127.0.0.1:4174"]
+allowed_origins = ["http://127.0.0.1:${frontendPort}"]
 
 [storage]
 medium_term_path = ${tomlString(storageRoot)}

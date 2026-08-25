@@ -1,0 +1,58 @@
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+required-version = "26.5.1"
+extend-exclude = '''
+/(
+    data/sample-videos
+  | example/object_detection_service/generated
+  | generated
+  | target
+  | ui/build
+  | ui/node_modules
+)/
+'''
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "typings"
+files = [
+  "object_detection_service.py",
+  "keeppeek_client.py",
+  "detection_pipeline.py",
+  "generate_protos.py",
+  "tests",
+]
+exclude = ["generated"]
+
+[tool.pytest.ini_options]
+addopts = "-ra -p no:cacheprovider"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["generated"]
+
+[tool.ruff.lint]
+select = [
+  "ARG",
+  "ASYNC",
+  "B",
+  "DTZ",
+  "E",
+  "ERA",
+  "F",
+  "G",
+  "I",
+  "LOG",
+  "PERF",
+  "PIE",
+  "PT",
+  "PTH",
+  "RET",
+  "RUF",
+  "SIM",
+  "UP",
+]

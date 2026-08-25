@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # SDP Offer Contract
 
 `POST /create` accepts an SDP offer only when the request and offer conform to this
