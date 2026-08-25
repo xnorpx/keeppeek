@@ -217,7 +217,10 @@ async function waitForCameraIngress(page: Page): Promise<void> {
 					const metrics = await response.text();
 					return cameraIds.filter(
 						(cameraId) =>
-							metricValue(metrics, 'keeppeek_camera_online', { camera_id: cameraId }) === 1 &&
+							metricValue(metrics, 'keeppeek_camera_info', {
+								camera_id: cameraId,
+								state: 'healthy'
+							}) === 1 &&
 							(metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
 								camera_id: cameraId,
 								stream: 'video_sub'

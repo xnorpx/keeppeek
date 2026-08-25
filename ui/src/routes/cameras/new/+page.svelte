@@ -638,7 +638,7 @@
 
 	function savedStateLabel(result: CameraSettingsUpdateResponse): string {
 		if (result.restart_required) return 'RESTART REQUIRED';
-		if (result.camera.health === 'online') return 'ONLINE';
+		if (result.camera.health === 'healthy') return 'HEALTHY';
 		if (result.camera.health === 'degraded' || result.camera.health === 'stale') return 'DEGRADED';
 		if (result.camera.health === 'offline') return 'OFFLINE';
 		return 'STARTING';
@@ -648,8 +648,8 @@
 		if (result.restart_required) {
 			return 'Saved to configuration. Restart KeepPeek before this camera can start.';
 		}
-		if (result.camera.health === 'online') {
-			return 'Saved, started, and reporting online.';
+		if (result.camera.health === 'healthy') {
+			return 'Saved, started, and healthy.';
 		}
 		if (result.camera.health === 'degraded' || result.camera.health === 'stale') {
 			return 'Saved and started, but stream health needs attention.';
@@ -698,7 +698,7 @@
 				<div>
 					<h2 class="text-lg font-semibold">Camera saved</h2>
 					<p
-						class="mt-2 font-mono text-2xs tracking-caps {saved.camera.health === 'online'
+						class="mt-2 font-mono text-2xs tracking-caps {saved.camera.health === 'healthy'
 							? 'text-healthy'
 							: 'text-activity'}"
 					>
@@ -716,7 +716,7 @@
 							href={`${resolve('/settings')}#appearance`}
 							class="inline-flex h-9 items-center rounded-sm border border-hairline-strong bg-raised px-4 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 							>Restart KeepPeek</a
-						>{:else if saved.camera.health !== 'online'}<a
+						>{:else if saved.camera.health !== 'healthy'}<a
 							href={`${resolve('/system-health')}/camera/${encodeURIComponent(saved.camera.id)}`}
 							class="inline-flex h-9 items-center rounded-sm border border-hairline-strong bg-raised px-4 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 							>Open diagnostics</a

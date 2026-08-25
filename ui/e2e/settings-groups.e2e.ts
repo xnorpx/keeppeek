@@ -44,7 +44,7 @@ const cameras: CameraSettings[] = ['Front Door', 'Back Yard'].map((name, index) 
 	record_generic_motion_events: false,
 	recording_mode: 'event-boost',
 	event_recording_duration_secs: 60,
-	health: 'online',
+	health: 'healthy',
 	model: null
 }));
 

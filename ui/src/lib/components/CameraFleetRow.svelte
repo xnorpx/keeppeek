@@ -32,14 +32,24 @@
 	let cameraHref = $derived(`${resolve('/camera')}?camera=${encodeURIComponent(camera.id)}`);
 
 	function stateColor(): string {
-		if (presentation.state === 'live') return 'bg-healthy';
-		if (presentation.state === 'degraded') return 'bg-activity';
+		if (presentation.state === 'healthy') return 'bg-healthy';
+		if (
+			presentation.state === 'degraded' ||
+			presentation.state === 'stale' ||
+			presentation.state === 'reconnecting'
+		)
+			return 'bg-activity';
 		if (presentation.state === 'offline') return 'bg-live';
 		return 'bg-text-faint';
 	}
 
 	function stateTextColor(): string {
-		if (presentation.state === 'degraded') return 'text-activity';
+		if (
+			presentation.state === 'degraded' ||
+			presentation.state === 'stale' ||
+			presentation.state === 'reconnecting'
+		)
+			return 'text-activity';
 		if (presentation.state === 'offline') return 'text-live-text';
 		return 'text-text-faint';
 	}
@@ -84,7 +94,7 @@
 				{label}
 			</a>
 			<p class="truncate font-mono text-2xs {stateTextColor()}">
-				{presentation.state === 'live' ? detail : presentation.statusDetail}
+				{presentation.state === 'healthy' ? detail : presentation.statusDetail}
 			</p>
 		</div>
 		<a
@@ -122,11 +132,11 @@
 				{label}
 			</a>
 			<p
-				class="truncate font-mono text-2xs {presentation.state === 'live'
+				class="truncate font-mono text-2xs {presentation.state === 'healthy'
 					? 'text-text-faint'
 					: stateTextColor()}"
 			>
-				{presentation.state === 'live' ? detail : presentation.statusDetail}
+				{presentation.state === 'healthy' ? detail : presentation.statusDetail}
 			</p>
 		</div>
 		<div class="min-w-0 pr-4">
@@ -165,7 +175,7 @@
 			<p class="text-2xs text-text-faint">Not reported</p>
 		</div>
 		<div class="flex justify-end pr-2">
-			{#if presentation.state === 'offline'}
+			{#if presentation.state !== 'healthy' && presentation.state !== 'starting'}
 				<a
 					href={resolve('/system-health')}
 					class="inline-flex h-6 items-center rounded-sm border border-hairline-strong px-2 text-2xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"

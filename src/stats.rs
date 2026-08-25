@@ -346,6 +346,13 @@ struct RegisteredStream {
     report: StreamReport,
     updated_at: Instant,
     updated_at_ms: u64,
+    frame_updated_at: Option<Instant>,
+    frame_updated_at_ms: Option<u64>,
+    keyframe_updated_at: Option<Instant>,
+    keyframe_updated_at_ms: Option<u64>,
+    recent_reconnects: u64,
+    recent_drops: u64,
+    recent_errors: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -363,6 +370,13 @@ pub(crate) struct StreamHealthReport {
     pub report: StreamReport,
     pub updated_at_ms: u64,
     pub report_age_ms: u64,
+    pub frame_updated_at_ms: Option<u64>,
+    pub frame_age_ms: Option<u64>,
+    pub keyframe_updated_at_ms: Option<u64>,
+    pub keyframe_age_ms: Option<u64>,
+    pub recent_reconnects: u64,
+    pub recent_drops: u64,
+    pub recent_errors: u64,
 }
 
 impl HealthRegistry {
@@ -372,8 +386,10 @@ impl HealthRegistry {
     }
 
     pub(crate) fn publish(&self, report: CameraReport) {
-        let now = Instant::now();
-        let updated_at_ms = unix_time_ms();
+        self.publish_at(report, Instant::now(), unix_time_ms());
+    }
+
+    fn publish_at(&self, report: CameraReport, now: Instant, updated_at_ms: u64) {
         let mut cameras = self
             .inner
             .lock()
@@ -394,19 +410,72 @@ impl HealthRegistry {
         }
         camera.port = report.port;
         for stream in report.streams {
+            let previous = camera.streams.get(&stream.kind);
+            let frames = stream.frames.unwrap_or(0);
+            let keyframes = stream.keyframes.unwrap_or(0);
+            let frame_progressed = counter_progressed(
+                previous.map(|entry| entry.report.frames.unwrap_or(0)),
+                frames,
+            );
+            let keyframe_progressed = counter_progressed(
+                previous.map(|entry| entry.report.keyframes.unwrap_or(0)),
+                keyframes,
+            );
+            let frame_updated_at = if frame_progressed {
+                Some(now)
+            } else {
+                previous.and_then(|entry| entry.frame_updated_at)
+            };
+            let frame_updated_at_ms = if frame_progressed {
+                Some(updated_at_ms)
+            } else {
+                previous.and_then(|entry| entry.frame_updated_at_ms)
+            };
+            let keyframe_updated_at = if keyframe_progressed {
+                Some(now)
+            } else {
+                previous.and_then(|entry| entry.keyframe_updated_at)
+            };
+            let keyframe_updated_at_ms = if keyframe_progressed {
+                Some(updated_at_ms)
+            } else {
+                previous.and_then(|entry| entry.keyframe_updated_at_ms)
+            };
+            let recent_reconnects = counter_delta(
+                previous.map(|entry| entry.report.reconnects.unwrap_or(0)),
+                stream.reconnects.unwrap_or(0),
+            );
+            let recent_drops = counter_delta(
+                previous.map(|entry| entry.report.drops.unwrap_or(0)),
+                stream.drops.unwrap_or(0),
+            );
+            let recent_errors = counter_delta(
+                previous.map(|entry| entry.report.errors.unwrap_or(0)),
+                stream.errors.unwrap_or(0),
+            );
             camera.streams.insert(
                 stream.kind.clone(),
                 RegisteredStream {
                     report: stream,
                     updated_at: now,
                     updated_at_ms,
+                    frame_updated_at,
+                    frame_updated_at_ms,
+                    keyframe_updated_at,
+                    keyframe_updated_at_ms,
+                    recent_reconnects,
+                    recent_drops,
+                    recent_errors,
                 },
             );
         }
     }
 
     pub(crate) fn snapshot(&self) -> Vec<CameraHealthReport> {
-        let now = Instant::now();
+        self.snapshot_at(Instant::now())
+    }
+
+    fn snapshot_at(&self, now: Instant) -> Vec<CameraHealthReport> {
         let cameras = self
             .inner
             .lock()
@@ -425,6 +494,23 @@ impl HealthRegistry {
                             .as_millis()
                             .try_into()
                             .unwrap_or(u64::MAX),
+                        frame_updated_at_ms: stream.frame_updated_at_ms,
+                        frame_age_ms: stream.frame_updated_at.map(|updated_at| {
+                            now.saturating_duration_since(updated_at)
+                                .as_millis()
+                                .try_into()
+                                .unwrap_or(u64::MAX)
+                        }),
+                        keyframe_updated_at_ms: stream.keyframe_updated_at_ms,
+                        keyframe_age_ms: stream.keyframe_updated_at.map(|updated_at| {
+                            now.saturating_duration_since(updated_at)
+                                .as_millis()
+                                .try_into()
+                                .unwrap_or(u64::MAX)
+                        }),
+                        recent_reconnects: stream.recent_reconnects,
+                        recent_drops: stream.recent_drops,
+                        recent_errors: stream.recent_errors,
                     })
                     .collect::<Vec<_>>();
                 streams.sort_unstable_by(|left, right| left.report.kind.cmp(&right.report.kind));
@@ -447,6 +533,20 @@ impl HealthRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&camera_ip);
     }
+}
+
+fn counter_progressed(previous: Option<u64>, current: u64) -> bool {
+    current > 0 && previous != Some(current)
+}
+
+fn counter_delta(previous: Option<u64>, current: u64) -> u64 {
+    previous.map_or(current, |previous| {
+        if current >= previous {
+            current - previous
+        } else {
+            current
+        }
+    })
 }
 
 pub(crate) fn video_report(
@@ -697,6 +797,76 @@ mod tests {
         assert_eq!(reports[0].streams[0].report.fps, 24.0);
         assert_eq!(reports[0].streams[1].report.kind, "video_sub");
         assert_eq!(reports[0].streams[1].report.fps, 15.0);
+    }
+
+    #[test]
+    fn registry_tracks_media_progress_with_monotonic_ages_and_recent_deltas() {
+        let registry = HealthRegistry::new();
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 2));
+        let started_at = Instant::now();
+        let mut initial = stream("video_main", 15.0);
+        initial.drops = Some(3);
+        initial.errors = Some(4);
+        registry.publish_at(
+            CameraReport {
+                ip,
+                name: Some("camera".to_owned()),
+                brand: None,
+                port: 554,
+                streams: vec![initial.clone()],
+            },
+            started_at,
+            1_000,
+        );
+
+        let mut next = initial;
+        next.frames = Some(120);
+        next.errors = Some(5);
+        registry.publish_at(
+            CameraReport {
+                ip,
+                name: None,
+                brand: None,
+                port: 554,
+                streams: vec![next],
+            },
+            started_at + Duration::from_secs(10),
+            11_000,
+        );
+
+        let reports = registry.snapshot_at(started_at + Duration::from_secs(35));
+        let report = &reports[0].streams[0];
+        assert_eq!(report.frame_updated_at_ms, Some(11_000));
+        assert_eq!(report.frame_age_ms, Some(25_000));
+        assert_eq!(report.keyframe_updated_at_ms, Some(1_000));
+        assert_eq!(report.keyframe_age_ms, Some(35_000));
+        assert_eq!(report.recent_drops, 0);
+        assert_eq!(report.recent_errors, 1);
+
+        let mut reset = stream("video_main", 15.0);
+        reset.frames = Some(5);
+        reset.keyframes = Some(1);
+        reset.reconnects = Some(1);
+        reset.drops = Some(1);
+        reset.errors = None;
+        registry.publish_at(
+            CameraReport {
+                ip,
+                name: None,
+                brand: None,
+                port: 554,
+                streams: vec![reset],
+            },
+            started_at + Duration::from_secs(40),
+            41_000,
+        );
+
+        let reports = registry.snapshot_at(started_at + Duration::from_secs(40));
+        let report = &reports[0].streams[0];
+        assert_eq!(report.frame_age_ms, Some(0));
+        assert_eq!(report.keyframe_age_ms, Some(0));
+        assert_eq!(report.recent_drops, 1);
+        assert_eq!(report.recent_errors, 0);
     }
 
     #[test]

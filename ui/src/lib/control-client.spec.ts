@@ -16,6 +16,7 @@ import {
 	CameraConfigurationResultSchema,
 	CameraSettingsSchema,
 	CameraHealthSnapshotSchema,
+	CameraHealthDimensionsSnapshotSchema,
 	CatalogHealthSnapshotSchema,
 	CameraBackend as ProtoCameraBackend,
 	CameraTransport as ProtoCameraTransport,
@@ -69,6 +70,7 @@ import {
 	SourceSessionSchema,
 	StorageHealthSnapshotSchema,
 	StreamHealthSnapshotSchema,
+	StreamHealthDimensionsSnapshotSchema,
 	SystemHealthSnapshotSchema,
 	StoredMediaSourceCapabilitySchema,
 	StoredMediaStreamCapabilitySchema,
@@ -577,12 +579,21 @@ class FakeDataChannel {
 									case: 'healthResult' as const,
 									value: create(ServerHealthSnapshotSchema, {
 										status: 'degraded',
+										healthContractVersion: 1,
 										generatedAtMs: 1_777_000_000_000n,
 										uptimeSeconds: 3_600n,
 										version: '0.1.0',
 										totals: create(HealthTotalsSnapshotSchema, {
 											configuredCameras: 1n,
-											reportingCameras: 1n,
+											connectedCameras: 1n,
+											freshCameras: 1n,
+											decodableCameras: 1n,
+											recordingCameras: 0n,
+											recordingRequestedCameras: 0n,
+											connectedVideoStreams: 1n,
+											freshVideoStreams: 1n,
+											decodableVideoStreams: 1n,
+											recordingRequestedVideoStreams: 0n,
 											ingressFps: 24.5,
 											ingressBitrateBps: 1_500_000n
 										}),
@@ -639,6 +650,29 @@ class FakeDataChannel {
 												backend: 'Reolink',
 												transport: 'TCP',
 												state: 'degraded',
+												reason: 'ingress_drops',
+												reasonCodes: ['ingress_drops'],
+												detail: 'Recent ingress frames were dropped',
+												dimensions: create(CameraHealthDimensionsSnapshotSchema, {
+													configured: true,
+													expected: true,
+													configuredVideoStreams: 1n,
+													connectedVideoStreams: 1n,
+													reportingVideoStreams: 1n,
+													freshVideoStreams: 1n,
+													decodableVideoStreams: 1n,
+													configuredVideoStreamIds: ['main'],
+													connectedVideoStreamIds: ['main'],
+													connectedVideoStreamIdsKnown: true,
+													reportingVideoStreamIds: ['main'],
+													freshVideoStreamIds: ['main'],
+													decodableVideoStreamIds: ['main'],
+													transportConnected: true,
+													framesFresh: true,
+													decodable: true,
+													recentDrops: 3n,
+													recordingRequested: false
+												}),
 												configuredProfiles: [
 													create(HealthProfileSummarySchema, {
 														name: 'Main',
@@ -652,9 +686,49 @@ class FakeDataChannel {
 														fps: 24.5,
 														drops: 3n,
 														updatedAtMs: 1_777_000_000_000n,
-														reportAgeMs: 200n
+														reportAgeMs: 200n,
+														frameAgeMs: 100n,
+														keyframeAgeMs: 1_000n,
+														recentDrops: 3n,
+														state: 'degraded',
+														reason: 'ingress_drops',
+														reasonCodes: ['ingress_drops'],
+														detail: 'Recent ingress frames were dropped',
+														dimensions: create(StreamHealthDimensionsSnapshotSchema, {
+															expected: true,
+															transportConnected: true,
+															reportFresh: true,
+															reportFreshnessThresholdMs: 30_000n,
+															framesFresh: true,
+															frameFreshnessThresholdMs: 20_000n,
+															decodable: true,
+															keyframeFreshnessThresholdMs: 30_000n,
+															recentDrops: 3n
+														})
 													})
 												]
+											}),
+											create(CameraHealthSnapshotSchema, {
+												id: 'future-camera',
+												ip: '192.0.2.11',
+												name: 'Future Camera',
+												state: 'future_state',
+												reason: 'future_reason',
+												dimensions: create(CameraHealthDimensionsSnapshotSchema, {
+													configured: true,
+													expected: true
+												})
+											}),
+											create(CameraHealthSnapshotSchema, {
+												id: 'healthy-camera',
+												ip: '192.0.2.12',
+												name: 'Healthy Camera',
+												state: 'healthy',
+												reason: 'healthy',
+												dimensions: create(CameraHealthDimensionsSnapshotSchema, {
+													configured: true,
+													expected: true
+												})
 											})
 										],
 										issues: [
@@ -699,7 +773,7 @@ class FakeDataChannel {
 																passwordConfigured: true,
 																backend: ProtoCameraBackend.REO_PROTO,
 																transport: ProtoCameraTransport.TCP,
-																health: 'online',
+																health: 'healthy',
 																model: 'RLC-811A'
 															})
 														]
@@ -1111,8 +1185,16 @@ describe('ControlClient', () => {
 		]);
 		await expect(client.getHealth()).resolves.toMatchObject({
 			status: 'degraded',
+			health_contract_version: 1,
 			generated_at_ms: 1_777_000_000_000,
-			totals: { configured_cameras: 1, ingress_fps: 24.5 },
+			totals: {
+				configured_cameras: 1,
+				connected_cameras: 1,
+				fresh_cameras: 1,
+				decodable_cameras: 1,
+				recording_requested_cameras: 0,
+				ingress_fps: 24.5
+			},
 			system: {
 				host_name: 'keeppeek.local',
 				process: { pid: 42, resident_memory_bytes: 536_870_912 },
@@ -1131,9 +1213,30 @@ describe('ControlClient', () => {
 				{
 					id: 'front-door',
 					state: 'degraded',
+					reason: 'ingress_drops',
+					detail: 'Recent ingress frames were dropped',
+					dimensions: {
+						transport_connected: true,
+						frames_fresh: true,
+						decodable: true,
+						recent_drops: 3
+					},
 					configured_profiles: [{ stream: 'main', encoding: 'h264' }],
-					streams: [{ type: 'video_main', fps: 24.5, drops: 3 }]
-				}
+					streams: [
+						{
+							type: 'video_main',
+							fps: 24.5,
+							drops: 3,
+							state: 'degraded',
+							reason: 'ingress_drops',
+							frame_age_ms: 100,
+							keyframe_age_ms: 1_000,
+							dimensions: { frames_fresh: true, decodable: true }
+						}
+					]
+				},
+				{ id: 'future-camera', state: 'unknown', reason: 'unknown' },
+				{ id: 'healthy-camera', state: 'healthy', reason: 'healthy' }
 			],
 			issues: [{ severity: 'warning', scope: 'Front Door' }]
 		});
@@ -1314,7 +1417,7 @@ describe('ControlClient', () => {
 				record_generic_motion_events: false,
 				recording_mode: 'event-boost',
 				event_recording_duration_secs: 60,
-				health: 'online',
+				health: 'healthy',
 				model: 'RLC-811A'
 			}
 		]);

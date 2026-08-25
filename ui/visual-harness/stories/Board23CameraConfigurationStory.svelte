@@ -19,7 +19,7 @@
 		record_generic_motion_events: false,
 		recording_mode: 'event-boost',
 		event_recording_duration_secs: 60,
-		health: 'online',
+		health: 'healthy',
 		model: 'RLC-811A'
 	} satisfies CameraSettings;
 

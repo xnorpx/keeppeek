@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	cameraDiagnosisEvidence,
-	effectiveCameraHealth,
-	rankHealthFindings
-} from '$lib/health-presentation';
+import { cameraDiagnosisEvidence, rankHealthFindings } from '$lib/health-presentation';
 import type { CameraHealth, HealthIssue } from '$lib/types';
 
 function camera(update: Partial<CameraHealth>): CameraHealth {
@@ -35,19 +31,15 @@ function issue(update: Partial<HealthIssue>): HealthIssue {
 }
 
 describe('health presentation', () => {
-	it('marks an online camera degraded when its snapshot has an active warning', () => {
-		const online = camera({ state: 'online', last_error: null });
-		expect(
-			effectiveCameraHealth(online, [
-				issue({ scope: 'back-yard', message: 'One or more stream reports are stale' })
-			])
-		).toMatchObject({
-			state: 'degraded',
-			last_error: 'One or more stream reports are stale'
+	it('does not rewrite canonical camera state from issue text', () => {
+		const healthy = camera({ state: 'healthy', last_error: null });
+		const findings = rankHealthFindings({
+			cameras: [healthy],
+			issues: [issue({ scope: 'back-yard', message: 'One or more stream reports are stale' })]
 		});
-		expect(effectiveCameraHealth(online, [issue({ severity: 'info', scope: 'back-yard' })])).toBe(
-			online
-		);
+
+		expect(findings[0].camera).toBe(healthy);
+		expect(findings[0].camera?.state).toBe('healthy');
 	});
 
 	it('ranks a camera recording outage before a same-severity system finding', () => {
@@ -87,11 +79,13 @@ describe('health presentation', () => {
 							report_age_ms: 2_000,
 							reconnects: 3,
 							drops: 14,
+							recent_drops: 14,
 							errors: 1
 						}
 					]
 				}),
-				camera({ id: 'front-door', name: 'Front Door', state: 'online' })
+				camera({ id: 'front-door', name: 'Front Door', state: 'healthy' }),
+				camera({ id: 'side-gate', name: 'Side Gate', state: 'unknown' })
 			],
 			issues: [issue({ scope: 'back-yard', message: 'Frames are dropping' })]
 		};
@@ -106,7 +100,7 @@ describe('health presentation', () => {
 			credentialProbeAvailable: false,
 			canSuggestTcp: true,
 			reportingNormally: 1,
-			otherUnhealthyCameras: 0
+			otherUnhealthyCameras: 1
 		});
 	});
 

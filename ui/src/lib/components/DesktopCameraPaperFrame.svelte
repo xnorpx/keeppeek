@@ -58,8 +58,8 @@
 			<span
 				class="inline-flex h-[26px] items-center gap-[7px] rounded-full border border-hairline bg-raised px-2.5 text-xs"
 			>
-				<span class="size-1.5 rounded-full bg-healthy"></span>{health.state === 'online'
-					? 'Connected'
+				<span class="size-1.5 rounded-full bg-healthy"></span>{health.state === 'healthy'
+					? 'Healthy'
 					: health.state}
 			</span>
 			<span class="font-mono text-[11px] leading-[14px] text-text-muted">

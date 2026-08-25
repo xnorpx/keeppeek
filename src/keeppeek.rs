@@ -253,9 +253,23 @@ impl CameraStreamStatus {
         let last_error = [StreamKind::Main, StreamKind::Sub]
             .into_iter()
             .find_map(|stream| self.errors.get(&stream).cloned());
+        let mut expected_streams = self
+            .expected
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        expected_streams.sort_unstable();
+        let mut connected_streams = self
+            .connected
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        connected_streams.sort_unstable();
         CameraStatus {
             id: self.id.clone(),
             lifecycle,
+            expected_streams,
+            connected_streams,
             last_error,
         }
     }
@@ -274,6 +288,7 @@ pub struct KeepPeekLoop {
     health: HealthRegistry,
     status_tx: Option<FacadeSender<RouterMessage>>,
     stream_statuses: HashMap<IpAddr, CameraStreamStatus>,
+    battery_uids: HashMap<IpAddr, String>,
     battery_wake: Option<BatteryWakeHandle>,
 }
 
@@ -294,6 +309,7 @@ impl KeepPeekLoop {
             health: HealthRegistry::new(),
             status_tx: None,
             stream_statuses: HashMap::new(),
+            battery_uids: HashMap::new(),
             battery_wake: None,
         }
     }
@@ -320,7 +336,7 @@ impl KeepPeekLoop {
         self.status_tx = Some(status_tx);
     }
 
-    pub const fn set_battery_wake(&mut self, battery_wake: BatteryWakeHandle) {
+    pub fn set_battery_wake(&mut self, battery_wake: BatteryWakeHandle) {
         self.battery_wake = Some(battery_wake);
     }
 
@@ -384,6 +400,14 @@ impl KeepPeekLoop {
         })?;
         if self.camera_workers.contains_key(&camera.config.ip) {
             anyhow::bail!("camera '{}' is already running", camera.config.ip)
+        }
+        if let Some(uid) = camera
+            .config
+            .uid
+            .clone()
+            .or_else(|| camera.device.p2p_uid.clone())
+        {
+            self.battery_uids.insert(camera.config.ip, uid);
         }
         self.camera_workers
             .insert(camera.config.ip, CameraWorkers::new());
@@ -683,6 +707,7 @@ impl KeepPeekLoop {
             workers.join(camera_ip);
         }
         self.stream_statuses.remove(&camera_ip);
+        self.battery_uids.remove(&camera_ip);
         self.health.remove(camera_ip);
         if let Some(live) = &self.live {
             live.reset_camera(camera_ip);
@@ -732,6 +757,11 @@ impl KeepPeekLoop {
         match event {
             KeepPeekEvent::StreamConnected { camera_ip, stream } => {
                 tracing::info!(%camera_ip, %stream, "stream connected");
+                if let Some(uid) = self.battery_uids.get(&camera_ip)
+                    && let Some(battery_wake) = &self.battery_wake
+                {
+                    battery_wake.note_media_connected(uid);
+                }
                 let status = self
                     .stream_statuses
                     .get_mut(&camera_ip)
@@ -746,6 +776,11 @@ impl KeepPeekLoop {
                 error,
             } => {
                 tracing::warn!(%camera_ip, %stream, %error, "stream error");
+                if let Some(uid) = self.battery_uids.get(&camera_ip)
+                    && let Some(battery_wake) = &self.battery_wake
+                {
+                    battery_wake.note_media_disconnected(uid);
+                }
                 let status = self
                     .stream_statuses
                     .get_mut(&camera_ip)

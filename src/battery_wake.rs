@@ -31,7 +31,15 @@ const WAKE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct BatteryWakeHandle {
-    config: BatteryWakeConfig,
+    core: Arc<WakeCore>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BatteryWakeHealth {
+    pub registered: bool,
+    pub last_seen_age_ms: Option<u64>,
+    pub wake_pending_age_ms: Option<u64>,
+    pub sleeping: bool,
 }
 
 impl BatteryWakeHandle {
@@ -70,7 +78,11 @@ impl BatteryWakeHandle {
                         continue;
                     };
                     if let WakeMessage::ClientConnectReply { response } = message {
-                        return Ok(response == 0);
+                        let accepted = response == 0;
+                        if accepted {
+                            self.core.note_wake_requested(uid);
+                        }
+                        return Ok(accepted);
                     }
                 }
                 Err(error)
@@ -84,13 +96,50 @@ impl BatteryWakeHandle {
         Ok(false)
     }
 
+    pub(crate) fn health(&self, uid: &str) -> BatteryWakeHealth {
+        self.health_at(uid, Instant::now())
+    }
+
+    pub(crate) fn note_media_connected(&self, uid: &str) {
+        self.core.note_media_connected(uid);
+    }
+
+    pub(crate) fn note_media_disconnected(&self, uid: &str) {
+        self.core.note_wake_requested(uid);
+    }
+
+    fn health_at(&self, uid: &str, now: Instant) -> BatteryWakeHealth {
+        let registration = self.core.registration_at(uid, now);
+        let wake_pending = self.core.wake_pending(uid);
+        BatteryWakeHealth {
+            registered: registration.is_some(),
+            last_seen_age_ms: registration.map(|registration| {
+                now.saturating_duration_since(registration.last_seen)
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX)
+            }),
+            wake_pending_age_ms: wake_pending.map(|requested_at| {
+                now.saturating_duration_since(requested_at)
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX)
+            }),
+            sleeping: registration.is_some() && wake_pending.is_none(),
+        }
+    }
+
     fn server_address(&self, camera_ip: IpAddr) -> anyhow::Result<SocketAddr> {
         let bind = self
+            .core
             .config
             .bind
             .filter(|bind| !bind.is_unspecified())
             .unwrap_or(local_route_ip(camera_ip)?);
-        Ok(SocketAddr::new(IpAddr::V4(bind), self.config.register_port))
+        Ok(SocketAddr::new(
+            IpAddr::V4(bind),
+            self.core.config.register_port,
+        ))
     }
 }
 
@@ -123,7 +172,7 @@ impl BatteryWakeService {
             .map(|uid| uid.trim().to_owned())
             .filter(|uid| valid_uid(uid))
             .collect();
-        let core = Arc::new(WakeCore::new(config.clone(), allowed_uids));
+        let core = Arc::new(WakeCore::new(config, allowed_uids));
         let register_socket = Arc::new(register);
         let middleman_core = core.clone();
         let middleman_shutdown = shutdown.clone();
@@ -131,14 +180,14 @@ impl BatteryWakeService {
             .name("battery-wake-middleman".to_owned())
             .spawn(move || run_middleman(middleman, middleman_core, middleman_shutdown))?;
 
-        let register_core = core;
+        let register_core = core.clone();
         let register_shutdown = shutdown;
         let register_worker = thread::Builder::new()
             .name("battery-wake-register".to_owned())
             .spawn(move || run_register(register_socket, register_core, register_shutdown))?;
 
         Ok(Self {
-            handle: BatteryWakeHandle { config },
+            handle: BatteryWakeHandle { core },
             workers: vec![middleman_worker, register_worker],
         })
     }
@@ -169,6 +218,7 @@ struct WakeCore {
 struct WakeState {
     anchors: HashMap<String, SessionAnchor>,
     registrations: HashMap<String, Registration>,
+    pending_wakes: HashMap<String, Instant>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -225,6 +275,10 @@ impl WakeCore {
     }
 
     fn register(&self, uid: &str, address: SocketAddr) -> bool {
+        self.register_at(uid, address, Instant::now())
+    }
+
+    fn register_at(&self, uid: &str, address: SocketAddr, now: Instant) -> bool {
         let Some(configured_uid) = self.configured_uid(uid) else {
             return false;
         };
@@ -234,11 +288,22 @@ impl WakeCore {
         {
             return false;
         }
+        let returned_to_sleep =
+            state
+                .pending_wakes
+                .get(&configured_uid)
+                .is_some_and(|pending_since| {
+                    now.saturating_duration_since(*pending_since)
+                        >= Duration::from_secs(self.config.heartbeat_secs)
+                });
+        if returned_to_sleep {
+            state.pending_wakes.remove(&configured_uid);
+        }
         state.registrations.insert(
             configured_uid,
             Registration {
                 address,
-                last_seen: Instant::now(),
+                last_seen: now,
             },
         );
         true
@@ -256,15 +321,52 @@ impl WakeCore {
     }
 
     fn registration(&self, uid: &str) -> Option<Registration> {
+        self.registration_at(uid, Instant::now())
+    }
+
+    fn registration_at(&self, uid: &str, now: Instant) -> Option<Registration> {
         let configured_uid = self.configured_uid(uid)?;
         let stale_after = Duration::from_secs(self.config.stale_after_secs);
         let mut state = self.state.lock().expect("battery wake state poisoned");
         let registration = state.registrations.get(&configured_uid).copied()?;
-        if registration.last_seen.elapsed() > stale_after {
+        if now.saturating_duration_since(registration.last_seen) > stale_after {
             state.registrations.remove(&configured_uid);
+            state.pending_wakes.remove(&configured_uid);
             return None;
         }
         Some(registration)
+    }
+
+    fn note_wake_requested(&self, uid: &str) {
+        let Some(configured_uid) = self.configured_uid(uid) else {
+            return;
+        };
+        self.state
+            .lock()
+            .expect("battery wake state poisoned")
+            .pending_wakes
+            .insert(configured_uid, Instant::now());
+    }
+
+    fn note_media_connected(&self, uid: &str) {
+        let Some(configured_uid) = self.configured_uid(uid) else {
+            return;
+        };
+        self.state
+            .lock()
+            .expect("battery wake state poisoned")
+            .pending_wakes
+            .remove(&configured_uid);
+    }
+
+    fn wake_pending(&self, uid: &str) -> Option<Instant> {
+        let configured_uid = self.configured_uid(uid)?;
+        self.state
+            .lock()
+            .expect("battery wake state poisoned")
+            .pending_wakes
+            .get(&configured_uid)
+            .copied()
     }
 }
 
@@ -865,10 +967,13 @@ mod tests {
         let server = UdpSocket::bind("127.0.0.1:0").unwrap();
         let register_port = server.local_addr().unwrap().port();
         let handle = BatteryWakeHandle {
-            config: BatteryWakeConfig {
-                register_port,
-                ..config()
-            },
+            core: Arc::new(WakeCore::new(
+                BatteryWakeConfig {
+                    register_port,
+                    ..config()
+                },
+                HashSet::new(),
+            )),
         };
         let server_thread = thread::spawn(move || {
             let mut buffer = [0u8; MAX_DISCOVERY_DATAGRAM];
@@ -894,5 +999,94 @@ mod tests {
                 .unwrap()
         );
         server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn handle_reports_fresh_and_expired_battery_registration() {
+        let started_at = Instant::now();
+        let core = Arc::new(WakeCore::new(
+            config(),
+            HashSet::from(["BATTERYCAMERA0001".to_owned()]),
+        ));
+        assert!(core.register_at(
+            "BATTERYCAMERA0001",
+            "192.168.1.20:50000".parse().unwrap(),
+            started_at,
+        ));
+        let handle = BatteryWakeHandle { core };
+
+        assert_eq!(
+            handle.health_at("BATTERYCAMERA0001", started_at + Duration::from_secs(20)),
+            BatteryWakeHealth {
+                registered: true,
+                last_seen_age_ms: Some(20_000),
+                wake_pending_age_ms: None,
+                sleeping: true,
+            }
+        );
+        assert_eq!(
+            handle.health_at("BATTERYCAMERA0001", started_at + Duration::from_secs(81)),
+            BatteryWakeHealth {
+                registered: false,
+                last_seen_age_ms: None,
+                wake_pending_age_ms: None,
+                sleeping: false,
+            }
+        );
+    }
+
+    #[test]
+    fn accepted_wake_is_pending_until_media_connects() {
+        let core = Arc::new(WakeCore::new(
+            config(),
+            HashSet::from(["BATTERYCAMERA0001".to_owned()]),
+        ));
+        assert!(core.register("BATTERYCAMERA0001", "192.168.1.20:50000".parse().unwrap()));
+        core.note_wake_requested("BATTERYCAMERA0001");
+        let handle = BatteryWakeHandle { core };
+
+        let pending = handle.health("BATTERYCAMERA0001");
+        assert!(pending.registered);
+        assert!(!pending.sleeping);
+        assert!(pending.wake_pending_age_ms.is_some());
+
+        handle.note_media_connected("BATTERYCAMERA0001");
+        let recovered = handle.health("BATTERYCAMERA0001");
+        assert!(recovered.registered);
+        assert!(recovered.sleeping);
+        assert_eq!(recovered.wake_pending_age_ms, None);
+    }
+
+    #[test]
+    fn later_heartbeat_proves_disconnected_camera_returned_to_sleep() {
+        let started_at = Instant::now();
+        let core = Arc::new(WakeCore::new(
+            config(),
+            HashSet::from(["BATTERYCAMERA0001".to_owned()]),
+        ));
+        assert!(core.register_at(
+            "BATTERYCAMERA0001",
+            "192.168.1.20:50000".parse().unwrap(),
+            started_at,
+        ));
+        core.state
+            .lock()
+            .unwrap()
+            .pending_wakes
+            .insert("BATTERYCAMERA0001".to_owned(), started_at);
+
+        assert!(core.register_at(
+            "BATTERYCAMERA0001",
+            "192.168.1.20:50000".parse().unwrap(),
+            started_at + Duration::from_secs(19),
+        ));
+        assert!(core.wake_pending("BATTERYCAMERA0001").is_some());
+
+        assert!(core.register_at(
+            "BATTERYCAMERA0001",
+            "192.168.1.20:50000".parse().unwrap(),
+            started_at + Duration::from_secs(20),
+        ));
+        assert_eq!(core.wake_pending("BATTERYCAMERA0001"), None);
     }
 }

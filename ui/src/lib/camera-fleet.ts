@@ -65,26 +65,27 @@ export function presentCameraFleetRow(
 	return {
 		state: peek.state,
 		statusDetail:
-			peek.state === 'live'
-				? 'ONLINE'
+			peek.state === 'healthy'
+				? 'HEALTHY'
 				: `${peek.state.toUpperCase()}${peek.detail ? ` · ${peek.detail}` : ''}`,
 		transport,
 		transportDetail,
 		streams: formatStreams(camera, health),
-		recording:
-			camera.capabilities?.recording !== true
-				? 'Not reported'
-				: peek.state === 'offline'
-					? 'Not recording'
-					: peek.state === 'degraded'
-						? 'Gaps reported'
-						: 'Continuous',
+		recording: !health?.dimensions
+			? 'Not reported'
+			: !health.dimensions.recording_requested
+				? 'Disabled'
+				: health.dimensions.recording_progressing === true
+					? 'Progressing'
+					: health.dimensions.recording_progressing === false
+						? 'Not progressing'
+						: 'Progress unknown',
 		recordingState:
-			camera.capabilities?.recording !== true
-				? 'unknown'
-				: peek.state === 'live'
-					? 'healthy'
-					: 'degraded',
+			health?.dimensions?.recording_progressing === true
+				? 'healthy'
+				: health?.dimensions?.recording_progressing === false
+					? 'degraded'
+					: 'unknown',
 		throughput: formatThroughput(kbps),
 		gbPerDay: formatGbPerDay(kbps)
 	};

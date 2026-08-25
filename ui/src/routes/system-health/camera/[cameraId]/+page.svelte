@@ -5,7 +5,7 @@
 	import { useCapabilityState } from '$lib/capability-context';
 	import DesktopCameraDiagnosis from '$lib/components/DesktopCameraDiagnosis.svelte';
 	import MobileCameraDiagnosis from '$lib/components/MobileCameraDiagnosis.svelte';
-	import { cameraDiagnosisEvidence, reconcileServerHealth } from '$lib/health-presentation';
+	import { cameraDiagnosisEvidence } from '$lib/health-presentation';
 	import type { ServerHealthResponse } from '$lib/types';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
@@ -36,7 +36,7 @@
 		try {
 			const nextHealth = await controlClient.getHealth(signal);
 			if (signal?.aborted || requestedCameraId !== cameraId) return;
-			health = reconcileServerHealth(nextHealth);
+			health = nextHealth;
 			error = null;
 		} catch (cause) {
 			if (signal?.aborted || requestedCameraId !== cameraId) return;

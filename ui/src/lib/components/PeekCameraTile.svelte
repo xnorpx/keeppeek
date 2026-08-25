@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import type { CameraHealth, CameraListItem } from '$lib/types';
-	import { presentPeekCamera, reconcilePeekCameraPlayback } from '$lib/peek-camera';
+	import { presentPeekCamera } from '$lib/peek-camera';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import VideoOffIcon from '@lucide/svelte/icons/video-off';
@@ -60,28 +60,25 @@
 		onlayoutkeydown
 	}: Props = $props();
 	let tileElement: HTMLElement | null = $state(null);
-	let healthPresentation = $derived(presentPeekCamera(camera, health));
+	let presentation = $derived(presentPeekCamera(camera, health));
 	let hasRecentFrames = $state(false);
-	let presentation = $derived(
-		reconcilePeekCameraPlayback(healthPresentation, health?.state ?? null, hasRecentFrames)
-	);
 	let waitingForFirstFrame = $derived(
-		healthPresentation.state === 'live' &&
+		presentation.state === 'healthy' &&
 			camera.profiles.some((profile) => profile.encoding !== null) &&
 			!hasRecentFrames
 	);
 	let firstFrameElapsedMs = $state(0);
 	let effectiveFirstFrameElapsedMs = $derived(firstFrameElapsedMsOverride ?? firstFrameElapsedMs);
-	let visualState = $derived(
-		waitingForFirstFrame
-			? effectiveFirstFrameElapsedMs >= 5_000
-				? 'degraded'
-				: 'reconnecting'
-			: presentation.state
-	);
+	let visualState = $derived(presentation.state);
+	let canonicalStateLabel = $derived(presentation.state.toUpperCase());
 	let label = $derived(camera.name ?? camera.id);
-	let rendersVideo = $derived(healthPresentation.state !== 'offline');
-	let canFocus = $derived(visualState === 'live' || visualState === 'degraded');
+	let rendersVideo = $derived(presentation.state !== 'offline' && presentation.state !== 'stopped');
+	let canFocus = $derived(
+		visualState === 'starting' ||
+			visualState === 'healthy' ||
+			visualState === 'degraded' ||
+			visualState === 'stale'
+	);
 	let mobileSizeClass = $derived(
 		compactStatus
 			? 'h-full min-w-0 flex-1 basis-0'
@@ -103,9 +100,9 @@
 		desktopPaperFrame || layoutMode || mobileFeatured ? '' : 'hidden md:block'
 	);
 	let stateColor = $derived(
-		visualState === 'live'
+		visualState === 'healthy'
 			? 'bg-healthy'
-			: visualState === 'degraded'
+			: visualState === 'degraded' || visualState === 'stale' || visualState === 'reconnecting'
 				? 'bg-activity'
 				: visualState === 'offline'
 					? 'bg-live'
@@ -114,7 +111,8 @@
 	let borderColor = $derived(
 		layoutMode && layoutSelected
 			? 'border-primary ring-1 ring-primary'
-			: compactStatus && visualState === 'degraded'
+			: compactStatus &&
+				  (visualState === 'degraded' || visualState === 'stale' || visualState === 'reconnecting')
 				? 'border-2 border-activity'
 				: compactStatus && visualState === 'offline'
 					? 'border-2 border-live'
@@ -122,15 +120,21 @@
 						? compactLiveBorder === 'hairline'
 							? 'border-hairline'
 							: 'border-hairline-strong'
-						: visualState === 'degraded'
+						: visualState === 'degraded' ||
+							  visualState === 'stale' ||
+							  visualState === 'reconnecting'
 							? 'border-activity'
 							: visualState === 'offline'
 								? 'border-hairline-strong border-dashed'
 								: 'border-hairline'
 	);
-	let tileSurface = $derived(presentation.state === 'offline' ? 'bg-surface' : 'bg-video');
+	let tileSurface = $derived(
+		presentation.state === 'offline' || presentation.state === 'stopped' ? 'bg-surface' : 'bg-video'
+	);
 	let headerSurface = $derived(
-		presentation.state === 'offline' ? 'bg-raised text-foreground' : 'bg-video/75 text-white'
+		presentation.state === 'offline' || presentation.state === 'stopped'
+			? 'bg-raised text-foreground'
+			: 'bg-video/75 text-white'
 	);
 	let compactObservedAtMs = $derived.by(() => {
 		const latestStream = health?.streams.reduce<(typeof health.streams)[number] | null>(
@@ -145,10 +149,9 @@
 	});
 	let compactObservedTime = $derived(formatCompactTime(compactObservedAtMs, true));
 	let compactObservedMinute = $derived(formatCompactTime(compactObservedAtMs, false));
-	let compactOfflineDuration = $derived(formatCompactDuration(compactObservedAtMs));
-	let compactDegradedDetail = $derived(
+	let compactStateDetail = $derived(
 		presentation.detail?.replace(/^(\d+)% frames dropped$/i, '$1% of frames dropped') ??
-			'Stream health degraded'
+			'Camera health evidence unavailable'
 	);
 
 	$effect(() => {
@@ -185,14 +188,6 @@
 		}).format(new Date(timestampMs));
 	}
 
-	function formatCompactDuration(timestampMs: number | null): string {
-		if (timestampMs === null) return '';
-		const elapsedMinutes = Math.max(0, Math.floor((compactNowMs - timestampMs) / 60_000));
-		const hours = Math.floor(elapsedMinutes / 60);
-		const minutes = elapsedMinutes % 60;
-		return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-	}
-
 	function handleFrameActivity(active: boolean): void {
 		hasRecentFrames = active;
 		onframeactivitychange?.(camera.id, active);
@@ -224,30 +219,24 @@
 		<div
 			data-peek-camera-region="compact-status"
 			class="pointer-events-none absolute inset-0 z-20 flex flex-col justify-between p-3 {presentation.state ===
-			'offline'
+				'offline' || presentation.state === 'stopped'
 				? 'text-foreground'
 				: 'text-white'}"
 		>
 			<div class="flex items-center justify-between gap-2 font-mono text-2xs">
 				<span
-					class="inline-flex h-[22px] items-center gap-1.5 self-start rounded-xs px-2 leading-3 tracking-[0.08em] text-white {presentation.state ===
+					class="inline-flex h-[22px] min-w-[76px] items-center justify-center gap-1.5 self-start rounded-xs px-2 leading-3 tracking-[0.08em] text-white {presentation.state ===
 					'offline'
-						? 'w-28 bg-live'
-						: presentation.state === 'degraded'
-							? 'w-[71px] bg-[#A87310E6]'
-							: 'w-12 bg-video/75'}"
+						? 'min-w-28 bg-live'
+						: presentation.state === 'healthy'
+							? 'bg-[#237A58E6]'
+							: presentation.state === 'unknown' || presentation.state === 'stopped'
+								? 'bg-text-muted'
+								: 'bg-[#A87310E6]'}"
 				>
-					{#if presentation.state === 'live'}
-						<span class="size-[5px] rounded-full bg-white/85"></span><span class="tracking-[0.08em]"
-							>REC</span
-						>
-					{:else if presentation.state === 'degraded'}
-						<span class="tracking-[0.08em]">DEGRADED</span>
-					{:else if presentation.state === 'offline'}
-						<span class="tracking-[0.08em]">OFFLINE {compactOfflineDuration}</span>
-					{:else}
-						<span class="tracking-[0.08em]">RECONNECTING</span>
-					{/if}
+					<span class="tracking-[0.08em]">
+						{canonicalStateLabel}
+					</span>
 				</span>
 				{#if presentation.state !== 'offline'}
 					<span class="leading-3 text-[#FFFFFFD1]">{compactObservedTime}</span>
@@ -256,9 +245,11 @@
 
 			{#if presentation.state === 'offline'}
 				<div class="space-y-1.5 text-center">
-					<p class="text-lg leading-5 font-semibold">Not recording</p>
+					<p class="text-lg leading-5 font-semibold">
+						{presentation.detail ?? 'Camera transport is offline'}
+					</p>
 					<p class="font-mono text-2xs leading-3 tracking-caps text-live-text uppercase">
-						No footage since {compactObservedMinute}
+						Last report {compactObservedMinute}
 					</p>
 					<span
 						class="pointer-events-auto inline-flex h-[30px] w-[86px] items-center justify-center rounded-sm bg-primary text-sm leading-4 font-semibold text-on-primary"
@@ -271,20 +262,20 @@
 			<div class="flex items-center justify-between gap-2">
 				<div class="flex min-w-0 flex-1 flex-col gap-[5px]">
 					<p class="truncate text-md leading-[18px] font-semibold">{label}</p>
-					{#if presentation.state === 'degraded'}
+					{#if presentation.state !== 'healthy' && presentation.state !== 'offline'}
 						<p class="font-mono text-2xs leading-3 tracking-caps text-white/70 uppercase">
-							{compactDegradedDetail}{presentation.recording ? ' · still recording' : ''}
+							{compactStateDetail}{presentation.recording ? ' · recording progressing' : ''}
 						</p>
 					{/if}
 				</div>
-				{#if presentation.state !== 'degraded'}
+				{#if presentation.state === 'healthy' || presentation.state === 'offline'}
 					<span
 						class="shrink-0 font-mono text-2xs leading-3 {presentation.state === 'offline'
 							? 'text-text-faint'
 							: 'text-white/60'}"
 					>
 						{presentation.state === 'offline'
-							? `LAST SEEN ${compactObservedTime}`
+							? `LAST REPORT ${compactObservedTime}`
 							: `${stream.toUpperCase()} · ${Math.round(presentation.fps ?? 0)}FPS`}
 					</span>
 				{/if}
@@ -302,6 +293,14 @@
 				>
 					<span class="size-1.5 shrink-0 rounded-full {stateColor}"></span>
 					<span class="truncate">{label}</span>
+					<span class="font-mono text-2xs tracking-caps">{canonicalStateLabel}</span>
+				</span>
+			{:else}
+				<span
+					data-peek-camera-status
+					class="inline-flex h-7 items-center gap-1.5 rounded-sm px-2 font-mono text-2xs tracking-caps {headerSurface}"
+				>
+					<span class="size-1.5 rounded-full {stateColor}"></span>{canonicalStateLabel}
 				</span>
 			{/if}
 			{#if layoutMode && layoutSize && layoutSelected}
@@ -338,7 +337,7 @@
 		/>
 	{/if}
 
-	{#if !compactStatus && presentation.state === 'degraded'}
+	{#if !compactStatus && (presentation.state === 'degraded' || presentation.state === 'stale')}
 		<div
 			data-peek-camera-region="evidence"
 			class="pointer-events-none absolute right-2.5 left-2.5 z-20 rounded-sm border border-activity bg-activity/15 font-medium text-white {mobileFeatured
@@ -346,20 +345,20 @@
 				: 'bottom-2 px-2 py-1.5 text-2xs'} md:bottom-9 md:px-2.5 md:py-2 md:text-xs"
 			role="status"
 		>
-			{#if mobileFeatured}<span>Degraded —</span>{:else}<span class="hidden md:inline"
-					>Degraded —</span
+			{#if mobileFeatured}<span>{canonicalStateLabel} —</span>{:else}<span class="hidden md:inline"
+					>{canonicalStateLabel} —</span
 				>{/if}{' '}{presentation.detail}
 		</div>
-	{:else if !compactStatus && presentation.state === 'reconnecting'}
+	{:else if !compactStatus && (presentation.state === 'reconnecting' || presentation.state === 'starting')}
 		<div
-			class="absolute inset-0 z-20 grid place-items-center px-3 pt-8 text-center md:px-6 md:pt-0"
+			class="pointer-events-none absolute inset-0 z-20 grid place-items-center px-3 pt-8 text-center md:px-6 md:pt-0"
 		>
 			<div data-peek-camera-region="evidence" class="space-y-1 text-white md:space-y-2">
 				<RefreshCwIcon
 					class="mx-auto size-5 text-text-muted {mobileCompactBlockHiddenClass}"
 					strokeWidth={1.75}
 				/>
-				<p class="text-sm font-medium">Reconnecting…</p>
+				<p class="text-sm font-medium">{canonicalStateLabel}</p>
 				<p class="text-xs text-white/70">{presentation.detail}</p>
 			</div>
 		</div>
@@ -382,6 +381,16 @@
 				>
 					Diagnose
 				</a>
+			</div>
+		</div>
+	{:else if !compactStatus && (presentation.state === 'unknown' || presentation.state === 'stopped')}
+		<div
+			class="absolute inset-0 z-20 grid place-items-center px-3 pt-8 text-center md:px-6 md:pt-0"
+		>
+			<div data-peek-camera-region="evidence" class="space-y-1 md:space-y-2">
+				<VideoOffIcon class="mx-auto size-5 text-text-muted" strokeWidth={1.75} />
+				<p class="text-sm font-semibold text-foreground">{canonicalStateLabel}</p>
+				<p class="text-xs text-text-muted">{presentation.detail}</p>
 			</div>
 		</div>
 	{/if}

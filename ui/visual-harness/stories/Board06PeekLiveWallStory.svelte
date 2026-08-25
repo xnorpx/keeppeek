@@ -2,7 +2,12 @@
 	import DesktopPaperRail from '$lib/components/DesktopPaperRail.svelte';
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import { setLivePeer } from '$lib/stream-peer-context';
-	import type { CameraHealth, CameraListItem } from '$lib/types';
+	import type {
+		CameraHealth,
+		CameraHealthDimensions,
+		CameraListItem,
+		StreamHealthDimensions
+	} from '$lib/types';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import Grid2X2Icon from '@lucide/svelte/icons/grid-2x2';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -11,11 +16,11 @@
 
 	const nowMs = Date.parse('2026-08-18T06:37:23Z');
 	const cameraRows = [
-		['front-door', 'Front Door', 'online'],
-		['driveway', 'Driveway', 'online'],
+		['front-door', 'Front Door', 'healthy'],
+		['driveway', 'Driveway', 'healthy'],
 		['porch', 'Porch', 'degraded'],
 		['alley', 'Alley', 'stale'],
-		['yard-ptz', 'Yard PTZ', 'online'],
+		['yard-ptz', 'Yard PTZ', 'healthy'],
 		['back-yard', 'Back Yard', 'offline']
 	] as const;
 	const cameras: CameraListItem[] = cameraRows.map(([id, name]) => ({
@@ -41,6 +46,25 @@
 		cameraRows.map(([id, name, state]) => {
 			const reportAgeMs =
 				state === 'stale' ? 41_000 : state === 'offline' ? 8_056_000 : id === 'porch' ? 4_000 : 0;
+			const reason =
+				state === 'healthy'
+					? 'healthy'
+					: state === 'degraded'
+						? 'ingress_drops'
+						: state === 'stale'
+							? 'stream_report_stale'
+							: 'transport_disconnected';
+			const detail =
+				state === 'healthy'
+					? 'Transport, media, keyframe, and recording evidence is current'
+					: state === 'degraded'
+						? '14% frames dropped'
+						: state === 'stale'
+							? 'Stream health report is stale'
+							: 'Camera transport is disconnected';
+			const transportConnected = state !== 'offline';
+			const framesFresh = state === 'healthy' || state === 'degraded';
+			const recordingProgressing = framesFresh;
 			return [
 				id,
 				{
@@ -51,8 +75,17 @@
 					model: null,
 					firmware_version: null,
 					state,
-					lifecycle:
-						state === 'stale' ? 'Attempt 3' : state === 'offline' ? 'Stopped' : 'Connected',
+					reason,
+					reason_codes: [reason],
+					detail,
+					dimensions: {
+						transport_connected: transportConnected,
+						frames_fresh: framesFresh,
+						decodable: framesFresh,
+						recording_requested: true,
+						recording_progressing: recordingProgressing
+					} as CameraHealthDimensions,
+					lifecycle: state === 'offline' ? 'Reconnecting' : 'Connected',
 					last_error: state === 'offline' ? 'Not recording. No footage since 04:23.' : null,
 					configured_profiles: [],
 					streams: [
@@ -62,7 +95,20 @@
 							frames: state === 'degraded' ? 86 : state === 'offline' ? 0 : 1_000,
 							drops: state === 'degraded' ? 14 : 0,
 							updated_at_ms: nowMs - reportAgeMs,
-							report_age_ms: reportAgeMs
+							report_age_ms: reportAgeMs,
+							state,
+							reason,
+							reason_codes: [reason],
+							detail,
+							dimensions: {
+								expected: true,
+								transport_connected: transportConnected,
+								report_fresh: reportAgeMs <= 30_000,
+								frames_fresh: framesFresh,
+								decodable: framesFresh,
+								recording_requested: true,
+								recording_progressing: recordingProgressing
+							} as StreamHealthDimensions
 						}
 					]
 				}
@@ -99,7 +145,8 @@
 			>
 				<span
 					class="flex items-center gap-[7px] text-[11px] leading-[14px] font-semibold tracking-[0.04em]"
-					><span class="size-1.5 rounded-full bg-activity"></span>5 / 6 REPORTING</span
+					><span class="size-1.5 rounded-full bg-activity"></span>6 CONFIG · 5 LINK · 4 FRESH · 4
+					DECODE · 4/6 REC</span
 				>
 				<span class="h-3.5 w-px bg-hairline"></span>
 				<span class="flex items-baseline gap-1.5"

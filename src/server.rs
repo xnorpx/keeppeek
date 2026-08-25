@@ -7,10 +7,11 @@ use crate::api::proto::{
 use crate::{
     access::{AccessKey, AccessKeyFingerprint},
     api::{
-        ApiError, AudioProfileSummary, CameraInfo, CreateRequest, CreateResponse, DeleteRequest,
-        MotionDetection, ProfileSummary, RecordingCapacityEstimate, SanitizedConfig,
-        SanitizedStorage, SdpAnswer as ApiSdpAnswer, Status,
+        ApiError, AudioProfileSummary, CameraInfo, CameraLifecycle, CameraStatus, CreateRequest,
+        CreateResponse, DeleteRequest, MotionDetection, ProfileSummary, RecordingCapacityEstimate,
+        SanitizedConfig, SanitizedStorage, SdpAnswer as ApiSdpAnswer, Status,
     },
+    battery_wake::BatteryWakeHandle,
     camera_database::{CameraDatabase, CameraMatch, CatalogCamera, StreamHints},
     cameras::{
         Camera, CameraBackend, CameraConfig, CameraPorts, CameraRecordingMode, CameraTransport,
@@ -19,7 +20,10 @@ use crate::{
     },
     config::{self, Config, StorageMigration, StorageMigrationPaths, StorageToml},
     health::{
-        CameraHealth, HealthIssue, HealthTotals, ServerHealthResponse, StorageHealth, SystemMonitor,
+        CAMERA_HEALTH_CONTRACT_VERSION, CameraHealth, CameraHealthDimensions, CameraHealthEvidence,
+        CameraHealthState, HealthIssue, HealthTotals, STREAM_REPORT_FRESHNESS_THRESHOLD_MS,
+        ServerHealthResponse, StorageHealth, StreamHealth, StreamHealthDimensions, SystemMonitor,
+        project_camera_health,
     },
     keeppeek::{KeepPeekControl, StreamKind},
     logging::{LogStreamError, LoggingService, LoggingSettings},
@@ -28,12 +32,12 @@ use crate::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
     },
     shutdown::{Restart, Shutdown},
-    stats::{HealthRegistry, REPORT_INTERVAL},
+    stats::{HealthRegistry, REPORT_INTERVAL, StreamHealthReport},
     storage::{
         CatalogMediaFragment, DEFAULT_PREVIEW_AFTER_MS, DEFAULT_PREVIEW_BEFORE_MS, EventEmbedding,
         EventSearch, EventSearchField, EventSearchTerm, EventSemanticSearchQuery, EventStore,
         EventTextSearchQuery, RecordingCatalogHandle, RecordingDemand, RecordingDemandGuard,
-        StorageConfig,
+        RecordingHealthRegistry, RecordingStreamHealthSnapshot, StorageConfig,
         metadata::{EventSource, TimelineEvent},
     },
     webrtc::{
@@ -208,6 +212,7 @@ struct CameraEntry {
     info: CameraInfo,
     reported_manufacturer: Option<String>,
     configuration: CameraConfig,
+    battery_uid: Option<String>,
     recording_label: String,
     control: Option<CameraControl>,
 }
@@ -5604,15 +5609,14 @@ fn proto_health_snapshot(health: ServerHealthResponse) -> proto::ServerHealthSna
                 message: issue.message,
             })
             .collect(),
+        health_contract_version: health.health_contract_version,
     }
 }
 
 fn proto_health_totals(totals: HealthTotals) -> proto::HealthTotalsSnapshot {
     proto::HealthTotalsSnapshot {
         configured_cameras: usize_u64(totals.configured_cameras),
-        reporting_cameras: usize_u64(totals.reporting_cameras),
         configured_video_streams: usize_u64(totals.configured_video_streams),
-        reporting_video_streams: usize_u64(totals.reporting_video_streams),
         ingress_fps: totals.ingress_fps,
         ingress_bitrate_bps: totals.ingress_bitrate_bps,
         frames: totals.frames,
@@ -5620,6 +5624,17 @@ fn proto_health_totals(totals: HealthTotals) -> proto::HealthTotalsSnapshot {
         drops: totals.drops,
         errors: totals.errors,
         reconnects: totals.reconnects,
+        connected_cameras: usize_u64(totals.connected_cameras),
+        fresh_cameras: usize_u64(totals.fresh_cameras),
+        decodable_cameras: usize_u64(totals.decodable_cameras),
+        recording_requested_cameras: usize_u64(totals.recording_requested_cameras),
+        recording_cameras: usize_u64(totals.recording_cameras),
+        unknown_cameras: usize_u64(totals.unknown_cameras),
+        connected_video_streams: usize_u64(totals.connected_video_streams),
+        fresh_video_streams: usize_u64(totals.fresh_video_streams),
+        decodable_video_streams: usize_u64(totals.decodable_video_streams),
+        recording_requested_video_streams: usize_u64(totals.recording_requested_video_streams),
+        recording_video_streams: usize_u64(totals.recording_video_streams),
     }
 }
 
@@ -5633,7 +5648,7 @@ fn proto_camera_health(camera: CameraHealth) -> proto::CameraHealthSnapshot {
         firmware_version: camera.firmware_version,
         backend: camera.backend,
         transport: camera.transport,
-        state: camera.state,
+        state: camera.state.as_str().to_owned(),
         lifecycle: camera.lifecycle,
         last_error: camera.last_error,
         configured_profiles: camera
@@ -5646,6 +5661,55 @@ fn proto_camera_health(camera: CameraHealth) -> proto::CameraHealthSnapshot {
             .into_iter()
             .map(proto_stream_health)
             .collect(),
+        reason: camera.reason.as_str().to_owned(),
+        reason_codes: camera
+            .reason_codes
+            .into_iter()
+            .map(|reason| reason.as_str().to_owned())
+            .collect(),
+        detail: camera.detail,
+        dimensions: Some(proto_camera_health_dimensions(camera.dimensions)),
+    }
+}
+
+fn proto_camera_health_dimensions(
+    dimensions: CameraHealthDimensions,
+) -> proto::CameraHealthDimensionsSnapshot {
+    let connected_video_stream_ids_known = dimensions.connected_video_stream_ids.is_some();
+    proto::CameraHealthDimensionsSnapshot {
+        configured: dimensions.configured,
+        expected: dimensions.expected,
+        configured_video_streams: usize_u64(dimensions.configured_video_streams),
+        connected_video_streams: dimensions.connected_video_streams.map(usize_u64),
+        reporting_video_streams: usize_u64(dimensions.reporting_video_streams),
+        fresh_video_streams: usize_u64(dimensions.fresh_video_streams),
+        decodable_video_streams: usize_u64(dimensions.decodable_video_streams),
+        configured_video_stream_ids: dimensions.configured_video_stream_ids,
+        connected_video_stream_ids: dimensions.connected_video_stream_ids.unwrap_or_default(),
+        connected_video_stream_ids_known,
+        reporting_video_stream_ids: dimensions.reporting_video_stream_ids,
+        fresh_video_stream_ids: dimensions.fresh_video_stream_ids,
+        decodable_video_stream_ids: dimensions.decodable_video_stream_ids,
+        transport_connected: dimensions.transport_connected,
+        latest_report_at_ms: dimensions.latest_report_at_ms,
+        report_age_ms: dimensions.report_age_ms,
+        frames_fresh: dimensions.frames_fresh,
+        decodable: dimensions.decodable,
+        recent_reconnects: dimensions.recent_reconnects,
+        recent_drops: dimensions.recent_drops,
+        recent_errors: dimensions.recent_errors,
+        recording_requested: dimensions.recording_requested,
+        recording_video_streams: usize_u64(dimensions.recording_video_streams),
+        recording_streams_progressing: usize_u64(dimensions.recording_streams_progressing),
+        recording_video_stream_ids: dimensions.recording_video_stream_ids,
+        recording_progressing_stream_ids: dimensions.recording_progressing_stream_ids,
+        recording_progressing: dimensions.recording_progressing,
+        recording_progress_age_ms: dimensions.recording_progress_age_ms,
+        battery_configured: dimensions.battery_configured,
+        battery_registered: dimensions.battery_registered,
+        battery_last_seen_age_ms: dimensions.battery_last_seen_age_ms,
+        battery_sleeping: dimensions.battery_sleeping,
+        battery_wake_pending_age_ms: dimensions.battery_wake_pending_age_ms,
     }
 }
 
@@ -5735,8 +5799,10 @@ fn proto_camera_stream_verification(
     }
 }
 
-fn proto_stream_health(stream: crate::stats::StreamHealthReport) -> proto::StreamHealthSnapshot {
-    let report = stream.report;
+fn proto_stream_health(stream: StreamHealth) -> proto::StreamHealthSnapshot {
+    let dimensions = stream.dimensions;
+    let ingress = stream.ingress;
+    let report = ingress.report;
     proto::StreamHealthSnapshot {
         r#type: report.kind,
         codec: report.codec,
@@ -5758,8 +5824,39 @@ fn proto_stream_health(stream: crate::stats::StreamHealthReport) -> proto::Strea
         reconnects: report.reconnects.and_then(nonzero_u64),
         drops: report.drops.and_then(nonzero_u64),
         errors: report.errors.and_then(nonzero_u64),
-        updated_at_ms: stream.updated_at_ms,
-        report_age_ms: stream.report_age_ms,
+        updated_at_ms: ingress.updated_at_ms,
+        report_age_ms: ingress.report_age_ms,
+        frame_updated_at_ms: ingress.frame_updated_at_ms,
+        frame_age_ms: ingress.frame_age_ms,
+        keyframe_updated_at_ms: ingress.keyframe_updated_at_ms,
+        keyframe_age_ms: ingress.keyframe_age_ms,
+        recent_reconnects: ingress.recent_reconnects,
+        recent_drops: ingress.recent_drops,
+        recent_errors: ingress.recent_errors,
+        state: stream.state.as_str().to_owned(),
+        reason: stream.reason.as_str().to_owned(),
+        reason_codes: stream
+            .reason_codes
+            .into_iter()
+            .map(|reason| reason.as_str().to_owned())
+            .collect(),
+        detail: stream.detail,
+        dimensions: Some(proto::StreamHealthDimensionsSnapshot {
+            expected: dimensions.expected,
+            transport_connected: dimensions.transport_connected,
+            report_fresh: dimensions.report_fresh,
+            report_freshness_threshold_ms: dimensions.report_freshness_threshold_ms,
+            frames_fresh: dimensions.frames_fresh,
+            frame_freshness_threshold_ms: dimensions.frame_freshness_threshold_ms,
+            decodable: dimensions.decodable,
+            keyframe_freshness_threshold_ms: dimensions.keyframe_freshness_threshold_ms,
+            recent_reconnects: dimensions.recent_reconnects,
+            recent_drops: dimensions.recent_drops,
+            recent_errors: dimensions.recent_errors,
+            recording_requested: dimensions.recording_requested,
+            recording_progressing: dimensions.recording_progressing,
+            recording_progress_age_ms: dimensions.recording_progress_age_ms,
+        }),
     }
 }
 
@@ -6425,6 +6522,10 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
         .map(|camera| camera.capabilities.clone())
         .unwrap_or_default();
     capabilities.ptz |= camera.is_some_and(|camera| camera.ptz.is_some());
+    let battery_uid = camera_config
+        .uid
+        .clone()
+        .or_else(|| camera.and_then(|camera| camera.device.p2p_uid.clone()));
 
     CameraEntry {
         info: CameraInfo {
@@ -6449,6 +6550,7 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
         },
         reported_manufacturer,
         configuration: camera_config.clone(),
+        battery_uid,
         recording_label: camera_config
             .name
             .clone()
@@ -6506,6 +6608,8 @@ pub struct ServerState {
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
+    recording_health: RecordingHealthRegistry,
+    battery_wake: Option<BatteryWakeHandle>,
     config: SanitizedConfig,
     manufacturer_overrides: Arc<Mutex<HashMap<String, String>>>,
     camera_config_path: Option<PathBuf>,
@@ -6563,6 +6667,8 @@ impl ServerState {
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
             recording_demand,
+            recording_health: RecordingHealthRegistry::default(),
+            battery_wake: None,
             config: sanitized_config,
             manufacturer_overrides: Arc::new(Mutex::new(manufacturer_overrides)),
             camera_config_path: None,
@@ -6761,6 +6867,16 @@ impl ServerState {
 
     pub fn with_recording_catalog(mut self, catalog: RecordingCatalogHandle) -> Self {
         self.catalog = Some(catalog);
+        self
+    }
+
+    pub(crate) fn with_recording_health(mut self, health: RecordingHealthRegistry) -> Self {
+        self.recording_health = health;
+        self
+    }
+
+    pub(crate) fn with_battery_wake(mut self, battery_wake: Option<BatteryWakeHandle>) -> Self {
+        self.battery_wake = battery_wake;
         self
     }
 
@@ -7388,6 +7504,517 @@ fn query_usize(
     Ok(value)
 }
 
+fn normalized_video_stream_id(value: &str) -> Option<&str> {
+    match value.strip_prefix("video_").unwrap_or(value) {
+        "main" => Some("main"),
+        "sub" => Some("sub"),
+        _ => None,
+    }
+}
+
+fn expected_video_stream_ids(
+    camera: &CameraEntry,
+    router_status: Option<&CameraStatus>,
+    streams: &[StreamHealthReport],
+) -> Vec<String> {
+    let mut ids = router_status
+        .into_iter()
+        .flat_map(|status| status.expected_streams.iter())
+        .filter_map(|stream| normalized_video_stream_id(stream))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        ids.extend(
+            camera
+                .info
+                .profiles
+                .iter()
+                .filter_map(|profile| normalized_video_stream_id(&profile.stream))
+                .map(str::to_owned),
+        );
+    }
+    if ids.is_empty() {
+        ids.extend(
+            streams
+                .iter()
+                .filter_map(|stream| normalized_video_stream_id(&stream.report.kind))
+                .map(str::to_owned),
+        );
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn connected_video_stream_ids(router_status: Option<&CameraStatus>) -> Option<Vec<String>> {
+    let status = router_status?;
+    if status.expected_streams.is_empty() && status.connected_streams.is_empty() {
+        return None;
+    }
+    let mut ids = status
+        .connected_streams
+        .iter()
+        .filter_map(|stream| normalized_video_stream_id(stream))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
+}
+
+fn stream_transport_connected(
+    stream_id: &str,
+    router_status: Option<&CameraStatus>,
+) -> Option<bool> {
+    let status = router_status?;
+    if !status.expected_streams.is_empty() || !status.connected_streams.is_empty() {
+        return Some(status.connected_streams.iter().any(|connected| {
+            normalized_video_stream_id(connected).is_some_and(|connected| connected == stream_id)
+        }));
+    }
+    match status.lifecycle {
+        CameraLifecycle::Connected => Some(true),
+        CameraLifecycle::Reconnecting | CameraLifecycle::Stopped => Some(false),
+        CameraLifecycle::Starting | CameraLifecycle::Degraded | CameraLifecycle::ShuttingDown => {
+            None
+        }
+    }
+}
+
+fn frame_freshness_threshold_ms(expected_fps: f64) -> u64 {
+    let report_floor = REPORT_INTERVAL
+        .as_millis()
+        .saturating_mul(2)
+        .try_into()
+        .unwrap_or(u64::MAX);
+    if !expected_fps.is_finite() || expected_fps <= 0.0 {
+        return STREAM_REPORT_FRESHNESS_THRESHOLD_MS;
+    }
+    let frame_window = (3_000.0 / expected_fps).ceil().max(1.0) as u64;
+    report_floor.max(frame_window).min(120_000)
+}
+
+fn keyframe_freshness_threshold_ms(profile: Option<&ProfileSummary>, observed_kf_fps: f64) -> u64 {
+    let configured_interval_ms = profile.and_then(|profile| {
+        let gop = f64::from(profile.gop?);
+        let fps = profile.framerate?;
+        (fps.is_finite() && fps > 0.0).then_some(gop / fps * 1_000.0)
+    });
+    let observed_interval_ms =
+        (observed_kf_fps.is_finite() && observed_kf_fps > 0.0).then_some(1_000.0 / observed_kf_fps);
+    configured_interval_ms.or(observed_interval_ms).map_or(
+        STREAM_REPORT_FRESHNESS_THRESHOLD_MS,
+        |interval| {
+            (interval * 3.0)
+                .ceil()
+                .max(STREAM_REPORT_FRESHNESS_THRESHOLD_MS as f64)
+                .min(120_000.0) as u64
+        },
+    )
+}
+
+fn recording_freshness_threshold_ms(config: &StorageConfig) -> u64 {
+    config
+        .short_term_duration
+        .saturating_add(config.flush_interval)
+        .saturating_add(Duration::from_millis(STREAM_REPORT_FRESHNESS_THRESHOLD_MS))
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn recording_progressing(
+    health: Option<&RecordingStreamHealthSnapshot>,
+    threshold_ms: u64,
+    uptime_ms: u64,
+    frames_fresh: bool,
+) -> Option<bool> {
+    if health
+        .and_then(|health| health.last_error.as_ref())
+        .is_some()
+    {
+        return Some(false);
+    }
+    if let Some(age_ms) = health.and_then(|health| health.progress_age_ms) {
+        return Some(age_ms <= threshold_ms);
+    }
+    if health
+        .and_then(|health| health.attempt_age_ms)
+        .is_some_and(|age_ms| age_ms > threshold_ms)
+        || (health.is_none() && frames_fresh && uptime_ms > threshold_ms)
+    {
+        return Some(false);
+    }
+    None
+}
+
+fn bounded_health_detail(value: &str) -> String {
+    value.chars().take(240).collect()
+}
+
+struct StreamProjectionContext<'a> {
+    camera: &'a CameraEntry,
+    expected_streams: &'a [String],
+    router_status: Option<&'a CameraStatus>,
+    recording_health: &'a HashMap<String, RecordingStreamHealthSnapshot>,
+    recording_threshold_ms: u64,
+    uptime_ms: u64,
+    startup_grace: bool,
+    battery_sleeping: Option<bool>,
+}
+
+fn project_stream_snapshot(
+    context: &StreamProjectionContext<'_>,
+    stream: StreamHealthReport,
+) -> StreamHealth {
+    let stream_id = normalized_video_stream_id(&stream.report.kind);
+    let is_video = stream_id.is_some();
+    let expected = stream_id.is_none_or(|stream_id| {
+        context
+            .expected_streams
+            .iter()
+            .any(|expected| expected == stream_id)
+    });
+    let transport_connected = stream_id
+        .and_then(|stream_id| stream_transport_connected(stream_id, context.router_status))
+        .or_else(|| {
+            (!is_video).then(|| {
+                context
+                    .router_status
+                    .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected)
+            })
+        });
+    let report_fresh = stream.report_age_ms <= STREAM_REPORT_FRESHNESS_THRESHOLD_MS;
+    let frame_threshold_ms = frame_freshness_threshold_ms(stream.report.expected_fps);
+    let frames_fresh = report_fresh
+        && stream
+            .frame_age_ms
+            .is_some_and(|age_ms| age_ms <= frame_threshold_ms);
+    let profile = stream_id.and_then(|stream_id| {
+        context
+            .camera
+            .info
+            .profiles
+            .iter()
+            .find(|profile| normalized_video_stream_id(&profile.stream) == Some(stream_id))
+    });
+    let keyframe_threshold_ms = keyframe_freshness_threshold_ms(profile, stream.report.kf_fps);
+    let decodable = if is_video {
+        report_fresh
+            && stream
+                .keyframe_age_ms
+                .is_some_and(|age_ms| age_ms <= keyframe_threshold_ms)
+    } else {
+        frames_fresh
+    };
+    let frame_rate_healthy =
+        stream.report.expected_fps <= 0.0 || stream.report.fps >= stream.report.expected_fps * 0.7;
+    let recording_requested = stream_id.is_some_and(|stream_id| {
+        recording_mode_includes_stream(context.camera.configuration.recording_mode, stream_id)
+    });
+    let recording_key =
+        stream_id.map(|stream_id| format!("{}/{stream_id}", context.camera.recording_label));
+    let writer_health = recording_key
+        .as_ref()
+        .and_then(|stream_id| context.recording_health.get(stream_id));
+    let recording_progress = recording_requested
+        .then(|| {
+            recording_progressing(
+                writer_health,
+                context.recording_threshold_ms,
+                context.uptime_ms,
+                frames_fresh,
+            )
+        })
+        .flatten();
+    let lifecycle = match transport_connected {
+        Some(true) => Some(CameraLifecycle::Connected),
+        Some(false) => Some(CameraLifecycle::Reconnecting),
+        None => context.router_status.map(|status| status.lifecycle),
+    };
+    let projection = project_camera_health(&CameraHealthEvidence {
+        expected,
+        lifecycle,
+        startup_grace: context.startup_grace,
+        report_age_ms: Some(stream.report_age_ms),
+        frames_fresh: Some(frames_fresh),
+        decodable: Some(decodable),
+        frame_rate_healthy: Some(frame_rate_healthy),
+        recent_reconnects: stream.recent_reconnects,
+        recent_drops: stream.recent_drops,
+        recent_errors: stream.recent_errors,
+        recording_requested,
+        recording_progressing: recording_progress,
+        battery_sleeping: context.battery_sleeping,
+    });
+    let detail = projection.reason.detail().to_owned();
+
+    StreamHealth {
+        state: projection.state,
+        reason: projection.reason,
+        reason_codes: projection.reasons,
+        detail,
+        dimensions: StreamHealthDimensions {
+            expected,
+            transport_connected,
+            report_fresh,
+            report_freshness_threshold_ms: STREAM_REPORT_FRESHNESS_THRESHOLD_MS,
+            frames_fresh,
+            frame_freshness_threshold_ms: frame_threshold_ms,
+            decodable,
+            keyframe_freshness_threshold_ms: keyframe_threshold_ms,
+            recent_reconnects: stream.recent_reconnects,
+            recent_drops: stream.recent_drops,
+            recent_errors: stream.recent_errors,
+            recording_requested,
+            recording_progressing: recording_progress,
+            recording_progress_age_ms: writer_health.and_then(|health| health.progress_age_ms),
+        },
+        ingress: stream,
+    }
+}
+
+struct CameraProjectionContext<'a> {
+    router_status: Option<&'a CameraStatus>,
+    recording_health: &'a HashMap<String, RecordingStreamHealthSnapshot>,
+    battery_wake: Option<&'a BatteryWakeHandle>,
+    storage_config: &'a StorageConfig,
+    uptime_seconds: u64,
+}
+
+fn project_camera_snapshot(
+    camera: &CameraEntry,
+    info: CameraInfo,
+    streams: Vec<StreamHealthReport>,
+    context: &CameraProjectionContext<'_>,
+) -> CameraHealth {
+    let expected_streams = expected_video_stream_ids(camera, context.router_status, &streams);
+    let connected_streams = connected_video_stream_ids(context.router_status);
+    let uptime_ms = context.uptime_seconds.saturating_mul(1_000);
+    let startup_grace = context.uptime_seconds < REPORT_INTERVAL.as_secs() * 2;
+    let battery_configured = camera.battery_uid.is_some();
+    let battery_source = context.battery_wake.zip(camera.battery_uid.as_deref());
+    let battery_health = battery_source.map(|(wake, uid)| wake.health(uid));
+    let battery_sleeping = battery_health.map(|battery| {
+        battery.sleeping
+            && !context
+                .router_status
+                .is_some_and(|status| status.lifecycle == CameraLifecycle::Connected)
+    });
+    let recording_threshold_ms = recording_freshness_threshold_ms(context.storage_config);
+    let stream_context = StreamProjectionContext {
+        camera,
+        expected_streams: &expected_streams,
+        router_status: context.router_status,
+        recording_health: context.recording_health,
+        recording_threshold_ms,
+        uptime_ms,
+        startup_grace,
+        battery_sleeping,
+    };
+    let projected_streams = streams
+        .into_iter()
+        .map(|stream| project_stream_snapshot(&stream_context, stream))
+        .collect::<Vec<_>>();
+    let video_streams = projected_streams
+        .iter()
+        .filter(|stream| normalized_video_stream_id(&stream.ingress.report.kind).is_some())
+        .collect::<Vec<_>>();
+    let mut reporting_stream_ids = video_streams
+        .iter()
+        .filter_map(|stream| normalized_video_stream_id(&stream.ingress.report.kind))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    reporting_stream_ids.sort_unstable();
+    reporting_stream_ids.dedup();
+    let mut fresh_stream_ids = video_streams
+        .iter()
+        .filter(|stream| stream.dimensions.frames_fresh)
+        .filter_map(|stream| normalized_video_stream_id(&stream.ingress.report.kind))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    fresh_stream_ids.sort_unstable();
+    fresh_stream_ids.dedup();
+    let mut decodable_stream_ids = video_streams
+        .iter()
+        .filter(|stream| stream.dimensions.decodable)
+        .filter_map(|stream| normalized_video_stream_id(&stream.ingress.report.kind))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    decodable_stream_ids.sort_unstable();
+    decodable_stream_ids.dedup();
+    let recording_stream_ids = expected_streams
+        .iter()
+        .filter(|stream| {
+            recording_mode_includes_stream(camera.configuration.recording_mode, stream)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let recording_states = recording_stream_ids
+        .iter()
+        .map(|stream_id| {
+            let key = format!("{}/{stream_id}", camera.recording_label);
+            let frames_fresh = fresh_stream_ids.iter().any(|fresh| fresh == stream_id);
+            let health = context.recording_health.get(&key);
+            (
+                stream_id.clone(),
+                recording_progressing(health, recording_threshold_ms, uptime_ms, frames_fresh),
+                health,
+            )
+        })
+        .collect::<Vec<_>>();
+    let recording_progressing_stream_ids = recording_states
+        .iter()
+        .filter(|(_, progressing, _)| *progressing == Some(true))
+        .map(|(stream_id, _, _)| stream_id.clone())
+        .collect::<Vec<_>>();
+    let recording_requested = !recording_stream_ids.is_empty();
+    let recording_progress = if !recording_requested {
+        None
+    } else if recording_states
+        .iter()
+        .any(|(_, progressing, _)| *progressing == Some(false))
+    {
+        Some(false)
+    } else if recording_states
+        .iter()
+        .all(|(_, progressing, _)| *progressing == Some(true))
+    {
+        Some(true)
+    } else {
+        None
+    };
+    let recording_progress_age_ms = recording_states
+        .iter()
+        .filter_map(|(_, _, health)| health.and_then(|health| health.progress_age_ms))
+        .max();
+    let reporting_video_streams = reporting_stream_ids.len();
+    let fresh_video_streams = fresh_stream_ids.len();
+    let decodable_video_streams = decodable_stream_ids.len();
+    let expected_count = expected_streams.len();
+    let frames_fresh = (expected_count > 0).then_some(fresh_video_streams == expected_count);
+    let decodable = (expected_count > 0).then_some(decodable_video_streams == expected_count);
+    let report_age_ms = video_streams
+        .iter()
+        .map(|stream| stream.ingress.report_age_ms)
+        .max();
+    let latest_report_at_ms = video_streams
+        .iter()
+        .map(|stream| stream.ingress.updated_at_ms)
+        .max();
+    let frame_rate_healthy = (expected_count > 0).then_some(
+        video_streams.len() == expected_count
+            && video_streams.iter().all(|stream| {
+                stream.ingress.report.expected_fps <= 0.0
+                    || stream.ingress.report.fps >= stream.ingress.report.expected_fps * 0.7
+            }),
+    );
+    let recent_reconnects = video_streams
+        .iter()
+        .map(|stream| stream.ingress.recent_reconnects)
+        .sum();
+    let recent_drops = video_streams
+        .iter()
+        .map(|stream| stream.ingress.recent_drops)
+        .sum();
+    let recent_errors = video_streams
+        .iter()
+        .map(|stream| stream.ingress.recent_errors)
+        .sum();
+    let expected = !matches!(
+        context.router_status.map(|status| status.lifecycle),
+        Some(CameraLifecycle::Stopped | CameraLifecycle::ShuttingDown)
+    );
+    let projection = project_camera_health(&CameraHealthEvidence {
+        expected,
+        lifecycle: context.router_status.map(|status| status.lifecycle),
+        startup_grace,
+        report_age_ms,
+        frames_fresh,
+        decodable,
+        frame_rate_healthy,
+        recent_reconnects,
+        recent_drops,
+        recent_errors,
+        recording_requested,
+        recording_progressing: recording_progress,
+        battery_sleeping,
+    });
+    let recording_error = recording_states
+        .iter()
+        .find_map(|(_, _, health)| health.and_then(|health| health.last_error.as_deref()));
+    let last_error = context
+        .router_status
+        .and_then(|status| status.last_error.as_deref())
+        .or(recording_error)
+        .map(bounded_health_detail);
+    let detail = last_error
+        .clone()
+        .unwrap_or_else(|| projection.reason.detail().to_owned());
+
+    CameraHealth {
+        id: camera.info.id.clone(),
+        ip: camera.info.ip.clone(),
+        name: camera
+            .info
+            .name
+            .clone()
+            .unwrap_or_else(|| camera.info.ip.clone()),
+        manufacturer: info.manufacturer,
+        model: camera.info.model.clone(),
+        firmware_version: camera.info.firmware_version.clone(),
+        backend: camera.info.backend.clone(),
+        transport: camera.info.transport.clone(),
+        state: projection.state,
+        reason: projection.reason,
+        reason_codes: projection.reasons,
+        detail,
+        dimensions: CameraHealthDimensions {
+            configured: true,
+            expected,
+            configured_video_streams: expected_count,
+            connected_video_streams: connected_streams.as_ref().map(Vec::len),
+            reporting_video_streams,
+            fresh_video_streams,
+            decodable_video_streams,
+            configured_video_stream_ids: expected_streams,
+            connected_video_stream_ids: connected_streams,
+            reporting_video_stream_ids: reporting_stream_ids,
+            fresh_video_stream_ids: fresh_stream_ids,
+            decodable_video_stream_ids: decodable_stream_ids,
+            transport_connected: context
+                .router_status
+                .map(|status| status.lifecycle == CameraLifecycle::Connected),
+            latest_report_at_ms,
+            report_age_ms,
+            frames_fresh,
+            decodable,
+            recent_reconnects,
+            recent_drops,
+            recent_errors,
+            recording_requested,
+            recording_video_streams: recording_stream_ids.len(),
+            recording_streams_progressing: recording_progressing_stream_ids.len(),
+            recording_video_stream_ids: recording_stream_ids,
+            recording_progressing_stream_ids,
+            recording_progressing: recording_progress,
+            recording_progress_age_ms,
+            battery_configured,
+            battery_registered: battery_health.map(|health| health.registered),
+            battery_last_seen_age_ms: battery_health.and_then(|health| health.last_seen_age_ms),
+            battery_wake_pending_age_ms: battery_health
+                .and_then(|health| health.wake_pending_age_ms),
+            battery_sleeping,
+        },
+        lifecycle: context
+            .router_status
+            .map(|status| format!("{:?}", status.lifecycle).to_lowercase()),
+        last_error,
+        configured_profiles: camera.info.profiles.clone(),
+        streams: projected_streams,
+    }
+}
+
 fn server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
@@ -7427,13 +8054,16 @@ fn server_health(
         .into_iter()
         .map(|report| (report.ip, report))
         .collect::<HashMap<_, _>>();
+    let recording_health = state
+        .recording_health
+        .snapshot()
+        .streams
+        .into_iter()
+        .map(|stream| (stream.stream_id.clone(), stream))
+        .collect::<HashMap<_, _>>();
     let configured_cameras = state.camera_entries();
     let mut totals = HealthTotals {
         configured_cameras: configured_cameras.len(),
-        configured_video_streams: configured_cameras
-            .iter()
-            .map(|camera| camera.info.profiles.len())
-            .sum(),
         ..HealthTotals::default()
     };
     let mut cameras = Vec::with_capacity(configured_cameras.len());
@@ -7447,10 +8077,6 @@ fn server_health(
             .iter()
             .filter(|stream| stream.report.kind.starts_with("video_"))
             .collect::<Vec<_>>();
-        if !video_streams.is_empty() {
-            totals.reporting_cameras += 1;
-        }
-        totals.reporting_video_streams += video_streams.len();
         for stream in &video_streams {
             totals.ingress_fps += stream.report.fps;
             totals.ingress_bitrate_bps = totals
@@ -7473,51 +8099,6 @@ fn server_health(
                 .saturating_add(stream.report.reconnects.unwrap_or(0));
         }
 
-        let state_name = if video_streams.is_empty() {
-            if uptime_seconds < REPORT_INTERVAL.as_secs() * 2 {
-                "starting"
-            } else {
-                issues.push(HealthIssue {
-                    severity: "warning".to_owned(),
-                    scope: camera
-                        .info
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| camera.info.ip.clone()),
-                    message: "No stream health report has been received".to_owned(),
-                });
-                "offline"
-            }
-        } else if video_streams
-            .iter()
-            .any(|stream| stream.report_age_ms > 30_000)
-        {
-            issues.push(HealthIssue {
-                severity: "warning".to_owned(),
-                scope: camera
-                    .info
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| camera.info.ip.clone()),
-                message: "One or more stream reports are stale".to_owned(),
-            });
-            "stale"
-        } else if video_streams.iter().any(|stream| {
-            stream.report.expected_fps > 0.0 && stream.report.fps < stream.report.expected_fps * 0.7
-        }) {
-            issues.push(HealthIssue {
-                severity: "warning".to_owned(),
-                scope: camera
-                    .info
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| camera.info.ip.clone()),
-                message: "Measured stream FPS is below 70% of the configured rate".to_owned(),
-            });
-            "degraded"
-        } else {
-            "online"
-        };
         for stream in &video_streams {
             let expected_gap_ms =
                 (stream.report.expected_fps > 0.0).then(|| 1_000.0 / stream.report.expected_fps);
@@ -7551,7 +8132,7 @@ fn server_health(
                     ),
                 });
             }
-            if stream.report.drops.unwrap_or(0) > 0 || stream.report.errors.unwrap_or(0) > 0 {
+            if stream.recent_drops > 0 || stream.recent_errors > 0 {
                 issues.push(HealthIssue {
                     severity: "info".to_owned(),
                     scope: camera
@@ -7560,35 +8141,46 @@ fn server_health(
                         .clone()
                         .unwrap_or_else(|| camera.info.ip.clone()),
                     message: format!(
-                        "{} cumulative drops {}, errors {}",
-                        stream.report.kind,
-                        stream.report.drops.unwrap_or(0),
-                        stream.report.errors.unwrap_or(0)
+                        "{} recent drops {}, errors {}",
+                        stream.report.kind, stream.recent_drops, stream.recent_errors
                     ),
                 });
             }
         }
 
         let router_status = lifecycle.get(&camera.recording_label);
-        cameras.push(CameraHealth {
-            id: camera.info.id.clone(),
-            ip: camera.info.ip.clone(),
-            name: camera
-                .info
-                .name
-                .clone()
-                .unwrap_or_else(|| camera.info.ip.clone()),
-            manufacturer: info.manufacturer,
-            model: camera.info.model.clone(),
-            firmware_version: camera.info.firmware_version.clone(),
-            backend: camera.info.backend.clone(),
-            transport: camera.info.transport.clone(),
-            state: state_name.to_owned(),
-            lifecycle: router_status.map(|status| format!("{:?}", status.lifecycle).to_lowercase()),
-            last_error: router_status.and_then(|status| status.last_error.clone()),
-            configured_profiles: camera.info.profiles.clone(),
-            streams,
-        });
+        let projection_context = CameraProjectionContext {
+            router_status,
+            recording_health: &recording_health,
+            battery_wake: state.battery_wake.as_ref(),
+            storage_config: &state.storage_config,
+            uptime_seconds,
+        };
+        let camera_health = project_camera_snapshot(camera, info, streams, &projection_context);
+        let dimensions = &camera_health.dimensions;
+        totals.configured_video_streams += dimensions.configured_video_streams;
+        totals.connected_video_streams += dimensions.connected_video_streams.unwrap_or(0);
+        totals.fresh_video_streams += dimensions.fresh_video_streams;
+        totals.decodable_video_streams += dimensions.decodable_video_streams;
+        totals.recording_requested_video_streams += dimensions.recording_video_streams;
+        totals.recording_video_streams += dimensions.recording_streams_progressing;
+        totals.connected_cameras += usize::from(dimensions.transport_connected == Some(true));
+        totals.fresh_cameras += usize::from(dimensions.frames_fresh == Some(true));
+        totals.decodable_cameras += usize::from(dimensions.decodable == Some(true));
+        totals.recording_requested_cameras += usize::from(dimensions.recording_requested);
+        totals.recording_cameras += usize::from(dimensions.recording_progressing == Some(true));
+        totals.unknown_cameras += usize::from(camera_health.state == CameraHealthState::Unknown);
+        if !matches!(
+            camera_health.state,
+            CameraHealthState::Healthy | CameraHealthState::Starting | CameraHealthState::Stopped
+        ) {
+            issues.push(HealthIssue {
+                severity: "warning".to_owned(),
+                scope: camera_health.id.clone(),
+                message: camera_health.detail.clone(),
+            });
+        }
+        cameras.push(camera_health);
     }
 
     let catalog = state
@@ -7668,6 +8260,7 @@ fn server_health(
 
     ServerHealthResponse {
         status: status.to_owned(),
+        health_contract_version: CAMERA_HEALTH_CONTRACT_VERSION,
         generated_at_ms: unix_time_ms(),
         uptime_seconds,
         version: env!("CARGO_PKG_VERSION"),
@@ -7701,7 +8294,7 @@ fn camera_settings(
     let health = server_health(router_tx, state)
         .cameras
         .into_iter()
-        .map(|camera| (camera.id, camera.state))
+        .map(|camera| (camera.id, camera.state.as_str().to_owned()))
         .collect::<HashMap<_, _>>();
     let mut configured = state.camera_config_path.as_ref().map_or_else(
         || {
@@ -7878,7 +8471,7 @@ fn present_discovered_cameras(
     let health = server_health(router_tx, state)
         .cameras
         .into_iter()
-        .map(|camera| (camera.ip, camera.state))
+        .map(|camera| (camera.ip, camera.state.as_str().to_owned()))
         .collect::<HashMap<_, _>>();
     let configured = state
         .camera_entries()
@@ -8363,7 +8956,7 @@ fn save_camera_settings(
         .cameras
         .into_iter()
         .find(|camera| camera.ip == config.ip.to_string())
-        .map(|camera| camera.state);
+        .map(|camera| camera.state.as_str().to_owned());
     let health = if dynamically_started && health.as_deref().is_none_or(|state| state == "offline")
     {
         Some("starting".to_owned())
@@ -8849,6 +9442,8 @@ fn service_error(status: u16, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::health::CameraHealthReason;
+
     #[test]
     fn indexed_video_format_reports_coded_dimensions() {
         let initialization = std::fs::read(
@@ -9220,6 +9815,133 @@ mod tests {
         let mut state = ServerState::empty();
         state.cameras = Arc::new(RwLock::new(vec![camera_entry(&config, None)]));
         state
+    }
+
+    #[test]
+    fn connected_stream_identities_remain_unknown_when_router_omits_them() {
+        let aggregate_only = CameraStatus {
+            id: crate::api::CameraId::new("front-door"),
+            lifecycle: CameraLifecycle::Connected,
+            expected_streams: Vec::new(),
+            connected_streams: Vec::new(),
+            last_error: None,
+        };
+        assert_eq!(connected_video_stream_ids(Some(&aggregate_only)), None);
+
+        let known_empty = CameraStatus {
+            expected_streams: vec!["main".to_owned()],
+            ..aggregate_only
+        };
+        assert_eq!(
+            connected_video_stream_ids(Some(&known_empty)),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn connected_camera_without_frame_progress_is_stale_in_api_counts_and_metrics() {
+        let camera = CameraConfig {
+            ip: "192.0.2.40".parse().unwrap(),
+            name: Some("front-door".to_owned()),
+            display_name: Some("Front Door".to_owned()),
+            manufacturer: None,
+            username: String::new(),
+            password: String::new(),
+            onvif_port: None,
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: CameraBackend::Retina,
+            transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Off,
+            event_recording_duration_secs: 60,
+        };
+        let config = Config::default();
+        let storage = StorageConfig::default();
+        let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
+        let registry = HealthRegistry::new();
+        registry.publish(crate::stats::CameraReport {
+            ip: "192.0.2.40".parse().unwrap(),
+            name: Some("front-door".to_owned()),
+            brand: None,
+            port: 554,
+            streams: vec![crate::stats::StreamReport {
+                kind: "video_main".to_owned(),
+                codec: Some("h264".to_owned()),
+                resolution: Some("1920x1080".to_owned()),
+                fps: 0.0,
+                expected_fps: 15.0,
+                kf_fps: 0.0,
+                kbps: 0.0,
+                max_frame_kb: 0.0,
+                gap_min_ms: 0.0,
+                gap_avg_ms: 0.0,
+                gap_max_ms: 0.0,
+                jitter_samples: 0,
+                jitter_p50_ms: 0.0,
+                jitter_p99_ms: 0.0,
+                frames: None,
+                bytes: None,
+                keyframes: None,
+                reconnects: None,
+                drops: None,
+                errors: None,
+            }],
+        });
+        let state = ServerState::new(
+            &config,
+            &camera_configs,
+            &HashMap::new(),
+            &storage,
+            RecordingDemand::new(Duration::ZERO),
+            WebRtc::new(),
+        )
+        .with_health_registry(registry);
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        router_tx
+            .send(RouterMessage::WorkerEvent(
+                crate::runtime::WorkerEvent::StatusChanged(CameraStatus {
+                    id: crate::api::CameraId::new("front-door"),
+                    lifecycle: CameraLifecycle::Connected,
+                    expected_streams: vec!["main".to_owned()],
+                    connected_streams: vec!["main".to_owned()],
+                    last_error: None,
+                }),
+            ))
+            .unwrap();
+        assert_eq!(router.wait_and_drain(Some(Duration::ZERO)).unwrap(), 1);
+        let router_worker =
+            std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(30))));
+
+        let health = server_health(&router_tx, &state);
+        assert_eq!(router_worker.join().unwrap().unwrap(), 1);
+        assert_eq!(health.cameras[0].state, CameraHealthState::Stale);
+        assert_eq!(
+            health.cameras[0].reason,
+            CameraHealthReason::FramesNotArriving
+        );
+        assert_eq!(health.totals.connected_cameras, 1);
+        assert_eq!(health.totals.fresh_cameras, 0);
+        assert_eq!(health.totals.decodable_cameras, 0);
+        assert_eq!(health.totals.connected_video_streams, 1);
+        assert_eq!(health.totals.fresh_video_streams, 0);
+        assert_eq!(health.totals.decodable_video_streams, 0);
+
+        let metrics = crate::metrics::encode_health(&health).unwrap();
+        assert!(metrics.contains("state=\"stale\""));
+        assert!(!metrics.contains("keeppeek_camera_online"));
+        assert!(!metrics.contains("keeppeek_camera_degraded"));
+        assert!(metrics.contains("dimension=\"frames_fresh\""));
+        let proto = proto_health_snapshot(health);
+        assert_eq!(
+            proto.health_contract_version,
+            CAMERA_HEALTH_CONTRACT_VERSION
+        );
+        assert_eq!(proto.cameras[0].state, "stale");
+        assert_eq!(proto.cameras[0].reason, "frames_not_arriving");
+        assert_eq!(proto.totals.unwrap().fresh_cameras, 0);
     }
 
     fn media_request(
@@ -12527,6 +13249,8 @@ mod tests {
                 crate::runtime::WorkerEvent::StatusChanged(crate::api::CameraStatus {
                     id: crate::api::CameraId::new("north"),
                     lifecycle: crate::api::CameraLifecycle::Starting,
+                    expected_streams: Vec::new(),
+                    connected_streams: Vec::new(),
                     last_error: None,
                 }),
             ))
@@ -12895,6 +13619,7 @@ mod tests {
                 recording_mode: Default::default(),
                 event_recording_duration_secs: 60,
             },
+            battery_uid: None,
             recording_label: "back-yard".to_owned(),
             control: None,
         }]));

@@ -146,7 +146,7 @@ export async function mockKeepModes(
 			status: 'healthy',
 			cameras: cameras.map((camera) => ({
 				id: camera.id,
-				state: 'online',
+				state: 'healthy',
 				configured_profiles: camera.profiles
 			}))
 		}

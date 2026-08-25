@@ -36,7 +36,7 @@
 						manufacturer: camera.manufacturer,
 						model: camera.model,
 						firmware_version: null,
-						state: camera.id === 'workshop' ? 'offline' : 'online',
+						state: camera.id === 'workshop' ? 'offline' : 'healthy',
 						lifecycle: camera.id === 'workshop' ? 'Stopped' : 'Connected',
 						last_error: camera.id === 'workshop' ? 'Stream unavailable' : null,
 						configured_profiles: [],

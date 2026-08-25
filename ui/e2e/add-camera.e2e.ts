@@ -347,7 +347,7 @@ test('reports a dynamically started camera as online without asking for a restar
 	const controls = await mockControlPeer(page, {
 		discoveredCameras: [discoveredCamera],
 		cameraUpdateResult: {
-			camera: { ...savedCamera, health: 'online' },
+			camera: { ...savedCamera, health: 'healthy' },
 			restart_required: false
 		}
 	});
@@ -358,7 +358,7 @@ test('reports a dynamically started camera as online without asking for a restar
 	await page.getByRole('button', { name: 'Save camera' }).click();
 
 	const saved = page.getByRole('region', { name: 'Camera saved' });
-	await expect(saved.getByText('ONLINE', { exact: true })).toBeVisible();
+	await expect(saved.getByText('HEALTHY', { exact: true })).toBeVisible();
 	await expect(saved).toContainText('Saved, started, and reporting online.');
 	await expect(saved.getByRole('link', { name: 'Restart KeepPeek' })).toHaveCount(0);
 	await expect(saved.getByRole('link', { name: 'Open diagnostics' })).toHaveCount(0);

@@ -1,5 +1,5 @@
 use crate::{
-    api::ProfileSummary,
+    api::{CameraLifecycle, ProfileSummary},
     stats::StreamHealthReport,
     storage::{catalog::CatalogStats, demand::RecordingDemandHealth},
     webrtc::WebRtcHealth,
@@ -11,9 +11,348 @@ use sysinfo::{
     RefreshKind, System,
 };
 
+pub(crate) const CAMERA_HEALTH_CONTRACT_VERSION: u32 = 1;
+pub(crate) const STREAM_REPORT_FRESHNESS_THRESHOLD_MS: u64 = 30_000;
+pub(crate) const OFFLINE_EVIDENCE_THRESHOLD_MS: u64 = 90_000;
+
+/// Canonical camera and stream presentation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraHealthState {
+    Starting,
+    Healthy,
+    Degraded,
+    Stale,
+    Reconnecting,
+    Offline,
+    Stopped,
+    Unknown,
+}
+
+impl CameraHealthState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::Stale => "stale",
+            Self::Reconnecting => "reconnecting",
+            Self::Offline => "offline",
+            Self::Stopped => "stopped",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Stable evidence code explaining a canonical health state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CameraHealthReason {
+    Healthy,
+    Starting,
+    NotExpected,
+    BatterySleeping,
+    EvidenceUnavailable,
+    TransportDisconnected,
+    TransportReconnecting,
+    TransportPartiallyConnected,
+    NoStreamReport,
+    StreamReportStale,
+    FramesNotArriving,
+    FramesBelowExpected,
+    KeyframesMissing,
+    IngressReconnects,
+    IngressDrops,
+    IngressErrors,
+    RecordingNotProgressing,
+}
+
+impl CameraHealthReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Starting => "starting",
+            Self::NotExpected => "not_expected",
+            Self::BatterySleeping => "battery_sleeping",
+            Self::EvidenceUnavailable => "evidence_unavailable",
+            Self::TransportDisconnected => "transport_disconnected",
+            Self::TransportReconnecting => "transport_reconnecting",
+            Self::TransportPartiallyConnected => "transport_partially_connected",
+            Self::NoStreamReport => "no_stream_report",
+            Self::StreamReportStale => "stream_report_stale",
+            Self::FramesNotArriving => "frames_not_arriving",
+            Self::FramesBelowExpected => "frames_below_expected",
+            Self::KeyframesMissing => "keyframes_missing",
+            Self::IngressReconnects => "ingress_reconnects",
+            Self::IngressDrops => "ingress_drops",
+            Self::IngressErrors => "ingress_errors",
+            Self::RecordingNotProgressing => "recording_not_progressing",
+        }
+    }
+
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::Healthy => "Transport, media, keyframe, and recording evidence is current",
+            Self::Starting => "Waiting for initial camera evidence",
+            Self::NotExpected => "Camera media is not currently expected",
+            Self::BatterySleeping => "Battery camera is registered and sleeping",
+            Self::EvidenceUnavailable => "Required camera evidence is unavailable",
+            Self::TransportDisconnected => "Camera transport is disconnected",
+            Self::TransportReconnecting => "Camera transport is reconnecting",
+            Self::TransportPartiallyConnected => "One or more camera transports are disconnected",
+            Self::NoStreamReport => "No stream health report has been received",
+            Self::StreamReportStale => "One or more stream health reports are stale",
+            Self::FramesNotArriving => "One or more streams are not receiving fresh frames",
+            Self::FramesBelowExpected => "One or more streams are below the expected frame rate",
+            Self::KeyframesMissing => "One or more streams have no recent decodable keyframe",
+            Self::IngressReconnects => "A stream reconnected during the latest evidence window",
+            Self::IngressDrops => "Recent ingress frames were dropped",
+            Self::IngressErrors => "Recent ingress errors were reported",
+            Self::RecordingNotProgressing => "Requested recording writes are not progressing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CameraHealthEvidence {
+    pub expected: bool,
+    pub lifecycle: Option<CameraLifecycle>,
+    pub startup_grace: bool,
+    pub report_age_ms: Option<u64>,
+    pub frames_fresh: Option<bool>,
+    pub decodable: Option<bool>,
+    pub frame_rate_healthy: Option<bool>,
+    pub recent_reconnects: u64,
+    pub recent_drops: u64,
+    pub recent_errors: u64,
+    pub recording_requested: bool,
+    pub recording_progressing: Option<bool>,
+    pub battery_sleeping: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CameraHealthProjection {
+    pub state: CameraHealthState,
+    pub reason: CameraHealthReason,
+    pub reasons: Vec<CameraHealthReason>,
+}
+
+pub(crate) fn project_camera_health(evidence: &CameraHealthEvidence) -> CameraHealthProjection {
+    let projection = |state, reason, mut reasons: Vec<CameraHealthReason>| {
+        if !reasons.contains(&reason) {
+            reasons.insert(0, reason);
+        }
+        CameraHealthProjection {
+            state,
+            reason,
+            reasons,
+        }
+    };
+
+    if !evidence.expected {
+        return projection(
+            CameraHealthState::Stopped,
+            CameraHealthReason::NotExpected,
+            Vec::new(),
+        );
+    }
+    if evidence.battery_sleeping == Some(true) {
+        return projection(
+            CameraHealthState::Stopped,
+            CameraHealthReason::BatterySleeping,
+            Vec::new(),
+        );
+    }
+    if matches!(
+        evidence.lifecycle,
+        Some(CameraLifecycle::Stopped | CameraLifecycle::ShuttingDown)
+    ) {
+        return projection(
+            CameraHealthState::Stopped,
+            CameraHealthReason::NotExpected,
+            Vec::new(),
+        );
+    }
+    if evidence.startup_grace
+        && (evidence.report_age_ms.is_none()
+            || evidence.lifecycle == Some(CameraLifecycle::Starting))
+    {
+        return projection(
+            CameraHealthState::Starting,
+            CameraHealthReason::Starting,
+            Vec::new(),
+        );
+    }
+
+    if evidence.lifecycle == Some(CameraLifecycle::Reconnecting) {
+        return if evidence
+            .report_age_ms
+            .is_some_and(|age| age <= OFFLINE_EVIDENCE_THRESHOLD_MS)
+        {
+            projection(
+                CameraHealthState::Reconnecting,
+                CameraHealthReason::TransportReconnecting,
+                Vec::new(),
+            )
+        } else {
+            projection(
+                CameraHealthState::Offline,
+                CameraHealthReason::TransportDisconnected,
+                Vec::new(),
+            )
+        };
+    }
+
+    if evidence.lifecycle.is_none() && evidence.report_age_ms.is_none() {
+        return projection(
+            CameraHealthState::Unknown,
+            CameraHealthReason::EvidenceUnavailable,
+            Vec::new(),
+        );
+    }
+
+    if evidence.report_age_ms.is_none() {
+        return projection(
+            CameraHealthState::Stale,
+            CameraHealthReason::NoStreamReport,
+            Vec::new(),
+        );
+    }
+    if evidence
+        .report_age_ms
+        .is_some_and(|age| age > STREAM_REPORT_FRESHNESS_THRESHOLD_MS)
+    {
+        return projection(
+            CameraHealthState::Stale,
+            CameraHealthReason::StreamReportStale,
+            Vec::new(),
+        );
+    }
+    if evidence.frames_fresh == Some(false) {
+        return projection(
+            CameraHealthState::Stale,
+            CameraHealthReason::FramesNotArriving,
+            Vec::new(),
+        );
+    }
+
+    let mut degraded_reasons = Vec::new();
+    if evidence.lifecycle == Some(CameraLifecycle::Degraded) {
+        degraded_reasons.push(CameraHealthReason::TransportPartiallyConnected);
+    }
+    if evidence.decodable == Some(false) {
+        degraded_reasons.push(CameraHealthReason::KeyframesMissing);
+    }
+    if evidence.recording_requested && evidence.recording_progressing == Some(false) {
+        degraded_reasons.push(CameraHealthReason::RecordingNotProgressing);
+    }
+    if evidence.frame_rate_healthy == Some(false) {
+        degraded_reasons.push(CameraHealthReason::FramesBelowExpected);
+    }
+    if evidence.recent_errors > 0 {
+        degraded_reasons.push(CameraHealthReason::IngressErrors);
+    }
+    if evidence.recent_drops > 0 {
+        degraded_reasons.push(CameraHealthReason::IngressDrops);
+    }
+    if evidence.recent_reconnects > 0 {
+        degraded_reasons.push(CameraHealthReason::IngressReconnects);
+    }
+    if let Some(reason) = degraded_reasons.first().copied() {
+        return projection(CameraHealthState::Degraded, reason, degraded_reasons);
+    }
+
+    let required_evidence_available = evidence.lifecycle.is_some()
+        && evidence.frames_fresh.is_some()
+        && evidence.decodable.is_some()
+        && evidence.frame_rate_healthy.is_some()
+        && (!evidence.recording_requested || evidence.recording_progressing.is_some());
+    if !required_evidence_available {
+        return projection(
+            CameraHealthState::Unknown,
+            CameraHealthReason::EvidenceUnavailable,
+            Vec::new(),
+        );
+    }
+
+    projection(
+        CameraHealthState::Healthy,
+        CameraHealthReason::Healthy,
+        Vec::new(),
+    )
+}
+
+/// Independent camera evidence used by health consumers and automation.
+#[derive(Debug, Clone, Serialize)]
+pub struct CameraHealthDimensions {
+    pub configured: bool,
+    pub expected: bool,
+    pub configured_video_streams: usize,
+    pub connected_video_streams: Option<usize>,
+    pub reporting_video_streams: usize,
+    pub fresh_video_streams: usize,
+    pub decodable_video_streams: usize,
+    pub configured_video_stream_ids: Vec<String>,
+    pub connected_video_stream_ids: Option<Vec<String>>,
+    pub reporting_video_stream_ids: Vec<String>,
+    pub fresh_video_stream_ids: Vec<String>,
+    pub decodable_video_stream_ids: Vec<String>,
+    pub transport_connected: Option<bool>,
+    pub latest_report_at_ms: Option<u64>,
+    pub report_age_ms: Option<u64>,
+    pub frames_fresh: Option<bool>,
+    pub decodable: Option<bool>,
+    pub recent_reconnects: u64,
+    pub recent_drops: u64,
+    pub recent_errors: u64,
+    pub recording_requested: bool,
+    pub recording_video_streams: usize,
+    pub recording_streams_progressing: usize,
+    pub recording_video_stream_ids: Vec<String>,
+    pub recording_progressing_stream_ids: Vec<String>,
+    pub recording_progressing: Option<bool>,
+    pub recording_progress_age_ms: Option<u64>,
+    pub battery_configured: bool,
+    pub battery_registered: Option<bool>,
+    pub battery_last_seen_age_ms: Option<u64>,
+    pub battery_wake_pending_age_ms: Option<u64>,
+    pub battery_sleeping: Option<bool>,
+}
+
+/// Independent stream evidence used by health consumers and automation.
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamHealthDimensions {
+    pub expected: bool,
+    pub transport_connected: Option<bool>,
+    pub report_fresh: bool,
+    pub report_freshness_threshold_ms: u64,
+    pub frames_fresh: bool,
+    pub frame_freshness_threshold_ms: u64,
+    pub decodable: bool,
+    pub keyframe_freshness_threshold_ms: u64,
+    pub recent_reconnects: u64,
+    pub recent_drops: u64,
+    pub recent_errors: u64,
+    pub recording_requested: bool,
+    pub recording_progressing: Option<bool>,
+    pub recording_progress_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamHealth {
+    #[serde(flatten)]
+    pub(crate) ingress: StreamHealthReport,
+    pub state: CameraHealthState,
+    pub reason: CameraHealthReason,
+    pub reason_codes: Vec<CameraHealthReason>,
+    pub detail: String,
+    pub dimensions: StreamHealthDimensions,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ServerHealthResponse {
     pub status: String,
+    pub health_contract_version: u32,
     pub generated_at_ms: u64,
     pub uptime_seconds: u64,
     pub version: &'static str,
@@ -28,9 +367,18 @@ pub struct ServerHealthResponse {
 #[derive(Debug, Default, Serialize)]
 pub struct HealthTotals {
     pub configured_cameras: usize,
-    pub reporting_cameras: usize,
+    pub connected_cameras: usize,
+    pub fresh_cameras: usize,
+    pub decodable_cameras: usize,
+    pub recording_requested_cameras: usize,
+    pub recording_cameras: usize,
+    pub unknown_cameras: usize,
     pub configured_video_streams: usize,
-    pub reporting_video_streams: usize,
+    pub connected_video_streams: usize,
+    pub fresh_video_streams: usize,
+    pub decodable_video_streams: usize,
+    pub recording_requested_video_streams: usize,
+    pub recording_video_streams: usize,
     pub ingress_fps: f64,
     pub ingress_bitrate_bps: u64,
     pub frames: u64,
@@ -50,11 +398,15 @@ pub struct CameraHealth {
     pub firmware_version: Option<String>,
     pub backend: String,
     pub transport: String,
-    pub state: String,
+    pub state: CameraHealthState,
+    pub reason: CameraHealthReason,
+    pub reason_codes: Vec<CameraHealthReason>,
+    pub detail: String,
+    pub dimensions: CameraHealthDimensions,
     pub lifecycle: Option<String>,
     pub last_error: Option<String>,
     pub configured_profiles: Vec<ProfileSummary>,
-    pub(crate) streams: Vec<StreamHealthReport>,
+    pub(crate) streams: Vec<StreamHealth>,
 }
 
 #[derive(Debug, Serialize)]
@@ -408,6 +760,191 @@ fn is_loopback_interface(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn healthy_camera_evidence() -> CameraHealthEvidence {
+        CameraHealthEvidence {
+            expected: true,
+            lifecycle: Some(CameraLifecycle::Connected),
+            startup_grace: false,
+            report_age_ms: Some(1_000),
+            frames_fresh: Some(true),
+            decodable: Some(true),
+            frame_rate_healthy: Some(true),
+            recent_reconnects: 0,
+            recent_drops: 0,
+            recent_errors: 0,
+            recording_requested: true,
+            recording_progressing: Some(true),
+            battery_sleeping: None,
+        }
+    }
+
+    #[test]
+    fn camera_health_projection_applies_evidence_precedence() {
+        let healthy = healthy_camera_evidence();
+        let cases = [
+            (
+                "healthy",
+                healthy.clone(),
+                CameraHealthState::Healthy,
+                CameraHealthReason::Healthy,
+            ),
+            (
+                "connected with stale reports",
+                CameraHealthEvidence {
+                    report_age_ms: Some(STREAM_REPORT_FRESHNESS_THRESHOLD_MS + 1),
+                    ..healthy.clone()
+                },
+                CameraHealthState::Stale,
+                CameraHealthReason::StreamReportStale,
+            ),
+            (
+                "fresh but undecodable",
+                CameraHealthEvidence {
+                    decodable: Some(false),
+                    ..healthy.clone()
+                },
+                CameraHealthState::Degraded,
+                CameraHealthReason::KeyframesMissing,
+            ),
+            (
+                "live but recording is not progressing",
+                CameraHealthEvidence {
+                    recording_progressing: Some(false),
+                    ..healthy.clone()
+                },
+                CameraHealthState::Degraded,
+                CameraHealthReason::RecordingNotProgressing,
+            ),
+            (
+                "connected without reports",
+                CameraHealthEvidence {
+                    report_age_ms: None,
+                    frames_fresh: None,
+                    decodable: None,
+                    frame_rate_healthy: None,
+                    ..healthy.clone()
+                },
+                CameraHealthState::Stale,
+                CameraHealthReason::NoStreamReport,
+            ),
+            (
+                "recently reconnecting",
+                CameraHealthEvidence {
+                    lifecycle: Some(CameraLifecycle::Reconnecting),
+                    ..healthy.clone()
+                },
+                CameraHealthState::Reconnecting,
+                CameraHealthReason::TransportReconnecting,
+            ),
+            (
+                "reconnecting without recent evidence",
+                CameraHealthEvidence {
+                    lifecycle: Some(CameraLifecycle::Reconnecting),
+                    report_age_ms: Some(OFFLINE_EVIDENCE_THRESHOLD_MS + 1),
+                    ..healthy.clone()
+                },
+                CameraHealthState::Offline,
+                CameraHealthReason::TransportDisconnected,
+            ),
+            (
+                "battery sleeping",
+                CameraHealthEvidence {
+                    battery_sleeping: Some(true),
+                    ..healthy.clone()
+                },
+                CameraHealthState::Stopped,
+                CameraHealthReason::BatterySleeping,
+            ),
+            (
+                "no server evidence",
+                CameraHealthEvidence {
+                    lifecycle: None,
+                    report_age_ms: None,
+                    frames_fresh: None,
+                    decodable: None,
+                    frame_rate_healthy: None,
+                    recording_progressing: None,
+                    ..healthy
+                },
+                CameraHealthState::Unknown,
+                CameraHealthReason::EvidenceUnavailable,
+            ),
+        ];
+
+        for (name, evidence, expected_state, expected_reason) in cases {
+            let projection = project_camera_health(&evidence);
+            assert_eq!(projection.state, expected_state, "{name}");
+            assert_eq!(projection.reason, expected_reason, "{name}");
+            assert_eq!(projection.reasons.first(), Some(&expected_reason), "{name}");
+        }
+    }
+
+    #[test]
+    fn camera_health_projection_does_not_treat_partial_evidence_as_healthy() {
+        let projection = project_camera_health(&CameraHealthEvidence {
+            lifecycle: None,
+            ..healthy_camera_evidence()
+        });
+
+        assert_eq!(projection.state, CameraHealthState::Unknown);
+        assert_eq!(projection.reason, CameraHealthReason::EvidenceUnavailable);
+    }
+
+    #[test]
+    fn camera_health_projection_honors_exact_freshness_boundaries() {
+        let at_report_boundary = project_camera_health(&CameraHealthEvidence {
+            report_age_ms: Some(STREAM_REPORT_FRESHNESS_THRESHOLD_MS),
+            ..healthy_camera_evidence()
+        });
+        assert_eq!(at_report_boundary.state, CameraHealthState::Healthy);
+
+        let at_reconnect_boundary = project_camera_health(&CameraHealthEvidence {
+            lifecycle: Some(CameraLifecycle::Reconnecting),
+            report_age_ms: Some(OFFLINE_EVIDENCE_THRESHOLD_MS),
+            ..healthy_camera_evidence()
+        });
+        assert_eq!(at_reconnect_boundary.state, CameraHealthState::Reconnecting);
+
+        let after_reconnect_boundary = project_camera_health(&CameraHealthEvidence {
+            lifecycle: Some(CameraLifecycle::Reconnecting),
+            report_age_ms: Some(OFFLINE_EVIDENCE_THRESHOLD_MS + 1),
+            ..healthy_camera_evidence()
+        });
+        assert_eq!(after_reconnect_boundary.state, CameraHealthState::Offline);
+    }
+
+    #[test]
+    fn camera_health_projection_preserves_concurrent_degraded_reasons() {
+        let projection = project_camera_health(&CameraHealthEvidence {
+            lifecycle: Some(CameraLifecycle::Degraded),
+            decodable: Some(false),
+            frame_rate_healthy: Some(false),
+            recent_reconnects: 1,
+            recent_drops: 2,
+            recent_errors: 3,
+            recording_progressing: Some(false),
+            ..healthy_camera_evidence()
+        });
+
+        assert_eq!(projection.state, CameraHealthState::Degraded);
+        assert_eq!(
+            projection.reason,
+            CameraHealthReason::TransportPartiallyConnected
+        );
+        assert_eq!(
+            projection.reasons,
+            [
+                CameraHealthReason::TransportPartiallyConnected,
+                CameraHealthReason::KeyframesMissing,
+                CameraHealthReason::RecordingNotProgressing,
+                CameraHealthReason::FramesBelowExpected,
+                CameraHealthReason::IngressErrors,
+                CameraHealthReason::IngressDrops,
+                CameraHealthReason::IngressReconnects,
+            ]
+        );
+    }
 
     fn network(name: &str, transmitted_bytes_per_second: u64) -> NetworkHealth {
         NetworkHealth {

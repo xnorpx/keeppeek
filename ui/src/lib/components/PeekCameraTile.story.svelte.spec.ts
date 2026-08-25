@@ -18,7 +18,7 @@ describe('Board 34 light-theme Peek story', () => {
 
 		const tiles = [...container.querySelectorAll<HTMLElement>('[data-peek-camera]')];
 		expect(tiles.map((tile) => tile.dataset.peekCameraState)).toEqual([
-			'live',
+			'healthy',
 			'degraded',
 			'offline'
 		]);
@@ -40,10 +40,10 @@ describe('Board 34 light-theme Peek story', () => {
 
 		await expect.element(page.getByText('DEGRADED', { exact: true })).toBeVisible();
 		await expect
-			.element(page.getByText('14% of frames dropped · still recording', { exact: true }))
+			.element(page.getByText('14% of frames dropped · recording progressing', { exact: true }))
 			.toBeVisible();
-		await expect.element(page.getByText('OFFLINE 2h 14m', { exact: true })).toBeVisible();
-		await expect.element(page.getByText('No footage since 04:23', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('OFFLINE', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('Last report 04:23', { exact: true })).toBeVisible();
 		expect(container.textContent).not.toContain('SUB · 11FPS');
 
 		expect(getComputedStyle(tiles[0]).backgroundColor).toBe('rgb(10, 11, 12)');

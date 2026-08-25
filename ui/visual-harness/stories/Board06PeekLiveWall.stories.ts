@@ -19,7 +19,7 @@ const meta = {
 			frameId: 'N7-0',
 			scenarioId: 'peek.desktop.live-wall',
 			reference: 'references/06-peek-live-wall.png',
-			referenceSha256: '669b362c076ac057a5bc625bd52170058104936e9f0a835c65245b8ab4e2342f',
+			referenceSha256: 'df3df85fe1c5bacf595045203e63e348361a6d638f0c7c8075d3bf37cb930ca2',
 			exceptions: [
 				'The deterministic story uses neutral native-video surfaces and cannot become a media baseline without approved Paper imagery.',
 				'Only six fixture cameras exist, so source pagination reports 6 of 6 instead of Paper’s unreturned 127-source total.',

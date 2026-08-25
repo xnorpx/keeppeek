@@ -15,12 +15,6 @@ struct ServerInfoLabels {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-struct CameraLabels {
-    camera_id: String,
-    camera_name: String,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct CameraStateLabels {
     camera_id: String,
     camera_name: String,
@@ -32,6 +26,21 @@ struct CameraStreamLabels {
     camera_id: String,
     camera_name: String,
     stream: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct CameraDimensionLabels {
+    camera_id: String,
+    camera_name: String,
+    dimension: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct CameraStreamDimensionLabels {
+    camera_id: String,
+    camera_name: String,
+    stream: String,
+    dimension: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -81,9 +90,39 @@ pub fn encode_health(health: &ServerHealthResponse) -> Result<String, std::fmt::
     );
     register_gauge(
         &mut registry,
-        "cameras_reporting",
-        "Cameras with current ingress reports",
-        health.totals.reporting_cameras,
+        "cameras_connected",
+        "Configured cameras with all expected transports connected",
+        health.totals.connected_cameras,
+    );
+    register_gauge(
+        &mut registry,
+        "cameras_fresh",
+        "Configured cameras with fresh frames on every expected video stream",
+        health.totals.fresh_cameras,
+    );
+    register_gauge(
+        &mut registry,
+        "cameras_decodable",
+        "Configured cameras with recent keyframes on every expected video stream",
+        health.totals.decodable_cameras,
+    );
+    register_gauge(
+        &mut registry,
+        "cameras_recording_requested",
+        "Configured cameras with one or more requested recording streams",
+        health.totals.recording_requested_cameras,
+    );
+    register_gauge(
+        &mut registry,
+        "cameras_recording",
+        "Configured cameras whose requested recording streams are progressing",
+        health.totals.recording_cameras,
+    );
+    register_gauge(
+        &mut registry,
+        "cameras_unknown",
+        "Configured cameras with insufficient evidence for a canonical state",
+        health.totals.unknown_cameras,
     );
     register_gauge(
         &mut registry,
@@ -93,9 +132,33 @@ pub fn encode_health(health: &ServerHealthResponse) -> Result<String, std::fmt::
     );
     register_gauge(
         &mut registry,
-        "video_streams_reporting",
-        "Video streams with current ingress reports",
-        health.totals.reporting_video_streams,
+        "video_streams_connected",
+        "Expected video streams with connected transports",
+        health.totals.connected_video_streams,
+    );
+    register_gauge(
+        &mut registry,
+        "video_streams_fresh",
+        "Expected video streams with fresh frames",
+        health.totals.fresh_video_streams,
+    );
+    register_gauge(
+        &mut registry,
+        "video_streams_decodable",
+        "Expected video streams with recent keyframes",
+        health.totals.decodable_video_streams,
+    );
+    register_gauge(
+        &mut registry,
+        "video_streams_recording_requested",
+        "Expected video streams requested by camera recording policy",
+        health.totals.recording_requested_video_streams,
+    );
+    register_gauge(
+        &mut registry,
+        "video_streams_recording",
+        "Requested video streams with current recording progress",
+        health.totals.recording_video_streams,
     );
     register_float_gauge(
         &mut registry,
@@ -314,8 +377,8 @@ pub fn encode_health(health: &ServerHealthResponse) -> Result<String, std::fmt::
 
 fn register_camera_metrics(registry: &mut Registry, health: &ServerHealthResponse) {
     let camera_info = Family::<CameraStateLabels, Gauge>::default();
-    let camera_online = Family::<CameraLabels, Gauge>::default();
-    let camera_degraded = Family::<CameraLabels, Gauge>::default();
+    let camera_dimensions = Family::<CameraDimensionLabels, Gauge>::default();
+    let camera_dimensions_known = Family::<CameraDimensionLabels, Gauge>::default();
     let stream_fps = Family::<CameraStreamLabels, FloatGauge>::default();
     let stream_bitrate = Family::<CameraStreamLabels, FloatGauge>::default();
     let stream_frames = Family::<CameraStreamLabels, Counter>::default();
@@ -323,54 +386,97 @@ fn register_camera_metrics(registry: &mut Registry, health: &ServerHealthRespons
     let stream_drops = Family::<CameraStreamLabels, Counter>::default();
     let stream_errors = Family::<CameraStreamLabels, Counter>::default();
     let stream_reconnects = Family::<CameraStreamLabels, Counter>::default();
+    let stream_dimensions = Family::<CameraStreamDimensionLabels, Gauge>::default();
+    let stream_dimensions_known = Family::<CameraStreamDimensionLabels, Gauge>::default();
 
     for camera in &health.cameras {
-        let labels = CameraLabels {
-            camera_id: camera.id.clone(),
-            camera_name: camera.name.clone(),
-        };
         camera_info
             .get_or_create(&CameraStateLabels {
                 camera_id: camera.id.clone(),
                 camera_name: camera.name.clone(),
-                state: camera.state.clone(),
+                state: camera.state.as_str().to_owned(),
             })
             .set(1);
-        camera_online
-            .get_or_create(&labels)
-            .set(i64::from(camera.state == "online"));
-        camera_degraded
-            .get_or_create(&labels)
-            .set(i64::from(matches!(
-                camera.state.as_str(),
-                "degraded" | "stale" | "offline"
-            )));
+        for (dimension, value) in [
+            ("transport_connected", camera.dimensions.transport_connected),
+            ("frames_fresh", camera.dimensions.frames_fresh),
+            ("decodable", camera.dimensions.decodable),
+            (
+                "recording_requested",
+                Some(camera.dimensions.recording_requested),
+            ),
+            (
+                "recording_progressing",
+                camera.dimensions.recording_progressing,
+            ),
+            ("battery_sleeping", camera.dimensions.battery_sleeping),
+        ] {
+            let labels = CameraDimensionLabels {
+                camera_id: camera.id.clone(),
+                camera_name: camera.name.clone(),
+                dimension: dimension.to_owned(),
+            };
+            camera_dimensions
+                .get_or_create(&labels)
+                .set(i64::from(value == Some(true)));
+            camera_dimensions_known
+                .get_or_create(&labels)
+                .set(i64::from(value.is_some()));
+        }
 
         for stream in &camera.streams {
+            let report = &stream.ingress.report;
             let labels = CameraStreamLabels {
                 camera_id: camera.id.clone(),
                 camera_name: camera.name.clone(),
-                stream: stream.report.kind.clone(),
+                stream: report.kind.clone(),
             };
-            stream_fps.get_or_create(&labels).set(stream.report.fps);
+            stream_fps.get_or_create(&labels).set(report.fps);
             stream_bitrate
                 .get_or_create(&labels)
-                .set(stream.report.kbps * 1_000.0);
+                .set(report.kbps * 1_000.0);
             stream_frames
                 .get_or_create(&labels)
-                .inc_by(stream.report.frames.unwrap_or(0));
+                .inc_by(report.frames.unwrap_or(0));
             stream_bytes
                 .get_or_create(&labels)
-                .inc_by(stream.report.bytes.unwrap_or(0));
+                .inc_by(report.bytes.unwrap_or(0));
             stream_drops
                 .get_or_create(&labels)
-                .inc_by(stream.report.drops.unwrap_or(0));
+                .inc_by(report.drops.unwrap_or(0));
             stream_errors
                 .get_or_create(&labels)
-                .inc_by(stream.report.errors.unwrap_or(0));
+                .inc_by(report.errors.unwrap_or(0));
             stream_reconnects
                 .get_or_create(&labels)
-                .inc_by(stream.report.reconnects.unwrap_or(0));
+                .inc_by(report.reconnects.unwrap_or(0));
+            for (dimension, value) in [
+                ("transport_connected", stream.dimensions.transport_connected),
+                ("report_fresh", Some(stream.dimensions.report_fresh)),
+                ("frames_fresh", Some(stream.dimensions.frames_fresh)),
+                ("decodable", Some(stream.dimensions.decodable)),
+                (
+                    "recording_requested",
+                    Some(stream.dimensions.recording_requested),
+                ),
+                (
+                    "recording_progressing",
+                    stream.dimensions.recording_progressing,
+                ),
+            ] {
+                let labels = CameraStreamDimensionLabels {
+                    camera_id: camera.id.clone(),
+                    camera_name: camera.name.clone(),
+                    stream: report.kind.clone(),
+                    dimension: dimension.to_owned(),
+                };
+                stream_dimensions
+                    .get_or_create(&labels)
+                    .set(i64::from(value == Some(true)));
+                stream_dimensions_known
+                    .get_or_create(&labels)
+                    .set(i64::from(value.is_some()));
+            }
         }
     }
 
@@ -380,14 +486,14 @@ fn register_camera_metrics(registry: &mut Registry, health: &ServerHealthRespons
         camera_info,
     );
     registry.register(
-        "camera_online",
-        "Whether a camera is currently online",
-        camera_online,
+        "camera_health_dimension",
+        "Current camera health dimension value; consult camera_health_dimension_known",
+        camera_dimensions,
     );
     registry.register(
-        "camera_degraded",
-        "Whether a camera is degraded, stale, or offline",
-        camera_degraded,
+        "camera_health_dimension_known",
+        "Whether the current camera health dimension has authoritative evidence",
+        camera_dimensions_known,
     );
     registry.register(
         "camera_ingress_frames_per_second",
@@ -423,6 +529,16 @@ fn register_camera_metrics(registry: &mut Registry, health: &ServerHealthRespons
         "camera_ingress_reconnects",
         "Cumulative camera stream reconnects",
         stream_reconnects,
+    );
+    registry.register(
+        "camera_stream_health_dimension",
+        "Current stream health dimension value; consult camera_stream_health_dimension_known",
+        stream_dimensions,
+    );
+    registry.register(
+        "camera_stream_health_dimension_known",
+        "Whether the current stream health dimension has authoritative evidence",
+        stream_dimensions_known,
     );
 }
 
