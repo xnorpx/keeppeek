@@ -3,8 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>The KeepPeek Book</title>
-        <meta name="robots" content="noindex">
+        <title>Camera and stream health - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -153,9 +152,7 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="keeppeek"><a class="header" href="#keeppeek">KeepPeek</a></h1>
-<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="camera-and-stream-health"><a class="header" href="#camera-and-stream-health">Camera and stream health</a></h1>
+                        <h1 id="camera-and-stream-health"><a class="header" href="#camera-and-stream-health">Camera and stream health</a></h1>
 <p>KeepPeek computes camera and stream health on the server. Peek, Cameras, Health, camera
 diagnosis, fleet counts, the control API, and Prometheus metrics consume that same projection.
 Clients do not infer health from display text, local video playback, or issue severity.</p>
@@ -290,52 +287,18 @@ recovered stream degraded;</li>
 <p>KeepPeek does not yet persist outage intervals or send health notifications. Those features are
 tracked separately and must use this canonical projection rather than reconstructing outages from
 UI labels.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="demo-videos"><a class="header" href="#demo-videos">Demo videos</a></h1>
-<p>These audio-paced H.264/AAC recordings exercise KeepPeek's production controls and are regenerated
-from the canonical Paper scenarios. Azure OpenAI narration controls each visual phase, and captions
-are available from every player.</p>
-<h2 id="add-nine-cameras-in-settings"><a class="header" href="#add-nine-cameras-in-settings">Add nine cameras in Settings</a></h2>
-<p>Begin with an empty KeepPeek server, enter nine real-time RTSP camera configurations through
-Settings, then inspect the completed live wall and one feed's WebRTC evidence.</p>
-<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.mp4">Download the nine-camera live-wall demo</a>.
-</video>
-<p>The virtual-camera source is <em>Big Buck Bunny</em>, © 2008 Blender Foundation,
-<a href="https://creativecommons.org/licenses/by/3.0/">licensed under CC BY 3.0</a>.</p>
-<h2 id="review-what-just-happened"><a class="header" href="#review-what-just-happened">Review what just happened</a></h2>
-<p>Focus a live camera, then use History to open its timeline in Keep.</p>
-<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4">Download the Peek history demo</a>.
-</video>
-<h2 id="delete-and-re-add-a-camera"><a class="header" href="#delete-and-re-add-a-camera">Delete and re-add a camera</a></h2>
-<p>Remove and restore the deterministic H.264 camera through the real KeepPeek server and production
-Settings UI.</p>
-<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4">Download the camera lifecycle demo</a>.
-</video>
-<h2 id="set-up-a-camera-with-catalog-context"><a class="header" href="#set-up-a-camera-with-catalog-context">Set up a camera with catalog context</a></h2>
-<p>Discover a model, review the embedded catalog facts, open CCTV Database for deeper manual research,
-then apply only the stream declarations you choose before the first configuration write.</p>
-<video controls crossorigin="anonymous" preload="metadata" playsinline style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4">Download the catalog-guided camera setup demo</a>.
-</video>
-<p>The <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/manifest.json">published manifest</a>
-contains the source commit, generated timestamp, content hashes, and metadata links for every
-recording.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
+                            <a rel="next prefetch" href="demo-videos.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -343,7 +306,13 @@ recording.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
+                    <a rel="next prefetch" href="demo-videos.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
             </nav>
 
         </div>
@@ -366,11 +335,6 @@ recording.</p>
 
         <!-- Custom JS scripts -->
 
-        <script>
-        window.addEventListener('load', function() {
-            window.setTimeout(window.print, 100);
-        });
-        </script>
 
     </div>
     </body>
