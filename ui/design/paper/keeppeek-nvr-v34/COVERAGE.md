@@ -5,9 +5,9 @@
 - Paper boards: 34/34
 - Token hash: `cf3b1cd7`
 - Scenarios: 55 (6 contracts, 49 rendered scenarios)
-- Paper references: 49 (14 accepted, 35 capability-gated candidates)
-- Approved Linux Loki references: 14/14
-- Board classifications: 6 contract, 5 accepted, 3 mixed, 20 capability-gated
+- Paper references: 49 (11 accepted, 38 capability-gated candidates)
+- Approved Linux Loki references: 11/11
+- Board classifications: 6 contract, 3 accepted, 2 mixed, 23 capability-gated
 - Unclassified candidates: 0
 
 ## Board Matrix
@@ -19,7 +19,7 @@
 | 03 Information Architecture            | Contract                    | `design.information-architecture`                                                                                                                                                        |            0/0/0 | None                                                                                                                  | None                                                                                                                                                    | `design/paper/keeppeek-nvr-v34/architecture.json`   |
 | 04 Keep: Timeline Anatomy              | Capability-gated            | `keep.desktop.timeline-anatomy`                                                                                                                                                          |            0/1/1 | `visual-harness/stories/Board04KeepTimeline.stories.ts`                                                               | `e2e/keep-timeline.e2e.ts`                                                                                                                              | None                                                |
 | 05 Handoff: What To Design Next        | Contract                    | `design.handoff`                                                                                                                                                                         |            0/0/0 | None                                                                                                                  | None                                                                                                                                                    | `design/paper/keeppeek-nvr-v34/handoff.json`        |
-| 06 App Shell &amp; Peek (Live)         | Paper accepted              | `peek.desktop.live-wall`                                                                                                                                                                 |            1/0/1 | `visual-harness/stories/Board06PeekLiveWall.stories.ts`                                                               | `e2e/dashboard.e2e.ts`                                                                                                                                  | None                                                |
+| 06 App Shell &amp; Peek (Live)         | Capability-gated            | `peek.desktop.live-wall`                                                                                                                                                                 |            0/1/1 | `visual-harness/stories/Board06PeekLiveWall.stories.ts`                                                               | `e2e/dashboard.e2e.ts`                                                                                                                                  | None                                                |
 | 07 Camera page &amp; PTZ               | Capability-gated            | `camera.desktop.details-ptz`                                                                                                                                                             |            0/1/1 | `visual-harness/stories/Board07CameraPage.stories.ts`                                                                 | `e2e/camera.e2e.ts`                                                                                                                                     | None                                                |
 | 08 Layout editor                       | Capability-gated            | `peek.desktop.layout-editor`<br>`peek.desktop.layout-registry`                                                                                                                           |            0/2/2 | `visual-harness/stories/Board08LayoutEditor.stories.ts`<br>`visual-harness/stories/Board08LayoutRegistry.stories.ts`  | `e2e/peek-layout.e2e.ts`                                                                                                                                | None                                                |
 | 09 Keep: stories, export, swimlanes    | Accepted + capability-gated | `keep.desktop.calendar`<br>`keep.desktop.export-gated`<br>`keep.desktop.stories`<br>`keep.desktop.swimlanes`                                                                             |            1/3/4 | `visual-harness/stories/Board09KeepModes.stories.ts`                                                                  | `e2e/keep-export.e2e.ts`<br>`e2e/keep-stories.e2e.ts`<br>`e2e/keep-swimlanes.e2e.ts`                                                                    | None                                                |
@@ -39,7 +39,7 @@
 | 23 Camera: configuration               | Capability-gated            | `camera.desktop.configuration`                                                                                                                                                           |            0/1/1 | `visual-harness/stories/Board23CameraConfiguration.stories.ts`                                                        | `e2e/camera.e2e.ts`                                                                                                                                     | None                                                |
 | 24 Mobile: Camera & PTZ                | Capability-gated            | `camera.mobile.details-ptz`<br>`camera.mobile.ptz`<br>`camera.mobile.settings`                                                                                                           |            0/3/3 | `visual-harness/stories/Board24MobileCamera.stories.ts`                                                               | `e2e/camera.e2e.ts`                                                                                                                                     | None                                                |
 | 25 Mobile: Add camera                  | Capability-gated            | `cameras.mobile.add-review`<br>`cameras.mobile.add-streams`<br>`cameras.mobile.add-wizard`                                                                                               |            0/3/3 | `visual-harness/stories/Board25MobileAddCamera.stories.ts`                                                            | `e2e/add-camera.e2e.ts`                                                                                                                                 | None                                                |
-| 26 Mobile: Health                      | Accepted + capability-gated | `health.mobile.camera-issue`<br>`health.mobile.overview`<br>`health.mobile.stream-evidence`                                                                                              |            1/2/3 | `visual-harness/stories/Board26MobileDiagnosis.stories.ts`<br>`visual-harness/stories/Board26MobileHealth.stories.ts` | `e2e/camera-diagnosis.e2e.ts`<br>`e2e/health.e2e.ts`                                                                                                    | None                                                |
+| 26 Mobile: Health                      | Capability-gated            | `health.mobile.camera-issue`<br>`health.mobile.overview`<br>`health.mobile.stream-evidence`                                                                                              |            0/3/3 | `visual-harness/stories/Board26MobileDiagnosis.stories.ts`<br>`visual-harness/stories/Board26MobileHealth.stories.ts` | `e2e/camera-diagnosis.e2e.ts`<br>`e2e/health.e2e.ts`                                                                                                    | None                                                |
 | 27 Mobile: Administration              | Accepted + capability-gated | `settings.mobile.access`<br>`settings.mobile.administration`                                                                                                                             |            1/1/2 | `visual-harness/stories/Board27MobileAdministration.stories.ts`                                                       | `e2e/settings-access.e2e.ts`<br>`e2e/settings.e2e.ts`                                                                                                   | None                                                |
 | 28 Backend capability contract         | Contract                    | `design.capability-contract`                                                                                                                                                             |            0/0/0 | None                                                                                                                  | None                                                                                                                                                    | `src/lib/capabilities.ts`                           |
 | 29 Keep: export job lifecycle          | Paper accepted              | `keep.desktop.export-lifecycle`                                                                                                                                                          |            1/0/1 | `visual-harness/stories/ExportLifecycle.stories.ts`                                                                   | `e2e/keep-export.e2e.ts`                                                                                                                                | None                                                |
@@ -47,7 +47,7 @@
 | 31 Peek → Keep: focused history        | Paper accepted              | `peek.desktop.focus-history`<br>`peek.desktop.history-keep`                                                                                                                              |            2/0/2 | `visual-harness/stories/Board31History.stories.ts`                                                                    | `e2e/peek-history.e2e.ts`                                                                                                                               | None                                                |
 | 32 Keyboard: the whole model           | Contract                    | `design.keyboard-contract`                                                                                                                                                               |            0/0/0 | None                                                                                                                  | `e2e/keyboard.e2e.ts`                                                                                                                                   | `src/lib/keyboard-shortcuts.ts`                     |
 | 33 Waiting, empty and nothing-found    | Paper accepted              | `cameras.waiting.discovery`<br>`cameras.waiting.fleet-skeleton`<br>`events.empty.no-results`<br>`keep.waiting.cold-seek`<br>`peek.waiting.first-keyframe`<br>`settings.waiting.applying` |            6/0/6 | `visual-harness/stories/Board33States.stories.ts`                                                                     | `e2e/add-camera.e2e.ts`<br>`e2e/cameras.e2e.ts`<br>`e2e/dashboard.e2e.ts`<br>`e2e/events.e2e.ts`<br>`e2e/keep-timeline.e2e.ts`<br>`e2e/settings.e2e.ts` | None                                                |
-| 34 Light theme                         | Paper accepted              | `peek.desktop.light-theme`                                                                                                                                                               |            1/0/1 | `visual-harness/stories/LightThemePeek.stories.ts`                                                                    | `e2e/theme.e2e.ts`                                                                                                                                      | None                                                |
+| 34 Light theme                         | Capability-gated            | `peek.desktop.light-theme`                                                                                                                                                               |            0/1/1 | `visual-harness/stories/LightThemePeek.stories.ts`                                                                    | `e2e/theme.e2e.ts`                                                                                                                                      | None                                                |
 
 ## Loki Baseline Queue
 
@@ -56,14 +56,11 @@
 | `cameras.waiting.discovery`      | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.discovery.png`      | Approved `ba812d715a40c7430e8ea7ef431655aaf40b7a549ed973dad3883e6270d1beb2` |
 | `cameras.waiting.fleet-skeleton` | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.fleet-skeleton.png` | Approved `90f92f4835cdf61566f085539f3edd2583c49a40c28946c45ab735aa98f3b194` |
 | `events.empty.no-results`        | `visual-harness/.loki/reference/chrome.desktop/events.empty.no-results.png`        | Approved `a58881eb304c9f78e10d675547c68b16f4383754019192a4a162815038931189` |
-| `health.mobile.overview`         | `visual-harness/.loki/reference/chrome.mobile/health.mobile.overview.png`          | Approved `addb2c3e76982ab113de98d8cd13a1d34f7c9c95840495e12bb9fbe5854df8f0` |
 | `keep.desktop.calendar`          | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.calendar.png`          | Approved `e192953cc22df1ef212112ae3a2293db3acaeb387f316d1f867655ad42cced40` |
 | `keep.desktop.export-lifecycle`  | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png`  | Approved `c045aad78865f1d3a5c8ebb8dd862018d3609711898a80b49fd4bc0fe307349d` |
 | `keep.waiting.cold-seek`         | `visual-harness/.loki/reference/chrome.desktop/keep.waiting.cold-seek.png`         | Approved `85bcb594d11464d3f0c0a06fb525a85a8c2ce84c604288f794b3f7a20e13550b` |
 | `peek.desktop.focus-history`     | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png`     | Approved `9076662f9be6f12b30e49220037bc9a68338e0d16a23275cd4cc128ef5e36dbc` |
 | `peek.desktop.history-keep`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png`      | Approved `b8ead2f325d9b5712058377a55095ee38ed8e21cc4abb234c4f8bfdbfab4f5d7` |
-| `peek.desktop.light-theme`       | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png`       | Approved `c0b04e71e4d62ba2540443ceb6e494b4ca7dde0ef473df93125573c5e4a0be91` |
-| `peek.desktop.live-wall`         | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png`         | Approved `b22a3b2c5344a8d94ec3e8901b3b596bc2990d608dc03905427b819776f072b0` |
 | `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Approved `3d5eb367f51b9d20e74dc3ae346e66034a6bc13428b2a6dfe8f5c3ba49025128` |
 | `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `8bebaa5aef87bf79e1048c723dac69bd9e5bff4fa1a917181c5c48fc05909a08` |
 | `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Approved `21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509` |
@@ -78,6 +75,14 @@ Scenario capability IDs: None
   - Event records expose kind and source category rather than Paper's narrative labels, publisher service names, and revision metadata.
   - One optional thumbnail URL cannot prove Paper's multi-frame story count, and approved deterministic player/event imagery is unavailable.
   - Paper's hand-positioned ruler scale conflicts with its explanatory 6-hour zoom value; the visual override remains isolated from production zoom math.
+
+### 06 App Shell &amp; Peek (Live)
+
+Scenario capability IDs: None
+
+- `peek.desktop.live-wall`
+  - The canonical health chips and fleet-dimension lane changed; a fresh reviewed Linux Loki baseline is required.
+  - The production story retains deterministic implementation chrome and responsive diagnostics whose placement differs from the Paper frame.
 
 ### 07 Camera page &amp; PTZ
 
@@ -171,9 +176,8 @@ Scenario capability IDs: None
 Scenario capability IDs: None
 
 - `health.desktop.overview`
-  - Health is read through HealthCommand over the WebRTC control channel, so Paper's obsolete GET /health endpoint label is intentionally not reproduced.
-  - Current stream snapshots do not expose 24-hour frame loss, writer lag, recorded-today completeness, or exact recording-gap start.
-  - Issue mute and external-service liveness are unavailable, so unsupported actions and service-state inferences are omitted.
+  - The production verdict, issue rows, and machine-readable cards retain implementation-owned spacing after the canonical dimension redesign.
+  - Persisted outage intervals, 24-hour loss series, issue mute, and external-service liveness remain separate or unavailable contracts.
 
 ### 16 Settings: access &amp; roles
 
@@ -286,12 +290,15 @@ Scenario capability IDs: `keeppeek.runtime-config.v1`
 
 Scenario capability IDs: `keeppeek.runtime-config.v1`
 
+- `health.mobile.overview`
+  - The canonical five-count strip and issue copy changed; a fresh reviewed Linux Loki baseline is required.
+  - Issue mute remains unavailable, so the stable action lane differs from the authored Paper frame.
 - `health.mobile.camera-issue`
-  - Server health does not expose recording-gap start or last accepted recording time, so the screen cannot claim when footage stopped.
-  - No retry countdown, retry command, or credential probe exists; the compact route keeps those actions unavailable.
+  - Persisted outage intervals and retry schedules are outside health contract v1, so the screen cannot claim when an outage began.
+  - No retry command or credential probe exists; the compact route keeps those actions unavailable.
 - `health.mobile.stream-evidence`
-  - Health exposes current cumulative drops and reconnects but no 24-hour loss aggregate, 30-minute history, or writer-lag series.
-  - Health does not provide causal attribution or confidence, so the screen cannot claim UDP is the likely cause; Switch to TCP remains available through WebRTC.
+  - Health exposes current drop deltas and writer progress but no 30-minute history or persisted loss series.
+  - Health does not provide causal attribution; a TCP test is shown only for current UDP drop evidence and still differs from Paper placement.
 
 ### 27 Mobile: Administration
 
@@ -306,5 +313,13 @@ Scenario capability IDs: `keeppeek.identity.v1`
 Scenario capability IDs: `keeppeek.runtime-config.v1`
 
 - `health.desktop.camera-diagnosis`
-  - Server health does not expose packet-loss history, recording-gap start, or retry countdown.
+  - Persisted packet-loss history, outage intervals, and retry schedules remain outside health contract v1.
   - No credential probe command exists, so the route and story must keep that action unavailable.
+
+### 34 Light theme
+
+Scenario capability IDs: None
+
+- `peek.desktop.light-theme`
+  - The canonical HEALTHY and OFFLINE chips plus last-report copy changed; a fresh reviewed light-theme Loki baseline is required.
+  - Production compact-tile typography and control placement differ from Paper at high-contrast edges.

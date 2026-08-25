@@ -136,3 +136,27 @@ test('preserves fleet table lanes and row height while health evidence is pendin
 	await expect(skeleton).toHaveCount(0);
 	await expect(page.locator('[data-fleet-row]')).toHaveCount(24);
 });
+
+test('keeps camera inventory visible and marks health unknown when health loading fails', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 1440, height: 840 });
+	await mockCameraFleet(page, 3, { healthError: 'Health snapshot unavailable' });
+
+	await page.goto('/cameras');
+
+	const rows = page.locator('[data-fleet-row]');
+	await expect(rows).toHaveCount(3);
+	await expect(page.getByRole('link', { name: 'Front Door', exact: true })).toBeVisible();
+	await expect
+		.poll(() =>
+			rows.evaluateAll((elements) =>
+				elements.every((element) =>
+					element.textContent?.includes('UNKNOWN · Camera health evidence is unavailable')
+				)
+			)
+		)
+		.toBe(true);
+	await expect(page.getByRole('button', { name: /Not healthy/ })).toContainText('3');
+	await expect(page.getByRole('alert')).toHaveCount(0);
+});

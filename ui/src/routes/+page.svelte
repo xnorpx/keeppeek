@@ -18,7 +18,6 @@
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import PeekLayoutEditor from '$lib/components/PeekLayoutEditor.svelte';
 	import { presentPeekCamera } from '$lib/peek-camera';
-	import { reconcileServerHealth } from '$lib/health-presentation';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import CameraIcon from '@lucide/svelte/icons/camera';
@@ -67,37 +66,37 @@
 	let cameraHealthById = $derived(
 		new Map((serverHealth?.cameras ?? []).map((camera) => [camera.id, camera]))
 	);
-	let healthyCameraCount = $derived(
-		(serverHealth?.cameras ?? []).filter((camera) => camera.state === 'online').length
-	);
 	let fleetStatus = $derived.by(() => {
-		if (serverHealth?.status === 'healthy' && cameras.length === 0) {
+		if (serverHealth === null) {
 			return {
-				colorClass: 'bg-emerald-500',
-				label: 'System online',
-				showCameraCount: true
+				colorClass: 'bg-text-faint',
+				label: 'Health evidence unavailable',
+				showCameraCount: false
 			};
 		}
-		if (serverHealth?.status === 'healthy') {
+		if (serverHealth.totals.configured_cameras === 0) {
 			return {
 				colorClass: 'bg-emerald-500',
-				label: `${healthyCameraCount} / ${cameras.length} cameras healthy`,
+				label: '0 configured cameras',
 				showCameraCount: false
 			};
 		}
 
-		if (healthyCameraCount > 0) {
-			return {
-				colorClass: 'bg-amber-500',
-				label: `${healthyCameraCount} / ${cameras.length} cameras healthy`,
-				showCameraCount: false
-			};
-		}
-
+		const configured = serverHealth.totals.configured_cameras;
+		const connected = serverHealth.totals.connected_cameras;
+		const fresh = serverHealth.totals.fresh_cameras;
+		const decodable = serverHealth.totals.decodable_cameras;
+		const recording = serverHealth.totals.recording_cameras;
+		const allMediaHealthy = fresh === configured && decodable === configured;
 		return {
-			colorClass: 'bg-destructive',
-			label: 'System unavailable',
-			showCameraCount: true
+			colorClass:
+				connected === 0
+					? 'bg-destructive'
+					: allMediaHealthy && serverHealth.status === 'healthy'
+						? 'bg-emerald-500'
+						: 'bg-amber-500',
+			label: `${configured} configured · ${connected ?? '—'} connected · ${fresh ?? '—'} fresh · ${decodable ?? '—'} decodable · ${recording ?? '—'}/${serverHealth.totals.recording_requested_cameras ?? '—'} recording`,
+			showCameraCount: false
 		};
 	});
 	let runtimeTelemetry = $derived.by(() => {
@@ -179,12 +178,14 @@
 
 	async function loadDashboard() {
 		try {
-			const [nextCameras, nextServerHealth] = await Promise.all([
+			const [camerasResult, healthResult] = await Promise.allSettled([
 				controlClient.getCameras(),
 				controlClient.getHealth()
 			]);
-			cameras = nextCameras;
-			serverHealth = reconcileServerHealth(nextServerHealth);
+			if (camerasResult.status === 'rejected') throw camerasResult.reason;
+			cameras = camerasResult.value;
+			serverHealth = healthResult.status === 'fulfilled' ? healthResult.value : null;
+			error = null;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load dashboard';
 		} finally {

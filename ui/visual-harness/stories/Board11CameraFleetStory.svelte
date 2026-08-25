@@ -2,7 +2,12 @@
 	import { presentCameraFleetRow } from '$lib/camera-fleet';
 	import CameraFleetRow from '$lib/components/CameraFleetRow.svelte';
 	import DesktopPaperRail from '$lib/components/DesktopPaperRail.svelte';
-	import type { CameraHealth, CameraListItem } from '$lib/types';
+	import type {
+		CameraHealth,
+		CameraHealthDimensions,
+		CameraListItem,
+		StreamHealthDimensions
+	} from '$lib/types';
 	import SearchIcon from '@lucide/svelte/icons/search';
 
 	const names = [
@@ -51,7 +56,20 @@
 	}));
 	const healthById = new Map<string, CameraHealth>(
 		cameras.map((camera, index) => {
-			const state = index === 1 ? 'degraded' : index === 2 ? 'offline' : 'online';
+			const state = index === 1 ? 'degraded' : index === 2 ? 'offline' : 'healthy';
+			const reason =
+				state === 'healthy'
+					? 'healthy'
+					: state === 'degraded'
+						? 'ingress_drops'
+						: 'transport_disconnected';
+			const detail =
+				state === 'healthy'
+					? 'Transport, media, keyframe, and recording evidence is current'
+					: state === 'degraded'
+						? '14% frames dropped'
+						: 'Authentication failed';
+			const current = state !== 'offline';
 			return [
 				camera.id,
 				{
@@ -64,6 +82,16 @@
 					backend: camera.backend,
 					transport: camera.transport,
 					state,
+					reason,
+					reason_codes: [reason],
+					detail,
+					dimensions: {
+						transport_connected: current,
+						frames_fresh: current,
+						decodable: current,
+						recording_requested: true,
+						recording_progressing: current
+					} as CameraHealthDimensions,
 					lifecycle: state === 'offline' ? 'Stopped' : 'Connected',
 					last_error: state === 'offline' ? 'Authentication failed' : null,
 					configured_profiles: camera.profiles,
@@ -77,7 +105,20 @@
 							frames: state === 'offline' ? 0 : 86,
 							drops: index === 1 ? 14 : 0,
 							updated_at_ms: 1,
-							report_age_ms: state === 'offline' ? 8_040_000 : 20
+							report_age_ms: state === 'offline' ? 8_040_000 : 20,
+							state,
+							reason,
+							reason_codes: [reason],
+							detail,
+							dimensions: {
+								expected: true,
+								transport_connected: current,
+								report_fresh: current,
+								frames_fresh: current,
+								decodable: current,
+								recording_requested: true,
+								recording_progressing: current
+							} as StreamHealthDimensions
 						}
 					]
 				}

@@ -306,6 +306,7 @@ export type LiveQuality = 'auto' | 'high' | 'low';
 
 export interface ServerHealthResponse {
 	status: 'healthy' | 'degraded';
+	health_contract_version: number;
 	generated_at_ms: number;
 	uptime_seconds: number;
 	version: string;
@@ -319,9 +320,18 @@ export interface ServerHealthResponse {
 
 export interface HealthTotals {
 	configured_cameras: number;
-	reporting_cameras: number;
+	connected_cameras: number;
+	fresh_cameras: number;
+	decodable_cameras: number;
+	recording_requested_cameras: number;
+	recording_cameras: number;
+	unknown_cameras: number;
 	configured_video_streams: number;
-	reporting_video_streams: number;
+	connected_video_streams: number;
+	fresh_video_streams: number;
+	decodable_video_streams: number;
+	recording_requested_video_streams: number;
+	recording_video_streams: number;
 	ingress_fps: number;
 	ingress_bitrate_bps: number;
 	frames: number;
@@ -329,6 +339,71 @@ export interface HealthTotals {
 	drops: number;
 	errors: number;
 	reconnects: number;
+}
+
+export type CameraHealthState =
+	| 'starting'
+	| 'healthy'
+	| 'degraded'
+	| 'stale'
+	| 'reconnecting'
+	| 'offline'
+	| 'stopped'
+	| 'unknown';
+
+export type CameraHealthReason =
+	| 'healthy'
+	| 'starting'
+	| 'not_expected'
+	| 'battery_sleeping'
+	| 'evidence_unavailable'
+	| 'transport_disconnected'
+	| 'transport_reconnecting'
+	| 'transport_partially_connected'
+	| 'no_stream_report'
+	| 'stream_report_stale'
+	| 'frames_not_arriving'
+	| 'frames_below_expected'
+	| 'keyframes_missing'
+	| 'ingress_reconnects'
+	| 'ingress_drops'
+	| 'ingress_errors'
+	| 'recording_not_progressing'
+	| 'unknown';
+
+export interface CameraHealthDimensions {
+	configured: boolean;
+	expected: boolean;
+	configured_video_streams: number;
+	connected_video_streams: number | null;
+	reporting_video_streams: number;
+	fresh_video_streams: number;
+	decodable_video_streams: number;
+	configured_video_stream_ids: string[];
+	connected_video_stream_ids: string[] | null;
+	reporting_video_stream_ids: string[];
+	fresh_video_stream_ids: string[];
+	decodable_video_stream_ids: string[];
+	transport_connected: boolean | null;
+	latest_report_at_ms: number | null;
+	report_age_ms: number | null;
+	frames_fresh: boolean | null;
+	decodable: boolean | null;
+	recent_reconnects: number;
+	recent_drops: number;
+	recent_errors: number;
+	recording_requested: boolean;
+	recording_video_streams: number;
+	recording_streams_progressing: number;
+	recording_video_stream_ids: string[];
+	recording_progressing_stream_ids: string[];
+	recording_progressing: boolean | null;
+	recording_progress_age_ms: number | null;
+	battery_configured: boolean;
+	battery_registered: boolean | null;
+	battery_last_seen_age_ms: number | null;
+	battery_wake_pending_age_ms: number | null;
+	battery_sleeping: boolean | null;
 }
 
 export interface CameraHealth {
@@ -340,11 +415,32 @@ export interface CameraHealth {
 	firmware_version: string | null;
 	backend?: string;
 	transport?: string;
-	state: 'starting' | 'online' | 'degraded' | 'stale' | 'offline';
+	state: CameraHealthState;
+	reason?: CameraHealthReason;
+	reason_codes?: CameraHealthReason[];
+	detail?: string;
+	dimensions?: CameraHealthDimensions | null;
 	lifecycle: string | null;
 	last_error: string | null;
 	configured_profiles: ProfileSummary[];
 	streams: StreamHealth[];
+}
+
+export interface StreamHealthDimensions {
+	expected: boolean;
+	transport_connected: boolean | null;
+	report_fresh: boolean;
+	report_freshness_threshold_ms: number;
+	frames_fresh: boolean;
+	frame_freshness_threshold_ms: number;
+	decodable: boolean;
+	keyframe_freshness_threshold_ms: number;
+	recent_reconnects: number;
+	recent_drops: number;
+	recent_errors: number;
+	recording_requested: boolean;
+	recording_progressing: boolean | null;
+	recording_progress_age_ms: number | null;
 }
 
 export interface StreamHealth {
@@ -370,6 +466,18 @@ export interface StreamHealth {
 	errors?: number;
 	updated_at_ms: number;
 	report_age_ms: number;
+	frame_updated_at_ms?: number | null;
+	frame_age_ms?: number | null;
+	keyframe_updated_at_ms?: number | null;
+	keyframe_age_ms?: number | null;
+	recent_reconnects?: number;
+	recent_drops?: number;
+	recent_errors?: number;
+	state?: CameraHealthState;
+	reason?: CameraHealthReason;
+	reason_codes?: CameraHealthReason[];
+	detail?: string;
+	dimensions?: StreamHealthDimensions | null;
 }
 
 export interface HealthIssue {

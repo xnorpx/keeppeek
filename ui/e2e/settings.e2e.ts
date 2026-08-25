@@ -398,7 +398,7 @@ test('keeps camera discovery and configuration out of Settings', async ({ page }
 				record_generic_motion_events: false,
 				recording_mode: 'event-boost',
 				event_recording_duration_secs: 60,
-				health: 'online',
+				health: 'healthy',
 				model: 'Test Camera'
 			}
 		],
@@ -411,7 +411,7 @@ test('keeps camera discovery and configuration out of Settings', async ({ page }
 				onvif_port: 80,
 				sources: ['onvif'],
 				configured: true,
-				health: 'online'
+				health: 'healthy'
 			},
 			{
 				ip: '192.0.2.77',
@@ -476,7 +476,7 @@ test('keeps per-camera recording policy out of Settings', async ({ page }) => {
 		record_generic_motion_events: false,
 		recording_mode: 'event-boost' as const,
 		event_recording_duration_secs: 60,
-		health: 'online' as const,
+		health: 'healthy' as const,
 		model: 'Test Camera'
 	};
 	const controls = await mockControlPeer(page, {

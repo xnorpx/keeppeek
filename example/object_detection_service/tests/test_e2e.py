@@ -26,12 +26,11 @@ MODEL = Path(os.environ.get("KEEPPEEK_E2E_MODEL", REPOSITORY_ROOT / "target" / "
 TEST_ACCESS_KEY = "550e8400-e29b-41d4-a716-446655440000"
 SOURCE_ID = "127.0.0.1"
 
-pytestmark = pytest.mark.skipif(
+
+@pytest.mark.skipif(
     os.environ.get("KEEPPEEK_RUN_OBJECT_DETECTION_E2E") != "1",
     reason="set KEEPPEEK_RUN_OBJECT_DETECTION_E2E=1 after building E2E binaries",
 )
-
-
 def test_ultralytics_detection_reaches_local_keeppeek_catalog(tmp_path: Path) -> None:
     executable_suffix = ".exe" if os.name == "nt" else ""
     keeppeek_binary = Path(
@@ -256,20 +255,63 @@ def camera_ingress_metrics(url: str) -> bool:
             metrics = response.read().decode("utf-8")
     except (OSError, urllib.error.URLError):
         return False
-    online = False
+    return camera_ingress_metrics_text(metrics)
+
+
+def camera_ingress_metrics_text(metrics: str) -> bool:
+    transport_connected = False
+    transport_known = False
     ingress = False
     for line in metrics.splitlines():
         if f'camera_id="{SOURCE_ID}"' not in line:
             continue
-        if line.startswith("keeppeek_camera_online{") and metric_value(line) == 1:
-            online = True
+        if 'dimension="transport_connected"' in line:
+            if line.startswith("keeppeek_camera_health_dimension{"):
+                transport_connected = metric_value(line) == 1
+            if line.startswith("keeppeek_camera_health_dimension_known{"):
+                transport_known = metric_value(line) == 1
         if (
             line.startswith("keeppeek_camera_ingress_frames_per_second{")
             and 'stream="video_sub"' in line
             and metric_value(line) > 0
         ):
             ingress = True
-    return online and ingress
+    return transport_connected and transport_known and ingress
+
+
+@pytest.mark.parametrize(
+    ("metrics", "expected"),
+    [
+        (
+            'keeppeek_camera_health_dimension{camera_id="127.0.0.1",'
+            'dimension="transport_connected"} 1\n'
+            'keeppeek_camera_health_dimension_known{camera_id="127.0.0.1",'
+            'dimension="transport_connected"} 1\n'
+            'keeppeek_camera_ingress_frames_per_second{camera_id="127.0.0.1",'
+            'stream="video_sub"} 12.0\n',
+            True,
+        ),
+        (
+            'keeppeek_camera_health_dimension{camera_id="127.0.0.1",'
+            'dimension="transport_connected"} 1\n'
+            'keeppeek_camera_health_dimension_known{camera_id="127.0.0.1",'
+            'dimension="transport_connected"} 0\n'
+            'keeppeek_camera_ingress_frames_per_second{camera_id="127.0.0.1",'
+            'stream="video_sub"} 12.0\n',
+            False,
+        ),
+        (
+            'keeppeek_camera_online{camera_id="127.0.0.1"} 1\n'
+            'keeppeek_camera_ingress_frames_per_second{camera_id="127.0.0.1",'
+            'stream="video_sub"} 12.0\n',
+            False,
+        ),
+    ],
+)
+def test_camera_ingress_metrics_require_canonical_transport_evidence(
+    metrics: str, expected: bool
+) -> None:
+    assert camera_ingress_metrics_text(metrics) is expected
 
 
 def metric_value(line: str) -> float:

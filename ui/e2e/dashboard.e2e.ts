@@ -9,12 +9,11 @@ test('renders the KeepPeek dashboard without configured cameras', async ({ page 
 
 	await expect(page).toHaveTitle('Peek - KeepPeek');
 	await expect(page.getByRole('heading', { name: 'Peek', exact: true })).toBeVisible();
-	await expect(page.getByText('System online', { exact: true })).toBeVisible();
-	await expect(page.getByText('0 cameras', { exact: true })).toBeVisible();
+	await expect(page.getByText('0 configured cameras', { exact: true })).toBeVisible();
 	await expect(page.getByText('No cameras configured.')).toBeVisible();
 });
 
-test('Board 6 renders live, degraded, reconnecting, and offline Paper tile states', async ({
+test('Board 6 renders healthy, degraded, stale, and offline Paper tile states', async ({
 	page
 }) => {
 	const browserErrors: string[] = [];
@@ -26,7 +25,9 @@ test('Board 6 renders live, degraded, reconnecting, and offline Paper tile state
 	await page.goto('/');
 
 	const fleetStatus = page.locator('[data-peek-fleet-status]');
-	await expect(fleetStatus).toContainText('1 / 4 cameras healthy');
+	await expect(fleetStatus).toContainText(
+		'4 configured · 3 connected · 2 fresh · 2 decodable · 1/4 recording'
+	);
 	await expect(fleetStatus.locator('span').first()).toHaveClass(/bg-amber-500/);
 	const runtimeTelemetry = page.locator('[data-peek-runtime-telemetry]');
 	await expect(runtimeTelemetry).toBeVisible();
@@ -36,7 +37,7 @@ test('Board 6 renders live, degraded, reconnecting, and offline Paper tile state
 
 	await expect(page.locator('[data-peek-camera="front-door"]')).toHaveAttribute(
 		'data-peek-camera-state',
-		'live'
+		'healthy'
 	);
 	await expect(page.locator('[data-peek-camera="porch"]')).toHaveAttribute(
 		'data-peek-camera-state',
@@ -44,7 +45,7 @@ test('Board 6 renders live, degraded, reconnecting, and offline Paper tile state
 	);
 	await expect(page.locator('[data-peek-camera="alley"]')).toHaveAttribute(
 		'data-peek-camera-state',
-		'reconnecting'
+		'stale'
 	);
 	await expect(page.locator('[data-peek-camera="back-yard"]')).toHaveAttribute(
 		'data-peek-camera-state',
@@ -52,8 +53,8 @@ test('Board 6 renders live, degraded, reconnecting, and offline Paper tile state
 	);
 	await expect(
 		page.locator('[data-peek-camera="porch"] [data-peek-camera-region="evidence"]')
-	).toContainText('Degraded — 14% frames dropped');
-	await expect(page.getByText('Attempt 3')).toBeVisible();
+	).toContainText('DEGRADED — 14% frames dropped');
+	await expect(page.getByText('Stream health report is stale')).toBeVisible();
 	await expect(page.getByText('Authentication failed')).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Diagnose' })).toBeVisible();
 	await expect(page.locator('[data-peek-camera="front-door"]')).toContainText('REC');
@@ -181,7 +182,7 @@ test('keeps focus visible until the complete Peek wall has a frame', async ({ pa
 	await expect(page.locator('[data-peek-focus="front-door"]')).toBeFocused();
 });
 
-test('names the negotiated first-keyframe wait and degrades it after five seconds', async ({
+test('names the negotiated first-keyframe wait without rewriting server health', async ({
 	page
 }) => {
 	await mockControlPeer(page, {
@@ -219,7 +220,7 @@ test('names the negotiated first-keyframe wait and degrades it after five second
 			cameras: [
 				{
 					id: 'alley',
-					state: 'online',
+					state: 'healthy',
 					lifecycle: 'Connected',
 					last_error: null,
 					streams: []
@@ -235,12 +236,12 @@ test('names the negotiated first-keyframe wait and degrades it after five second
 	await expect(wall).toHaveAttribute('data-peek-wall-state', 'staging');
 	await expect(wall.locator('[data-peek-wall-content]')).toHaveCSS('opacity', '0');
 	await expect(state).toHaveAttribute('data-first-frame-state', 'waiting');
-	await expect(tile).toHaveAttribute('data-peek-camera-state', 'reconnecting');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy');
 	await expect(state).toContainText('Negotiated · waiting for a keyframe');
 	await expect(state).toHaveAttribute('data-first-frame-state', 'late', { timeout: 7_000 });
 	await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
 	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'timeout');
 	await expect(wall.locator('[data-peek-wall-content]')).toHaveCSS('opacity', '1');
-	await expect(tile).toHaveAttribute('data-peek-camera-state', 'degraded');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy');
 	await expect(state).toContainText('No keyframe after');
 });

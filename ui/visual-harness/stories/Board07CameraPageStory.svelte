@@ -78,7 +78,7 @@
 		firmware_version: camera.firmware_version,
 		backend: camera.backend,
 		transport: camera.transport,
-		state: 'online',
+		state: 'healthy',
 		lifecycle: 'Connected',
 		last_error: null,
 		configured_profiles: camera.profiles,

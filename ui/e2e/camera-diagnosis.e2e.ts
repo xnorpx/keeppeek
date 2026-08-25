@@ -34,12 +34,14 @@ test('diagnoses a camera from server evidence without inventing outage history',
 	await expect(page.getByText('192.0.2.83 · Reolink RLC-820A · main')).toBeVisible();
 
 	const diagnosis = page.getByRole('region', {
-		name: 'No stream health report has been received'
+		name: 'Camera transport is disconnected'
 	});
-	await expect(diagnosis).toContainText('Connection refused');
-	await expect(diagnosis).toContainText('No stream report available');
-	await expect(diagnosis).toContainText('Unavailable');
-	await expect(diagnosis).toContainText('Unavailable in health API');
+	await expect(diagnosis).toContainText('Reason transport_disconnected');
+	await expect(diagnosis).toContainText('TRANSPORT');
+	await expect(diagnosis).toContainText('FRAMES');
+	await expect(diagnosis).toContainText('DECODABLE');
+	await expect(diagnosis).toContainText('RECORDING');
+	await expect(diagnosis.getByText('MISSING', { exact: true })).toHaveCount(4);
 
 	await expect(page.getByRole('button', { name: 'Retry now' })).toBeDisabled();
 	await expect(page.getByRole('link', { name: 'Open camera page' })).toHaveAttribute(
@@ -51,8 +53,8 @@ test('diagnoses a camera from server evidence without inventing outage history',
 		'http://192.0.2.83'
 	);
 	await expect(page.getByRole('button', { name: 'Probe unavailable' })).toBeDisabled();
-	await expect(page.getByText('Switch to TCP', { exact: true })).toBeVisible();
-	await expect(page.getByText('Server update required · keeppeek.runtime-config.v1')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Review settings' })).toBeVisible();
+	await expect(page.getByText('Test TCP', { exact: true })).toHaveCount(0);
 	await expect(page.getByRole('link', { name: 'Open logs' })).toHaveAttribute(
 		'href',
 		'/settings/logs'
@@ -62,11 +64,9 @@ test('diagnoses a camera from server evidence without inventing outage history',
 	await expect(summary.getByText('Drops', { exact: true }).locator('..')).toContainText(
 		'Unavailable'
 	);
-	await expect(summary).toContainText('1 camera currently reports online');
-	await expect(summary).toContainText(
-		'1 camera other than this one is degraded, stale, or offline'
-	);
-	await expect(summary).toContainText('Gap start unavailable');
+	await expect(summary).toContainText('1 camera currently is healthy');
+	await expect(summary).toContainText('1 camera other than this one is not healthy');
+	await expect(summary).toContainText('Latest writer progress: Unavailable');
 	await expect(page.getByText('2h 14m', { exact: true })).toHaveCount(0);
 	await expect(page.getByText('27', { exact: true })).toHaveCount(0);
 	await expect(page.locator('input[type="password"]')).toHaveCount(0);
@@ -75,13 +75,13 @@ test('diagnoses a camera from server evidence without inventing outage history',
 
 test('switches an advertised diagnosis transport through WebRTC control', async ({ page }) => {
 	const controls = await mockControlPeer(page, {
-		health,
+		health: diagnosisVisualHealth,
 		capabilityIds: ['keeppeek.runtime-config.v1'],
 		cameraUpdateResult: {
 			camera: {
-				id: 'back-yard',
-				ip: '192.0.2.83',
-				display_name: 'Back Yard',
+				id: 'porch',
+				ip: '192.168.1.59',
+				display_name: 'Porch',
 				manufacturer_override: null,
 				username_configured: true,
 				password_configured: true,
@@ -95,23 +95,25 @@ test('switches an advertised diagnosis transport through WebRTC control', async 
 				record_generic_motion_events: false,
 				recording_mode: 'event-boost',
 				event_recording_duration_secs: 60,
-				health: 'offline',
-				model: 'RLC-820A'
+				health: 'degraded',
+				model: null
 			},
 			restart_required: true
 		}
 	});
-	await page.goto('/system-health/camera/back-yard');
+	await page.goto('/system-health/camera/porch');
 
-	const action = page.getByRole('button', { name: 'Switch to TCP' });
+	const action = page.getByRole('button', { name: 'Test TCP' });
 	await expect(action).toBeEnabled();
 	await action.click();
 
-	await expect(page.getByText('Transport saved. Apply the pending restart')).toBeVisible();
+	await expect(page.getByRole('status')).toContainText(
+		'Transport saved. Apply the pending restart'
+	);
 	await expect(
 		page.getByRole('heading', { name: 'Review transport and ports', exact: true })
 	).toBeVisible();
-	expect(controls.cameraUpdates).toEqual([{ ip: '192.0.2.83', update: { transport: 'tcp' } }]);
+	expect(controls.cameraUpdates).toEqual([{ ip: '192.168.1.59', update: { transport: 'tcp' } }]);
 });
 
 test('renders Board 26 mobile issue evidence without gap or retry history', async ({ page }) => {
@@ -122,10 +124,10 @@ test('renders Board 26 mobile issue evidence without gap or retry history', asyn
 
 	const diagnosis = page.locator('[data-mobile-camera-diagnosis="issue"]');
 	await expect(diagnosis).toBeVisible();
-	await expect(diagnosis).toContainText('Connection refused');
-	await expect(diagnosis).toContainText('RECORDING GAP START UNAVAILABLE');
+	await expect(diagnosis).toContainText('Camera transport is disconnected');
+	await expect(diagnosis).toContainText('transport_disconnected');
 	await expect(diagnosis).toContainText('Latest stream report');
-	await expect(diagnosis).toContainText('Next retry');
+	await expect(diagnosis).toContainText('Recording progress');
 	await expect(diagnosis).toContainText('Unavailable');
 	await expect(diagnosis).toContainText('Credential probe unavailable');
 	await expect(diagnosis).toContainText('Retry unavailable');
@@ -179,7 +181,7 @@ test('renders Board 26 current stream evidence and switches TCP through WebRTC',
 	await expect(diagnosis).toContainText('NO CAUSAL CONFIDENCE');
 	await expect(diagnosis).not.toContainText('LOSS 24H');
 	await expect(diagnosis).not.toContainText('HIGH CONFIDENCE');
-	const action = page.getByRole('button', { name: 'Switch to TCP and test' });
+	const action = page.getByRole('button', { name: 'Test TCP transport' });
 	await expect(action).toBeEnabled();
 	await action.click();
 	await expect(diagnosis).toContainText('Transport saved. Apply the pending restart');

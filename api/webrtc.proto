@@ -1631,13 +1631,14 @@ message ServerHealthSnapshot {
   WebRtcHealthSnapshot webrtc = 8;
   repeated CameraHealthSnapshot cameras = 9;
   repeated HealthIssueSnapshot issues = 10;
+  uint32 health_contract_version = 11;
 }
 
 message HealthTotalsSnapshot {
   uint64 configured_cameras = 1;
-  uint64 reporting_cameras = 2;
+  reserved 2;
   uint64 configured_video_streams = 3;
-  uint64 reporting_video_streams = 4;
+  reserved 4;
   double ingress_fps = 5;
   uint64 ingress_bitrate_bps = 6;
   uint64 frames = 7;
@@ -1645,6 +1646,17 @@ message HealthTotalsSnapshot {
   uint64 drops = 9;
   uint64 errors = 10;
   uint64 reconnects = 11;
+  uint64 connected_cameras = 12;
+  uint64 fresh_cameras = 13;
+  uint64 decodable_cameras = 14;
+  uint64 recording_cameras = 15;
+  uint64 unknown_cameras = 16;
+  uint64 connected_video_streams = 17;
+  uint64 fresh_video_streams = 18;
+  uint64 decodable_video_streams = 19;
+  uint64 recording_video_streams = 20;
+  uint64 recording_requested_cameras = 21;
+  uint64 recording_requested_video_streams = 22;
 }
 
 message CameraHealthSnapshot {
@@ -1661,6 +1673,46 @@ message CameraHealthSnapshot {
   optional string last_error = 11;
   repeated HealthProfileSummary configured_profiles = 12;
   repeated StreamHealthSnapshot streams = 13;
+  string reason = 14;
+  repeated string reason_codes = 15;
+  string detail = 16;
+  CameraHealthDimensionsSnapshot dimensions = 17;
+}
+
+message CameraHealthDimensionsSnapshot {
+  bool configured = 1;
+  bool expected = 2;
+  uint64 configured_video_streams = 3;
+  optional uint64 connected_video_streams = 4;
+  uint64 reporting_video_streams = 5;
+  uint64 fresh_video_streams = 6;
+  uint64 decodable_video_streams = 7;
+  repeated string configured_video_stream_ids = 8;
+  repeated string connected_video_stream_ids = 9;
+  bool connected_video_stream_ids_known = 10;
+  repeated string reporting_video_stream_ids = 11;
+  repeated string fresh_video_stream_ids = 12;
+  repeated string decodable_video_stream_ids = 13;
+  optional bool transport_connected = 14;
+  optional uint64 latest_report_at_ms = 15;
+  optional uint64 report_age_ms = 16;
+  optional bool frames_fresh = 17;
+  optional bool decodable = 18;
+  uint64 recent_reconnects = 19;
+  uint64 recent_drops = 20;
+  uint64 recent_errors = 21;
+  bool recording_requested = 22;
+  uint64 recording_video_streams = 23;
+  uint64 recording_streams_progressing = 24;
+  repeated string recording_video_stream_ids = 25;
+  repeated string recording_progressing_stream_ids = 26;
+  optional bool recording_progressing = 27;
+  optional uint64 recording_progress_age_ms = 28;
+  bool battery_configured = 29;
+  optional bool battery_registered = 30;
+  optional uint64 battery_last_seen_age_ms = 31;
+  optional bool battery_sleeping = 32;
+  optional uint64 battery_wake_pending_age_ms = 33;
 }
 
 message HealthProfileSummary {
@@ -1704,6 +1756,35 @@ message StreamHealthSnapshot {
   optional uint64 errors = 20;
   uint64 updated_at_ms = 21;
   uint64 report_age_ms = 22;
+  optional uint64 frame_updated_at_ms = 23;
+  optional uint64 frame_age_ms = 24;
+  optional uint64 keyframe_updated_at_ms = 25;
+  optional uint64 keyframe_age_ms = 26;
+  uint64 recent_reconnects = 27;
+  uint64 recent_drops = 28;
+  uint64 recent_errors = 29;
+  string state = 30;
+  string reason = 31;
+  repeated string reason_codes = 32;
+  string detail = 33;
+  StreamHealthDimensionsSnapshot dimensions = 34;
+}
+
+message StreamHealthDimensionsSnapshot {
+  bool expected = 1;
+  optional bool transport_connected = 2;
+  bool report_fresh = 3;
+  uint64 report_freshness_threshold_ms = 4;
+  bool frames_fresh = 5;
+  uint64 frame_freshness_threshold_ms = 6;
+  bool decodable = 7;
+  uint64 keyframe_freshness_threshold_ms = 8;
+  uint64 recent_reconnects = 9;
+  uint64 recent_drops = 10;
+  uint64 recent_errors = 11;
+  bool recording_requested = 12;
+  optional bool recording_progressing = 13;
+  optional uint64 recording_progress_age_ms = 14;
 }
 
 message HealthIssueSnapshot {

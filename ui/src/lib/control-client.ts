@@ -118,7 +118,16 @@ import type {
 	CameraTransport
 } from './types';
 import type { SanitizedConfig, SettingsConfigUpdate, SettingsConfigUpdateResponse } from './types';
-import type { CameraHealth, ProfileSummary, ServerHealthResponse, StreamHealth } from './types';
+import type {
+	CameraHealth,
+	CameraHealthDimensions,
+	CameraHealthReason,
+	CameraHealthState,
+	ProfileSummary,
+	ServerHealthResponse,
+	StreamHealth,
+	StreamHealthDimensions
+} from './types';
 import type { StorageWriteProbe } from './first-run';
 
 const controlTimeoutMs = 10_000;
@@ -3132,6 +3141,9 @@ function runtimeConfiguration(config: SanitizedRuntimeConfiguration): SanitizedC
 }
 
 function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
+	if (health.healthContractVersion < 1) {
+		throw new Error(`Server returned unsupported health contract ${health.healthContractVersion}.`);
+	}
 	const { totals, system, storage, webrtc } = health;
 	if (!totals || !system || !storage || !webrtc) {
 		throw new Error('Server returned incomplete health evidence.');
@@ -3143,14 +3155,24 @@ function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
 	}
 	return {
 		status: health.status === 'healthy' ? 'healthy' : 'degraded',
+		health_contract_version: health.healthContractVersion,
 		generated_at_ms: numeric(health.generatedAtMs),
 		uptime_seconds: numeric(health.uptimeSeconds),
 		version: health.version,
 		totals: {
 			configured_cameras: numeric(totals.configuredCameras),
-			reporting_cameras: numeric(totals.reportingCameras),
+			connected_cameras: numeric(totals.connectedCameras),
+			fresh_cameras: numeric(totals.freshCameras),
+			decodable_cameras: numeric(totals.decodableCameras),
+			recording_requested_cameras: numeric(totals.recordingRequestedCameras),
+			recording_cameras: numeric(totals.recordingCameras),
+			unknown_cameras: numeric(totals.unknownCameras),
 			configured_video_streams: numeric(totals.configuredVideoStreams),
-			reporting_video_streams: numeric(totals.reportingVideoStreams),
+			connected_video_streams: numeric(totals.connectedVideoStreams),
+			fresh_video_streams: numeric(totals.freshVideoStreams),
+			decodable_video_streams: numeric(totals.decodableVideoStreams),
+			recording_requested_video_streams: numeric(totals.recordingRequestedVideoStreams),
+			recording_video_streams: numeric(totals.recordingVideoStreams),
 			ingress_fps: totals.ingressFps,
 			ingress_bitrate_bps: numeric(totals.ingressBitrateBps),
 			frames: numeric(totals.frames),
@@ -3329,6 +3351,8 @@ function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
 }
 
 function cameraHealth(camera: ServerHealthSnapshot['cameras'][number]): CameraHealth {
+	const state = canonicalCameraHealthState(camera.state);
+	const reason = canonicalCameraHealthReason(camera.reason);
 	return {
 		id: camera.id,
 		ip: camera.ip,
@@ -3338,11 +3362,59 @@ function cameraHealth(camera: ServerHealthSnapshot['cameras'][number]): CameraHe
 		firmware_version: camera.firmwareVersion ?? null,
 		backend: camera.backend,
 		transport: camera.transport,
-		state: camera.state as CameraHealth['state'],
+		state,
+		reason,
+		reason_codes:
+			camera.reasonCodes.length > 0
+				? camera.reasonCodes.map(canonicalCameraHealthReason)
+				: [reason],
+		detail: camera.detail || camera.lastError || fallbackHealthDetail(state),
+		dimensions: camera.dimensions ? cameraHealthDimensions(camera.dimensions) : null,
 		lifecycle: camera.lifecycle ?? null,
 		last_error: camera.lastError ?? null,
 		configured_profiles: camera.configuredProfiles.map(healthProfile),
 		streams: camera.streams.map(streamHealth)
+	};
+}
+
+function cameraHealthDimensions(
+	dimensions: NonNullable<ServerHealthSnapshot['cameras'][number]['dimensions']>
+): CameraHealthDimensions {
+	return {
+		configured: dimensions.configured,
+		expected: dimensions.expected,
+		configured_video_streams: numeric(dimensions.configuredVideoStreams),
+		connected_video_streams: optionalNumber(dimensions.connectedVideoStreams),
+		reporting_video_streams: numeric(dimensions.reportingVideoStreams),
+		fresh_video_streams: numeric(dimensions.freshVideoStreams),
+		decodable_video_streams: numeric(dimensions.decodableVideoStreams),
+		configured_video_stream_ids: dimensions.configuredVideoStreamIds,
+		connected_video_stream_ids: dimensions.connectedVideoStreamIdsKnown
+			? dimensions.connectedVideoStreamIds
+			: null,
+		reporting_video_stream_ids: dimensions.reportingVideoStreamIds,
+		fresh_video_stream_ids: dimensions.freshVideoStreamIds,
+		decodable_video_stream_ids: dimensions.decodableVideoStreamIds,
+		transport_connected: dimensions.transportConnected ?? null,
+		latest_report_at_ms: optionalNumber(dimensions.latestReportAtMs),
+		report_age_ms: optionalNumber(dimensions.reportAgeMs),
+		frames_fresh: dimensions.framesFresh ?? null,
+		decodable: dimensions.decodable ?? null,
+		recent_reconnects: numeric(dimensions.recentReconnects),
+		recent_drops: numeric(dimensions.recentDrops),
+		recent_errors: numeric(dimensions.recentErrors),
+		recording_requested: dimensions.recordingRequested,
+		recording_video_streams: numeric(dimensions.recordingVideoStreams),
+		recording_streams_progressing: numeric(dimensions.recordingStreamsProgressing),
+		recording_video_stream_ids: dimensions.recordingVideoStreamIds,
+		recording_progressing_stream_ids: dimensions.recordingProgressingStreamIds,
+		recording_progressing: dimensions.recordingProgressing ?? null,
+		recording_progress_age_ms: optionalNumber(dimensions.recordingProgressAgeMs),
+		battery_configured: dimensions.batteryConfigured,
+		battery_registered: dimensions.batteryRegistered ?? null,
+		battery_last_seen_age_ms: optionalNumber(dimensions.batteryLastSeenAgeMs),
+		battery_wake_pending_age_ms: optionalNumber(dimensions.batteryWakePendingAgeMs),
+		battery_sleeping: dimensions.batterySleeping ?? null
 	};
 }
 
@@ -3369,6 +3441,8 @@ function healthProfile(profile: HealthProfileSummary): ProfileSummary {
 function streamHealth(
 	stream: ServerHealthSnapshot['cameras'][number]['streams'][number]
 ): StreamHealth {
+	const state = canonicalCameraHealthState(stream.state);
+	const reason = canonicalCameraHealthReason(stream.reason);
 	return {
 		type: stream.type,
 		codec: stream.codec,
@@ -3391,8 +3465,96 @@ function streamHealth(
 		drops: optionalUndefinedNumber(stream.drops),
 		errors: optionalUndefinedNumber(stream.errors),
 		updated_at_ms: numeric(stream.updatedAtMs),
-		report_age_ms: numeric(stream.reportAgeMs)
+		report_age_ms: numeric(stream.reportAgeMs),
+		frame_updated_at_ms: optionalNumber(stream.frameUpdatedAtMs),
+		frame_age_ms: optionalNumber(stream.frameAgeMs),
+		keyframe_updated_at_ms: optionalNumber(stream.keyframeUpdatedAtMs),
+		keyframe_age_ms: optionalNumber(stream.keyframeAgeMs),
+		recent_reconnects: numeric(stream.recentReconnects),
+		recent_drops: numeric(stream.recentDrops),
+		recent_errors: numeric(stream.recentErrors),
+		state,
+		reason,
+		reason_codes:
+			stream.reasonCodes.length > 0
+				? stream.reasonCodes.map(canonicalCameraHealthReason)
+				: [reason],
+		detail: stream.detail || fallbackHealthDetail(state),
+		dimensions: stream.dimensions ? streamHealthDimensions(stream.dimensions) : null
 	};
+}
+
+function streamHealthDimensions(
+	dimensions: NonNullable<ServerHealthSnapshot['cameras'][number]['streams'][number]['dimensions']>
+): StreamHealthDimensions {
+	return {
+		expected: dimensions.expected,
+		transport_connected: dimensions.transportConnected ?? null,
+		report_fresh: dimensions.reportFresh,
+		report_freshness_threshold_ms: numeric(dimensions.reportFreshnessThresholdMs),
+		frames_fresh: dimensions.framesFresh,
+		frame_freshness_threshold_ms: numeric(dimensions.frameFreshnessThresholdMs),
+		decodable: dimensions.decodable,
+		keyframe_freshness_threshold_ms: numeric(dimensions.keyframeFreshnessThresholdMs),
+		recent_reconnects: numeric(dimensions.recentReconnects),
+		recent_drops: numeric(dimensions.recentDrops),
+		recent_errors: numeric(dimensions.recentErrors),
+		recording_requested: dimensions.recordingRequested,
+		recording_progressing: dimensions.recordingProgressing ?? null,
+		recording_progress_age_ms: optionalNumber(dimensions.recordingProgressAgeMs)
+	};
+}
+
+function canonicalCameraHealthState(value: string): CameraHealthState {
+	if (
+		value === 'starting' ||
+		value === 'healthy' ||
+		value === 'degraded' ||
+		value === 'stale' ||
+		value === 'reconnecting' ||
+		value === 'offline' ||
+		value === 'stopped' ||
+		value === 'unknown'
+	) {
+		return value;
+	}
+	return 'unknown';
+}
+
+function canonicalCameraHealthReason(value: string): CameraHealthReason {
+	if (
+		value === 'healthy' ||
+		value === 'starting' ||
+		value === 'not_expected' ||
+		value === 'battery_sleeping' ||
+		value === 'evidence_unavailable' ||
+		value === 'transport_disconnected' ||
+		value === 'transport_reconnecting' ||
+		value === 'transport_partially_connected' ||
+		value === 'no_stream_report' ||
+		value === 'stream_report_stale' ||
+		value === 'frames_not_arriving' ||
+		value === 'frames_below_expected' ||
+		value === 'keyframes_missing' ||
+		value === 'ingress_reconnects' ||
+		value === 'ingress_drops' ||
+		value === 'ingress_errors' ||
+		value === 'recording_not_progressing'
+	) {
+		return value;
+	}
+	return 'unknown';
+}
+
+function fallbackHealthDetail(state: CameraHealthState): string {
+	if (state === 'healthy') return 'Camera evidence is current';
+	if (state === 'starting') return 'Waiting for initial camera evidence';
+	if (state === 'stale') return 'Camera media evidence is stale';
+	if (state === 'reconnecting') return 'Camera transport is reconnecting';
+	if (state === 'offline') return 'Camera transport is offline';
+	if (state === 'stopped') return 'Camera media is not expected';
+	if (state === 'degraded') return 'Camera health is degraded';
+	return 'Camera health evidence is unavailable';
 }
 
 function healthStream(value: string): 'main' | 'sub' {

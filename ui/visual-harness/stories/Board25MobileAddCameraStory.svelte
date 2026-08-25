@@ -89,7 +89,7 @@
 			onvif_port: 8000,
 			sources: [],
 			configured: true,
-			health: 'online'
+			health: 'healthy'
 		}
 	];
 

@@ -162,6 +162,8 @@ mod tests {
         CameraStatus {
             id: CameraId::new(id),
             lifecycle,
+            expected_streams: Vec::new(),
+            connected_streams: Vec::new(),
             last_error: None,
         }
     }

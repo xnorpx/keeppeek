@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { useControlClient } from '$lib/control-context';
-	import { rankHealthFindings, reconcileServerHealth } from '$lib/health-presentation';
+	import { rankHealthFindings } from '$lib/health-presentation';
 	import HealthPriorityCard from '$lib/components/HealthPriorityCard.svelte';
 	import MobileHealthOverview from '$lib/components/MobileHealthOverview.svelte';
 	import { useLivePeer } from '$lib/stream-peer-context';
@@ -131,7 +131,7 @@
 		try {
 			const next = await controlClient.getHealth();
 			if (version !== requestVersion) return;
-			health = reconcileServerHealth(next);
+			health = next;
 			error = null;
 		} catch (cause) {
 			if (version !== requestVersion) return;
@@ -317,10 +317,23 @@
 	}
 
 	function stateColor(state: CameraHealth['state']): string {
-		if (state === 'online') return 'bg-emerald-500';
+		if (state === 'healthy') return 'bg-emerald-500';
 		if (state === 'starting') return 'bg-sky-500';
-		if (state === 'degraded' || state === 'stale') return 'bg-amber-500';
-		return 'bg-red-500';
+		if (state === 'degraded' || state === 'stale' || state === 'reconnecting') {
+			return 'bg-amber-500';
+		}
+		if (state === 'offline') return 'bg-red-500';
+		return 'bg-muted-foreground';
+	}
+
+	function healthRatio(value: number | undefined, total: number): string {
+		return `${value ?? '—'} / ${total}`;
+	}
+
+	function evidenceLabel(value: boolean | null | undefined): string {
+		if (value === true) return 'Current';
+		if (value === false) return 'Missing';
+		return 'Unknown';
 	}
 
 	function diskFreePercent(disk: DiskHealth | null): number {
@@ -729,14 +742,31 @@
 						</div>
 					</section>
 
+					<section
+						class="grid grid-cols-2 divide-x divide-y border-y md:grid-cols-5"
+						aria-label="Camera health dimensions"
+					>
+						{#each [['Configured', `${health.totals.configured_cameras}`, `${health.totals.configured_video_streams} expected streams`], ['Connected', healthRatio(health.totals.connected_cameras, health.totals.configured_cameras), `${health.totals.connected_video_streams ?? '—'} connected streams`], ['Fresh', healthRatio(health.totals.fresh_cameras, health.totals.configured_cameras), `${health.totals.fresh_video_streams ?? '—'} streams with current frames`], ['Decodable', healthRatio(health.totals.decodable_cameras, health.totals.configured_cameras), `${health.totals.decodable_video_streams ?? '—'} streams with recent keyframes`], ['Recording', healthRatio(health.totals.recording_cameras, health.totals.recording_requested_cameras ?? 0), `${health.totals.recording_video_streams ?? '—'} of ${health.totals.recording_requested_video_streams ?? '—'} requested streams progressing`]] as dimension (dimension[0])}
+							<div class="min-w-0 p-3" data-health-dimension={dimension[0]}>
+								<p class="text-[10px] font-semibold text-muted-foreground uppercase">
+									{dimension[0]}
+								</p>
+								<p class="mt-1 text-lg font-semibold tabular-nums">{dimension[1]}</p>
+								<p class="truncate text-[11px] text-muted-foreground">{dimension[2]}</p>
+							</div>
+						{/each}
+					</section>
+
 					<section aria-labelledby="streams-heading">
 						<div class="mb-2 flex flex-wrap items-end justify-between gap-2">
 							<div>
 								<h2 id="streams-heading" class="text-sm font-semibold">Camera streams</h2>
 								<p class="text-[11px] text-muted-foreground">
-									{health.totals.reporting_cameras} of {health.totals.configured_cameras} cameras ·
-									{health.totals.reporting_video_streams} of {health.totals
-										.configured_video_streams} streams reporting
+									{health.totals.connected_cameras ?? '—'} connected · {health.totals
+										.fresh_cameras ?? '—'} fresh ·
+									{health.totals.decodable_cameras ?? '—'} decodable · {health.totals
+										.recording_cameras ?? '—'} of
+									{health.totals.recording_requested_cameras ?? '—'} recording
 								</p>
 							</div>
 							<div class="flex gap-3 font-mono text-[10px] text-muted-foreground">
@@ -797,7 +827,8 @@
 													>{camera.backend ?? '—'} / {(camera.transport ?? '—').toUpperCase()}</td
 												>
 												<td class="px-3 py-3 text-muted-foreground" colspan="8"
-													>Waiting for stream metrics</td
+													>{camera.detail ?? camera.reason ?? 'Health evidence unavailable'} · Transport
+													{evidenceLabel(camera.dimensions?.transport_connected)}</td
 												>
 											</tr>
 										{:else}
@@ -824,13 +855,16 @@
 																<!-- eslint-enable svelte/no-navigation-without-resolve -->
 															</div>
 															<p class="mt-0.5 font-mono text-[9px] text-muted-foreground">
-																{camera.ip} · {camera.model ?? 'Unknown model'}
+																{camera.ip} · {camera.reason ?? 'evidence unavailable'}
 															</p>
 														{/if}
 													</td>
 													<td class="px-3 py-2.5 align-top font-medium">{streamLabel(stream)}</td>
 													<td class="px-3 py-2.5 align-top font-mono uppercase">
 														{camera.backend ?? '—'} / {camera.transport ?? '—'}
+														<p class="text-[9px] text-muted-foreground normal-case">
+															{evidenceLabel(stream.dimensions?.transport_connected)}
+														</p>
 													</td>
 													<td class="px-3 py-2.5 align-top"
 														><span class="font-mono uppercase">{stream.codec ?? '—'}</span>
@@ -852,6 +886,9 @@
 																style={`width: ${streamUtilization(stream)}%`}
 															></div>
 														</div>
+														<p class="mt-1 text-[9px] text-muted-foreground">
+															Frames {evidenceLabel(stream.dimensions?.frames_fresh)}
+														</p>
 													</td>
 													<td class="px-3 py-2.5 align-top font-mono"
 														>{formatBitrate((stream.kbps ?? 0) * 1_000)}
@@ -868,6 +905,9 @@
 															{compactFormatter.format(stream.frames ?? 0)} frames · {formatBytes(
 																stream.bytes
 															)}
+														</p>
+														<p class="text-[9px] text-muted-foreground">
+															Decodable {evidenceLabel(stream.dimensions?.decodable)}
 														</p></td
 													>
 													<td class="px-3 py-2.5 align-top font-mono"
@@ -908,7 +948,12 @@
 														>{compactFormatter.format(stream.reconnects ?? 0)}</td
 													>
 													<td class="px-3 py-2.5 align-top font-mono text-muted-foreground"
-														>{formatAge(stream.report_age_ms)}</td
+														>{formatAge(stream.report_age_ms)}
+														<p class="text-[9px]">
+															Recording {stream.dimensions?.recording_requested === false
+																? 'Not requested'
+																: evidenceLabel(stream.dimensions?.recording_progressing)}
+														</p></td
 													>
 												</tr>
 											{/each}

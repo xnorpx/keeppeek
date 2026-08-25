@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CameraHealth, CameraListItem } from './types';
+import type { CameraHealth, CameraHealthDimensions, CameraListItem } from './types';
 import { presentCameraFleetRow } from './camera-fleet';
 
 const camera: CameraListItem = {
@@ -32,7 +32,10 @@ const camera: CameraListItem = {
 	]
 };
 
-function health(state: CameraHealth['state']): CameraHealth {
+function health(
+	state: CameraHealth['state'],
+	recordingProgressing: boolean | null = true
+): CameraHealth {
 	return {
 		id: camera.id,
 		ip: camera.ip,
@@ -43,6 +46,11 @@ function health(state: CameraHealth['state']): CameraHealth {
 		backend: 'Reolink',
 		transport: 'Baichuan · TCP',
 		state,
+		detail: state === 'degraded' ? 'Packet loss' : undefined,
+		dimensions: {
+			recording_requested: true,
+			recording_progressing: recordingProgressing
+		} as CameraHealthDimensions,
 		lifecycle: 'Connected',
 		last_error: state === 'degraded' ? 'Packet loss' : null,
 		configured_profiles: camera.profiles,
@@ -62,24 +70,31 @@ function health(state: CameraHealth['state']): CameraHealth {
 
 describe('camera fleet presentation', () => {
 	it('publishes only measured transport, stream, and throughput values', () => {
-		expect(presentCameraFleetRow(camera, health('online'))).toEqual({
-			state: 'live',
-			statusDetail: 'ONLINE',
+		expect(presentCameraFleetRow(camera, health('healthy'))).toEqual({
+			state: 'healthy',
+			statusDetail: 'HEALTHY',
 			transport: 'Reolink',
 			transportDetail: 'Baichuan · TCP',
 			streams: ['MAIN 3840X2160 H265'],
-			recording: 'Continuous',
+			recording: 'Progressing',
 			recordingState: 'healthy',
 			throughput: '18.4 Mb/s',
 			gbPerDay: '198.7'
 		});
 	});
 
-	it('surfaces degraded evidence and recording gaps', () => {
+	it('keeps degraded media separate from healthy recording progress', () => {
 		const presentation = presentCameraFleetRow(camera, health('degraded'));
 
 		expect(presentation.statusDetail).toBe('DEGRADED · Packet loss');
-		expect(presentation.recording).toBe('Gaps reported');
+		expect(presentation.recording).toBe('Progressing');
+		expect(presentation.recordingState).toBe('healthy');
+	});
+
+	it('surfaces requested recording without writer progress', () => {
+		const presentation = presentCameraFleetRow(camera, health('degraded', false));
+
+		expect(presentation.recording).toBe('Not progressing');
 		expect(presentation.recordingState).toBe('degraded');
 	});
 
@@ -88,7 +103,7 @@ describe('camera fleet presentation', () => {
 			...camera,
 			profiles: [{ ...camera.profiles[0], encoding: 'h264' }]
 		};
-		const measured = health('online');
+		const measured = health('healthy');
 		measured.streams = [
 			{
 				type: 'video_main',
@@ -110,7 +125,7 @@ describe('camera fleet presentation', () => {
 		const presentation = presentCameraFleetRow(camera, null);
 
 		expect(presentation).toMatchObject({
-			state: 'reconnecting',
+			state: 'unknown',
 			throughput: null,
 			gbPerDay: null
 		});

@@ -6,14 +6,24 @@
 
 	const health = {
 		status: 'degraded',
+		health_contract_version: 1,
 		generated_at_ms: Date.parse('2026-08-18T06:00:00Z'),
 		uptime_seconds: 76_400,
 		version: '0.4.1',
 		totals: {
 			configured_cameras: 42,
-			reporting_cameras: 41,
+			connected_cameras: 41,
+			fresh_cameras: 41,
+			decodable_cameras: 41,
+			recording_cameras: 41,
+			recording_requested_cameras: 42,
+			unknown_cameras: 0,
 			configured_video_streams: 84,
-			reporting_video_streams: 82,
+			connected_video_streams: 82,
+			fresh_video_streams: 82,
+			decodable_video_streams: 82,
+			recording_video_streams: 82,
+			recording_requested_video_streams: 84,
 			ingress_fps: 615,
 			ingress_bitrate_bps: 318_000_000,
 			frames: 18_400_000,
@@ -120,8 +130,11 @@
 				backend: 'retina',
 				transport: 'udp',
 				state: 'offline',
+				reason: 'transport_disconnected',
+				reason_codes: ['transport_disconnected'],
+				detail: 'Camera transport is disconnected',
 				lifecycle: 'reconnecting',
-				last_error: 'Connection refused since 04:23. The recorder itself is healthy.',
+				last_error: 'Camera transport is disconnected. Recording is not progressing.',
 				configured_profiles: [],
 				streams: [
 					{
@@ -142,6 +155,9 @@
 				backend: 'retina',
 				transport: 'udp',
 				state: 'degraded',
+				reason: 'ingress_drops',
+				reason_codes: ['ingress_drops'],
+				detail: 'Recent ingress frames were dropped',
 				lifecycle: 'running',
 				last_error: 'Switching to TCP usually fixes it',
 				configured_profiles: [],
@@ -157,7 +173,7 @@
 			}
 		],
 		issues: [
-			{ severity: 'critical', scope: 'Back Yard', message: 'has recorded nothing for 2h 14m' },
+			{ severity: 'critical', scope: 'Back Yard', message: 'transport is disconnected' },
 			{ severity: 'warning', scope: 'Porch', message: 'dropping frames' },
 			{ severity: 'warning', scope: 'Projected in 3 days', message: 'Retention below 7 days soon' },
 			{ severity: 'info', scope: 'runtime', message: 'A server update is available' }
