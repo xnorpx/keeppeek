@@ -616,6 +616,7 @@ pub fn load_secrets(config_path: &Path) -> anyhow::Result<Secrets> {
     if !path.exists() {
         return Ok(Secrets::default());
     }
+    #[cfg(unix)]
     make_file_owner_only(&path)?;
     let text = std::fs::read_to_string(&path)?;
     let secrets = toml::from_str(&text).map_err(|_| {
@@ -628,13 +629,10 @@ pub fn load_secrets(config_path: &Path) -> anyhow::Result<Secrets> {
     Ok(secrets)
 }
 
+#[cfg(unix)]
 fn make_file_owner_only(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 fn ensure_secrets_file(config_path: &Path) -> anyhow::Result<Secrets> {
