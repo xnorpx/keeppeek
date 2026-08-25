@@ -246,6 +246,14 @@ export type StoredMediaKeyFramePreview = EncodedEventKeyframe & {
 	configurationRevision: bigint;
 };
 
+export type StoredMediaStartupPhase = 'metadata' | 'initialization' | 'first-fragment';
+
+export type StoredMediaStartupEvent = {
+	phase: StoredMediaStartupPhase;
+	generation: bigint;
+	contentType: string;
+};
+
 export type StoredTimelineRange = {
 	sourceId: string;
 	streamId: string;
@@ -668,7 +676,10 @@ export class ControlClient {
 		playing: boolean;
 		playbackRate: number;
 		mode?: 'scrub' | 'playback';
+		signal?: AbortSignal;
+		openTimeoutMs?: number;
 	}): Promise<StoredMediaPlayback> {
+		options.signal?.throwIfAborted();
 		const storedMediaId = `review-${this.#nextStoredId++}`;
 		const playback = new StoredMediaPlayback(
 			storedMediaId,
@@ -701,7 +712,11 @@ export class ControlClient {
 					})
 				}
 			});
-			const result = await this.request({ case: 'storedMediaCommand', value: command });
+			const result = await this.request(
+				{ case: 'storedMediaCommand', value: command },
+				options.openTimeoutMs ?? 4_000,
+				options.signal
+			);
 			if (result.case !== 'storedMediaState') {
 				throw new Error('Server returned an unexpected stored media response.');
 			}
@@ -710,6 +725,9 @@ export class ControlClient {
 		} catch (error) {
 			this.#playbacks.delete(storedMediaId);
 			playback.dispose();
+			if (options.signal?.aborted) {
+				void this.closeStoredMedia(storedMediaId).catch(() => undefined);
+			}
 			throw error;
 		}
 	}
@@ -1566,8 +1584,14 @@ export class ControlClient {
 		}
 	}
 
-	private async request(command: Request['command'], timeoutMs = controlTimeoutMs) {
+	private async request(
+		command: Request['command'],
+		timeoutMs = controlTimeoutMs,
+		signal?: AbortSignal
+	) {
+		signal?.throwIfAborted();
 		await this.connect();
+		signal?.throwIfAborted();
 		const channel = this.#controlChannel;
 		if (!channel || channel.readyState !== 'open') {
 			throw new Error('WebRTC control channel is unavailable.');
@@ -1581,17 +1605,29 @@ export class ControlClient {
 			}, timeoutMs);
 			this.#pending.set(requestId, { resolve, reject, timeout });
 		});
+		const abort = () => {
+			const pending = this.#pending.get(requestId);
+			if (!pending) return;
+			clearTimeout(pending.timeout);
+			this.#pending.delete(requestId);
+			pending.reject(timelineAbortError());
+		};
+		signal?.addEventListener('abort', abort, { once: true });
 		const envelope = create(ControlEnvelopeSchema, {
 			message: {
 				case: 'request',
 				value: create(RequestSchema, { requestId, command })
 			}
 		});
-		channel.send(toBinary(ControlEnvelopeSchema, envelope));
-		const reply = await response;
-		if (reply.result.case === 'error') throw new Error(reply.result.value.message);
-		if (reply.result.case !== 'ok') throw new Error('Server returned an empty control response.');
-		return reply.result.value.result;
+		try {
+			channel.send(toBinary(ControlEnvelopeSchema, envelope));
+			const reply = await response;
+			if (reply.result.case === 'error') throw new Error(reply.result.value.message);
+			if (reply.result.case !== 'ok') throw new Error('Server returned an empty control response.');
+			return reply.result.value.result;
+		} finally {
+			signal?.removeEventListener('abort', abort);
+		}
 	}
 
 	private async loggingRequest(command: ReturnType<typeof create<typeof LoggingCommandSchema>>) {
@@ -2183,6 +2219,7 @@ export class StoredMediaPlayback {
 	error: string | null = null;
 
 	#mediaSource: MediaSource;
+	#objectUrls = new Set<string>();
 	#sourceBuffer: SourceBuffer | null = null;
 	#contentType: string | null = null;
 	#sourceBufferContentType: string | null = null;
@@ -2215,6 +2252,9 @@ export class StoredMediaPlayback {
 	#blockedGeneration: bigint | null = null;
 	#keyFrameChunks = new Map<string, StoredKeyFrameAccumulator>();
 	#keyFrameListeners = new Set<(preview: StoredMediaKeyFramePreview) => void>();
+	#errorListeners = new Set<(message: string) => void>();
+	#startupListeners = new Set<(event: StoredMediaStartupEvent) => void>();
+	#startupEvents: StoredMediaStartupEvent[] = [];
 	#latestKeyFrame: StoredMediaKeyFramePreview | null = null;
 	#firstFragmentGenerations = new Set<bigint>();
 
@@ -2240,7 +2280,12 @@ export class StoredMediaPlayback {
 		this.#close = close;
 		this.#mediaSource = new MediaSource();
 		this.url = URL.createObjectURL(this.#mediaSource);
+		this.#objectUrls.add(this.url);
 		this.listenForSourceOpen();
+	}
+
+	get contentType(): string | null {
+		return this.#contentType;
 	}
 
 	configure(state: StoredMediaState): void {
@@ -2254,6 +2299,7 @@ export class StoredMediaPlayback {
 		this.#generation = state.generation;
 		this.#mode = state.mode as StoredMediaMode;
 		this.#contentType = state.delivery.contentType;
+		this.reportStartup('metadata', state.delivery.contentType);
 		this.anchorTimeMs = timestampDate(state.fragmentTime).getTime();
 		this.#maxBufferMs = state.delivery.maxBufferDuration
 			? protoDurationMs(state.delivery.maxBufferDuration)
@@ -2320,6 +2366,18 @@ export class StoredMediaPlayback {
 		this.#keyFrameListeners.add(listener);
 		if (this.#latestKeyFrame) listener(this.#latestKeyFrame);
 		return () => this.#keyFrameListeners.delete(listener);
+	}
+
+	onError(listener: (message: string) => void): () => void {
+		this.#errorListeners.add(listener);
+		if (this.error) listener(this.error);
+		return () => this.#errorListeners.delete(listener);
+	}
+
+	onStartup(listener: (event: StoredMediaStartupEvent) => void): () => void {
+		this.#startupListeners.add(listener);
+		for (const event of this.#startupEvents) listener(event);
+		return () => this.#startupListeners.delete(listener);
 	}
 
 	async enterScrub(): Promise<void> {
@@ -2528,7 +2586,9 @@ export class StoredMediaPlayback {
 	}
 
 	fail(message: string): void {
+		if (this.error === message) return;
 		this.error = message;
+		for (const listener of this.#errorListeners) listener(message);
 	}
 
 	dispose(): void {
@@ -2537,6 +2597,9 @@ export class StoredMediaPlayback {
 		this.#chunks.clear();
 		this.#keyFrameChunks.clear();
 		this.#keyFrameListeners.clear();
+		this.#errorListeners.clear();
+		this.#startupListeners.clear();
+		this.#startupEvents = [];
 		this.#latestKeyFrame = null;
 		this.#firstFragmentGenerations.clear();
 		this.#completed = [];
@@ -2549,7 +2612,8 @@ export class StoredMediaPlayback {
 		this.#currentSeek?.reject(closedError);
 		this.#pendingSeek = null;
 		this.#currentSeek = null;
-		URL.revokeObjectURL(this.url);
+		for (const url of this.#objectUrls) URL.revokeObjectURL(url);
+		this.#objectUrls.clear();
 	}
 
 	private receiveChunks(
@@ -2586,6 +2650,11 @@ export class StoredMediaPlayback {
 		this.#chunks.set(key, accumulator);
 		if (!accumulator.chunks.every((chunk) => chunk !== undefined)) return;
 		this.#chunks.delete(key);
+		if (accumulator.sourceBufferContentType) {
+			this.reportStartup('initialization', accumulator.sourceBufferContentType);
+		} else if (accumulator.deliveredThroughMs !== undefined) {
+			this.reportStartup('first-fragment', accumulator.contentType);
+		}
 		const completed = {
 			generation,
 			payload: concatenateChunks(accumulator.chunks),
@@ -2663,14 +2732,27 @@ export class StoredMediaPlayback {
 	}
 
 	private replaceMediaSource(): void {
-		URL.revokeObjectURL(this.url);
 		this.#sourceBuffer = null;
 		this.#sourceBufferContentType = null;
 		this.#appendQueue = [];
 		this.#refillInFlight = false;
 		this.#mediaSource = new MediaSource();
 		this.url = URL.createObjectURL(this.#mediaSource);
+		this.#objectUrls.add(this.url);
 		this.listenForSourceOpen();
+	}
+
+	private reportStartup(phase: StoredMediaStartupPhase, contentType: string): void {
+		if (
+			this.#startupEvents.some(
+				(event) => event.generation === this.#generation && event.phase === phase
+			)
+		) {
+			return;
+		}
+		const event = { phase, generation: this.#generation, contentType };
+		this.#startupEvents.push(event);
+		for (const listener of this.#startupListeners) listener(event);
 	}
 
 	private listenForSourceOpen(): void {
@@ -3680,6 +3762,7 @@ function camerasFromCapabilities(capabilities: ServerCapabilities): CameraListIt
 			.toSorted((left) => (left === 'main' ? -1 : 1))
 			.map((stream) => {
 				const variant = live?.video?.variants.find((candidate) => candidate.variantId === stream);
+				const storedStream = stored?.streams.find((candidate) => candidate.streamId === stream);
 				const video = variant?.format?.format;
 				return {
 					name: `${stream}Stream`,
@@ -3694,6 +3777,8 @@ function camerasFromCapabilities(capabilities: ServerCapabilities): CameraListIt
 						variant && variant.nominalBitrateBps > 0n
 							? numeric(variant.nominalBitrateBps / 1_000n)
 							: null,
+					quality_rank: variant && variant.qualityRank > 0 ? variant.qualityRank : null,
+					recorded_content_type: storedStream?.contentType ?? null,
 					gop: null,
 					h264_profile: null,
 					audio: null

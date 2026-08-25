@@ -19,6 +19,15 @@
 	import PeekLayoutEditor from '$lib/components/PeekLayoutEditor.svelte';
 	import { presentPeekCamera } from '$lib/peek-camera';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
+	import { browserSupportsLiveEncoding, selectRecordedStream } from '$lib/recorded-playback-policy';
+	import {
+		defaultPlaybackPreferences,
+		focusedLivePreference,
+		loadPlaybackPreferences,
+		savePlaybackPreferences,
+		withFocusedLivePreference,
+		type FocusedLivePreference
+	} from '$lib/playback-preferences';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import Grid2X2Icon from '@lucide/svelte/icons/grid-2x2';
@@ -27,7 +36,13 @@
 	import RadioIcon from '@lucide/svelte/icons/radio';
 
 	const placeholders = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
-	const qualityOptions = ['auto', 'high', 'low'] as const;
+	const qualityOptions: ReadonlyArray<{ value: FocusedLivePreference; label: string }> = [
+		{ value: 'auto', label: 'Auto' },
+		{ value: 'high', label: 'High' },
+		{ value: 'low', label: 'Low' },
+		{ value: 'main', label: 'Main' },
+		{ value: 'sub', label: 'Sub' }
+	];
 	const wallRevealTimeoutMs = 5_000;
 	const controlClient = useControlClient();
 	const livePeer = useLivePeer();
@@ -40,7 +55,11 @@
 	let focusedCameraId: string | null = $state(null);
 	let requestedCameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let isLayoutEditing = $derived(page.url.searchParams.get('mode') === 'layout-editor');
-	let focusQuality = $state<LiveQuality>('auto');
+	let focusQuality = $state<FocusedLivePreference>('auto');
+	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
+	let focusFallbackVariant = $state<'main' | 'sub' | null>(null);
+	let focusFallbackAttempted = false;
+	let focusRuntimeNotice = $state<string | null>(null);
 	let livePlans = $state.raw<LivePeerPlan[]>([]);
 	let tileVisibility = $state.raw<Record<string, GridTileVisibility>>({});
 	let screenActive = true;
@@ -58,6 +77,30 @@
 			: (cameras.find((camera) => camera.id === focusedCameraId) ?? null)
 	);
 	let focusedTrack = $derived(focusedCameraId === null ? null : livePeer.track(focusedCameraId));
+	let focusedVariantSelection = $derived.by(() => {
+		if (!focusedCamera) return null;
+		return selectRecordedStream(focusedCamera, {
+			requestedStream: focusQuality === 'main' || focusQuality === 'sub' ? focusQuality : null,
+			preference: focusQuality,
+			isEncodingSupported: browserSupportsLiveEncoding
+		});
+	});
+	let focusedVariant = $derived(
+		focusFallbackVariant ?? focusedVariantSelection?.selectedStream ?? 'main'
+	);
+	let effectiveFocusQuality = $derived<LiveQuality>(
+		focusQuality === 'main' || focusQuality === 'sub' ? 'auto' : focusQuality
+	);
+	let focusCompatibilityNotice = $derived.by(() => {
+		const selection = focusedVariantSelection;
+		if (!selection || selection.selectedStream === null) return null;
+		const rejected = selection.rejectedStreams.find(
+			(candidate) => candidate.stream === focusQuality
+		);
+		if (!rejected) return null;
+		return `${focusStreamLabel(rejected.stream)} uses ${rejected.encoding}, which this browser cannot decode. Showing ${focusStreamLabel(selection.selectedStream)} instead.`;
+	});
+	let focusNotice = $derived(focusRuntimeNotice ?? focusCompatibilityNotice);
 	let pendingFocusStream = $derived(focusedTrack?.pendingStream ?? null);
 	let focusQualitySwitching = $derived(pendingFocusStream !== null);
 	let filmstripCameras = $derived(
@@ -129,7 +172,29 @@
 		void isLayoutEditing;
 		void focusedCameraId;
 		void focusQuality;
+		void focusFallbackVariant;
 		queueMicrotask(reconcileLivePlans);
+	});
+
+	$effect(() => {
+		const track = focusedTrack;
+		const selection = focusedVariantSelection;
+		if (
+			focusedCameraId === null ||
+			track?.status !== 'unavailable' ||
+			focusFallbackAttempted ||
+			!selection
+		) {
+			return;
+		}
+		const fallback = selection.fallbackStreams.find((candidate) => candidate !== focusedVariant);
+		focusFallbackAttempted = true;
+		if (fallback) {
+			focusFallbackVariant = fallback;
+			focusRuntimeNotice = `${focusStreamLabel(focusedVariant)} live playback was unavailable. Showing ${focusStreamLabel(fallback)} instead.`;
+			return;
+		}
+		focusRuntimeNotice = `${focusStreamLabel(focusedVariant)} live playback is unavailable and no compatible fallback was reported.`;
 	});
 
 	$effect(() => {
@@ -143,6 +208,7 @@
 	});
 
 	onMount(() => {
+		playbackPreferences = loadPlaybackPreferences(window.localStorage);
 		const decoderBudget = webDecoderBudget(navigator.hardwareConcurrency);
 		decoderCapacity = decoderBudget;
 		gridScheduler.setCapacity({
@@ -278,9 +344,11 @@
 			const focused = !focusReturnPending && focusedCameraId === camera.id;
 			return {
 				cameraId: camera.id,
-				quality: focused ? focusQuality : (grants.get(camera.id)?.quality ?? ('low' as const)),
+				quality: focused
+					? effectiveFocusQuality
+					: (grants.get(camera.id)?.quality ?? ('low' as const)),
 				active: grants.has(camera.id),
-				variantId: focused && focusQuality === 'auto' ? ('main' as const) : undefined
+				variantId: focused ? focusedVariant : undefined
 			};
 		});
 		for (const cameraId of grants.keys()) {
@@ -345,13 +413,27 @@
 		if (wallRevealTimer) clearTimeout(wallRevealTimer);
 		wallRevealTimer = null;
 		focusedCameraId = cameraId;
-		focusQuality = 'auto';
+		focusQuality = focusedLivePreference(playbackPreferences, cameraId);
+		focusFallbackVariant = null;
+		focusFallbackAttempted = false;
+		focusRuntimeNotice = null;
 		queueMicrotask(reconcileLivePlans);
 	}
 
-	function setFocusQuality(quality: LiveQuality) {
+	function setFocusQuality(quality: FocusedLivePreference) {
 		if (focusQuality === quality) return;
 		focusQuality = quality;
+		focusFallbackVariant = null;
+		focusFallbackAttempted = false;
+		focusRuntimeNotice = null;
+		if (focusedCameraId) {
+			playbackPreferences = withFocusedLivePreference(
+				playbackPreferences,
+				focusedCameraId,
+				quality
+			);
+			savePlaybackPreferences(window.localStorage, playbackPreferences);
+		}
 	}
 
 	function closeFocus() {
@@ -365,7 +447,8 @@
 		const previousCameraId = focusedCameraId;
 		focusReturnPending = false;
 		focusedCameraId = null;
-		focusQuality = 'auto';
+		focusFallbackVariant = null;
+		focusRuntimeNotice = null;
 		queueMicrotask(reconcileLivePlans);
 		if (previousCameraId !== null) {
 			void tick().then(() => {
@@ -381,7 +464,11 @@
 	}
 
 	function historyHref(cameraId: string): string {
-		return `${resolve('/keep')}?camera=${encodeURIComponent(cameraId)}&stream=main`;
+		return `${resolve('/keep')}?camera=${encodeURIComponent(cameraId)}`;
+	}
+
+	function focusStreamLabel(stream: 'main' | 'sub'): string {
+		return stream === 'main' ? 'Main' : 'Sub';
 	}
 
 	function openLayoutEditor(): void {
@@ -545,6 +632,9 @@
 		<div class="grid">
 			{#if focusedCamera}
 				<section
+					data-focused-live-preference={focusQuality}
+					data-focused-live-selected-variant={focusedVariant}
+					data-focused-live-fallback-variant={focusFallbackVariant ?? undefined}
 					data-peek-focus-return={focusReturnPending ? 'waiting' : undefined}
 					class="relative z-10 col-start-1 row-start-1 space-y-3 bg-background"
 					aria-label={`${cameraLabel(focusedCamera)} focus`}
@@ -589,17 +679,16 @@
 							role="group"
 							aria-label="Live quality ceiling"
 						>
-							{#each qualityOptions as quality (quality)}
+							{#each qualityOptions as option (option.value)}
 								<button
 									type="button"
-									class="h-7 rounded px-2 text-[11px] font-medium capitalize {focusQuality ===
-									quality
+									class="h-7 rounded px-2 text-[11px] font-medium {focusQuality === option.value
 										? 'bg-foreground text-background'
 										: 'text-muted-foreground hover:text-foreground'}"
-									aria-pressed={focusQuality === quality}
-									onclick={() => setFocusQuality(quality)}
+									aria-pressed={focusQuality === option.value}
+									onclick={() => setFocusQuality(option.value)}
 								>
-									{quality}
+									{option.label}
 								</button>
 							{/each}
 						</div>
@@ -610,6 +699,11 @@
 								role="status"
 							>
 								Switching to {pendingFocusStream === 'main' ? 'high' : 'low'} stream…
+							</span>
+						{/if}
+						{#if focusNotice}
+							<span class="text-xs text-amber-700 dark:text-amber-300" role="status">
+								{focusNotice}
 							</span>
 						{/if}
 						<!-- eslint-disable svelte/no-navigation-without-resolve -->
@@ -630,7 +724,7 @@
 								<LiveVideo
 									cameraId={focusedCamera.id}
 									stream="main"
-									quality={focusQuality}
+									quality={effectiveFocusQuality}
 									matchVideoAspectRatio
 									onvisibilitychange={handleTileVisibility}
 									class="aspect-video overflow-hidden rounded-md ring-1 ring-white/10"

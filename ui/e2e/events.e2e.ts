@@ -322,7 +322,7 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 	).toBeVisible();
 	await expect(detail.getByRole('link', { name: 'Open at this moment' })).toHaveAttribute(
 		'href',
-		/\/keep\?camera=front-door&stream=main&date=2026-08-18&at=\d+/
+		/\/keep\?camera=front-door&date=2026-08-18&at=\d+/
 	);
 	await page.reload();
 	await expect(page.getByRole('complementary', { name: 'Event detail' })).toBeVisible();

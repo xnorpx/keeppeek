@@ -21,6 +21,8 @@ async function mockKeepTimeline(
 		}[];
 		storedEvents?: NonNullable<Parameters<typeof mockControlPeer>[1]>['storedEvents'];
 		storedSeekError?: string;
+		mainEncoding?: string;
+		emitLoadedData?: boolean;
 	} = {}
 ): Promise<ControlRequests> {
 	const cameras = [
@@ -36,7 +38,7 @@ async function mockKeepTimeline(
 				{
 					name: 'Main',
 					stream: 'main' as const,
-					encoding: 'h265',
+					encoding: options.mainEncoding ?? 'h264',
 					resolution: '3840x2160',
 					framerate: 25
 				},
@@ -50,16 +52,36 @@ async function mockKeepTimeline(
 			]
 		}
 	];
-	await page.addInitScript((frozenNowMs) => {
-		Date.now = () => frozenNowMs;
-		Object.defineProperty(HTMLMediaElement.prototype, 'play', {
-			configurable: true,
-			value() {
-				this.dataset.playRequested = 'true';
-				return Promise.resolve();
-			}
-		});
-	}, newestMs);
+	await page.addInitScript(
+		({ frozenNowMs, emitLoadedData }) => {
+			Date.now = () => frozenNowMs;
+			document.addEventListener(
+				'error',
+				(event) => {
+					const target = event.target;
+					if (
+						target instanceof HTMLMediaElement &&
+						target.dataset.keeppeekIntentionalError !== 'true'
+					) {
+						event.preventDefault();
+						event.stopImmediatePropagation();
+					}
+				},
+				true
+			);
+			Object.defineProperty(HTMLMediaElement.prototype, 'play', {
+				configurable: true,
+				value() {
+					this.dataset.playRequested = 'true';
+					if (emitLoadedData) {
+						queueMicrotask(() => this.dispatchEvent(new Event('loadeddata')));
+					}
+					return Promise.resolve();
+				}
+			});
+		},
+		{ frozenNowMs: newestMs, emitLoadedData: options.emitLoadedData ?? true }
+	);
 	return mockControlPeer(page, {
 		cameras,
 		storedOpenGates: options.storedOpenGates,
@@ -119,14 +141,141 @@ async function mockKeepTimeline(
 	});
 }
 
-test('defaults to an H.264 substream and autoplays when no stream is requested', async ({
+async function dispatchIntentionalMediaError(video: ReturnType<Page['locator']>): Promise<void> {
+	await video.evaluate((element) => {
+		const media = element as HTMLVideoElement;
+		media.dataset.keeppeekIntentionalError = 'true';
+		media.dispatchEvent(new Event('error'));
+		delete media.dataset.keeppeekIntentionalError;
+	});
+}
+
+test('defaults to the compatible H.264 main stream and autoplays when no stream is requested', async ({
 	page
 }) => {
 	await mockKeepTimeline(page);
 	await page.goto(`/keep?camera=front-door&date=${date}`);
 
-	await expect(page).toHaveURL(new RegExp(`stream=sub`));
+	await expect(page).toHaveURL(new RegExp(`stream=main`));
 	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
+});
+
+test('explains a known codec fallback before opening the compatible substream', async ({
+	page
+}) => {
+	const requests = await mockKeepTimeline(page, { mainEncoding: 'h265' });
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+
+	await expect(page).toHaveURL(new RegExp(`stream=sub`));
+	await expect(page.getByRole('status')).toContainText(
+		'Main uses h265, which this browser cannot decode. Playing Sub instead.'
+	);
+	await expect(page.locator('[data-keep-player]')).toHaveAttribute(
+		'data-recording-rejected-variants',
+		'main:h265'
+	);
+	await expect.poll(() => requests.storedOpens.map((request) => request.streamId)).toEqual(['sub']);
+});
+
+test('persists a recorded quality preference and reapplies it without an explicit stream', async ({
+	page
+}) => {
+	const requests = await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+	await expect
+		.poll(() => requests.storedOpens.map((request) => request.streamId))
+		.toEqual(['main']);
+
+	await page.getByLabel('Quality').selectOption('low');
+	await expect(page).toHaveURL(new RegExp('stream=sub'));
+	await expect
+		.poll(() => requests.storedOpens.map((request) => request.streamId))
+		.toEqual(['main', 'sub']);
+	await page.locator('video').evaluate((element) => {
+		const video = element as HTMLVideoElement;
+		video.muted = true;
+		video.dispatchEvent(new Event('volumechange'));
+		video.playbackRate = 2;
+		video.dispatchEvent(new Event('ratechange'));
+		video.dispatchEvent(new Event('pause'));
+	});
+	await expect
+		.poll(() =>
+			page.evaluate(() => {
+				const value = localStorage.getItem('keeppeek-playback-preferences');
+				return value ? JSON.parse(value) : null;
+			})
+		)
+		.toMatchObject({
+			version: 1,
+			recorded: { cameras: { 'front-door': 'low' } },
+			media: { muted: true, playbackRate: 2, playing: false }
+		});
+
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+	await expect(page.getByLabel('Quality')).toHaveValue('low');
+	await expect(page).toHaveURL(new RegExp('stream=sub'));
+	await expect.poll(() => requests.storedOpens.at(-1)?.streamId).toBe('sub');
+	const reloadedVideo = page.locator('video');
+	await expect(reloadedVideo).toHaveJSProperty('muted', true);
+	await expect(reloadedVideo).toHaveJSProperty('playbackRate', 2);
+	await expect(reloadedVideo).not.toHaveAttribute('data-play-requested', 'true');
+});
+
+test('tries one visible compatible fallback after startup failure', async ({ page }) => {
+	const requests = await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+
+	await expect
+		.poll(() => requests.storedOpens.map((request) => request.streamId))
+		.toEqual(['main']);
+	await dispatchIntentionalMediaError(page.locator('video'));
+	await expect
+		.poll(() => requests.storedOpens.map((request) => request.streamId))
+		.toEqual(['main', 'sub']);
+	await expect(page.locator('[data-keep-player]')).toHaveAttribute(
+		'data-recording-fallback-variant',
+		'sub'
+	);
+	await expect(page.getByRole('status')).toContainText('Playing Sub instead.');
+
+	await dispatchIntentionalMediaError(page.locator('video'));
+	await expect(page.getByRole('alert')).toContainText('The compatible fallback also failed.');
+	expect(requests.storedOpens.map((request) => request.streamId)).toEqual(['main', 'sub']);
+});
+
+test('starts one visible fallback within the bounded startup deadline', async ({ page }) => {
+	const requests = await mockKeepTimeline(page, { emitLoadedData: false });
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+
+	await expect
+		.poll(() => requests.storedOpens.map((request) => request.streamId), { timeout: 5_000 })
+		.toEqual(['main', 'sub']);
+	await expect(page.locator('[data-keep-player]')).toHaveAttribute(
+		'data-recording-fallback-variant',
+		'sub'
+	);
+	await expect(
+		page.getByText('No recording initialization arrived within 3 seconds. Playing Sub instead.', {
+			exact: true
+		})
+	).toBeVisible();
+});
+
+test('aborts and closes a stored open when the route changes', async ({ page }) => {
+	let releaseOpen!: () => void;
+	const openGate = new Promise<void>((resolve) => {
+		releaseOpen = resolve;
+	});
+	const requests = await mockKeepTimeline(page, { storedOpenGates: [openGate] });
+	await page.goto(`/keep?camera=front-door&date=${date}`);
+	await expect.poll(() => requests.storedOpens.length).toBe(1);
+	const storedMediaId = requests.storedOpens[0]!.storedMediaId;
+
+	await page.getByRole('link', { name: 'Peek', exact: true }).click();
+	releaseOpen();
+	await expect.poll(() => requests.storedCloses).toContain(storedMediaId);
+	await expect(page).toHaveURL(/\/$/);
 });
 
 test('loads timeline metadata as soon as the primary frame is ready', async ({ page }) => {
@@ -203,7 +352,12 @@ test('opens an event in a recording gap with one bounded exact-range query', asy
 
 	await expect(page.locator('video')).toBeVisible();
 	expect(
-		requests.storedTimelineQueries.filter((query) => query.includeAvailability && query.startMs > 0)
+		requests.storedTimelineQueries.filter(
+			(query) =>
+				query.includeAvailability &&
+				query.startMs === gapTimestampMs - 5 * 60_000 &&
+				query.endMs === gapTimestampMs + 5 * 60_000
+		)
 	).toHaveLength(1);
 	expect(requests.storedOpens).toHaveLength(1);
 	expect(requests.storedOpens[0]?.timestampMs).toBe(nextRecordingMs);
@@ -391,7 +545,9 @@ test('names a cold seek after 400ms while preserving the current frame', async (
 	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
 });
 
-test('clears a cold seek when the media element rejects playback', async ({ page }) => {
+test('falls back once when the media element rejects playback during a cold seek', async ({
+	page
+}) => {
 	let releaseColdSeek!: () => void;
 	const coldSeekGate = new Promise<void>((resolve) => {
 		releaseColdSeek = resolve;
@@ -407,10 +563,13 @@ test('clears a cold seek when the media element rejects playback', async ({ page
 	await olderRange.click();
 	await expect(page.locator('[data-cold-seek]')).toBeVisible();
 
-	await video.dispatchEvent('error');
-	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
-	await expect(page.getByText('This recording could not be played.')).toBeVisible();
-	await expect(video).toHaveAttribute('src', currentSource!);
-
+	await dispatchIntentionalMediaError(video);
 	releaseColdSeek();
+	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
+	await expect(page.locator('[data-keep-player]')).toHaveAttribute(
+		'data-recording-fallback-variant',
+		'sub'
+	);
+	await expect(page.getByRole('status')).toContainText('Playing Sub instead.');
+	await expect.poll(() => video.getAttribute('src')).not.toBe(currentSource);
 });

@@ -164,6 +164,8 @@
 						{#each filteredCameras as camera, index (camera.id)}
 							<button
 								id={`keep-camera-option-${index}`}
+								data-camera-option={camera.id}
+								data-camera-label={cameraName(camera)}
 								type="button"
 								role="option"
 								aria-selected={camera.id === selectedCameraId}

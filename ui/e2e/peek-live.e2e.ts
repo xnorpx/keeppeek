@@ -126,7 +126,7 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 		)
 		.toBeCloseTo(640 / 360, 5);
 
-	await focus.getByRole('button', { name: 'low', exact: true }).click();
+	await focus.getByRole('button', { name: 'Low', exact: true }).click();
 	await expect(liveView).toHaveAttribute('data-requested-quality', 'low');
 	await expect(liveView).toHaveAttribute('data-stream', 'main');
 	await expect(liveView).toHaveAttribute('data-pending-stream', 'sub');
@@ -134,27 +134,27 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 	await expect(focus.locator('[data-peek-quality-switch]')).toContainText(
 		'Switching to low stream…'
 	);
-	await expect(focus.getByRole('button', { name: 'high', exact: true })).toBeEnabled();
+	await expect(focus.getByRole('button', { name: 'High', exact: true })).toBeEnabled();
 	await expect(liveView).toHaveAttribute('data-stream', 'sub', { timeout: 20_000 });
 	await expect(liveView).not.toHaveAttribute('data-pending-stream');
 	await expect(focus.locator('[data-peek-quality-switch]')).toHaveCount(0);
 
-	await focus.getByRole('button', { name: 'high', exact: true }).click();
+	await focus.getByRole('button', { name: 'High', exact: true }).click();
 	await expect(liveView).toHaveAttribute('data-requested-quality', 'high');
 	await expect(liveView).toHaveAttribute('data-stream', 'main');
-	await focus.getByRole('button', { name: 'low', exact: true }).click();
+	await focus.getByRole('button', { name: 'Low', exact: true }).click();
 	await expect(liveView).toHaveAttribute('data-requested-quality', 'low');
 	await expect(liveView).toHaveAttribute('data-stream', 'main');
 	await expect(liveView).toHaveAttribute('data-pending-stream', 'sub');
 	await expect(focus.locator('[data-peek-quality-switch]')).toContainText(
 		'Switching to low stream…'
 	);
-	await expect(focus.getByRole('button', { name: 'high', exact: true })).toBeEnabled();
+	await expect(focus.getByRole('button', { name: 'High', exact: true })).toBeEnabled();
 	await expect(liveView).toHaveAttribute('data-stream', 'sub', { timeout: 20_000 });
 	await expect(liveView).not.toHaveAttribute('data-pending-stream');
 	await expect(focus.locator('[data-peek-quality-switch]')).toHaveCount(0);
 
-	await focus.getByRole('button', { name: 'high', exact: true }).click();
+	await focus.getByRole('button', { name: 'High', exact: true }).click();
 	await expect(liveView).toHaveAttribute('data-stream', 'main', { timeout: 20_000 });
 	await focus.getByRole('button', { name: 'Return to camera grid' }).click();
 	const wall = page.locator('[data-peek-wall]');

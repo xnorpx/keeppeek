@@ -447,6 +447,7 @@
 	data-stream={activeStream}
 	data-pending-stream={track?.pendingStream ?? undefined}
 	data-requested-quality={requestedQuality}
+	data-requested-variant={track?.requestedVariantId ?? undefined}
 	data-estimated-bitrate-bps={estimatedBitrateBps}
 	data-decoder="browser"
 	data-codec={negotiatedCodec}
