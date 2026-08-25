@@ -1,0 +1,129 @@
+name: Feature work item
+description: Plan implementation for a feature that has already been discussed and accepted.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Feature work starts in Discussions
+
+        A feature issue is an implementation work item, not the place to introduce a proposal. First open a [Suggestion discussion](https://github.com/xnorpx/keeppeek/discussions/new?category=suggestions), gather feedback, and obtain a recorded vote or explicit approval.
+
+        **A feature work item without a corresponding Discussion and recorded vote or approval will be automatically closed.** The approved scope in the Discussion must match the work item below.
+
+        Feature completion is evidence-driven: every acceptance criterion must be checked, have a testable outcome, and name its verification. The implementing PR must show the result for every criterion and include measured before-and-after performance numbers where applicable.
+  - type: checkboxes
+    id: proposal-gate
+    attributes:
+      label: Proposal gate
+      options:
+        - label: I linked the corresponding KeepPeek Discussion below.
+          required: true
+        - label: The Discussion records an accepted vote or explicit approval, and I linked that decision below.
+          required: true
+        - label: This work item matches the scope and conditions that were accepted in the Discussion.
+          required: true
+        - label: I understand that an undiscussed or unapproved feature work item will be automatically closed.
+          required: true
+  - type: input
+    id: discussion-url
+    attributes:
+      label: Corresponding Discussion
+      description: Link the KeepPeek Discussion where this feature was proposed and reviewed.
+      placeholder: https://github.com/xnorpx/keeppeek/discussions/123
+    validations:
+      required: true
+  - type: textarea
+    id: approval-evidence
+    attributes:
+      label: Vote or approval evidence
+      description: Link the exact accepted poll result, maintainer decision, or approval comment and summarize any conditions.
+      placeholder: |
+        Decision link:
+        Accepted by or vote result:
+        Decision date:
+        Conditions or scope changes:
+    validations:
+      required: true
+  - type: textarea
+    id: summary-and-problem
+    attributes:
+      label: Summary and user problem
+      description: Summarize the accepted feature and the concrete user problem it solves.
+      placeholder: |
+        Summary:
+
+        User problem:
+
+        Observable user outcome:
+    validations:
+      required: true
+  - type: textarea
+    id: existing-foundation
+    attributes:
+      label: Existing foundation and current state
+      description: Identify reusable code, contracts, tests, documentation, related issues, and the current limitation.
+      placeholder: Describe what KeepPeek already supports, where the behavior is owned, and what gap remains.
+    validations:
+      required: true
+  - type: textarea
+    id: scope-and-behavior
+    attributes:
+      label: Scope and proposed behavior
+      description: Define the approved behavior precisely enough to implement without reopening the product decision.
+      placeholder: Include workflows, states, data flow, UI/API behavior, supported platforms or cameras, limits, and explicit boundaries.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints-and-failures
+    attributes:
+      label: Contracts, constraints, and failure behavior
+      description: Cover interfaces, compatibility, security, privacy, resources, accessibility, recovery, and honest unsupported states.
+      placeholder: Describe API/data compatibility, authorization, secret handling, bounded work, failure states, migration, rollback, and accessibility as applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests and verification plan
+      description: Name the focused automated suites, fixtures, hardware checks, browser checks, and failure cases needed to prove the feature.
+      placeholder: List unit, integration, API, component, Playwright, real-media, hardware, security, accessibility, and regression coverage as applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance criteria and verification
+      description: Each criterion must describe one observable outcome and the exact test or check that verifies it.
+      placeholder: |
+        - [ ] AC-1: <observable behavior or measurable result>
+          - Expected outcome: <exact state, result, or threshold>
+          - Verification: <test name, benchmark, command, or reproducible procedure>
+          - PR evidence: <result, log, artifact, screenshot, or measurement to show>
+
+        - [ ] AC-2: <observable behavior or measurable result>
+          - Expected outcome: <exact state, result, or threshold>
+          - Verification: <test name, benchmark, command, or reproducible procedure>
+          - PR evidence: <result, log, artifact, screenshot, or measurement to show>
+    validations:
+      required: true
+  - type: textarea
+    id: performance-and-boundaries
+    attributes:
+      label: Performance, dependencies, and non-goals
+      description: Define reproducible performance targets plus dependencies and exclusions. Use a justified N/A only when no performance path can change.
+      placeholder: |
+        Performance metrics and units:
+        Baseline and target or budget:
+        Workload or dataset:
+        Environment and build profile:
+        Command or harness:
+        Runs and statistic (for example median or p95):
+
+        Dependencies and related work:
+
+        Non-goals:
+    validations:
+      required: true

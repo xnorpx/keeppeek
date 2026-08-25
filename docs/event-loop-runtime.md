@@ -76,7 +76,7 @@ Global finalized-file movement and size-limit enforcement stay in a storage-main
 
 ## HTTP API
 
-Rouille exposes only the checked-in HTTP contract: `POST /create`, `POST /delete`, `GET /logs`, and `GET /metrics`. Session creation is the sole SDP offer/answer exchange, deletion tears down the creator-owned session, logs use Server-Sent Events, and metrics use Prometheus text exposition.
+Rouille exposes only the checked-in HTTP contract: `POST /create`, `POST /delete`, `GET /logs`, `GET /logs/snapshot`, and `GET /metrics`. Session creation is the sole SDP offer/answer exchange, deletion tears down the creator-owned session, live logs use Server-Sent Events, the finite log snapshot returns the complete bounded retained buffer for diagnostics export, and metrics use Prometheus text exposition.
 
 Commands, state, camera configuration, typed health, live subscriptions, and stored-media queries run as protobuf messages over the negotiated WebRTC data channels. `HealthCommand.get` returns process and host CPU/memory/load, disks, network interfaces, temperatures, recording catalog and demand, WebRTC delivery, configured cameras, per-stream ingress rates and counters, and current health findings.
 

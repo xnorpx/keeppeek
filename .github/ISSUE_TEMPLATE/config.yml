@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Propose or discuss a feature
+    url: https://github.com/xnorpx/keeppeek/discussions/new?category=suggestions
+    about: Start here before creating a feature work item. The proposal must be voted on or approved first.
+  - name: Ask a support or usage question
+    url: https://github.com/xnorpx/keeppeek/discussions/new?category=q-a
+    about: Get help with setup, camera configuration, troubleshooting, and using KeepPeek.

@@ -6802,6 +6802,9 @@ fn handle_request(
         (GET) (/logs) => {
             authenticated_api_request(request, state, false, |_| log_stream(request, state))
         },
+        (GET) (/logs/snapshot) => {
+            authenticated_api_request(request, state, false, |_| log_snapshot(state))
+        },
         (GET) (/metrics) => {
             authenticated_api_request(request, state, false, |_| {
                 prometheus_metrics(router_tx, state)
@@ -7091,6 +7094,15 @@ fn set_logging_filter(
         )
     })?;
     Ok(logging.settings())
+}
+
+fn log_snapshot(state: &ServerState) -> Response {
+    let Some(logging) = &state.logging else {
+        return service_error(503, "logging service is unavailable");
+    };
+    let limit = logging.settings().buffer.max_entries;
+    Response::json(&logging.snapshot(None, limit))
+        .with_additional_header("Cache-Control", "no-store")
 }
 
 fn log_stream(request: &Request, state: &ServerState) -> Response {
@@ -9111,35 +9123,37 @@ mod tests {
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
         let remote = SocketAddr::from(([203, 0, 113, 7], 42_000));
 
-        let missing = handle_request(
-            &Request::fake_http_from(remote, "GET", "/logs", Vec::new(), Vec::new()),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(missing.status_code, 401);
+        for path in ["/logs", "/logs/snapshot"] {
+            let missing = handle_request(
+                &Request::fake_http_from(remote, "GET", path, Vec::new(), Vec::new()),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(missing.status_code, 401);
 
-        let wrong = handle_request(
-            &Request::fake_http_from(
-                remote,
-                "GET",
-                "/logs",
-                vec![(
-                    "Authorization".to_owned(),
-                    "Bearer 123e4567-e89b-12d3-a456-426614174000".to_owned(),
-                )],
-                Vec::new(),
-            ),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(wrong.status_code, 401);
+            let wrong = handle_request(
+                &Request::fake_http_from(
+                    remote,
+                    "GET",
+                    path,
+                    vec![(
+                        "Authorization".to_owned(),
+                        "Bearer 123e4567-e89b-12d3-a456-426614174000".to_owned(),
+                    )],
+                    Vec::new(),
+                ),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(wrong.status_code, 401);
 
-        let authenticated = handle_request(
-            &Request::fake_http_from(remote, "GET", "/logs", vec![bearer_header()], Vec::new()),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(authenticated.status_code, 503);
+            let authenticated = handle_request(
+                &Request::fake_http_from(remote, "GET", path, vec![bearer_header()], Vec::new()),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(authenticated.status_code, 503);
+        }
 
         let forwarded_local = handle_request(
             &Request::fake_http(
@@ -11952,6 +11966,37 @@ mod tests {
         assert_eq!(snapshot.entries[0].sequence, 2);
         assert_eq!(snapshot.entries[0].message, "two");
         assert!(snapshot.truncated);
+        std::fs::remove_dir_all(filter_file.path().parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn log_snapshot_route_returns_the_retained_buffer_as_json() {
+        let (state, _logging, dispatch, filter_file) = logging_test_state("trace");
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info!(target: "keeppeek::test", "one");
+            tracing::warn!(target: "keeppeek::test", "two");
+        });
+
+        let response = handle_request(
+            &Request::fake_http("GET", "/logs/snapshot", Vec::new(), Vec::new()),
+            &router_tx,
+            &state,
+        );
+
+        assert_eq!(response.status_code, 200);
+        assert!(response.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("Content-Type") && value.starts_with("application/json")
+        }));
+        assert!(response.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("Cache-Control") && value == "no-store"
+        }));
+        let snapshot: crate::logging::LogSnapshot =
+            serde_json::from_slice(&response_data(response)).unwrap();
+        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.entries[0].message, "one");
+        assert_eq!(snapshot.entries[1].message, "two");
+        assert!(!snapshot.truncated);
         std::fs::remove_dir_all(filter_file.path().parent().unwrap()).unwrap();
     }
 

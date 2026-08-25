@@ -5,11 +5,13 @@
 	import LogViewer from '$lib/components/logging/LogViewer.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import { downloadDiagnosticsBundle } from '$lib/diagnostics-bundle';
 	import { downloadBugReport } from '$lib/log-export';
 	import { useControlClient } from '$lib/control-context';
 	import { ServerLogStream, type LogStreamState } from '$lib/server-log-stream';
 	import type { BrowserLogEntry, LoggingSettings, LogSnapshot, ServerLogEntry } from '$lib/types';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
+	import DownloadIcon from '@lucide/svelte/icons/download';
 	import SaveIcon from '@lucide/svelte/icons/save';
 
 	type LogTab = 'server' | 'browser';
@@ -22,6 +24,7 @@
 	let filterError = $state<string | null>(null);
 	let savingFilter = $state(false);
 	let downloading = $state(false);
+	let downloadingDiagnostics = $state(false);
 	let exportError = $state<string | null>(null);
 	let serverEntries = $state.raw<ServerLogEntry[]>([]);
 	let browserEntries = $state.raw<BrowserLogEntry[]>([]);
@@ -119,6 +122,20 @@
 		}
 	}
 
+	async function exportDiagnostics(): Promise<void> {
+		if (downloadingDiagnostics) return;
+		downloadingDiagnostics = true;
+		exportError = null;
+		try {
+			await downloadDiagnosticsBundle(controlClient, browserLogStore.snapshot());
+		} catch (cause) {
+			exportError =
+				cause instanceof Error ? cause.message : 'Unable to create the diagnostics package.';
+		} finally {
+			downloadingDiagnostics = false;
+		}
+	}
+
 	function visibleServerSnapshot(currentSettings: LoggingSettings): LogSnapshot {
 		return {
 			entries: serverEntries,
@@ -159,12 +176,22 @@
 				<p class="mt-1 text-sm text-muted-foreground">Live server and browser diagnostics</p>
 			</div>
 		</div>
-		{#if settings}
-			<div class="text-right text-xs text-muted-foreground">
-				<p>KeepPeek {settings.version}</p>
-				<p>{settings.buffer.entry_count.toLocaleString()} retained server entries</p>
-			</div>
-		{/if}
+		<div class="flex items-center gap-3">
+			{#if settings}
+				<div class="text-right text-xs text-muted-foreground">
+					<p>KeepPeek {settings.version}</p>
+					<p>{settings.buffer.entry_count.toLocaleString()} retained server entries</p>
+				</div>
+			{/if}
+			<Button
+				variant="outline"
+				disabled={!settings || downloadingDiagnostics}
+				onclick={() => void exportDiagnostics()}
+			>
+				<DownloadIcon class={downloadingDiagnostics ? 'animate-pulse' : undefined} />
+				{downloadingDiagnostics ? 'Building package' : 'Download diagnostics'}
+			</Button>
+		</div>
 	</header>
 
 	{#if loading}

@@ -40,13 +40,14 @@ compatibility guarantees begin with the 1.0 release.
 
 ## HTTP API
 
-The initial API has four operations:
+The initial API has five operations:
 
 1. `POST /create` sends a gzip-compressed SDP offer and returns a gzip-compressed SDP answer
    with a session ID.
 2. `POST /delete` closes the session identified by the session ID in its JSON body.
 3. `GET /logs` reads server logs through Server-Sent Events.
-4. `GET /metrics` exposes Prometheus text metrics.
+4. `GET /logs/snapshot` returns the complete bounded retained log buffer as JSON.
+5. `GET /metrics` exposes Prometheus text metrics.
 
 ## Access key
 
@@ -96,8 +97,8 @@ updates future Bearer authentication immediately, and closes sessions authentica
 key. Debug logs must not print either GUID.
 
 Until per-key scopes exist, every configured GUID has the same rights to `/create`, `/delete`,
-`/logs`, and `/metrics`. A Home Assistant card token is therefore also a metrics and log
-credential.
+`/logs`, `/logs/snapshot`, and `/metrics`. A Home Assistant card token is therefore also a
+metrics and log credential.
 
 Every remote request sends its configured key in the Authorization header:
 
@@ -149,6 +150,11 @@ key returns `404`.
 `GET /logs` returns `text/event-stream`. Each `log` event has a JSON log entry in its
 `data` field and uses that entry's sequence number as its SSE `id`. The stream requires the
 same Authorization header as the session endpoints.
+
+`GET /logs/snapshot` returns one `application/json` `LogSnapshot` containing every entry still
+retained by the bounded in-memory log hub, plus sequence, truncation, eviction, byte, and entry
+limits. The response uses `Cache-Control: no-store`, requires the same authorization as the live
+stream, and is intended for the scrubbed diagnostics-package workflow rather than polling.
 
 ## Metrics
 

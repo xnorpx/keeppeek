@@ -1,0 +1,159 @@
+name: Bug report
+description: Report a reproducible defect in KeepPeek.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## GitHub Issues are for reproducible KeepPeek defects
+
+        Use [Q&A](https://github.com/xnorpx/keeppeek/discussions/categories/q-a) for setup help, troubleshooting, and usage questions. Use [Suggestions](https://github.com/xnorpx/keeppeek/discussions/categories/suggestions) for feature proposals.
+
+        Before filing, inspect KeepPeek Health, camera diagnosis, server logs, and the browser console where relevant. Reports that are support requests, feature proposals, duplicates, or missing the required reproduction and environment details may be closed.
+
+        Generate a scrubbed diagnostics package from **Settings → Logs & diagnostics → Download diagnostics** and attach the resulting `.json.gz` file under **Diagnostics package and sanitized evidence**. You may still submit when the package cannot be generated or attached, but explain why; reports without logs may be closed as **needs more info**.
+
+        Never publish credentials, camera addresses, tokens, cookies, private recordings, or unsanitized logs and screenshots.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues and did not find the same bug.
+          required: true
+        - label: This is a reproducible KeepPeek defect, not a setup question, support request, or feature proposal.
+          required: true
+        - label: I reproduced this on the current release or identified the exact build where it occurs.
+          required: true
+        - label: I checked the relevant Health, diagnosis, server log, and browser console evidence.
+          required: true
+        - label: I removed credentials, private addresses, tokens, cookies, private media, and other sensitive data from the report.
+          required: true
+        - label: I attached the KeepPeek-generated diagnostics package below, or explained why it is unavailable.
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      options:
+        - Recording and ingest
+        - Peek and live video
+        - Events, search, and previews
+        - Keep, timeline, and recorded playback
+        - Export
+        - Cameras, discovery, and configuration
+        - Camera controls and vendor integration
+        - Storage, retention, backup, and restore
+        - Authentication, authorization, and privacy
+        - Installation, upgrade, and service lifecycle
+        - API, WebRTC, and external integrations
+        - UI, mobile, and accessibility
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Bug description
+      description: State what fails, when it fails, and the user or recorder impact.
+      placeholder: Describe one defect concisely. Include the affected camera, stream, date range, or workflow without exposing private details.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest deterministic sequence that reproduces the defect.
+      placeholder: |
+        Starting state:
+        1. Configure or open ...
+        2. Select ...
+        3. Perform ...
+        4. Observe ...
+
+        Frequency: <always, intermittent, or N of M attempts>
+    validations:
+      required: true
+  - type: textarea
+    id: expected-and-actual
+    attributes:
+      label: Expected and actual behavior
+      description: Make the difference observable or measurable.
+      placeholder: |
+        Expected: <specific state, media behavior, response, timing, or resource use>
+        Actual: <specific failure, incorrect state, error, timing, or resource use>
+    validations:
+      required: true
+  - type: textarea
+    id: regression-and-impact
+    attributes:
+      label: Regression, frequency, and impact
+      description: Identify when it started, how often it happens, and how it affects recording or review.
+      placeholder: |
+        Previously worked: <yes, no, or unknown>
+        Last known good version:
+        First known bad version:
+        Frequency:
+        Impact or data-loss risk:
+        Workaround, if any:
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include every field relevant to reproducing the defect; use N/A where a field does not apply.
+      placeholder: |
+        KeepPeek version, commit, and build profile:
+        OS and architecture:
+        Installation method (native, Docker, service, other):
+        Browser/client and version:
+        Camera make/model and anonymized firmware version:
+        Camera source (Reolink, ONVIF, RTSP, test-camera, other):
+        Stream profile (codec, resolution, FPS, audio):
+        Camera count and relevant catalog/date-range scale:
+        Storage type and free space:
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Diagnostics package and sanitized evidence
+      description: Drag the KeepPeek-generated .json.gz package into this field. Add focused timestamps, screenshots, stack traces, or fixtures when useful. If the package is unavailable, state exactly why; the report may be closed as needs more info.
+      placeholder: |
+        Diagnostics package: <drag keeppeek-diagnostics-*.json.gz here>
+        Package unavailable reason: <required only when no package is attached>
+        Correlated timestamps and additional sanitized evidence:
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Fix acceptance criteria and verification
+      description: Define observable completion criteria. Every criterion must name the test or check that will verify it.
+      placeholder: |
+        - [ ] AC-1: <the reported reproduction produces the correct observable outcome>
+          - Expected outcome: <exact state or result>
+          - Verification: <regression test, command, or reproducible procedure>
+
+        - [ ] AC-2: <the relevant failure or boundary case behaves correctly>
+          - Expected outcome: <exact state or result>
+          - Verification: <test name, command, or reproducible procedure>
+    validations:
+      required: true
+  - type: textarea
+    id: performance
+    attributes:
+      label: Performance evidence
+      description: Provide measured numbers and a comparison plan if performance is affected; otherwise write N/A and explain why.
+      placeholder: |
+        Metric and unit:
+        Current or before value:
+        Expected budget or target:
+        Workload or dataset:
+        Environment:
+        Command or harness:
+        Runs and statistic (for example median or p95):
+    validations:
+      required: true

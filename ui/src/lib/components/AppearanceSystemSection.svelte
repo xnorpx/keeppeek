@@ -24,7 +24,10 @@
 		logLines?: readonly string[];
 		logsLive?: boolean;
 		logTarget?: string;
+		downloadingDiagnostics?: boolean;
+		diagnosticsError?: string | null;
 		onrestart: () => void;
+		ondownloaddiagnostics?: () => void | Promise<void>;
 	};
 
 	let {
@@ -38,7 +41,10 @@
 		logLines = [],
 		logsLive = false,
 		logTarget = 'all',
-		onrestart
+		downloadingDiagnostics = false,
+		diagnosticsError = null,
+		onrestart,
+		ondownloaddiagnostics
 	}: Props = $props();
 	const appearance = useAppearanceState();
 	let browserTimeZone = $state<string | null>(null);
@@ -327,23 +333,28 @@
 						<ActivityIcon class="size-3.5" /> Open health
 					</a>
 				</div>
-				<div class="rounded-sm border border-activity/45 bg-activity/5 px-3 py-3">
-					<div class="flex items-center gap-2 font-mono text-2xs tracking-caps text-activity">
-						<CircleAlertIcon class="size-3.5" /> FULL DIAGNOSTICS BUNDLE UNAVAILABLE
+				<div class="rounded-sm border border-healthy/35 bg-healthy/5 px-3 py-3">
+					<div class="flex items-center gap-2 font-mono text-2xs tracking-caps text-healthy">
+						<CircleAlertIcon class="size-3.5" /> SCRUBBED DIAGNOSTICS PACKAGE
 					</div>
 					<p class="mt-1.5 text-xs leading-5 text-text-muted">
-						The current export contains redacted server/browser logs and viewer metadata. It does
-						not include sanitized config or the health document, so it is not labeled as Paper's
-						bundle.
+						Includes the complete retained server log buffer, current browser logs, health, runtime
+						configuration, metrics, and collection metadata. Private values are scrubbed before
+						compression; review the package before sharing.
 					</p>
 				</div>
 				<button
 					type="button"
-					class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-sm border border-hairline bg-raised px-3 text-xs text-text-muted disabled:cursor-not-allowed"
-					disabled
+					class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-sm border border-hairline bg-raised px-3 text-xs text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
+					disabled={!ondownloaddiagnostics || downloadingDiagnostics}
+					onclick={() => void ondownloaddiagnostics?.()}
 				>
-					<DownloadIcon class="size-3.5" /> Diagnostics bundle unavailable
+					<DownloadIcon class="size-3.5 {downloadingDiagnostics ? 'animate-pulse' : ''}" />
+					{downloadingDiagnostics ? 'Building package' : 'Download diagnostics'}
 				</button>
+				{#if diagnosticsError}
+					<p class="text-xs leading-5 text-live-text" role="alert">{diagnosticsError}</p>
+				{/if}
 				<div class="border-t border-hairline pt-3 text-xs leading-5 text-text-faint">
 					<p>
 						Executable: <span class="font-mono break-all"

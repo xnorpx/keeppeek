@@ -1,4 +1,7 @@
 import type { BrowserLogEntry, LoggingSettings, LogSnapshot, ServerLogEntry } from './types';
+import { createDiagnosticRedactor } from './diagnostic-redaction';
+
+const redactor = createDiagnosticRedactor();
 
 export interface BugReportInput {
 	settings: LoggingSettings;
@@ -51,29 +54,7 @@ export function downloadBugReport(input: BugReportInput): void {
 }
 
 function safeJsonLine(record: unknown): string {
-	const seen = new WeakSet<object>();
-	return JSON.stringify(record, (key, value) => {
-		if (isSensitiveKey(key)) return '[REDACTED]';
-		if (typeof value === 'string') return redactText(value);
-		if (value && typeof value === 'object') {
-			if (seen.has(value)) return '[Circular]';
-			seen.add(value);
-		}
-		return value;
-	});
-}
-
-function redactText(value: string): string {
-	return value
-		.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/gi, '$1[REDACTED]@')
-		.replace(
-			/\b(password|passwd|secret|token|authorization|api[_-]?key)\s*=\s*([^\s,;&]+)/gi,
-			'$1=[REDACTED]'
-		);
-}
-
-function isSensitiveKey(key: string): boolean {
-	return /password|passwd|secret|token|authorization|credential|api[_-]?key|cookie/i.test(key);
+	return JSON.stringify(redactor.value(record));
 }
 
 function browserUserAgent(): string {

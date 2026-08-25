@@ -22,7 +22,7 @@
 		},
 		{
 			"source": "api/README.md",
-			"contains": "The initial API has four operations:"
+			"contains": "The initial API has five operations:"
 		},
 		{
 			"source": "api/webrtc.md",
@@ -56,7 +56,7 @@
 			"The browser RecordingEvent adapter does not yet expose wire text, payload, revision, source_id, or multiple attachments."
 		]
 	},
-	"httpPaths": ["/create", "/delete", "/logs", "/metrics"],
+	"httpPaths": ["/create", "/delete", "/logs", "/logs/snapshot", "/metrics"],
 	"principles": [
 		{
 			"index": 1,

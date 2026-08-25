@@ -76,6 +76,7 @@
 		"demo:render:narrated": "bun run demo:render && bun run demo:narrate:all",
 		"demo:mux": "bun scripts/mux-demo-video.ts",
 		"demo:publish:prepare": "bun scripts/prepare-demo-publish.ts",
+		"perf:diagnostics": "bun scripts/benchmark-diagnostics-bundle.ts",
 		"perf:keep:real": "bun scripts/benchmark-keep-real.ts",
 		"test": "bun run test:unit:run && bun run test:e2e",
 		"quality:check": "bun run registry:check && bun run paper:typecheck && bun run paper:check && bun run visual:harness:check && bun run demo:typecheck && bun run demo:check && bun run format:check && bun run lint && bun run check && bun run test:e2e:typecheck && bun run test:unit:check",

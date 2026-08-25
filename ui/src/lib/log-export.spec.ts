@@ -74,7 +74,7 @@ describe('bug report export', () => {
 			active_filter: 'info,str0m=warn',
 			browser_entries: 1
 		});
-		expect(lines[1].message).toBe('opening rtsp://[REDACTED]@192.0.2.1/live');
+		expect(lines[1].message).toBe('opening rtsp://[REDACTED_HOST]/live');
 		expect(lines[1].fields.password).toBe('[REDACTED]');
 		expect(lines[2].message).toBe('token=[REDACTED]');
 	});
