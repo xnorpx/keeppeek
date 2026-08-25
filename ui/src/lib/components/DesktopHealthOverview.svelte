@@ -39,6 +39,13 @@
 	let findings = $derived(rankHealthFindings(health));
 	let primaryFinding = $derived(findings[0] ?? null);
 	let recordingDisk = $derived(health.system.disks.find((disk) => disk.stores_recordings) ?? null);
+	let fleetCounts = $derived({
+		configured: health.totals.configured_cameras,
+		connected: health.totals.connected_cameras ?? null,
+		fresh: health.totals.fresh_cameras ?? null,
+		decodable: health.totals.decodable_cameras ?? null,
+		recording: health.totals.recording_cameras ?? null
+	});
 	let streamRows = $derived.by((): HealthStreamRow[] =>
 		health.cameras.flatMap((camera): HealthStreamRow[] => {
 			const videoStreams = camera.streams.filter((stream) => stream.type !== 'audio');
@@ -90,16 +97,53 @@
 		return `${camera.name} · ${suffix}`;
 	}
 
-	function streamState(camera: CameraHealth): string {
-		if (camera.state === 'online') return 'Connected';
-		if (camera.state === 'stale') return 'Stale';
-		return camera.state.charAt(0).toUpperCase() + camera.state.slice(1);
+	function streamState(camera: CameraHealth, stream: StreamHealth | null): string {
+		const state = stream?.state ?? camera.state;
+		return state.charAt(0).toUpperCase() + state.slice(1);
 	}
 
-	function stateColor(camera: CameraHealth): string {
-		if (camera.state === 'online') return 'bg-healthy';
-		if (camera.state === 'degraded' || camera.state === 'stale') return 'bg-activity';
-		return 'bg-live';
+	function stateColor(camera: CameraHealth, stream: StreamHealth | null): string {
+		const state = stream?.state ?? camera.state;
+		if (state === 'healthy') return 'bg-healthy';
+		if (state === 'degraded' || state === 'stale' || state === 'reconnecting') {
+			return 'bg-activity';
+		}
+		if (state === 'offline') return 'bg-live';
+		return 'bg-text-faint';
+	}
+
+	function ratio(value: number | null, total: number): string {
+		return `${value ?? '—'} / ${total}`;
+	}
+
+	function evidence(value: boolean | null | undefined): string {
+		if (value === true) return 'CURRENT';
+		if (value === false) return 'MISSING';
+		return 'UNKNOWN';
+	}
+
+	function transportEvidence(camera: CameraHealth, stream: StreamHealth | null): boolean | null {
+		return (
+			stream?.dimensions?.transport_connected ?? camera.dimensions?.transport_connected ?? null
+		);
+	}
+
+	function frameEvidence(camera: CameraHealth, stream: StreamHealth | null): boolean | null {
+		return stream?.dimensions?.frames_fresh ?? camera.dimensions?.frames_fresh ?? null;
+	}
+
+	function decodeEvidence(camera: CameraHealth, stream: StreamHealth | null): boolean | null {
+		return stream?.dimensions?.decodable ?? camera.dimensions?.decodable ?? null;
+	}
+
+	function recordingEvidence(camera: CameraHealth, stream: StreamHealth | null): string {
+		const requested =
+			stream?.dimensions?.recording_requested ?? camera.dimensions?.recording_requested;
+		if (requested === false) return 'NOT REQUESTED';
+		if (requested !== true) return 'UNKNOWN';
+		return evidence(
+			stream?.dimensions?.recording_progressing ?? camera.dimensions?.recording_progressing
+		);
 	}
 </script>
 
@@ -138,7 +182,7 @@
 					{finding.camera?.last_error ?? `Server-authored finding · ${finding.issue.scope}`}
 				</p>
 				<span class="w-[180px] shrink-0 font-mono text-xs-plus text-text-muted">
-					{finding.camera ? streamState(finding.camera) : finding.issue.severity}
+					{finding.camera ? streamState(finding.camera, null) : finding.issue.severity}
 				</span>
 				{#if finding.camera}
 					<a
@@ -170,7 +214,7 @@
 			: 'min-h-[130px] flex-wrap gap-px'}"
 		aria-label="Health summary"
 	>
-		{#each [['CPU', formatPercent(health.system.process.cpu_capacity_percent), `${health.system.logical_cores} logical cores`], ['MEMORY', formatBytes(health.system.process.resident_memory_bytes), `${formatPercent(health.system.process.memory_capacity_percent)} of host RAM`], ['DISK WRITE', health.system.process.write_bytes_per_second === null ? '—' : `${formatBytes(health.system.process.write_bytes_per_second)}/s`, 'Current process write rate'], ['INGEST', formatBitrate(health.totals.ingress_bitrate_bps), `${health.totals.reporting_video_streams} of ${health.totals.configured_video_streams} streams reporting`], ['LIVE SESSIONS', `${health.webrtc.active_sessions}`, `${health.webrtc.browser_sessions} browser sessions`]] as stat (stat[0])}
+		{#each [['CONFIGURED', `${fleetCounts.configured}`, `${health.totals.configured_video_streams} expected video streams`], ['CONNECTED', ratio(fleetCounts.connected, fleetCounts.configured), `${health.totals.connected_video_streams ?? '—'} transports connected`], ['FRESH', ratio(fleetCounts.fresh, fleetCounts.configured), `${health.totals.fresh_video_streams ?? '—'} streams with current frames`], ['DECODABLE', ratio(fleetCounts.decodable, fleetCounts.configured), `${health.totals.decodable_video_streams ?? '—'} streams with recent keyframes`], ['RECORDING', ratio(fleetCounts.recording, health.totals.recording_requested_cameras ?? 0), `${health.totals.recording_video_streams ?? '—'} of ${health.totals.recording_requested_video_streams ?? '—'} requested writers progressing`]] as stat (stat[0])}
 			<div
 				data-health-metric={stat[0] === 'CPU'
 					? 'Process CPU'
@@ -181,9 +225,7 @@
 			>
 				<p class="font-mono text-2xs leading-[14px] tracking-[0.12em] text-text-faint">{stat[0]}</p>
 				<p class="text-[28px] leading-[34px] font-semibold">{stat[1]}</p>
-				<span class="h-1 w-[225px] rounded-full bg-hairline"
-					><span class="block h-1 w-1/3 rounded-full bg-healthy"></span></span
-				>
+				<span class="h-1 w-[225px] rounded-full bg-hairline"></span>
 				<p class="text-xs-plus leading-4 text-text-muted">{stat[2]}</p>
 			</div>
 		{/each}
@@ -198,8 +240,10 @@
 			<div>
 				<h2 id="streams-heading" class="text-sm font-semibold">Camera streams</h2>
 				<p class="text-[11px] text-text-muted">
-					{health.totals.reporting_cameras} of {health.totals.configured_cameras} cameras · {health
-						.totals.reporting_video_streams} of {health.totals.configured_video_streams} streams reporting
+					{health.totals.connected_cameras ?? '—'} connected · {health.totals.fresh_cameras ?? '—'} fresh
+					·
+					{health.totals.decodable_cameras ?? '—'} decodable · {health.totals.recording_cameras ??
+						'—'} recording
 				</p>
 			</div>
 			<p class="font-mono text-[10px] text-text-faint">
@@ -211,32 +255,45 @@
 		<div
 			class="flex h-[30px] shrink-0 items-center border-b border-hairline-strong font-mono text-2xs tracking-[0.14em] text-text-faint"
 		>
-			<span class="w-[240px]">STREAM</span><span class="w-[190px]">STATE</span><span
-				class="w-[180px]">FRAMES / DROPS</span
-			><span class="w-[150px]">RECONNECTS</span><span class="w-[150px]">FPS</span><span
-				class="w-[180px]">LAST REPORT</span
-			><span class="w-[220px]">FORMAT</span>
+			<span class="w-[220px]">STREAM</span><span class="w-[230px]">STATE / REASON</span><span
+				class="w-[145px]">TRANSPORT</span
+			><span class="w-[150px]">FRAMES</span><span class="w-[150px]">DECODABLE</span><span
+				class="w-[170px]">RECORDING</span
+			><span class="w-[145px]">LAST REPORT</span><span class="w-[100px]">FORMAT</span>
 		</div>
 		{#each streamRows.slice(0, paperFrame ? 4 : streamRows.length) as row (`${row.camera.id}-${row.stream?.type ?? 'none'}`)}
 			<div
 				data-health-stream-row
 				class="flex h-[46px] shrink-0 items-center border-b border-hairline text-[13px]"
 			>
-				<span class="w-[240px] shrink-0 text-sm">{streamName(row.camera, row.stream)}</span>
-				<span class="flex w-[190px] shrink-0 items-center gap-2"
-					><span class="size-1.5 rounded-full {stateColor(row.camera)}"></span>{streamState(
-						row.camera
-					)}</span
+				<span class="w-[220px] shrink-0 text-sm">{streamName(row.camera, row.stream)}</span>
+				<span class="flex w-[230px] shrink-0 items-center gap-2 pr-3"
+					><span class="size-1.5 shrink-0 rounded-full {stateColor(row.camera, row.stream)}"
+					></span><span class="min-w-0"
+						><span class="block">{streamState(row.camera, row.stream)}</span><span
+							class="block truncate text-2xs text-text-faint"
+							>{row.stream?.detail ??
+								row.camera.detail ??
+								row.camera.reason ??
+								'Evidence unavailable'}</span
+						></span
+					></span
 				>
-				<span class="w-[180px] shrink-0 font-mono"
-					>{row.stream?.frames ?? '—'} / {row.stream?.drops ?? '—'}</span
+				<span class="w-[145px] shrink-0 font-mono"
+					>{evidence(transportEvidence(row.camera, row.stream))}</span
 				>
-				<span class="w-[150px] shrink-0 font-mono">{row.stream?.reconnects ?? '—'}</span>
-				<span class="w-[150px] shrink-0 font-mono">{formatMetric(row.stream?.fps ?? null)}</span>
-				<span class="w-[180px] shrink-0 font-mono"
+				<span class="w-[150px] shrink-0 font-mono"
+					>{evidence(frameEvidence(row.camera, row.stream))}</span
+				>
+				<span class="w-[150px] shrink-0 font-mono"
+					>{evidence(decodeEvidence(row.camera, row.stream))}</span
+				>
+				<span class="w-[170px] shrink-0 font-mono">{recordingEvidence(row.camera, row.stream)}</span
+				>
+				<span class="w-[145px] shrink-0 font-mono"
 					>{row.stream ? `${Math.round(row.stream.report_age_ms / 1_000)}s ago` : '—'}</span
 				>
-				<span class="w-[220px] shrink-0 font-mono text-xs text-text-muted"
+				<span class="w-[100px] shrink-0 truncate font-mono text-xs text-text-muted"
 					>{row.stream
 						? `${row.stream.codec ?? '—'} · ${row.stream.resolution ?? '—'}`
 						: (row.camera.lifecycle ?? 'No stream report')}</span

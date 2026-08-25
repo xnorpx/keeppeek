@@ -25,16 +25,10 @@
 		onswitchtotcp
 	}: Props = $props();
 	const capabilities = useCapabilityState();
-	let streamMode = $derived(evidence.camera.state === 'degraded');
-	let frameDropPercent = $derived.by(() => {
-		const frames = evidence.camera.streams.reduce(
-			(total, stream) => total + (stream.frames ?? 0),
-			0
-		);
-		const drops = evidence.drops ?? 0;
-		return frames + drops > 0 ? Math.round((drops / (frames + drops)) * 100) : null;
-	});
-
+	let streamMode = $derived(
+		evidence.camera.state === 'degraded' || evidence.camera.state === 'stale'
+	);
+	let dimensions = $derived(evidence.camera.dimensions ?? null);
 	function formatAge(timestampMs: number | null): string {
 		if (timestampMs === null) return 'Unavailable';
 		const ageSeconds = Math.max(0, Math.round((generatedAtMs - timestampMs) / 1_000));
@@ -51,8 +45,23 @@
 
 	function primaryMessage(): string {
 		return (
-			evidence.camera.last_error ?? evidence.relatedIssues[0]?.message ?? 'No active camera issue'
+			evidence.camera.detail ??
+			evidence.camera.last_error ??
+			evidence.relatedIssues[0]?.message ??
+			'Camera health evidence is unavailable'
 		);
+	}
+
+	function evidenceLabel(value: boolean | null | undefined): string {
+		if (value === true) return 'CURRENT';
+		if (value === false) return 'MISSING';
+		return 'UNKNOWN';
+	}
+
+	function recordingLabel(): string {
+		if (dimensions?.recording_requested === false) return 'OFF';
+		if (dimensions?.recording_requested !== true) return 'UNKNOWN';
+		return evidenceLabel(dimensions.recording_progressing);
 	}
 </script>
 
@@ -70,7 +79,7 @@
 			<ChevronLeftIcon class="size-[18px]" strokeWidth={2} />
 		</a>
 		<h1 class="truncate text-lg leading-5 font-semibold">
-			{evidence.camera.name} · {streamMode ? 'Stream evidence' : 'Offline'}
+			{evidence.camera.name} · {evidence.camera.state}
 		</h1>
 	</header>
 
@@ -81,27 +90,19 @@
 			>
 				<span class="size-[7px] shrink-0 rounded-full bg-activity"></span>
 				<p class="truncate text-sm leading-4">
-					{errorMessage ??
-						statusMessage ??
-						`Degraded · ${frameDropPercent ?? 'unknown'}% frames dropped`}
+					{errorMessage ?? statusMessage ?? `${evidence.camera.state} · ${primaryMessage()}`}
 				</p>
 			</div>
 
 			<div
-				class="flex h-[63px] shrink-0 gap-px overflow-hidden rounded-sm border border-hairline bg-hairline"
+				class="grid h-[63px] shrink-0 grid-cols-4 gap-px overflow-hidden rounded-sm border border-hairline bg-hairline"
 			>
-				<div class="flex w-[119px] shrink-0 flex-col gap-[3px] bg-surface p-3">
-					<p class="font-mono text-2xs leading-3 text-text-faint">DROPS OBSERVED</p>
-					<p class="text-lg-plus leading-[22px] text-activity">{formatCount(evidence.drops)}</p>
-				</div>
-				<div class="flex w-[119px] shrink-0 flex-col gap-[3px] bg-surface p-3">
-					<p class="font-mono text-2xs leading-3 text-text-faint">RECONNECTS</p>
-					<p class="text-lg-plus leading-[22px]">{formatCount(evidence.reconnects)}</p>
-				</div>
-				<div class="flex w-[118px] shrink-0 flex-col gap-[3px] bg-surface p-3">
-					<p class="font-mono text-2xs leading-3 text-text-faint">REPORT AGE</p>
-					<p class="text-lg-plus leading-[22px]">{formatAge(evidence.latestStreamReportAtMs)}</p>
-				</div>
+				{#each [['TRANSPORT', evidenceLabel(dimensions?.transport_connected)], ['FRAMES', evidenceLabel(dimensions?.frames_fresh)], ['DECODE', evidenceLabel(dimensions?.decodable)], ['RECORD', recordingLabel()]] as item (item[0])}
+					<div class="flex min-w-0 flex-col gap-[3px] bg-surface px-1 py-3 text-center">
+						<p class="truncate font-mono text-2xs leading-3 text-text-faint">{item[0]}</p>
+						<p class="truncate font-mono text-xs-plus leading-[22px]">{item[1]}</p>
+					</div>
+				{/each}
 			</div>
 
 			<h2 class="h-5 shrink-0 text-lg leading-5 font-semibold">Last 30 minutes</h2>
@@ -126,28 +127,34 @@
 						'an unknown'} transport. Health does not identify a cause.
 				</p>
 				<div class="mt-auto flex items-center justify-between border-t border-hairline pt-2">
-					<span class="text-sm leading-4">Switch to TCP</span>
+					<span class="text-sm leading-4">
+						{evidence.canSuggestTcp ? 'Test TCP transport' : 'Review transport and ports'}
+					</span>
 					<span class="font-mono text-2xs leading-3 text-healthy">
-						{capabilities.supports('keeppeek.runtime-config.v1')
-							? 'SHIPS · CAMERA WRITE'
-							: 'SERVER UPDATE REQUIRED'}
+						{!evidence.canSuggestTcp
+							? 'REVIEW ONLY'
+							: capabilities.supports('keeppeek.runtime-config.v1')
+								? 'SHIPS · CAMERA WRITE'
+								: 'SERVER UPDATE REQUIRED'}
 					</span>
 				</div>
 			</div>
 
 			<p class="text-xs-plus leading-[18px] text-text-faint">
-				The action changes transport only. It never rewrites unrelated camera settings.
+				{evidence.canSuggestTcp
+					? 'The action changes transport only. It never rewrites unrelated camera settings.'
+					: 'Current health evidence does not justify an automatic transport change.'}
 			</p>
 		</div>
 	{:else}
 		<div class="flex h-[660px] shrink-0 flex-col gap-[14px] p-4">
 			<div class="flex h-[88px] shrink-0 flex-col gap-1.5">
-				<p class="font-mono text-2xs leading-3 tracking-[0.08em] text-live-text">
-					RECORDING GAP START UNAVAILABLE
+				<p class="font-mono text-2xs leading-3 tracking-[0.08em] text-live-text uppercase">
+					{evidence.camera.state} · {evidence.camera.reason ?? 'unknown'}
 				</p>
 				<h2 class="text-xl leading-6 font-semibold">{primaryMessage()}</h2>
 				<p class="line-clamp-2 text-sm leading-[19.5px] text-text-muted">
-					Current health reports the camera error, but not a recording-gap start or retry schedule.
+					{primaryMessage()}
 				</p>
 			</div>
 
@@ -167,8 +174,8 @@
 					<dd class="font-mono text-xs-plus leading-4">{formatCount(evidence.reconnects)}</dd>
 				</div>
 				<div class="flex h-[38px] items-center justify-between">
-					<dt class="text-sm leading-4 text-text-muted">Next retry</dt>
-					<dd class="font-mono text-xs-plus leading-4">Unavailable</dd>
+					<dt class="text-sm leading-4 text-text-muted">Recording progress</dt>
+					<dd class="font-mono text-xs-plus leading-4">{recordingLabel()}</dd>
 				</div>
 			</dl>
 
@@ -228,11 +235,11 @@
 					disabled={updatingTransport}
 					onclick={() => void onswitchtotcp?.()}
 				>
-					{updatingTransport ? 'Saving transport' : 'Switch to TCP and test'}
+					{updatingTransport ? 'Saving transport' : 'Test TCP transport'}
 				</button>
 			{:else}
 				<CapabilityGate
-					action="Switch to TCP"
+					action="Test TCP"
 					capability="keeppeek.runtime-config.v1"
 					class="h-[38px] min-h-0 w-full justify-center text-sm"
 				/>

@@ -21,6 +21,7 @@ import {
 	CameraManufacturerResultSchema,
 	CameraSettingsSchema,
 	CameraHealthSnapshotSchema,
+	CameraHealthDimensionsSnapshotSchema,
 	AccessKeyResultSchema,
 	CatalogHealthSnapshotSchema,
 	CameraTransport as ProtoCameraTransport,
@@ -92,6 +93,7 @@ import {
 	StorageHealthSnapshotSchema,
 	StorageWriteProbeResultSchema,
 	StreamHealthSnapshotSchema,
+	StreamHealthDimensionsSnapshotSchema,
 	SystemHealthSnapshotSchema,
 	TemperatureHealthSnapshotSchema,
 	CpuHealthSnapshotSchema,
@@ -251,6 +253,8 @@ export type MockControlPeerOptions = {
 	cameraSettings?: readonly CameraSettings[];
 	runtimeConfiguration?: SanitizedConfig;
 	health?: HealthFixture;
+	healthSequence?: readonly HealthFixture[];
+	healthError?: string;
 	motionDetection?: MotionDetection;
 	ptzPresets?: readonly { id: number; name: string }[];
 	runtimeUpdateResult?: SettingsConfigUpdateResponse;
@@ -341,6 +345,8 @@ export async function mockControlPeer(
 	const storedCursors = new Map<string, StoredMediaState>();
 	const storedTimelineGates = [...(options.storedTimelineGates ?? [])];
 	const storedOpenGates = [...(options.storedOpenGates ?? [])];
+	const healthSequence = [...(options.healthSequence ?? [])];
+	let healthSequenceIndex = 0;
 	const exportFile = options.exportFile ?? Uint8Array.from([0, 0, 0, 8, 102, 116, 121, 112]);
 	const exportFileHash = createHash('sha256').update(exportFile).digest('hex');
 	const exportJobs = new Map<string, ExportJob>();
@@ -695,9 +701,15 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'healthCommand' && request.command.value.action.case === 'get') {
 			await options.healthGate;
+			if (options.healthError) return encodedError(request.requestId, options.healthError);
+			const health =
+				healthSequence[Math.min(healthSequenceIndex, healthSequence.length - 1)] ??
+				options.health ??
+				{};
+			healthSequenceIndex += 1;
 			return encodedOk(request.requestId, {
 				case: 'healthResult',
-				value: protoHealthSnapshot(options.health ?? {})
+				value: protoHealthSnapshot(health)
 			});
 		}
 		if (request.command.case === 'loggingCommand') {
@@ -1464,21 +1476,31 @@ function protoHealthSnapshot(health: HealthFixture) {
 	const webrtc = health.webrtc ?? {};
 	return create(ServerHealthSnapshotSchema, {
 		status: health.status ?? 'healthy',
+		healthContractVersion: health.health_contract_version ?? 1,
 		generatedAtMs: fixtureBigInt(health.generated_at_ms),
 		uptimeSeconds: fixtureBigInt(health.uptime_seconds),
 		version: health.version ?? 'test',
 		totals: create(HealthTotalsSnapshotSchema, {
 			configuredCameras: fixtureBigInt(totals.configured_cameras),
-			reportingCameras: fixtureBigInt(totals.reporting_cameras),
 			configuredVideoStreams: fixtureBigInt(totals.configured_video_streams),
-			reportingVideoStreams: fixtureBigInt(totals.reporting_video_streams),
 			ingressFps: totals.ingress_fps ?? 0,
 			ingressBitrateBps: fixtureBigInt(totals.ingress_bitrate_bps),
 			frames: fixtureBigInt(totals.frames),
 			keyframes: fixtureBigInt(totals.keyframes),
 			drops: fixtureBigInt(totals.drops),
 			errors: fixtureBigInt(totals.errors),
-			reconnects: fixtureBigInt(totals.reconnects)
+			reconnects: fixtureBigInt(totals.reconnects),
+			connectedCameras: fixtureBigInt(totals.connected_cameras),
+			freshCameras: fixtureBigInt(totals.fresh_cameras),
+			decodableCameras: fixtureBigInt(totals.decodable_cameras),
+			recordingRequestedCameras: fixtureBigInt(totals.recording_requested_cameras),
+			recordingCameras: fixtureBigInt(totals.recording_cameras),
+			unknownCameras: fixtureBigInt(totals.unknown_cameras),
+			connectedVideoStreams: fixtureBigInt(totals.connected_video_streams),
+			freshVideoStreams: fixtureBigInt(totals.fresh_video_streams),
+			decodableVideoStreams: fixtureBigInt(totals.decodable_video_streams),
+			recordingRequestedVideoStreams: fixtureBigInt(totals.recording_requested_video_streams),
+			recordingVideoStreams: fixtureBigInt(totals.recording_video_streams)
 		}),
 		system: create(SystemHealthSnapshotSchema, {
 			hostName: system.host_name ?? undefined,
@@ -1665,6 +1687,59 @@ function protoHealthSnapshot(health: HealthFixture) {
 				backend: camera.backend ?? '',
 				transport: camera.transport ?? '',
 				state: camera.state ?? 'starting',
+				reason: camera.reason ?? '',
+				reasonCodes: camera.reason_codes ?? [],
+				detail: camera.detail ?? '',
+				dimensions: camera.dimensions
+					? create(CameraHealthDimensionsSnapshotSchema, {
+							configured: camera.dimensions.configured ?? false,
+							expected: camera.dimensions.expected ?? false,
+							configuredVideoStreams: fixtureBigInt(camera.dimensions.configured_video_streams),
+							connectedVideoStreams: optionalFixtureBigInt(
+								camera.dimensions.connected_video_streams
+							),
+							reportingVideoStreams: fixtureBigInt(camera.dimensions.reporting_video_streams),
+							freshVideoStreams: fixtureBigInt(camera.dimensions.fresh_video_streams),
+							decodableVideoStreams: fixtureBigInt(camera.dimensions.decodable_video_streams),
+							configuredVideoStreamIds: camera.dimensions.configured_video_stream_ids ?? [],
+							connectedVideoStreamIds: camera.dimensions.connected_video_stream_ids ?? [],
+							connectedVideoStreamIdsKnown:
+								camera.dimensions.connected_video_stream_ids !== null &&
+								camera.dimensions.connected_video_stream_ids !== undefined,
+							reportingVideoStreamIds: camera.dimensions.reporting_video_stream_ids ?? [],
+							freshVideoStreamIds: camera.dimensions.fresh_video_stream_ids ?? [],
+							decodableVideoStreamIds: camera.dimensions.decodable_video_stream_ids ?? [],
+							transportConnected: camera.dimensions.transport_connected ?? undefined,
+							latestReportAtMs: optionalFixtureBigInt(camera.dimensions.latest_report_at_ms),
+							reportAgeMs: optionalFixtureBigInt(camera.dimensions.report_age_ms),
+							framesFresh: camera.dimensions.frames_fresh ?? undefined,
+							decodable: camera.dimensions.decodable ?? undefined,
+							recentReconnects: fixtureBigInt(camera.dimensions.recent_reconnects),
+							recentDrops: fixtureBigInt(camera.dimensions.recent_drops),
+							recentErrors: fixtureBigInt(camera.dimensions.recent_errors),
+							recordingRequested: camera.dimensions.recording_requested ?? false,
+							recordingVideoStreams: fixtureBigInt(camera.dimensions.recording_video_streams),
+							recordingStreamsProgressing: fixtureBigInt(
+								camera.dimensions.recording_streams_progressing
+							),
+							recordingVideoStreamIds: camera.dimensions.recording_video_stream_ids ?? [],
+							recordingProgressingStreamIds:
+								camera.dimensions.recording_progressing_stream_ids ?? [],
+							recordingProgressing: camera.dimensions.recording_progressing ?? undefined,
+							recordingProgressAgeMs: optionalFixtureBigInt(
+								camera.dimensions.recording_progress_age_ms
+							),
+							batteryConfigured: camera.dimensions.battery_configured ?? false,
+							batteryRegistered: camera.dimensions.battery_registered ?? undefined,
+							batteryLastSeenAgeMs: optionalFixtureBigInt(
+								camera.dimensions.battery_last_seen_age_ms
+							),
+							batteryWakePendingAgeMs: optionalFixtureBigInt(
+								camera.dimensions.battery_wake_pending_age_ms
+							),
+							batterySleeping: camera.dimensions.battery_sleeping ?? undefined
+						})
+					: undefined,
 				lifecycle: camera.lifecycle ?? undefined,
 				lastError: camera.last_error ?? undefined,
 				configuredProfiles: (camera.configured_profiles ?? []).map((profile) =>
@@ -1709,7 +1784,44 @@ function protoHealthSnapshot(health: HealthFixture) {
 						drops: optionalFixtureBigInt(stream.drops),
 						errors: optionalFixtureBigInt(stream.errors),
 						updatedAtMs: fixtureBigInt(stream.updated_at_ms),
-						reportAgeMs: fixtureBigInt(stream.report_age_ms)
+						reportAgeMs: fixtureBigInt(stream.report_age_ms),
+						frameUpdatedAtMs: optionalFixtureBigInt(stream.frame_updated_at_ms),
+						frameAgeMs: optionalFixtureBigInt(stream.frame_age_ms),
+						keyframeUpdatedAtMs: optionalFixtureBigInt(stream.keyframe_updated_at_ms),
+						keyframeAgeMs: optionalFixtureBigInt(stream.keyframe_age_ms),
+						recentReconnects: fixtureBigInt(stream.recent_reconnects),
+						recentDrops: fixtureBigInt(stream.recent_drops),
+						recentErrors: fixtureBigInt(stream.recent_errors),
+						state: stream.state ?? '',
+						reason: stream.reason ?? '',
+						reasonCodes: stream.reason_codes ?? [],
+						detail: stream.detail ?? '',
+						dimensions: stream.dimensions
+							? create(StreamHealthDimensionsSnapshotSchema, {
+									expected: stream.dimensions.expected ?? false,
+									transportConnected: stream.dimensions.transport_connected ?? undefined,
+									reportFresh: stream.dimensions.report_fresh ?? false,
+									reportFreshnessThresholdMs: fixtureBigInt(
+										stream.dimensions.report_freshness_threshold_ms
+									),
+									framesFresh: stream.dimensions.frames_fresh ?? false,
+									frameFreshnessThresholdMs: fixtureBigInt(
+										stream.dimensions.frame_freshness_threshold_ms
+									),
+									decodable: stream.dimensions.decodable ?? false,
+									keyframeFreshnessThresholdMs: fixtureBigInt(
+										stream.dimensions.keyframe_freshness_threshold_ms
+									),
+									recentReconnects: fixtureBigInt(stream.dimensions.recent_reconnects),
+									recentDrops: fixtureBigInt(stream.dimensions.recent_drops),
+									recentErrors: fixtureBigInt(stream.dimensions.recent_errors),
+									recordingRequested: stream.dimensions.recording_requested ?? false,
+									recordingProgressing: stream.dimensions.recording_progressing ?? undefined,
+									recordingProgressAgeMs: optionalFixtureBigInt(
+										stream.dimensions.recording_progress_age_ms
+									)
+								})
+							: undefined
 					})
 				)
 			})

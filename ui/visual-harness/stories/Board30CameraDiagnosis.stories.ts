@@ -19,7 +19,7 @@ const meta = {
 			frameId: '507-0',
 			scenarioId: 'health.desktop.camera-diagnosis',
 			reference: 'references/30-camera-diagnosis.png',
-			referenceSha256: '7f2bcedfcb182a70e3a1f73eb2413505ba08de5ae03c11ad7ceb7571b9b07f4a',
+			referenceSha256: '0ab1125972a5a523023d2f7ba16847073c2c815200ae507da5076da020b18b5e',
 			exceptions: [
 				'Server health does not expose packet-loss history, recording-gap start, or retry countdown.',
 				'No credential probe command exists, so the story keeps that action unavailable.',

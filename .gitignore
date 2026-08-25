@@ -11,6 +11,7 @@ npm-shrinkwrap.json
 pnpm-lock.yaml
 yarn.lock
 node_modules/
+/book/book/
 
 # Python
 __pycache__/

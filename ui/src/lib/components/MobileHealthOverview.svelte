@@ -26,17 +26,9 @@
 		return `${minutes}m`;
 	}
 
-	function formatBytes(bytes: number | null): string {
-		if (bytes === null) return '—';
-		return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-	}
-
-	function formatBitrate(bitsPerSecond: number): string {
-		return `${Math.round(bitsPerSecond / 1_000_000)} Mb/s`;
-	}
-
 	function findingDetail(issue: HealthIssue, camera: CameraHealth | null): string {
 		if (!camera) return issue.scope;
+		if (camera.detail) return camera.detail;
 		const stream = camera.streams[0];
 		if (stream?.reconnects !== undefined) return `${stream.reconnects} reconnect attempts`;
 		if (camera.last_error) return camera.last_error;
@@ -71,6 +63,10 @@
 
 	function issueColor(issue: HealthIssue): string {
 		return issue.severity === 'critical' ? 'bg-live' : 'bg-activity';
+	}
+
+	function count(value: number | undefined): string {
+		return value === undefined ? '—' : `${value}`;
 	}
 </script>
 
@@ -147,24 +143,15 @@
 		</div>
 
 		<div
-			class="flex h-[59px] shrink-0 gap-px overflow-hidden rounded-sm border border-hairline bg-hairline"
+			class="grid h-[59px] shrink-0 grid-cols-5 gap-px overflow-hidden rounded-sm border border-hairline bg-hairline"
+			aria-label="Camera health dimensions"
 		>
-			<div class="flex h-[57px] w-[119px] shrink-0 flex-col gap-[3px] bg-surface p-2.5">
-				<p class="font-mono text-2xs leading-3 text-text-faint">CPU</p>
-				<p class="text-lg-plus leading-[22px]">{Math.round(health.system.system_cpu_percent)}%</p>
-			</div>
-			<div class="flex h-[57px] w-[119px] shrink-0 flex-col gap-[3px] bg-surface p-2.5">
-				<p class="font-mono text-2xs leading-3 text-text-faint">RAM</p>
-				<p class="text-lg-plus leading-[22px]">
-					{formatBytes(health.system.process.resident_memory_bytes)}
-				</p>
-			</div>
-			<div class="flex h-[57px] w-[118px] shrink-0 flex-col gap-[3px] bg-surface p-2.5">
-				<p class="font-mono text-2xs leading-3 text-text-faint">INGEST</p>
-				<p class="text-lg-plus leading-[22px]">
-					{formatBitrate(health.totals.ingress_bitrate_bps)}
-				</p>
-			</div>
+			{#each [['CONFIG', `${health.totals.configured_cameras}`], ['LINK', count(health.totals.connected_cameras)], ['FRESH', count(health.totals.fresh_cameras)], ['DECODE', count(health.totals.decodable_cameras)], ['RECORD', `${count(health.totals.recording_cameras)}/${count(health.totals.recording_requested_cameras)}`]] as dimension (dimension[0])}
+				<div class="flex min-w-0 flex-col gap-[3px] bg-surface px-1 py-2.5 text-center">
+					<p class="truncate font-mono text-2xs leading-3 text-text-faint">{dimension[0]}</p>
+					<p class="truncate text-lg-plus leading-[22px]">{dimension[1]}</p>
+				</div>
+			{/each}
 		</div>
 	</div>
 </section>

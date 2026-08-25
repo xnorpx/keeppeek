@@ -24,9 +24,12 @@ async function renderState(state: 'issue' | 'stream') {
 describe('Board 26 mobile diagnosis stories', () => {
 	it('renders current offline evidence without gap-start or retry claims', async () => {
 		const frame = await renderState('issue');
-		await expect.element(page.getByText('Connection refused', { exact: true })).toBeVisible();
+		await expect
+			.element(page.getByRole('heading', { name: 'Camera transport is disconnected' }))
+			.toBeVisible();
 		await expect.element(page.getByText('27', { exact: true })).toBeVisible();
-		expect(frame.textContent).toContain('RECORDING GAP START UNAVAILABLE');
+		expect(frame.textContent).toContain('transport_disconnected');
+		expect(frame.textContent).toContain('Recording progress MISSING');
 		expect(frame.textContent).toContain('Retry unavailable');
 		expect(frame.textContent).not.toContain('NO FOOTAGE SINCE');
 		expect(frame.textContent).not.toContain('18s');
@@ -34,10 +37,11 @@ describe('Board 26 mobile diagnosis stories', () => {
 
 	it('renders current stream counters without fabricated loss history or confidence', async () => {
 		const frame = await renderState('stream');
-		await expect.element(page.getByText('184,000', { exact: true })).toBeVisible();
+		expect(frame.textContent).toContain('184,000 drops observed');
 		await expect.element(page.getByText('History unavailable', { exact: true })).toBeVisible();
 		expect(frame.textContent).toContain('NO CAUSAL CONFIDENCE');
-		expect(frame.textContent).toContain('Switch to TCP and test');
+		expect(frame.textContent).toContain('Test TCP transport');
+		expect(frame.textContent).toContain('SHIPS · CAMERA WRITE');
 		expect(frame.textContent).not.toContain('LOSS 24H');
 		expect(frame.textContent).not.toContain('HIGH CONFIDENCE');
 	});

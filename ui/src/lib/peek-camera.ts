@@ -1,6 +1,6 @@
-import type { CameraHealth, CameraListItem, StreamHealth } from './types';
+import type { CameraHealth, CameraHealthState, CameraListItem, StreamHealth } from './types';
 
-export type PeekCameraState = 'degraded' | 'live' | 'offline' | 'reconnecting';
+export type PeekCameraState = CameraHealthState;
 
 export type PeekCameraPresentation = {
 	state: PeekCameraState;
@@ -8,21 +8,6 @@ export type PeekCameraPresentation = {
 	fps: number | null;
 	recording: boolean;
 };
-
-export function reconcilePeekCameraPlayback(
-	presentation: PeekCameraPresentation,
-	healthState: CameraHealth['state'] | null,
-	hasRecentFrames: boolean
-): PeekCameraPresentation {
-	if (!hasRecentFrames || presentation.state !== 'reconnecting' || healthState === 'stale') {
-		return presentation;
-	}
-	return {
-		...presentation,
-		state: 'live',
-		detail: null
-	};
-}
 
 function latestStream(streams: readonly StreamHealth[]): StreamHealth | null {
 	return streams.reduce<StreamHealth | null>((latest, stream) => {
@@ -40,55 +25,30 @@ function dropDetail(streams: readonly StreamHealth[]): string | null {
 }
 
 export function presentPeekCamera(
-	camera: CameraListItem,
+	_camera: CameraListItem,
 	health: CameraHealth | null
 ): PeekCameraPresentation {
 	const stream = health === null ? null : latestStream(health.streams);
-	const recording = camera.capabilities?.recording === true && health?.state !== 'offline';
+	const recording = health?.dimensions?.recording_progressing === true;
 
 	if (health === null) {
 		return {
-			state: 'reconnecting',
-			detail: 'Waiting for camera health',
+			state: 'unknown',
+			detail: 'Camera health evidence is unavailable',
 			fps: null,
 			recording: false
 		};
 	}
 
-	switch (health.state) {
-		case 'online':
-			return { state: 'live', detail: null, fps: stream?.fps ?? null, recording };
-		case 'degraded':
-			return {
-				state: 'degraded',
-				detail: health.last_error ?? dropDetail(health.streams) ?? 'Stream health degraded',
-				fps: stream?.fps ?? null,
-				recording
-			};
-		case 'starting':
-			return {
-				state: 'reconnecting',
-				detail: health.last_error ?? health.lifecycle ?? 'Starting camera',
-				fps: stream?.fps ?? null,
-				recording: false
-			};
-		case 'stale':
-			const lifecycle = health.lifecycle?.trim() ?? '';
-			const reconnecting = /reconnect|attempt|starting/i.test(lifecycle);
-			return {
-				state: reconnecting ? 'reconnecting' : 'degraded',
-				detail:
-					health.last_error ??
-					(reconnecting ? lifecycle || 'Reconnecting' : 'Stream health report stale'),
-				fps: stream?.fps ?? null,
-				recording: false
-			};
-		case 'offline':
-			return {
-				state: 'offline',
-				detail: health.last_error ?? 'Not recording',
-				fps: null,
-				recording: false
-			};
-	}
+	const detail =
+		health.detail ??
+		health.last_error ??
+		(health.state === 'degraded' ? dropDetail(health.streams) : null) ??
+		(health.state === 'healthy' ? null : `Camera health is ${health.state}`);
+	return {
+		state: health.state,
+		detail,
+		fps: health.state === 'offline' || health.state === 'stopped' ? null : (stream?.fps ?? null),
+		recording
+	};
 }

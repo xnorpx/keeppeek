@@ -55,7 +55,9 @@ describe('Board 6 Peek live wall story', () => {
 		expect(labelBounds).toEqual(diagnosticsBounds);
 		const fleetRuntime = frame!.querySelector<HTMLElement>('[data-peek-paper-fleet-runtime]');
 		expect(fleetRuntime).not.toBeNull();
-		expect(fleetRuntime!.textContent).toContain('5 / 6 REPORTING');
+		expect(fleetRuntime!.textContent?.replace(/\s+/g, ' ')).toContain(
+			'6 CONFIG · 5 LINK · 4 FRESH · 4 DECODE · 4/6 REC'
+		);
 		expect(fleetRuntime!.textContent).toContain('HOSTCPU 34% RAM 6.1/32 GB');
 		expect(fleetRuntime!.textContent).toContain('KEEPPEEKCPU 4% RAM 0.3 GB');
 		expect(frame!.textContent).not.toContain('last frame');
@@ -71,13 +73,13 @@ describe('Board 6 Peek live wall story', () => {
 			frame!
 				.querySelector('[data-peek-camera="front-door"]')
 				?.getAttribute('data-peek-camera-state')
-		).toBe('live');
+		).toBe('healthy');
 		expect(
 			frame!.querySelector('[data-peek-camera="porch"]')?.getAttribute('data-peek-camera-state')
 		).toBe('degraded');
 		expect(
 			frame!.querySelector('[data-peek-camera="alley"]')?.getAttribute('data-peek-camera-state')
-		).toBe('reconnecting');
+		).toBe('stale');
 		expect(
 			frame!.querySelector('[data-peek-camera="back-yard"]')?.getAttribute('data-peek-camera-state')
 		).toBe('offline');

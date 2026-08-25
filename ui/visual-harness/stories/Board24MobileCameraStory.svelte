@@ -85,7 +85,7 @@
 		firmware_version: camera.firmware_version,
 		backend: camera.backend,
 		transport: camera.transport,
-		state: 'online',
+		state: 'healthy',
 		lifecycle: 'connected',
 		last_error: null,
 		configured_profiles: camera.profiles,
@@ -124,7 +124,7 @@
 		record_generic_motion_events: false,
 		recording_mode: 'event-boost',
 		event_recording_duration_secs: 60,
-		health: 'online',
+		health: 'healthy',
 		model: camera.model
 	} satisfies CameraSettings;
 

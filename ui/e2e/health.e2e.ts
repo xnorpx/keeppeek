@@ -1,17 +1,28 @@
 import { expect, test } from '@playwright/test';
-import type { Locator, Page } from '@playwright/test';
+import type { Locator } from '@playwright/test';
+import { canonicalStaleCamera, canonicalStaleHealth } from './fixtures/canonical-health';
 import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 
 const healthSnapshot: HealthFixture = {
 	status: 'degraded',
+	health_contract_version: 1,
 	generated_at_ms: Date.UTC(2026, 7, 10, 12),
 	uptime_seconds: 3_661,
 	version: '0.1.0',
 	totals: {
 		configured_cameras: 9,
-		reporting_cameras: 8,
+		connected_cameras: 8,
+		fresh_cameras: 8,
+		decodable_cameras: 8,
+		recording_requested_cameras: 9,
+		recording_cameras: 8,
+		unknown_cameras: 0,
 		configured_video_streams: 18,
-		reporting_video_streams: 16,
+		connected_video_streams: 16,
+		fresh_video_streams: 16,
+		decodable_video_streams: 16,
+		recording_requested_video_streams: 18,
+		recording_video_streams: 16,
 		ingress_fps: 280,
 		ingress_bitrate_bps: 42_000_000,
 		frames: 1_234_567,
@@ -178,7 +189,26 @@ const healthSnapshot: HealthFixture = {
 			backend: 'reo-proto',
 			transport: 'tcp',
 			state: 'offline',
-			lifecycle: 'starting',
+			reason: 'transport_disconnected',
+			reason_codes: ['transport_disconnected'],
+			detail: 'Camera transport is disconnected',
+			dimensions: {
+				configured: true,
+				expected: true,
+				configured_video_streams: 2,
+				connected_video_streams: 0,
+				reporting_video_streams: 0,
+				fresh_video_streams: 0,
+				decodable_video_streams: 0,
+				transport_connected: false,
+				frames_fresh: false,
+				decodable: false,
+				recording_requested: true,
+				recording_video_streams: 2,
+				recording_streams_progressing: 0,
+				recording_progressing: false
+			},
+			lifecycle: 'reconnecting',
 			last_error: null,
 			configured_profiles: [
 				{
@@ -201,8 +231,28 @@ const healthSnapshot: HealthFixture = {
 			firmware_version: 'v1',
 			backend: 'retina',
 			transport: 'udp',
-			state: 'online',
-			lifecycle: 'starting',
+			state: 'healthy',
+			reason: 'healthy',
+			reason_codes: ['healthy'],
+			detail: 'Transport, media, keyframe, and recording evidence is current',
+			dimensions: {
+				configured: true,
+				expected: true,
+				configured_video_streams: 1,
+				connected_video_streams: 1,
+				reporting_video_streams: 1,
+				fresh_video_streams: 1,
+				decodable_video_streams: 1,
+				transport_connected: true,
+				frames_fresh: true,
+				decodable: true,
+				recording_requested: true,
+				recording_video_streams: 1,
+				recording_streams_progressing: 1,
+				recording_progressing: true,
+				recording_progress_age_ms: 400
+			},
+			lifecycle: 'connected',
 			last_error: null,
 			configured_profiles: [
 				{
@@ -236,7 +286,23 @@ const healthSnapshot: HealthFixture = {
 					drops: 0,
 					errors: 0,
 					updated_at_ms: Date.UTC(2026, 7, 10, 12),
-					report_age_ms: 2_000
+					report_age_ms: 2_000,
+					frame_age_ms: 200,
+					keyframe_age_ms: 400,
+					state: 'healthy',
+					reason: 'healthy',
+					reason_codes: ['healthy'],
+					detail: 'Transport, media, keyframe, and recording evidence is current',
+					dimensions: {
+						expected: true,
+						transport_connected: true,
+						report_fresh: true,
+						frames_fresh: true,
+						decodable: true,
+						recording_requested: true,
+						recording_progressing: true,
+						recording_progress_age_ms: 400
+					}
 				},
 				{
 					type: 'audio',
@@ -247,7 +313,19 @@ const healthSnapshot: HealthFixture = {
 					frames: 156,
 					bytes: 64_000,
 					updated_at_ms: Date.UTC(2026, 7, 10, 12),
-					report_age_ms: 2_000
+					report_age_ms: 2_000,
+					state: 'healthy',
+					reason: 'healthy',
+					reason_codes: ['healthy'],
+					detail: 'Audio frames are current',
+					dimensions: {
+						expected: true,
+						transport_connected: true,
+						report_fresh: true,
+						frames_fresh: true,
+						decodable: true,
+						recording_requested: false
+					}
 				}
 			]
 		}
@@ -256,128 +334,95 @@ const healthSnapshot: HealthFixture = {
 		{
 			severity: 'warning',
 			scope: 'North Courtyard',
-			message: 'No stream health report has been received'
+			message: 'Camera transport is disconnected'
 		}
 	]
 };
 
 /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
-async function installMockPeerConnection(page: Page) {
-	await page.addInitScript(() => {
-		class MockPeerConnection {
-			localDescription: RTCSessionDescriptionInit | null = null;
-			iceGatheringState: RTCIceGatheringState = 'complete';
-			connectionState: RTCPeerConnectionState = 'connected';
-			iceConnectionState: RTCIceConnectionState = 'connected';
-			ontrack: RTCPeerConnection['ontrack'] = null;
-			onconnectionstatechange: RTCPeerConnection['onconnectionstatechange'] = null;
-			oniceconnectionstatechange: RTCPeerConnection['oniceconnectionstatechange'] = null;
-			private statsTimestamp = performance.now();
-			private bytesReceived = 1_000_000;
-			private framesReceived = 300;
-			private framesDecoded = 300;
-			private transceivers: RTCRtpTransceiver[] = [];
-			private receiver = {
-				getStats: async (): Promise<RTCStatsReport> => {
-					this.statsTimestamp += 1_000;
-					this.bytesReceived += 250_000;
-					this.framesReceived += 15;
-					this.framesDecoded += 15;
-					return new Map<string, object>([
-						[
-							'inbound',
-							{
-								id: 'inbound',
-								type: 'inbound-rtp',
-								kind: 'video',
-								ssrc: 1,
-								timestamp: this.statsTimestamp,
-								codecId: 'codec',
-								transportId: 'transport',
-								bytesReceived: this.bytesReceived,
-								packetsReceived: 10_000,
-								packetsLost: 2,
-								frameWidth: 640,
-								frameHeight: 360,
-								framesReceived: this.framesReceived,
-								framesPerSecond: 15,
-								framesDecoded: this.framesDecoded,
-								framesDropped: 3,
-								jitter: 0.004,
-								decoderImplementation: 'Mock decoder'
-							}
-						],
-						['codec', { id: 'codec', type: 'codec', mimeType: 'video/H264' }],
-						[
-							'transport',
-							{
-								id: 'transport',
-								type: 'transport',
-								selectedCandidatePairId: 'candidate-pair'
-							}
-						],
-						[
-							'candidate-pair',
-							{
-								id: 'candidate-pair',
-								type: 'candidate-pair',
-								currentRoundTripTime: 0.012
-							}
-						]
-					]) as unknown as RTCStatsReport;
-				}
-			} as RTCRtpReceiver;
-
-			addTransceiver(): RTCRtpTransceiver {
-				const transceiver = {
-					mid: null,
-					setCodecPreferences() {}
-				} as unknown as RTCRtpTransceiver;
-				this.transceivers.push(transceiver);
-				return transceiver;
-			}
-
-			async createOffer(): Promise<RTCSessionDescriptionInit> {
-				this.transceivers.forEach((transceiver, index) => {
-					(transceiver as unknown as { mid: string }).mid = `${index}`;
-				});
-				return { type: 'offer', sdp: 'v=0\r\n' };
-			}
-
-			async setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
-				this.localDescription = description;
-			}
-
-			async setRemoteDescription(): Promise<void> {
-				this.ontrack?.call(
-					this as unknown as RTCPeerConnection,
+function transitionHealth(state: 'stale' | 'healthy'): HealthFixture {
+	const recovered = state === 'healthy';
+	const reason = recovered ? 'healthy' : 'stream_report_stale';
+	const detail = recovered
+		? 'Transport, media, keyframe, and recording evidence is current'
+		: 'One or more stream health reports are stale';
+	return {
+		...healthSnapshot,
+		status: recovered ? 'healthy' : 'degraded',
+		totals: {
+			...healthSnapshot.totals,
+			configured_cameras: 1,
+			connected_cameras: 1,
+			fresh_cameras: recovered ? 1 : 0,
+			decodable_cameras: recovered ? 1 : 0,
+			recording_requested_cameras: 1,
+			recording_cameras: recovered ? 1 : 0,
+			configured_video_streams: 1,
+			connected_video_streams: 1,
+			fresh_video_streams: recovered ? 1 : 0,
+			decodable_video_streams: recovered ? 1 : 0,
+			recording_requested_video_streams: 1,
+			recording_video_streams: recovered ? 1 : 0
+		},
+		cameras: [
+			{
+				id: 'front-door',
+				ip: '192.0.2.10',
+				name: 'Front Door',
+				backend: 'retina',
+				transport: 'tcp',
+				state,
+				reason,
+				reason_codes: [reason],
+				detail,
+				lifecycle: 'connected',
+				configured_profiles: [{ name: 'Main', stream: 'main', encoding: 'h264' }],
+				dimensions: {
+					configured: true,
+					expected: true,
+					configured_video_streams: 1,
+					connected_video_streams: 1,
+					reporting_video_streams: 1,
+					fresh_video_streams: recovered ? 1 : 0,
+					decodable_video_streams: recovered ? 1 : 0,
+					transport_connected: true,
+					frames_fresh: recovered,
+					decodable: recovered,
+					recording_requested: true,
+					recording_video_streams: 1,
+					recording_streams_progressing: recovered ? 1 : 0,
+					recording_progressing: recovered
+				},
+				streams: [
 					{
-						receiver: this.receiver,
-						streams: [new MediaStream()],
-						transceiver: this.transceivers[0]
-					} as unknown as RTCTrackEvent
-				);
+						type: 'video_main',
+						codec: 'h264',
+						resolution: '1920x1080',
+						fps: recovered ? 15 : 0,
+						expected_fps: 15,
+						updated_at_ms: Date.UTC(2026, 7, 10, 12),
+						report_age_ms: recovered ? 100 : 31_000,
+						frame_age_ms: recovered ? 100 : 31_000,
+						keyframe_age_ms: recovered ? 100 : 31_000,
+						state,
+						reason,
+						reason_codes: [reason],
+						detail,
+						dimensions: {
+							expected: true,
+							transport_connected: true,
+							report_fresh: recovered,
+							frames_fresh: recovered,
+							decodable: recovered,
+							recording_requested: true,
+							recording_progressing: recovered
+						}
+					}
+				]
 			}
-
-			createDataChannel(label: string): RTCDataChannel {
-				return {
-					label,
-					readyState: 'open',
-					onopen: null,
-					onerror: null,
-					onmessage: null,
-					onclose: null,
-					close: () => {},
-					send: () => {}
-				} as unknown as RTCDataChannel;
-			}
-
-			close() {}
-		}
-
-		Object.defineProperty(window, 'RTCPeerConnection', { value: MockPeerConnection });
-		Object.defineProperty(navigator, 'sendBeacon', { value: () => true });
-	});
+		],
+		issues: recovered ? [] : [{ severity: 'warning', scope: 'Front Door', message: detail }]
+	};
 }
 
 async function expectMetric(scope: Locator, label: string, value: string | RegExp) {
@@ -402,9 +447,7 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 		'page'
 	);
 	const priorityIssue = page.getByRole('region', { name: 'Highest priority health issue' });
-	await expect(priorityIssue).toContainText(
-		'North Courtyard · No stream health report has been received'
-	);
+	await expect(priorityIssue).toContainText('North Courtyard · Camera transport is disconnected');
 	await expect(
 		page.getByRole('link', { name: 'Diagnose North Courtyard', exact: true })
 	).toHaveAttribute('href', '/system-health/camera/192.168.137.121');
@@ -449,6 +492,14 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 	await expect(summary.locator('[data-health-metric="Process memory"]')).toContainText(
 		'3.1% of 17.2 GB RAM'
 	);
+	const cameraDimensions = page.getByRole('region', { name: 'Camera health dimensions' });
+	await expectTexts(cameraDimensions, [
+		/Configured\s*9/,
+		/Connected\s*8 \/ 9/,
+		/Fresh\s*8 \/ 9/,
+		/Decodable\s*8 \/ 9/,
+		/Recording\s*8 \/ 9/
+	]);
 	await expect(page.getByText('North Courtyard', { exact: true }).first()).toBeVisible();
 	await expect(page.getByText('retina / udp', { exact: true }).first()).toBeVisible();
 	await expect(
@@ -456,13 +507,13 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 	).toHaveAttribute('href', '/camera?camera=192.168.137.199');
 	await expect(page.getByText('offline', { exact: true })).toBeVisible();
 	await expect(
-		page.getByText('No stream health report has been received', { exact: true })
+		findings.getByText('Camera transport is disconnected', { exact: true })
 	).toBeVisible();
 	const streams = page.locator('section').filter({
 		has: page.getByRole('heading', { name: 'Camera streams' })
 	});
 	await expectTexts(streams, [
-		'8 of 9 cameras · 16 of 18 streams reporting',
+		'8 connected · 8 fresh · 8 decodable · 8 of 9 recording',
 		'1.2M frames',
 		'12.3K keyframes',
 		'3 drops',
@@ -478,6 +529,9 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 		'max 800 kB',
 		'4K total',
 		'100K frames · 10.0 GB',
+		'Frames Current',
+		'Decodable Current',
+		'Recording Current',
 		'min 39 · avg 40 ms',
 		'max 50 ms',
 		'jitter p50 1.2 ms · p99 14.5 ms · 249 samples'
@@ -611,6 +665,71 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
 });
 
+test('uses one canonical stale fixture across every health surface', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await mockControlPeer(page, {
+		cameras: [canonicalStaleCamera],
+		health: canonicalStaleHealth
+	});
+
+	await page.goto('/');
+	const peekTile = page.locator('[data-peek-camera="front-door"]');
+	await expect(peekTile).toHaveAttribute('data-peek-camera-state', 'stale');
+	await expect(peekTile).toContainText('STALE — Video frames are not arriving');
+	await expect(page.locator('[data-peek-fleet-status]')).toContainText(
+		'1 configured · 1 connected · 0 fresh · 0 decodable · 0/0 recording'
+	);
+
+	await page.goto('/cameras');
+	const fleetRow = page.locator('[data-fleet-row="front-door"]');
+	await expect(fleetRow).toContainText('STALE · Video frames are not arriving');
+	await expect(page.getByRole('button', { name: /Not healthy/ })).toContainText('1');
+
+	await page.goto('/system-health');
+	const dimensions = page.getByRole('region', { name: 'Camera health dimensions' });
+	await expect(dimensions.locator('[data-health-dimension="Connected"]')).toContainText('1 / 1');
+	await expect(dimensions.locator('[data-health-dimension="Fresh"]')).toContainText('0 / 1');
+	const streams = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Camera streams' })
+	});
+	await expect(streams).toContainText('stale');
+	await expect(streams).toContainText('frames_not_arriving');
+
+	await page.goto('/system-health/camera/front-door');
+	await expect(page.getByRole('heading', { name: 'Front Door', exact: true })).toBeVisible();
+	await expect(page.getByText('stale', { exact: true })).toBeVisible();
+	const diagnosis = page.getByRole('region', { name: 'Video frames are not arriving' });
+	await expect(diagnosis).toContainText('Reason frames_not_arriving');
+	await expect(diagnosis).toContainText('TRANSPORT');
+	await expect(diagnosis).toContainText('FRAMES');
+	await expect(diagnosis).toContainText('DECODABLE');
+	await expect(diagnosis).toContainText('RECORDING');
+});
+
+test('recovers connected stale media only after fresh server evidence', async ({ page }) => {
+	test.setTimeout(20_000);
+	await mockControlPeer(page, {
+		healthSequence: [transitionHealth('stale'), transitionHealth('healthy')]
+	});
+
+	await page.goto('/system-health');
+
+	const dimensions = page.getByRole('region', { name: 'Camera health dimensions' });
+	const fresh = dimensions.locator('[data-health-dimension="Fresh"]');
+	const streams = page.locator('section').filter({
+		has: page.getByRole('heading', { name: 'Camera streams' })
+	});
+	await expect(fresh).toContainText('0 / 1');
+	await expect(streams).toContainText('stream_report_stale');
+	await expect(streams).toContainText('Frames Missing');
+
+	await expect(fresh).toContainText('1 / 1', { timeout: 12_000 });
+	await expect(streams).toContainText('healthy');
+	await expect(streams).toContainText('Frames Current');
+	await expect(streams).toContainText('Decodable Current');
+	await expect(streams).toContainText('Recording Current');
+});
+
 test('keeps the highest-cost health issue and diagnosis action first on mobile', async ({
 	page
 }) => {
@@ -622,16 +741,18 @@ test('keeps the highest-cost health issue and diagnosis action first on mobile',
 	const priorityIssue = page.getByRole('region', { name: 'Highest priority health issue' });
 	const diagnose = page.getByRole('link', { name: 'Diagnose North Courtyard', exact: true });
 	await expect(priorityIssue).toBeInViewport();
-	await expect(priorityIssue).toContainText('No stream health report has been received');
+	await expect(priorityIssue).toContainText('Camera transport is disconnected');
 	await expect(diagnose).toBeInViewport();
 	await expect(diagnose).toHaveAttribute('href', '/system-health/camera/192.168.137.121');
 	const findings = page.getByRole('heading', { name: 'Open issues' });
 	await expect(findings).toBeInViewport();
 	const mobileOverview = page.locator('[data-mobile-health-overview]');
 	await expect(mobileOverview).toContainText('North Courtyard offline');
-	await expect(mobileOverview).toContainText('CPU');
-	await expect(mobileOverview).toContainText('RAM');
-	await expect(mobileOverview).toContainText('INGEST');
+	await expect(mobileOverview).toContainText('CONFIG');
+	await expect(mobileOverview).toContainText('LINK');
+	await expect(mobileOverview).toContainText('FRESH');
+	await expect(mobileOverview).toContainText('DECODE');
+	await expect(mobileOverview).toContainText('RECORD');
 	expect(
 		await mobileOverview.evaluate((element) => Math.round(element.getBoundingClientRect().width))
 	).toBe(390);

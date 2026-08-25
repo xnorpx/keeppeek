@@ -26,7 +26,7 @@ describe('Board 26 mobile Health story', () => {
 			Math.round(primary!.getBoundingClientRect().height),
 			Math.round(navigation!.getBoundingClientRect().height)
 		]).toEqual([52, 650, 196, 78]);
-		await expect.element(page.getByText('Back Yard has recorded nothing for 2h 14m')).toBeVisible();
+		await expect.element(page.getByText('Back Yard transport is disconnected')).toBeVisible();
 		await expect.element(page.getByText('39 / 42', { exact: true })).not.toBeInTheDocument();
 		await expect.element(page.getByRole('link', { name: 'Diagnose Back Yard' })).toBeVisible();
 		expect(frame!.textContent).not.toContain('Mute 24h');
