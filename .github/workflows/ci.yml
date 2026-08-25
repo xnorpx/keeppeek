@@ -503,6 +503,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: example/object_detection_service/.python-version
+          cache: pip
+          cache-dependency-path: example/object_detection_service/requirements.txt
+      - name: Install repository Python formatter
+        working-directory: .
+        run: python -m pip install black==26.5.1
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
