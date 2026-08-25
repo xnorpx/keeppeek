@@ -1364,16 +1364,16 @@
 						"status": "accepted",
 						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 7128,
+						"mismatchPixels": 7530,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 4384,
-						"varianceReason": "Paper and production share the nine-section rows and exact phone frame; the remaining high-contrast variance is text antialiasing and deterministic unavailable-count copy."
+						"highContrastMismatchPixels": 4186,
+						"varianceReason": "Paper and production share the nine-section rows and exact phone frame; the remaining high-contrast variance is the local administrator initial, deterministic unavailable-count copy, and text antialiasing."
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png",
-						"bytes": 38071,
-						"sha256": "33440fc2c237f35b7d95b06dd24e3bcd96bcaafe17e49bf04694ccc094a52fbc",
+						"bytes": 34427,
+						"sha256": "8bebaa5aef87bf79e1048c723dac69bd9e5bff4fa1a917181c5c48fc05909a08",
 						"approvedAt": "2026-08-24",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
@@ -1688,19 +1688,19 @@
 					"sha256": "c1a6cd81daa61172fbffa12afd77f43be22e9a523aac36ad6eb4c8cb5b9aeb67",
 					"paperOverlay": {
 						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-24",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 2309,
+						"mismatchPixels": 2502,
 						"totalPixels": 79464,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 1267,
-						"varianceReason": "The 18px inset and 45/99/115px lanes match Paper exactly; the residual follows the large Archivo numeral and mono glyph edges."
+						"highContrastMismatchPixels": 1412,
+						"varianceReason": "The 18px inset and 45/99/115px lanes match Paper exactly; the residual follows the explicit elapsed/target wording plus the large Archivo numeral and mono glyph edges."
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.desktop/cameras.waiting.discovery.png",
-						"bytes": 5643,
-						"sha256": "24c0590621c54e83fb405345727ca056b9d6d1aeae2ad78fd6f0a4e27a9fb0b4",
-						"approvedAt": "2026-08-21",
+						"bytes": 6160,
+						"sha256": "ba812d715a40c7430e8ea7ef431655aaf40b7a549ed973dad3883e6270d1beb2",
+						"approvedAt": "2026-08-24",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
 						"paperReferenceSha256": "c1a6cd81daa61172fbffa12afd77f43be22e9a523aac36ad6eb4c8cb5b9aeb67",

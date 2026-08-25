@@ -53,7 +53,7 @@
 
 | Scenario                         | Expected reference                                                                 | Status                                                                      |
 | -------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `cameras.waiting.discovery`      | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.discovery.png`      | Approved `24c0590621c54e83fb405345727ca056b9d6d1aeae2ad78fd6f0a4e27a9fb0b4` |
+| `cameras.waiting.discovery`      | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.discovery.png`      | Approved `ba812d715a40c7430e8ea7ef431655aaf40b7a549ed973dad3883e6270d1beb2` |
 | `cameras.waiting.fleet-skeleton` | `visual-harness/.loki/reference/chrome.desktop/cameras.waiting.fleet-skeleton.png` | Approved `90f92f4835cdf61566f085539f3edd2583c49a40c28946c45ab735aa98f3b194` |
 | `events.empty.no-results`        | `visual-harness/.loki/reference/chrome.desktop/events.empty.no-results.png`        | Approved `a58881eb304c9f78e10d675547c68b16f4383754019192a4a162815038931189` |
 | `health.mobile.overview`         | `visual-harness/.loki/reference/chrome.mobile/health.mobile.overview.png`          | Approved `addb2c3e76982ab113de98d8cd13a1d34f7c9c95840495e12bb9fbe5854df8f0` |
@@ -65,7 +65,7 @@
 | `peek.desktop.light-theme`       | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png`       | Approved `c0b04e71e4d62ba2540443ceb6e494b4ca7dde0ef473df93125573c5e4a0be91` |
 | `peek.desktop.live-wall`         | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png`         | Approved `b22a3b2c5344a8d94ec3e8901b3b596bc2990d608dc03905427b819776f072b0` |
 | `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Approved `3d5eb367f51b9d20e74dc3ae346e66034a6bc13428b2a6dfe8f5c3ba49025128` |
-| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `33440fc2c237f35b7d95b06dd24e3bcd96bcaafe17e49bf04694ccc094a52fbc` |
+| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `8bebaa5aef87bf79e1048c723dac69bd9e5bff4fa1a917181c5c48fc05909a08` |
 | `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Approved `21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509` |
 
 ## Deliberate Capability Gates
