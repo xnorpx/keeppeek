@@ -29,7 +29,7 @@ export const OfflineIssue: Story = {
 			frameId: '4EU-0',
 			scenarioId: 'health.mobile.camera-issue',
 			reference: 'references/26-mobile-health-issue.png',
-			referenceSha256: 'c2bc11e1097bbe539b143c423bed2c0e0863e6033ad83e8a45f6db9b3f192889'
+			referenceSha256: 'fad4120467ee3b2ee2b33edc33b7523571008c390f5eb600ac6351ea3cb561e2'
 		}
 	}
 };
@@ -45,7 +45,7 @@ export const StreamEvidence: Story = {
 			frameId: '4GF-0',
 			scenarioId: 'health.mobile.stream-evidence',
 			reference: 'references/26-mobile-stream-evidence.png',
-			referenceSha256: 'a1d6c9a37eb78c415524ca3bfc9819746069fdd7465d90810d9e7236d60c03dc'
+			referenceSha256: 'ee90a7d58f9992adca50a217a18b9d85ce70cbe39662c735bf6dade19b6df7a7'
 		}
 	}
 };

@@ -45,14 +45,15 @@ describe('Board 30 camera diagnosis story', () => {
 		expect(frame).not.toBeNull();
 
 		await expect
-			.element(page.getByText('No stream health report has been received', { exact: true }))
+			.element(page.getByText('Camera transport is disconnected', { exact: true }))
 			.toBeVisible();
 		await expect.element(page.getByRole('button', { name: 'Retry now' })).toBeDisabled();
 		await expect.element(page.getByRole('button', { name: 'Probe unavailable' })).toBeDisabled();
-		await expect
-			.element(page.getByText('Server update required · keeppeek.runtime-config.v1'))
-			.toBeVisible();
-		await expect.element(page.getByText('Gap start unavailable', { exact: true })).toBeVisible();
+		await expect.element(page.getByRole('link', { name: 'Review settings' })).toBeVisible();
+		expect(frame!.textContent).not.toContain('keeppeek.runtime-config.v1');
+		await expect.element(page.getByText('MISSING', { exact: true }).last()).toBeVisible();
+		expect(frame!.textContent).toContain('TRANSPORT');
+		expect(frame!.textContent).toContain('DECODABLE');
 		expect(frame!.textContent).not.toContain('2h 14m');
 		expect(frame!.textContent).not.toContain('The hour before it stopped');
 		expect(frame!.textContent).not.toContain('packet loss');

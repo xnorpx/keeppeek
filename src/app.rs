@@ -138,6 +138,7 @@ pub fn run(
         storage_config.event_thumbnail_max_bytes,
     )?;
     let recording_demand = storage_engine.demand();
+    let recording_health = storage_engine.health();
     let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
     let health_registry = HealthRegistry::new();
     let server_state = ServerState::new(
@@ -154,7 +155,9 @@ pub fn run(
     .with_restart_control(shutdown.clone(), restart.clone())
     .with_event_store(event_store.clone())
     .with_health_registry(health_registry.clone())
-    .with_recording_catalog(recording_catalog.handle());
+    .with_recording_catalog(recording_catalog.handle())
+    .with_recording_health(recording_health)
+    .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
 
     let (mut router, router_tx) = Router::new()?;
     for camera in cameras.values() {
@@ -168,6 +171,8 @@ pub fn run(
                 CameraStatus {
                     id: CameraId::new(id),
                     lifecycle: CameraLifecycle::Starting,
+                    expected_streams: Vec::new(),
+                    connected_streams: Vec::new(),
                     last_error: None,
                 },
             )))

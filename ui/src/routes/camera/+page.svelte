@@ -370,7 +370,7 @@
 	}
 
 	function stateClass(state: CameraHealth['state'] | undefined): string {
-		if (state === 'online') return 'bg-emerald-500';
+		if (state === 'healthy') return 'bg-emerald-500';
 		if (state === 'starting') return 'bg-sky-500';
 		if (state === 'degraded' || state === 'stale') return 'bg-amber-500';
 		return 'bg-red-500';

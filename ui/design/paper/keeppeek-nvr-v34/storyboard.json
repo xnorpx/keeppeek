@@ -130,27 +130,20 @@
 					"height": 860,
 					"theme": "dark",
 					"fixture": "fleet.mixed-health",
-					"bytes": 103261,
-					"sha256": "669b362c076ac057a5bc625bd52170058104936e9f0a835c65245b8ab4e2342f",
+					"bytes": 106310,
+					"sha256": "df3df85fe1c5bacf595045203e63e348361a6d638f0c7c8075d3bf37cb930ca2",
 					"paperOverlay": {
-						"status": "accepted",
-						"reviewedAt": "2026-08-22",
+						"status": "candidate",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 33203,
+						"mismatchPixels": 77777,
 						"totalPixels": 1238400,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 16248,
-						"varianceReason": "The 1440x860 shell, 64/1374px columns, 52/774/32px main lanes, two 1342x340 rows, and six 439x340 shared tiles match exactly. Residual text and control pixels come from reporting the six fixture cameras as 6 OF 6 instead of inventing Paper's 127-source total, deterministic fleet/runtime telemetry and compound tile diagnostics triggers, runtime-derived reconnect/offline evidence, and Paper/Chromium font rasterization; both references use neutral video surfaces."
-					},
-					"lokiReference": {
-						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.live-wall.png",
-						"bytes": 65050,
-						"sha256": "b22a3b2c5344a8d94ec3e8901b3b596bc2990d608dc03905427b819776f072b0",
-						"approvedAt": "2026-08-22",
-						"approvedBy": "GitHub Copilot",
-						"paperTokenHash": "cf3b1cd7",
-						"paperReferenceSha256": "669b362c076ac057a5bc625bd52170058104936e9f0a835c65245b8ab4e2342f",
-						"storybookStoryId": "peek.desktop.live-wall"
+						"highContrastMismatchPixels": 26365,
+						"blockers": [
+							"The canonical health chips and fleet-dimension lane changed; a fresh reviewed Linux Loki baseline is required.",
+							"The production story retains deterministic implementation chrome and responsive diagnostics whose placement differs from the Paper frame."
+						]
 					}
 				}
 			]
@@ -477,16 +470,16 @@
 					"height": 624,
 					"theme": "dark",
 					"fixture": "fleet.127-sources",
-					"bytes": 153561,
-					"sha256": "3e429d22a99506eccf9d09d072ab4d1336c0cfefd41ee983cb3dc708c6d01f67",
+					"bytes": 155671,
+					"sha256": "dd3710b7bfadca376ca34cb086096f186339db5e5e964ce77771f34d42c312b9",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 50349,
+						"mismatchPixels": 69053,
 						"totalPixels": 898560,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 26623,
+						"highContrastMismatchPixels": 32260,
 						"blockers": [
 							"Fleet and health snapshots do not expose last-event timestamp, kind, or publisher provenance.",
 							"Group membership/directory state and service-published media variants are unavailable.",
@@ -640,20 +633,19 @@
 					"height": 1302,
 					"theme": "dark",
 					"fixture": "health.mixed-outages",
-					"bytes": 278114,
-					"sha256": "de44fdef07d7c14bce45237e1fea81f6d6c6461b636f602b2e655f89c69cf68b",
+					"bytes": 265355,
+					"sha256": "279d0538a445b84c8f878a90ba68dbe01b3be26ccbf48b8785dddd3823e44233",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 101420,
+						"mismatchPixels": 167768,
 						"totalPixels": 1874880,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 64298,
+						"highContrastMismatchPixels": 90474,
 						"blockers": [
-							"Health is read through HealthCommand over the WebRTC control channel, so Paper's obsolete GET /health endpoint label is intentionally not reproduced.",
-							"Current stream snapshots do not expose 24-hour frame loss, writer lag, recorded-today completeness, or exact recording-gap start.",
-							"Issue mute and external-service liveness are unavailable, so unsupported actions and service-state inferences are omitted."
+							"The production verdict, issue rows, and machine-readable cards retain implementation-owned spacing after the canonical dimension redesign.",
+							"Persisted outage intervals, 24-hour loss series, issue mute, and external-service liveness remain separate or unavailable contracts."
 						]
 					}
 				}
@@ -1262,26 +1254,20 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "health.mixed-outages",
-					"bytes": 60213,
-					"sha256": "2f05f294eaa5a7dff49d229d26f473d47e8a9666c0096cb21744a87882905ce7",
+					"bytes": 58349,
+					"sha256": "485c0105af5eb18333e7daeeabe1c2f53254e9a3353b13e8054c506c04aa8739",
 					"paperOverlay": {
-						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"status": "candidate",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 4069,
+						"mismatchPixels": 15279,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 2196
-					},
-					"lokiReference": {
-						"source": "visual-harness/.loki/reference/chrome.mobile/health.mobile.overview.png",
-						"bytes": 46559,
-						"sha256": "addb2c3e76982ab113de98d8cd13a1d34f7c9c95840495e12bb9fbe5854df8f0",
-						"approvedAt": "2026-08-21",
-						"approvedBy": "GitHub Copilot",
-						"paperTokenHash": "cf3b1cd7",
-						"paperReferenceSha256": "2f05f294eaa5a7dff49d229d26f473d47e8a9666c0096cb21744a87882905ce7",
-						"storybookStoryId": "health.mobile.overview"
+						"highContrastMismatchPixels": 9522,
+						"blockers": [
+							"The canonical five-count strip and issue copy changed; a fresh reviewed Linux Loki baseline is required.",
+							"Issue mute remains unavailable, so the stable action lane differs from the authored Paper frame."
+						]
 					}
 				},
 				{
@@ -1293,19 +1279,19 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "health.camera-outage",
-					"bytes": 69520,
-					"sha256": "c2bc11e1097bbe539b143c423bed2c0e0863e6033ad83e8a45f6db9b3f192889",
+					"bytes": 73973,
+					"sha256": "fad4120467ee3b2ee2b33edc33b7523571008c390f5eb600ac6351ea3cb561e2",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 25513,
+						"mismatchPixels": 15196,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 20836,
+						"highContrastMismatchPixels": 8560,
 						"blockers": [
-							"Server health does not expose recording-gap start or last accepted recording time, so the screen cannot claim when footage stopped.",
-							"No retry countdown, retry command, or credential probe exists; the compact route keeps those actions unavailable."
+							"Persisted outage intervals and retry schedules are outside health contract v1, so the screen cannot claim when an outage began.",
+							"No retry command or credential probe exists; the compact route keeps those actions unavailable."
 						]
 					}
 				},
@@ -1318,19 +1304,19 @@
 					"height": 844,
 					"theme": "dark",
 					"fixture": "health.stream-degraded",
-					"bytes": 50366,
-					"sha256": "a1d6c9a37eb78c415524ca3bfc9819746069fdd7465d90810d9e7236d60c03dc",
+					"bytes": 48672,
+					"sha256": "ee90a7d58f9992adca50a217a18b9d85ce70cbe39662c735bf6dade19b6df7a7",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 15555,
+						"mismatchPixels": 22826,
 						"totalPixels": 329160,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 12262,
+						"highContrastMismatchPixels": 16845,
 						"blockers": [
-							"Health exposes current cumulative drops and reconnects but no 24-hour loss aggregate, 30-minute history, or writer-lag series.",
-							"Health does not provide causal attribution or confidence, so the screen cannot claim UDP is the likely cause; Switch to TCP remains available through WebRTC."
+							"Health exposes current drop deltas and writer progress but no 30-minute history or persisted loss series.",
+							"Health does not provide causal attribution; a TCP test is shown only for current UDP drop evidence and still differs from Paper placement."
 						]
 					}
 				}
@@ -1490,18 +1476,18 @@
 					"height": 776,
 					"theme": "dark",
 					"fixture": "health.camera-outage",
-					"bytes": 234097,
-					"sha256": "7f2bcedfcb182a70e3a1f73eb2413505ba08de5ae03c11ad7ceb7571b9b07f4a",
+					"bytes": 203968,
+					"sha256": "0ab1125972a5a523023d2f7ba16847073c2c815200ae507da5076da020b18b5e",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 109217,
+						"mismatchPixels": 130246,
 						"totalPixels": 1117440,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 68423,
+						"highContrastMismatchPixels": 60278,
 						"blockers": [
-							"Server health does not expose packet-loss history, recording-gap start, or retry countdown.",
+							"Persisted packet-loss history, outage intervals, and retry schedules remain outside health contract v1.",
 							"No credential probe command exists, so the route and story must keep that action unavailable."
 						]
 					}
@@ -1824,26 +1810,20 @@
 					"height": 362,
 					"theme": "light",
 					"fixture": "fleet.mixed-health",
-					"bytes": 53734,
-					"sha256": "55828067fdc8a63cc17572a29b597ec1559ad18bd412b3222d9090cf2c73819f",
+					"bytes": 53604,
+					"sha256": "e2b1815d0693006cf2eae0a564bbf9160209590ce02375d833a2cb2682cb60eb",
 					"paperOverlay": {
-						"status": "accepted",
-						"reviewedAt": "2026-08-20",
+						"status": "candidate",
+						"reviewedAt": "2026-08-25",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 1876,
+						"mismatchPixels": 66777,
 						"totalPixels": 521280,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 481
-					},
-					"lokiReference": {
-						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.light-theme.png",
-						"bytes": 40916,
-						"sha256": "c0b04e71e4d62ba2540443ceb6e494b4ca7dde0ef473df93125573c5e4a0be91",
-						"approvedAt": "2026-08-21",
-						"approvedBy": "GitHub Copilot",
-						"paperTokenHash": "cf3b1cd7",
-						"paperReferenceSha256": "55828067fdc8a63cc17572a29b597ec1559ad18bd412b3222d9090cf2c73819f",
-						"storybookStoryId": "peek.desktop.light-theme"
+						"highContrastMismatchPixels": 9003,
+						"blockers": [
+							"The canonical HEALTHY and OFFLINE chips plus last-report copy changed; a fresh reviewed light-theme Loki baseline is required.",
+							"Production compact-tile typography and control placement differ from Paper at high-contrast edges."
+						]
 					}
 				}
 			]

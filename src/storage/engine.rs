@@ -2,7 +2,7 @@ use crate::{
     cameras::CameraRecordingMode,
     config::StorageToml,
     storage::{
-        catalog::RecordingCatalogHandle, demand::RecordingDemand,
+        catalog::RecordingCatalogHandle, demand::RecordingDemand, health::RecordingHealthRegistry,
         identity::RecordingStreamIdentity, long_term::LongTermStore, medium_term::MediumTermWriter,
         segment::RecordingFrame, short_term::ShortTermBuffer,
     },
@@ -356,6 +356,7 @@ pub struct StorageEngine {
     tx: mpsc::Sender<Command>,
     demand: RecordingDemand,
     admission: RecordingAdmission,
+    health: RecordingHealthRegistry,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -396,12 +397,15 @@ impl StorageEngine {
 
         let demand = RecordingDemand::new(DEMAND_INACTIVITY_GRACE);
         let admission = RecordingAdmission::default();
+        let health = RecordingHealthRegistry::default();
         let worker_demand = demand.clone();
+        let worker_health = health.clone();
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("storage-writer".into())
             .spawn(move || {
-                let mut worker = WriterWorker::new(config, worker_demand, catalog);
+                let mut worker =
+                    WriterWorker::new_with_health(config, worker_demand, catalog, worker_health);
                 worker.run(rx);
             })
             .expect("failed to spawn storage writer thread");
@@ -410,6 +414,7 @@ impl StorageEngine {
             tx,
             demand,
             admission,
+            health,
             thread: Some(thread),
         }
     }
@@ -423,6 +428,10 @@ impl StorageEngine {
 
     pub fn demand(&self) -> RecordingDemand {
         self.demand.clone()
+    }
+
+    pub(crate) fn health(&self) -> RecordingHealthRegistry {
+        self.health.clone()
     }
 
     pub fn ingest(&self, camera_id: &str, frame: RecordingFrame) {
@@ -463,21 +472,33 @@ impl Drop for StorageEngine {
 struct WriterWorker {
     config: StorageConfig,
     demand: RecordingDemand,
+    health: RecordingHealthRegistry,
     catalog: Option<RecordingCatalogHandle>,
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
 }
 
 impl WriterWorker {
+    #[cfg(test)]
     fn new(
         config: StorageConfig,
         demand: RecordingDemand,
         catalog: Option<RecordingCatalogHandle>,
     ) -> Self {
+        Self::new_with_health(config, demand, catalog, RecordingHealthRegistry::default())
+    }
+
+    fn new_with_health(
+        config: StorageConfig,
+        demand: RecordingDemand,
+        catalog: Option<RecordingCatalogHandle>,
+        health: RecordingHealthRegistry,
+    ) -> Self {
         let long_term = LongTermStore::new(config.long_term_path.clone());
         Self {
             config,
             demand,
+            health,
             catalog,
             pipelines: HashMap::new(),
             long_term,
@@ -549,8 +570,14 @@ impl WriterWorker {
         self.pipeline_for(identity);
 
         if self.config.is_direct_write() {
-            if let Err(e) = self.direct_write(&storage_key, frame) {
-                tracing::error!(camera = storage_key, error = %e, "direct write failed");
+            self.health.note_attempt(&storage_key);
+            match self.direct_write(&storage_key, frame) {
+                Ok(true) => self.health.note_progress(&storage_key),
+                Ok(false) => {}
+                Err(error) => {
+                    self.health.note_failure(&storage_key, &error.to_string());
+                    tracing::error!(camera = storage_key, %error, "direct write failed");
+                }
             }
             return;
         }
@@ -560,12 +587,20 @@ impl WriterWorker {
         pipeline.short_term.push(frame);
         let needs_flush = active || pipeline.last_flush.elapsed() >= self.config.flush_interval;
 
-        if needs_flush && let Err(e) = self.flush_camera(&storage_key, active) {
-            tracing::error!(camera = storage_key, error = %e, "flush to medium-term failed");
+        if needs_flush {
+            self.health.note_attempt(&storage_key);
+            match self.flush_camera(&storage_key, active) {
+                Ok(true) => self.health.note_progress(&storage_key),
+                Ok(false) => {}
+                Err(error) => {
+                    self.health.note_failure(&storage_key, &error.to_string());
+                    tracing::error!(camera = storage_key, %error, "flush to medium-term failed");
+                }
+            }
         }
     }
 
-    fn direct_write(&mut self, camera_id: &str, frame: RecordingFrame) -> std::io::Result<()> {
+    fn direct_write(&mut self, camera_id: &str, frame: RecordingFrame) -> std::io::Result<bool> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
 
         let needs_rotation = pipeline
@@ -582,7 +617,7 @@ impl WriterWorker {
 
         if pipeline.medium_term.is_none() {
             if !frame.is_video_keyframe() {
-                return Ok(());
+                return Ok(false);
             }
             let started_at = frame.received_at;
             let writer = create_medium_term_writer(
@@ -605,12 +640,13 @@ impl WriterWorker {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
-        Ok(())
+        Ok(true)
     }
 
-    fn flush_camera(&mut self, camera_id: &str, publish_all: bool) -> std::io::Result<()> {
+    fn flush_camera(&mut self, camera_id: &str, publish_all: bool) -> std::io::Result<bool> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         pipeline.last_flush = Instant::now();
+        let mut progressed = false;
 
         let mut frames = if publish_all {
             pipeline.short_term.drain_all()
@@ -619,7 +655,7 @@ impl WriterWorker {
             pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
         };
         if frames.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
 
         let needs_rotation = pipeline
@@ -638,6 +674,7 @@ impl WriterWorker {
                         .as_mut()
                         .unwrap()
                         .append_batch(frames)?;
+                    progressed = true;
                     frames = remainder;
                 }
             } else {
@@ -646,6 +683,7 @@ impl WriterWorker {
                     .as_mut()
                     .unwrap()
                     .append_batch(frames)?;
+                progressed = true;
                 frames = Vec::new();
             }
 
@@ -684,13 +722,14 @@ impl WriterWorker {
                 .as_mut()
                 .unwrap()
                 .append_batch(frames)?;
+            progressed = true;
         }
 
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
-        Ok(())
+        Ok(progressed)
     }
 
     fn flush_all(&mut self) {

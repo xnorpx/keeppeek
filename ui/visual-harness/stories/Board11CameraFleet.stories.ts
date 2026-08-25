@@ -19,7 +19,7 @@ const meta = {
 			frameId: '1NP-0',
 			scenarioId: 'cameras.desktop.fleet',
 			reference: 'references/11-camera-fleet.png',
-			referenceSha256: '3e429d22a99506eccf9d09d072ab4d1336c0cfefd41ee983cb3dc708c6d01f67',
+			referenceSha256: 'dd3710b7bfadca376ca34cb086096f186339db5e5e964ce77771f34d42c312b9',
 			exceptions: [
 				'Fleet and health snapshots do not expose last-event timestamp, kind, or publisher provenance.',
 				'Group membership/directory state and service-published media variants are unavailable.',

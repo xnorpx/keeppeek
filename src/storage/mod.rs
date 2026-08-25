@@ -6,6 +6,7 @@ pub mod demand;
 pub mod engine;
 pub mod events;
 pub mod frame;
+pub(crate) mod health;
 pub mod identity;
 pub mod layout;
 pub mod long_term;
@@ -27,6 +28,7 @@ pub use demand::{RecordingDemand, RecordingDemandGuard};
 pub use engine::{StorageConfig, StorageEngine, StorageHandle};
 pub use events::EventStore;
 pub use frame::{AudioCodec, AudioFrame, MediaFrame, VideoCodec, VideoFrame};
+pub(crate) use health::{RecordingHealthRegistry, RecordingStreamHealthSnapshot};
 pub use identity::RecordingStreamIdentity;
 pub use media_objects::{EncodedEventKeyframe, EventKeyframeLookup};
 pub use search::{

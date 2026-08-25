@@ -37,6 +37,10 @@ pub enum CameraLifecycle {
 pub struct CameraStatus {
     pub id: CameraId,
     pub lifecycle: CameraLifecycle,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_streams: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connected_streams: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }

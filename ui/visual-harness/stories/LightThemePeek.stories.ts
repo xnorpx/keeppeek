@@ -19,7 +19,7 @@ const meta = {
 			frameId: '5SZ-0',
 			scenarioId: 'peek.desktop.light-theme',
 			reference: 'references/34-light-theme-peek.png',
-			referenceSha256: '55828067fdc8a63cc17572a29b597ec1559ad18bd412b3222d9090cf2c73819f'
+			referenceSha256: 'e2b1815d0693006cf2eae0a564bbf9160209590ce02375d833a2cb2682cb60eb'
 		}
 	}
 } satisfies Meta<typeof LightThemePeekStory>;

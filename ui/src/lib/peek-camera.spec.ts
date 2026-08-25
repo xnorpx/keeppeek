@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { CameraHealth, CameraListItem, StreamHealth } from './types';
-import { presentPeekCamera, reconcilePeekCameraPlayback } from './peek-camera';
+import type { CameraHealth, CameraHealthDimensions, CameraListItem, StreamHealth } from './types';
+import { presentPeekCamera } from './peek-camera';
 
 const camera: CameraListItem = {
 	id: 'front-door',
@@ -49,13 +49,24 @@ function health(state: CameraHealth['state'], overrides: Partial<CameraHealth> =
 }
 
 describe('Peek camera presentation', () => {
-	it('shows an online recording stream as live', () => {
-		expect(presentPeekCamera(camera, health('online'))).toEqual({
-			state: 'live',
+	it('shows healthy state without inventing recording progress', () => {
+		expect(presentPeekCamera(camera, health('healthy'))).toEqual({
+			state: 'healthy',
 			detail: null,
 			fps: 11,
-			recording: true
+			recording: false
 		});
+	});
+
+	it('shows recording only from server writer progress', () => {
+		expect(
+			presentPeekCamera(
+				camera,
+				health('healthy', {
+					dimensions: { recording_progressing: true } as CameraHealthDimensions
+				})
+			)
+		).toMatchObject({ state: 'healthy', recording: true });
 	});
 
 	it('derives a degraded frame-drop reason from counters', () => {
@@ -63,44 +74,23 @@ describe('Peek camera presentation', () => {
 			state: 'degraded',
 			detail: '14% frames dropped',
 			fps: 11,
-			recording: true
-		});
-	});
-
-	it('keeps a reconnecting stale lifecycle as reconnecting', () => {
-		expect(presentPeekCamera(camera, health('stale', { lifecycle: 'Reconnecting' }))).toMatchObject(
-			{
-				state: 'reconnecting',
-				detail: 'Reconnecting',
-				recording: false
-			}
-		);
-	});
-
-	it('does not call connected stale telemetry a reconnect', () => {
-		expect(presentPeekCamera(camera, health('stale', { lifecycle: 'Connected' }))).toMatchObject({
-			state: 'degraded',
-			detail: 'Stream health report stale',
 			recording: false
 		});
 	});
 
-	it('preserves stale server evidence while decoded frames remain active', () => {
-		const stale = presentPeekCamera(camera, health('stale', { lifecycle: 'Connected' }));
-		expect(reconcilePeekCameraPlayback(stale, 'stale', true)).toMatchObject({
-			state: 'degraded',
-			detail: 'Stream health report stale'
-		});
-	});
-
-	it('preserves current degraded evidence while decoded frames remain active', () => {
-		const degraded = presentPeekCamera(
-			camera,
-			health('degraded', { last_error: 'RTSP TCP connection closed' })
-		);
-		expect(reconcilePeekCameraPlayback(degraded, 'degraded', true)).toMatchObject({
-			state: 'degraded',
-			detail: 'RTSP TCP connection closed'
+	it('does not reinterpret stale from lifecycle strings', () => {
+		expect(
+			presentPeekCamera(
+				camera,
+				health('stale', {
+					lifecycle: 'Reconnecting',
+					detail: 'Stream health report stale'
+				})
+			)
+		).toMatchObject({
+			state: 'stale',
+			detail: 'Stream health report stale',
+			recording: false
 		});
 	});
 
@@ -115,10 +105,10 @@ describe('Peek camera presentation', () => {
 		});
 	});
 
-	it('treats an unreported configured camera as reconnecting without invented timing', () => {
+	it('treats unavailable camera evidence as unknown', () => {
 		expect(presentPeekCamera(camera, null)).toEqual({
-			state: 'reconnecting',
-			detail: 'Waiting for camera health',
+			state: 'unknown',
+			detail: 'Camera health evidence is unavailable',
 			fps: null,
 			recording: false
 		});

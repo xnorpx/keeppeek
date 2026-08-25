@@ -6,7 +6,6 @@
 	import CameraFleetSkeleton from '$lib/components/CameraFleetSkeleton.svelte';
 	import { useControlClient } from '$lib/control-context';
 	import { fixedRowWindow } from '$lib/fixed-row-virtualizer';
-	import { reconcileServerHealth } from '$lib/health-presentation';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { CameraListItem, ServerHealthResponse } from '$lib/types';
 	import CheckIcon from '@lucide/svelte/icons/check';
@@ -37,7 +36,7 @@
 			presentation: presentCameraFleetRow(camera, healthById.get(camera.id) ?? null)
 		}))
 	);
-	let unhealthyCount = $derived(rows.filter((row) => row.presentation.state !== 'live').length);
+	let unhealthyCount = $derived(rows.filter((row) => row.presentation.state !== 'healthy').length);
 	let normalizedSearch = $derived(searchTerm.trim().toLocaleLowerCase());
 	let filteredRows = $derived(
 		rows.filter((row) => {
@@ -45,7 +44,7 @@
 			const matchesSearch = [camera.name, camera.id, camera.ip, camera.manufacturer, camera.model]
 				.filter((value): value is string => value !== null)
 				.some((value) => value.toLocaleLowerCase().includes(normalizedSearch));
-			return matchesSearch && (!unhealthyOnly || row.presentation.state !== 'live');
+			return matchesSearch && (!unhealthyOnly || row.presentation.state !== 'healthy');
 		})
 	);
 	let rowWindow = $derived(
@@ -80,12 +79,17 @@
 
 	async function loadFleet(): Promise<void> {
 		try {
-			const camerasRequest = controlClient.getCameras();
-			const healthRequest = controlClient.getHealth();
-			const nextCameras = await camerasRequest;
-			cameras = nextCameras;
-			const nextHealth = await healthRequest;
-			serverHealth = reconcileServerHealth(nextHealth);
+			const camerasPromise = controlClient.getCameras().then((nextCameras) => {
+				cameras = nextCameras;
+				return nextCameras;
+			});
+			const [camerasResult, healthResult] = await Promise.allSettled([
+				camerasPromise,
+				controlClient.getHealth()
+			]);
+			if (camerasResult.status === 'rejected') throw camerasResult.reason;
+			serverHealth = healthResult.status === 'fulfilled' ? healthResult.value : null;
+			error = null;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to load cameras';
 		} finally {

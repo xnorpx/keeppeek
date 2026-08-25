@@ -19,7 +19,7 @@ const meta = {
 			frameId: '4CM-0',
 			scenarioId: 'health.mobile.overview',
 			reference: 'references/26-mobile-health-overview.png',
-			referenceSha256: '2f05f294eaa5a7dff49d229d26f473d47e8a9666c0096cb21744a87882905ce7',
+			referenceSha256: '485c0105af5eb18333e7daeeabe1c2f53254e9a3353b13e8054c506c04aa8739',
 			exceptions: [
 				'Mute 24h is omitted because the health control API exposes no issue-suppression command.'
 			]

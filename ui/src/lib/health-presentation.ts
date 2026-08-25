@@ -33,11 +33,10 @@ export function rankHealthFindings(snapshot: HealthPresentationSnapshot): Ranked
 	return snapshot.issues
 		.map((issue, index) => {
 			const matchedCamera = cameraForIssue(snapshot.cameras, issue);
-			const camera = matchedCamera ? effectiveCameraHealth(matchedCamera, snapshot.issues) : null;
 			return {
 				issue,
-				camera,
-				priority: severityPriority[issue.severity] + impactPriority(camera, issue.scope),
+				camera: matchedCamera,
+				priority: severityPriority[issue.severity] + impactPriority(matchedCamera, issue.scope),
 				index
 			};
 		})
@@ -49,9 +48,12 @@ export function cameraDiagnosisEvidence(
 	snapshot: HealthPresentationSnapshot,
 	cameraId: string
 ): CameraDiagnosisEvidence | null {
-	const cameras = snapshot.cameras.map((camera) => effectiveCameraHealth(camera, snapshot.issues));
+	const cameras = snapshot.cameras;
 	const camera = cameras.find((candidate) => candidate.id === cameraId) ?? null;
 	if (camera === null) return null;
+	const currentDrops =
+		camera.dimensions?.recent_drops ??
+		camera.streams.reduce((total, stream) => total + (stream.recent_drops ?? 0), 0);
 
 	return {
 		camera,
@@ -68,34 +70,12 @@ export function cameraDiagnosisEvidence(
 		recordingGapStartMs: null,
 		retryEvidence: null,
 		credentialProbeAvailable: false,
-		canSuggestTcp: camera.transport === 'udp',
-		reportingNormally: cameras.filter((candidate) => candidate.state === 'online').length,
+		canSuggestTcp: camera.transport === 'udp' && camera.state === 'degraded' && currentDrops > 0,
+		reportingNormally: cameras.filter((candidate) => candidate.state === 'healthy').length,
 		otherUnhealthyCameras: cameras.filter(
-			(candidate) =>
-				candidate.id !== camera.id && candidate.state !== 'online' && candidate.state !== 'starting'
+			(candidate) => candidate.id !== camera.id && candidate.state !== 'healthy'
 		).length
 	};
-}
-
-export function reconcileServerHealth(snapshot: ServerHealthResponse): ServerHealthResponse {
-	return {
-		...snapshot,
-		cameras: snapshot.cameras.map((camera) => effectiveCameraHealth(camera, snapshot.issues))
-	};
-}
-
-export function effectiveCameraHealth(
-	camera: CameraHealth,
-	issues: readonly HealthIssue[]
-): CameraHealth {
-	if (camera.state !== 'online') return camera;
-	const issue = issues.find(
-		(candidate) =>
-			candidate.severity !== 'info' && cameraForIssue([camera], candidate)?.id === camera.id
-	);
-	return issue
-		? { ...camera, state: 'degraded', last_error: camera.last_error ?? issue.message }
-		: camera;
 }
 
 function cameraForIssue(cameras: readonly CameraHealth[], issue: HealthIssue): CameraHealth | null {
@@ -108,9 +88,11 @@ function cameraForIssue(cameras: readonly CameraHealth[], issue: HealthIssue): C
 }
 
 function impactPriority(camera: CameraHealth | null, scope: string): number {
-	if (camera?.state === 'offline') return -50;
+	if (camera?.state === 'offline') return -60;
+	if (camera?.state === 'reconnecting') return -50;
 	if (camera?.state === 'stale') return -40;
 	if (camera?.state === 'degraded') return -30;
+	if (camera?.state === 'unknown') return -20;
 	if (scope === 'storage') return -20;
 	if (scope === 'runtime') return -10;
 	return 0;

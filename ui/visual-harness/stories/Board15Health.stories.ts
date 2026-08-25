@@ -19,7 +19,7 @@ const meta = {
 			frameId: '2GY-0',
 			scenarioId: 'health.desktop.overview',
 			reference: 'references/15-health-server-client.png',
-			referenceSha256: 'de44fdef07d7c14bce45237e1fea81f6d6c6461b636f602b2e655f89c69cf68b',
+			referenceSha256: '279d0538a445b84c8f878a90ba68dbe01b3be26ccbf48b8785dddd3823e44233',
 			exceptions: [
 				"Health is read via HealthCommand over the WebRTC control channel, not Paper's obsolete GET /health label.",
 				'Current stream totals do not expose 24-hour frame loss, writer lag, recorded-today completeness, or exact recording-gap start.',

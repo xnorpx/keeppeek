@@ -81,13 +81,13 @@
 
 	const cameras = names.map(([id, name]) => camera(id, name));
 	const healthById = new Map<string, CameraHealth>([
-		['front-door', health('front-door', 'Front Door', 'online')],
-		['driveway', health('driveway', 'Driveway', 'online')],
+		['front-door', health('front-door', 'Front Door', 'healthy')],
+		['driveway', health('driveway', 'Driveway', 'healthy')],
 		['porch', health('porch', 'Porch', 'degraded', 14)],
 		['back-yard', health('back-yard', 'Back Yard', 'offline')],
-		['yard-ptz', health('yard-ptz', 'Yard PTZ', 'online')],
-		['side-gate', health('side-gate', 'Side Gate', 'online')],
-		['workshop', health('workshop', 'Workshop', 'online')]
+		['yard-ptz', health('yard-ptz', 'Yard PTZ', 'healthy')],
+		['side-gate', health('side-gate', 'Side Gate', 'healthy')],
+		['workshop', health('workshop', 'Workshop', 'healthy')]
 	]);
 
 	const segments: RecordingSegment[] = [

@@ -30,8 +30,12 @@
 	}: Props = $props();
 
 	let primaryMessage = $derived(
-		evidence.relatedIssues[0]?.message ?? evidence.camera.last_error ?? 'No active camera issue'
+		evidence.camera.detail ??
+			evidence.relatedIssues[0]?.message ??
+			evidence.camera.last_error ??
+			'Camera health evidence is unavailable'
 	);
+	let dimensions = $derived(evidence.camera.dimensions ?? null);
 	let configuredStreams = $derived(
 		evidence.camera.configured_profiles.map((profile) => profile.stream).join(' + ') ||
 			'profiles unavailable'
@@ -59,11 +63,34 @@
 	}
 
 	function stateClasses(): string {
-		if (evidence.camera.state === 'online') return 'border-healthy/40 bg-healthy/10 text-healthy';
-		if (evidence.camera.state === 'degraded' || evidence.camera.state === 'stale') {
+		if (evidence.camera.state === 'healthy') return 'border-healthy/40 bg-healthy/10 text-healthy';
+		if (
+			evidence.camera.state === 'degraded' ||
+			evidence.camera.state === 'stale' ||
+			evidence.camera.state === 'reconnecting'
+		) {
 			return 'border-activity/50 bg-activity/10 text-activity';
 		}
-		return 'border-live/40 bg-live/10 text-live-text';
+		if (evidence.camera.state === 'offline') return 'border-live/40 bg-live/10 text-live-text';
+		return 'border-hairline-strong bg-raised text-text-muted';
+	}
+
+	function evidenceLabel(value: boolean | null | undefined): string {
+		if (value === true) return 'CURRENT';
+		if (value === false) return 'MISSING';
+		return 'UNKNOWN';
+	}
+
+	function recordingLabel(): string {
+		if (dimensions?.recording_requested === false) return 'NOT REQUESTED';
+		if (dimensions?.recording_requested !== true) return 'UNKNOWN';
+		return evidenceLabel(dimensions.recording_progressing);
+	}
+
+	function formatAgeMs(value: number | null | undefined): string {
+		if (value === null || value === undefined) return 'Unavailable';
+		if (value < 1_000) return `${value} ms`;
+		return `${Math.round(value / 1_000)}s ago`;
 	}
 </script>
 
@@ -127,33 +154,36 @@
 	>
 		<div class="space-y-5">
 			<section
-				class="overflow-hidden rounded-lg border border-live/40 bg-surface lg:h-[197px]"
+				class="overflow-hidden rounded-lg border bg-surface lg:h-[197px] {stateClasses()}"
 				aria-labelledby="diagnosis-heading"
 			>
-				<header class="min-h-[105px] border-b border-hairline bg-live/5 px-5 py-[18px]">
-					<p class="font-mono text-2xs tracking-caps text-live-text">
-						SERVER-OBSERVED CAMERA EVIDENCE
-					</p>
+				<header class="min-h-[105px] border-b border-hairline px-5 py-[18px]">
+					<p class="font-mono text-2xs tracking-caps">SERVER-OBSERVED CAMERA EVIDENCE</p>
 					<h2 id="diagnosis-heading" class="mt-1 text-lg font-semibold">{primaryMessage}</h2>
 					<p class="mt-1 text-xs leading-5 text-text-muted">
-						Lifecycle {evidence.camera.lifecycle ?? 'unavailable'} · Last error {evidence.camera
-							.last_error ?? 'unavailable'}
+						Reason {evidence.camera.reason ?? 'unknown'} · Latest report {formatObservationTime(
+							evidence.latestStreamReportAtMs
+						)}
 					</p>
 				</header>
-				<dl class="grid sm:h-[90px] sm:grid-cols-3">
+				<dl class="grid sm:h-[90px] sm:grid-cols-4">
 					<div class="border-b border-hairline px-4 py-3 sm:border-r sm:border-b-0">
-						<dt class="font-mono text-2xs tracking-caps text-text-faint">LATEST STREAM REPORT</dt>
-						<dd class="mt-1 text-xs text-text-muted">
-							{formatObservationTime(evidence.latestStreamReportAtMs)}
+						<dt class="font-mono text-2xs tracking-caps text-text-faint">TRANSPORT</dt>
+						<dd class="mt-1 text-sm font-medium">
+							{evidenceLabel(dimensions?.transport_connected)}
 						</dd>
 					</div>
 					<div class="border-b border-hairline px-4 py-3 sm:border-r sm:border-b-0">
-						<dt class="font-mono text-2xs tracking-caps text-text-faint">RECONNECTS OBSERVED</dt>
-						<dd class="mt-1 text-sm font-medium">{formatCounter(evidence.reconnects)}</dd>
+						<dt class="font-mono text-2xs tracking-caps text-text-faint">FRAMES</dt>
+						<dd class="mt-1 text-sm font-medium">{evidenceLabel(dimensions?.frames_fresh)}</dd>
+					</div>
+					<div class="border-b border-hairline px-4 py-3 sm:border-r sm:border-b-0">
+						<dt class="font-mono text-2xs tracking-caps text-text-faint">DECODABLE</dt>
+						<dd class="mt-1 text-sm font-medium">{evidenceLabel(dimensions?.decodable)}</dd>
 					</div>
 					<div class="px-4 py-3">
-						<dt class="font-mono text-2xs tracking-caps text-text-faint">NEXT RETRY</dt>
-						<dd class="mt-1 text-sm font-medium">Unavailable in health API</dd>
+						<dt class="font-mono text-2xs tracking-caps text-text-faint">RECORDING</dt>
+						<dd class="mt-1 text-sm font-medium">{recordingLabel()}</dd>
 					</div>
 				</dl>
 			</section>
@@ -223,9 +253,7 @@
 						>
 						<div>
 							<h3 class="text-lg leading-5 font-semibold">
-								{evidence.canSuggestTcp
-									? 'Switch this camera to TCP'
-									: 'Review transport and ports'}
+								{evidence.canSuggestTcp ? 'Test TCP transport' : 'Review transport and ports'}
 							</h3>
 							<p class="mt-1 text-sm leading-[19px] text-text-muted">
 								{evidence.canSuggestTcp
@@ -242,10 +270,10 @@
 									onclick={() => void onswitchtotcp?.()}
 								>
 									<NetworkIcon class="size-3.5" />
-									{updatingTransport ? 'Saving' : 'Switch to TCP'}
+									{updatingTransport ? 'Saving' : 'Test TCP'}
 								</button>
 							{:else}
-								<CapabilityGate action="Switch to TCP" capability="keeppeek.runtime-config.v1" />
+								<CapabilityGate action="Test TCP" capability="keeppeek.runtime-config.v1" />
 							{/if}
 						{:else}
 							<a
@@ -299,6 +327,18 @@
 						<dt class="text-text-muted">Configured profiles</dt>
 						<dd class="font-mono">{evidence.camera.configured_profiles.length}</dd>
 					</div>
+					<div class="flex items-center justify-between gap-3 py-2.5">
+						<dt class="text-text-muted">Fresh video streams</dt>
+						<dd class="font-mono">{dimensions?.fresh_video_streams ?? 'Unknown'}</dd>
+					</div>
+					<div class="flex items-center justify-between gap-3 py-2.5">
+						<dt class="text-text-muted">Decodable video streams</dt>
+						<dd class="font-mono">{dimensions?.decodable_video_streams ?? 'Unknown'}</dd>
+					</div>
+					<div class="flex items-center justify-between gap-3 py-2.5">
+						<dt class="text-text-muted">Recording progress age</dt>
+						<dd class="font-mono">{formatAgeMs(dimensions?.recording_progress_age_ms)}</dd>
+					</div>
 				</dl>
 			</section>
 
@@ -313,26 +353,26 @@
 					<p class="flex items-center gap-2">
 						<span class="size-1.5 rounded-full bg-healthy"></span>{cameraCountLabel(
 							evidence.reportingNormally
-						)} currently {evidence.reportingNormally === 1 ? 'reports' : 'report'} online
+						)} currently {evidence.reportingNormally === 1 ? 'is' : 'are'} healthy
 					</p>
 					<p class="flex items-center gap-2">
 						<span class="size-1.5 rounded-full bg-activity"></span>{cameraCountLabel(
 							evidence.otherUnhealthyCameras
-						)} other than this one {evidence.otherUnhealthyCameras === 1 ? 'is' : 'are'} degraded, stale,
-						or offline
+						)} other than this one {evidence.otherUnhealthyCameras === 1 ? 'is' : 'are'} not healthy
 					</p>
 				</div>
 			</section>
 
 			<section
-				class="h-[130px] rounded-lg border border-live/40 bg-live/5 p-[18px]"
+				class="h-[130px] rounded-lg border border-hairline bg-surface p-[18px]"
 				aria-labelledby="impact-heading"
 			>
-				<p class="font-mono text-2xs tracking-caps text-live-text">RECORDING IMPACT</p>
-				<h2 id="impact-heading" class="mt-1 text-base font-semibold">Gap start unavailable</h2>
+				<p class="font-mono text-2xs tracking-caps text-text-faint">RECORDING IMPACT</p>
+				<h2 id="impact-heading" class="mt-1 text-base font-semibold">{recordingLabel()}</h2>
 				<p class="mt-1 text-xs leading-5 text-text-muted">
-					ServerHealthResponse does not include the last accepted recording timestamp. Keep can draw
-					known catalog gaps, but this diagnosis cannot claim a missing-footage duration.
+					{dimensions?.recording_requested === false
+						? 'Recording is not requested for this camera.'
+						: `Latest writer progress: ${formatAgeMs(dimensions?.recording_progress_age_ms)}.`}
 				</p>
 			</section>
 		</aside>

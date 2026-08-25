@@ -8,7 +8,12 @@
 	import VideoIcon from '@lucide/svelte/icons/video';
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import { setLivePeer } from '$lib/stream-peer-context';
-	import type { CameraHealth, CameraListItem } from '$lib/types';
+	import type {
+		CameraHealth,
+		CameraHealthDimensions,
+		CameraListItem,
+		StreamHealthDimensions
+	} from '$lib/types';
 
 	setLivePeer();
 
@@ -47,6 +52,19 @@
 			lastError?: string;
 		}
 	): CameraHealth {
+		const reason =
+			state === 'healthy'
+				? 'healthy'
+				: state === 'degraded'
+					? 'ingress_drops'
+					: 'transport_disconnected';
+		const detail =
+			state === 'healthy'
+				? 'Transport, media, keyframe, and recording evidence is current'
+				: state === 'degraded'
+					? '14% frames dropped'
+					: 'Camera transport is disconnected';
+		const current = state === 'healthy' || state === 'degraded';
 		return {
 			id,
 			ip: '192.0.2.1',
@@ -55,6 +73,16 @@
 			model: null,
 			firmware_version: null,
 			state,
+			reason,
+			reason_codes: [reason],
+			detail,
+			dimensions: {
+				transport_connected: state !== 'offline',
+				frames_fresh: current,
+				decodable: current,
+				recording_requested: true,
+				recording_progressing: current
+			} as CameraHealthDimensions,
 			lifecycle: state === 'offline' ? 'Stopped' : 'Connected',
 			last_error: options.lastError ?? null,
 			configured_profiles: [],
@@ -65,7 +93,20 @@
 					frames: options.frames ?? 0,
 					drops: options.drops ?? 0,
 					updated_at_ms: options.updatedAtMs,
-					report_age_ms: options.reportAgeMs
+					report_age_ms: options.reportAgeMs,
+					state,
+					reason,
+					reason_codes: [reason],
+					detail,
+					dimensions: {
+						expected: true,
+						transport_connected: state !== 'offline',
+						report_fresh: options.reportAgeMs <= 30_000,
+						frames_fresh: current,
+						decodable: current,
+						recording_requested: true,
+						recording_progressing: current
+					} as StreamHealthDimensions
 				}
 			]
 		};
@@ -79,7 +120,7 @@
 	const healthById = new Map<string, CameraHealth>([
 		[
 			'front-door',
-			health('front-door', 'Front Door', 'online', {
+			health('front-door', 'Front Door', 'healthy', {
 				fps: 25,
 				frames: 1_000,
 				reportAgeMs: 20,
