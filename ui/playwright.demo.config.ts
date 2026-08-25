@@ -25,6 +25,7 @@ export default defineConfig({
 		{
 			command: 'bun scripts/start-logging-e2e-server.ts',
 			url: `${backendURL}/metrics`,
+			env: { ...environment, KEEPPEEK_E2E_EMPTY_FLEET: '1' },
 			reuseExistingServer: false,
 			timeout: 180_000
 		},

@@ -50,21 +50,13 @@ type CameraDrafts = {
 	cameras: CameraDraft[];
 };
 
-test('adds nine randomized RTSP cameras in Settings and shows the production WebRTC wall', async ({
-	browser
-}) => {
+test('shows nine configured RTSP cameras on the production WebRTC wall', async ({ browser }) => {
 	const cameraDrafts = JSON.parse(await readFile(draftsPath, 'utf8')) as CameraDrafts;
 	expect(cameraDrafts.cameras.map((camera) => camera.id)).toEqual(cameraIds);
 	expect(new Set(cameraDrafts.cameras.map((camera) => camera.startAtSeconds)).size).toBe(
 		cameraIds.length
 	);
-	const firstSave = demo.actions.find(
-		(action) => action.selector === 'role=button[name="Save camera"]'
-	);
-	if (!firstSave) throw new Error('Nine-camera story has no Save camera action');
-	expect(cameraDrafts.selection.safeAfterSeconds).toBeGreaterThanOrEqual(
-		(demo.durationMs - firstSave.atMs) / 1_000
-	);
+	expect(cameraDrafts.selection.safeAfterSeconds).toBeGreaterThanOrEqual(demo.durationMs / 1_000);
 	for (const camera of cameraDrafts.cameras) {
 		expect(
 			cameraDrafts.selection.excludedBlackIntervals.some(
@@ -105,36 +97,14 @@ test('adds nine randomized RTSP cameras in Settings and shows the production Web
 			(response) => response.url().endsWith('/create') && response.request().method() === 'POST',
 			{ timeout: 30_000 }
 		);
-		await page.goto('/');
+		await page.goto('/cameras');
 		const response = await createResponse;
 		expect(response.status(), await response.text()).toBe(201);
-		await expect(page.locator('[data-peek-camera]')).toHaveCount(0);
+		await expect(page.getByRole('heading', { name: 'Cameras', exact: true })).toBeVisible();
+		await expect(page.locator('[data-fleet-row]')).toHaveCount(cameraIds.length);
+		await waitForCameraIngress(page);
 		await documentReady(page);
 		const demoStartAt = performance.now();
-
-		await waitForAction(page, demoStartAt, 'a[aria-label="Settings"]');
-		await page.getByRole('link', { name: 'Settings', exact: true }).click();
-		await showCameraSetup(page);
-		await expect(page.getByText('No cameras configured.')).toBeVisible();
-
-		for (const [index, draft] of cameraDrafts.cameras.entries()) {
-			await waitForAction(page, demoStartAt, 'role=button[name="Add camera"]', index);
-			await page.getByRole('button', { name: 'Add camera', exact: true }).click();
-			const form = cameraEditor(page);
-			await fillCameraDraft(page, form, draft);
-			await waitForAction(page, demoStartAt, 'role=button[name="Save camera"]', index);
-			await form.getByRole('button', { name: 'Save camera' }).click();
-			await expect(page.getByText('Camera settings saved.')).toBeVisible();
-			await expect(page.getByText(`${index + 1} configured`, { exact: true })).toBeVisible();
-		}
-
-		await waitForAction(page, demoStartAt, 'role=button[name="Restart"]');
-		const restarted = page.waitForEvent('load', { timeout: 30_000 });
-		await page.getByRole('button', { name: 'Restart', exact: true }).click();
-		await restarted;
-		await showCameraSetup(page);
-		await expect(page.getByText('9 configured', { exact: true })).toBeVisible();
-		await waitForCameraIngress(page);
 
 		await waitForNineLiveCameras(page, async () => {
 			await waitForAction(page, demoStartAt, 'a[aria-label="Peek"]');
@@ -325,39 +295,6 @@ async function waitForNineLiveCameras(page: Page, navigate: () => Promise<unknow
 		await expect(tile).not.toContainText('Reconnecting');
 		await expect(tile).not.toContainText('NO SIGNAL');
 	}
-}
-
-async function showCameraSetup(page: Page): Promise<void> {
-	const title = page.getByText('Camera setup', { exact: true });
-	await expect(title).toBeVisible();
-	await title.scrollIntoViewIfNeeded();
-}
-
-function cameraEditor(page: Page) {
-	return page
-		.locator('form')
-		.filter({ has: page.getByRole('heading', { name: 'Add camera', exact: true }) });
-}
-
-async function fillCameraDraft(
-	page: Page,
-	form: ReturnType<typeof cameraEditor>,
-	draft: CameraDraft
-): Promise<void> {
-	const fields = [
-		['IP address', draft.ip],
-		['Display name', draft.displayName],
-		['Username', draft.username],
-		['Password', draft.password],
-		['Main RTSP stream URL', draft.mainRtspUrl],
-		['Sub RTSP stream URL', draft.subRtspUrl]
-	] as const;
-	for (const [label, value] of fields) {
-		await form.getByLabel(label, { exact: true }).fill(value);
-		await page.waitForTimeout(120);
-	}
-	await form.getByLabel('Backend').selectOption(draft.backend);
-	await form.getByLabel('Transport').selectOption(draft.transport);
 }
 
 async function documentReady(page: Page): Promise<void> {

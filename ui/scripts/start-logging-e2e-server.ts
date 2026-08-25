@@ -6,16 +6,48 @@ const repositoryRoot = path.resolve(import.meta.dir, '../..');
 const testRoot = path.join(repositoryRoot, 'target', 'ui-logging-e2e');
 const storageRoot = path.join(testRoot, 'recordings');
 const configPath = path.join(testRoot, 'config.toml');
+const cameraDraftPath = path.join(testRoot, 'camera-draft.json');
 const testdataRoot = path.join(repositoryRoot, 'crates', 'test-camera', 'testdata');
 const executableExtension = process.platform === 'win32' ? '.exe' : '';
 const releaseRoot = path.join(repositoryRoot, 'target', 'release');
 const keeppeekBinary = requiredBinary('keeppeek');
 const testCameraBinary = requiredBinary('test_camera');
+const startWithEmptyFleet = process.env.KEEPPEEK_E2E_EMPTY_FLEET === '1';
 
 type TestCamera = {
 	name: string;
 	process: ReturnType<typeof Bun.spawn>;
 	config: string;
+};
+
+type TestCameraDraft = {
+	ip: string;
+	displayName: string;
+	username: string;
+	password: string;
+	onvifPort: string;
+	httpPort: string;
+	mainRtspUrl: string;
+	subRtspUrl: string;
+	backend: string;
+	transport: string;
+};
+
+type ParsedTestCameraConfig = {
+	'test-camera': Record<
+		string,
+		{
+			ip: string;
+			username: string;
+			password: string;
+			onvif_port: number;
+			http_port: number;
+			main_rtsp_url: string;
+			sub_rtsp_url: string;
+			backend: string;
+			transport: string;
+		}
+	>;
 };
 
 async function startTestCamera(name: string, main: string, sub: string): Promise<TestCamera> {
@@ -73,6 +105,10 @@ try {
 	throw error;
 }
 
+const testCamera = testCameras[0];
+if (!testCamera) throw new Error('The logging E2E server requires a test camera');
+await writeFile(cameraDraftPath, `${JSON.stringify(parseCameraDraft(testCamera), null, 2)}\n`);
+
 const tomlString = (value: string) => JSON.stringify(value);
 await writeFile(
 	configPath,
@@ -94,7 +130,7 @@ flush_interval_secs = 1
 write_buffer_bytes = 8192
 long_term_max_gb = 0
 
-${testCameras.map((camera) => camera.config).join('\n')}
+${startWithEmptyFleet ? '' : testCameras.map((camera) => camera.config).join('\n')}
 `
 );
 
@@ -141,6 +177,24 @@ process.once('exit', stopServer);
 
 const exitCode = await server.exited;
 process.exitCode = stopping ? 0 : exitCode;
+
+function parseCameraDraft(camera: TestCamera): TestCameraDraft {
+	const parsed = Bun.TOML.parse(camera.config) as ParsedTestCameraConfig;
+	const settings = parsed['test-camera'][camera.name];
+	if (!settings) throw new Error(`Missing generated configuration for ${camera.name}`);
+	return {
+		ip: settings.ip,
+		displayName: camera.name,
+		username: settings.username,
+		password: settings.password,
+		onvifPort: settings.onvif_port.toString(),
+		httpPort: settings.http_port.toString(),
+		mainRtspUrl: settings.main_rtsp_url,
+		subRtspUrl: settings.sub_rtsp_url,
+		backend: settings.backend,
+		transport: settings.transport
+	};
+}
 
 function requiredBinary(binaryName: string): string {
 	const binaryPath = path.join(releaseRoot, `${binaryName}${executableExtension}`);
