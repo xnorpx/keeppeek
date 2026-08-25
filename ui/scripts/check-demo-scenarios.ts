@@ -101,22 +101,13 @@ if (nineCameraLiveStory.demo.viewport.width % 2 || nineCameraLiveStory.demo.view
 }
 const nineCameraActions = nineCameraLiveStory.demo.actions;
 if (
-	nineCameraActions.filter((action) => action.selector === 'role=button[name="Add camera"]')
-		.length !== 9 ||
-	nineCameraActions.filter((action) => action.selector === 'role=button[name="Save camera"]')
-		.length !== 9 ||
-	nineCameraActions.filter((action) => action.selector === 'role=button[name="Restart"]').length !==
-		1 ||
-	nineCameraActions.filter((action) => action.selector === 'a[aria-label="Settings"]').length !==
-		1 ||
+	nineCameraActions.length !== 3 ||
 	nineCameraActions.filter((action) => action.selector === 'a[aria-label="Peek"]').length !== 1 ||
 	nineCameraActions.filter(
 		(action) => action.selector === '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]'
 	).length !== 2
 ) {
-	throw new Error(
-		'Nine-camera demo must save nine cameras and restart once before opening Peek diagnostics'
-	);
+	throw new Error('Nine-camera demo must open Peek and toggle one camera diagnostic twice');
 }
 for (const source of [
 	'demo/nine-camera-live.story.ts',
@@ -140,11 +131,9 @@ const nineCameraLauncher = await readFile(
 );
 if (
 	!nineCameraLauncher.includes('camera-drafts.json') ||
-	nineCameraLauncher.includes('testCameras.map((camera) => camera.config)')
+	!nineCameraLauncher.includes('testCameras.map((camera) => camera.config)')
 ) {
-	throw new Error(
-		'Nine-camera demo server must stage manual drafts and start without camera tables'
-	);
+	throw new Error('Nine-camera demo server must retain drafts and start from camera tables');
 }
 
 const previewSource = await readFile(resolve('visual-harness/local-preview.ts'), 'utf8');

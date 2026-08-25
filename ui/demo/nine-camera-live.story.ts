@@ -1,13 +1,5 @@
 import type { StoryScenarioMetadata } from '../src/lib/storybook/demo';
 
-const cameraFormActions = Array.from({ length: 9 }, (_, index) => {
-	const addAtMs = 4_000 + index * 3_500;
-	return [
-		{ kind: 'click' as const, atMs: addAtMs, selector: 'role=button[name="Add camera"]' },
-		{ kind: 'click' as const, atMs: addAtMs + 2_300, selector: 'role=button[name="Save camera"]' }
-	];
-}).flat();
-
 export const nineCameraLiveStory = {
 	storyId: 'demos-camera-fleet--add-nine-manual-streams',
 	paper: {
@@ -18,9 +10,9 @@ export const nineCameraLiveStory = {
 		scenarioId: 'peek.desktop.live-wall'
 	},
 	demo: {
-		title: 'Add nine cameras in Settings',
+		title: 'Nine-camera live wall',
 		purpose:
-			'Prove nine manual RTSP camera configurations can be entered through production Settings and become live immediately.',
+			'Prove nine independently paced RTSP cameras render together through the production WebRTC wall.',
 		narration: {
 			voice: 'coral',
 			instructions:
@@ -28,65 +20,44 @@ export const nineCameraLiveStory = {
 			cues: [
 				{
 					atMs: 0,
-					text: 'We begin with an empty KeepPeek server and nine virtual RTSP cameras ready to add.',
+					text: 'The Cameras fleet confirms nine independently paced RTSP sources are configured and online.',
 					pauseAfterMs: 450
 				},
 				{
-					atMs: 2_000,
-					text: 'Open Settings, then add each camera with its address, credentials, and main and sub stream URLs.',
+					atMs: 5_000,
+					text: 'Open Peek and all nine feeds join the shared WebRTC session as one coordinated live wall.',
 					pauseAfterMs: 500
 				},
 				{
-					atMs: 16_000,
-					text: 'Every form is saved through the production control channel. Each camera starts as soon as its configuration is accepted.',
+					atMs: 20_000,
+					text: 'Each tile advances with real decoded H.264 frames from its own RTSP source.',
 					pauseAfterMs: 550
 				},
 				{
-					atMs: 34_000,
-					text: 'The ninth camera completes the fleet. Every configuration was entered here in Settings.',
-					pauseAfterMs: 550
-				},
-				{
-					atMs: 38_000,
-					text: 'Restart the recorder once, so KeepPeek loads the complete nine-camera configuration we just saved.',
-					pauseAfterMs: 600
-				},
-				{
-					atMs: 48_000,
-					text: 'Return to Peek and all nine independently paced feeds appear together on the live wall.',
-					pauseAfterMs: 550
-				},
-				{
-					atMs: 60_000,
+					atMs: 30_000,
 					text: 'The stream diagnostics confirm that the wall is using the real RTSP and WebRTC path.',
 					pauseAfterMs: 650
 				}
 			]
 		},
-		durationMs: 70_000,
+		durationMs: 45_000,
 		viewport: { width: 1440, height: 900 },
 		captions: [
-			{ atMs: 0, text: 'Begin with an empty KeepPeek server.' },
-			{ atMs: 2_000, text: 'Add nine RTSP cameras manually in Settings.' },
-			{ atMs: 16_000, text: 'Each saved camera starts through the production control path.' },
-			{ atMs: 34_000, text: 'All nine camera configurations are saved.' },
-			{ atMs: 38_000, text: 'Restart once with the complete saved configuration.' },
-			{ atMs: 48_000, text: 'The nine live feeds appear together in Peek.' },
-			{ atMs: 60_000, text: 'Diagnostics confirm the production RTSP and WebRTC path.' }
+			{ atMs: 0, text: 'The Cameras fleet reports nine configured sources.' },
+			{ atMs: 5_000, text: 'The nine feeds join one shared WebRTC live wall.' },
+			{ atMs: 20_000, text: 'Every tile advances with decoded H.264 frames.' },
+			{ atMs: 30_000, text: 'Diagnostics confirm the production RTSP and WebRTC path.' }
 		],
 		actions: [
-			{ kind: 'click', atMs: 2_000, selector: 'a[aria-label="Settings"]' },
-			...cameraFormActions,
-			{ kind: 'click', atMs: 38_000, selector: 'role=button[name="Restart"]' },
-			{ kind: 'click', atMs: 48_000, selector: 'a[aria-label="Peek"]' },
+			{ kind: 'click', atMs: 5_000, selector: 'a[aria-label="Peek"]' },
 			{
 				kind: 'click',
-				atMs: 60_000,
+				atMs: 30_000,
 				selector: '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]'
 			},
 			{
 				kind: 'click',
-				atMs: 65_000,
+				atMs: 38_000,
 				selector: '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]'
 			}
 		],

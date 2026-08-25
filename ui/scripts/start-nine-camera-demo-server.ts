@@ -64,6 +64,7 @@ type CameraDraft = CameraStart & {
 type TestCamera = {
 	process: ChildProcess;
 	draft: CameraDraft;
+	config: string;
 };
 
 type CameraConfigEntry = {
@@ -139,6 +140,8 @@ medium_term_secs = 60
 flush_interval_secs = 1
 write_buffer_bytes = 8192
 long_term_max_gb = 0
+
+${testCameras.map((camera) => camera.config).join('\n')}
 `
 );
 
@@ -211,6 +214,7 @@ async function startTestCamera(camera: CameraStart, mediaPath: string): Promise<
 			}
 			return {
 				process: cameraProcess,
+				config,
 				draft: {
 					...camera,
 					ip: entry.ip,

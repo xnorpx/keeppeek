@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import {
 	assertDemoRecordingCovers,
 	assertH264OnlyVideo,
@@ -17,7 +17,8 @@ import { cameraLifecycleStory } from './camera-lifecycle.story';
 type CameraDraft = {
 	ip: string;
 	displayName: string;
-	manufacturer: string;
+	username: string;
+	password: string;
 	onvifPort: string;
 	httpPort: string;
 	mainRtspUrl: string;
@@ -26,16 +27,16 @@ type CameraDraft = {
 	transport: string;
 };
 
-const cameraId = '127.0.0.1';
 const { demo } = cameraLifecycleStory;
 const viewport = demo.viewport;
 const outputDirectory = resolve(process.env.DEMO_OUTPUT_DIR ?? 'test-results/demo-videos/assets');
 const recordingDirectory = resolve('test-results/demo-playwright/recordings');
+const cameraDraftPath = resolve('../target/ui-logging-e2e/camera-draft.json');
 const scenarioStem = join(outputDirectory, cameraLifecycleStory.paper.scenarioId);
 const recordingTailMs = 500;
 
-test('delete and re-add the same camera through the real server', async ({ browser }) => {
-	const draft = await readStableCameraDraft(browser);
+test('add a verified camera through the real server', async ({ browser }) => {
+	const draft = await readCameraDraft();
 	await mkdir(outputDirectory, { recursive: true });
 	await rm(recordingDirectory, { recursive: true, force: true });
 	await mkdir(recordingDirectory, { recursive: true });
@@ -54,33 +55,50 @@ test('delete and re-add the same camera through the real server', async ({ brows
 	let contextClosed = false;
 
 	try {
-		await waitForStableH264Camera(page);
+		await page.goto('/cameras');
+		await expect(page.getByText('No cameras configured.')).toBeVisible();
 		await documentReady(page);
 		const demoStartAt = performance.now();
 
-		await waitForAction(page, demoStartAt, 'a[aria-label="Settings"]');
-		await page.getByRole('link', { name: 'Settings' }).click();
-		await expect(page).toHaveURL(/\/settings$/);
-		await showCameraSetup(page);
+		await waitForAction(page, demoStartAt, 'role=link[name="Add camera"]');
+		await page.getByRole('link', { name: 'Add camera', exact: true }).click();
+		await expect(page).toHaveURL(/\/cameras\/new$/);
+		const wizard = page.locator('[data-desktop-camera-wizard]');
+		await wizard.getByLabel('Address or RTSP URL').fill(draft.mainRtspUrl);
+		await wizard.getByLabel('Username').fill(draft.username);
+		await wizard.getByLabel('Password').fill(draft.password);
 
-		await waitForAction(page, demoStartAt, 'role=button[name="Remove"]');
-		page.once('dialog', (dialog) => dialog.accept());
-		await page.getByRole('button', { name: 'Remove', exact: true }).click();
-		await expect(page.getByText('No cameras configured.')).toBeVisible();
+		await waitForAction(page, demoStartAt, 'role=button[name="Continue"]', 0);
+		await wizard.getByRole('button', { name: 'Continue' }).click();
+		await expect(wizard.getByRole('heading', { name: 'Connection options' })).toBeVisible();
+		await wizard.getByLabel('Protocol').selectOption(draft.backend);
+		await wizard.getByLabel('Transport').selectOption(draft.transport);
+		await wizard.getByLabel('ONVIF port').fill(draft.onvifPort);
+		await wizard.getByLabel('HTTP port').fill(draft.httpPort);
+
+		await waitForAction(page, demoStartAt, 'role=button[name="Continue"]', 1);
+		await wizard.getByRole('button', { name: 'Continue' }).click();
+		await wizard.getByLabel(/Recording stream/).fill(draft.mainRtspUrl);
+		await wizard.getByLabel(/Live stream/).fill(draft.subRtspUrl);
+		await waitForAction(page, demoStartAt, 'role=button[name="Verify streams"]');
+		await wizard.getByRole('button', { name: 'Verify streams' }).click();
 		await expect(
-			page.getByText('Camera removed. Apply changes to update the server.')
+			wizard.getByText('KeepPeek received authenticated video evidence.', { exact: true })
 		).toBeVisible();
 
-		await waitForAction(page, demoStartAt, 'role=button[name="Add camera"]');
-		await page.getByRole('button', { name: 'Add camera', exact: true }).click();
-		const form = cameraEditor(page, 'Add camera');
-		await fillCameraDraft(page, form, draft);
+		await waitForAction(page, demoStartAt, 'role=button[name="Continue"]', 2);
+		await wizard.getByRole('button', { name: 'Continue' }).click();
+		await wizard.getByLabel('Camera name').fill(draft.displayName);
+		await waitForAction(page, demoStartAt, 'role=button[name="Continue"]', 3);
+		await wizard.getByRole('button', { name: 'Continue' }).click();
+		await expect(wizard.getByRole('heading', { name: 'Review & save' })).toBeVisible();
 		await waitForAction(page, demoStartAt, 'role=button[name="Save camera"]');
-		await form.getByRole('button', { name: 'Save camera' }).click();
-		await expect(page.getByText('Camera settings saved.')).toBeVisible();
-		await expect(page.getByText('1 configured', { exact: true })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Apply changes' })).toBeVisible();
-		await showCameraSetup(page);
+		await wizard.getByRole('button', { name: 'Save camera' }).click();
+		await expect(page.getByRole('region', { name: 'Camera saved' })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'Open camera' })).toHaveAttribute(
+			'href',
+			`/camera?camera=${encodeURIComponent(draft.ip)}`
+		);
 		await page.locator(demo.completionSignal.selector).waitFor({
 			state: demo.completionSignal.state,
 			timeout: 60_000
@@ -133,8 +151,9 @@ test('delete and re-add the same camera through the real server', async ({ brows
 				fixtureSha256: await fixtureHash([
 					'demo/camera-lifecycle.story.ts',
 					'demo/camera-lifecycle.demo.ts',
+					'playwright.demo.config.ts',
 					'scripts/start-logging-e2e-server.ts',
-					'src/routes/settings/+page.svelte'
+					'src/routes/cameras/new/+page.svelte'
 				]),
 				recordingPreRollMs,
 				mp4FileName: basename(mp4Path),
@@ -161,79 +180,8 @@ test('delete and re-add the same camera through the real server', async ({ brows
 	}
 });
 
-async function readStableCameraDraft(browser: Browser): Promise<CameraDraft> {
-	const context = await browser.newContext({ viewport, colorScheme: 'dark' });
-	const page = await context.newPage();
-	try {
-		await waitForStableH264Camera(page);
-		await page.getByRole('link', { name: 'Settings' }).click();
-		await showCameraSetup(page);
-		await page.getByRole('button', { name: 'Edit', exact: true }).click();
-		const form = cameraEditor(page, 'Edit camera');
-		const draft = {
-			ip: await form.getByLabel('IP address').inputValue(),
-			displayName: await form.getByLabel('Display name').inputValue(),
-			manufacturer: await form.getByLabel('Manufacturer override').inputValue(),
-			onvifPort: await form.getByLabel('ONVIF port').inputValue(),
-			httpPort: await form.getByLabel('HTTP port').inputValue(),
-			mainRtspUrl: await form.getByLabel('Main RTSP stream URL').inputValue(),
-			subRtspUrl: await form.getByLabel('Sub RTSP stream URL').inputValue(),
-			backend: await form.getByLabel('Backend').inputValue(),
-			transport: await form.getByLabel('Transport').inputValue()
-		};
-		await form.getByRole('button', { name: 'Cancel' }).first().click();
-		return draft;
-	} finally {
-		await context.close();
-	}
-}
-
-async function waitForStableH264Camera(page: Page, navigate = true): Promise<void> {
-	if (navigate) await page.goto('/');
-	const liveView = page.locator(`[data-camera-id="${cameraId}"]`);
-	await expect(liveView).toHaveAttribute('data-status', 'live', { timeout: 60_000 });
-	await expect(liveView).toHaveAttribute('data-codec', /h264/i, { timeout: 60_000 });
-	await expect(liveView).toHaveAttribute('data-frame-activity', 'active', { timeout: 60_000 });
-	await expect(page.locator(`[data-peek-camera="${cameraId}"]`)).toHaveAttribute(
-		'data-peek-camera-state',
-		/^(?:live|degraded)$/
-	);
-}
-
-async function showCameraSetup(page: Page): Promise<void> {
-	const title = page.getByText('Camera setup', { exact: true });
-	await expect(title).toBeVisible();
-	await title.scrollIntoViewIfNeeded();
-}
-
-function cameraEditor(page: Page, title: 'Add camera' | 'Edit camera') {
-	return page
-		.locator('form')
-		.filter({ has: page.getByRole('heading', { name: title, exact: true }) });
-}
-
-async function fillCameraDraft(
-	page: Page,
-	form: ReturnType<typeof cameraEditor>,
-	draft: CameraDraft
-): Promise<void> {
-	const fields = [
-		['IP address', draft.ip],
-		['Display name', draft.displayName],
-		['Username', 'test'],
-		['Password', 'test'],
-		['Manufacturer override', draft.manufacturer],
-		['ONVIF port', draft.onvifPort],
-		['HTTP port', draft.httpPort],
-		['Main RTSP stream URL', draft.mainRtspUrl],
-		['Sub RTSP stream URL', draft.subRtspUrl]
-	] as const;
-	for (const [label, value] of fields) {
-		await form.getByLabel(label, { exact: true }).fill(value);
-		await page.waitForTimeout(150);
-	}
-	await form.getByLabel('Backend').selectOption(draft.backend);
-	await form.getByLabel('Transport').selectOption(draft.transport);
+async function readCameraDraft(): Promise<CameraDraft> {
+	return JSON.parse(await readFile(cameraDraftPath, 'utf8')) as CameraDraft;
 }
 
 async function documentReady(page: Page): Promise<void> {
