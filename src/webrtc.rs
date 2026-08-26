@@ -2513,9 +2513,9 @@ fn rtc_config() -> RtcConfig {
     #[cfg(all(target_os = "macos", not(feature = "macos-test-aws-crypto")))]
     let provider = str0m_apple_crypto::default_provider();
     #[cfg(target_os = "linux")]
-    let provider = str0m_openssl::default_provider();
+    let provider = str0m::crypto::from_feature_flags();
     #[cfg(windows)]
-    let provider = str0m_wincrypto::default_provider();
+    let provider = str0m::crypto::from_feature_flags();
 
     RtcConfig::new()
         .set_crypto_provider(Arc::new(provider))
