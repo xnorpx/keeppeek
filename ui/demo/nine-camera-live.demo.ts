@@ -3,12 +3,14 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
+import type { PeekCameraState } from '../src/lib/peek-camera';
 import {
 	assertDemoRecordingCovers,
 	assertH264OnlyVideo,
 	createFfprobeDurationArgs,
 	createFfprobeStreamsArgs,
 	createSilentDemoVideoMuxArgs,
+	finalizeDemoRecordingDirectory,
 	parseFfprobeDurationMs
 } from '../src/lib/server/storybook/demo-video';
 import { createDemoWebVtt } from '../src/lib/storybook/demo';
@@ -24,6 +26,7 @@ const draftsPath = resolve('../target/nine-camera-demo/camera-drafts.json');
 const scenarioStem = join(outputDirectory, nineCameraLiveStory.paper.scenarioId);
 const recordingTailMs = 500;
 const nineCameraHardwareConcurrency = 18;
+const readyTileState: PeekCameraState = 'healthy';
 
 type CameraDraft = {
 	id: string;
@@ -50,7 +53,9 @@ type CameraDrafts = {
 	cameras: CameraDraft[];
 };
 
-test('shows nine configured RTSP cameras on the production WebRTC wall', async ({ browser }) => {
+test('shows nine configured RTSP cameras on the production WebRTC wall', async ({
+	browser
+}, testInfo) => {
 	const cameraDrafts = JSON.parse(await readFile(draftsPath, 'utf8')) as CameraDrafts;
 	expect(cameraDrafts.cameras.map((camera) => camera.id)).toEqual(cameraIds);
 	expect(new Set(cameraDrafts.cameras.map((camera) => camera.startAtSeconds)).size).toBe(
@@ -82,10 +87,12 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 	});
 	const pageCreatedAt = performance.now();
 	const page = await context.newPage();
+	const recording = page.video();
 	await page.addInitScript((hardwareConcurrency) => {
 		Object.defineProperty(navigator, 'hardwareConcurrency', { value: hardwareConcurrency });
 	}, nineCameraHardwareConcurrency);
 	let contextClosed = false;
+	let recordingCompleted = false;
 
 	try {
 		const browserErrors: string[] = [];
@@ -189,6 +196,7 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 			}
 		};
 		await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+		recordingCompleted = true;
 		console.log(
 			JSON.stringify({
 				scenarioId: nineCameraLiveStory.paper.scenarioId,
@@ -203,7 +211,16 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 		);
 	} finally {
 		if (!contextClosed) await context.close().catch(() => {});
-		await rm(recordingDirectory, { recursive: true, force: true });
+		await finalizeDemoRecordingDirectory({ recordingDirectory, completed: recordingCompleted });
+		if (!recordingCompleted && recording) {
+			const rawVideoPath = await recording.path().catch(() => null);
+			if (rawVideoPath) {
+				await testInfo.attach('failed-nine-camera-demo.webm', {
+					path: rawVideoPath,
+					contentType: 'video/webm'
+				});
+			}
+		}
 	}
 });
 
@@ -294,7 +311,7 @@ async function waitForNineLiveCameras(page: Page, navigate: () => Promise<unknow
 				{ timeout: 90_000 }
 			)
 			.toBeGreaterThan(8);
-		await expect(tile).toHaveAttribute('data-peek-camera-state', /^(?:live|degraded)$/);
+		await expect(tile).toHaveAttribute('data-peek-camera-state', readyTileState);
 		await expect(tile).not.toContainText('Reconnecting');
 		await expect(tile).not.toContainText('NO SIGNAL');
 	}

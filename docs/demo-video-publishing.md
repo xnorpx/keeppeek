@@ -60,6 +60,17 @@ bun run demo:check
 bun run demo:render
 ```
 
+Run the complete local pre-upload gate with:
+
+```sh
+bun run demo:gate
+```
+
+This command typechecks the recorder against production UI contracts, validates the demo registry,
+and records every canonical demo. It does not sign in to Azure, synthesize narration, publish media,
+or upload an artifact. The canonical `./check.sh` gate runs the same `demo:typecheck` and
+`demo:check` phases, so invalid typed state expectations fail quickly without recording video.
+
 Record only a static Storybook scenario:
 
 ```sh
@@ -118,12 +129,14 @@ staged non-secret test drafts are available under ignored `target/nine-camera-de
 for manual entry. The launcher never reads or modifies the user's private
 KeepPeek configuration.
 
-Generated files are written under `ui/test-results/demo-videos/assets/`. Playwright's VP8 WebM is a
-temporary capture only and is deleted after transcoding. Every retained MP4 contains exactly one
-H.264/yuv420p video stream; WebVTT captions remain a sidecar rather than an embedded subtitle
-stream. The JSON records story/Paper IDs, action timeline, fixture SHA-256, commit SHA, measured
-pre-roll, viewport, duration, codec, and stream count. Local and CI generation require Chromium,
-ffmpeg, and ffprobe.
+Generated files are written under `ui/test-results/demo-videos/assets/`. After successful
+transcoding, Playwright's temporary VP8 WebM is deleted. When a recorder fails, its raw WebM remains
+under the corresponding ignored `ui/test-results/**/recordings/` directory; real-server Playwright
+recorders also attach that WebM to the failed test result. Every retained MP4 contains exactly one
+H.264/yuv420p video stream; WebVTT captions remain a sidecar rather than an embedded subtitle stream.
+The JSON records story/Paper IDs, action timeline, fixture SHA-256, commit SHA, measured pre-roll,
+viewport, duration, codec, and stream count. Local and CI generation require Chromium, ffmpeg, and
+ffprobe.
 
 Every published demo uses ordered Azure OpenAI narration cues. `demo:narrate` writes one numbered
 WAV per cue plus a manifest containing its source timestamp, measured duration, size, and SHA-256.

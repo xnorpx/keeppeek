@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
 	assertDemoRecordingCovers,
@@ -8,10 +11,28 @@ import {
 	createNarratedDemoPlan,
 	createPacedDemoVideoMuxArgs,
 	createSilentDemoVideoMuxArgs,
+	finalizeDemoRecordingDirectory,
 	parseFfprobeDurationMs
 } from './demo-video';
 
 describe('demo video muxing', () => {
+	it('retains failed recordings and removes successful raw captures', async () => {
+		const root = await mkdtemp(join(tmpdir(), 'keeppeek-demo-recording-'));
+		const recordingDirectory = join(root, 'recordings');
+		const recordingPath = join(recordingDirectory, 'failure.webm');
+		try {
+			await mkdir(recordingDirectory);
+			await writeFile(recordingPath, 'recording');
+			await finalizeDemoRecordingDirectory({ recordingDirectory, completed: false });
+			expect(await readFile(recordingPath, 'utf8')).toBe('recording');
+
+			await finalizeDemoRecordingDirectory({ recordingDirectory, completed: true });
+			await expect(readFile(recordingPath, 'utf8')).rejects.toThrow();
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it('lets narration delay the next visual phase by freezing the final frame', () => {
 		const cues = [
 			{ sourceAtMs: 0, audioPath: 'first.wav', audioDurationMs: 2_600, pauseAfterMs: 400 },

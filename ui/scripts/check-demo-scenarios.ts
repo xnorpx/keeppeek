@@ -159,6 +159,12 @@ if (
 	throw new Error('demo:render must invoke every canonical recorder');
 }
 if (
+	packageManifest.scripts['demo:gate'] !==
+	'bun run demo:typecheck && bun run demo:check && bun run demo:render'
+) {
+	throw new Error('demo:gate must validate contracts before recording every canonical demo');
+}
+if (
 	packageManifest.scripts['demo:render:camera-lifecycle'] !==
 	'bun run test:e2e:prepare && playwright test --config playwright.demo.config.ts'
 ) {

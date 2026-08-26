@@ -1,3 +1,5 @@
+import { rm } from 'node:fs/promises';
+
 export type SilentDemoVideoMuxOptions = {
 	videoPath: string;
 	captionsPath?: string;
@@ -33,6 +35,14 @@ export type PacedDemoVideoMuxOptions = {
 	sourceDurationMs: number;
 	cues: readonly NarrationCueMedia[];
 };
+
+export async function finalizeDemoRecordingDirectory(options: {
+	recordingDirectory: string;
+	completed: boolean;
+}): Promise<void> {
+	if (!options.completed) return;
+	await rm(options.recordingDirectory, { recursive: true, force: true });
+}
 
 function requireNonNegativeInteger(name: string, value: number): void {
 	if (!Number.isInteger(value) || value < 0) {
