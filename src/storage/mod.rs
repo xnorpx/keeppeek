@@ -15,6 +15,7 @@ pub mod medium_term;
 pub mod metadata;
 pub mod nal;
 pub mod playback;
+pub(crate) mod safety;
 pub mod search;
 pub mod segment;
 pub mod short_term;

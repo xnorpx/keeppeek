@@ -570,6 +570,7 @@ message UpdateRuntimeConfiguration {
   uint32 port = 2;
   RuntimeStorageConfiguration storage = 3;
   bool move_existing_recordings = 4;
+  string expected_configuration_revision = 5;
 }
 
 message RuntimeStorageConfiguration {
@@ -583,6 +584,11 @@ message RuntimeStorageConfiguration {
   uint64 flush_interval_secs = 8;
   uint64 write_buffer_bytes = 9;
   uint64 long_term_max_gb = 10;
+  optional uint64 minimum_free_gb = 11;
+  optional uint32 maximum_used_percent = 12;
+  optional uint64 warning_free_gb = 13;
+  optional uint64 critical_free_gb = 14;
+  optional uint64 cleanup_hysteresis_gb = 15;
 }
 
 message LoggingCommand {
@@ -1611,6 +1617,7 @@ message SanitizedRuntimeConfiguration {
   RuntimeStorageConfiguration storage = 3;
   uint64 camera_count = 4;
   RecordingCapacityEstimate recording_estimate = 5;
+  string configuration_revision = 6;
 }
 
 message RecordingCapacityEstimate {
@@ -1899,6 +1906,36 @@ message StorageHealthSnapshot {
   optional uint64 catalog_bytes = 9;
   CatalogHealthSnapshot catalog = 10;
   RecordingDemandHealthSnapshot demand = 11;
+  uint64 minimum_free_bytes = 12;
+  optional uint32 maximum_used_percent = 13;
+  uint64 warning_free_bytes = 14;
+  uint64 critical_free_bytes = 15;
+  uint64 cleanup_hysteresis_bytes = 16;
+  StorageSafetyHealthSnapshot safety = 17;
+}
+
+message StorageSafetyHealthSnapshot {
+  string pressure = 1;
+  string recording_state = 2;
+  optional uint64 total_bytes = 3;
+  optional uint64 available_bytes = 4;
+  optional uint64 keeppeek_bytes = 5;
+  optional uint64 effective_limit_bytes = 6;
+  optional uint64 cleanup_target_bytes = 7;
+  uint64 warning_free_bytes = 8;
+  uint64 critical_free_bytes = 9;
+  uint64 recovery_free_bytes = 10;
+  optional uint64 last_evaluation_at_ms = 11;
+  optional string last_evaluation_trigger = 12;
+  bool cleanup_running = 13;
+  optional uint64 last_cleanup_started_at_ms = 14;
+  optional uint64 last_cleanup_ended_at_ms = 15;
+  uint64 last_cleanup_files_removed = 16;
+  uint64 last_cleanup_bytes_removed = 17;
+  optional string last_cleanup_reason = 18;
+  optional uint64 last_failure_at_ms = 19;
+  optional string last_failure = 20;
+  optional uint64 last_recovered_at_ms = 21;
 }
 
 message CatalogHealthSnapshot {
@@ -1912,6 +1949,8 @@ message CatalogHealthSnapshot {
   uint64 event_thumbnails = 8;
   optional int64 oldest_recording_at_ms = 9;
   optional int64 newest_recording_at_ms = 10;
+  uint64 protected_files = 11;
+  uint64 recording_bytes = 12;
 }
 
 message RecordingDemandHealthSnapshot {

@@ -133,6 +133,81 @@ describe('storage retention evidence', () => {
 		expect(evidence.archive.limitBytes).toBeNull();
 	});
 
+	it('does not turn hysteresis into a limit when every trigger is disabled', () => {
+		const unlimitedConfig = {
+			...config,
+			storage: {
+				...config.storage,
+				long_term_max_gb: 0,
+				minimum_free_gb: 0,
+				maximum_used_percent: null,
+				warning_free_gb: 0,
+				critical_free_gb: 0,
+				cleanup_hysteresis_gb: 5
+			}
+		};
+		const unlimitedHealth = {
+			...health,
+			storage: {
+				...health.storage,
+				long_term_max_bytes: 0,
+				minimum_free_bytes: 0,
+				maximum_used_percent: null,
+				warning_free_bytes: 0,
+				critical_free_bytes: 0,
+				cleanup_hysteresis_bytes: 5 * 1_073_741_824
+			}
+		} as ServerHealthResponse;
+
+		const evidence = storageRetentionEvidence(unlimitedConfig, unlimitedHealth);
+
+		expect(evidence.warningFreeBytes).toBe(0);
+		expect(evidence.recoveryFreeBytes).toBe(0);
+		expect(evidence.effectiveLimitBytes).toBeNull();
+		expect(evidence.pressure).toBe('normal');
+	});
+
+	it('combines archive, reserve, percentage, and non-KeepPeek usage into one effective limit', () => {
+		const gibibyte = 1_073_741_824;
+		const policyConfig = {
+			...config,
+			storage: {
+				...config.storage,
+				long_term_max_gb: 70,
+				minimum_free_gb: 10,
+				maximum_used_percent: 75,
+				warning_free_gb: 20,
+				critical_free_gb: 10,
+				cleanup_hysteresis_gb: 5
+			}
+		};
+		const policyHealth = {
+			...health,
+			system: {
+				disks: [
+					{
+						...health.system.disks[1]!,
+						total_bytes: 100 * gibibyte,
+						available_bytes: 20 * gibibyte,
+						used_bytes: 80 * gibibyte
+					}
+				]
+			},
+			storage: {
+				...health.storage,
+				long_term_max_bytes: 70 * gibibyte,
+				catalog: { ...health.storage.catalog!, recording_bytes: 60 * gibibyte }
+			}
+		} as ServerHealthResponse;
+
+		const evidence = storageRetentionEvidence(policyConfig, policyHealth);
+
+		expect(evidence.keeppeekBytes).toBe(60 * gibibyte);
+		expect(evidence.warningFreeBytes).toBe(25 * gibibyte);
+		expect(evidence.recoveryFreeBytes).toBe(30 * gibibyte);
+		expect(evidence.effectiveLimitBytes).toBe(55 * gibibyte);
+	});
+
 	it('does not synthesize disk, history, or override evidence without health', () => {
 		const evidence = storageRetentionEvidence(config, null);
 

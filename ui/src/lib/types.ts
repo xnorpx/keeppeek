@@ -129,6 +129,11 @@ export interface SanitizedStorage {
 	flush_interval_secs: number;
 	write_buffer_bytes: number;
 	long_term_max_gb: number;
+	minimum_free_gb?: number;
+	maximum_used_percent?: number | null;
+	warning_free_gb?: number;
+	critical_free_gb?: number;
+	cleanup_hysteresis_gb?: number;
 }
 
 export interface RecordingCapacityEstimate {
@@ -142,6 +147,7 @@ export interface RecordingCapacityEstimate {
 export interface SanitizedConfig {
 	host: string;
 	port: number;
+	configuration_revision?: string;
 	storage: SanitizedStorage;
 	camera_count: number;
 	recording_estimate: RecordingCapacityEstimate;
@@ -150,6 +156,7 @@ export interface SanitizedConfig {
 export interface SettingsConfigUpdate {
 	host: string;
 	port: number;
+	expected_configuration_revision?: string;
 	storage: SanitizedStorage;
 	move_existing_recordings: boolean;
 }
@@ -591,15 +598,47 @@ export interface StorageHealth {
 	flush_interval_seconds: number;
 	write_buffer_bytes: number;
 	long_term_max_bytes: number;
+	minimum_free_bytes?: number;
+	maximum_used_percent?: number | null;
+	warning_free_bytes?: number;
+	critical_free_bytes?: number;
+	cleanup_hysteresis_bytes?: number;
 	catalog_bytes: number | null;
 	catalog: CatalogHealth | null;
+	safety?: StorageSafetyHealth | null;
 	demand: RecordingDemandHealth;
+}
+
+export interface StorageSafetyHealth {
+	pressure: 'normal' | 'warning' | 'critical';
+	recording_state: 'active' | 'degraded' | 'paused';
+	total_bytes: number | null;
+	available_bytes: number | null;
+	keeppeek_bytes: number | null;
+	effective_limit_bytes: number | null;
+	cleanup_target_bytes: number | null;
+	warning_free_bytes: number;
+	critical_free_bytes: number;
+	recovery_free_bytes: number;
+	last_evaluation_at_ms: number | null;
+	last_evaluation_trigger: 'startup' | 'segment_finalized' | 'periodic' | null;
+	cleanup_running: boolean;
+	last_cleanup_started_at_ms: number | null;
+	last_cleanup_ended_at_ms: number | null;
+	last_cleanup_files_removed: number;
+	last_cleanup_bytes_removed: number;
+	last_cleanup_reason: 'archive_cap' | 'filesystem_headroom' | 'combined' | 'reconciliation' | null;
+	last_failure_at_ms: number | null;
+	last_failure: string | null;
+	last_recovered_at_ms: number | null;
 }
 
 export interface CatalogHealth {
 	recording_files: number;
 	finalized_files: number;
 	active_files: number;
+	protected_files?: number;
+	recording_bytes?: number;
 	fragments: number;
 	fragment_bytes: number;
 	events: number;

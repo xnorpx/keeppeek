@@ -129,7 +129,9 @@ expects.
 - Finalized segments are simply the renamed medium-term files (`.active`
   suffix removed). No copy or re-encoding.
 - Provides queries: `finalized_segments()`, `total_bytes()`.
-- Supports date-based purging via `purge_before()` to enforce retention.
+- Supports explicit date-based maintenance via `purge_before()`.
+- Automatic capacity cleanup selects finalized, unprotected files from the recording catalog. It
+  never scans arbitrary files into the deletion set.
 
 ## Disk Layout
 
@@ -176,6 +178,13 @@ StorageConfig {
   short_term_duration:       Duration,   // default 120 s
   medium_term_duration:      Duration,   // default 1800 s (30 min)
   flush_interval:            Duration,   // default 60 s
+  write_buffer_bytes:        usize,
+  long_term_max_bytes:       u64,        // default 1024 GiB
+  minimum_free_bytes:        u64,        // default 10 GiB
+  maximum_used_percent:      Option<u8>, // default disabled
+  warning_free_bytes:        u64,        // default 20 GiB
+  critical_free_bytes:       u64,        // default 10 GiB
+  cleanup_hysteresis_bytes:  u64,        // default 5 GiB
 }
 ```
 
@@ -198,19 +207,58 @@ once to 384×216 JPEG thumbnails and written atomically. The default aggregate t
 leaves thumbnail storage unbounded. HTTP thumbnail lookup verifies the event's camera ownership and
 canonical path before opening the file.
 
+## Storage Safety
+
+Storage cleanup combines independent limits on the long-term filesystem:
+
+- `long_term_max_gb`: maximum catalog-owned finalized recording bytes. Zero disables the archive
+  cap.
+- `minimum_free_gb`: filesystem capacity reserved for the operating system and other services.
+  Zero disables the reserve.
+- `maximum_used_percent`: optional filesystem high-water mark from 1 through 99. Omission disables
+  this limit.
+- `warning_free_gb`: cleanup trigger. An explicit zero derives a warning boundary from a nonzero
+  critical boundary plus hysteresis.
+- `critical_free_gb`: critical headroom boundary. The minimum-free reserve is also a critical
+  boundary.
+- `cleanup_hysteresis_gb`: extra headroom cleanup must restore beyond the trigger. It also lowers
+  the archive-cap recovery target so cleanup does not oscillate at one byte.
+
+For a filesystem with total capacity $T$, non-KeepPeek used bytes $O$, and warning headroom $W$,
+the filesystem-derived KeepPeek limit is $T - O - W$. The effective limit is the smaller of that
+value and the nonzero archive cap. Health, metrics, and the Settings UI consume the worker's same
+evaluation.
+
+The storage writer evaluates pressure at startup, after each segment is finalized, and every five
+minutes. Capacity is queried from the configured path rather than inferred only from enumerated
+local disks, so mounted and network roots retain safety and health evidence. The worker deletes one
+oldest eligible catalog recording at a time until the recovery target is met. Active writers,
+protected recordings, exports, links, non-MP4 files, unindexed files, and paths outside the
+configured long-term root are ineligible.
+
+Cleanup uses a recoverable sequence: mark the catalog row pending, remove the exact file, then
+delete the catalog row. Startup reconciliation resumes a pending row whether a crash happened
+before or after file deletion. Each step is idempotent.
+
+If deletion fails or no eligible recording remains, recording enters the `paused` safety state
+instead of repeatedly failing writes. Health reports the failure and cleanup evidence. Periodic
+evaluation continues; recording returns to `active` automatically after capacity and the configured
+recovery headroom are available again.
+
 ## Module Map
 
-| File             | Type               | Role                                         |
-| ---------------- | ------------------ | -------------------------------------------- |
-| `catalog.rs`     | `RecordingCatalog` | Turso-backed recording and fragment metadata |
-| `demand.rs`      | `RecordingDemand`  | Per-stream viewer guards and review leases   |
-| `frame.rs`       | `MediaFrame`       | Unified codec-agnostic frame types           |
-| `segment.rs`     | `RecordingFrame`   | Timestamped wrapper around `MediaFrame`      |
-| `short_term.rs`  | `ShortTermBuffer`  | In-memory ring buffer with time eviction     |
-| `medium_term.rs` | `MediumTermWriter` | Fragmented MP4 muxer (H.264/H.265 + AAC)     |
-| `long_term.rs`   | `LongTermStore`    | Finalized file management and purging        |
-| `engine.rs`      | `StorageEngine`    | Per-camera pipeline orchestrator             |
-| `events.rs`      | `EventStore`       | Event lifecycle and secure thumbnail storage |
-| `layout.rs`      | (functions)        | Path generation for the on-disk hierarchy    |
-| `nal.rs`         | (functions)        | Annex B ↔ AVCC conversion, SPS/PPS extract   |
-| `metadata.rs`    | `CameraMetadata`   | Per-camera metadata types (zones, events)    |
+| File             | Type                  | Role                                         |
+| ---------------- | --------------------- | -------------------------------------------- |
+| `catalog.rs`     | `RecordingCatalog`    | Turso-backed recording and fragment metadata |
+| `demand.rs`      | `RecordingDemand`     | Per-stream viewer guards and review leases   |
+| `frame.rs`       | `MediaFrame`          | Unified codec-agnostic frame types           |
+| `segment.rs`     | `RecordingFrame`      | Timestamped wrapper around `MediaFrame`      |
+| `short_term.rs`  | `ShortTermBuffer`     | In-memory ring buffer with time eviction     |
+| `medium_term.rs` | `MediumTermWriter`    | Fragmented MP4 muxer (H.264/H.265 + AAC)     |
+| `long_term.rs`   | `LongTermStore`       | Finalized file management and purging        |
+| `safety.rs`      | `StorageSafetyPolicy` | Capacity policy, cleanup state, and health   |
+| `engine.rs`      | `StorageEngine`       | Per-camera pipeline orchestrator             |
+| `events.rs`      | `EventStore`          | Event lifecycle and secure thumbnail storage |
+| `layout.rs`      | (functions)           | Path generation for the on-disk hierarchy    |
+| `nal.rs`         | (functions)           | Annex B ↔ AVCC conversion, SPS/PPS extract   |
+| `metadata.rs`    | `CameraMetadata`      | Per-camera metadata types (zones, events)    |

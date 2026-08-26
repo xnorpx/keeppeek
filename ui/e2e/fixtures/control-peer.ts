@@ -102,6 +102,7 @@ import {
 	StoredMediaStreamCapabilitySchema,
 	SubscriptionResultSchema,
 	StorageHealthSnapshotSchema,
+	StorageSafetyHealthSnapshotSchema,
 	StorageWriteProbeResultSchema,
 	StreamHealthSnapshotSchema,
 	StreamHealthDimensionsSnapshotSchema,
@@ -291,6 +292,7 @@ export type MockControlPeerOptions = {
 	motionDetection?: MotionDetection;
 	ptzPresets?: readonly { id: number; name: string }[];
 	runtimeUpdateResult?: SettingsConfigUpdateResponse;
+	runtimeUpdateError?: string;
 	runtimeUpdateGate?: Promise<void>;
 	storageWriteProbe?: { writable: boolean; detail: string };
 	cameras?: readonly CameraListItem[];
@@ -1305,6 +1307,9 @@ export async function mockControlPeer(
 			const update = runtimeUpdate(request.command.value.action.value);
 			requests.runtimeUpdates.push(update);
 			await options.runtimeUpdateGate;
+			if (options.runtimeUpdateError) {
+				return encodedError(request.requestId, options.runtimeUpdateError);
+			}
 			if (!options.runtimeUpdateResult) throw new Error('runtime update result is not configured');
 			return encodedOk(request.requestId, {
 				case: 'runtimeConfigurationResult',
@@ -1934,12 +1939,19 @@ function protoHealthSnapshot(health: HealthFixture) {
 			flushIntervalSeconds: fixtureBigInt(storage.flush_interval_seconds),
 			writeBufferBytes: fixtureBigInt(storage.write_buffer_bytes),
 			longTermMaxBytes: fixtureBigInt(storage.long_term_max_bytes),
+			minimumFreeBytes: fixtureBigInt(storage.minimum_free_bytes),
+			maximumUsedPercent: storage.maximum_used_percent ?? undefined,
+			warningFreeBytes: fixtureBigInt(storage.warning_free_bytes),
+			criticalFreeBytes: fixtureBigInt(storage.critical_free_bytes),
+			cleanupHysteresisBytes: fixtureBigInt(storage.cleanup_hysteresis_bytes),
 			catalogBytes: optionalFixtureBigInt(storage.catalog_bytes),
 			catalog: storage.catalog
 				? create(CatalogHealthSnapshotSchema, {
 						recordingFiles: fixtureBigInt(storage.catalog.recording_files),
 						finalizedFiles: fixtureBigInt(storage.catalog.finalized_files),
 						activeFiles: fixtureBigInt(storage.catalog.active_files),
+						protectedFiles: fixtureBigInt(storage.catalog.protected_files),
+						recordingBytes: fixtureBigInt(storage.catalog.recording_bytes),
 						fragments: fixtureBigInt(storage.catalog.fragments),
 						fragmentBytes: fixtureBigInt(storage.catalog.fragment_bytes),
 						events: fixtureBigInt(storage.catalog.events),
@@ -1947,6 +1959,33 @@ function protoHealthSnapshot(health: HealthFixture) {
 						eventThumbnails: fixtureBigInt(storage.catalog.event_thumbnails),
 						oldestRecordingAtMs: optionalFixtureBigInt(storage.catalog.oldest_recording_at_ms),
 						newestRecordingAtMs: optionalFixtureBigInt(storage.catalog.newest_recording_at_ms)
+					})
+				: undefined,
+			safety: storage.safety
+				? create(StorageSafetyHealthSnapshotSchema, {
+						pressure: storage.safety.pressure ?? '',
+						recordingState: storage.safety.recording_state ?? '',
+						totalBytes: optionalFixtureBigInt(storage.safety.total_bytes),
+						availableBytes: optionalFixtureBigInt(storage.safety.available_bytes),
+						keeppeekBytes: optionalFixtureBigInt(storage.safety.keeppeek_bytes),
+						effectiveLimitBytes: optionalFixtureBigInt(storage.safety.effective_limit_bytes),
+						cleanupTargetBytes: optionalFixtureBigInt(storage.safety.cleanup_target_bytes),
+						warningFreeBytes: fixtureBigInt(storage.safety.warning_free_bytes),
+						criticalFreeBytes: fixtureBigInt(storage.safety.critical_free_bytes),
+						recoveryFreeBytes: fixtureBigInt(storage.safety.recovery_free_bytes),
+						lastEvaluationAtMs: optionalFixtureBigInt(storage.safety.last_evaluation_at_ms),
+						lastEvaluationTrigger: storage.safety.last_evaluation_trigger ?? undefined,
+						cleanupRunning: storage.safety.cleanup_running ?? false,
+						lastCleanupStartedAtMs: optionalFixtureBigInt(
+							storage.safety.last_cleanup_started_at_ms
+						),
+						lastCleanupEndedAtMs: optionalFixtureBigInt(storage.safety.last_cleanup_ended_at_ms),
+						lastCleanupFilesRemoved: fixtureBigInt(storage.safety.last_cleanup_files_removed),
+						lastCleanupBytesRemoved: fixtureBigInt(storage.safety.last_cleanup_bytes_removed),
+						lastCleanupReason: storage.safety.last_cleanup_reason ?? undefined,
+						lastFailureAtMs: optionalFixtureBigInt(storage.safety.last_failure_at_ms),
+						lastFailure: storage.safety.last_failure ?? undefined,
+						lastRecoveredAtMs: optionalFixtureBigInt(storage.safety.last_recovered_at_ms)
 					})
 				: undefined,
 			demand: create(RecordingDemandHealthSnapshotSchema, {
@@ -2429,6 +2468,9 @@ function runtimeUpdate(
 	return {
 		host: update.host,
 		port: update.port,
+		...(update.expectedConfigurationRevision
+			? { expected_configuration_revision: update.expectedConfigurationRevision }
+			: {}),
 		move_existing_recordings: update.moveExistingRecordings,
 		storage: {
 			medium_term_path: update.storage.mediumTermPath,
@@ -2440,7 +2482,15 @@ function runtimeUpdate(
 			medium_term_secs: Number(update.storage.mediumTermSecs),
 			flush_interval_secs: Number(update.storage.flushIntervalSecs),
 			write_buffer_bytes: Number(update.storage.writeBufferBytes),
-			long_term_max_gb: Number(update.storage.longTermMaxGb)
+			long_term_max_gb: Number(update.storage.longTermMaxGb),
+			minimum_free_gb: Number(update.storage.minimumFreeGb ?? 0n),
+			maximum_used_percent:
+				update.storage.maximumUsedPercent === undefined || update.storage.maximumUsedPercent === 0
+					? null
+					: update.storage.maximumUsedPercent,
+			warning_free_gb: Number(update.storage.warningFreeGb ?? 0n),
+			critical_free_gb: Number(update.storage.criticalFreeGb ?? 0n),
+			cleanup_hysteresis_gb: Number(update.storage.cleanupHysteresisGb ?? 0n)
 		}
 	};
 }
@@ -2451,6 +2501,7 @@ function protoRuntimeResult(result: SettingsConfigUpdateResponse) {
 		config: create(SanitizedRuntimeConfigurationSchema, {
 			host: config.host,
 			port: config.port,
+			configurationRevision: config.configuration_revision ?? '',
 			storage: create(RuntimeStorageConfigurationSchema, {
 				mediumTermPath: config.storage.medium_term_path,
 				longTermPath: config.storage.long_term_path,
@@ -2461,7 +2512,12 @@ function protoRuntimeResult(result: SettingsConfigUpdateResponse) {
 				mediumTermSecs: BigInt(config.storage.medium_term_secs),
 				flushIntervalSecs: BigInt(config.storage.flush_interval_secs),
 				writeBufferBytes: BigInt(config.storage.write_buffer_bytes),
-				longTermMaxGb: BigInt(config.storage.long_term_max_gb)
+				longTermMaxGb: BigInt(config.storage.long_term_max_gb),
+				minimumFreeGb: BigInt(config.storage.minimum_free_gb ?? 0),
+				maximumUsedPercent: config.storage.maximum_used_percent ?? 0,
+				warningFreeGb: BigInt(config.storage.warning_free_gb ?? 0),
+				criticalFreeGb: BigInt(config.storage.critical_free_gb ?? 0),
+				cleanupHysteresisGb: BigInt(config.storage.cleanup_hysteresis_gb ?? 0)
 			}),
 			cameraCount: BigInt(config.camera_count),
 			recordingEstimate: create(RecordingCapacityEstimateSchema, {
