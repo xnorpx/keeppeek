@@ -1268,7 +1268,7 @@ mod tests {
         let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
         let handle = catalog.handle();
         let invalid = root.join("invalid.mp4");
-        std::fs::create_dir_all(&invalid).unwrap();
+        std::fs::write(&invalid, vec![0; 32]).unwrap();
         handle
             .upsert_recording(CatalogRecording {
                 id: "invalid".to_owned(),
@@ -1286,6 +1286,8 @@ mod tests {
         handle
             .update_recording_path("invalid", &invalid, true)
             .unwrap();
+        std::fs::remove_file(&invalid).unwrap();
+        std::fs::create_dir(&invalid).unwrap();
         config.long_term_max_bytes = 1;
         let mut worker = WriterWorker::new(
             config,
