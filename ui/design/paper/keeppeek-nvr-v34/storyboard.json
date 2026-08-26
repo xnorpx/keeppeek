@@ -1620,9 +1620,9 @@
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png",
-						"bytes": 4816,
-						"sha256": "3d5eb367f51b9d20e74dc3ae346e66034a6bc13428b2a6dfe8f5c3ba49025128",
-						"approvedAt": "2026-08-21",
+						"bytes": 4819,
+						"sha256": "b41263a3034f5e4943a67825053acae19b6bc13d086ae187215ad70e51595e7f",
+						"approvedAt": "2026-08-26",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
 						"paperReferenceSha256": "8bec87079b9d92f34c1f64145e9bf9a05b2645e09ca4d9014b5d377c2adcd329",
