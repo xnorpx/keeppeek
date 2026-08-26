@@ -1336,7 +1336,12 @@ export class ControlClient {
 			mediumTermSecs: BigInt(update.storage.medium_term_secs),
 			flushIntervalSecs: BigInt(update.storage.flush_interval_secs),
 			writeBufferBytes: BigInt(update.storage.write_buffer_bytes),
-			longTermMaxGb: BigInt(update.storage.long_term_max_gb)
+			longTermMaxGb: BigInt(update.storage.long_term_max_gb),
+			minimumFreeGb: BigInt(update.storage.minimum_free_gb ?? 0),
+			maximumUsedPercent: update.storage.maximum_used_percent ?? 0,
+			warningFreeGb: BigInt(update.storage.warning_free_gb ?? 0),
+			criticalFreeGb: BigInt(update.storage.critical_free_gb ?? 0),
+			cleanupHysteresisGb: BigInt(update.storage.cleanup_hysteresis_gb ?? 0)
 		});
 		const command = create(RuntimeConfigurationCommandSchema, {
 			action: {
@@ -1345,7 +1350,8 @@ export class ControlClient {
 					host: update.host,
 					port: update.port,
 					storage,
-					moveExistingRecordings: update.move_existing_recordings
+					moveExistingRecordings: update.move_existing_recordings,
+					expectedConfigurationRevision: update.expected_configuration_revision ?? ''
 				})
 			}
 		});
@@ -3286,6 +3292,7 @@ function runtimeConfiguration(config: SanitizedRuntimeConfiguration): SanitizedC
 	return {
 		host: config.host,
 		port: config.port,
+		configuration_revision: config.configurationRevision,
 		storage: {
 			medium_term_path: config.storage.mediumTermPath,
 			long_term_path: config.storage.longTermPath,
@@ -3296,7 +3303,21 @@ function runtimeConfiguration(config: SanitizedRuntimeConfiguration): SanitizedC
 			medium_term_secs: numeric(config.storage.mediumTermSecs),
 			flush_interval_secs: numeric(config.storage.flushIntervalSecs),
 			write_buffer_bytes: numeric(config.storage.writeBufferBytes),
-			long_term_max_gb: numeric(config.storage.longTermMaxGb)
+			long_term_max_gb: numeric(config.storage.longTermMaxGb),
+			minimum_free_gb:
+				config.storage.minimumFreeGb === undefined ? 0 : numeric(config.storage.minimumFreeGb),
+			maximum_used_percent:
+				config.storage.maximumUsedPercent === undefined || config.storage.maximumUsedPercent === 0
+					? null
+					: config.storage.maximumUsedPercent,
+			warning_free_gb:
+				config.storage.warningFreeGb === undefined ? 0 : numeric(config.storage.warningFreeGb),
+			critical_free_gb:
+				config.storage.criticalFreeGb === undefined ? 0 : numeric(config.storage.criticalFreeGb),
+			cleanup_hysteresis_gb:
+				config.storage.cleanupHysteresisGb === undefined
+					? 0
+					: numeric(config.storage.cleanupHysteresisGb)
 		},
 		camera_count: numeric(config.cameraCount),
 		recording_estimate: {
@@ -3319,6 +3340,7 @@ function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
 	}
 	const { process, memory, load } = system;
 	const demand = storage.demand;
+	const safety = storage.safety;
 	if (!process || !memory || !load || !demand) {
 		throw new Error('Server returned incomplete health evidence.');
 	}
@@ -3437,12 +3459,19 @@ function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
 			flush_interval_seconds: numeric(storage.flushIntervalSeconds),
 			write_buffer_bytes: numeric(storage.writeBufferBytes),
 			long_term_max_bytes: numeric(storage.longTermMaxBytes),
+			minimum_free_bytes: numeric(storage.minimumFreeBytes),
+			maximum_used_percent: storage.maximumUsedPercent ?? null,
+			warning_free_bytes: numeric(storage.warningFreeBytes),
+			critical_free_bytes: numeric(storage.criticalFreeBytes),
+			cleanup_hysteresis_bytes: numeric(storage.cleanupHysteresisBytes),
 			catalog_bytes: optionalNumber(storage.catalogBytes),
 			catalog: storage.catalog
 				? {
 						recording_files: numeric(storage.catalog.recordingFiles),
 						finalized_files: numeric(storage.catalog.finalizedFiles),
 						active_files: numeric(storage.catalog.activeFiles),
+						protected_files: numeric(storage.catalog.protectedFiles),
+						recording_bytes: numeric(storage.catalog.recordingBytes),
 						fragments: numeric(storage.catalog.fragments),
 						fragment_bytes: numeric(storage.catalog.fragmentBytes),
 						events: numeric(storage.catalog.events),
@@ -3450,6 +3479,39 @@ function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
 						event_thumbnails: numeric(storage.catalog.eventThumbnails),
 						oldest_recording_at_ms: optionalNumber(storage.catalog.oldestRecordingAtMs),
 						newest_recording_at_ms: optionalNumber(storage.catalog.newestRecordingAtMs)
+					}
+				: null,
+			safety: safety
+				? {
+						pressure: safety.pressure as 'normal' | 'warning' | 'critical',
+						recording_state: safety.recordingState as 'active' | 'degraded' | 'paused',
+						total_bytes: optionalNumber(safety.totalBytes),
+						available_bytes: optionalNumber(safety.availableBytes),
+						keeppeek_bytes: optionalNumber(safety.keeppeekBytes),
+						effective_limit_bytes: optionalNumber(safety.effectiveLimitBytes),
+						cleanup_target_bytes: optionalNumber(safety.cleanupTargetBytes),
+						warning_free_bytes: numeric(safety.warningFreeBytes),
+						critical_free_bytes: numeric(safety.criticalFreeBytes),
+						recovery_free_bytes: numeric(safety.recoveryFreeBytes),
+						last_evaluation_at_ms: optionalNumber(safety.lastEvaluationAtMs),
+						last_evaluation_trigger:
+							(safety.lastEvaluationTrigger as
+								'startup' | 'segment_finalized' | 'periodic' | undefined) ?? null,
+						cleanup_running: safety.cleanupRunning,
+						last_cleanup_started_at_ms: optionalNumber(safety.lastCleanupStartedAtMs),
+						last_cleanup_ended_at_ms: optionalNumber(safety.lastCleanupEndedAtMs),
+						last_cleanup_files_removed: numeric(safety.lastCleanupFilesRemoved),
+						last_cleanup_bytes_removed: numeric(safety.lastCleanupBytesRemoved),
+						last_cleanup_reason:
+							(safety.lastCleanupReason as
+								| 'archive_cap'
+								| 'filesystem_headroom'
+								| 'combined'
+								| 'reconciliation'
+								| undefined) ?? null,
+						last_failure_at_ms: optionalNumber(safety.lastFailureAtMs),
+						last_failure: safety.lastFailure ?? null,
+						last_recovered_at_ms: optionalNumber(safety.lastRecoveredAtMs)
 					}
 				: null,
 			demand: {

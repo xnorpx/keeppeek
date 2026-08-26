@@ -111,6 +111,11 @@ pub struct SanitizedStorage {
     pub flush_interval_secs: u64,
     pub write_buffer_bytes: usize,
     pub long_term_max_gb: u64,
+    pub minimum_free_gb: u64,
+    pub maximum_used_percent: Option<u8>,
+    pub warning_free_gb: u64,
+    pub critical_free_gb: u64,
+    pub cleanup_hysteresis_gb: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -126,6 +131,7 @@ pub struct RecordingCapacityEstimate {
 pub struct SanitizedConfig {
     pub host: String,
     pub port: u16,
+    pub configuration_revision: String,
     pub storage: SanitizedStorage,
     pub camera_count: usize,
     pub recording_estimate: RecordingCapacityEstimate,

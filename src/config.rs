@@ -248,6 +248,44 @@ pub struct StorageToml {
 
     #[serde(default = "default_long_term_max_gb")]
     pub long_term_max_gb: u64,
+
+    #[serde(default = "default_minimum_free_gb")]
+    pub minimum_free_gb: u64,
+
+    #[serde(default)]
+    pub maximum_used_percent: Option<u8>,
+
+    #[serde(default = "default_warning_free_gb")]
+    pub warning_free_gb: u64,
+
+    #[serde(default = "default_critical_free_gb")]
+    pub critical_free_gb: u64,
+
+    #[serde(default = "default_cleanup_hysteresis_gb")]
+    pub cleanup_hysteresis_gb: u64,
+}
+
+impl StorageToml {
+    pub(crate) fn validate_safety_thresholds(&self) -> anyhow::Result<()> {
+        if self
+            .maximum_used_percent
+            .is_some_and(|percent| !(1..=99).contains(&percent))
+        {
+            anyhow::bail!("maximum filesystem usage must be between 1 and 99 percent");
+        }
+        let critical_free_gb = self.critical_free_gb.max(self.minimum_free_gb);
+        let warning_free_gb = if self.warning_free_gb == 0 && critical_free_gb > 0 {
+            critical_free_gb.saturating_add(self.cleanup_hysteresis_gb)
+        } else {
+            self.warning_free_gb
+        };
+        if warning_free_gb < critical_free_gb {
+            anyhow::bail!(
+                "warning free space must be greater than or equal to critical free space"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,6 +298,8 @@ pub struct StorageMigration {
     pub recording_catalog: Option<StoragePathMigration>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_thumbnails: Option<StoragePathMigration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_catalog_after_move: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,6 +387,7 @@ impl StorageMigration {
             }),
             recording_catalog: None,
             event_thumbnails: None,
+            recording_catalog_after_move: None,
         };
         if let Some((
             current_recording_catalog_path,
@@ -355,6 +396,8 @@ impl StorageMigration {
             next_event_thumbnail_path,
         )) = metadata_paths
         {
+            migration.recording_catalog_after_move =
+                Some(next_recording_catalog_path.to_path_buf());
             if current_recording_catalog_path != next_recording_catalog_path
                 && !migration.is_covered_by_recording_root(
                     current_recording_catalog_path,
@@ -426,6 +469,13 @@ impl StorageMigration {
                 );
             }
         }
+        if self
+            .recording_catalog_after_move
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            anyhow::bail!("post-migration recording catalog path must not be empty");
+        }
         for (index, route) in routes.iter().enumerate() {
             for other in routes.iter().skip(index + 1) {
                 if route.from == other.from && route.to != other.to {
@@ -443,6 +493,13 @@ impl StorageMigration {
 
     fn apply(&self) -> anyhow::Result<()> {
         self.validate()?;
+        let mut recording_routes = [self.medium_term.as_ref(), self.long_term.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(|route| (route.from.clone(), route.to.clone()))
+            .collect::<Vec<_>>();
+        recording_routes.sort_unstable();
+        recording_routes.dedup();
         let mut moved = Vec::new();
         for route in self.routes() {
             if moved
@@ -451,8 +508,15 @@ impl StorageMigration {
             {
                 continue;
             }
-            move_storage_path(&route.from, &route.to)?;
+            if self.recording_catalog.as_ref() == Some(route) {
+                move_recording_catalog_path(&route.from, &route.to)?;
+            } else {
+                move_storage_path(&route.from, &route.to)?;
+            }
             moved.push((route.from.clone(), route.to.clone()));
+        }
+        if let Some(catalog_path) = &self.recording_catalog_after_move {
+            crate::storage::catalog::rewrite_recording_paths(catalog_path, &recording_routes)?;
         }
         Ok(())
     }
@@ -482,6 +546,22 @@ const fn default_long_term_max_gb() -> u64 {
     1_024
 }
 
+const fn default_minimum_free_gb() -> u64 {
+    10
+}
+
+const fn default_warning_free_gb() -> u64 {
+    20
+}
+
+const fn default_critical_free_gb() -> u64 {
+    10
+}
+
+const fn default_cleanup_hysteresis_gb() -> u64 {
+    5
+}
+
 impl Default for StorageToml {
     fn default() -> Self {
         Self {
@@ -495,6 +575,11 @@ impl Default for StorageToml {
             flush_interval_secs: default_flush_interval_secs(),
             write_buffer_bytes: default_write_buffer_bytes(),
             long_term_max_gb: default_long_term_max_gb(),
+            minimum_free_gb: default_minimum_free_gb(),
+            maximum_used_percent: None,
+            warning_free_gb: default_warning_free_gb(),
+            critical_free_gb: default_critical_free_gb(),
+            cleanup_hysteresis_gb: default_cleanup_hysteresis_gb(),
         }
     }
 }
@@ -1017,6 +1102,33 @@ pub fn update_settings_with_migration(
         "long_term_max_gb".to_owned(),
         toml::Value::Integer(i64::try_from(settings.storage.long_term_max_gb)?),
     );
+    storage.insert(
+        "minimum_free_gb".to_owned(),
+        toml::Value::Integer(i64::try_from(settings.storage.minimum_free_gb)?),
+    );
+    match settings.storage.maximum_used_percent {
+        Some(maximum_used_percent) => {
+            storage.insert(
+                "maximum_used_percent".to_owned(),
+                toml::Value::Integer(i64::from(maximum_used_percent)),
+            );
+        }
+        None => {
+            storage.remove("maximum_used_percent");
+        }
+    }
+    storage.insert(
+        "warning_free_gb".to_owned(),
+        toml::Value::Integer(i64::try_from(settings.storage.warning_free_gb)?),
+    );
+    storage.insert(
+        "critical_free_gb".to_owned(),
+        toml::Value::Integer(i64::try_from(settings.storage.critical_free_gb)?),
+    );
+    storage.insert(
+        "cleanup_hysteresis_gb".to_owned(),
+        toml::Value::Integer(i64::try_from(settings.storage.cleanup_hysteresis_gb)?),
+    );
     match migration {
         Some(migration) => {
             migration.validate()?;
@@ -1195,12 +1307,6 @@ fn move_directory_contents(from: &Path, to: &Path) -> anyhow::Result<()> {
     for entry in entries {
         let source = entry.path();
         let destination = to.join(entry.file_name());
-        if destination.exists() {
-            anyhow::bail!(
-                "storage migration destination already contains {}",
-                destination.display()
-            );
-        }
         move_path(&source, &destination)?;
     }
     std::fs::remove_dir(from).or_else(|error| {
@@ -1218,25 +1324,87 @@ fn move_storage_path(from: &Path, to: &Path) -> anyhow::Result<()> {
     if from.is_dir() {
         return move_directory_contents(from, to);
     }
-    if to.exists() {
-        anyhow::bail!(
-            "storage migration destination already contains {}",
-            to.display()
-        );
-    }
     let parent = to.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    std::fs::rename(from, to)?;
+    move_path(from, to)
+}
+
+fn move_recording_catalog_path(from: &Path, to: &Path) -> anyhow::Result<()> {
+    move_storage_path(from, to)?;
+    for suffix in ["-wal", "-shm"] {
+        let from_sidecar = path_with_suffix(from, suffix);
+        if from_sidecar.exists() {
+            move_storage_path(&from_sidecar, &path_with_suffix(to, suffix))?;
+        }
+    }
     Ok(())
 }
 
+fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
 fn move_path(from: &Path, to: &Path) -> anyhow::Result<()> {
+    if to.exists() {
+        let from_metadata = std::fs::symlink_metadata(from)?;
+        let to_metadata = std::fs::symlink_metadata(to)?;
+        if from_metadata.is_dir() && to_metadata.is_dir() {
+            return move_directory_contents(from, to);
+        }
+        if from_metadata.is_file() && to_metadata.is_file() && files_equal(from, to)? {
+            std::fs::remove_file(from)?;
+            return Ok(());
+        }
+        anyhow::bail!(
+            "storage migration destination already contains different data at {}",
+            to.display()
+        );
+    }
     if std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
-    copy_path(from, to)?;
+    let pending = migration_pending_path(to)?;
+    if pending.exists() {
+        remove_path(&pending)?;
+    }
+    copy_path(from, &pending)?;
+    std::fs::rename(&pending, to)?;
     remove_path(from)?;
     Ok(())
+}
+
+fn migration_pending_path(destination: &Path) -> anyhow::Result<PathBuf> {
+    let name = destination
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("storage migration destination has no file name"))?
+        .to_string_lossy();
+    Ok(destination.with_file_name(format!(".keeppeek-migration-{name}.partial")))
+}
+
+fn files_equal(left: &Path, right: &Path) -> anyhow::Result<bool> {
+    use std::io::Read as _;
+
+    let left_metadata = std::fs::metadata(left)?;
+    let right_metadata = std::fs::metadata(right)?;
+    if left_metadata.len() != right_metadata.len() {
+        return Ok(false);
+    }
+    let mut left = std::fs::File::open(left)?;
+    let mut right = std::fs::File::open(right)?;
+    let mut left_buffer = [0u8; 64 * 1024];
+    let mut right_buffer = [0u8; 64 * 1024];
+    loop {
+        let left_read = left.read(&mut left_buffer)?;
+        let right_read = right.read(&mut right_buffer)?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..left_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 fn copy_path(from: &Path, to: &Path) -> anyhow::Result<()> {
@@ -1581,6 +1749,40 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{CatalogRecording, RecordingCatalog};
+
+    fn create_migration_catalog(catalog_path: &Path, recording_path: &Path) {
+        let catalog = RecordingCatalog::open(catalog_path).unwrap();
+        let handle = catalog.handle();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "migration-recording".to_owned(),
+                stream_id: "front_gate/main".to_owned(),
+                source_id: Some("front_gate".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                started_at_ms: 1_000,
+                ended_at_ms: Some(2_000),
+                path: recording_path.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: true,
+            })
+            .unwrap();
+        handle
+            .update_recording_path("migration-recording", recording_path, true)
+            .unwrap();
+        drop(handle);
+        catalog.shutdown();
+    }
+
+    fn assert_migrated_catalog_path(catalog_path: &Path, expected_path: &Path) {
+        let catalog = RecordingCatalog::open(catalog_path).unwrap();
+        let handle = catalog.handle();
+        let candidate = handle.claim_cleanup_candidate().unwrap().unwrap();
+        assert_eq!(candidate.path, expected_path);
+        drop(handle);
+        catalog.shutdown();
+    }
 
     #[test]
     fn battery_wake_config_is_not_treated_as_camera_configuration() {
@@ -2140,6 +2342,11 @@ mod tests {
                 flush_interval_secs: 15,
                 write_buffer_bytes: 16_384,
                 long_term_max_gb: 24,
+                minimum_free_gb: 8,
+                maximum_used_percent: Some(85),
+                warning_free_gb: 12,
+                critical_free_gb: 8,
+                cleanup_hysteresis_gb: 2,
             },
             ..Config::default()
         };
@@ -2189,6 +2396,11 @@ mod tests {
         );
         assert_eq!(saved["storage"]["short_term_secs"].as_integer(), Some(30));
         assert_eq!(saved["storage"]["long_term_max_gb"].as_integer(), Some(24));
+        assert_eq!(saved["storage"]["minimum_free_gb"].as_integer(), Some(8));
+        assert_eq!(
+            saved["storage"]["maximum_used_percent"].as_integer(),
+            Some(85)
+        );
         assert_eq!(
             saved["storage"]["recording_catalog_path"].as_str(),
             Some("/metadata/recordings.db")
@@ -2256,12 +2468,25 @@ mod tests {
         std::fs::create_dir_all(recording.parent().unwrap()).unwrap();
         std::fs::create_dir_all(thumbnail.parent().unwrap()).unwrap();
         std::fs::write(&recording, b"recording").unwrap();
-        std::fs::write(&catalog, b"catalog").unwrap();
+        create_migration_catalog(&catalog, &recording);
         std::fs::write(&thumbnail, b"thumbnail").unwrap();
 
-        let migration = StorageMigration::between(&current, &next, &current, &next)
-            .unwrap()
-            .unwrap();
+        let migration = StorageMigration::between_with_metadata(
+            StorageMigrationPaths::new(
+                &current,
+                &current,
+                &catalog,
+                &current.join(".event-thumbnails"),
+            ),
+            StorageMigrationPaths::new(
+                &next,
+                &next,
+                &next.join("recordings.db"),
+                &next.join(".event-thumbnails"),
+            ),
+        )
+        .unwrap()
+        .unwrap();
         let mut root = toml::Table::new();
         root.insert(
             STORAGE_MIGRATION_SECTION.to_owned(),
@@ -2276,9 +2501,9 @@ mod tests {
             std::fs::read(next.join("front_gate/main/2026-08-12/12/0000.mp4")).unwrap(),
             b"recording"
         );
-        assert_eq!(
-            std::fs::read(next.join("recordings.db")).unwrap(),
-            b"catalog"
+        assert_migrated_catalog_path(
+            &next.join("recordings.db"),
+            &next.join("front_gate/main/2026-08-12/12/0000.mp4"),
         );
         assert_eq!(
             std::fs::read(next.join(".event-thumbnails/event-1.jpg")).unwrap(),
@@ -2308,7 +2533,10 @@ mod tests {
             b"recording",
         )
         .unwrap();
-        std::fs::write(&current_catalog, b"catalog").unwrap();
+        create_migration_catalog(
+            &current_catalog,
+            &current_recordings.join("front_gate/main/0000.mp4"),
+        );
         std::fs::write(current_thumbnails.join("event-1.jpg"), b"thumbnail").unwrap();
 
         let migration = StorageMigration::between_with_metadata(
@@ -2334,18 +2562,48 @@ mod tests {
         );
 
         apply_pending_storage_migration(&mut root).unwrap();
+        migration.apply().unwrap();
 
         assert!(!root.contains_key(STORAGE_MIGRATION_SECTION));
         assert_eq!(
             std::fs::read(next_recordings.join("front_gate/main/0000.mp4")).unwrap(),
             b"recording"
         );
-        assert_eq!(std::fs::read(next_catalog).unwrap(), b"catalog");
+        assert_migrated_catalog_path(
+            &next_catalog,
+            &next_recordings.join("front_gate/main/0000.mp4"),
+        );
         assert_eq!(
             std::fs::read(next_thumbnails.join("event-1.jpg")).unwrap(),
             b"thumbnail"
         );
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn storage_migration_replays_a_committed_copy_before_source_cleanup() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-storage-copy-replay-{}",
+            rand::random::<u64>()
+        ));
+        let current = directory.join("current");
+        let next = directory.join("next");
+        let source = current.join("front/main/recording.mp4");
+        let destination = next.join("front/main/recording.mp4");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"complete recording").unwrap();
+        std::fs::write(&destination, b"complete recording").unwrap();
+        let migration = StorageMigration::between(&current, &next, &current, &next)
+            .unwrap()
+            .unwrap();
+
+        migration.apply().unwrap();
+        migration.apply().unwrap();
+
+        assert!(!current.exists());
+        assert_eq!(std::fs::read(destination).unwrap(), b"complete recording");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2365,7 +2623,7 @@ mod tests {
         std::fs::create_dir_all(current_catalog.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&current_thumbnails).unwrap();
         std::fs::write(current.join("front_gate/main/0000.mp4"), b"recording").unwrap();
-        std::fs::write(&current_catalog, b"catalog").unwrap();
+        create_migration_catalog(&current_catalog, &current.join("front_gate/main/0000.mp4"));
         std::fs::write(current_thumbnails.join("event-1.jpg"), b"thumbnail").unwrap();
 
         let migration = StorageMigration::between_with_metadata(
@@ -2386,7 +2644,7 @@ mod tests {
             std::fs::read(next.join("front_gate/main/0000.mp4")).unwrap(),
             b"recording"
         );
-        assert_eq!(std::fs::read(next_catalog).unwrap(), b"catalog");
+        assert_migrated_catalog_path(&next_catalog, &next.join("front_gate/main/0000.mp4"));
         assert_eq!(
             std::fs::read(next_thumbnails.join("event-1.jpg")).unwrap(),
             b"thumbnail"

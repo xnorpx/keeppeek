@@ -1,3 +1,4 @@
+use crate::storage::safety::StorageSafetyHealthSnapshot;
 use crate::{
     api::{CameraLifecycle, ProfileSummary},
     stats::StreamHealthReport,
@@ -426,8 +427,14 @@ pub struct StorageHealth {
     pub flush_interval_seconds: u64,
     pub write_buffer_bytes: usize,
     pub long_term_max_bytes: u64,
+    pub minimum_free_bytes: u64,
+    pub maximum_used_percent: Option<u8>,
+    pub warning_free_bytes: u64,
+    pub critical_free_bytes: u64,
+    pub cleanup_hysteresis_bytes: u64,
     pub catalog_bytes: Option<u64>,
     pub catalog: Option<CatalogStats>,
+    pub(crate) safety: StorageSafetyHealthSnapshot,
     pub(crate) demand: RecordingDemandHealth,
 }
 
@@ -613,6 +620,20 @@ impl SystemMonitor {
         networks.sort_unstable_by(|left, right| left.name.cmp(&right.name));
         let network_egress_bps = network_egress_bitrate_bps(&networks);
 
+        let recording_path = if recording_path.is_absolute() {
+            recording_path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(recording_path)
+        };
+        let recording_mount = self
+            .disks
+            .list()
+            .iter()
+            .filter(|disk| recording_path.starts_with(disk.mount_point()))
+            .max_by_key(|disk| disk.mount_point().components().count())
+            .map(|disk| disk.mount_point().to_path_buf());
         let mut disks = self
             .disks
             .list()
@@ -626,7 +647,9 @@ impl SystemMonitor {
                 available_bytes: disk.available_space(),
                 used_bytes: disk.total_space().saturating_sub(disk.available_space()),
                 removable: disk.is_removable(),
-                stores_recordings: recording_path.starts_with(disk.mount_point()),
+                stores_recordings: recording_mount
+                    .as_deref()
+                    .is_some_and(|mount| mount == disk.mount_point()),
             })
             .collect::<Vec<_>>();
         disks.sort_unstable_by(|left, right| left.mount_point.cmp(&right.mount_point));

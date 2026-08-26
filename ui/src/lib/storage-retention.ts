@@ -1,4 +1,4 @@
-import type { DiskHealth, SanitizedConfig, ServerHealthResponse } from '$lib/types';
+import type { CatalogHealth, DiskHealth, SanitizedConfig, ServerHealthResponse } from '$lib/types';
 
 const GIBIBYTE_BYTES = 1_073_741_824;
 const MINIMUM_SUGGESTED_STORAGE_BYTES = 16 * GIBIBYTE_BYTES;
@@ -11,6 +11,103 @@ const NON_PERSISTENT_FILE_SYSTEMS = new Set([
 	'sysfs',
 	'tmpfs'
 ]);
+
+export type StoragePolicyInput = {
+	archiveMaxBytes: number;
+	minimumFreeBytes: number;
+	maximumUsedPercent: number | null;
+	warningFreeBytes: number;
+	criticalFreeBytes: number;
+	cleanupHysteresisBytes: number;
+	capacity: Pick<DiskHealth, 'total_bytes' | 'available_bytes'> | null;
+	keeppeekBytes: number;
+};
+
+export type EffectiveStoragePolicy = {
+	archiveLimitBytes: number | null;
+	warningFreeBytes: number;
+	criticalFreeBytes: number;
+	recoveryFreeBytes: number;
+	effectiveLimitBytes: number | null;
+	cleanupTargetBytes: number | null;
+	pressure: 'normal' | 'warning' | 'critical';
+};
+
+export function effectiveStoragePolicy(input: StoragePolicyInput): EffectiveStoragePolicy {
+	const archiveLimitBytes = input.archiveMaxBytes === 0 ? null : input.archiveMaxBytes;
+	const criticalFreeBytes = Math.max(input.minimumFreeBytes, input.criticalFreeBytes);
+	const configuredWarningFreeBytes =
+		input.warningFreeBytes === 0 && criticalFreeBytes > 0
+			? criticalFreeBytes + input.cleanupHysteresisBytes
+			: Math.max(input.warningFreeBytes, criticalFreeBytes);
+	const percentageFreeBytes =
+		input.capacity && input.maximumUsedPercent !== null
+			? input.capacity.total_bytes -
+				Math.floor((input.capacity.total_bytes * Math.min(100, input.maximumUsedPercent)) / 100)
+			: 0;
+	const warningFreeBytes = Math.max(configuredWarningFreeBytes, percentageFreeBytes);
+	const hasFilesystemLimit =
+		warningFreeBytes > 0 ||
+		input.minimumFreeBytes > 0 ||
+		input.maximumUsedPercent !== null ||
+		criticalFreeBytes > 0;
+	const recoveryFreeBytes = hasFilesystemLimit
+		? Math.min(
+				input.capacity?.total_bytes ?? Number.MAX_SAFE_INTEGER,
+				warningFreeBytes + input.cleanupHysteresisBytes
+			)
+		: 0;
+	const otherUsedBytes = input.capacity
+		? Math.max(0, input.capacity.total_bytes - input.capacity.available_bytes - input.keeppeekBytes)
+		: 0;
+	const filesystemLimitBytes =
+		input.capacity && hasFilesystemLimit
+			? Math.max(0, input.capacity.total_bytes - otherUsedBytes - warningFreeBytes)
+			: null;
+	const effectiveLimitBytes = [archiveLimitBytes, filesystemLimitBytes]
+		.filter((value): value is number => value !== null)
+		.reduce<number | null>(
+			(limit, value) => (limit === null ? value : Math.min(limit, value)),
+			null
+		);
+	const archiveTargetBytes =
+		archiveLimitBytes === null
+			? null
+			: Math.max(0, archiveLimitBytes - input.cleanupHysteresisBytes);
+	const filesystemTargetBytes =
+		input.capacity && hasFilesystemLimit
+			? Math.max(0, input.capacity.total_bytes - otherUsedBytes - recoveryFreeBytes)
+			: null;
+	const cleanupRequired =
+		(archiveLimitBytes !== null && input.keeppeekBytes > archiveLimitBytes) ||
+		(input.capacity !== null &&
+			hasFilesystemLimit &&
+			input.capacity.available_bytes < warningFreeBytes);
+	const cleanupTargetBytes = cleanupRequired
+		? [archiveTargetBytes, filesystemTargetBytes]
+				.filter((value): value is number => value !== null)
+				.reduce<number | null>(
+					(target, value) => (target === null ? value : Math.min(target, value)),
+					null
+				)
+		: null;
+	const pressure =
+		input.capacity && criticalFreeBytes > 0 && input.capacity.available_bytes < criticalFreeBytes
+			? 'critical'
+			: cleanupRequired
+				? 'warning'
+				: 'normal';
+
+	return {
+		archiveLimitBytes,
+		warningFreeBytes,
+		criticalFreeBytes,
+		recoveryFreeBytes,
+		effectiveLimitBytes,
+		cleanupTargetBytes,
+		pressure
+	};
+}
 
 export function formatStorageDuration(seconds: number, locale?: string): string {
 	if (seconds < 1) {
@@ -99,6 +196,13 @@ export function suggestedStorageDisks(
 		});
 }
 
+export function catalogRecordingBytes(catalog: CatalogHealth | null | undefined): number | null {
+	if (!catalog) return null;
+	const exact = catalog.recording_bytes;
+	if (exact !== undefined && (exact > 0 || catalog.fragment_bytes === 0)) return exact;
+	return catalog.fragment_bytes;
+}
+
 export type StorageRetentionEvidence = {
 	recordingDisk: DiskHealth | null;
 	indexedFragmentBytes: number | null;
@@ -108,8 +212,24 @@ export type StorageRetentionEvidence = {
 	oldestFootageAtMs: number | null;
 	newestFootageAtMs: number | null;
 	longTermCapBytes: number | null;
+	keeppeekBytes: number | null;
+	minimumFreeBytes: number;
+	maximumUsedPercent: number | null;
+	warningFreeBytes: number;
+	criticalFreeBytes: number;
+	recoveryFreeBytes: number;
+	effectiveLimitBytes: number | null;
+	cleanupTargetBytes: number | null;
+	pressure: 'normal' | 'warning' | 'critical';
+	recordingState: 'active' | 'degraded' | 'paused';
+	cleanupRunning: boolean;
+	lastCleanupFilesRemoved: number;
+	lastCleanupBytesRemoved: number;
+	lastCleanupReason: string | null;
+	lastCleanupEndedAtMs: number | null;
+	lastFailure: string | null;
 	fillBehavior: 'prune-oldest';
-	diskWarningThresholdPercent: 10;
+	diskWarningThresholdPercent: number;
 	shortTerm: {
 		durationSeconds: number;
 		storage: 'memory';
@@ -141,12 +261,52 @@ export function storageRetentionEvidence(
 			: runtimeCapBytes === 0
 				? null
 				: runtimeCapBytes;
+	const recordingDisk = mostSpecificDiskForPath(
+		config.storage.long_term_path,
+		health?.system.disks ?? []
+	);
+	const safety = health?.storage.safety;
+	const hasPolicyEvidence =
+		safety !== undefined ||
+		health?.storage.minimum_free_bytes !== undefined ||
+		config.storage.minimum_free_gb !== undefined;
+	const keeppeekBytes = safety?.keeppeek_bytes ?? catalogRecordingBytes(health?.storage.catalog);
+	const minimumFreeBytes =
+		health?.storage.minimum_free_bytes ?? (config.storage.minimum_free_gb ?? 0) * GIBIBYTE_BYTES;
+	const maximumUsedPercent =
+		health?.storage.maximum_used_percent ?? config.storage.maximum_used_percent ?? null;
+	const configuredWarningFreeBytes =
+		health?.storage.warning_free_bytes ?? (config.storage.warning_free_gb ?? 0) * GIBIBYTE_BYTES;
+	const criticalFreeBytes = Math.max(
+		minimumFreeBytes,
+		health?.storage.critical_free_bytes ?? (config.storage.critical_free_gb ?? 0) * GIBIBYTE_BYTES
+	);
+	const warningFallback =
+		configuredWarningFreeBytes === 0 && criticalFreeBytes > 0
+			? criticalFreeBytes +
+				(health?.storage.cleanup_hysteresis_bytes ??
+					(config.storage.cleanup_hysteresis_gb ?? 0) * GIBIBYTE_BYTES)
+			: configuredWarningFreeBytes;
+	const cleanupHysteresisBytes =
+		health?.storage.cleanup_hysteresis_bytes ??
+		(config.storage.cleanup_hysteresis_gb ?? 0) * GIBIBYTE_BYTES;
+	const computedPolicy = effectiveStoragePolicy({
+		archiveMaxBytes: effectiveCapBytes ?? 0,
+		minimumFreeBytes,
+		maximumUsedPercent,
+		warningFreeBytes: warningFallback,
+		criticalFreeBytes,
+		cleanupHysteresisBytes,
+		capacity: recordingDisk,
+		keeppeekBytes: keeppeekBytes ?? 0
+	});
+	const warningFreeBytes = safety?.warning_free_bytes ?? computedPolicy.warningFreeBytes;
+	const recoveryFreeBytes = safety?.recovery_free_bytes ?? computedPolicy.recoveryFreeBytes;
+	const effectiveLimitBytes = safety?.effective_limit_bytes ?? computedPolicy.effectiveLimitBytes;
+	const pressure = safety?.pressure ?? computedPolicy.pressure;
 
 	return {
-		recordingDisk: mostSpecificDiskForPath(
-			config.storage.long_term_path,
-			health?.system.disks ?? []
-		),
+		recordingDisk,
 		indexedFragmentBytes: health?.storage.catalog?.fragment_bytes ?? null,
 		catalogBytes: health?.storage.catalog_bytes ?? null,
 		eventThumbnailCount: health?.storage.catalog?.event_thumbnails ?? null,
@@ -154,8 +314,27 @@ export function storageRetentionEvidence(
 		oldestFootageAtMs: health?.storage.catalog?.oldest_recording_at_ms ?? null,
 		newestFootageAtMs: health?.storage.catalog?.newest_recording_at_ms ?? null,
 		longTermCapBytes: effectiveCapBytes,
+		keeppeekBytes,
+		minimumFreeBytes,
+		maximumUsedPercent,
+		warningFreeBytes,
+		criticalFreeBytes,
+		recoveryFreeBytes,
+		effectiveLimitBytes,
+		cleanupTargetBytes: safety?.cleanup_target_bytes ?? computedPolicy.cleanupTargetBytes,
+		pressure,
+		recordingState: safety?.recording_state ?? (pressure === 'normal' ? 'active' : 'degraded'),
+		cleanupRunning: safety?.cleanup_running ?? false,
+		lastCleanupFilesRemoved: safety?.last_cleanup_files_removed ?? 0,
+		lastCleanupBytesRemoved: safety?.last_cleanup_bytes_removed ?? 0,
+		lastCleanupReason: safety?.last_cleanup_reason ?? null,
+		lastCleanupEndedAtMs: safety?.last_cleanup_ended_at_ms ?? null,
+		lastFailure: safety?.last_failure ?? null,
 		fillBehavior: 'prune-oldest',
-		diskWarningThresholdPercent: 10,
+		diskWarningThresholdPercent:
+			hasPolicyEvidence && recordingDisk && recordingDisk.total_bytes > 0
+				? (warningFreeBytes / recordingDisk.total_bytes) * 100
+				: 10,
 		shortTerm: {
 			durationSeconds: config.storage.short_term_secs,
 			storage: 'memory'

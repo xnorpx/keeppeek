@@ -98,7 +98,7 @@ test('Board 21 verifies storage, names empty states, and opens camera onboarding
 	await expect(page).toHaveURL(/\/settings\?edit=storage#storage$/);
 	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
 	await expect(page.getByLabel('Folder path')).toHaveValue('/mnt/keeppeek');
-	await expect(page.getByText('Confirm unlimited storage before continuing.')).toBeVisible();
+	await expect(page.getByText('Confirm unbounded storage before continuing.')).toBeVisible();
 	expect(writes).toEqual([]);
 
 	await page.goto('/setup');

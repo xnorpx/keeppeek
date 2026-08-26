@@ -40,6 +40,7 @@ use crate::{
         RecordingDemand, RecordingDemandGuard, RecordingHealthRegistry,
         RecordingStreamHealthSnapshot, StorageConfig,
         metadata::{EventSource, TimelineEvent},
+        safety::filesystem_capacity,
     },
     webrtc::{
         ControlDispatch, ControlHandlerError, ControlRequestHandler, DataChannelTarget,
@@ -140,6 +141,7 @@ struct CameraSettingsUpdate {
 struct RuntimeSettingsUpdate {
     host: String,
     port: u16,
+    expected_configuration_revision: String,
     storage: RuntimeStorageSettingsUpdate,
     #[serde(default)]
     move_existing_recordings: bool,
@@ -157,6 +159,11 @@ struct RuntimeStorageSettingsUpdate {
     flush_interval_secs: u64,
     write_buffer_bytes: usize,
     long_term_max_gb: u64,
+    minimum_free_gb: u64,
+    maximum_used_percent: Option<u8>,
+    warning_free_gb: u64,
+    critical_free_gb: u64,
+    cleanup_hysteresis_gb: u64,
 }
 
 #[derive(Serialize)]
@@ -1929,6 +1936,7 @@ impl ServerControlHandler {
                         "runtime configuration requires storage settings",
                     ));
                 };
+                let current_storage = current_config(&self.state).storage;
                 let write_buffer_bytes =
                     usize::try_from(storage.write_buffer_bytes).map_err(|_| {
                         ControlCommandError::new(
@@ -1937,10 +1945,28 @@ impl ServerControlHandler {
                             "write buffer size is too large",
                         )
                     })?;
+                let maximum_used_percent = storage.maximum_used_percent.map_or_else(
+                    || Ok(current_storage.maximum_used_percent),
+                    |percent| {
+                        if percent == 0 {
+                            return Ok(None);
+                        }
+                        u8::try_from(percent)
+                            .map_err(|_| {
+                                ControlCommandError::new(
+                                    proto::ErrorCode::InvalidRequest,
+                                    400,
+                                    "maximum filesystem usage percentage is too large",
+                                )
+                            })
+                            .map(Some)
+                    },
+                )?;
                 let result = save_runtime_settings(
                     RuntimeSettingsUpdate {
                         host: update.host,
                         port,
+                        expected_configuration_revision: update.expected_configuration_revision,
                         storage: RuntimeStorageSettingsUpdate {
                             medium_term_path: storage.medium_term_path,
                             long_term_path: storage.long_term_path,
@@ -1952,6 +1978,19 @@ impl ServerControlHandler {
                             flush_interval_secs: storage.flush_interval_secs,
                             write_buffer_bytes,
                             long_term_max_gb: storage.long_term_max_gb,
+                            minimum_free_gb: storage
+                                .minimum_free_gb
+                                .unwrap_or(current_storage.minimum_free_gb),
+                            maximum_used_percent,
+                            warning_free_gb: storage
+                                .warning_free_gb
+                                .unwrap_or(current_storage.warning_free_gb),
+                            critical_free_gb: storage
+                                .critical_free_gb
+                                .unwrap_or(current_storage.critical_free_gb),
+                            cleanup_hysteresis_gb: storage
+                                .cleanup_hysteresis_gb
+                                .unwrap_or(current_storage.cleanup_hysteresis_gb),
                         },
                         move_existing_recordings: update.move_existing_recordings,
                     },
@@ -5799,6 +5838,7 @@ fn proto_runtime_configuration_result(
         config: Some(proto::SanitizedRuntimeConfiguration {
             host: config.host,
             port: u32::from(config.port),
+            configuration_revision: config.configuration_revision,
             storage: Some(proto::RuntimeStorageConfiguration {
                 medium_term_path: config.storage.medium_term_path,
                 long_term_path: config.storage.long_term_path,
@@ -5814,6 +5854,13 @@ fn proto_runtime_configuration_result(
                     .try_into()
                     .unwrap_or(u64::MAX),
                 long_term_max_gb: config.storage.long_term_max_gb,
+                minimum_free_gb: Some(config.storage.minimum_free_gb),
+                maximum_used_percent: Some(
+                    config.storage.maximum_used_percent.map_or(0, u32::from),
+                ),
+                warning_free_gb: Some(config.storage.warning_free_gb),
+                critical_free_gb: Some(config.storage.critical_free_gb),
+                cleanup_hysteresis_gb: Some(config.storage.cleanup_hysteresis_gb),
             }),
             camera_count: config.camera_count.try_into().unwrap_or(u64::MAX),
             recording_estimate: Some(proto::RecordingCapacityEstimate {
@@ -6213,6 +6260,7 @@ fn proto_process_health(process: crate::health::ProcessHealth) -> proto::Process
 }
 
 fn proto_storage_health(storage: StorageHealth) -> proto::StorageHealthSnapshot {
+    let safety = storage.safety;
     proto::StorageHealthSnapshot {
         medium_term_path: storage.medium_term_path,
         long_term_path: storage.long_term_path,
@@ -6234,6 +6282,8 @@ fn proto_storage_health(storage: StorageHealth) -> proto::StorageHealthSnapshot 
             event_thumbnails: catalog.event_thumbnails,
             oldest_recording_at_ms: catalog.oldest_recording_at_ms,
             newest_recording_at_ms: catalog.newest_recording_at_ms,
+            protected_files: catalog.protected_files,
+            recording_bytes: catalog.recording_bytes,
         }),
         demand: Some(proto::RecordingDemandHealthSnapshot {
             active_streams: usize_u64(storage.demand.active_streams),
@@ -6249,6 +6299,38 @@ fn proto_storage_health(storage: StorageHealth) -> proto::StorageHealthSnapshot 
                     lease_remaining_ms: stream.lease_remaining_ms,
                 })
                 .collect(),
+        }),
+        minimum_free_bytes: storage.minimum_free_bytes,
+        maximum_used_percent: storage.maximum_used_percent.map(u32::from),
+        warning_free_bytes: storage.warning_free_bytes,
+        critical_free_bytes: storage.critical_free_bytes,
+        cleanup_hysteresis_bytes: storage.cleanup_hysteresis_bytes,
+        safety: Some(proto::StorageSafetyHealthSnapshot {
+            pressure: safety.pressure.as_str().to_owned(),
+            recording_state: safety.recording_state.as_str().to_owned(),
+            total_bytes: safety.total_bytes,
+            available_bytes: safety.available_bytes,
+            keeppeek_bytes: safety.keeppeek_bytes,
+            effective_limit_bytes: safety.effective_limit_bytes,
+            cleanup_target_bytes: safety.cleanup_target_bytes,
+            warning_free_bytes: safety.warning_free_bytes,
+            critical_free_bytes: safety.critical_free_bytes,
+            recovery_free_bytes: safety.recovery_free_bytes,
+            last_evaluation_at_ms: safety.last_evaluation_at_ms,
+            last_evaluation_trigger: safety
+                .last_evaluation_trigger
+                .map(|trigger| trigger.as_str().to_owned()),
+            cleanup_running: safety.cleanup_running,
+            last_cleanup_started_at_ms: safety.last_cleanup_started_at_ms,
+            last_cleanup_ended_at_ms: safety.last_cleanup_ended_at_ms,
+            last_cleanup_files_removed: safety.last_cleanup_files_removed,
+            last_cleanup_bytes_removed: safety.last_cleanup_bytes_removed,
+            last_cleanup_reason: safety
+                .last_cleanup_reason
+                .map(|reason| reason.as_str().to_owned()),
+            last_failure_at_ms: safety.last_failure_at_ms,
+            last_failure: safety.last_failure,
+            last_recovered_at_ms: safety.last_recovered_at_ms,
         }),
     }
 }
@@ -7180,6 +7262,7 @@ fn sanitized_config(
     SanitizedConfig {
         host: config.reference_or_value(&["host"], &config.host),
         port: config.port,
+        configuration_revision: configuration_revision(config),
         storage: SanitizedStorage {
             medium_term_path,
             long_term_path,
@@ -7191,6 +7274,11 @@ fn sanitized_config(
             flush_interval_secs: config.storage.flush_interval_secs,
             write_buffer_bytes: config.storage.write_buffer_bytes,
             long_term_max_gb: config.storage.long_term_max_gb,
+            minimum_free_gb: config.storage.minimum_free_gb,
+            maximum_used_percent: config.storage.maximum_used_percent,
+            warning_free_gb: config.storage.warning_free_gb,
+            critical_free_gb: config.storage.critical_free_gb,
+            cleanup_hysteresis_gb: config.storage.cleanup_hysteresis_gb,
         },
         camera_count,
         recording_estimate: recording_capacity_estimate(
@@ -7205,6 +7293,14 @@ fn sanitized_config(
             storage_config.long_term_max_bytes,
         ),
     }
+}
+
+fn configuration_revision(config: &Config) -> String {
+    let serialized = toml::to_string(&config.source).unwrap_or_default();
+    Sha256::digest(serialized.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn recording_mode_includes_stream(mode: CameraRecordingMode, stream: &str) -> bool {
@@ -8318,9 +8414,9 @@ fn server_health(
         .into_iter()
         .map(|report| (report.ip, report))
         .collect::<HashMap<_, _>>();
-    let recording_health = state
-        .recording_health
-        .snapshot()
+    let recording_snapshot = state.recording_health.snapshot();
+    let storage_safety = recording_snapshot.storage;
+    let recording_health = recording_snapshot
         .streams
         .into_iter()
         .map(|stream| (stream.stream_id.clone(), stream))
@@ -8474,22 +8570,38 @@ fn server_health(
         flush_interval_seconds: state.storage_config.flush_interval.as_secs(),
         write_buffer_bytes: state.storage_config.write_buffer_bytes,
         long_term_max_bytes: state.storage_config.long_term_max_bytes,
+        minimum_free_bytes: state.storage_config.minimum_free_bytes,
+        maximum_used_percent: state.storage_config.maximum_used_percent,
+        warning_free_bytes: state.storage_config.warning_free_bytes,
+        critical_free_bytes: state.storage_config.critical_free_bytes,
+        cleanup_hysteresis_bytes: state.storage_config.cleanup_hysteresis_bytes,
         catalog_bytes,
         catalog,
+        safety: storage_safety,
         demand: state.recording_demand.health_snapshot(),
     };
-    for disk in system.disks.iter().filter(|disk| disk.stores_recordings) {
-        if disk.total_bytes > 0 && disk.available_bytes.saturating_mul(100) / disk.total_bytes < 10
-        {
-            issues.push(HealthIssue {
-                severity: "critical".to_owned(),
-                scope: "storage".to_owned(),
-                message: format!(
-                    "Recording disk {} has less than 10% free space",
-                    disk.mount_point
-                ),
-            });
-        }
+    if storage.safety.recording_state.as_str() == "paused" {
+        issues.push(HealthIssue {
+            severity: "critical".to_owned(),
+            scope: "storage".to_owned(),
+            message: storage.safety.last_failure.as_ref().map_or_else(
+                || {
+                    "Recording is paused because storage cleanup could not restore headroom"
+                        .to_owned()
+                },
+                |failure| format!("Recording is paused: {failure}"),
+            ),
+        });
+    } else if matches!(storage.safety.pressure.as_str(), "warning" | "critical") {
+        issues.push(HealthIssue {
+            severity: storage.safety.pressure.as_str().to_owned(),
+            scope: "storage".to_owned(),
+            message: format!(
+                "Recording storage has {} bytes available; cleanup recovery target is {} bytes",
+                storage.safety.available_bytes.unwrap_or(0),
+                storage.safety.recovery_free_bytes,
+            ),
+        });
     }
     if system.memory.total_bytes > 0
         && system.memory.available_bytes.saturating_mul(100) / system.memory.total_bytes < 5
@@ -8832,6 +8944,20 @@ fn save_runtime_settings(
             "long-term storage limit is too large",
         ));
     }
+    for (value, name) in [
+        (update.storage.minimum_free_gb, "minimum free space"),
+        (update.storage.warning_free_gb, "warning free space"),
+        (update.storage.critical_free_gb, "critical free space"),
+        (update.storage.cleanup_hysteresis_gb, "cleanup hysteresis"),
+    ] {
+        if value > u64::MAX / GIBIBYTE_BYTES {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("{name} is too large"),
+            ));
+        }
+    }
     if update.storage.event_thumbnail_max_mb > u64::MAX / MEBIBYTE_BYTES {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -8905,9 +9031,21 @@ fn save_runtime_settings(
             flush_interval_secs: update.storage.flush_interval_secs,
             write_buffer_bytes: update.storage.write_buffer_bytes,
             long_term_max_gb: update.storage.long_term_max_gb,
+            minimum_free_gb: update.storage.minimum_free_gb,
+            maximum_used_percent: update.storage.maximum_used_percent,
+            warning_free_gb: update.storage.warning_free_gb,
+            critical_free_gb: update.storage.critical_free_gb,
+            cleanup_hysteresis_gb: update.storage.cleanup_hysteresis_gb,
         },
         ..Config::default()
     };
+    if let Err(error) = settings.storage.validate_safety_thresholds() {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            format!("invalid storage safety thresholds: {error}"),
+        ));
+    }
     let next_storage_config = StorageConfig::from_toml(&settings.storage);
     let migration = if update.move_existing_recordings {
         match StorageMigration::between_with_metadata(
@@ -8936,10 +9074,105 @@ fn save_runtime_settings(
     } else {
         None
     };
+    let mut probe_paths = HashSet::new();
+    probe_paths.insert(next_storage_config.medium_term_path.clone());
+    probe_paths.insert(next_storage_config.long_term_path.clone());
+    probe_paths.insert(next_storage_config.event_thumbnail_path.clone());
+    probe_paths.insert(
+        next_storage_config
+            .recording_catalog_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
+    for path in probe_paths {
+        if let Err(error) = storage_write_probe(&path) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                format!("storage path is not writable: {error}"),
+            ));
+        }
+    }
+    let catalog_recording_bytes = state
+        .catalog
+        .as_ref()
+        .and_then(|catalog| catalog.stats().ok())
+        .map_or(0, |stats| stats.recording_bytes);
+    let capacity = filesystem_capacity(
+        &next_storage_config.long_term_path,
+        if next_storage_config.long_term_path == state.storage_config.long_term_path
+            || update.move_existing_recordings
+        {
+            catalog_recording_bytes
+        } else {
+            0
+        },
+    )
+    .map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            format!("storage filesystem is unavailable: {error}"),
+        )
+    })?;
+    let safety = next_storage_config.safety_policy().evaluate(capacity);
+    if safety.critical_free_bytes > capacity.total_bytes
+        || safety.warning_free_bytes > capacity.total_bytes
+        || safety.recovery_free_bytes > capacity.total_bytes
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "storage headroom thresholds exceed destination filesystem capacity",
+        ));
+    }
+    let reclaimable_bytes = if next_storage_config.long_term_path
+        == state.storage_config.long_term_path
+        || update.move_existing_recordings
+    {
+        catalog_recording_bytes
+    } else {
+        0
+    };
+    if capacity.available_bytes.saturating_add(reclaimable_bytes) < safety.recovery_free_bytes {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "destination filesystem cannot provide the configured cleanup recovery headroom",
+        ));
+    }
+    if update.move_existing_recordings
+        && next_storage_config.long_term_path != state.storage_config.long_term_path
+        && capacity.available_bytes
+            < catalog_recording_bytes.saturating_add(safety.critical_free_bytes)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "destination filesystem cannot hold indexed recordings and critical headroom",
+        ));
+    }
     let _config_update = state
         .config_update
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !update.expected_configuration_revision.is_empty() {
+        let current = config::load_config(config_path).map_err(|error| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to verify current settings revision: {error}"),
+            )
+        })?;
+        if configuration_revision(&current) != update.expected_configuration_revision {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "runtime configuration changed after this editor was opened; reload before applying the draft",
+            ));
+        }
+    }
     let saved =
         match config::update_settings_with_migration(config_path, &settings, migration.as_ref()) {
             Ok(saved) => saved,
@@ -13044,6 +13277,7 @@ mod tests {
                                 port: 3000,
                                 storage: None,
                                 move_existing_recordings: false,
+                                expected_configuration_revision: String::new(),
                             },
                         )),
                     },
@@ -13057,6 +13291,120 @@ mod tests {
         };
         assert_eq!(error.code, proto::ErrorCode::InvalidRequest as i32);
         assert!(error.message.contains("requires storage"));
+    }
+
+    #[test]
+    fn runtime_configuration_distinguishes_omitted_safety_fields_from_zero() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-runtime-optional-storage-{}",
+            rand::random::<u64>()
+        ));
+        let config_path = directory.join("config.toml");
+        let recordings = directory.join("recordings");
+        let config = Config {
+            storage: StorageToml {
+                medium_term_path: Some(recordings.to_string_lossy().into_owned()),
+                long_term_path: Some(recordings.to_string_lossy().into_owned()),
+                long_term_max_gb: 24,
+                minimum_free_gb: 8,
+                maximum_used_percent: Some(85),
+                warning_free_gb: 12,
+                critical_free_gb: 8,
+                cleanup_hysteresis_gb: 2,
+                ..StorageToml::default()
+            },
+            ..Config::default()
+        };
+        crate::config::write_private_file(
+            &config_path,
+            toml::to_string_pretty(&config).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let storage_config = StorageConfig::from_toml(&config.storage);
+        let state = ServerState::new(
+            &config,
+            &HashMap::new(),
+            &HashMap::new(),
+            &storage_config,
+            RecordingDemand::new(Duration::ZERO),
+            WebRtc::new(),
+        )
+        .with_camera_config_path(config_path);
+        let handler = test_control_handler(state);
+        let storage_update = |safety: Option<u64>| proto::RuntimeStorageConfiguration {
+            medium_term_path: recordings.to_string_lossy().into_owned(),
+            long_term_path: recordings.to_string_lossy().into_owned(),
+            recording_catalog_path: recordings
+                .join("recordings.db")
+                .to_string_lossy()
+                .into_owned(),
+            event_thumbnail_path: recordings
+                .join(".event-thumbnails")
+                .to_string_lossy()
+                .into_owned(),
+            event_thumbnail_max_mb: 1_024,
+            short_term_secs: 120,
+            medium_term_secs: 1_800,
+            flush_interval_secs: 60,
+            write_buffer_bytes: 8_192,
+            long_term_max_gb: 24,
+            minimum_free_gb: safety,
+            maximum_used_percent: safety.map(|_| 0),
+            warning_free_gb: safety,
+            critical_free_gb: safety,
+            cleanup_hysteresis_gb: safety,
+        };
+        let update = |request_id, revision: String, storage| proto::Request {
+            request_id,
+            command: Some(control_request::Command::RuntimeConfigurationCommand(
+                proto::RuntimeConfigurationCommand {
+                    action: Some(runtime_configuration_command::Action::Update(
+                        proto::UpdateRuntimeConfiguration {
+                            host: "0.0.0.0".to_owned(),
+                            port: 8081,
+                            storage: Some(storage),
+                            move_existing_recordings: false,
+                            expected_configuration_revision: revision,
+                        },
+                    )),
+                },
+            )),
+        };
+
+        let preserved = handler.handle(update(86, String::new(), storage_update(None)));
+        let Some(control_response::Result::Ok(ok)) = preserved.response.result else {
+            panic!("legacy runtime update must succeed");
+        };
+        let Some(control_ok::Result::RuntimeConfigurationResult(result)) = ok.result else {
+            panic!("legacy runtime update must return configuration");
+        };
+        let preserved = result.config.unwrap();
+        let preserved_storage = preserved.storage.unwrap();
+        assert_eq!(preserved_storage.minimum_free_gb, Some(8));
+        assert_eq!(preserved_storage.maximum_used_percent, Some(85));
+        assert_eq!(preserved_storage.warning_free_gb, Some(12));
+        assert_eq!(preserved_storage.critical_free_gb, Some(8));
+        assert_eq!(preserved_storage.cleanup_hysteresis_gb, Some(2));
+
+        let disabled = handler.handle(update(
+            87,
+            preserved.configuration_revision,
+            storage_update(Some(0)),
+        ));
+        let Some(control_response::Result::Ok(ok)) = disabled.response.result else {
+            panic!("explicit zero runtime update must succeed");
+        };
+        let Some(control_ok::Result::RuntimeConfigurationResult(result)) = ok.result else {
+            panic!("explicit zero runtime update must return configuration");
+        };
+        let disabled_storage = result.config.unwrap().storage.unwrap();
+        assert_eq!(disabled_storage.minimum_free_gb, Some(0));
+        assert_eq!(disabled_storage.maximum_used_percent, Some(0));
+        assert_eq!(disabled_storage.warning_free_gb, Some(0));
+        assert_eq!(disabled_storage.critical_free_gb, Some(0));
+        assert_eq!(disabled_storage.cleanup_hysteresis_gb, Some(0));
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -13573,6 +13921,12 @@ mod tests {
             .storage
             .expect("health must include storage evidence");
         assert!(storage.demand.is_some());
+        assert!(storage.minimum_free_bytes > 0);
+        let safety = storage
+            .safety
+            .expect("health must include storage safety evidence");
+        assert_eq!(safety.pressure, "normal");
+        assert_eq!(safety.recording_state, "active");
         assert!(health.webrtc.is_some());
     }
 
@@ -13598,6 +13952,10 @@ mod tests {
         assert!(body.contains("keeppeek_ingress_frames_total 0"));
         assert!(body.contains("keeppeek_system_memory_total_bytes"));
         assert!(body.contains("keeppeek_webrtc_active_sessions"));
+        assert!(body.contains("keeppeek_storage_minimum_free_bytes"));
+        assert!(body.contains("keeppeek_storage_pressure_state 0"));
+        assert!(body.contains("keeppeek_storage_recording_paused 0"));
+        assert!(body.contains("keeppeek_storage_last_cleanup_files_removed 0"));
         assert_eq!(router_thread.join().unwrap(), 1);
     }
 
@@ -14335,21 +14693,29 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-runtime-{}", rand::random::<u64>()));
         let config_path = directory.join("config.toml");
+        let current_storage = directory.join("current-storage");
+        let medium_term_path = directory.join("new-medium");
+        let long_term_path = directory.join("new-archive");
+        let recording_catalog_path = directory.join("metadata/new-recordings.db");
+        let event_thumbnail_path = directory.join("metadata/new-thumbnails");
         crate::config::write_private_file(
             &config_path,
-            br#"
+            format!(
+                r#"
                 host = "0.0.0.0"
                 port = 3000
 
                 [storage]
-                medium_term_path = "/media/keeppeek"
-                long_term_path = "/archive/keeppeek"
+                medium_term_path = {current_storage:?}
+                long_term_path = {current_storage:?}
 
                 [cameras.front]
                 ip = "192.0.2.44"
                 username = "operator"
                 password = "not-in-the-response"
-            "#,
+            "#
+            )
+            .as_bytes(),
         )
         .unwrap();
         let state = ServerState::empty().with_camera_config_path(config_path.clone());
@@ -14358,17 +14724,23 @@ mod tests {
             RuntimeSettingsUpdate {
                 host: "127.0.0.1".to_owned(),
                 port: 3200,
+                expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
-                    medium_term_path: "/media/new-keeppeek".to_owned(),
-                    long_term_path: "/archive/new-keeppeek".to_owned(),
-                    recording_catalog_path: "/metadata/new-recordings.db".to_owned(),
-                    event_thumbnail_path: "/metadata/new-thumbnails".to_owned(),
+                    medium_term_path: medium_term_path.to_string_lossy().into_owned(),
+                    long_term_path: long_term_path.to_string_lossy().into_owned(),
+                    recording_catalog_path: recording_catalog_path.to_string_lossy().into_owned(),
+                    event_thumbnail_path: event_thumbnail_path.to_string_lossy().into_owned(),
                     event_thumbnail_max_mb: 512,
                     short_term_secs: 30,
                     medium_term_secs: 120,
                     flush_interval_secs: 15,
                     write_buffer_bytes: 16_384,
                     long_term_max_gb: 24,
+                    minimum_free_gb: 8,
+                    maximum_used_percent: Some(85),
+                    warning_free_gb: 12,
+                    critical_free_gb: 8,
+                    cleanup_hysteresis_gb: 2,
                 },
                 move_existing_recordings: false,
             },
@@ -14378,15 +14750,21 @@ mod tests {
 
         assert_eq!(saved.config.host, "127.0.0.1");
         assert_eq!(saved.config.port, 3200);
-        assert_eq!(saved.config.storage.medium_term_path, "/media/new-keeppeek");
-        assert_eq!(saved.config.storage.long_term_path, "/archive/new-keeppeek");
+        assert_eq!(
+            saved.config.storage.medium_term_path,
+            medium_term_path.to_string_lossy()
+        );
+        assert_eq!(
+            saved.config.storage.long_term_path,
+            long_term_path.to_string_lossy()
+        );
         assert_eq!(
             saved.config.storage.recording_catalog_path,
-            "/metadata/new-recordings.db"
+            recording_catalog_path.to_string_lossy()
         );
         assert_eq!(
             saved.config.storage.event_thumbnail_path,
-            "/metadata/new-thumbnails"
+            event_thumbnail_path.to_string_lossy()
         );
         assert_eq!(saved.config.storage.event_thumbnail_max_mb, 512);
         assert_eq!(saved.config.storage.medium_term_secs, 120);
@@ -14418,20 +14796,26 @@ mod tests {
             .expect("persisted runtime storage must be present");
         assert_eq!(persisted.host, "127.0.0.1");
         assert_eq!(persisted.port, 3200);
-        assert_eq!(storage.medium_term_path, "/media/new-keeppeek");
-        assert_eq!(storage.long_term_path, "/archive/new-keeppeek");
+        assert_eq!(storage.medium_term_path, medium_term_path.to_string_lossy());
+        assert_eq!(storage.long_term_path, long_term_path.to_string_lossy());
         assert_eq!(
             storage.recording_catalog_path,
-            "/metadata/new-recordings.db"
+            recording_catalog_path.to_string_lossy()
         );
-        assert_eq!(storage.event_thumbnail_path, "/metadata/new-thumbnails");
+        assert_eq!(
+            storage.event_thumbnail_path,
+            event_thumbnail_path.to_string_lossy()
+        );
         assert_eq!(storage.event_thumbnail_max_mb, 512);
+        assert_eq!(storage.minimum_free_gb, Some(8));
+        assert_eq!(storage.maximum_used_percent, Some(85));
         assert_eq!(persisted.camera_count, 1);
 
         let Err(error) = save_runtime_settings(
             RuntimeSettingsUpdate {
                 host: "127.0.0.1".to_owned(),
                 port: 0,
+                expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
                     medium_term_path: "/media/invalid".to_owned(),
                     long_term_path: "/archive/invalid".to_owned(),
@@ -14443,6 +14827,11 @@ mod tests {
                     flush_interval_secs: 15,
                     write_buffer_bytes: 16_384,
                     long_term_max_gb: 24,
+                    minimum_free_gb: 8,
+                    maximum_used_percent: Some(85),
+                    warning_free_gb: 12,
+                    critical_free_gb: 8,
+                    cleanup_hysteresis_gb: 2,
                 },
                 move_existing_recordings: false,
             },
@@ -14459,6 +14848,152 @@ mod tests {
             Some("not-in-the-response")
         );
         assert!(!persisted.contains_key("storage_migration"));
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn runtime_storage_validation_failures_leave_configuration_unchanged() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-runtime-storage-validation-{}",
+            rand::random::<u64>()
+        ));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(
+            &config_path,
+            b"host = \"0.0.0.0\"\nport = 3000\n[storage]\nlong_term_max_gb = 24\n",
+        )
+        .unwrap();
+        let original = std::fs::read(&config_path).unwrap();
+        let state = ServerState::empty().with_camera_config_path(config_path.clone());
+        let writable = directory.join("writable").to_string_lossy().into_owned();
+
+        let Err(invalid_thresholds) = save_runtime_settings(
+            RuntimeSettingsUpdate {
+                host: "127.0.0.1".to_owned(),
+                port: 3200,
+                expected_configuration_revision: String::new(),
+                storage: RuntimeStorageSettingsUpdate {
+                    medium_term_path: writable.clone(),
+                    long_term_path: writable.clone(),
+                    recording_catalog_path: directory
+                        .join("recordings.db")
+                        .to_string_lossy()
+                        .into_owned(),
+                    event_thumbnail_path: directory
+                        .join("thumbnails")
+                        .to_string_lossy()
+                        .into_owned(),
+                    event_thumbnail_max_mb: 512,
+                    short_term_secs: 30,
+                    medium_term_secs: 120,
+                    flush_interval_secs: 15,
+                    write_buffer_bytes: 16_384,
+                    long_term_max_gb: 24,
+                    minimum_free_gb: 8,
+                    maximum_used_percent: Some(85),
+                    warning_free_gb: 7,
+                    critical_free_gb: 8,
+                    cleanup_hysteresis_gb: 2,
+                },
+                move_existing_recordings: false,
+            },
+            &state,
+        ) else {
+            panic!("contradictory storage thresholds must be rejected");
+        };
+        assert_eq!(invalid_thresholds.code, proto::ErrorCode::InvalidRequest);
+        assert!(invalid_thresholds.message.contains("warning free space"));
+        assert_eq!(std::fs::read(&config_path).unwrap(), original);
+
+        let inaccessible_path = if cfg!(windows) {
+            "Z:\\keeppeek-unavailable\\recordings"
+        } else {
+            "/dev/null/recordings"
+        };
+        let Err(invalid_path) = save_runtime_settings(
+            RuntimeSettingsUpdate {
+                host: "127.0.0.1".to_owned(),
+                port: 3200,
+                expected_configuration_revision: String::new(),
+                storage: RuntimeStorageSettingsUpdate {
+                    medium_term_path: inaccessible_path.to_owned(),
+                    long_term_path: inaccessible_path.to_owned(),
+                    recording_catalog_path: directory
+                        .join("recordings.db")
+                        .to_string_lossy()
+                        .into_owned(),
+                    event_thumbnail_path: directory
+                        .join("thumbnails")
+                        .to_string_lossy()
+                        .into_owned(),
+                    event_thumbnail_max_mb: 512,
+                    short_term_secs: 30,
+                    medium_term_secs: 120,
+                    flush_interval_secs: 15,
+                    write_buffer_bytes: 16_384,
+                    long_term_max_gb: 24,
+                    minimum_free_gb: 0,
+                    maximum_used_percent: None,
+                    warning_free_gb: 0,
+                    critical_free_gb: 0,
+                    cleanup_hysteresis_gb: 0,
+                },
+                move_existing_recordings: false,
+            },
+            &state,
+        ) else {
+            panic!("inaccessible storage paths must be rejected");
+        };
+        assert_eq!(invalid_path.code, proto::ErrorCode::InvalidRequest);
+        assert!(invalid_path.message.contains("not writable"));
+        assert_eq!(std::fs::read(&config_path).unwrap(), original);
+
+        let stale_revision = current_config(&state).configuration_revision;
+        let mut externally_changed = original;
+        externally_changed.extend_from_slice(b"unrelated_setting = true\n");
+        crate::config::write_private_file(&config_path, &externally_changed).unwrap();
+        let Err(conflict) = save_runtime_settings(
+            RuntimeSettingsUpdate {
+                host: "127.0.0.1".to_owned(),
+                port: 3200,
+                expected_configuration_revision: stale_revision,
+                storage: RuntimeStorageSettingsUpdate {
+                    medium_term_path: writable.clone(),
+                    long_term_path: writable,
+                    recording_catalog_path: directory
+                        .join("recordings.db")
+                        .to_string_lossy()
+                        .into_owned(),
+                    event_thumbnail_path: directory
+                        .join("thumbnails")
+                        .to_string_lossy()
+                        .into_owned(),
+                    event_thumbnail_max_mb: 512,
+                    short_term_secs: 30,
+                    medium_term_secs: 120,
+                    flush_interval_secs: 15,
+                    write_buffer_bytes: 16_384,
+                    long_term_max_gb: 24,
+                    minimum_free_gb: 0,
+                    maximum_used_percent: None,
+                    warning_free_gb: 0,
+                    critical_free_gb: 0,
+                    cleanup_hysteresis_gb: 0,
+                },
+                move_existing_recordings: false,
+            },
+            &state,
+        ) else {
+            panic!("a stale runtime editor must be rejected");
+        };
+        assert_eq!(conflict.code, proto::ErrorCode::Rejected);
+        assert!(
+            conflict
+                .message
+                .contains("changed after this editor was opened")
+        );
+        assert_eq!(std::fs::read(&config_path).unwrap(), externally_changed);
 
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -14501,6 +15036,7 @@ mod tests {
             RuntimeSettingsUpdate {
                 host: "0.0.0.0".to_owned(),
                 port: 3000,
+                expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
                     medium_term_path: next.to_string_lossy().into_owned(),
                     long_term_path: next.to_string_lossy().into_owned(),
@@ -14518,6 +15054,11 @@ mod tests {
                     flush_interval_secs: 60,
                     write_buffer_bytes: 8192,
                     long_term_max_gb: 0,
+                    minimum_free_gb: 0,
+                    maximum_used_percent: None,
+                    warning_free_gb: 0,
+                    critical_free_gb: 0,
+                    cleanup_hysteresis_gb: 0,
                 },
                 move_existing_recordings: true,
             },
@@ -14613,6 +15154,7 @@ mod tests {
             RuntimeSettingsUpdate {
                 host: "0.0.0.0".to_owned(),
                 port: 3000,
+                expected_configuration_revision: String::new(),
                 storage: RuntimeStorageSettingsUpdate {
                     medium_term_path: next_recordings.to_string_lossy().into_owned(),
                     long_term_path: next_recordings.to_string_lossy().into_owned(),
@@ -14624,6 +15166,11 @@ mod tests {
                     flush_interval_secs: 60,
                     write_buffer_bytes: 8192,
                     long_term_max_gb: 0,
+                    minimum_free_gb: 0,
+                    maximum_used_percent: None,
+                    warning_free_gb: 0,
+                    critical_free_gb: 0,
+                    cleanup_hysteresis_gb: 0,
                 },
                 move_existing_recordings: true,
             },

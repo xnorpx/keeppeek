@@ -158,6 +158,14 @@ pub struct CatalogMediaObjectLocation {
     pub keyframe_len: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CatalogCleanupCandidate {
+    pub recording_id: String,
+    pub path: PathBuf,
+    pub file_bytes: u64,
+    pub pending: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct EventPreviewRequest {
     pub event_id: String,
@@ -181,6 +189,8 @@ pub struct CatalogStats {
     pub recording_files: u64,
     pub finalized_files: u64,
     pub active_files: u64,
+    pub protected_files: u64,
+    pub recording_bytes: u64,
     pub fragments: u64,
     pub fragment_bytes: u64,
     pub events: u64,
@@ -208,6 +218,7 @@ struct LegacyRecording {
     id: String,
     path: PathBuf,
     finalized: bool,
+    cleanup_pending: bool,
     needs_keyframe_backfill: bool,
 }
 
@@ -311,6 +322,25 @@ enum Command {
         paths: Vec<String>,
         reply: SyncSender<anyhow::Result<()>>,
     },
+    ClaimCleanupCandidate {
+        reply: SyncSender<anyhow::Result<Option<CatalogCleanupCandidate>>>,
+    },
+    PendingCleanupCandidate {
+        reply: SyncSender<anyhow::Result<Option<CatalogCleanupCandidate>>>,
+    },
+    CompleteCleanup {
+        recording_id: String,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
+    CancelCleanup {
+        recording_id: String,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
+    SetRecordingProtected {
+        recording_id: String,
+        protected: bool,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
     ReplaceEventSearchTerms {
         event_id: String,
         terms: Vec<EventSearchTerm>,
@@ -359,6 +389,10 @@ impl RecordingCatalog {
         pollster::block_on(initialize_schema(&connection))?;
         let legacy_recordings =
             pollster::block_on(legacy_recordings_without_keyframes(&connection))?;
+        pollster::block_on(backfill_recording_file_sizes(
+            &connection,
+            &legacy_recordings,
+        ))?;
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
@@ -427,6 +461,86 @@ impl Drop for RecordingCatalog {
     fn drop(&mut self) {
         self.shutdown_inner();
     }
+}
+
+pub(crate) fn rewrite_recording_paths(
+    catalog_path: &Path,
+    routes: &[(PathBuf, PathBuf)],
+) -> anyhow::Result<()> {
+    if routes.is_empty() || !catalog_path.exists() {
+        return Ok(());
+    }
+    let path = catalog_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Turso catalog path is not valid UTF-8"))?;
+    let database = pollster::block_on(turso::Builder::new_local(path).build())?;
+    let connection = database.connect()?;
+    connection.busy_timeout(BUSY_TIMEOUT)?;
+    pollster::block_on(async {
+        initialize_schema(&connection).await?;
+        let mut rows = connection
+            .query("SELECT id, path, finalized FROM recording_files", ())
+            .await?;
+        let mut rewrites = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let recording_id = row.get::<String>(0)?;
+            let current_path = PathBuf::from(row.get::<String>(1)?);
+            let finalized = row.get::<i64>(2)? != 0;
+            let destination = routes
+                .iter()
+                .filter_map(|(from, to)| {
+                    current_path
+                        .strip_prefix(from)
+                        .ok()
+                        .map(|relative| (from.components().count(), to.join(relative)))
+                })
+                .max_by_key(|(specificity, _)| *specificity)
+                .map(|(_, destination)| destination);
+            if let Some(destination) = destination
+                && destination != current_path
+            {
+                rewrites.push((recording_id, destination, finalized));
+            }
+        }
+        drop(rows);
+        if rewrites.is_empty() {
+            return Ok(());
+        }
+        connection.execute_batch("BEGIN IMMEDIATE").await?;
+        let result = async {
+            for (recording_id, destination, finalized) in rewrites {
+                let destination = destination
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("migrated recording path is not valid UTF-8"))?;
+                let file_bytes = if finalized {
+                    std::fs::metadata(destination).map_or(0, |metadata| metadata.len())
+                } else {
+                    0
+                };
+                connection
+                    .execute(
+                        "UPDATE recording_files
+                         SET path = ?1, file_bytes = ?2
+                         WHERE id = ?3",
+                        turso::params![
+                            destination,
+                            to_i64(file_bytes, "migrated recording file bytes")?,
+                            recording_id
+                        ],
+                    )
+                    .await?;
+            }
+            anyhow::Ok(())
+        }
+        .await;
+        match result {
+            Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+            Err(error) => {
+                let _ = connection.execute_batch("ROLLBACK").await;
+                Err(error)
+            }
+        }
+    })
 }
 
 impl RecordingCatalogHandle {
@@ -772,6 +886,75 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub(crate) fn claim_cleanup_candidate(
+        &self,
+    ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::ClaimCleanupCandidate { reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn pending_cleanup_candidate(
+        &self,
+    ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::PendingCleanupCandidate { reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn complete_cleanup(&self, recording_id: &str) -> anyhow::Result<()> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::CompleteCleanup {
+                recording_id: recording_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn cancel_cleanup(&self, recording_id: &str) -> anyhow::Result<()> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::CancelCleanup {
+                recording_id: recording_id.to_owned(),
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    /// Includes or excludes a finalized recording from automatic storage cleanup.
+    pub fn set_recording_protected(
+        &self,
+        recording_id: &str,
+        protected: bool,
+    ) -> anyhow::Result<()> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::SetRecordingProtected {
+                recording_id: recording_id.to_owned(),
+                protected,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
     pub(crate) fn replace_event_search_terms(
         &self,
         event_id: &str,
@@ -1037,6 +1220,41 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     &paths,
                 )));
             }
+            Command::ClaimCleanupCandidate { reply } => {
+                let _ = reply.send(pollster::block_on(claim_cleanup_candidate(&connection)));
+            }
+            Command::PendingCleanupCandidate { reply } => {
+                let _ = reply.send(pollster::block_on(pending_cleanup_candidate(&connection)));
+            }
+            Command::CompleteCleanup {
+                recording_id,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(complete_cleanup(
+                    &connection,
+                    &recording_id,
+                )));
+            }
+            Command::CancelCleanup {
+                recording_id,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(cancel_cleanup(
+                    &connection,
+                    &recording_id,
+                )));
+            }
+            Command::SetRecordingProtected {
+                recording_id,
+                protected,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(set_recording_protected(
+                    &connection,
+                    &recording_id,
+                    protected,
+                )));
+            }
             Command::ReplaceEventSearchTerms {
                 event_id,
                 terms,
@@ -1095,7 +1313,7 @@ async fn legacy_recordings_without_keyframes(
 ) -> anyhow::Result<Vec<LegacyRecording>> {
     let mut rows = connection
         .query(
-                        "SELECT r.id, r.path, r.finalized,
+                        "SELECT r.id, r.path, r.finalized, r.cleanup_pending,
                                         EXISTS (
                                                 SELECT 1
                                                 FROM recording_fragments AS f
@@ -1115,7 +1333,8 @@ async fn legacy_recordings_without_keyframes(
             id: row.get(0)?,
             path: PathBuf::from(row.get::<String>(1)?),
             finalized: row.get::<i64>(2)? != 0,
-            needs_keyframe_backfill: row.get::<i64>(3)? != 0,
+            cleanup_pending: row.get::<i64>(3)? != 0,
+            needs_keyframe_backfill: row.get::<i64>(4)? != 0,
         });
     }
     Ok(recordings)
@@ -1129,6 +1348,9 @@ fn backfill_legacy_recordings(
     for mut recording in recordings {
         if shutdown.load(Ordering::Acquire) {
             break;
+        }
+        if recording.cleanup_pending {
+            continue;
         }
         if !recording.path.is_file() {
             let recovered = (!recording.finalized)
@@ -1159,6 +1381,10 @@ fn backfill_legacy_recordings(
         if !recording.finalized {
             continue;
         }
+        if let Err(error) = catalog.update_recording_path(&recording.id, &recording.path, true) {
+            tracing::warn!(recording_id = recording.id, %error, "unable to backfill recording file size");
+            continue;
+        }
         if !recording.needs_keyframe_backfill {
             continue;
         }
@@ -1181,6 +1407,41 @@ fn backfill_legacy_recordings(
                 %error,
                 "unable to commit legacy recording keyframes",
             );
+        }
+    }
+}
+
+async fn backfill_recording_file_sizes(
+    connection: &turso::Connection,
+    recordings: &[LegacyRecording],
+) -> anyhow::Result<()> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        for recording in recordings.iter().filter(|recording| recording.finalized) {
+            let Ok(metadata) = std::fs::metadata(&recording.path) else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            connection
+                .execute(
+                    "UPDATE recording_files SET file_bytes = ?1 WHERE id = ?2",
+                    turso::params![
+                        to_i64(metadata.len(), "recording file bytes")?,
+                        recording.id.clone()
+                    ],
+                )
+                .await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
         }
     }
 }
@@ -1359,6 +1620,124 @@ async fn delete_recordings_by_path(
     }
 }
 
+async fn claim_cleanup_candidate(
+    connection: &turso::Connection,
+) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let mut rows = connection
+            .query(
+                "SELECT id, path, file_bytes, cleanup_pending
+                 FROM recording_files
+                 WHERE finalized = 1 AND protected = 0
+                 ORDER BY cleanup_pending DESC, started_at_ms, id
+                 LIMIT 1",
+                (),
+            )
+            .await?;
+        let candidate = rows
+            .next()
+            .await?
+            .map(|row| {
+                anyhow::Ok(CatalogCleanupCandidate {
+                    recording_id: row.get(0)?,
+                    path: PathBuf::from(row.get::<String>(1)?),
+                    file_bytes: to_u64(row.get(2)?, "cleanup candidate file bytes")?,
+                    pending: row.get::<i64>(3)? != 0,
+                })
+            })
+            .transpose()?;
+        drop(rows);
+        if let Some(candidate) = &candidate
+            && !candidate.pending
+        {
+            connection
+                .execute(
+                    "UPDATE recording_files SET cleanup_pending = 1 WHERE id = ?1",
+                    turso::params![candidate.recording_id.clone()],
+                )
+                .await?;
+        }
+        anyhow::Ok(candidate)
+    }
+    .await;
+    match result {
+        Ok(candidate) => {
+            connection.execute_batch("COMMIT").await?;
+            Ok(candidate)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn pending_cleanup_candidate(
+    connection: &turso::Connection,
+) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
+    let mut rows = connection
+        .query(
+            "SELECT id, path, file_bytes
+             FROM recording_files
+             WHERE finalized = 1 AND protected = 0 AND cleanup_pending = 1
+             ORDER BY started_at_ms, id
+             LIMIT 1",
+            (),
+        )
+        .await?;
+    rows.next()
+        .await?
+        .map(|row| {
+            anyhow::Ok(CatalogCleanupCandidate {
+                recording_id: row.get(0)?,
+                path: PathBuf::from(row.get::<String>(1)?),
+                file_bytes: to_u64(row.get(2)?, "pending cleanup file bytes")?,
+                pending: true,
+            })
+        })
+        .transpose()
+}
+
+async fn complete_cleanup(
+    connection: &turso::Connection,
+    recording_id: &str,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "DELETE FROM recording_files WHERE id = ?1 AND cleanup_pending = 1",
+            turso::params![recording_id],
+        )
+        .await?;
+    Ok(())
+}
+
+async fn cancel_cleanup(connection: &turso::Connection, recording_id: &str) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "UPDATE recording_files SET cleanup_pending = 0 WHERE id = ?1",
+            turso::params![recording_id],
+        )
+        .await?;
+    Ok(())
+}
+
+async fn set_recording_protected(
+    connection: &turso::Connection,
+    recording_id: &str,
+    protected: bool,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "UPDATE recording_files
+             SET protected = ?1, cleanup_pending = CASE WHEN ?1 = 1 THEN 0 ELSE cleanup_pending END
+             WHERE id = ?2",
+            (i64::from(protected), recording_id),
+        )
+        .await?;
+    Ok(())
+}
+
 pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
     connection
         .execute_batch(
@@ -1382,7 +1761,10 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  path TEXT NOT NULL UNIQUE,
                  init_offset INTEGER NOT NULL,
                  init_len INTEGER NOT NULL,
-                 finalized INTEGER NOT NULL
+                 finalized INTEGER NOT NULL,
+                 file_bytes INTEGER NOT NULL DEFAULT 0,
+                 protected INTEGER NOT NULL DEFAULT 0,
+                 cleanup_pending INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS recording_files_stream_time
                  ON recording_files(stream_id, started_at_ms);
@@ -1468,6 +1850,27 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     ensure_column(connection, "recording_files", "logical_stream_id", "TEXT").await?;
     ensure_column(
         connection,
+        "recording_files",
+        "file_bytes",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_files",
+        "protected",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_files",
+        "cleanup_pending",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        connection,
         "recording_events",
         "search_revision",
         "INTEGER NOT NULL DEFAULT 0",
@@ -1476,7 +1879,9 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     connection
         .execute_batch(
             "CREATE INDEX IF NOT EXISTS recording_files_source_stream_time
-                 ON recording_files(source_id, logical_stream_id, started_at_ms);",
+                 ON recording_files(source_id, logical_stream_id, started_at_ms);
+             CREATE INDEX IF NOT EXISTS recording_files_cleanup
+                 ON recording_files(finalized, protected, cleanup_pending, started_at_ms);",
         )
         .await?;
     apply_event_search_backfill(connection).await?;
@@ -1654,10 +2059,22 @@ async fn update_recording_path(
     path: &str,
     finalized: bool,
 ) -> anyhow::Result<()> {
+    let file_bytes = if finalized {
+        std::fs::metadata(path).map_or(0, |metadata| metadata.len())
+    } else {
+        0
+    };
     connection
         .execute(
-            "UPDATE recording_files SET path = ?1, finalized = ?2 WHERE id = ?3",
-            (path, i64::from(finalized), recording_id),
+            "UPDATE recording_files
+             SET path = ?1, finalized = ?2, file_bytes = ?3
+             WHERE id = ?4",
+            (
+                path,
+                i64::from(finalized),
+                to_i64(file_bytes, "recording file bytes")?,
+                recording_id,
+            ),
         )
         .await?;
     Ok(())
@@ -3060,6 +3477,8 @@ async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<Catalog
                  (SELECT COUNT(*) FROM recording_files),
                  (SELECT COUNT(*) FROM recording_files WHERE finalized = 1),
                  (SELECT COUNT(*) FROM recording_files WHERE finalized = 0),
+                 (SELECT COUNT(*) FROM recording_files WHERE protected = 1),
+                 (SELECT COALESCE(SUM(file_bytes), 0) FROM recording_files WHERE finalized = 1),
                  (SELECT COUNT(*) FROM recording_fragments),
                  (SELECT COALESCE(SUM(byte_len), 0) FROM recording_fragments),
                  (SELECT COUNT(*) FROM recording_events),
@@ -3078,13 +3497,15 @@ async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<Catalog
         recording_files: to_u64(row.get(0)?, "recording file count")?,
         finalized_files: to_u64(row.get(1)?, "finalized recording count")?,
         active_files: to_u64(row.get(2)?, "active recording count")?,
-        fragments: to_u64(row.get(3)?, "fragment count")?,
-        fragment_bytes: to_u64(row.get(4)?, "fragment bytes")?,
-        events: to_u64(row.get(5)?, "event count")?,
-        open_events: to_u64(row.get(6)?, "open event count")?,
-        event_thumbnails: to_u64(row.get(7)?, "event thumbnail count")?,
-        oldest_recording_at_ms: row.get(8)?,
-        newest_recording_at_ms: row.get(9)?,
+        protected_files: to_u64(row.get(3)?, "protected recording count")?,
+        recording_bytes: to_u64(row.get(4)?, "recording bytes")?,
+        fragments: to_u64(row.get(5)?, "fragment count")?,
+        fragment_bytes: to_u64(row.get(6)?, "fragment bytes")?,
+        events: to_u64(row.get(7)?, "event count")?,
+        open_events: to_u64(row.get(8)?, "open event count")?,
+        event_thumbnails: to_u64(row.get(9)?, "event thumbnail count")?,
+        oldest_recording_at_ms: row.get(10)?,
+        newest_recording_at_ms: row.get(11)?,
     })
 }
 
@@ -3193,6 +3614,8 @@ mod tests {
                 recording_files: 1,
                 finalized_files: 0,
                 active_files: 1,
+                protected_files: 0,
+                recording_bytes: 0,
                 fragments: 1,
                 fragment_bytes: 8_192,
                 events: 0,
@@ -3608,6 +4031,106 @@ mod tests {
                 .is_none()
         );
         assert_eq!(handle.stats().unwrap().recording_files, 0);
+
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_intent_recovers_after_file_deletion_and_completion_is_idempotent() {
+        let root = test_dir("turso-cleanup-reconciliation");
+        let catalog_path = root.join("recordings.db");
+        let recording_path = root.join("old.mp4");
+        std::fs::write(&recording_path, vec![0; 64]).unwrap();
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let handle = catalog.handle();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "old".to_owned(),
+                stream_id: "front/sub".to_owned(),
+                source_id: Some("front".to_owned()),
+                logical_stream_id: Some("sub".to_owned()),
+                started_at_ms: 1_000,
+                ended_at_ms: Some(2_000),
+                path: recording_path.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: true,
+            })
+            .unwrap();
+        handle
+            .update_recording_path("old", &recording_path, true)
+            .unwrap();
+
+        let claimed = handle.claim_cleanup_candidate().unwrap().unwrap();
+        assert_eq!(claimed.recording_id, "old");
+        assert_eq!(claimed.file_bytes, 64);
+        assert!(!claimed.pending);
+        drop(handle);
+        catalog.shutdown();
+
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let handle = catalog.handle();
+        let before_deletion = handle.pending_cleanup_candidate().unwrap().unwrap();
+        assert_eq!(before_deletion.recording_id, "old");
+        assert!(before_deletion.path.is_file());
+        std::fs::remove_file(&recording_path).unwrap();
+        drop(handle);
+        catalog.shutdown();
+
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let handle = catalog.handle();
+        let recovered = handle.claim_cleanup_candidate().unwrap().unwrap();
+        assert_eq!(recovered.recording_id, "old");
+        assert!(recovered.pending);
+        handle.complete_cleanup("old").unwrap();
+        handle.complete_cleanup("old").unwrap();
+        assert!(handle.claim_cleanup_candidate().unwrap().is_none());
+
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_candidates_exclude_active_and_protected_recordings() {
+        let root = test_dir("turso-cleanup-protection");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        for (id, finalized, started_at_ms) in [("protected", true, 1_000), ("active", false, 2_000)]
+        {
+            let path = root.join(format!("{id}.mp4"));
+            std::fs::write(&path, vec![0; 32]).unwrap();
+            handle
+                .upsert_recording(CatalogRecording {
+                    id: id.to_owned(),
+                    stream_id: "front/sub".to_owned(),
+                    source_id: Some("front".to_owned()),
+                    logical_stream_id: Some("sub".to_owned()),
+                    started_at_ms,
+                    ended_at_ms: finalized.then_some(started_at_ms + 1_000),
+                    path: path.to_string_lossy().into_owned(),
+                    init_offset: 0,
+                    init_len: 8,
+                    finalized,
+                })
+                .unwrap();
+            if finalized {
+                handle.update_recording_path(id, &path, true).unwrap();
+            }
+        }
+        handle.set_recording_protected("protected", true).unwrap();
+
+        assert!(handle.claim_cleanup_candidate().unwrap().is_none());
+        handle.set_recording_protected("protected", false).unwrap();
+        assert_eq!(
+            handle
+                .claim_cleanup_candidate()
+                .unwrap()
+                .map(|candidate| candidate.recording_id),
+            Some("protected".to_owned())
+        );
 
         drop(handle);
         catalog.shutdown();

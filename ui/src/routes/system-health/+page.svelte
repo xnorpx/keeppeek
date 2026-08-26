@@ -1333,6 +1333,36 @@
 											? formatBytes(health.storage.long_term_max_bytes)
 											: 'Unlimited'}
 									</dd>
+									<dt class="text-muted-foreground">Minimum free</dt>
+									<dd class="font-mono">{formatBytes(health.storage.minimum_free_bytes)}</dd>
+									<dt class="text-muted-foreground">Maximum filesystem used</dt>
+									<dd class="font-mono">
+										{health.storage.maximum_used_percent === null ||
+										health.storage.maximum_used_percent === undefined
+											? 'Disabled'
+											: `${health.storage.maximum_used_percent}%`}
+									</dd>
+									<dt class="text-muted-foreground">Pressure / recording</dt>
+									<dd class="font-mono uppercase">
+										{health.storage.safety?.pressure ?? 'unavailable'} / {health.storage.safety
+											?.recording_state ?? 'unavailable'}
+									</dd>
+									<dt class="text-muted-foreground">Effective limit</dt>
+									<dd class="font-mono">
+										{health.storage.safety?.effective_limit_bytes === null
+											? 'Unlimited'
+											: formatBytes(health.storage.safety?.effective_limit_bytes)}
+									</dd>
+									<dt class="text-muted-foreground">Recovery free</dt>
+									<dd class="font-mono">
+										{formatBytes(health.storage.safety?.recovery_free_bytes)}
+									</dd>
+									<dt class="text-muted-foreground">Last cleanup</dt>
+									<dd class="font-mono">
+										{health.storage.safety?.cleanup_running
+											? 'Running'
+											: `${health.storage.safety?.last_cleanup_files_removed ?? 0} files / ${formatBytes(health.storage.safety?.last_cleanup_bytes_removed)}`}
+									</dd>
 									<dt class="text-muted-foreground">Catalog size</dt>
 									<dd class="font-mono">{formatBytes(health.storage.catalog_bytes)}</dd>
 									<dt class="text-muted-foreground">Active streams</dt>
@@ -1366,6 +1396,12 @@
 										</dd>
 										<dt class="text-muted-foreground">Fragment bytes</dt>
 										<dd class="font-mono">{formatBytes(health.storage.catalog.fragment_bytes)}</dd>
+										<dt class="text-muted-foreground">Recording bytes</dt>
+										<dd class="font-mono">{formatBytes(health.storage.catalog.recording_bytes)}</dd>
+										<dt class="text-muted-foreground">Protected files</dt>
+										<dd class="font-mono">
+											{compactFormatter.format(health.storage.catalog.protected_files ?? 0)}
+										</dd>
 										<dt class="text-muted-foreground">Events / open</dt>
 										<dd class="font-mono">
 											{compactFormatter.format(health.storage.catalog.events)} / {compactFormatter.format(

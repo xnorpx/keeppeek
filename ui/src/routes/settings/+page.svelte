@@ -226,6 +226,7 @@
 		return {
 			host,
 			port: parseWholeNumber(runtimeSettingsForm.port, 'Server port', 1, 65_535),
+			expected_configuration_revision: config.configuration_revision,
 			move_existing_recordings: false,
 			storage: { ...config.storage }
 		};

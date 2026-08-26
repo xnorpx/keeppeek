@@ -2,9 +2,18 @@ use crate::{
     cameras::CameraRecordingMode,
     config::StorageToml,
     storage::{
-        catalog::RecordingCatalogHandle, demand::RecordingDemand, health::RecordingHealthRegistry,
-        identity::RecordingStreamIdentity, long_term::LongTermStore, medium_term::MediumTermWriter,
-        segment::RecordingFrame, short_term::ShortTermBuffer,
+        catalog::RecordingCatalogHandle,
+        demand::RecordingDemand,
+        health::RecordingHealthRegistry,
+        identity::RecordingStreamIdentity,
+        long_term::LongTermStore,
+        medium_term::MediumTermWriter,
+        safety::{
+            FilesystemCapacity, StorageCleanupReason, StorageCleanupTrigger,
+            StorageSafetyHealthRegistry, StorageSafetyPolicy, filesystem_capacity,
+        },
+        segment::RecordingFrame,
+        short_term::ShortTermBuffer,
     },
 };
 use std::{
@@ -30,6 +39,11 @@ pub struct StorageConfig {
     pub flush_interval: Duration,
     pub write_buffer_bytes: usize,
     pub long_term_max_bytes: u64,
+    pub minimum_free_bytes: u64,
+    pub maximum_used_percent: Option<u8>,
+    pub warning_free_bytes: u64,
+    pub critical_free_bytes: u64,
+    pub cleanup_hysteresis_bytes: u64,
 }
 
 impl Default for StorageConfig {
@@ -72,7 +86,31 @@ impl StorageConfig {
             flush_interval: Duration::from_secs(toml.flush_interval_secs),
             write_buffer_bytes: toml.write_buffer_bytes,
             long_term_max_bytes: toml.long_term_max_gb.saturating_mul(GIBIBYTE_BYTES),
+            minimum_free_bytes: toml.minimum_free_gb.saturating_mul(GIBIBYTE_BYTES),
+            maximum_used_percent: toml.maximum_used_percent,
+            warning_free_bytes: toml.warning_free_gb.saturating_mul(GIBIBYTE_BYTES),
+            critical_free_bytes: toml.critical_free_gb.saturating_mul(GIBIBYTE_BYTES),
+            cleanup_hysteresis_bytes: toml.cleanup_hysteresis_gb.saturating_mul(GIBIBYTE_BYTES),
         }
+    }
+
+    pub(crate) const fn safety_policy(&self) -> StorageSafetyPolicy {
+        StorageSafetyPolicy {
+            archive_max_bytes: self.long_term_max_bytes,
+            minimum_free_bytes: self.minimum_free_bytes,
+            maximum_used_percent: self.maximum_used_percent,
+            warning_free_bytes: self.warning_free_bytes,
+            critical_free_bytes: self.critical_free_bytes,
+            cleanup_hysteresis_bytes: self.cleanup_hysteresis_bytes,
+        }
+    }
+
+    const fn has_safety_limits(&self) -> bool {
+        self.long_term_max_bytes > 0
+            || self.minimum_free_bytes > 0
+            || self.maximum_used_percent.is_some()
+            || self.warning_free_bytes > 0
+            || self.critical_free_bytes > 0
     }
 
     const fn is_direct_write(&self) -> bool {
@@ -392,6 +430,11 @@ impl StorageEngine {
             write_buffer_bytes = config.write_buffer_bytes,
             direct_write = config.is_direct_write(),
             long_term_max_gb = config.long_term_max_bytes / GIBIBYTE_BYTES,
+            minimum_free_gb = config.minimum_free_bytes / GIBIBYTE_BYTES,
+            maximum_used_percent = config.maximum_used_percent,
+            warning_free_gb = config.warning_free_bytes / GIBIBYTE_BYTES,
+            critical_free_gb = config.critical_free_bytes / GIBIBYTE_BYTES,
+            cleanup_hysteresis_gb = config.cleanup_hysteresis_bytes / GIBIBYTE_BYTES,
             "storage engine initialized",
         );
 
@@ -473,6 +516,7 @@ struct WriterWorker {
     config: StorageConfig,
     demand: RecordingDemand,
     health: RecordingHealthRegistry,
+    safety: StorageSafetyHealthRegistry,
     catalog: Option<RecordingCatalogHandle>,
     pipelines: HashMap<String, CameraPipeline>,
     long_term: LongTermStore,
@@ -495,10 +539,12 @@ impl WriterWorker {
         health: RecordingHealthRegistry,
     ) -> Self {
         let long_term = LongTermStore::new(config.long_term_path.clone());
+        let safety = health.storage();
         Self {
             config,
             demand,
             health,
+            safety,
             catalog,
             pipelines: HashMap::new(),
             long_term,
@@ -508,11 +554,18 @@ impl WriterWorker {
     fn run(&mut self, rx: mpsc::Receiver<Command>) {
         let reap_interval = Duration::from_secs(300);
         let mut last_reap = Instant::now();
+        let safety_enabled = self.catalog.is_some() && self.config.has_safety_limits();
 
-        self.enforce_storage_limit();
+        if self.catalog.is_some() {
+            self.enforce_storage_limit(StorageCleanupTrigger::Startup);
+        } else if self.config.has_safety_limits() {
+            tracing::warn!(
+                "storage safety cleanup is disabled because no recording catalog is configured"
+            );
+        }
 
         loop {
-            let cmd = if self.config.long_term_max_bytes > 0 {
+            let cmd = if safety_enabled {
                 match rx.recv_timeout(reap_interval) {
                     Ok(cmd) => Some(cmd),
                     Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -544,28 +597,134 @@ impl WriterWorker {
                 }
             }
 
-            if self.config.long_term_max_bytes > 0 && last_reap.elapsed() >= reap_interval {
+            if safety_enabled && last_reap.elapsed() >= reap_interval {
                 last_reap = Instant::now();
-                self.enforce_storage_limit();
+                self.enforce_storage_limit(StorageCleanupTrigger::Periodic);
             }
         }
     }
 
-    fn enforce_storage_limit(&self) {
-        if self.config.long_term_max_bytes == 0 {
-            return;
-        }
-        let removed = self
-            .long_term
-            .enforce_limit_with_removed(self.config.long_term_max_bytes);
-        if let Some(catalog) = &self.catalog
-            && let Err(error) = catalog.delete_recordings_by_path(&removed)
-        {
-            tracing::warn!(%error, "unable to remove retained recording catalog rows");
+    fn enforce_storage_limit(&self, trigger: StorageCleanupTrigger) {
+        if let Err(error) = self.try_enforce_storage_limit(trigger, None) {
+            self.safety.cleanup_failed(&error.to_string());
+            tracing::error!(%error, ?trigger, "storage cleanup could not restore safe headroom; recording paused");
         }
     }
 
+    #[cfg(test)]
+    fn enforce_storage_limit_with_capacity(
+        &self,
+        trigger: StorageCleanupTrigger,
+        capacity: FilesystemCapacity,
+    ) {
+        if let Err(error) = self.try_enforce_storage_limit(trigger, Some(capacity)) {
+            self.safety.cleanup_failed(&error.to_string());
+        }
+    }
+
+    fn try_enforce_storage_limit(
+        &self,
+        trigger: StorageCleanupTrigger,
+        capacity: Option<FilesystemCapacity>,
+    ) -> anyhow::Result<()> {
+        let catalog = self
+            .catalog
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("recording catalog is unavailable for safe cleanup"))?;
+        let injected_capacity = capacity.is_some();
+        let stats = catalog.stats()?;
+        let mut capacity = match capacity {
+            Some(mut capacity) => {
+                capacity.keeppeek_bytes = stats.recording_bytes;
+                capacity
+            }
+            None => filesystem_capacity(&self.config.long_term_path, stats.recording_bytes)?,
+        };
+        let policy = self.config.safety_policy();
+        let mut evaluation = policy.evaluate(capacity);
+
+        if let Some(candidate) = catalog.pending_cleanup_candidate()? {
+            if !candidate.path.exists() {
+                self.safety
+                    .cleanup_started(StorageCleanupReason::Reconciliation);
+                catalog.complete_cleanup(&candidate.recording_id)?;
+                capacity.keeppeek_bytes =
+                    capacity.keeppeek_bytes.saturating_sub(candidate.file_bytes);
+                self.safety.cleanup_finished(1, candidate.file_bytes);
+                evaluation = policy.evaluate(capacity);
+            } else if !evaluation.cleanup_required {
+                catalog.cancel_cleanup(&candidate.recording_id)?;
+            }
+        }
+
+        self.safety.observe(trigger, capacity, evaluation);
+        if !evaluation.cleanup_required {
+            return Ok(());
+        }
+
+        let reason = evaluation
+            .cleanup_reason
+            .ok_or_else(|| anyhow::anyhow!("storage cleanup has no trigger reason"))?;
+        let target_bytes = evaluation
+            .cleanup_target_bytes
+            .ok_or_else(|| anyhow::anyhow!("storage cleanup has no recovery target"))?;
+        self.safety.cleanup_started(reason);
+        let mut files_removed = 0u64;
+        let mut bytes_removed = 0u64;
+
+        while capacity.keeppeek_bytes > target_bytes {
+            let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
+                anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
+            })?;
+            let removed = self.remove_cleanup_candidate(&catalog, &candidate)?;
+            files_removed = files_removed.saturating_add(u64::from(removed > 0));
+            bytes_removed = bytes_removed.saturating_add(removed);
+            capacity.keeppeek_bytes = capacity
+                .keeppeek_bytes
+                .saturating_sub(candidate.file_bytes.max(removed));
+            capacity.available_bytes = capacity
+                .available_bytes
+                .saturating_add(removed)
+                .min(capacity.total_bytes);
+        }
+
+        if !injected_capacity {
+            let stats = catalog.stats()?;
+            capacity = filesystem_capacity(&self.config.long_term_path, stats.recording_bytes)?;
+        }
+        let recovered = policy.evaluate(capacity);
+        self.safety.observe(trigger, capacity, recovered);
+        if recovered.cleanup_required {
+            anyhow::bail!("cleanup completed without restoring the configured recovery target");
+        }
+        self.safety.cleanup_finished(files_removed, bytes_removed);
+        tracing::info!(
+            ?trigger,
+            ?reason,
+            files_removed,
+            bytes_removed,
+            available_bytes = capacity.available_bytes,
+            keeppeek_bytes = capacity.keeppeek_bytes,
+            "storage cleanup restored configured headroom",
+        );
+        Ok(())
+    }
+
+    fn remove_cleanup_candidate(
+        &self,
+        catalog: &RecordingCatalogHandle,
+        candidate: &crate::storage::catalog::CatalogCleanupCandidate,
+    ) -> anyhow::Result<u64> {
+        let bytes_removed = self.long_term.remove_catalog_recording(&candidate.path)?;
+        self.safety.cleanup_progress(bytes_removed);
+        catalog.complete_cleanup(&candidate.recording_id)?;
+        Ok(bytes_removed)
+    }
+
     fn ingest(&mut self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
+        if self.safety.recording_paused() {
+            return;
+        }
         let storage_key = identity.storage_key.clone();
         self.pipeline_for(identity);
 
@@ -845,6 +1004,9 @@ impl WriterWorker {
                 .update_recording_path(recording_id, &destination, true)
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
         }
+        if self.catalog.is_some() && self.config.has_safety_limits() {
+            self.enforce_storage_limit(StorageCleanupTrigger::SegmentFinalized);
+        }
         Ok(destination)
     }
 
@@ -925,6 +1087,7 @@ mod tests {
     use crate::storage::{
         AudioCodec, AudioFrame, CatalogRecording, MediaFrame, RecordingCatalog, VideoCodec,
         VideoFrame,
+        safety::{StoragePressure, StorageRecordingState},
     };
     use bytes::Bytes;
     use std::fs::File;
@@ -945,7 +1108,37 @@ mod tests {
             flush_interval: Duration::from_secs(60),
             write_buffer_bytes: 8 * 1024,
             long_term_max_bytes: 0,
+            minimum_free_bytes: 0,
+            maximum_used_percent: None,
+            warning_free_bytes: 0,
+            critical_free_bytes: 0,
+            cleanup_hysteresis_bytes: 0,
         }
+    }
+
+    fn insert_cleanup_recording(
+        catalog: &RecordingCatalogHandle,
+        id: &str,
+        path: &Path,
+        started_at_ms: i64,
+        bytes: usize,
+    ) {
+        std::fs::write(path, vec![0; bytes]).unwrap();
+        catalog
+            .upsert_recording(CatalogRecording {
+                id: id.to_owned(),
+                stream_id: "front/sub".to_owned(),
+                source_id: Some("front".to_owned()),
+                logical_stream_id: Some("sub".to_owned()),
+                started_at_ms,
+                ended_at_ms: Some(started_at_ms + 1_000),
+                path: path.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: true,
+            })
+            .unwrap();
+        catalog.update_recording_path(id, path, true).unwrap();
     }
 
     #[test]
@@ -966,6 +1159,172 @@ mod tests {
         );
         assert_eq!(storage.event_thumbnail_max_bytes, 512 * MEBIBYTE_BYTES);
         assert_eq!(storage.long_term_max_bytes, 1_024 * GIBIBYTE_BYTES);
+        assert_eq!(storage.minimum_free_bytes, 10 * GIBIBYTE_BYTES);
+        assert_eq!(storage.warning_free_bytes, 20 * GIBIBYTE_BYTES);
+        assert_eq!(storage.critical_free_bytes, 10 * GIBIBYTE_BYTES);
+        assert_eq!(storage.cleanup_hysteresis_bytes, 5 * GIBIBYTE_BYTES);
+    }
+
+    #[test]
+    fn startup_cleanup_removes_only_oldest_catalog_media_to_recovery_target() {
+        let mut config = storage_config("storage-safety-startup-cleanup");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".exports")).unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let handle = catalog.handle();
+        let old = root.join("old.mp4");
+        let new = root.join("new.mp4");
+        let export = root.join(".exports/export.mp4");
+        let unrelated = root.join("unindexed.mp4");
+        insert_cleanup_recording(&handle, "old", &old, 1_000, 40);
+        insert_cleanup_recording(&handle, "new", &new, 2_000, 40);
+        std::fs::write(&export, vec![0; 80]).unwrap();
+        std::fs::write(&unrelated, vec![0; 80]).unwrap();
+        config.long_term_max_bytes = 50;
+        config.cleanup_hysteresis_bytes = 10;
+        let worker = WriterWorker::new(
+            config,
+            RecordingDemand::new(Duration::ZERO),
+            Some(handle.clone()),
+        );
+
+        worker.enforce_storage_limit_with_capacity(
+            StorageCleanupTrigger::Startup,
+            FilesystemCapacity {
+                total_bytes: 1_000,
+                available_bytes: 500,
+                keeppeek_bytes: 0,
+            },
+        );
+
+        assert!(!old.exists());
+        assert!(new.exists());
+        assert!(export.exists());
+        assert!(unrelated.exists());
+        assert_eq!(handle.stats().unwrap().recording_files, 1);
+        let safety = worker.safety.snapshot();
+        assert_eq!(safety.pressure, StoragePressure::Normal);
+        assert_eq!(safety.recording_state, StorageRecordingState::Active);
+        assert_eq!(safety.last_cleanup_files_removed, 1);
+        assert_eq!(safety.last_cleanup_bytes_removed, 40);
+
+        drop(worker);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_pauses_recording_when_no_eligible_media_remains() {
+        let mut config = storage_config("storage-safety-protected");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let handle = catalog.handle();
+        let protected = root.join("protected.mp4");
+        insert_cleanup_recording(&handle, "protected", &protected, 1_000, 32);
+        handle.set_recording_protected("protected", true).unwrap();
+        config.long_term_max_bytes = 16;
+        let worker = WriterWorker::new(
+            config,
+            RecordingDemand::new(Duration::ZERO),
+            Some(handle.clone()),
+        );
+
+        worker.enforce_storage_limit_with_capacity(
+            StorageCleanupTrigger::Startup,
+            FilesystemCapacity {
+                total_bytes: 1_000,
+                available_bytes: 100,
+                keeppeek_bytes: 0,
+            },
+        );
+
+        assert!(protected.exists());
+        let safety = worker.safety.snapshot();
+        assert_eq!(safety.pressure, StoragePressure::Critical);
+        assert_eq!(safety.recording_state, StorageRecordingState::Paused);
+        assert!(
+            safety
+                .last_failure
+                .as_deref()
+                .is_some_and(|error| error.contains("no eligible"))
+        );
+
+        drop(worker);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_delete_failure_is_actionable_and_capacity_recovery_resumes_recording() {
+        let mut config = storage_config("storage-safety-delete-failure");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let handle = catalog.handle();
+        let invalid = root.join("invalid.mp4");
+        std::fs::create_dir_all(&invalid).unwrap();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "invalid".to_owned(),
+                stream_id: "front/sub".to_owned(),
+                source_id: Some("front".to_owned()),
+                logical_stream_id: Some("sub".to_owned()),
+                started_at_ms: 1_000,
+                ended_at_ms: Some(2_000),
+                path: invalid.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: true,
+            })
+            .unwrap();
+        handle
+            .update_recording_path("invalid", &invalid, true)
+            .unwrap();
+        config.long_term_max_bytes = 1;
+        let mut worker = WriterWorker::new(
+            config,
+            RecordingDemand::new(Duration::ZERO),
+            Some(handle.clone()),
+        );
+
+        worker.enforce_storage_limit_with_capacity(
+            StorageCleanupTrigger::Periodic,
+            FilesystemCapacity {
+                total_bytes: 1_000,
+                available_bytes: 100,
+                keeppeek_bytes: 0,
+            },
+        );
+        assert_eq!(
+            worker.safety.snapshot().recording_state,
+            StorageRecordingState::Paused
+        );
+
+        worker.config.long_term_max_bytes = 0;
+        worker.enforce_storage_limit_with_capacity(
+            StorageCleanupTrigger::Periodic,
+            FilesystemCapacity {
+                total_bytes: 1_000,
+                available_bytes: 500,
+                keeppeek_bytes: 0,
+            },
+        );
+        let recovered = worker.safety.snapshot();
+        assert_eq!(recovered.pressure, StoragePressure::Normal);
+        assert_eq!(recovered.recording_state, StorageRecordingState::Active);
+        assert!(recovered.last_recovered_at_ms.is_some());
+        assert!(handle.pending_cleanup_candidate().unwrap().is_none());
+
+        drop(worker);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

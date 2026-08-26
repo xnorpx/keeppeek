@@ -73,6 +73,11 @@ harness = false
 required-features = ["event-keyframe-benchmark"]
 test = false
 
+[[bench]]
+name = "storage_safety"
+harness = false
+test = false
+
 [dependencies]
 anyhow = { version = "*" }
 base64 = { version = "*" }
