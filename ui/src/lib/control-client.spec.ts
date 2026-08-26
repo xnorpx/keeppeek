@@ -27,6 +27,9 @@ import {
 	DiskHealthSnapshotSchema,
 	EventSearchDeliverySchema,
 	EventSearchField,
+	EventImageFilter,
+	EventOrigin,
+	EventBoundingBoxSchema,
 	EventSearchHitSchema,
 	EventSearchKeyframeSchema,
 	EventSearchMediaChunkSchema,
@@ -162,6 +165,10 @@ class FakeDataChannel {
 			const action = command.value.action;
 			if (action.case === 'query') {
 				this.eventSearchQueries.push(action.value);
+				const sourceId =
+					action.value.search.case === 'metadata'
+						? (action.value.search.value.sourceIds[0] ?? 'front-door')
+						: (action.value.sourceId ?? 'front-door');
 				const response = create(ControlEnvelopeSchema, {
 					message: {
 						case: 'response',
@@ -186,7 +193,7 @@ class FakeDataChannel {
 					(channel) => channel.label === 'reliable-data'
 				);
 				const keyframe = create(EventSearchKeyframeSchema, {
-					sourceId: action.value.sourceId,
+					sourceId,
 					streamId: action.value.streamId,
 					recordingId: 'recording-7',
 					fragmentSequence: 7n,
@@ -196,9 +203,20 @@ class FakeDataChannel {
 				});
 				const hit = create(EventSearchHitSchema, {
 					eventId: 'event-42',
-					sourceId: action.value.sourceId,
+					sourceId,
 					eventType: 'person',
+					origin: EventOrigin.KEEPPEEK,
 					startTime: timestampFromDate(new Date('2026-08-20T01:00:00Z')),
+					confidence: 0.93,
+					boundingBox: create(EventBoundingBoxSchema, {
+						x: 0.1,
+						y: 0.2,
+						width: 0.3,
+						height: 0.4
+					}),
+					zone: 'Porch',
+					text: 'Alice at the front door',
+					hasImageAttachment: true,
 					previewStartTime: timestampFromDate(new Date('2026-08-20T00:59:55Z')),
 					previewEndTime: timestampFromDate(new Date('2026-08-20T01:00:10Z')),
 					keyframes: [keyframe]
@@ -226,7 +244,8 @@ class FakeDataChannel {
 								case: 'queryEnd',
 								value: create(EventSearchQueryEndSchema, {
 									queryId: action.value.queryId,
-									resultCount: 1n
+									resultCount: 1n,
+									nextPageToken: action.value.pageToken ? '' : 'next-page-token'
 								})
 							}
 						})
@@ -1608,6 +1627,58 @@ describe('ControlClient', () => {
 			nalLengthSize: 4
 		});
 		expect([...media.payload]).toEqual([1, 2, 3]);
+	});
+
+	it('encodes metadata filters and decodes a rich bounded event page', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-event-metadata',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+
+		const page = await client.searchEventMetadata({
+			sourceIds: ['front-door'],
+			streamId: 'main',
+			startMs: Date.parse('2026-08-20T00:00:00Z'),
+			endMs: Date.parse('2026-08-21T00:00:00Z'),
+			eventTypes: ['person'],
+			origins: ['keeppeek'],
+			zones: ['Porch'],
+			minimumConfidence: 0.8,
+			image: 'with',
+			text: 'Alice',
+			pageSize: 18
+		});
+		const query = FakePeerConnection.latest?.channels.find(
+			(channel) => channel.label === 'control-channel'
+		)?.eventSearchQueries[0];
+		expect(query?.search.case).toBe('metadata');
+		if (query?.search.case !== 'metadata') throw new Error('expected metadata event search');
+		expect(query.search.value).toMatchObject({
+			sourceIds: ['front-door'],
+			eventTypes: ['person'],
+			origins: [EventOrigin.KEEPPEEK],
+			zones: ['Porch'],
+			minimumConfidence: 0.8,
+			image: EventImageFilter.WITH_IMAGE,
+			text: 'Alice'
+		});
+		expect(query.pageSize).toBe(18);
+		expect(page.nextPageToken).toBe('next-page-token');
+		expect(page.hits[0]).toMatchObject({
+			eventId: 'event-42',
+			sourceId: 'front-door',
+			origin: 'keeppeek',
+			confidence: 0.93,
+			zone: 'Porch',
+			text: 'Alice at the front door',
+			hasImageAttachment: true
+		});
+		expect(page.hits[0]?.bbox).toHaveLength(4);
+		for (const [index, value] of [0.1, 0.2, 0.3, 0.4].entries()) {
+			expect(page.hits[0]?.bbox?.[index]).toBeCloseTo(value);
+		}
 	});
 
 	it('refills at half-buffer and ends only after the terminal generation is appended', async () => {

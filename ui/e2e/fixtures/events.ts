@@ -99,7 +99,10 @@ const drivewayEvents: RecordingEvent[] = [
 	}
 ];
 
-export async function mockEvents(page: Page): Promise<ControlRequests> {
+export async function mockEvents(
+	page: Page,
+	eventMediaGates: readonly Promise<void>[] = []
+): Promise<ControlRequests> {
 	const storedRanges: StoredRangeFixture[] = [
 		{
 			sourceId: 'front-door',
@@ -120,7 +123,7 @@ export async function mockEvents(page: Page): Promise<ControlRequests> {
 			thumbnail: event.thumbnail_url === null ? undefined : jpeg
 		}))
 	];
-	return mockControlPeer(page, { cameras, storedRanges, storedEvents });
+	return mockControlPeer(page, { cameras, storedRanges, storedEvents, eventMediaGates });
 }
 
 export async function mockEventsWithUnavailablePreview(page: Page): Promise<void> {
@@ -136,10 +139,30 @@ export async function mockEventsWithUnavailablePreview(page: Page): Promise<void
 	});
 }
 
+export async function mockDenseEvents(page: Page, eventCount = 1_000): Promise<ControlRequests> {
+	const dayEndMs = dayStartMs + 24 * 60 * 60_000;
+	const storedEvents: StoredEventFixture[] = Array.from({ length: eventCount }, (_, index) => ({
+		sourceId: index % 2 === 0 ? 'front-door' : 'driveway',
+		event: {
+			id: `dense-event-${index.toString().padStart(4, '0')}`,
+			source: index % 3 === 0 ? 'keeppeek' : 'camera',
+			kind: index % 2 === 0 ? 'person' : 'motion',
+			start_time_ms: dayEndMs - (index + 1) * 1_000,
+			end_time_ms: null,
+			confidence: index % 2 === 0 ? 0.9 : null,
+			bbox: null,
+			zone: index % 2 === 0 ? 'porch' : null,
+			thumbnail_url: null
+		}
+	}));
+	return mockControlPeer(page, { cameras, storedEvents });
+}
+
 export async function mockEventsWithOlderFilteredMatch(
 	page: Page,
-	storedTimelineGates: readonly Promise<void>[] = []
-): Promise<void> {
+	eventSearchGates: readonly Promise<void>[] = [],
+	eventSearchPageError?: string
+): Promise<ControlRequests> {
 	const dayEndMs = dayStartMs + 24 * 60 * 60_000;
 	const recentEvents: StoredEventFixture[] = Array.from({ length: 18 }, (_, index) => ({
 		sourceId: 'front-door',
@@ -155,9 +178,10 @@ export async function mockEventsWithOlderFilteredMatch(
 			thumbnail_url: null
 		}
 	}));
-	await mockControlPeer(page, {
+	return mockControlPeer(page, {
 		cameras,
-		storedTimelineGates,
+		eventSearchGates,
+		eventSearchPageError,
 		storedEvents: [
 			...recentEvents,
 			{

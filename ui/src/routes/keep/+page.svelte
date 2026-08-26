@@ -1279,12 +1279,14 @@
 	}
 
 	async function startReplay(): Promise<void> {
-		if (!video) return;
+		const player = video;
+		if (!player) return;
 		try {
-			await video.play();
+			await player.play();
 		} catch {
-			video.muted = true;
-			await video.play().catch(() => (playing = false));
+			if (video !== player) return;
+			player.muted = true;
+			await player.play().catch(() => (playing = false));
 		}
 	}
 
