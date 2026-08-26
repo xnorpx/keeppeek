@@ -38,6 +38,13 @@
 	let observedSpan = $derived(
 		formatObservedSpan(evidence.oldestFootageAtMs, evidence.newestFootageAtMs)
 	);
+	let storageStateLabel = $derived(
+		evidence.recordingState === 'paused'
+			? 'Recording paused'
+			: evidence.pressure === 'normal'
+				? 'Headroom normal'
+				: `${evidence.pressure} pressure`
+	);
 
 	function formatBytes(bytes: number | null): string {
 		if (bytes === null) return 'Unavailable';
@@ -64,6 +71,21 @@
 			timeStyle: 'short',
 			timeZone: 'UTC'
 		}).format(timestampMs)} UTC`;
+	}
+
+	function cleanupReason(value: string | null): string {
+		switch (value) {
+			case 'archive_cap':
+				return 'archive cap';
+			case 'filesystem_headroom':
+				return 'filesystem headroom';
+			case 'combined':
+				return 'combined limits';
+			case 'reconciliation':
+				return 'restart reconciliation';
+			default:
+				return 'not run';
+		}
 	}
 
 	function formatObservedSpan(oldestMs: number | null, newestMs: number | null): string | null {
@@ -133,11 +155,20 @@
 							evidence.recordingDisk.total_bytes
 						)}
 					</h3>
-					<p class="font-mono text-2xs text-text-muted">
-						{formatBytes(evidence.recordingDisk.used_bytes)} USED · {formatBytes(
-							evidence.recordingDisk.available_bytes
-						)} FREE · {formatBytes(evidence.recordingDisk.total_bytes)} TOTAL
-					</p>
+					<div class="flex items-center gap-3">
+						<span
+							class="font-mono text-2xs uppercase {evidence.recordingState === 'paused'
+								? 'text-destructive'
+								: evidence.pressure === 'normal'
+									? 'text-healthy'
+									: 'text-activity'}">{storageStateLabel}</span
+						>
+						<p class="font-mono text-2xs text-text-muted">
+							{formatBytes(evidence.recordingDisk.used_bytes)} USED · {formatBytes(
+								evidence.recordingDisk.available_bytes
+							)} FREE · {formatBytes(evidence.recordingDisk.total_bytes)} TOTAL
+						</p>
+					</div>
 				</div>
 				<div
 					class="mt-3 h-[22px] overflow-hidden rounded-xs bg-hairline"
@@ -146,6 +177,7 @@
 					<div class="h-full bg-primary" style:width={`${diskUsedPercent}%`}></div>
 				</div>
 				<div class="mt-3 flex flex-wrap gap-x-7 gap-y-2 text-xs text-text-muted">
+					<span>KeepPeek-owned {formatBytes(evidence.keeppeekBytes)}</span>
 					<span>Indexed fragments {formatBytes(evidence.indexedFragmentBytes)}</span>
 					<span>Catalog {formatBytes(evidence.catalogBytes)}</span>
 					<span>Thumbnails {evidence.eventThumbnailCount ?? 'Unavailable'}</span>
@@ -154,7 +186,28 @@
 							? 'Unlimited'
 							: formatBytes(evidence.archive.limitBytes)}</span
 					>
+					<span
+						>Effective limit {evidence.effectiveLimitBytes === null
+							? 'Unlimited'
+							: formatBytes(evidence.effectiveLimitBytes)}</span
+					>
+					<span>Reserve {formatBytes(evidence.minimumFreeBytes)}</span>
 				</div>
+				{#if evidence.pressure !== 'normal' || evidence.recordingState === 'paused'}
+					<div
+						class="mt-4 flex gap-2 border-l-2 px-3 py-2 text-xs leading-5 {evidence.recordingState ===
+						'paused'
+							? 'border-destructive bg-destructive/5 text-destructive'
+							: 'border-activity bg-activity/5 text-text-muted'}"
+						role="alert"
+					>
+						<TriangleAlertIcon class="mt-0.5 size-4 shrink-0" />
+						<span>
+							{evidence.lastFailure ??
+								`Cleanup is working toward ${formatBytes(evidence.recoveryFreeBytes)} free.`}
+						</span>
+					</div>
+				{/if}
 			{:else}
 				<div
 					class="flex gap-2 rounded-sm border border-activity/45 bg-activity/5 px-3 py-3 text-xs leading-5 text-text-muted"
@@ -223,8 +276,8 @@
 					</p>
 				</div>
 				<p class="text-xs leading-5 text-text-muted">
-					The archive scans dated recording directories and removes the oldest until it is within
-					the cap. A zero cap leaves it unbounded.
+					Only catalog-owned finalized MP4 files are eligible. Cleanup removes the oldest file at a
+					time until the configured recovery target is reached.
 				</p>
 			</article>
 		</div>
@@ -270,15 +323,36 @@
 
 		<div data-storage-band="policy" class="grid lg:grid-cols-2">
 			<article class="space-y-3 border-b border-hairline p-5 lg:border-r lg:border-b-0">
-				<h3 class="text-lg font-semibold">When the archive reaches its cap</h3>
+				<h3 class="text-lg font-semibold">Cleanup policy and recovery</h3>
 				<div class="flex gap-3 rounded-sm border border-primary bg-primary/5 p-3">
 					<span class="mt-0.5 size-4 shrink-0 rounded-full border-4 border-primary"></span>
 					<div>
-						<p class="text-sm font-medium">Prune the oldest dated recordings</p>
+						<p class="text-sm font-medium">Prune the oldest eligible recordings</p>
 						<p class="mt-1 text-xs leading-5 text-text-muted">
-							Fixed engine behavior. Health becomes critical below {evidence.diskWarningThresholdPercent}%
-							free.
+							Starts below {formatBytes(evidence.warningFreeBytes)} free and continues to {formatBytes(
+								evidence.recoveryFreeBytes
+							)} free. Critical begins below {formatBytes(evidence.criticalFreeBytes)}.
 						</p>
+					</div>
+					<div class="grid gap-2 border-t border-hairline pt-3 text-sm sm:grid-cols-2">
+						<div>
+							<span class="text-xs text-text-muted">Last cleanup</span>
+							<p class="mt-1 font-mono text-xs">
+								{evidence.cleanupRunning
+									? 'Running'
+									: evidence.lastCleanupEndedAtMs === null
+										? 'Not run'
+										: formatObservedTimestamp(evidence.lastCleanupEndedAtMs)}
+							</p>
+						</div>
+						<div>
+							<span class="text-xs text-text-muted">Result</span>
+							<p class="mt-1 font-mono text-xs">
+								{evidence.lastCleanupFilesRemoved} files · {formatBytes(
+									evidence.lastCleanupBytesRemoved
+								)} · {cleanupReason(evidence.lastCleanupReason)}
+							</p>
+						</div>
 					</div>
 				</div>
 				<div class="flex items-center justify-between gap-4 border-t border-hairline pt-3 text-sm">
@@ -308,7 +382,7 @@
 					<h3 class="text-lg font-semibold">Camera recording policy</h3>
 					<span class="font-mono text-2xs text-healthy">CONFIGURED PER CAMERA</span>
 				</div>
-				{#each [['Recording modes', 'Off · Sub · Main · Both'], ['Event boost', 'Sub → Main → Sub'], ['Pinned recordings', 'Not available']] as row (row[0])}
+				{#each [['Recording modes', 'Off · Sub · Main · Both'], ['Event boost', 'Sub → Main → Sub'], ['Protected recordings', `${health?.storage.catalog?.protected_files ?? 0}`]] as row (row[0])}
 					<div
 						class="flex min-h-10 items-center justify-between gap-4 border-b border-hairline text-sm"
 					>

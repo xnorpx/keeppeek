@@ -253,7 +253,12 @@ test('saves only the active Settings draft with Control+S', async ({ page }) => 
 		medium_term_secs: 1800,
 		flush_interval_secs: 60,
 		write_buffer_bytes: 8192,
-		long_term_max_gb: 0
+		long_term_max_gb: 0,
+		minimum_free_gb: 0,
+		maximum_used_percent: null,
+		warning_free_gb: 0,
+		critical_free_gb: 0,
+		cleanup_hysteresis_gb: 0
 	};
 	const recordingEstimate = {
 		estimated_bitrate_bps: 8_576_000,

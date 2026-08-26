@@ -7,7 +7,12 @@
 		ServerHealthResponse,
 		SettingsConfigUpdate
 	} from '$lib/types';
-	import { mostSpecificDiskForPath, suggestedStorageDisks } from '$lib/storage-retention';
+	import {
+		catalogRecordingBytes,
+		effectiveStoragePolicy,
+		mostSpecificDiskForPath,
+		suggestedStorageDisks
+	} from '$lib/storage-retention';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import ArrowLeftIcon from '@lucide/svelte/icons/arrow-left';
@@ -31,10 +36,15 @@
 		flushIntervalSeconds: string;
 		writeBufferBytes: string;
 		longTermMaxGigabytes: string;
+		minimumFreeGigabytes: string;
+		maximumUsedPercent: string;
+		warningFreeGigabytes: string;
+		criticalFreeGigabytes: string;
+		cleanupHysteresisGigabytes: string;
 	};
 
 	type FieldName = keyof StorageDraft;
-	type MigrationChoice = 'leave' | 'move';
+	type MigrationChoice = 'unselected' | 'leave' | 'move';
 	type Step = 'configure' | 'review';
 	type Change = { label: string; from: string; to: string };
 
@@ -53,7 +63,7 @@
 	const MAX_WRITE_BUFFER_BYTES = 64 * 1_024 * 1_024;
 	const initialDraft = untrack(() => storageDraftFromConfig(config));
 	let draft = $state<StorageDraft>({ ...initialDraft });
-	let migrationChoice = $state<MigrationChoice>('leave');
+	let migrationChoice = $state<MigrationChoice>('unselected');
 	let confirmUnlimited = $state(false);
 	let step = $state<Step>('configure');
 	let reviewHeading = $state<HTMLHeadingElement | null>(null);
@@ -70,22 +80,25 @@
 	);
 	let fieldErrors = $derived(validateDraft(draft, confirmUnlimited));
 	let migrationError = $derived(validateMigration());
+	let policyError = $derived(validatePolicy());
 	let hasErrors = $derived(
-		Object.values(fieldErrors).some((message) => message !== null) || migrationError !== null
+		Object.values(fieldErrors).some((message) => message !== null) ||
+			migrationError !== null ||
+			policyError !== null
 	);
 	let dirty = $derived(
 		(Object.keys(initialDraft) as FieldName[]).some(
 			(field) => draft[field] !== initialDraft[field]
-		) || migrationChoice === 'move'
+		) ||
+			(locationsChanged && migrationChoice !== 'unselected')
 	);
-	let proposedRetentionDays = $derived(retentionDaysForCap(draft.longTermMaxGigabytes));
+	let proposedPolicy = $derived.by(evaluateDraftPolicy);
+	let proposedRetentionDays = $derived(retentionDaysForLimit(proposedPolicy?.effectiveLimitBytes));
 	let estimatedPruneBytes = $derived.by(() => {
-		const cap = /^\d+$/.test(String(draft.longTermMaxGigabytes).trim())
-			? Number(draft.longTermMaxGigabytes) * GIBIBYTE_BYTES
-			: null;
-		const indexed = health?.storage.catalog?.fragment_bytes;
-		if (cap === null || cap === 0 || indexed === undefined || indexed <= cap) return 0;
-		return indexed - cap;
+		const effectiveLimit = proposedPolicy?.effectiveLimitBytes;
+		const indexed = catalogRecordingBytes(health?.storage.catalog);
+		if (effectiveLimit === null || effectiveLimit === undefined || indexed === null) return 0;
+		return Math.max(0, indexed - effectiveLimit);
 	});
 	let changes = $derived.by(buildChanges);
 
@@ -105,7 +118,12 @@
 			mediumTermSeconds: value.storage.medium_term_secs.toString(),
 			flushIntervalSeconds: value.storage.flush_interval_secs.toString(),
 			writeBufferBytes: value.storage.write_buffer_bytes.toString(),
-			longTermMaxGigabytes: value.storage.long_term_max_gb.toString()
+			longTermMaxGigabytes: value.storage.long_term_max_gb.toString(),
+			minimumFreeGigabytes: (value.storage.minimum_free_gb ?? 0).toString(),
+			maximumUsedPercent: value.storage.maximum_used_percent?.toString() ?? '',
+			warningFreeGigabytes: (value.storage.warning_free_gb ?? 0).toString(),
+			criticalFreeGigabytes: (value.storage.critical_free_gb ?? 0).toString(),
+			cleanupHysteresisGigabytes: (value.storage.cleanup_hysteresis_gb ?? 0).toString()
 		};
 	}
 
@@ -145,6 +163,21 @@
 		if (!value.trim()) return `${label} is required.`;
 		if (value.includes('\0')) return `${label} contains an invalid character.`;
 		return null;
+	}
+
+	function optionalPercentError(value: string): string | null {
+		if (!String(value).trim()) return null;
+		return wholeNumberError(value, 'Maximum filesystem usage', 1, 99);
+	}
+
+	function allSafetyLimitsDisabled(value: StorageDraft): boolean {
+		return (
+			String(value.longTermMaxGigabytes).trim() === '0' &&
+			String(value.minimumFreeGigabytes).trim() === '0' &&
+			!String(value.maximumUsedPercent).trim() &&
+			String(value.warningFreeGigabytes).trim() === '0' &&
+			String(value.criticalFreeGigabytes).trim() === '0'
+		);
 	}
 
 	function validateDraft(value: StorageDraft, unlimitedConfirmed: boolean) {
@@ -188,16 +221,46 @@
 				'Maximum recording storage',
 				0,
 				Number.MAX_SAFE_INTEGER
+			),
+			minimumFreeGigabytes: wholeNumberError(
+				value.minimumFreeGigabytes,
+				'Minimum free space',
+				0,
+				Number.MAX_SAFE_INTEGER
+			),
+			maximumUsedPercent: optionalPercentError(value.maximumUsedPercent),
+			warningFreeGigabytes: wholeNumberError(
+				value.warningFreeGigabytes,
+				'Warning free space',
+				0,
+				Number.MAX_SAFE_INTEGER
+			),
+			criticalFreeGigabytes: wholeNumberError(
+				value.criticalFreeGigabytes,
+				'Critical free space',
+				0,
+				Number.MAX_SAFE_INTEGER
+			),
+			cleanupHysteresisGigabytes: wholeNumberError(
+				value.cleanupHysteresisGigabytes,
+				'Cleanup hysteresis',
+				0,
+				Number.MAX_SAFE_INTEGER
 			)
 		};
-		if (String(value.longTermMaxGigabytes).trim() === '0' && !unlimitedConfirmed) {
-			errors.longTermMaxGigabytes = 'Confirm unlimited storage before continuing.';
+		if (allSafetyLimitsDisabled(value) && !unlimitedConfirmed) {
+			errors.longTermMaxGigabytes = 'Confirm unbounded storage before continuing.';
 		}
 		return errors;
 	}
 
 	function validateMigration(): string | null {
-		if (!locationsChanged || migrationChoice !== 'move') return null;
+		if (!locationsChanged) return null;
+		const indexedBytes = catalogRecordingBytes(health?.storage.catalog) ?? 0;
+		if (indexedBytes > 0 && migrationChoice === 'unselected') {
+			return 'Choose whether to leave or move the indexed recordings before continuing.';
+		}
+		if (migrationChoice !== 'move') return null;
 		const changedDestinations = [
 			[initialDraft.mediumTermPath, draft.mediumTermPath],
 			[initialDraft.longTermPath, draft.longTermPath],
@@ -214,9 +277,63 @@
 		}
 		if (!destinationDisk) return null;
 		if (!sourceDisk || sourceDisk.mount_point === destinationDisk.mount_point) return null;
-		const indexedBytes = health?.storage.catalog?.fragment_bytes;
-		if (indexedBytes !== undefined && indexedBytes > destinationDisk.available_bytes) {
+		if (indexedBytes > destinationDisk.available_bytes) {
 			return `The destination has ${formatBytes(destinationDisk.available_bytes)} free, less than the ${formatBytes(indexedBytes)} indexed archive.`;
+		}
+		return null;
+	}
+
+	function evaluateDraftPolicy() {
+		const numericFields = [
+			draft.longTermMaxGigabytes,
+			draft.minimumFreeGigabytes,
+			draft.warningFreeGigabytes,
+			draft.criticalFreeGigabytes,
+			draft.cleanupHysteresisGigabytes
+		];
+		if (numericFields.some((value) => !/^\d+$/.test(String(value).trim()))) return null;
+		const maximumUsed = String(draft.maximumUsedPercent).trim();
+		if (maximumUsed && !/^\d+$/.test(maximumUsed)) return null;
+		return effectiveStoragePolicy({
+			archiveMaxBytes: parseWholeNumber(draft.longTermMaxGigabytes) * GIBIBYTE_BYTES,
+			minimumFreeBytes: parseWholeNumber(draft.minimumFreeGigabytes) * GIBIBYTE_BYTES,
+			maximumUsedPercent: maximumUsed ? Number(maximumUsed) : null,
+			warningFreeBytes: parseWholeNumber(draft.warningFreeGigabytes) * GIBIBYTE_BYTES,
+			criticalFreeBytes: parseWholeNumber(draft.criticalFreeGigabytes) * GIBIBYTE_BYTES,
+			cleanupHysteresisBytes: parseWholeNumber(draft.cleanupHysteresisGigabytes) * GIBIBYTE_BYTES,
+			capacity: destinationDisk,
+			keeppeekBytes: catalogRecordingBytes(health?.storage.catalog) ?? 0
+		});
+	}
+
+	function validatePolicy(): string | null {
+		const values = [
+			draft.minimumFreeGigabytes,
+			draft.warningFreeGigabytes,
+			draft.criticalFreeGigabytes,
+			draft.cleanupHysteresisGigabytes
+		];
+		if (values.some((value) => !/^\d+$/.test(String(value).trim()))) return null;
+		const minimumFree = parseWholeNumber(draft.minimumFreeGigabytes);
+		const criticalFree = Math.max(minimumFree, parseWholeNumber(draft.criticalFreeGigabytes));
+		const warningFree = parseWholeNumber(draft.warningFreeGigabytes);
+		if (warningFree > 0 && warningFree < criticalFree) {
+			return 'Warning free space must be greater than or equal to critical free space.';
+		}
+		if (!proposedPolicy || !destinationDisk) return null;
+		if (
+			proposedPolicy.warningFreeBytes > destinationDisk.total_bytes ||
+			proposedPolicy.recoveryFreeBytes > destinationDisk.total_bytes
+		) {
+			return 'The proposed headroom thresholds exceed the destination filesystem capacity.';
+		}
+		const indexedBytes = catalogRecordingBytes(health?.storage.catalog) ?? 0;
+		const reclaimableBytes =
+			draft.longTermPath.trim() === initialDraft.longTermPath || migrationChoice === 'move'
+				? indexedBytes
+				: 0;
+		if (destinationDisk.available_bytes + reclaimableBytes < proposedPolicy.recoveryFreeBytes) {
+			return 'The destination cannot provide the proposed cleanup recovery headroom.';
 		}
 		return null;
 	}
@@ -225,13 +342,13 @@
 		return Number(String(value).trim());
 	}
 
-	function retentionDaysForCap(value: string): number | null | 'unlimited' {
-		const normalized = String(value).trim();
-		if (!/^\d+$/.test(normalized)) return null;
-		const gigabytes = Number(normalized);
-		if (gigabytes === 0) return 'unlimited';
+	function retentionDaysForLimit(
+		limitBytes: number | null | undefined
+	): number | null | 'unlimited' {
+		if (limitBytes === undefined) return null;
+		if (limitBytes === null) return 'unlimited';
 		if (config.recording_estimate.bytes_per_day <= 0) return null;
-		return (gigabytes * GIBIBYTE_BYTES) / config.recording_estimate.bytes_per_day;
+		return limitBytes / config.recording_estimate.bytes_per_day;
 	}
 
 	function buildChanges(): Change[] {
@@ -245,7 +362,12 @@
 			mediumTermSeconds: 'Recording file duration',
 			flushIntervalSeconds: 'Flush interval',
 			writeBufferBytes: 'Write buffer',
-			longTermMaxGigabytes: 'Archive limit'
+			longTermMaxGigabytes: 'Archive limit',
+			minimumFreeGigabytes: 'Minimum free space',
+			maximumUsedPercent: 'Maximum filesystem usage',
+			warningFreeGigabytes: 'Warning free space',
+			criticalFreeGigabytes: 'Critical free space',
+			cleanupHysteresisGigabytes: 'Cleanup hysteresis'
 		};
 		return (Object.keys(initialDraft) as FieldName[])
 			.filter((field) => draft[field] !== initialDraft[field])
@@ -256,6 +378,7 @@
 		return {
 			host: config.host,
 			port: config.port,
+			expected_configuration_revision: config.configuration_revision,
 			move_existing_recordings: locationsChanged && migrationChoice === 'move',
 			storage: {
 				medium_term_path: draft.mediumTermPath.trim(),
@@ -267,7 +390,14 @@
 				medium_term_secs: parseWholeNumber(draft.mediumTermSeconds),
 				flush_interval_secs: parseWholeNumber(draft.flushIntervalSeconds),
 				write_buffer_bytes: parseWholeNumber(draft.writeBufferBytes),
-				long_term_max_gb: parseWholeNumber(draft.longTermMaxGigabytes)
+				long_term_max_gb: parseWholeNumber(draft.longTermMaxGigabytes),
+				minimum_free_gb: parseWholeNumber(draft.minimumFreeGigabytes),
+				maximum_used_percent: String(draft.maximumUsedPercent).trim()
+					? parseWholeNumber(draft.maximumUsedPercent)
+					: null,
+				warning_free_gb: parseWholeNumber(draft.warningFreeGigabytes),
+				critical_free_gb: parseWholeNumber(draft.criticalFreeGigabytes),
+				cleanup_hysteresis_gb: parseWholeNumber(draft.cleanupHysteresisGigabytes)
 			}
 		};
 	}
@@ -485,6 +615,11 @@
 							</div>
 						{/if}
 						{#if String(draft.longTermMaxGigabytes).trim() === '0'}
+							<p class="mt-2 text-xs text-text-muted">
+								The archive cap is disabled; filesystem headroom limits still apply.
+							</p>
+						{/if}
+						{#if allSafetyLimitsDisabled(draft)}
 							<label
 								class="mt-3 flex gap-2 rounded-sm border border-activity/50 bg-activity/5 p-3 text-sm"
 							>
@@ -493,8 +628,73 @@
 									bind:checked={confirmUnlimited}
 									class="mt-0.5 size-4 accent-primary"
 								/>
-								<span>I understand that an unlimited archive can fill the recording disk.</span>
+								<span>I understand that unbounded storage can fill the recording disk.</span>
 							</label>
+						{/if}
+					</section>
+
+					<section
+						class="border-t border-hairline pt-5"
+						aria-labelledby="filesystem-safety-heading"
+					>
+						<div class="flex items-center gap-2">
+							<TriangleAlertIcon class="size-4 text-primary-soft" />
+							<h3 id="filesystem-safety-heading" class="text-base font-semibold">
+								Filesystem safety
+							</h3>
+						</div>
+						<p class="mt-1 text-xs leading-5 text-text-muted">
+							Cleanup starts at the warning boundary and continues through the recovery target.
+							Critical pressure pauses recording only when eligible footage cannot restore headroom.
+						</p>
+						<div class="mt-3 grid gap-4 lg:grid-cols-3 sm:grid-cols-2">
+							{#each [{ field: 'minimumFreeGigabytes', id: 'minimum-free-gigabytes', label: 'Minimum free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'maximumUsedPercent', id: 'maximum-used-percent', label: 'Maximum filesystem used (%)', minimum: 1, placeholder: 'Disabled' }, { field: 'warningFreeGigabytes', id: 'warning-free-gigabytes', label: 'Warning free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'criticalFreeGigabytes', id: 'critical-free-gigabytes', label: 'Critical free space (GiB)', minimum: 0, placeholder: undefined }, { field: 'cleanupHysteresisGigabytes', id: 'cleanup-hysteresis-gigabytes', label: 'Cleanup hysteresis (GiB)', minimum: 0, placeholder: undefined }] as item (item.field)}
+								<label class="grid gap-1.5 text-sm font-medium" for={item.id}>
+									{item.label}
+									<Input
+										id={item.id}
+										type="number"
+										min={item.minimum}
+										max={item.field === 'maximumUsedPercent' ? 99 : undefined}
+										step="1"
+										placeholder={item.placeholder}
+										bind:value={draft[item.field as FieldName]}
+										aria-invalid={fieldErrors[item.field as FieldName] !== null}
+									/>
+									{#if fieldErrors[item.field as FieldName]}
+										<span class="text-xs text-destructive"
+											>{fieldErrors[item.field as FieldName]}</span
+										>
+									{/if}
+								</label>
+							{/each}
+						</div>
+						{#if proposedPolicy}
+							<div class="mt-4 grid gap-3 border-y border-hairline py-3 text-xs sm:grid-cols-3">
+								<div>
+									<span class="text-text-muted">Effective limit</span><strong
+										class="mt-1 block font-mono"
+										>{proposedPolicy.effectiveLimitBytes === null
+											? 'Unlimited'
+											: formatBytes(proposedPolicy.effectiveLimitBytes)}</strong
+									>
+								</div>
+								<div>
+									<span class="text-text-muted">Cleanup starts below</span><strong
+										class="mt-1 block font-mono"
+										>{formatBytes(proposedPolicy.warningFreeBytes)} free</strong
+									>
+								</div>
+								<div>
+									<span class="text-text-muted">Recovery target</span><strong
+										class="mt-1 block font-mono"
+										>{formatBytes(proposedPolicy.recoveryFreeBytes)} free</strong
+									>
+								</div>
+							</div>
+						{/if}
+						{#if policyError}
+							<p class="mt-2 text-xs text-destructive" role="alert">{policyError}</p>
 						{/if}
 					</section>
 
@@ -611,6 +811,21 @@
 						<p class="mt-1 text-xs text-text-muted">Indexed finalized fragments</p>
 					</div>
 					<div class="border-t border-hairline pt-5">
+						<p class="font-mono text-2xs tracking-caps text-text-faint">PROPOSED SAFETY POLICY</p>
+						<p class="mt-2 text-sm font-medium">
+							{proposedPolicy?.effectiveLimitBytes === null
+								? 'Unlimited effective limit'
+								: proposedPolicy
+									? `${formatBytes(proposedPolicy.effectiveLimitBytes)} effective limit`
+									: 'Complete valid limits'}
+						</p>
+						<p class="mt-1 text-xs leading-5 text-text-muted">
+							Reserve {draft.minimumFreeGigabytes || '0'} GiB · Recovery {proposedPolicy
+								? formatBytes(proposedPolicy.recoveryFreeBytes)
+								: 'Unavailable'} free
+						</p>
+					</div>
+					<div class="border-t border-hairline pt-5">
 						<p class="font-mono text-2xs tracking-caps text-text-faint">BEFORE CONTINUING</p>
 						<ul class="mt-3 space-y-2 text-xs leading-5 text-text-muted">
 							<li class="flex gap-2">
@@ -684,6 +899,28 @@
 							</p>
 						</div>
 					</div>
+					{#if proposedPolicy}
+						<div class="mt-3 grid gap-3 border-y border-hairline py-4 text-sm sm:grid-cols-3">
+							<div>
+								<span class="text-xs text-text-muted">Effective limit</span><strong
+									class="mt-1 block"
+									>{proposedPolicy.effectiveLimitBytes === null
+										? 'Unlimited'
+										: formatBytes(proposedPolicy.effectiveLimitBytes)}</strong
+								>
+							</div>
+							<div>
+								<span class="text-xs text-text-muted">Warning boundary</span><strong
+									class="mt-1 block">{formatBytes(proposedPolicy.warningFreeBytes)} free</strong
+								>
+							</div>
+							<div>
+								<span class="text-xs text-text-muted">Recovery target</span><strong
+									class="mt-1 block">{formatBytes(proposedPolicy.recoveryFreeBytes)} free</strong
+								>
+							</div>
+						</div>
+					{/if}
 					{#if estimatedPruneBytes > 0}
 						<div class="mt-3 flex gap-3 rounded-sm border border-activity/50 bg-activity/5 p-4">
 							<TriangleAlertIcon class="mt-0.5 size-4 shrink-0 text-activity" />

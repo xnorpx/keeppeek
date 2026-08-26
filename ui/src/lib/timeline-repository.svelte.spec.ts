@@ -202,7 +202,10 @@ describe('TimelineRepository', () => {
 				return result;
 			})
 		};
-		const repository = new TimelineRepository(client);
+		const repository = new TimelineRepository(client, {
+			get: async () => null,
+			put: async () => undefined
+		});
 
 		await repository.loadWindow({
 			sourceIds: ['front-door'],

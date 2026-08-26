@@ -47,6 +47,8 @@ export type TimelineViewport = Omit<
 type TimelineQueryClient = Pick<ControlClient, 'queryStoredTimeline'> &
 	Partial<Pick<ControlClient, 'releaseObjectUrl'>>;
 
+type TimelineThumbnailCache = Pick<TimelineThumbnailDiskCache, 'get' | 'put'>;
+
 type TimelineCache = {
 	key: string;
 	ranges: StoredTimelineRange[];
@@ -96,10 +98,14 @@ export class TimelineRepository {
 	#thumbnailUrls = new Map<string, CachedThumbnail>();
 	#thumbnailByIdentity = new Map<string, string>();
 	#decodedThumbnailBytes = 0;
-	#diskCache = new TimelineThumbnailDiskCache();
+	#diskCache: TimelineThumbnailCache;
 
-	constructor(client: TimelineQueryClient) {
+	constructor(
+		client: TimelineQueryClient,
+		diskCache: TimelineThumbnailCache = new TimelineThumbnailDiskCache()
+	) {
 		this.#client = client;
+		this.#diskCache = diskCache;
 	}
 
 	async loadWindow(request: TimelineWindowRequest): Promise<void> {

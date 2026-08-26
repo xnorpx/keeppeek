@@ -7,24 +7,20 @@ const releaseRoot = path.join(repositoryRoot, 'target', 'release');
 const mixedCodecFixtureRoot = path.join(repositoryRoot, 'target', 'e2e-mixed-codec');
 const keeppeekFeatures =
 	process.platform === 'darwin' ? ['--features', 'keeppeek/macos-test-aws-crypto'] : [];
-const force = process.argv.slice(2).includes('--force');
-const requiredBinaries = ['keeppeek', 'test_camera'].map(binaryPath);
 
-if (force || requiredBinaries.some((binary) => !existsSync(binary))) {
-	await runCargo([
-		'build',
-		'--release',
-		'-p',
-		'keeppeek',
-		'-p',
-		'test-camera',
-		'--bin',
-		'keeppeek',
-		'--bin',
-		'test_camera',
-		...keeppeekFeatures
-	]);
-}
+await runCargo([
+	'build',
+	'--release',
+	'-p',
+	'keeppeek',
+	'-p',
+	'test-camera',
+	'--bin',
+	'keeppeek',
+	'--bin',
+	'test_camera',
+	...keeppeekFeatures
+]);
 
 for (const binaryName of ['keeppeek', 'test_camera']) {
 	const requiredPath = binaryPath(binaryName);

@@ -65,6 +65,11 @@ fn three_tier_storage_pipeline() {
         flush_interval: Duration::from_secs(1),
         write_buffer_bytes: 8 * 1024,
         long_term_max_bytes: 0,
+        minimum_free_bytes: 0,
+        maximum_used_percent: None,
+        warning_free_bytes: 0,
+        critical_free_bytes: 0,
+        cleanup_hysteresis_bytes: 0,
     };
     let engine = StorageEngine::start(config);
 
@@ -168,6 +173,11 @@ fn segment_moves_from_medium_to_long_term() {
         flush_interval: Duration::from_secs(1),
         write_buffer_bytes: 8 * 1024,
         long_term_max_bytes: 0,
+        minimum_free_bytes: 0,
+        maximum_used_percent: None,
+        warning_free_bytes: 0,
+        critical_free_bytes: 0,
+        cleanup_hysteresis_bytes: 0,
     };
     let engine = StorageEngine::start(config);
 
@@ -251,6 +261,11 @@ fn same_path_no_extra_copy() {
         flush_interval: Duration::from_secs(1),
         write_buffer_bytes: 8 * 1024,
         long_term_max_bytes: 0,
+        minimum_free_bytes: 0,
+        maximum_used_percent: None,
+        warning_free_bytes: 0,
+        critical_free_bytes: 0,
+        cleanup_hysteresis_bytes: 0,
     };
     let engine = StorageEngine::start(config);
 
@@ -322,7 +337,12 @@ fn long_term_retention_limit() {
         medium_term_duration: Duration::from_secs(2),
         flush_interval: Duration::ZERO,
         write_buffer_bytes: 8 * 1024,
-        long_term_max_bytes: max_bytes,
+        long_term_max_bytes: 0,
+        minimum_free_bytes: 0,
+        maximum_used_percent: None,
+        warning_free_bytes: 0,
+        critical_free_bytes: 0,
+        cleanup_hysteresis_bytes: 0,
     };
     let engine = StorageEngine::start(config);
 

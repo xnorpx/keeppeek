@@ -11,7 +11,12 @@ const storage = {
 	medium_term_secs: 1800,
 	flush_interval_secs: 60,
 	write_buffer_bytes: 8192,
-	long_term_max_gb: 0
+	long_term_max_gb: 0,
+	minimum_free_gb: 10,
+	maximum_used_percent: null,
+	warning_free_gb: 20,
+	critical_free_gb: 10,
+	cleanup_hysteresis_gb: 5
 };
 
 const recordingEstimate = {
@@ -351,8 +356,8 @@ test('Board 13 shows measured storage evidence without presenting projected rete
 	await expect(section).toContainText('Rolling MP4 segment');
 	await expect(section).toContainText('30 minutes');
 	await expect(section).toContainText('This duration sizes active files; it is not retention age.');
-	await expect(section).toContainText('Prune the oldest dated recordings');
-	await expect(section).toContainText('below 10% free');
+	await expect(section).toContainText('Prune the oldest eligible recordings');
+	await expect(section).toContainText('Only catalog-owned finalized MP4 files are eligible.');
 	await expect(section).toContainText('Actual oldest footage');
 	await expect(section.locator('time')).toHaveAttribute('datetime', '2026-08-01T00:00:00.000Z');
 	await expect(section).toContainText('23.5 days of indexed footage observed');
@@ -511,7 +516,12 @@ test('reviews and stages safe storage changes before a restart', async ({ page }
 		medium_term_secs: 120,
 		flush_interval_secs: 15,
 		write_buffer_bytes: 16_384,
-		long_term_max_gb: 24
+		long_term_max_gb: 24,
+		minimum_free_gb: 8,
+		maximum_used_percent: 85,
+		warning_free_gb: 12,
+		critical_free_gb: 8,
+		cleanup_hysteresis_gb: 2
 	};
 	const controls = await mockControlPeer(page, {
 		runtimeConfiguration: {
@@ -568,6 +578,7 @@ test('reviews and stages safe storage changes before a restart', async ({ page }
 	await page.goto('/settings');
 	await page.getByRole('button', { name: 'Change storage' }).click();
 	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
+	await expect(page.getByLabel('Folder path')).toBeFocused();
 	await expect(page.getByLabel('Host')).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
 
@@ -576,6 +587,17 @@ test('reviews and stages safe storage changes before a restart', async ({ page }
 	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
 	await page.getByLabel('Maximum recording storage (GiB)').fill('24');
 	await expect(page.getByText('7 hours', { exact: true })).toBeVisible();
+	await page.getByLabel('Warning free space (GiB)').fill('7');
+	await expect(
+		page.getByText('Warning free space must be greater than or equal to critical free space.')
+	).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
+	await page.getByLabel('Minimum free space (GiB)').fill('8');
+	await page.getByLabel('Maximum filesystem used (%)').fill('85');
+	await page.getByLabel('Warning free space (GiB)').fill('12');
+	await page.getByLabel('Critical free space (GiB)').fill('8');
+	await page.getByLabel('Cleanup hysteresis (GiB)').fill('2');
+	await expect(page.getByText(/effective limit/i).first()).toBeVisible();
 	await page.getByLabel('Folder path').fill('/archive/long');
 	await expect(page.getByText('Existing files', { exact: true })).toBeVisible();
 	await page.getByLabel('Move existing storage during restart').check();
@@ -592,6 +614,9 @@ test('reviews and stages safe storage changes before a restart', async ({ page }
 	await page.getByRole('button', { name: 'Continue to review' }).click();
 
 	await expect(page.getByRole('heading', { name: 'Review storage changes' })).toBeFocused();
+	await expect(page.getByText('Effective limit', { exact: true })).toBeVisible();
+	await expect(page.getByText('Warning boundary', { exact: true })).toBeVisible();
+	await expect(page.getByText('Recovery target', { exact: true })).toBeVisible();
 	await expect(page.getByText('Move during restart', { exact: true })).toBeVisible();
 	await expect(page.getByText('RESTART REQUIRED', { exact: true })).toBeVisible();
 	await expect(page.getByText(/may remove about 814 GiB of indexed footage/)).toBeVisible();
@@ -614,6 +639,38 @@ test('reviews and stages safe storage changes before a restart', async ({ page }
 		}
 	]);
 	expect(controls.restarts).toBe(0);
+});
+
+test('preserves a storage draft after a runtime conflict', async ({ page }) => {
+	const controls = await mockControlPeer(page, {
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			configuration_revision: 'revision-a',
+			camera_count: 0,
+			storage: { ...storage, long_term_max_gb: 1024 },
+			recording_estimate: recordingEstimate
+		},
+		runtimeUpdateError:
+			'Runtime configuration changed after this editor was opened; reload before applying the draft.'
+	});
+	await page.goto('/settings#storage');
+	await page.getByRole('button', { name: 'Change storage' }).click();
+	await page.getByLabel('Minimum free space (GiB)').fill('11');
+	await page.getByRole('button', { name: 'Continue to review' }).click();
+	await page.getByRole('button', { name: 'Stage storage changes' }).click();
+
+	await expect(page.getByRole('alert')).toContainText(
+		'Runtime configuration changed after this editor was opened'
+	);
+	await expect(page.getByRole('heading', { name: 'Review storage changes' })).toBeVisible();
+	await page.getByRole('button', { name: 'Back', exact: true }).click();
+	await expect(page.getByLabel('Minimum free space (GiB)')).toHaveValue('11');
+	expect(controls.runtimeUpdates).toHaveLength(1);
+	expect(controls.runtimeUpdates[0]).toMatchObject({
+		expected_configuration_revision: 'revision-a',
+		storage: { minimum_free_gb: 11 }
+	});
 });
 
 test('protects an unsaved storage draft from cancel and navigation', async ({ page }) => {
@@ -654,6 +711,73 @@ test('protects an unsaved storage draft from cancel and navigation', async ({ pa
 	await dialog.accept();
 	await actionPromise;
 	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toHaveCount(0);
+});
+
+test('surfaces an actionable paused recording state and cleanup evidence', async ({ page }) => {
+	await mockControlPeer(page, {
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			camera_count: 0,
+			storage: { ...storage, long_term_max_gb: 1024 },
+			recording_estimate: recordingEstimate
+		},
+		health: {
+			system: {
+				disks: [
+					{
+						name: 'Recordings',
+						kind: 'SSD',
+						file_system: 'apfs',
+						mount_point: '/recordings',
+						total_bytes: 2_000_000_000_000,
+						available_bytes: 8_000_000_000,
+						used_bytes: 1_992_000_000_000,
+						removable: false,
+						stores_recordings: true
+					}
+				]
+			},
+			storage: {
+				long_term_max_bytes: 1_099_511_627_776,
+				minimum_free_bytes: 10_737_418_240,
+				warning_free_bytes: 21_474_836_480,
+				critical_free_bytes: 10_737_418_240,
+				cleanup_hysteresis_bytes: 5_368_709_120,
+				catalog: {
+					recording_bytes: 1_050_000_000_000,
+					fragment_bytes: 1_040_000_000_000,
+					protected_files: 4
+				},
+				safety: {
+					pressure: 'critical',
+					recording_state: 'paused',
+					total_bytes: 2_000_000_000_000,
+					available_bytes: 8_000_000_000,
+					keeppeek_bytes: 1_050_000_000_000,
+					effective_limit_bytes: 1_036_000_000_000,
+					cleanup_target_bytes: 1_030_000_000_000,
+					warning_free_bytes: 21_474_836_480,
+					critical_free_bytes: 10_737_418_240,
+					recovery_free_bytes: 26_843_545_600,
+					cleanup_running: false,
+					last_cleanup_files_removed: 2,
+					last_cleanup_bytes_removed: 8_000_000_000,
+					last_cleanup_reason: 'combined',
+					last_cleanup_ended_at_ms: Date.UTC(2026, 7, 25, 12),
+					last_failure: 'No eligible finalized recording remains to restore headroom.'
+				}
+			}
+		}
+	});
+
+	await page.goto('/settings#storage');
+	const section = page.getByRole('region', { name: 'Storage & retention' });
+	await expect(section).toContainText('Recording paused');
+	await expect(section.getByRole('alert')).toContainText('No eligible finalized recording remains');
+	await expect(section).toContainText('KeepPeek-owned 1.05 TB');
+	await expect(section).toContainText('Protected recordings4');
+	await expect(section).toContainText('2 files · 8 GB · combined limits');
 });
 
 test('blocks a storage move that cannot fit on the reported destination', async ({ page }) => {
@@ -726,6 +850,7 @@ test('keeps storage setup and review inside the mobile administration viewport',
 	await page.goto('/settings?edit=storage#storage');
 
 	await expect(page.getByRole('heading', { name: 'Change recording storage' })).toBeVisible();
+	await expect(page.getByLabel('Folder path')).toBeFocused();
 	await expect(page.getByLabel('Folder path')).toBeInViewport();
 	await page.getByLabel('Maximum recording storage (GiB)').fill('512');
 	await expect

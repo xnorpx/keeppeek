@@ -72,6 +72,7 @@ import {
 	ServerHealthSnapshotSchema,
 	SourceSessionSchema,
 	StorageHealthSnapshotSchema,
+	StorageSafetyHealthSnapshotSchema,
 	StreamHealthSnapshotSchema,
 	StreamHealthDimensionsSnapshotSchema,
 	SystemHealthSnapshotSchema,
@@ -646,14 +647,36 @@ class FakeDataChannel {
 											mediumTermPath: '/recordings',
 											longTermPath: '/recordings',
 											pathsAreSame: true,
+											minimumFreeBytes: 100_000_000n,
+											maximumUsedPercent: 85,
+											warningFreeBytes: 150_000_000n,
+											criticalFreeBytes: 100_000_000n,
+											cleanupHysteresisBytes: 50_000_000n,
 											catalog: create(CatalogHealthSnapshotSchema, {
 												events: 12n,
+												recordingBytes: 1_400_000_000n,
+												protectedFiles: 2n,
 												oldestRecordingAtMs: 1_776_000_000_000n,
 												newestRecordingAtMs: 1_777_000_000_000n
 											}),
 											demand: create(RecordingDemandHealthSnapshotSchema, {
 												activeStreams: 1n,
 												totalViewers: 2n
+											}),
+											safety: create(StorageSafetyHealthSnapshotSchema, {
+												pressure: 'warning',
+												recordingState: 'degraded',
+												totalBytes: 2_000_000_000n,
+												availableBytes: 140_000_000n,
+												keeppeekBytes: 1_400_000_000n,
+												effectiveLimitBytes: 1_390_000_000n,
+												cleanupTargetBytes: 1_340_000_000n,
+												warningFreeBytes: 150_000_000n,
+												criticalFreeBytes: 100_000_000n,
+												recoveryFreeBytes: 200_000_000n,
+												lastCleanupFilesRemoved: 3n,
+												lastCleanupBytesRemoved: 60_000_000n,
+												lastCleanupReason: 'filesystem_headroom'
 											})
 										}),
 										webrtc: create(WebRtcHealthSnapshotSchema, {
@@ -1224,10 +1247,22 @@ describe('ControlClient', () => {
 				disks: [{ mount_point: '/recordings', stores_recordings: true }]
 			},
 			storage: {
+				minimum_free_bytes: 100_000_000,
+				maximum_used_percent: 85,
 				catalog: {
 					events: 12,
+					recording_bytes: 1_400_000_000,
+					protected_files: 2,
 					oldest_recording_at_ms: 1_776_000_000_000,
 					newest_recording_at_ms: 1_777_000_000_000
+				},
+				safety: {
+					pressure: 'warning',
+					recording_state: 'degraded',
+					effective_limit_bytes: 1_390_000_000,
+					last_cleanup_files_removed: 3,
+					last_cleanup_bytes_removed: 60_000_000,
+					last_cleanup_reason: 'filesystem_headroom'
 				},
 				demand: { active_streams: 1, total_viewers: 2 }
 			},
@@ -1484,7 +1519,12 @@ describe('ControlClient', () => {
 					medium_term_secs: 120,
 					flush_interval_secs: 15,
 					write_buffer_bytes: 16_384,
-					long_term_max_gb: 24
+					long_term_max_gb: 24,
+					minimum_free_gb: 8,
+					maximum_used_percent: 85,
+					warning_free_gb: 12,
+					critical_free_gb: 8,
+					cleanup_hysteresis_gb: 2
 				}
 			})
 		).resolves.toMatchObject({
@@ -1494,7 +1534,12 @@ describe('ControlClient', () => {
 				camera_count: 2,
 				storage: {
 					recording_catalog_path: '/metadata/recordings.db',
-					write_buffer_bytes: 16_384
+					write_buffer_bytes: 16_384,
+					minimum_free_gb: 8,
+					maximum_used_percent: 85,
+					warning_free_gb: 12,
+					critical_free_gb: 8,
+					cleanup_hysteresis_gb: 2
 				},
 				recording_estimate: { estimated_retention_days: 2.5 }
 			},

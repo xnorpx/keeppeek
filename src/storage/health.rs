@@ -1,3 +1,4 @@
+use crate::storage::safety::{StorageSafetyHealthRegistry, StorageSafetyHealthSnapshot};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -10,6 +11,7 @@ const MAX_ERROR_CHARS: usize = 240;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecordingHealthSnapshot {
     pub streams: Vec<RecordingStreamHealthSnapshot>,
+    pub storage: StorageSafetyHealthSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -27,6 +29,7 @@ pub struct RecordingStreamHealthSnapshot {
 #[derive(Clone, Default)]
 pub struct RecordingHealthRegistry {
     inner: Arc<Mutex<HashMap<String, RecordingStreamHealth>>>,
+    storage: StorageSafetyHealthRegistry,
 }
 
 #[derive(Default)]
@@ -59,6 +62,10 @@ impl RecordingHealthRegistry {
 
     pub(crate) fn snapshot(&self) -> RecordingHealthSnapshot {
         self.snapshot_at(Instant::now())
+    }
+
+    pub(crate) fn storage(&self) -> StorageSafetyHealthRegistry {
+        self.storage.clone()
     }
 
     fn note_attempt_at(&self, stream_id: &str, at: Instant, at_ms: u64) {
@@ -118,7 +125,10 @@ impl RecordingHealthRegistry {
             })
             .collect::<Vec<_>>();
         snapshots.sort_unstable_by(|left, right| left.stream_id.cmp(&right.stream_id));
-        RecordingHealthSnapshot { streams: snapshots }
+        RecordingHealthSnapshot {
+            streams: snapshots,
+            storage: self.storage.snapshot(),
+        }
     }
 }
 

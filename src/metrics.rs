@@ -282,6 +282,106 @@ pub fn encode_health(health: &ServerHealthResponse) -> Result<String, std::fmt::
         "Configured long-term recording storage limit, or zero when unlimited",
         health.storage.long_term_max_bytes,
     );
+    register_gauge(
+        &mut registry,
+        "storage_minimum_free_bytes",
+        "Configured minimum free recording filesystem capacity",
+        health.storage.minimum_free_bytes,
+    );
+    register_gauge(
+        &mut registry,
+        "storage_maximum_used_percent",
+        "Configured maximum recording filesystem usage percentage, or zero when disabled",
+        u64::from(health.storage.maximum_used_percent.unwrap_or(0)),
+    );
+    register_gauge(
+        &mut registry,
+        "storage_warning_free_bytes",
+        "Configured free-space cleanup warning boundary",
+        health.storage.warning_free_bytes,
+    );
+    register_gauge(
+        &mut registry,
+        "storage_critical_free_bytes",
+        "Configured critical free-space boundary",
+        health.storage.critical_free_bytes,
+    );
+    register_gauge(
+        &mut registry,
+        "storage_cleanup_hysteresis_bytes",
+        "Configured cleanup recovery headroom beyond the warning boundary",
+        health.storage.cleanup_hysteresis_bytes,
+    );
+    register_gauge(
+        &mut registry,
+        "storage_pressure_state",
+        "Storage pressure state: 0 normal, 1 warning, 2 critical",
+        health.storage.safety.pressure.metric_value(),
+    );
+    register_gauge(
+        &mut registry,
+        "storage_recording_paused",
+        "Whether recording is paused by the storage safety policy",
+        u64::from(health.storage.safety.recording_state.as_str() == "paused"),
+    );
+    for (name, help, value) in [
+        (
+            "storage_effective_limit_bytes",
+            "Effective KeepPeek recording limit after combining configured filesystem policies",
+            health.storage.safety.effective_limit_bytes,
+        ),
+        (
+            "storage_cleanup_target_bytes",
+            "KeepPeek recording bytes targeted by the active cleanup recovery policy",
+            health.storage.safety.cleanup_target_bytes,
+        ),
+        (
+            "storage_keeppeek_bytes",
+            "Catalog-owned finalized recording bytes",
+            health.storage.safety.keeppeek_bytes,
+        ),
+        (
+            "storage_filesystem_total_bytes",
+            "Total capacity of the recording filesystem observed by the safety worker",
+            health.storage.safety.total_bytes,
+        ),
+        (
+            "storage_filesystem_available_bytes",
+            "Available capacity of the recording filesystem observed by the safety worker",
+            health.storage.safety.available_bytes,
+        ),
+        (
+            "storage_last_cleanup_started_at_ms",
+            "Unix timestamp of the most recent storage cleanup start",
+            health.storage.safety.last_cleanup_started_at_ms,
+        ),
+        (
+            "storage_last_cleanup_ended_at_ms",
+            "Unix timestamp of the most recent storage cleanup end",
+            health.storage.safety.last_cleanup_ended_at_ms,
+        ),
+        (
+            "storage_last_failure_at_ms",
+            "Unix timestamp of the most recent storage cleanup failure",
+            health.storage.safety.last_failure_at_ms,
+        ),
+    ] {
+        if let Some(value) = value {
+            register_gauge(&mut registry, name, help, value);
+        }
+    }
+    register_gauge(
+        &mut registry,
+        "storage_last_cleanup_files_removed",
+        "Files removed by the most recent storage cleanup",
+        health.storage.safety.last_cleanup_files_removed,
+    );
+    register_gauge(
+        &mut registry,
+        "storage_last_cleanup_bytes_removed",
+        "Bytes removed by the most recent storage cleanup",
+        health.storage.safety.last_cleanup_bytes_removed,
+    );
     if let Some(value) = health.storage.catalog_bytes {
         register_gauge(
             &mut registry,

@@ -65,6 +65,50 @@ impl LongTermStore {
         &self.root
     }
 
+    pub(crate) fn remove_catalog_recording(&self, path: &Path) -> std::io::Result<u64> {
+        let relative = path.strip_prefix(&self.root).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "catalog recording is outside the configured archive root",
+            )
+        })?;
+        if relative
+            .components()
+            .any(|component| component.as_os_str() == ".exports")
+            || path.extension().and_then(|extension| extension.to_str()) != Some("mp4")
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "catalog recording is not eligible for automatic cleanup",
+            ));
+        }
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(error),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "catalog recording cleanup refuses links and non-files",
+            ));
+        }
+        let canonical_root = self.root.canonicalize()?;
+        let canonical_path = path.canonicalize()?;
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "catalog recording resolves outside the configured archive root",
+            ));
+        }
+        let bytes = metadata.len();
+        std::fs::remove_file(path)?;
+        if let Some(parent) = path.parent() {
+            let _ = remove_empty_parents(parent, &self.root);
+        }
+        Ok(bytes)
+    }
+
     pub fn enforce_limit(&self, max_bytes: u64) {
         let _ = self.enforce_limit_with_removed(max_bytes);
     }
