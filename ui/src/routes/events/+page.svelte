@@ -20,7 +20,11 @@
 		type EventImageFilter,
 		type EventPreviewState
 	} from '$lib/event-browser';
-	import type { EventPreviewHit, EventPreviewPage } from '$lib/control-client';
+	import type {
+		EventPreviewHit,
+		EventPreviewKeyframe,
+		EventPreviewPage
+	} from '$lib/control-client';
 	import type { CameraListItem, RecordingEvent } from '$lib/types';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -48,6 +52,7 @@
 	let focusedKey = $state<string | null>(null);
 	let loading = $state(true);
 	let refreshing = $state(false);
+	let mobileFiltersOpen = $state(false);
 	let refreshDelayed = $state(false);
 	let currentDate = $state(today);
 	let error = $state<string | null>(null);
@@ -393,12 +398,7 @@
 		return hits.flatMap((hit) => {
 			const camera = camerasById.get(hit.sourceId);
 			if (!camera) return [];
-			const previewKeyframe = hit.keyframes
-				.filter((keyframe) => keyframe.byteLength <= MAX_EVENT_KEYFRAME_BYTES)
-				.toSorted(
-					(left, right) =>
-						Math.abs(left.eventTimeMs - hit.startMs) - Math.abs(right.eventTimeMs - hit.startMs)
-				)[0];
+			const previewKeyframe = eventPreviewKeyframe(hit);
 			const hasPreview = hit.hasImageAttachment || previewKeyframe !== undefined;
 			const event: RecordingEvent = {
 				id: hit.eventId,
@@ -429,6 +429,15 @@
 		});
 	}
 
+	function eventPreviewKeyframe(hit: EventPreviewHit): EventPreviewKeyframe | undefined {
+		return hit.keyframes
+			.filter((keyframe) => keyframe.byteLength <= MAX_EVENT_KEYFRAME_BYTES)
+			.toSorted(
+				(left, right) =>
+					Math.abs(left.eventTimeMs - hit.startMs) - Math.abs(right.eventTimeMs - hit.startMs)
+			)[0];
+	}
+
 	function mergeEventRecords(
 		current: readonly EventBrowserRecord[],
 		incoming: readonly EventBrowserRecord[]
@@ -454,12 +463,11 @@
 	function requestEventPreview(record: EventBrowserRecord): void {
 		const key = eventBrowserRecordKey(record);
 		if (record.event.thumbnail_url || previewKeys.has(key)) return;
-		if (!record.previewKeyframe) {
-			if (record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')) {
-				setPreviewState(key, 'unavailable');
-			}
+		if (
+			!record.previewKeyframe &&
+			!record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')
+		)
 			return;
-		}
 		previewKeys.add(key);
 		setPreviewState(key, 'queued');
 		previewQueue.push(record);
@@ -484,8 +492,15 @@
 		const controller = new AbortController();
 		previewControllers.set(key, controller);
 		try {
+			const previewKeyframe =
+				record.previewKeyframe ?? (await resolveEventPreviewKeyframe(record, controller.signal));
+			if (!previewKeyframe) {
+				previewKeys.delete(key);
+				setPreviewState(key, 'unavailable');
+				return;
+			}
 			const media = await controlClient.fetchEventPreviewKeyframe(
-				record.previewKeyframe!,
+				previewKeyframe,
 				controller.signal
 			);
 			const url = await decodeEventKeyframePreview(media);
@@ -522,6 +537,29 @@
 		} finally {
 			if (previewControllers.get(key) === controller) previewControllers.delete(key);
 		}
+	}
+
+	async function resolveEventPreviewKeyframe(
+		record: EventBrowserRecord,
+		signal: AbortSignal
+	): Promise<EventPreviewKeyframe | undefined> {
+		const startMs = record.event.start_time_ms;
+		const endMs = Math.max(startMs + 1, record.event.end_time_ms ?? startMs + 1);
+		const result = await controlClient.searchEventMetadata({
+			eventIds: [record.event.id],
+			sourceIds: [record.camera.id],
+			streamId: 'main',
+			startMs,
+			endMs,
+			pageSize: 1,
+			includePreviewKeyframes: true,
+			signal
+		});
+		const hit = result.hits.find(
+			(candidate) =>
+				candidate.eventId === record.event.id && candidate.sourceId === record.camera.id
+		);
+		return hit ? eventPreviewKeyframe(hit) : undefined;
 	}
 
 	function cancelPreviews(retainedKeys: ReadonlySet<string> = new Set()): void {
@@ -752,7 +790,7 @@
 			{/if}
 			<button
 				type="button"
-				class="grid size-8 place-items-center rounded-sm text-text-muted hover:bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-45"
+				class="grid size-11 place-items-center rounded-sm text-text-muted hover:bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-45 md:size-8"
 				title="Refresh events"
 				aria-label="Refresh events"
 				disabled={loading || refreshing}
@@ -767,10 +805,8 @@
 		class="space-y-2 rounded-md border border-hairline bg-surface p-3"
 		aria-label="Event filters"
 	>
-		<div
-			class="grid gap-2 md:grid-cols-2 xl:grid-cols-[minmax(13rem,1fr)_9.5rem_8rem_8rem_10rem_9rem_9rem]"
-		>
-			<label class="relative block md:col-span-2 xl:col-span-1">
+		<div class="grid grid-cols-[minmax(0,1fr)_9.5rem] gap-2">
+			<label class="relative block">
 				<SearchIcon
 					class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-text-faint"
 				/>
@@ -779,7 +815,7 @@
 					type="search"
 					value={filters.query}
 					placeholder="Search indexed event text…"
-					class="h-9 w-full rounded-sm border border-hairline bg-raised pr-3 pl-8 text-xs outline-none placeholder:text-text-faint focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 w-full rounded-sm border border-hairline bg-raised pr-3 pl-8 text-xs outline-none placeholder:text-text-faint focus:border-ring focus:ring-1 focus:ring-ring md:h-9"
 					oninput={(event) => updateFilters({ query: event.currentTarget.value }, true)}
 				/>
 			</label>
@@ -788,16 +824,32 @@
 				<input
 					type="date"
 					value={filters.date}
-					class="h-9 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-9"
 					onchange={(event) => updateFilters({ date: event.currentTarget.value })}
 				/>
 			</label>
+		</div>
+		<button
+			type="button"
+			class="flex h-11 w-full items-center justify-between rounded-sm border border-hairline bg-raised px-3 text-xs font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:hidden"
+			aria-expanded={mobileFiltersOpen}
+			onclick={() => (mobileFiltersOpen = !mobileFiltersOpen)}
+		>
+			<span class="flex items-center gap-2"><SlidersHorizontalIcon class="size-3.5" /> Filters</span
+			>
+			<span class="font-mono text-2xs text-text-faint">{mobileFiltersOpen ? 'CLOSE' : 'OPEN'}</span>
+		</button>
+		<div
+			class="{mobileFiltersOpen
+				? 'grid'
+				: 'hidden'} gap-2 md:grid md:grid-cols-2 xl:grid-cols-[8rem_8rem_10rem_9rem_9rem]"
+		>
 			<label class="grid gap-1 font-mono text-2xs tracking-caps text-text-faint">
 				<span class="sr-only">Start time UTC</span>
 				<input
 					type="time"
 					value={filters.startTime ?? ''}
-					class="h-9 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-9"
 					onchange={(event) => updateStartTime(event.currentTarget.value)}
 				/>
 			</label>
@@ -806,7 +858,7 @@
 				<input
 					type="time"
 					value={filters.endTime ?? ''}
-					class="h-9 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 rounded-sm border border-hairline bg-raised px-2 text-xs tracking-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-9"
 					onchange={(event) => updateEndTime(event.currentTarget.value)}
 				/>
 			</label>
@@ -814,7 +866,7 @@
 				<span class="sr-only">Camera filter</span>
 				<select
 					value={filters.cameraId ?? ''}
-					class="h-9 w-full rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 w-full rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-9"
 					onchange={(event) => updateFilters({ cameraId: event.currentTarget.value || null })}
 				>
 					<option value="">All cameras</option>
@@ -827,7 +879,7 @@
 				<span class="sr-only">Event type filter</span>
 				<select
 					value={filters.type ?? ''}
-					class="h-9 w-full rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 w-full rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-9"
 					onchange={(event) => updateFilters({ type: event.currentTarget.value || null })}
 				>
 					{#each eventKinds as kind (kind)}
@@ -847,7 +899,7 @@
 				<span class="sr-only">Image filter</span>
 				<select
 					value={filters.image}
-					class="h-9 w-full rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 w-full rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-9"
 					onchange={(event) =>
 						updateFilters({ image: event.currentTarget.value as EventImageFilter })}
 				>
@@ -857,7 +909,7 @@
 				</select>
 			</label>
 		</div>
-		<div class="flex flex-wrap items-center gap-2">
+		<div class="{mobileFiltersOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-2 md:flex">
 			<SlidersHorizontalIcon class="size-3.5 text-text-faint" />
 			<label class="flex items-center gap-2 text-xs text-text-muted">
 				Minimum confidence
@@ -868,7 +920,7 @@
 					step="0.05"
 					value={filters.minimumConfidence ?? ''}
 					placeholder="Any"
-					class="h-8 w-20 rounded-sm border border-hairline bg-raised px-2 font-mono text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 w-20 rounded-sm border border-hairline bg-raised px-2 font-mono text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-8"
 					onchange={(event) => {
 						const value = event.currentTarget.valueAsNumber;
 						updateFilters({ minimumConfidence: Number.isFinite(value) ? value : null });
@@ -881,7 +933,7 @@
 					type="text"
 					value={filters.zone ?? ''}
 					placeholder="Any"
-					class="h-8 w-28 rounded-sm border border-hairline bg-raised px-2 text-xs outline-none placeholder:text-text-faint focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 w-28 rounded-sm border border-hairline bg-raised px-2 text-xs outline-none placeholder:text-text-faint focus:border-ring focus:ring-1 focus:ring-ring md:h-8"
 					oninput={(event) => updateFilters({ zone: event.currentTarget.value || null }, true)}
 				/>
 			</label>
@@ -889,7 +941,7 @@
 				Reported by
 				<select
 					value={filters.source ?? ''}
-					class="h-8 rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+					class="h-11 rounded-sm border border-hairline bg-raised px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring md:h-8"
 					onchange={(event) =>
 						updateFilters({
 							source: (event.currentTarget.value as RecordingEvent['source']) || null
@@ -902,7 +954,7 @@
 			</label>
 			<button
 				type="button"
-				class="ml-auto h-8 rounded-sm px-2.5 text-xs text-text-muted hover:bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				class="ml-auto h-11 rounded-sm px-2.5 text-xs text-text-muted hover:bg-raised hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-8"
 				onclick={clearFilters}
 			>
 				Clear filters

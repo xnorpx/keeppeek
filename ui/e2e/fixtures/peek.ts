@@ -74,7 +74,13 @@ export const mixedHealth: HealthFixture = {
 				frames_fresh: true,
 				decodable: true,
 				recording_requested: true,
-				recording_progressing: true
+				recording_video_stream_ids: ['sub'],
+				recording_progressing_stream_ids: ['sub'],
+				recording_progressing: true,
+				session_duration_ms: 600_000,
+				recorded_main_duration_ms: 480_000,
+				recorded_sub_duration_ms: 300_000,
+				recorded_total_duration_ms: 780_000
 			},
 			lifecycle: 'Connected',
 			last_error: null,
@@ -96,7 +102,13 @@ export const mixedHealth: HealthFixture = {
 				decodable: true,
 				recent_drops: 14,
 				recording_requested: true,
-				recording_progressing: false
+				recording_video_stream_ids: ['sub'],
+				recording_progressing_stream_ids: [],
+				recording_progressing: false,
+				session_duration_ms: 600_000,
+				recorded_main_duration_ms: 0,
+				recorded_sub_duration_ms: 240_000,
+				recorded_total_duration_ms: 240_000
 			},
 			lifecycle: 'Connected',
 			last_error: null,
@@ -117,6 +129,8 @@ export const mixedHealth: HealthFixture = {
 				frames_fresh: false,
 				decodable: false,
 				recording_requested: true,
+				recording_video_stream_ids: ['sub'],
+				recording_progressing_stream_ids: [],
 				recording_progressing: false
 			},
 			lifecycle: 'Attempt 3',
@@ -138,6 +152,8 @@ export const mixedHealth: HealthFixture = {
 				frames_fresh: false,
 				decodable: false,
 				recording_requested: true,
+				recording_video_stream_ids: ['sub'],
+				recording_progressing_stream_ids: [],
 				recording_progressing: false
 			},
 			lifecycle: 'Stopped',

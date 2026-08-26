@@ -44,6 +44,7 @@
 		{ value: 'sub', label: 'Sub' }
 	];
 	const wallRevealTimeoutMs = 5_000;
+	const healthRefreshIntervalMs = 5_000;
 	const controlClient = useControlClient();
 	const livePeer = useLivePeer();
 	const gridScheduler = new GridStreamScheduler({ subscriptionSlots: 4, decoderSlots: 4 });
@@ -69,6 +70,7 @@
 	let wallTargetCameraIds = $state.raw<readonly string[]>([]);
 	let wallRevealState = $state<'staging' | 'frames' | 'timeout'>('staging');
 	let wallRevealTimer: ReturnType<typeof setTimeout> | null = null;
+	let healthRefreshInFlight = false;
 	let focusReturnPending = $state(false);
 	let wallRevealed = $derived(wallRevealState !== 'staging');
 	let focusedCamera = $derived(
@@ -225,8 +227,12 @@
 		};
 		document.addEventListener('visibilitychange', onVisibility);
 		void loadDashboard();
+		const healthTimer = window.setInterval(() => {
+			if (document.visibilityState === 'visible') void refreshHealth();
+		}, healthRefreshIntervalMs);
 		return () => {
 			document.removeEventListener('visibilitychange', onVisibility);
+			window.clearInterval(healthTimer);
 			if (schedulerTimer) clearTimeout(schedulerTimer);
 			if (wallRevealTimer) clearTimeout(wallRevealTimer);
 		};
@@ -240,6 +246,18 @@
 			camera.profiles.at(-1)?.stream ??
 			'main'
 		);
+	}
+
+	async function refreshHealth(): Promise<void> {
+		if (healthRefreshInFlight) return;
+		healthRefreshInFlight = true;
+		try {
+			serverHealth = await controlClient.getHealth();
+		} catch {
+			// Retain the last authoritative snapshot until a later refresh succeeds.
+		} finally {
+			healthRefreshInFlight = false;
+		}
 	}
 
 	async function loadDashboard() {

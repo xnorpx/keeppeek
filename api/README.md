@@ -154,7 +154,9 @@ SDP string.
 Delete the session with `POST /delete` and a JSON body containing that `session_id` when
 the viewer or service is finished. KeepPeek records the key used to create each session and
 accepts deletion only from that same key. An unknown session or a session created by a different
-key returns `404`.
+key returns `404`. The default successful response is `204`. Browser clients may send
+`Prefer: return=representation` to receive a complete `200 text/plain` response before the
+associated WebRTC transport closes.
 
 ## Log stream
 

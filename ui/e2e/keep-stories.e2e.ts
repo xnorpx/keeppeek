@@ -4,7 +4,7 @@ import { keepModeDate, keepModeOlderDate, mockKeepModes } from './fixtures/keep-
 test('Board 9 Stories renders only server-authored events and returns to Timeline', async ({
 	page
 }) => {
-	await mockKeepModes(page);
+	const controls = await mockKeepModes(page);
 	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}&mode=stories`);
 
 	await expect(page.getByRole('button', { name: 'Stories', exact: true })).toHaveAttribute(
@@ -16,6 +16,13 @@ test('Board 9 Stories renders only server-authored events and returns to Timelin
 		page.getByText('Summary and additional frames were not reported by this server.')
 	).toBeVisible();
 	await expect(page.getByText('Camera event source', { exact: true })).toBeVisible();
+	const storyQuery = controls.eventSearchQueries.find((query) =>
+		query.eventTypes.includes('story')
+	);
+	expect(storyQuery?.pageSize).toBe(18);
+	expect((storyQuery?.endMs ?? 0) - (storyQuery?.startMs ?? 0)).toBeLessThanOrEqual(
+		6 * 60 * 60_000
+	);
 
 	await page.getByRole('button', { name: /review story at/i }).click();
 	await expect(page.getByRole('button', { name: 'Timeline', exact: true })).toHaveAttribute(

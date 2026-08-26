@@ -182,6 +182,14 @@ impl LogHub {
             .sensitive_values = values;
     }
 
+    pub(super) fn redact_output(&self, text: &str) -> String {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        redact_text(text, &state.sensitive_values)
+    }
+
     pub fn record(
         &self,
         level: LogLevel,
@@ -490,7 +498,13 @@ fn is_sensitive_name(name: &str) -> bool {
 }
 
 fn redact_text(text: &str, sensitive_values: &[String]) -> String {
-    let mut redacted = redact_url_userinfo(text);
+    let mut redacted = text.to_owned();
+    for sensitive_value in sensitive_values {
+        if !sensitive_value.is_empty() {
+            redacted = redacted.replace(sensitive_value, "[REDACTED]");
+        }
+    }
+    redacted = redact_url_userinfo(&redacted);
     for marker in [
         "password=",
         "passwd=",
@@ -518,11 +532,6 @@ fn redact_text(text: &str, sensitive_values: &[String]) -> String {
             if search_from >= redacted.len() {
                 break;
             }
-        }
-    }
-    for sensitive_value in sensitive_values {
-        if !sensitive_value.is_empty() {
-            redacted = redacted.replace(sensitive_value, "[REDACTED]");
         }
     }
     redacted

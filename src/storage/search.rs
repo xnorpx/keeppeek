@@ -103,6 +103,7 @@ pub struct EventMetadataQuery {
     pub preview_after_ms: u64,
     pub page_size: u32,
     pub page_token: Option<String>,
+    pub include_preview_keyframes: bool,
 }
 
 impl EventMetadataQuery {
@@ -124,6 +125,7 @@ impl EventMetadataQuery {
             preview_after_ms: DEFAULT_PREVIEW_AFTER_MS,
             page_size: 50,
             page_token: None,
+            include_preview_keyframes: false,
         }
     }
 }
@@ -664,6 +666,11 @@ mod tests {
         metadata_query.minimum_confidence = Some(0.85);
         metadata_query.image = EventImageFilter::WithImage;
         metadata_query.text = Some("alice".to_owned());
+        let metadata_only_page = search.search_metadata(metadata_query.clone()).unwrap();
+        assert_eq!(metadata_only_page.hits.len(), 1);
+        assert!(metadata_only_page.hits[0].keyframes.is_empty());
+
+        metadata_query.include_preview_keyframes = true;
         let metadata_page = search.search_metadata(metadata_query).unwrap();
         assert_eq!(metadata_page.hits.len(), 1);
         assert_eq!(metadata_page.hits[0].event_id, "event-alice");

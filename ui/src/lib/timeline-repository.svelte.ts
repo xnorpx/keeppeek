@@ -1,5 +1,6 @@
 import type {
 	ControlClient,
+	EventPreviewHit,
 	StoredTimelineQueryOptions,
 	StoredTimelineRange,
 	StoredTimelineResult
@@ -45,7 +46,7 @@ export type TimelineViewport = Omit<
 };
 
 type TimelineQueryClient = Pick<ControlClient, 'queryStoredTimeline'> &
-	Partial<Pick<ControlClient, 'releaseObjectUrl'>>;
+	Partial<Pick<ControlClient, 'releaseObjectUrl' | 'searchEventMetadata'>>;
 
 type TimelineThumbnailCache = Pick<TimelineThumbnailDiskCache, 'get' | 'put'>;
 
@@ -97,6 +98,7 @@ export class TimelineRepository {
 	#activeThumbnails = 0;
 	#thumbnailUrls = new Map<string, CachedThumbnail>();
 	#thumbnailByIdentity = new Map<string, string>();
+	#visibleThumbnailIdentities = new Set<string>();
 	#decodedThumbnailBytes = 0;
 	#diskCache: TimelineThumbnailCache;
 
@@ -175,6 +177,7 @@ export class TimelineRepository {
 		this.#generation += 1;
 		for (const query of this.#activeQueries.values()) query.controller.abort();
 		this.#cancelThumbnails();
+		this.#visibleThumbnailIdentities.clear();
 		this.#activeContextKey = '';
 		this.ranges = [];
 		this.events = [];
@@ -186,6 +189,7 @@ export class TimelineRepository {
 		this.#generation += 1;
 		for (const query of this.#activeQueries.values()) query.controller.abort();
 		this.#cancelThumbnails();
+		this.#visibleThumbnailIdentities.clear();
 		this.#activeQueries.clear();
 		this.#releaseAllThumbnails();
 		this.loading = false;
@@ -203,6 +207,7 @@ export class TimelineRepository {
 		this.#generation += 1;
 		for (const query of this.#activeQueries.values()) query.controller.abort();
 		this.#cancelThumbnails();
+		this.#visibleThumbnailIdentities.clear();
 		this.#activeContextKey = contextKey;
 		this.ranges = cache.ranges;
 		this.events = cache.events;
@@ -226,6 +231,15 @@ export class TimelineRepository {
 		const controller = new AbortController();
 		const startedAtMs = performance.now();
 		let firstPage = true;
+		const markFirstPage = () => {
+			if (!firstPage) return;
+			firstPage = false;
+			emitTimelinePerformanceEvent('TimelineFirstPage', {
+				queryId: queryKey,
+				sourceId: options.sourceIds.join(','),
+				durationMs: performance.now() - startedAtMs
+			});
+		};
 		this.#activeQueries.set(queryKey, {
 			contextKey: options.contextKey,
 			generation: options.generation,
@@ -241,33 +255,48 @@ export class TimelineRepository {
 			bucketMs: options.bucketMs
 		});
 
+		const searchEvents = options.includeEvents ? this.#client.searchEventMetadata : undefined;
+		const eventPagePromise = searchEvents
+			? searchEvents.call(this.#client, {
+					sourceIds: options.sourceIds,
+					streamId: 'main',
+					startMs: options.interval.startMs,
+					endMs: options.interval.endMs,
+					eventTypes: options.eventTypes,
+					pageSize: 128,
+					signal: controller.signal
+				})
+			: Promise.resolve(null);
 		const queryOptions: StoredTimelineQueryOptions = {
 			sourceIds: options.sourceIds,
 			startMs: options.interval.startMs,
 			endMs: options.interval.endMs,
 			availabilityBucketMs: options.bucketMs,
 			eventTypes: options.eventTypes,
-			includeEvents: options.includeEvents,
+			includeEvents: options.includeEvents && !searchEvents,
 			includeAttachments: false,
 			signal: controller.signal,
 			onPage: (page) => {
 				if (!this.#isCurrent(options.contextKey, options.generation, controller)) return;
-				if (firstPage) {
-					firstPage = false;
-					emitTimelinePerformanceEvent('TimelineFirstPage', {
-						queryId: queryKey,
-						sourceId: options.sourceIds.join(','),
-						durationMs: performance.now() - startedAtMs
-					});
-				}
+				markFirstPage();
 				this.#mergePage(options.cache, page);
 			}
 		};
 
 		try {
-			const result = await this.#client.queryStoredTimeline(queryOptions);
+			const [result, eventPage] = await Promise.all([
+				this.#client.queryStoredTimeline(queryOptions),
+				eventPagePromise
+			]);
 			if (!this.#isCurrent(options.contextKey, options.generation, controller)) return;
+			markFirstPage();
 			this.#mergePage(options.cache, result);
+			if (eventPage) {
+				this.#mergePage(options.cache, {
+					ranges: [],
+					events: eventPage.hits.map(timelineEventFromHit)
+				});
+			}
 			options.cache.coverage = mergeTimelineIntervals([
 				...options.cache.coverage,
 				options.interval
@@ -329,6 +358,7 @@ export class TimelineRepository {
 		const candidateEndMs = window.endMs + durationMs / 2;
 		const spacingMs = (durationMs * MIN_THUMBNAIL_SPACING_PX) / window.viewportExtentPx;
 		const sourceSet = new Set(sourceIds);
+		const visibleThumbnailIdentities = new Set<string>();
 		const candidates = cache.events
 			.filter((event) => {
 				const sourceId = event.source_id ?? sourceIds[0];
@@ -345,19 +375,31 @@ export class TimelineRepository {
 			})
 			.toSorted(compareThumbnailPriority);
 		for (const event of cache.events) {
+			const sourceId = event.source_id ?? sourceIds[0];
+			const hasThumbnail =
+				!!event.thumbnail_url ||
+				event.attachments?.some((attachment) => attachment.type === 'thumbnail');
 			if (
-				event.thumbnail_url &&
-				event.start_time_ms >= candidateStartMs &&
-				event.start_time_ms <= candidateEndMs
+				!sourceId ||
+				!sourceSet.has(sourceId) ||
+				!hasThumbnail ||
+				event.start_time_ms < candidateStartMs ||
+				event.start_time_ms > candidateEndMs
 			) {
+				continue;
+			}
+			const identity = `${cache.key}:${sourceId}:${event.id}:${event.revision ?? 0}`;
+			visibleThumbnailIdentities.add(identity);
+			if (event.thumbnail_url && !this.#visibleThumbnailIdentities.has(identity)) {
 				this.#touchThumbnail(event.thumbnail_url);
 				emitTimelinePerformanceEvent('ThumbnailCacheHitMemory', {
-					sourceId: event.source_id ?? event.source,
+					sourceId,
 					eventId: event.id,
 					revision: event.revision ?? 0
 				});
 			}
 		}
+		this.#visibleThumbnailIdentities = visibleThumbnailIdentities;
 		const selected: RecordingEvent[] = [];
 		for (const event of candidates) {
 			if (
@@ -536,6 +578,34 @@ export class TimelineRepository {
 	}
 }
 
+function timelineEventFromHit(hit: EventPreviewHit): RecordingEvent {
+	return {
+		id: hit.eventId,
+		source_id: hit.sourceId,
+		source: hit.origin,
+		kind: hit.eventType,
+		start_time_ms: hit.startMs,
+		end_time_ms: hit.endMs,
+		confidence: hit.confidence,
+		bbox: hit.bbox,
+		zone: hit.zone,
+		text: hit.text,
+		thumbnail_url: null,
+		attachments: hit.hasImageAttachment
+			? [
+					{
+						id: 'thumbnail',
+						type: 'thumbnail',
+						content_type: 'image/jpeg',
+						byte_length: null,
+						ordinal: 0,
+						timestamp_ms: hit.startMs
+					}
+				]
+			: []
+	};
+}
+
 export function mergeTimelineIntervals(intervals: readonly TimelineInterval[]): TimelineInterval[] {
 	const ordered = intervals
 		.filter((interval) => interval.endMs > interval.startMs)
@@ -628,9 +698,20 @@ function mergeTimelineEvents(
 ): RecordingEvent[] {
 	const byKey = new Map<string, RecordingEvent>();
 	for (const event of [...current, ...incoming]) {
-		const key = `${event.source_id ?? event.source}:${event.id}:${event.revision ?? 0}`;
+		const key = `${event.source_id ?? event.source}:${event.id}`;
 		const previous = byKey.get(key);
-		if (!previous || (!previous.thumbnail_url && event.thumbnail_url)) byKey.set(key, event);
+		byKey.set(
+			key,
+			previous
+				? {
+						...previous,
+						...event,
+						thumbnail_url: event.thumbnail_url ?? previous.thumbnail_url,
+						thumbnail_blob: event.thumbnail_blob ?? previous.thumbnail_blob,
+						attachments: event.attachments?.length ? event.attachments : previous.attachments
+					}
+				: event
+		);
 	}
 	return [...byKey.values()]
 		.toSorted((left, right) => right.start_time_ms - left.start_time_ms)

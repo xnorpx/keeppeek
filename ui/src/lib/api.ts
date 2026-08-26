@@ -27,11 +27,15 @@ async function postEmpty(path: string, body?: unknown): Promise<void> {
 			? { method: 'POST' }
 			: {
 					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
+					headers: {
+						'Content-Type': 'application/json',
+						Prefer: 'return=representation'
+					},
 					body: JSON.stringify(body)
 				}
 	);
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	await res.text();
 }
 
 export async function waitForMetricsAt(origin: string): Promise<void> {

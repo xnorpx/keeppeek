@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { mockControlPeer } from './fixtures/control-peer';
+import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 import { mixedCameras, mixedHealth, mockMixedHealth } from './fixtures/peek';
 
 test('renders the KeepPeek dashboard without configured cameras', async ({ page }) => {
@@ -57,17 +57,43 @@ test('Board 6 renders healthy, degraded, stale, and offline Paper tile states', 
 	await expect(page.getByText('Stream health report is stale')).toBeVisible();
 	await expect(page.getByText('Authentication failed')).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Diagnose' })).toBeVisible();
-	await expect(page.locator('[data-peek-camera="front-door"]')).toContainText('REC');
+	await expect(page.locator('[data-peek-camera="front-door"]')).not.toContainText('REC');
 	await expect(page.locator('[data-peek-camera="back-yard"]')).not.toContainText('REC');
 	await expect(page.getByText(/last frame/i)).toHaveCount(0);
 	await expect(page.getByText(/SUB ·/i)).toHaveCount(0);
 	const frontDoor = page.locator('[data-peek-camera="front-door"]');
 	const frontDoorLabel = frontDoor.locator('[data-peek-camera-label]');
 	const frontDoorDiagnostics = frontDoor.getByRole('button', {
-		name: 'Front Door WebRTC stream diagnostics'
+		name: 'Front Door camera information'
 	});
+	await expect(page.locator('[data-peek-camera-status]')).toHaveCount(0);
 	await expect(frontDoorLabel).toBeVisible();
 	await expect(frontDoorDiagnostics).toBeVisible();
+	await frontDoorDiagnostics.click();
+	await expect(page.locator('[data-web-rtc-recording="front-door"]')).toHaveText(
+		'Sub stream · recording'
+	);
+	await expect(page.locator('[data-web-rtc-recording="front-door"]')).toHaveAttribute(
+		'data-recording-state',
+		'recording'
+	);
+	await expect(page.locator('[data-camera-session-duration="front-door"]')).toHaveText('10m 00s');
+	await expect(page.locator('[data-main-recorded-duration="front-door"]')).toHaveText('8m 00s');
+	await expect(page.locator('[data-sub-recorded-duration="front-door"]')).toHaveText('5m 00s');
+	await expect(page.locator('[data-total-recorded-duration="front-door"]')).toHaveText('13m 00s');
+	await page.keyboard.press('Escape');
+	const porchDiagnostics = page
+		.locator('[data-peek-camera="porch"]')
+		.getByRole('button', { name: 'Porch camera information' });
+	await porchDiagnostics.click();
+	await expect(page.locator('[data-web-rtc-recording="porch"]')).toHaveText(
+		'Sub stream · not progressing'
+	);
+	await expect(page.locator('[data-web-rtc-recording="porch"]')).toHaveAttribute(
+		'data-recording-state',
+		'not-progressing'
+	);
+	await page.keyboard.press('Escape');
 	const [frontDoorBounds, labelBounds, diagnosticsBounds] = await Promise.all([
 		frontDoor.boundingBox(),
 		frontDoorLabel.boundingBox(),
@@ -86,6 +112,53 @@ test('Board 6 renders healthy, degraded, stale, and offline Paper tile states', 
 	await page.locator('[data-peek-camera="back-yard"]').hover();
 	await expect(page.getByRole('button', { name: 'Rewind Back Yard' })).toHaveCount(0);
 	expect(browserErrors).toEqual([]);
+});
+
+test('refreshes startup health evidence in place without reopening Peek', async ({ page }) => {
+	test.setTimeout(30_000);
+	const staleEvidence = mixedHealth.cameras?.find((camera) => camera.id === 'alley');
+	const offlineEvidence = mixedHealth.cameras?.find((camera) => camera.id === 'back-yard');
+	if (!staleEvidence || !offlineEvidence)
+		throw new Error('mixed health transitions are incomplete');
+	const withFrontDoorEvidence = (evidence: typeof staleEvidence) => ({
+		...mixedHealth,
+		cameras: mixedHealth.cameras?.map((camera) =>
+			camera.id === 'front-door' ? { ...evidence, id: 'front-door' } : camera
+		)
+	});
+	const initialHealth: HealthFixture = {
+		...mixedHealth,
+		cameras: mixedHealth.cameras?.map((camera) =>
+			camera.id === 'front-door'
+				? {
+						...camera,
+						state: 'unknown',
+						reason: 'evidence_unavailable',
+						detail: 'Required camera evidence is unavailable'
+					}
+				: camera
+		)
+	};
+	await mockControlPeer(page, {
+		cameras: mixedCameras,
+		healthSequence: [
+			initialHealth,
+			mixedHealth,
+			withFrontDoorEvidence(staleEvidence),
+			withFrontDoorEvidence(offlineEvidence),
+			mixedHealth
+		]
+	});
+	await page.goto('/');
+
+	const tile = page.locator('[data-peek-camera="front-door"]');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'unknown');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy', { timeout: 12_000 });
+	await expect(tile.locator('[data-peek-camera-status]')).toHaveCount(0);
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'stale', { timeout: 7_000 });
+	await expect(tile).toContainText('STALE');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'offline', { timeout: 7_000 });
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy', { timeout: 7_000 });
 });
 
 test('keeps mixed Peek states usable at the authored mobile viewport', async ({ page }) => {
@@ -323,10 +396,11 @@ test('names the negotiated first-keyframe wait without rewriting server health',
 	await expect(state).toHaveAttribute('data-first-frame-state', 'waiting');
 	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy');
 	await expect(state).toContainText('Negotiated · waiting for a keyframe');
-	await expect(state).toHaveAttribute('data-first-frame-state', 'late', { timeout: 7_000 });
 	await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
 	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'timeout');
 	await expect(wall.locator('[data-peek-wall-content]')).toHaveCSS('opacity', '1');
 	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy');
-	await expect(state).toContainText('No keyframe after');
+	await expect(state).toHaveAttribute('data-first-frame-state', 'waiting');
+	await expect(state).toContainText('CONNECTING');
+	await expect(state).not.toContainText('DEGRADED');
 });

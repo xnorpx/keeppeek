@@ -518,12 +518,17 @@ export class LivePeer {
 				// Session deletion remains authoritative teardown.
 			}
 		}
-		const sessionToken = this.releaseLocalResources();
-		if (sessionToken === null) return;
+		const sessionToken = this.#sessionToken;
+		if (sessionToken === null) {
+			this.releaseLocalResources();
+			return;
+		}
 		try {
 			await deleteSession(sessionToken);
 		} catch (error) {
 			console.debug('Unable to close shared live session', error);
+		} finally {
+			if (this.#sessionToken === sessionToken) this.releaseLocalResources();
 		}
 	}
 

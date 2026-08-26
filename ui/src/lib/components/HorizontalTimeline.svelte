@@ -313,14 +313,14 @@
 		<div class="flex items-center gap-1">
 			<button
 				type="button"
-				class="grid size-7 place-items-center rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-40"
+				class="grid size-11 place-items-center rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-40 md:size-7"
 				title="Zoom timeline out"
 				disabled={zoomIndex === 0}
 				onclick={() => void zoom(-1)}><ZoomOutIcon class="size-3.5" /></button
 			>
 			<button
 				type="button"
-				class="grid size-7 place-items-center rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-40"
+				class="grid size-11 place-items-center rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-40 md:size-7"
 				title="Zoom timeline in"
 				disabled={zoomIndex === ZOOM_LEVELS.length - 1}
 				onclick={() => void zoom(1)}><ZoomInIcon class="size-3.5" /></button

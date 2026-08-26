@@ -85,6 +85,14 @@
 		showDiagnostics?: boolean;
 		diagnosticsLabel?: string;
 		diagnosticsStatusClass?: string;
+		diagnosticsRecording?: {
+			state: 'recording' | 'not-progressing' | 'pending' | 'off' | 'unknown';
+			detail: string;
+			sessionDurationMs: number | null;
+			mainDurationMs: number | null;
+			subDurationMs: number | null;
+			totalDurationMs: number | null;
+		};
 		onframeactivitychange?: (active: boolean) => void;
 		onvisibilitychange?: (visibility: GridTileVisibility) => void;
 		class?: string;
@@ -98,6 +106,7 @@
 		showDiagnostics = true,
 		diagnosticsLabel,
 		diagnosticsStatusClass = 'bg-white/65',
+		diagnosticsRecording,
 		onframeactivitychange,
 		onvisibilitychange,
 		class: className = ''
@@ -430,6 +439,30 @@
 		return framesPerSecond === null ? '—' : framesPerSecond.toFixed(1);
 	}
 
+	function formatDuration(milliseconds: number | null): string {
+		if (milliseconds === null) return '—';
+		const totalSeconds = Math.floor(milliseconds / 1_000);
+		const days = Math.floor(totalSeconds / 86_400);
+		const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+		const minutes = Math.floor((totalSeconds % 3_600) / 60);
+		const seconds = totalSeconds % 60;
+		if (days > 0)
+			return `${days}d ${hours.toString().padStart(2, '0')}h ${minutes.toString().padStart(2, '0')}m`;
+		if (hours > 0)
+			return `${hours}h ${minutes.toString().padStart(2, '0')}m ${seconds.toString().padStart(2, '0')}s`;
+		if (minutes > 0) return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+		return `${seconds}s`;
+	}
+
+	function recordingIndicatorClass(
+		state: NonNullable<Props['diagnosticsRecording']>['state']
+	): string {
+		if (state === 'recording') return 'bg-emerald-400';
+		if (state === 'not-progressing') return 'bg-red-400';
+		if (state === 'pending') return 'bg-amber-400';
+		return 'bg-white/35';
+	}
+
 	function handleDiagnosticsEscape(event: KeyboardEvent) {
 		event.stopPropagation();
 	}
@@ -491,7 +524,7 @@
 				? 'bg-black/90 text-white ring-1 ring-white/35'
 				: ''}"
 			aria-label={diagnosticsLabel
-				? `${diagnosticsLabel} WebRTC stream diagnostics`
+				? `${diagnosticsLabel} camera information`
 				: 'WebRTC stream diagnostics'}
 		>
 			{#if diagnosticsLabel}
@@ -509,7 +542,9 @@
 				sideOffset={6}
 				collisionPadding={8}
 				class="max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-white/15 bg-zinc-950/97 p-3 text-left text-[11px] text-white shadow-2xl backdrop-blur-md"
-				aria-label="WebRTC stream diagnostics"
+				aria-label={diagnosticsLabel
+					? `${diagnosticsLabel} camera information`
+					: 'WebRTC stream diagnostics'}
 				trapFocus={false}
 				onEscapeKeydown={handleDiagnosticsEscape}
 			>
@@ -521,12 +556,46 @@
 									? 'bg-emerald-400'
 									: 'bg-amber-400'}"
 							></span>
-							<span class="font-semibold text-white">WebRTC</span>
+							<span class="font-semibold text-white"
+								>{diagnosticsLabel ? 'Camera info' : 'WebRTC'}</span
+							>
 						</div>
 						<span class="font-mono text-[10px] text-white/45">#{sessionId ?? '—'}</span>
 					</div>
 
 					<dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1.5">
+						{#if diagnosticsRecording}
+							<dt class="text-white/45">Recording</dt>
+							<dd
+								data-web-rtc-recording={cameraId}
+								data-recording-state={diagnosticsRecording.state}
+								class="flex max-w-44 items-center justify-end gap-1.5 text-right font-medium"
+							>
+								<span
+									class="size-1.5 shrink-0 rounded-full {recordingIndicatorClass(
+										diagnosticsRecording.state
+									)}"
+								></span>
+								<span>{diagnosticsRecording.detail}</span>
+							</dd>
+							<dt class="text-white/45">Camera session</dt>
+							<dd data-camera-session-duration={cameraId} class="font-mono">
+								{formatDuration(diagnosticsRecording.sessionDurationMs)}
+							</dd>
+							<dt class="text-white/45">Main recorded</dt>
+							<dd data-main-recorded-duration={cameraId} class="font-mono">
+								{formatDuration(diagnosticsRecording.mainDurationMs)}
+							</dd>
+							<dt class="text-white/45">Sub recorded</dt>
+							<dd data-sub-recorded-duration={cameraId} class="font-mono">
+								{formatDuration(diagnosticsRecording.subDurationMs)}
+							</dd>
+							<dt class="text-white/45">Total recorded</dt>
+							<dd data-total-recorded-duration={cameraId} class="font-mono">
+								{formatDuration(diagnosticsRecording.totalDurationMs)}
+							</dd>
+							<div class="col-span-2 my-1 border-t border-white/10"></div>
+						{/if}
 						<dt class="text-white/45">Quality</dt>
 						<dd class="text-right font-medium capitalize">{requestedQuality} · {activeStream}</dd>
 						<dt class="text-white/45">Codec</dt>

@@ -270,6 +270,7 @@ export type EventMetadataSearchOptions = {
 	text?: string;
 	pageSize?: number;
 	pageToken?: string;
+	includePreviewKeyframes?: boolean;
 	signal?: AbortSignal;
 };
 
@@ -498,7 +499,7 @@ export class ControlClient {
 			startMs,
 			endMs,
 			includeEvents: true,
-			includeAttachments: true,
+			includeAttachments: false,
 			signal
 		});
 		return { camera_id: cameraId, date, events: timeline.events };
@@ -558,7 +559,8 @@ export class ControlClient {
 						zones: [...(options.zones ?? [])],
 						minimumConfidence: options.minimumConfidence,
 						image,
-						text: options.text?.trim() || undefined
+						text: options.text?.trim() || undefined,
+						includePreviewKeyframes: options.includePreviewKeyframes ?? false
 					})
 				},
 				streamId: options.streamId,
@@ -4008,6 +4010,10 @@ function cameraHealthDimensions(
 		recording_progressing_stream_ids: dimensions.recordingProgressingStreamIds,
 		recording_progressing: dimensions.recordingProgressing ?? null,
 		recording_progress_age_ms: optionalNumber(dimensions.recordingProgressAgeMs),
+		session_duration_ms: optionalNumber(dimensions.sessionDurationMs),
+		recorded_main_duration_ms: numeric(dimensions.recordedMainDurationMs),
+		recorded_sub_duration_ms: numeric(dimensions.recordedSubDurationMs),
+		recorded_total_duration_ms: numeric(dimensions.recordedTotalDurationMs),
 		battery_configured: dimensions.batteryConfigured,
 		battery_registered: dimensions.batteryRegistered ?? null,
 		battery_last_seen_age_ms: optionalNumber(dimensions.batteryLastSeenAgeMs),
@@ -4099,7 +4105,9 @@ function streamHealthDimensions(
 		recent_errors: numeric(dimensions.recentErrors),
 		recording_requested: dimensions.recordingRequested,
 		recording_progressing: dimensions.recordingProgressing ?? null,
-		recording_progress_age_ms: optionalNumber(dimensions.recordingProgressAgeMs)
+		recording_progress_age_ms: optionalNumber(dimensions.recordingProgressAgeMs),
+		session_duration_ms: numeric(dimensions.sessionDurationMs),
+		recorded_duration_ms: numeric(dimensions.recordedDurationMs)
 	};
 }
 

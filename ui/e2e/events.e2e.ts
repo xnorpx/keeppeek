@@ -64,7 +64,9 @@ test('sends UTC range and zone filters server-side with bounded text debounce', 
 
 	await expect(page.locator('[data-event-card="front-door:person-high"]')).toBeVisible();
 	await expect(page.locator('[data-event-card]')).toHaveCount(1);
-	const query = requests.eventSearchQueries.at(-1);
+	const query = requests.eventSearchQueries
+		.filter((request) => !request.includePreviewKeyframes)
+		.at(-1);
 	expect(query?.startMs).toBe(Date.parse(`${eventDate}T06:00:00Z`));
 	expect(query?.endMs).toBe(Date.parse(`${eventDate}T07:00:00Z`));
 	expect(query?.zones).toEqual(['porch']);
@@ -86,6 +88,14 @@ test('bounds lazy preview concurrency and cancels media on route exit', async ({
 	await page.goto(`/events?date=${eventDate}`);
 
 	await expect.poll(() => requests.eventMediaFetches.length).toBe(2);
+	expect(requests.eventSearchQueries[0]?.includePreviewKeyframes).toBe(false);
+	const previewQueries = requests.eventSearchQueries.filter(
+		(query) => query.includePreviewKeyframes
+	);
+	expect(previewQueries).toHaveLength(2);
+	expect(previewQueries.every((query) => query.eventIds.length === 1 && query.pageSize === 1)).toBe(
+		true
+	);
 	expect(requests.maxConcurrentEventMedia).toBe(2);
 	releases.shift()?.();
 	await expect.poll(() => requests.eventMediaFetches.length).toBe(3);
@@ -358,6 +368,20 @@ test('keeps mixed Event cards and detail usable at the authored mobile viewport'
 
 	await expect(page.locator('[data-event-card]')).toHaveCount(5);
 	await expect(page.getByLabel('Event filters')).toBeVisible();
+	await expect(page.getByLabel('Start time UTC')).toBeHidden();
+	const filterToggle = page.getByRole('button', { name: /Filters/ });
+	await expect(filterToggle).toBeInViewport();
+	await expect(page.locator('[data-event-card]').first()).toBeInViewport();
+	await expect
+		.poll(async () => {
+			const bounds = await filterToggle.boundingBox();
+			return bounds
+				? [Math.round(bounds.width >= 44 ? 44 : bounds.width), Math.round(bounds.height)]
+				: null;
+		})
+		.toEqual([44, 44]);
+	await filterToggle.click();
+	await expect(page.getByLabel('Start time UTC')).toBeVisible();
 	await page.locator('[data-event-card="front-door:motion-no-image"]').click();
 	const detail = page.getByRole('complementary', { name: 'Event detail' });
 	await expect(detail).toBeVisible();

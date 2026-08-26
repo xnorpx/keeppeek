@@ -1889,6 +1889,10 @@ message CameraHealthDimensionsSnapshot {
   optional uint64 battery_last_seen_age_ms = 31;
   optional bool battery_sleeping = 32;
   optional uint64 battery_wake_pending_age_ms = 33;
+  optional uint64 session_duration_ms = 34;
+  uint64 recorded_main_duration_ms = 35;
+  uint64 recorded_sub_duration_ms = 36;
+  uint64 recorded_total_duration_ms = 37;
 }
 
 message HealthProfileSummary {
@@ -1961,6 +1965,8 @@ message StreamHealthDimensionsSnapshot {
   bool recording_requested = 12;
   optional bool recording_progressing = 13;
   optional uint64 recording_progress_age_ms = 14;
+  uint64 session_duration_ms = 15;
+  uint64 recorded_duration_ms = 16;
 }
 
 message HealthIssueSnapshot {
@@ -2628,6 +2634,7 @@ message EventMetadataSearch {
   EventImageFilter image = 6;
   optional string text = 7;
   repeated string event_ids = 8;
+  bool include_preview_keyframes = 9;
 }
 
 enum EventImageFilter {

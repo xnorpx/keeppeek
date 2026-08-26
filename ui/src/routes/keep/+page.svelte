@@ -4,6 +4,7 @@
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
 	import type {
+		EventPreviewHit,
 		StoredMediaKeyFramePreview,
 		StoredMediaPlayback,
 		StoredMediaStartupPhase
@@ -85,8 +86,10 @@
 	let cameraId = $state('');
 	let stream = $state<'main' | 'sub'>('main');
 	let dates: string[] = $state([]);
+	let recordingDatesPending = false;
 	let selectedDate = $state('');
 	let segments: RecordingSegment[] = $state([]);
+	let storyModeEvents = $state.raw<RecordingEvent[]>([]);
 	let selected: RecordingSegment | null = $state(null);
 	let playheadMs: number | null = $state(null);
 	let loading = $state(true);
@@ -108,6 +111,8 @@
 	let playbackStartupPhase = $state<'idle' | 'opening' | StoredMediaStartupPhase | 'first-frame'>(
 		'idle'
 	);
+	let keepNavigationStartedAtMs = 0;
+	let keepFirstSegmentEmitted = false;
 	let fallbackStreams = $state.raw<RecordedStreamId[]>([]);
 	let rejectedStreams = $state.raw<Array<{ stream: RecordedStreamId; encoding: string }>>([]);
 	let fallbackAttempted = false;
@@ -236,18 +241,38 @@
 	});
 
 	$effect(() => {
-		if (!secondaryLoadsReady || mode === 'timeline' || !cameraId || !selectedDate) return;
-		const startMs = Date.parse(`${selectedDate}T00:00:00Z`);
-		void timelineRepository
-			.loadWindow({
+		if (mode === 'timeline' || !recordingDatesPending) return;
+		recordingDatesPending = false;
+		void discoverRecordingDates(false);
+	});
+
+	$effect(() => {
+		if (!secondaryLoadsReady || mode !== 'stories' || !cameraId || !selectedDate) {
+			storyModeEvents = [];
+			return;
+		}
+		const controller = new AbortController();
+		const dayStart = Date.parse(`${selectedDate}T00:00:00Z`);
+		const dayEnd = dayStart + 86_400_000;
+		const endMs = Math.min(dayEnd, Math.max(dayStart + 1, swimlaneAnchorMs));
+		const startMs = Math.max(dayStart, endMs - 6 * 60 * 60_000);
+		void controlClient
+			.searchEventMetadata({
 				sourceIds: [cameraId],
+				streamId: 'main',
 				startMs,
-				endMs: startMs + 86_400_000,
-				bucketMs: 5 * 60_000,
-				prefetchMs: 0,
-				viewportExtentPx: 1_200
+				endMs,
+				eventTypes: ['story'],
+				pageSize: 18,
+				signal: controller.signal
 			})
-			.catch(() => undefined);
+			.then((result) => {
+				if (!controller.signal.aborted) storyModeEvents = result.hits.map(recordingEventFromHit);
+			})
+			.catch(() => {
+				if (!controller.signal.aborted) storyModeEvents = [];
+			});
+		return () => controller.abort();
 	});
 
 	$effect(() => {
@@ -262,6 +287,7 @@
 	});
 
 	onMount(() => {
+		keepNavigationStartedAtMs = performance.now();
 		const portraitMedia = window.matchMedia('(max-width: 767px) and (orientation: portrait)');
 		const updateOrientation = () => (mobilePortrait = portraitMedia.matches);
 		updateOrientation();
@@ -318,6 +344,7 @@
 				(requestedTimestampMs === null
 					? undefined
 					: new Date(requestedTimestampMs).toISOString().slice(0, 10));
+			const resolveLatestDateFirst = requestedDate === undefined && requestedTimestampMs === null;
 			const initialDate = requestedDate ?? new Date().toISOString().slice(0, 10);
 			const camerasPromise = controlClient.getCameras().then((nextCameras) => {
 				cameras = nextCameras;
@@ -326,7 +353,7 @@
 			cameraProfilesPromise = camerasPromise;
 			const healthPromise = controlClient.getHealth().catch(() => null);
 			let recordingsPromise: Promise<void> | null = null;
-			if (requestedCamera && hasRequestedStream) {
+			if (requestedCamera && hasRequestedStream && !resolveLatestDateFirst) {
 				cameraId = requestedCamera;
 				recordingsPromise = loadRecordings(
 					initialDate,
@@ -340,7 +367,20 @@
 			const resolvedCameraId = nextCameras.some((camera) => camera.id === requestedCamera)
 				? requestedCamera
 				: (nextCameras[0]?.id ?? '');
-			if (cameraId !== resolvedCameraId) {
+			if (resolveLatestDateFirst && resolvedCameraId) {
+				cameraId = resolvedCameraId;
+				try {
+					dates = await controlClient.getRecordingDates(resolvedCameraId);
+				} catch {
+					dates = [];
+				}
+				recordingsPromise = loadRecordings(
+					dates[0] ?? initialDate,
+					undefined,
+					initialPlay,
+					hasRequestedStream ? requestedStream : null
+				);
+			} else if (cameraId !== resolvedCameraId) {
 				cameraId = resolvedCameraId;
 				recordingsPromise = cameraId
 					? loadRecordings(
@@ -371,7 +411,7 @@
 			);
 			if (recordingsPromise) {
 				await recordingsPromise;
-				void discoverRecordingDates(requestedDate === undefined && requestedTimestampMs === null);
+				if (!resolveLatestDateFirst) scheduleRecordingDateDiscovery();
 			}
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to open Keep';
@@ -449,6 +489,7 @@
 			} else {
 				await selectSegment(candidates.at(-1) ?? null, 0, play);
 			}
+			emitKeepFirstSegment();
 			updateUrl();
 		} catch (cause) {
 			if (version !== loadVersion) return;
@@ -463,6 +504,16 @@
 		} finally {
 			if (version === loadVersion) loading = false;
 		}
+	}
+
+	function emitKeepFirstSegment(): void {
+		if (keepFirstSegmentEmitted || !selected) return;
+		keepFirstSegmentEmitted = true;
+		emitTimelinePerformanceEvent('KeepFirstSegment', {
+			sourceId: cameraId,
+			streamId: selected.stream,
+			durationMs: Math.max(0, performance.now() - keepNavigationStartedAtMs)
+		});
 	}
 
 	function chooseRecordedStream(
@@ -601,6 +652,18 @@
 				maximumMs: isLiveDate ? Date.now() : dayStartMs + 86_400_000
 			})
 			.catch(() => undefined);
+		if (recordingDatesPending) {
+			recordingDatesPending = false;
+			void discoverRecordingDates(false);
+		}
+	}
+
+	function scheduleRecordingDateDiscovery(): void {
+		recordingDatesPending = true;
+		if (mode !== 'timeline') {
+			recordingDatesPending = false;
+			void discoverRecordingDates(false);
+		}
 	}
 
 	function showNearestCachedPreview(timestampMs: number): void {
@@ -613,6 +676,23 @@
 		if (cachedPreview && Math.abs(cachedPreview.start_time_ms - timestampMs) <= 30_000) {
 			stillPreviewUrl = cachedPreview.thumbnail_url;
 		}
+	}
+
+	function recordingEventFromHit(hit: EventPreviewHit): RecordingEvent {
+		return {
+			id: hit.eventId,
+			source_id: hit.sourceId,
+			source: hit.origin,
+			kind: hit.eventType,
+			start_time_ms: hit.startMs,
+			end_time_ms: hit.endMs,
+			confidence: hit.confidence,
+			bbox: hit.bbox,
+			zone: hit.zone,
+			text: hit.text,
+			thumbnail_url: null,
+			attachments: []
+		};
 	}
 
 	function attachKeyFramePreview(playback: StoredMediaPlayback): void {
@@ -1100,8 +1180,8 @@
 		timelineRepository.deactivate();
 		latestTimelineViewport = null;
 		cameraId = nextCameraId;
-		void loadRecordings(selectedDate || undefined, timestampMs, play).then(() =>
-			discoverRecordingDates(false)
+		void loadRecordings(selectedDate || undefined, timestampMs, play).then(
+			scheduleRecordingDateDiscovery
 		);
 	}
 
@@ -1117,8 +1197,8 @@
 			selectCamera(nextCameraId, cameraDirection(nextCameraId), timestampMs);
 			return;
 		}
-		void loadRecordings(selectedDate || undefined, timestampMs, playbackIntent()).then(() =>
-			discoverRecordingDates(false)
+		void loadRecordings(selectedDate || undefined, timestampMs, playbackIntent()).then(
+			scheduleRecordingDateDiscovery
 		);
 	}
 
@@ -1734,7 +1814,7 @@
 				{#each ['timeline', 'stories', 'swimlanes', 'export'] as nextMode (nextMode)}
 					<button
 						type="button"
-						class="h-7 rounded-xs px-2.5 text-2xs font-semibold {mode === nextMode
+						class="h-11 rounded-xs px-2.5 text-2xs font-semibold md:h-7 {mode === nextMode
 							? 'bg-primary text-on-primary'
 							: 'text-text-muted hover:text-foreground'} focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 						aria-pressed={mode === nextMode}
@@ -1760,13 +1840,14 @@
 					<Button
 						variant="ghost"
 						size="icon"
+						class="size-11 md:size-9"
 						title="Previous recorded day"
 						disabled={!olderDate}
 						onclick={() => olderDate && changeDate(olderDate)}
 					>
 						<ChevronLeftIcon />
 					</Button>
-					<label class="relative flex h-9 items-center gap-2 border-x px-2">
+					<label class="relative flex h-11 items-center gap-2 border-x px-2 md:h-9">
 						<CalendarDaysIcon class="size-4 text-muted-foreground" />
 						<select
 							value={selectedDate}
@@ -1782,6 +1863,7 @@
 					<Button
 						variant="ghost"
 						size="icon"
+						class="size-11 md:size-9"
 						title="Next recorded day"
 						disabled={!newerDate}
 						onclick={() => newerDate && changeDate(newerDate)}
@@ -1799,7 +1881,7 @@
 					<select
 						id="recorded-quality"
 						value={recordedPreference(playbackPreferences, cameraId)}
-						class="h-9 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						class="h-11 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring md:h-9"
 						onchange={handleRecordedQualityChange}
 					>
 						{#each recordedQualityOptions as option (option.value)}
@@ -1812,6 +1894,7 @@
 			<Button
 				variant="outline"
 				size="icon"
+				class="size-11 md:size-9"
 				title="Refresh recordings"
 				disabled={!cameraId || loading}
 				onclick={() => void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
@@ -1835,7 +1918,13 @@
 			<Skeleton class="h-[34rem] w-full rounded-md" />
 		</div>
 	{:else if mode === 'stories'}
-		<KeepStories {events} {dates} {selectedDate} ondate={changeDate} onseek={openTimestamp} />
+		<KeepStories
+			events={storyModeEvents}
+			{dates}
+			{selectedDate}
+			ondate={changeDate}
+			onseek={openTimestamp}
+		/>
 	{:else if mode === 'swimlanes'}
 		<KeepSwimlanes
 			{cameras}
@@ -1969,6 +2058,7 @@
 					<Button
 						variant="outline"
 						size="icon-sm"
+						class="size-11 md:size-8"
 						title="Back 10 seconds"
 						disabled={!selected}
 						onclick={() => skip(-10)}
@@ -1978,6 +2068,7 @@
 					<Button
 						variant="outline"
 						size="icon-sm"
+						class="size-11 md:size-8"
 						title="Forward 10 seconds"
 						disabled={!selected}
 						onclick={() => skip(10)}

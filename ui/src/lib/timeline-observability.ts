@@ -12,6 +12,7 @@ export type TimelinePerformanceEventName =
 	| 'ReplayFirstFragment'
 	| 'ReplayFirstFrame'
 	| 'ReplayRefill'
+	| 'KeepFirstSegment'
 	| 'GridTileAdmitted'
 	| 'GridTileFrozen'
 	| 'GridTileEvicted'

@@ -134,6 +134,12 @@ struct CameraPipeline {
     last_flush: Instant,
 }
 
+#[derive(Default)]
+struct WriteProgress {
+    wrote: bool,
+    recorded_duration: Duration,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CameraRecordingPolicy {
     mode: CameraRecordingMode,
@@ -731,8 +737,10 @@ impl WriterWorker {
         if self.config.is_direct_write() {
             self.health.note_attempt(&storage_key);
             match self.direct_write(&storage_key, frame) {
-                Ok(true) => self.health.note_progress(&storage_key),
-                Ok(false) => {}
+                Ok(progress) if progress.wrote => self
+                    .health
+                    .note_progress(&storage_key, progress.recorded_duration),
+                Ok(_) => {}
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     tracing::error!(camera = storage_key, %error, "direct write failed");
@@ -749,8 +757,10 @@ impl WriterWorker {
         if needs_flush {
             self.health.note_attempt(&storage_key);
             match self.flush_camera(&storage_key, active) {
-                Ok(true) => self.health.note_progress(&storage_key),
-                Ok(false) => {}
+                Ok(progress) if progress.wrote => self
+                    .health
+                    .note_progress(&storage_key, progress.recorded_duration),
+                Ok(_) => {}
                 Err(error) => {
                     self.health.note_failure(&storage_key, &error.to_string());
                     tracing::error!(camera = storage_key, %error, "flush to medium-term failed");
@@ -759,7 +769,11 @@ impl WriterWorker {
         }
     }
 
-    fn direct_write(&mut self, camera_id: &str, frame: RecordingFrame) -> std::io::Result<bool> {
+    fn direct_write(
+        &mut self,
+        camera_id: &str,
+        frame: RecordingFrame,
+    ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
 
         let needs_rotation = pipeline
@@ -776,7 +790,7 @@ impl WriterWorker {
 
         if pipeline.medium_term.is_none() {
             if !frame.is_video_keyframe() {
-                return Ok(false);
+                return Ok(WriteProgress::default());
             }
             let started_at = frame.received_at;
             let writer = create_medium_term_writer(
@@ -793,19 +807,26 @@ impl WriterWorker {
             pipeline.medium_term = Some(writer);
         }
 
-        pipeline.medium_term.as_mut().unwrap().append_one(frame)?;
+        let recorded_duration = pipeline.medium_term.as_mut().unwrap().append_one(frame)?;
 
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
-        Ok(true)
+        Ok(WriteProgress {
+            wrote: true,
+            recorded_duration,
+        })
     }
 
-    fn flush_camera(&mut self, camera_id: &str, publish_all: bool) -> std::io::Result<bool> {
+    fn flush_camera(
+        &mut self,
+        camera_id: &str,
+        publish_all: bool,
+    ) -> std::io::Result<WriteProgress> {
         let pipeline = self.pipelines.get_mut(camera_id).unwrap();
         pipeline.last_flush = Instant::now();
-        let mut progressed = false;
+        let mut progress = WriteProgress::default();
 
         let mut frames = if publish_all {
             pipeline.short_term.drain_all()
@@ -814,7 +835,7 @@ impl WriterWorker {
             pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
         };
         if frames.is_empty() {
-            return Ok(false);
+            return Ok(progress);
         }
 
         let needs_rotation = pipeline
@@ -828,21 +849,25 @@ impl WriterWorker {
             if let Some(kf_idx) = frames.iter().position(|f| f.is_video_keyframe()) {
                 if kf_idx > 0 {
                     let remainder = frames.split_off(kf_idx);
-                    pipeline
+                    let recorded_duration = pipeline
                         .medium_term
                         .as_mut()
                         .unwrap()
                         .append_batch(frames)?;
-                    progressed = true;
+                    progress.wrote = true;
+                    progress.recorded_duration =
+                        progress.recorded_duration.saturating_add(recorded_duration);
                     frames = remainder;
                 }
             } else {
-                pipeline
+                let recorded_duration = pipeline
                     .medium_term
                     .as_mut()
                     .unwrap()
                     .append_batch(frames)?;
-                progressed = true;
+                progress.wrote = true;
+                progress.recorded_duration =
+                    progress.recorded_duration.saturating_add(recorded_duration);
                 frames = Vec::new();
             }
 
@@ -876,19 +901,21 @@ impl WriterWorker {
         }
 
         if !frames.is_empty() {
-            pipeline
+            let recorded_duration = pipeline
                 .medium_term
                 .as_mut()
                 .unwrap()
                 .append_batch(frames)?;
-            progressed = true;
+            progress.wrote = true;
+            progress.recorded_duration =
+                progress.recorded_duration.saturating_add(recorded_duration);
         }
 
         if let Some((path, recording_id)) = rotated {
             self.move_to_long_term(camera_id, &path, &recording_id)?;
         }
 
-        Ok(progressed)
+        Ok(progress)
     }
 
     fn flush_all(&mut self) {
@@ -1829,6 +1856,39 @@ mod tests {
         worker.ingest(RecordingStreamIdentity::legacy(STREAM), inter_frame());
 
         assert!(worker.pipelines[STREAM].medium_term.is_none());
+    }
+
+    #[test]
+    fn direct_write_reports_committed_session_duration() {
+        const STREAM: &str = "front-door/main";
+        let demand = RecordingDemand::new(Duration::ZERO);
+        let mut config = storage_config("direct-write-session-duration");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        config.short_term_duration = Duration::ZERO;
+        config.flush_interval = Duration::ZERO;
+        let health = RecordingHealthRegistry::default();
+        let mut worker = WriterWorker::new_with_health(config, demand, None, health.clone());
+        let started_at = Instant::now();
+
+        worker.ingest(
+            RecordingStreamIdentity::legacy(STREAM),
+            key_frame(started_at),
+        );
+        worker.ingest(
+            RecordingStreamIdentity::legacy(STREAM),
+            key_frame(started_at + Duration::from_secs(1)),
+        );
+        assert_eq!(health.snapshot().streams[0].recorded_duration_ms, 1_000);
+
+        worker.ingest(
+            RecordingStreamIdentity::legacy(STREAM),
+            key_frame(started_at + Duration::from_secs(2)),
+        );
+        assert_eq!(health.snapshot().streams[0].recorded_duration_ms, 2_000);
+
+        worker.finalize_all();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
