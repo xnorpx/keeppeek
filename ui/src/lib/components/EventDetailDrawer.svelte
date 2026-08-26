@@ -81,13 +81,8 @@
 
 	function keepHref(): string {
 		const date = new Date(record.event.start_time_ms).toISOString().slice(0, 10);
-		const stream =
-			record.camera.profiles.find(
-				(profile) => profile.stream === 'sub' && profile.encoding?.toLowerCase() === 'h264'
-			)?.stream ?? 'main';
 		const search = new URLSearchParams({
 			camera: record.camera.id,
-			stream,
 			date,
 			at: String(record.event.start_time_ms)
 		});

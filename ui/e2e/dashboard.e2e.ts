@@ -182,6 +182,91 @@ test('keeps focus visible until the complete Peek wall has a frame', async ({ pa
 	await expect(page.locator('[data-peek-focus="front-door"]')).toBeFocused();
 });
 
+test('keeps focused-live preferences device-local per camera and separate from the wall', async ({
+	page
+}) => {
+	const cameras = [
+		{ id: 'front-door', name: 'Front Door', ip: '192.0.2.10' },
+		{ id: 'porch', name: 'Porch', ip: '192.0.2.11' }
+	].map((camera) => ({
+		...camera,
+		manufacturer: 'ONVIF',
+		model: null,
+		firmware_version: null,
+		is_reolink: false,
+		profiles: [
+			{
+				name: 'Main',
+				stream: 'main' as const,
+				encoding: 'h264',
+				resolution: '1920x1080',
+				framerate: 25
+			},
+			{
+				name: 'Sub',
+				stream: 'sub' as const,
+				encoding: 'h264',
+				resolution: '640x360',
+				framerate: 15
+			}
+		]
+	}));
+	await mockControlPeer(page, {
+		cameras,
+		health: {
+			status: 'healthy',
+			cameras: cameras.map((camera) => ({
+				id: camera.id,
+				state: 'healthy',
+				lifecycle: 'Connected',
+				last_error: null,
+				streams: []
+			}))
+		}
+	});
+	await page.goto('/?camera=front-door');
+	let focus = page.getByRole('region', { name: 'Front Door focus' });
+	await focus.getByRole('button', { name: 'Sub', exact: true }).click();
+	await expect(focus).toHaveAttribute('data-focused-live-preference', 'sub');
+	await expect(focus).toHaveAttribute('data-focused-live-selected-variant', 'sub');
+
+	await page.goto('/?camera=porch');
+	focus = page.getByRole('region', { name: 'Porch focus' });
+	await expect(focus).toHaveAttribute('data-focused-live-preference', 'auto');
+	await focus.getByRole('button', { name: 'High', exact: true }).click();
+	await expect(focus).toHaveAttribute('data-focused-live-preference', 'high');
+	await expect(focus).toHaveAttribute('data-focused-live-selected-variant', 'main');
+
+	await page.goto('/?camera=front-door');
+	focus = page.getByRole('region', { name: 'Front Door focus' });
+	await expect(focus).toHaveAttribute('data-focused-live-preference', 'sub');
+
+	await page.reload();
+	focus = page.getByRole('region', { name: 'Front Door focus' });
+	await expect(focus).toHaveAttribute('data-focused-live-preference', 'sub');
+	await expect(focus).toHaveAttribute('data-focused-live-selected-variant', 'sub');
+	await expect
+		.poll(() =>
+			page.evaluate(() => {
+				const value = localStorage.getItem('keeppeek-playback-preferences');
+				return value ? JSON.parse(value) : null;
+			})
+		)
+		.toMatchObject({
+			version: 1,
+			focusedLive: { cameras: { 'front-door': 'sub', porch: 'high' } }
+		});
+
+	await page.goto('/');
+	for (const video of await page.locator('[data-peek-wall] video').all()) {
+		await video.dispatchEvent('playing');
+	}
+	await expect(page.locator('[data-peek-wall] [data-camera-id="front-door"]')).toHaveAttribute(
+		'data-requested-quality',
+		'low'
+	);
+});
+
 test('names the negotiated first-keyframe wait without rewriting server health', async ({
 	page
 }) => {

@@ -3,6 +3,7 @@ import type { CameraListItem, RecordingEvent } from '../src/lib/types';
 import { mockControlPeer, type StoredEventFixture } from './fixtures/control-peer';
 import {
 	eventDate,
+	mockDenseEvents,
 	mockEvents,
 	mockEventsWithOlderFilteredMatch,
 	mockEventsWithUnavailablePreview
@@ -45,25 +46,170 @@ test('Board 10 browse restores URL filters and preserves mixed Event states', as
 	await expect(page).toHaveURL(new RegExp(`/events\\?date=${eventDate}$`));
 });
 
-test('continues a filtered Events search into an earlier bounded window', async ({ page }) => {
-	await mockEventsWithOlderFilteredMatch(page);
-	await page.goto(`/events?date=${eventDate}&type=person`);
+test('sends UTC range and zone filters server-side with bounded text debounce', async ({
+	page
+}) => {
+	const requests = await mockEvents(page);
+	await page.goto(`/events?date=${eventDate}`);
+	await expect(page.locator('[data-event-card]')).toHaveCount(5);
 
-	await expect(page.locator('[data-event-card]')).toHaveCount(0);
-	await expect(page.getByText('No matching events in the loaded window.')).toBeVisible();
-	await page.getByRole('button', { name: 'Search earlier events' }).click();
+	await page.getByLabel('Start time UTC').fill('06:00');
+	await page.getByLabel('Start time UTC').press('Tab');
+	await page.getByLabel('End time UTC').fill('07:00');
+	await page.getByLabel('End time UTC').press('Tab');
+	await page.getByLabel('Zone').fill('porch');
+	await page.getByRole('searchbox', { name: 'Search events' }).fill('p');
+	await page.getByRole('searchbox', { name: 'Search events' }).fill('pe');
+	await page.getByRole('searchbox', { name: 'Search events' }).fill('person');
+
+	await expect(page.locator('[data-event-card="front-door:person-high"]')).toBeVisible();
+	await expect(page.locator('[data-event-card]')).toHaveCount(1);
+	const query = requests.eventSearchQueries.at(-1);
+	expect(query?.startMs).toBe(Date.parse(`${eventDate}T06:00:00Z`));
+	expect(query?.endMs).toBe(Date.parse(`${eventDate}T07:00:00Z`));
+	expect(query?.zones).toEqual(['porch']);
+	expect(query?.text).toBe('person');
+	expect(query?.pageSize).toBe(18);
+	await expect(page).toHaveURL(/from=06%3A00&to=07%3A00.*zone=porch.*q=person/);
+});
+
+test('bounds lazy preview concurrency and cancels media on route exit', async ({ page }) => {
+	const releases: Array<() => void> = [];
+	const gates = Array.from(
+		{ length: 4 },
+		() =>
+			new Promise<void>((resolve) => {
+				releases.push(resolve);
+			})
+	);
+	const requests = await mockEvents(page, gates);
+	await page.goto(`/events?date=${eventDate}`);
+
+	await expect.poll(() => requests.eventMediaFetches.length).toBe(2);
+	expect(requests.maxConcurrentEventMedia).toBe(2);
+	releases.shift()?.();
+	await expect.poll(() => requests.eventMediaFetches.length).toBe(3);
+	expect(requests.maxConcurrentEventMedia).toBe(2);
+
+	await page.getByRole('link', { name: 'Cameras', exact: true }).click();
+	await expect.poll(() => requests.cancelledEventMedia.length).toBeGreaterThan(0);
+	for (const release of releases) release();
+});
+
+test('meets dense metadata-first DOM, transfer, and long-task budgets', async ({
+	page
+}, testInfo) => {
+	await page.addInitScript(() => {
+		const state = { activeObjectUrls: new Set<string>(), longTasks: [] as number[] };
+		(window as unknown as { __eventPerformance: typeof state }).__eventPerformance = state;
+		const createObjectUrl = URL.createObjectURL.bind(URL);
+		const revokeObjectUrl = URL.revokeObjectURL.bind(URL);
+		URL.createObjectURL = (object) => {
+			const url = createObjectUrl(object);
+			state.activeObjectUrls.add(url);
+			return url;
+		};
+		URL.revokeObjectURL = (url) => {
+			state.activeObjectUrls.delete(url);
+			revokeObjectUrl(url);
+		};
+		new PerformanceObserver((list) => {
+			state.longTasks.push(...list.getEntries().map((entry) => entry.duration));
+		}).observe({ type: 'longtask', buffered: true });
+	});
+	const requests = await mockDenseEvents(page);
+	const startedAt = performance.now();
+	await page.goto(`/events?date=${eventDate}`);
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	const firstPageMs = performance.now() - startedAt;
+
+	expect(requests.eventSearchQueries).toHaveLength(1);
+	expect(requests.eventSearchQueries[0]?.pageSize).toBe(18);
+	expect(requests.storedTimelineQueries).toHaveLength(0);
+	expect(requests.eventMediaFetches).toHaveLength(0);
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	const metrics = await page.evaluate(() => {
+		const state = (
+			window as unknown as {
+				__eventPerformance: { activeObjectUrls: Set<string>; longTasks: number[] };
+			}
+		).__eventPerformance;
+		return {
+			activeObjectUrls: state.activeObjectUrls.size,
+			maxLongTaskMs: Math.max(0, ...state.longTasks),
+			eventCards: document.querySelectorAll('[data-event-card]').length
+		};
+	});
+	await testInfo.attach('event-performance.json', {
+		body: JSON.stringify({ firstPageMs, ...metrics }, null, 2),
+		contentType: 'application/json'
+	});
+	const firstPageBudgetMs = testInfo.config.workers === 1 ? 1_000 : 2_000;
+	const longTaskBudgetMs = testInfo.config.workers === 1 ? 50 : 150;
+	expect(firstPageMs).toBeLessThan(firstPageBudgetMs);
+	expect(metrics.eventCards).toBe(18);
+	expect(metrics.activeObjectUrls).toBe(0);
+	expect(metrics.maxLongTaskMs).toBeLessThanOrEqual(longTaskBudgetMs);
+});
+
+test('continues Events with an opaque server page token', async ({ page }) => {
+	await mockEventsWithOlderFilteredMatch(page);
+	await page.goto(`/events?date=${eventDate}`);
+
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	await expect(page.getByText('1-18+', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Earlier events' }).click();
 
 	await expect(page.locator('[data-event-card="front-door:older-person"]')).toBeVisible();
-	await expect(page.getByText('1-1 of 1 loaded')).toBeVisible();
+	await expect(page.getByText('19-19', { exact: true })).toBeVisible();
+	await page.locator('[data-event-card="front-door:older-person"]').click();
+	await page
+		.getByRole('complementary', { name: 'Event detail' })
+		.getByRole('link', { name: 'Open at this moment' })
+		.click();
+	await expect(page).toHaveURL(/\/keep\?/);
+	await page.goBack();
+	await expect(page).toHaveURL(/event=older-person&eventCamera=front-door/);
+	await expect(page.getByRole('complementary', { name: 'Event detail' })).toBeVisible();
+	await expect(page.getByText('19-19', { exact: true })).toBeVisible();
+	await page.getByRole('button', { name: 'Close event detail', exact: true }).click();
+	await page.getByRole('button', { name: 'Newer events' }).click();
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+});
 
-	await page.getByRole('button', { name: 'Clear filters' }).click();
-	const visibleCards = page.locator('[data-event-card]');
-	await expect(visibleCards).toHaveCount(18);
-	const lastVisibleCard = visibleCards.last();
-	await lastVisibleCard.focus();
-	await lastVisibleCard.press('ArrowDown');
-	await expect(lastVisibleCard).toBeFocused();
-	await expect(lastVisibleCard).toHaveAttribute('tabindex', '0');
+test('recovers an expired continuation token from the newest page', async ({ page }) => {
+	await mockEventsWithOlderFilteredMatch(
+		page,
+		[],
+		'event search page token expired; restart the query'
+	);
+	await page.goto(`/events?date=${eventDate}`);
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+
+	await page.getByRole('button', { name: 'Earlier events' }).click();
+
+	await expect(
+		page.getByText('Events changed while you were browsing. Refreshed from the newest page.')
+	).toBeVisible();
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	await expect(page.getByText('1-18+', { exact: true })).toBeVisible();
+});
+
+test('resolves a selected event outside the visible page with one exact query', async ({
+	page
+}) => {
+	const requests = await mockEventsWithOlderFilteredMatch(page);
+	await page.goto(`/events?date=${eventDate}&event=older-person&eventCamera=front-door`);
+
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	await expect(page.getByRole('complementary', { name: 'Event detail' })).toBeVisible();
+	await expect(page.getByText('19-19', { exact: true })).toHaveCount(0);
+	const selectedQuery = requests.eventSearchQueries.find(
+		(query) => query.eventIds[0] === 'older-person'
+	);
+	expect(selectedQuery?.eventIds).toEqual(['older-person']);
+	expect(selectedQuery?.pageSize).toBe(1);
 });
 
 test('cancels an earlier Events search cleanly when the date changes', async ({ page }) => {
@@ -71,10 +217,14 @@ test('cancels an earlier Events search cleanly when the date changes', async ({ 
 	const earlierSearchGate = new Promise<void>((resolve) => {
 		releaseEarlierSearch = resolve;
 	});
-	await mockEventsWithOlderFilteredMatch(page, [Promise.resolve(), earlierSearchGate]);
-	await page.goto(`/events?date=${eventDate}&type=person`);
+	const requests = await mockEventsWithOlderFilteredMatch(page, [
+		Promise.resolve(),
+		earlierSearchGate
+	]);
+	await page.goto(`/events?date=${eventDate}`);
 
-	await page.getByRole('button', { name: 'Search earlier events' }).click();
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	await page.getByRole('button', { name: 'Earlier events' }).click();
 	await page.getByLabel('Event date').fill('2026-08-19');
 	await page.getByLabel('Event date').press('Tab');
 	releaseEarlierSearch();
@@ -82,6 +232,7 @@ test('cancels an earlier Events search cleanly when the date changes', async ({ 
 	await expect(page).toHaveURL(/date=2026-08-19/);
 	await expect(page.getByRole('alert')).toHaveCount(0);
 	await expect(page.getByText('No events found.')).toBeVisible();
+	await expect.poll(() => requests.cancelledEventSearchQueries.length).toBeGreaterThan(0);
 });
 
 test('refreshes today’s event metadata without clearing rendered results', async ({ page }) => {
@@ -103,7 +254,7 @@ test('refreshes today’s event metadata without clearing rendered results', asy
 
 	await expect(page.getByText('LIVE', { exact: true })).toBeVisible();
 	await expect(page.getByText('No events found.', { exact: true })).toBeVisible();
-	const initialQueryCount = requests.storedTimelineQueries.length;
+	const initialQueryCount = requests.eventSearchQueries.length;
 	storedEvents.push({
 		sourceId: camera.id,
 		event: {
@@ -122,11 +273,11 @@ test('refreshes today’s event metadata without clearing rendered results', asy
 	await expect(page.locator('[data-event-card="front-door:live-person"]')).toBeVisible({
 		timeout: 2_000
 	});
-	expect(requests.storedTimelineQueries.length).toBeGreaterThan(initialQueryCount);
-	const refresh = requests.storedTimelineQueries.at(-1);
-	expect(refresh?.includeAttachments).toBe(false);
-	expect(refresh?.includeAvailability).toBe(false);
-	expect((refresh?.endMs ?? 0) - (refresh?.startMs ?? 0)).toBeLessThanOrEqual(5 * 60_000);
+	expect(requests.eventSearchQueries.length).toBeGreaterThan(initialQueryCount);
+	const refresh = requests.eventSearchQueries.at(-1);
+	expect(refresh?.pageSize).toBe(18);
+	expect(refresh?.pageToken).toBe('');
+	expect(refresh?.sourceIds).toEqual(['front-door']);
 });
 
 test('ends a failed preview cleanly and retries it from event detail', async ({ page }) => {
@@ -156,7 +307,7 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 	await expect(detail.getByText('porch', { exact: true })).toBeVisible();
 	await expect(detail.getByText('0.300, 0.200, 0.250, 0.500', { exact: true })).toBeVisible();
 	await expect(detail.getByText('Camera event source', { exact: true })).toBeVisible();
-	await expect(detail.getByText('REVISION 1', { exact: true })).toBeVisible();
+	await expect(detail.getByText('REVISION NOT REPORTED', { exact: true })).toBeVisible();
 	await expect(detail.getByText('front-door', { exact: true })).toBeVisible();
 	await expect(detail.getByText('Not reported by REST API', { exact: true })).toHaveCount(1);
 	await expect(
@@ -171,12 +322,16 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 	).toBeVisible();
 	await expect(detail.getByRole('link', { name: 'Open at this moment' })).toHaveAttribute(
 		'href',
-		/\/keep\?camera=front-door&stream=main&date=2026-08-18&at=\d+/
+		/\/keep\?camera=front-door&date=2026-08-18&at=\d+/
 	);
 	await page.reload();
 	await expect(page.getByRole('complementary', { name: 'Event detail' })).toBeVisible();
 	await page.keyboard.press('Escape');
 	await expect(page).not.toHaveURL(/event=/);
+	await page.locator('[data-event-card="front-door:person-high"]').click();
+	await page.goBack();
+	await expect(page.getByRole('complementary', { name: 'Event detail' })).toHaveCount(0);
+	await expect(page).toHaveURL(new RegExp(`/events\\?date=${eventDate}$`));
 	await page.locator('[data-event-card="front-door:person-high"]').click();
 	const expectedTimestampMs = Date.parse('2026-08-18T06:37:23Z');
 	await page
@@ -188,6 +343,9 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 		'data-recording-playhead-ms',
 		String(expectedTimestampMs)
 	);
+	await page.goBack();
+	await expect(page.getByRole('complementary', { name: 'Event detail' })).toBeVisible();
+	await expect(page).toHaveURL(/event=person-high&eventCamera=front-door/);
 });
 
 test('keeps mixed Event cards and detail usable at the authored mobile viewport', async ({

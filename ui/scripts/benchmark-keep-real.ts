@@ -98,18 +98,37 @@ try {
 	catalogUrl.searchParams.set('stream', stream);
 	catalogUrl.searchParams.set('date', date);
 	await catalogPage.goto(catalogUrl.href, { waitUntil: 'domcontentloaded' });
-	const cameraSelect = catalogPage.getByRole('combobox', { name: 'Camera' });
-	await cameraSelect.waitFor({ state: 'visible', timeout: timeoutMs });
-	await cameraSelect.locator('option').first().waitFor({ state: 'attached', timeout: timeoutMs });
-	const allCameras = await cameraSelect.locator('option').evaluateAll((options) =>
-		options.map((option) => {
-			const cameraOption = option as HTMLOptionElement;
-			return {
-				label: cameraOption.textContent?.trim() || cameraOption.value,
-				value: cameraOption.value
-			};
+	const cameraSwitcher = catalogPage.locator('[data-camera-switcher]');
+	await cameraSwitcher.waitFor({ state: 'visible', timeout: timeoutMs });
+	await catalogPage.waitForFunction(
+		() =>
+			Boolean(
+				document.querySelector('[data-camera-switcher]')?.getAttribute('data-selected-camera')
+			),
+		undefined,
+		{ timeout: timeoutMs }
+	);
+	const selectedCameraId = await cameraSwitcher.getAttribute('data-selected-camera');
+	if (!selectedCameraId) throw new Error('Keep did not select a camera');
+	const trigger = cameraSwitcher.getByRole('button', { name: /^Choose camera,/ });
+	await trigger.click();
+	const cameraOptions = catalogPage.locator('[data-camera-option]');
+	const discoveredCameras = await cameraOptions.evaluateAll((options) =>
+		options.flatMap((option) => {
+			const value = (option as HTMLElement).dataset.cameraOption;
+			if (!value) return [];
+			return [
+				{
+					label: (option as HTMLElement).dataset.cameraLabel || value,
+					value
+				}
+			];
 		})
 	);
+	const allCameras =
+		discoveredCameras.length > 0
+			? discoveredCameras
+			: [{ label: selectedCameraId, value: selectedCameraId }];
 	await catalogPage.close();
 
 	const cameras: CameraOption[] =

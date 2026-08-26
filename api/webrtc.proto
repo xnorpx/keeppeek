@@ -496,6 +496,7 @@ message QueryEvents {
   oneof search {
     EventTextSearch text = 2;
     EventSemanticSearch semantic = 3;
+    EventMetadataSearch metadata = 14;
   }
   optional string source_id = 4;
   string stream_id = 5;
@@ -2176,6 +2177,12 @@ message EventSearchHit {
   google.protobuf.Timestamp preview_end_time = 8;
   repeated EventSearchKeyframe keyframes = 9;
   bool keyframes_truncated = 10;
+  EventOrigin origin = 11;
+  optional double confidence = 12;
+  EventBoundingBox bounding_box = 13;
+  optional string zone = 14;
+  optional string text = 15;
+  bool has_image_attachment = 16;
 }
 
 message EventSearchKeyframe {
@@ -2403,4 +2410,21 @@ message StoredMediaQueryEnd {
   string query_id = 1;
   uint64 page_count = 2;
   uint64 attachment_count = 3;
+}
+
+message EventMetadataSearch {
+  repeated string source_ids = 1;
+  repeated string event_types = 2;
+  repeated EventOrigin origins = 3;
+  repeated string zones = 4;
+  optional double minimum_confidence = 5;
+  EventImageFilter image = 6;
+  optional string text = 7;
+  repeated string event_ids = 8;
+}
+
+enum EventImageFilter {
+  EVENT_IMAGE_FILTER_ANY = 0;
+  EVENT_IMAGE_FILTER_WITH_IMAGE = 1;
+  EVENT_IMAGE_FILTER_WITHOUT_IMAGE = 2;
 }

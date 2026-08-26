@@ -11,6 +11,7 @@ const MAX_SEARCH_TERMS: usize = 64;
 const MAX_TERM_BYTES: usize = 256;
 const MAX_MODEL_ID_BYTES: usize = 128;
 const MAX_EMBEDDING_DIMENSIONS: usize = 4_096;
+const MAX_FILTER_VALUES: usize = 64;
 const MAX_PAGE_SIZE: u32 = 128;
 const MAX_SEMANTIC_WINDOW_MS: i64 = 31 * 86_400_000;
 const MAX_PREVIEW_WINDOW_MS: u64 = 60_000;
@@ -73,6 +74,58 @@ pub struct EventTextSearchQuery {
     pub preview_after_ms: u64,
     pub page_size: u32,
     pub page_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Selects events by supported image-attachment presence.
+pub enum EventImageFilter {
+    #[default]
+    Any,
+    WithImage,
+    WithoutImage,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// A bounded newest-first query over event metadata.
+pub struct EventMetadataQuery {
+    pub event_ids: Vec<String>,
+    pub source_ids: Vec<String>,
+    pub event_types: Vec<String>,
+    pub origins: Vec<crate::storage::metadata::EventSource>,
+    pub zones: Vec<String>,
+    pub minimum_confidence: Option<f64>,
+    pub image: EventImageFilter,
+    pub text: Option<String>,
+    pub stream_id: String,
+    pub start_time_ms: i64,
+    pub end_time_ms: i64,
+    pub preview_before_ms: u64,
+    pub preview_after_ms: u64,
+    pub page_size: u32,
+    pub page_token: Option<String>,
+}
+
+impl EventMetadataQuery {
+    /// Creates an unfiltered query with the default preview interval and a 50-hit page.
+    pub fn new(stream_id: impl Into<String>, start_time_ms: i64, end_time_ms: i64) -> Self {
+        Self {
+            event_ids: Vec::new(),
+            source_ids: Vec::new(),
+            event_types: Vec::new(),
+            origins: Vec::new(),
+            zones: Vec::new(),
+            minimum_confidence: None,
+            image: EventImageFilter::Any,
+            text: None,
+            stream_id: stream_id.into(),
+            start_time_ms,
+            end_time_ms,
+            preview_before_ms: DEFAULT_PREVIEW_BEFORE_MS,
+            preview_after_ms: DEFAULT_PREVIEW_AFTER_MS,
+            page_size: 50,
+            page_token: None,
+        }
+    }
 }
 
 impl EventTextSearchQuery {
@@ -140,8 +193,14 @@ pub struct EventSearchHit {
     pub event_id: String,
     pub source_id: String,
     pub event_type: String,
+    pub origin: crate::storage::metadata::EventSource,
     pub start_time_ms: i64,
     pub end_time_ms: Option<i64>,
+    pub confidence: Option<f64>,
+    pub bbox: Option<[f32; 4]>,
+    pub zone: Option<String>,
+    pub text: Option<String>,
+    pub has_image_attachment: bool,
     pub score: Option<f64>,
     pub(crate) semantic_distance: Option<f64>,
     pub preview_start_ms: i64,
@@ -208,6 +267,15 @@ impl EventSearch {
         validate_event_id(event_id)?;
         validate_embedding(&embedding)?;
         self.catalog.set_event_embedding(event_id, embedding)
+    }
+
+    /// Browses newest-first event metadata with composable filters.
+    pub fn search_metadata(
+        &self,
+        mut query: EventMetadataQuery,
+    ) -> anyhow::Result<EventSearchPage> {
+        normalize_metadata_query(&mut query)?;
+        self.catalog.search_event_metadata(query)
     }
 
     /// Searches structured terms and returns metadata plus lazy keyframe descriptors.
@@ -279,6 +347,85 @@ pub(crate) fn normalize_search_text(value: &str) -> anyhow::Result<String> {
     Ok(normalized)
 }
 
+fn normalize_metadata_query(query: &mut EventMetadataQuery) -> anyhow::Result<()> {
+    validate_search_window(
+        &query.stream_id,
+        query.start_time_ms,
+        query.end_time_ms,
+        query.preview_before_ms,
+        query.preview_after_ms,
+        query.page_size,
+    )?;
+    if query.end_time_ms.saturating_sub(query.start_time_ms) > MAX_SEMANTIC_WINDOW_MS {
+        anyhow::bail!("event metadata search window exceeds 31 days");
+    }
+    if query
+        .minimum_confidence
+        .is_some_and(|confidence| !confidence.is_finite() || !(0.0..=1.0).contains(&confidence))
+    {
+        anyhow::bail!("event minimum confidence must be between zero and one");
+    }
+    normalize_source_ids(&mut query.source_ids)?;
+    normalize_event_ids(&mut query.event_ids)?;
+    normalize_filter_values(&mut query.event_types, "event type")?;
+    normalize_filter_values(&mut query.zones, "zone")?;
+    if query.origins.len() > MAX_FILTER_VALUES {
+        anyhow::bail!("event origin filter count exceeds {MAX_FILTER_VALUES}");
+    }
+    query
+        .origins
+        .sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+    query.origins.dedup();
+    query.text = query
+        .text
+        .as_deref()
+        .map(normalize_search_text)
+        .transpose()?;
+    Ok(())
+}
+
+fn normalize_event_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
+    if values.len() > MAX_FILTER_VALUES {
+        anyhow::bail!("event ID filter count exceeds {MAX_FILTER_VALUES}");
+    }
+    for value in &mut *values {
+        *value = value.trim().to_owned();
+        if value.is_empty() || value.len() > MAX_TERM_BYTES {
+            anyhow::bail!("event ID filter must contain 1 to {MAX_TERM_BYTES} UTF-8 bytes");
+        }
+    }
+    values.sort_unstable();
+    values.dedup();
+    Ok(())
+}
+
+fn normalize_source_ids(values: &mut Vec<String>) -> anyhow::Result<()> {
+    if values.len() > MAX_FILTER_VALUES {
+        anyhow::bail!("event source filter count exceeds {MAX_FILTER_VALUES}");
+    }
+    for value in &mut *values {
+        *value = value.trim().to_owned();
+        if value.is_empty() || value.len() > MAX_TERM_BYTES {
+            anyhow::bail!("event source filter must contain 1 to {MAX_TERM_BYTES} UTF-8 bytes");
+        }
+    }
+    values.sort_unstable();
+    values.dedup();
+    Ok(())
+}
+
+fn normalize_filter_values(values: &mut Vec<String>, label: &str) -> anyhow::Result<()> {
+    if values.len() > MAX_FILTER_VALUES {
+        anyhow::bail!("event {label} filter count exceeds {MAX_FILTER_VALUES}");
+    }
+    for value in &mut *values {
+        *value = normalize_search_text(value)?;
+    }
+    values.sort_unstable();
+    values.dedup();
+    Ok(())
+}
+
 pub(crate) fn validate_embedding(embedding: &EventEmbedding) -> anyhow::Result<()> {
     let model_id = embedding.model_id.trim();
     if model_id.is_empty() || model_id.len() > MAX_MODEL_ID_BYTES {
@@ -334,6 +481,39 @@ fn validate_search_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_query_normalizes_filters_and_rejects_invalid_limits() {
+        let mut query = EventMetadataQuery::new("main", 0, 40_000);
+        query.source_ids = vec![" Front Door ".to_owned(), "Front Door".to_owned()];
+        query.event_types = vec![" Person ".to_owned(), "person".to_owned()];
+        query.text = Some("  Alice   Example ".to_owned());
+
+        normalize_metadata_query(&mut query).unwrap();
+
+        assert_eq!(query.source_ids, ["Front Door"]);
+        assert_eq!(query.event_types, ["person"]);
+        assert_eq!(query.text.as_deref(), Some("alice example"));
+
+        query.minimum_confidence = Some(f64::NAN);
+        assert_eq!(
+            normalize_metadata_query(&mut query)
+                .unwrap_err()
+                .to_string(),
+            "event minimum confidence must be between zero and one"
+        );
+
+        query.minimum_confidence = None;
+        query.zones = (0..=MAX_FILTER_VALUES)
+            .map(|index| index.to_string())
+            .collect();
+        assert_eq!(
+            normalize_metadata_query(&mut query)
+                .unwrap_err()
+                .to_string(),
+            "event zone filter count exceeds 64"
+        );
+    }
     use crate::storage::{
         CatalogFragment, CatalogKeyframe, CatalogRecording, RecordingCatalog,
         metadata::{EventSource, TimelineEvent},
@@ -396,8 +576,8 @@ mod tests {
                     end_time_ms: Some(start_time_ms + 1_000),
                     confidence: Some(0.9),
                     bbox: None,
-                    zone: None,
-                    thumbnail_filename: None,
+                    zone: (id == "event-alice").then(|| "Porch".to_owned()),
+                    thumbnail_filename: (id == "event-alice").then(|| "event-alice.jpg".to_owned()),
                 })
                 .unwrap();
         }
@@ -474,6 +654,109 @@ mod tests {
                 }],
             )
             .unwrap();
+
+        let mut metadata_query = EventMetadataQuery::new("main", 0, 40_000);
+        metadata_query.event_ids = vec!["event-alice".to_owned()];
+        metadata_query.source_ids = vec!["front-door".to_owned()];
+        metadata_query.event_types = vec!["FACE".to_owned()];
+        metadata_query.origins = vec![EventSource::KeepPeek];
+        metadata_query.zones = vec![" porch ".to_owned()];
+        metadata_query.minimum_confidence = Some(0.85);
+        metadata_query.image = EventImageFilter::WithImage;
+        metadata_query.text = Some("alice".to_owned());
+        let metadata_page = search.search_metadata(metadata_query).unwrap();
+        assert_eq!(metadata_page.hits.len(), 1);
+        assert_eq!(metadata_page.hits[0].event_id, "event-alice");
+        assert_eq!(metadata_page.hits[0].origin, EventSource::KeepPeek);
+        assert_eq!(metadata_page.hits[0].confidence, Some(0.9));
+        assert_eq!(metadata_page.hits[0].zone.as_deref(), Some("Porch"));
+        assert_eq!(metadata_page.hits[0].text.as_deref(), Some("match"));
+        assert!(metadata_page.hits[0].has_image_attachment);
+        assert_eq!(metadata_page.hits[0].keyframes.len(), 1);
+
+        let matching_ids = |query: EventMetadataQuery| {
+            search
+                .search_metadata(query)
+                .unwrap()
+                .hits
+                .into_iter()
+                .map(|hit| hit.event_id)
+                .collect::<Vec<_>>()
+        };
+        let mut event_id_query = EventMetadataQuery::new("main", 0, 40_000);
+        event_id_query.event_ids = vec!["event-alice".to_owned()];
+        assert_eq!(matching_ids(event_id_query), ["event-alice"]);
+        let mut source_query = EventMetadataQuery::new("main", 0, 40_000);
+        source_query.source_ids = vec!["front-door".to_owned()];
+        assert_eq!(matching_ids(source_query), ["event-vehicle", "event-alice"]);
+        let mut type_query = EventMetadataQuery::new("main", 0, 40_000);
+        type_query.event_types = vec!["face".to_owned()];
+        assert_eq!(matching_ids(type_query), ["event-alice"]);
+        let mut origin_query = EventMetadataQuery::new("main", 0, 40_000);
+        origin_query.origins = vec![EventSource::KeepPeek];
+        assert_eq!(matching_ids(origin_query), ["event-vehicle", "event-alice"]);
+        let mut zone_query = EventMetadataQuery::new("main", 0, 40_000);
+        zone_query.zones = vec!["porch".to_owned()];
+        assert_eq!(matching_ids(zone_query), ["event-alice"]);
+        let mut confidence_query = EventMetadataQuery::new("main", 0, 40_000);
+        confidence_query.minimum_confidence = Some(0.9);
+        assert_eq!(
+            matching_ids(confidence_query),
+            ["event-vehicle", "event-alice"]
+        );
+        let mut with_image_query = EventMetadataQuery::new("main", 0, 40_000);
+        with_image_query.image = EventImageFilter::WithImage;
+        assert_eq!(matching_ids(with_image_query), ["event-alice"]);
+        let mut without_image_query = EventMetadataQuery::new("main", 0, 40_000);
+        without_image_query.image = EventImageFilter::WithoutImage;
+        assert_eq!(matching_ids(without_image_query), ["event-vehicle"]);
+        let mut text_metadata_query = EventMetadataQuery::new("main", 0, 40_000);
+        text_metadata_query.text = Some("delivery".to_owned());
+        assert_eq!(matching_ids(text_metadata_query), ["event-vehicle"]);
+        let time_query = EventMetadataQuery::new("main", 16_000, 18_000);
+        assert_eq!(matching_ids(time_query), ["event-vehicle"]);
+
+        let mut first_metadata_query = EventMetadataQuery::new("main", 0, 40_000);
+        first_metadata_query.page_size = 1;
+        let first_metadata_page = search
+            .search_metadata(first_metadata_query.clone())
+            .unwrap();
+        assert_eq!(first_metadata_page.hits[0].event_id, "event-vehicle");
+        assert!(first_metadata_page.next_page_token.is_some());
+        handle
+            .insert_event(TimelineEvent {
+                id: "event-metadata-new".to_owned(),
+                camera_id: "front-door".to_owned(),
+                stream: Some("main".to_owned()),
+                source: EventSource::Camera,
+                kind: "motion".to_owned(),
+                start_time_ms: 16_000,
+                end_time_ms: None,
+                confidence: None,
+                bbox: None,
+                zone: None,
+                thumbnail_filename: None,
+            })
+            .unwrap();
+        let mut camera_origin_query = EventMetadataQuery::new("main", 0, 40_000);
+        camera_origin_query.origins = vec![EventSource::Camera];
+        assert_eq!(matching_ids(camera_origin_query), ["event-metadata-new"]);
+        first_metadata_query.page_token = first_metadata_page.next_page_token.clone();
+        let second_metadata_page = search.search_metadata(first_metadata_query).unwrap();
+        assert_eq!(second_metadata_page.hits[0].event_id, "event-alice");
+        assert_eq!(second_metadata_page.next_page_token, None);
+
+        let mut mismatched_metadata_query = EventMetadataQuery::new("main", 0, 40_000);
+        mismatched_metadata_query.page_size = 1;
+        mismatched_metadata_query.event_types = vec!["face".to_owned()];
+        mismatched_metadata_query.page_token = first_metadata_page.next_page_token;
+        assert_eq!(
+            search
+                .search_metadata(mismatched_metadata_query)
+                .unwrap_err()
+                .to_string(),
+            "event search page token does not match the metadata query"
+        );
         search
             .set_embedding(
                 "event-alice",

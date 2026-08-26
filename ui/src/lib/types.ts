@@ -5,6 +5,8 @@ export interface ProfileSummary {
 	resolution: string | null;
 	framerate: number | null;
 	bitrate_kbps?: number | null;
+	quality_rank?: number | null;
+	recorded_content_type?: string | null;
 	gop?: number | null;
 	h264_profile?: string | null;
 	audio?: AudioProfileSummary | null;
@@ -95,6 +97,7 @@ export interface RecordingEvent {
 	confidence: number | null;
 	bbox: [number, number, number, number] | null;
 	zone: string | null;
+	text?: string | null;
 	thumbnail_url: string | null;
 	thumbnail_blob?: Blob;
 	attachments?: readonly RecordingEventAttachment[];

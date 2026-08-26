@@ -3,7 +3,11 @@
 	import { resolve } from '$app/paths';
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
-	import type { StoredMediaKeyFramePreview, StoredMediaPlayback } from '$lib/control-client';
+	import type {
+		StoredMediaKeyFramePreview,
+		StoredMediaPlayback,
+		StoredMediaStartupPhase
+	} from '$lib/control-client';
 	import { decodeEventKeyframePreview } from '$lib/event-keyframe-preview';
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
 	import {
@@ -13,6 +17,21 @@
 	} from '$lib/timeline-repository.svelte';
 	import { parseKeepMode, type KeepMode } from '$lib/keep-modes';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
+	import {
+		browserSupportsRecordedEncoding,
+		selectRecordedStream,
+		type RecordedQualityPreference,
+		type RecordedStreamId,
+		type RecordedStreamSelection
+	} from '$lib/recorded-playback-policy';
+	import {
+		defaultPlaybackPreferences,
+		loadPlaybackPreferences,
+		recordedPreference,
+		savePlaybackPreferences,
+		withMediaPreferences,
+		withRecordedPreference
+	} from '$lib/playback-preferences';
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
 	import KeepCameraSwitcher from '$lib/components/KeepCameraSwitcher.svelte';
 	import KeepExportPanel from '$lib/components/KeepExportPanel.svelte';
@@ -47,6 +66,17 @@
 	const initialRecordingWindowMs = 5 * 60_000;
 	const maximumRecordingWindowMs = 6 * 60 * 60_000;
 	const cameraSwitchDurationMs = 180;
+	const startupPhaseTimeoutMs = 3_000;
+	const recordedQualityOptions: ReadonlyArray<{
+		value: RecordedQualityPreference;
+		label: string;
+	}> = [
+		{ value: 'auto', label: 'Auto' },
+		{ value: 'high', label: 'High' },
+		{ value: 'low', label: 'Low' },
+		{ value: 'main', label: 'Main exact' },
+		{ value: 'sub', label: 'Sub exact' }
+	];
 	const controlClient = useControlClient();
 	const timelineRepository = new TimelineRepository(controlClient);
 
@@ -67,6 +97,26 @@
 	let playbackUrl: string | null = $state(null);
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
+	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
+	let playbackMuted = $state(false);
+	let playbackNotice = $state<string | null>(null);
+	let requestedPlaybackVariant = $state('auto');
+	let selectedPlaybackVariant = $state<RecordedStreamId | null>(null);
+	let selectedPlaybackReason = $state('automatic');
+	let selectedFallbackStream = $state<RecordedStreamId | null>(null);
+	let playbackContentType = $state<string | null>(null);
+	let playbackStartupPhase = $state<'idle' | 'opening' | StoredMediaStartupPhase | 'first-frame'>(
+		'idle'
+	);
+	let fallbackStreams = $state.raw<RecordedStreamId[]>([]);
+	let rejectedStreams = $state.raw<Array<{ stream: RecordedStreamId; encoding: string }>>([]);
+	let fallbackAttempted = false;
+	let playbackFailureHandling = false;
+	let playbackOpenController: AbortController | null = null;
+	let playbackStartupTimer: ReturnType<typeof setTimeout> | null = null;
+	let playbackErrorUnsubscribe: (() => void) | null = null;
+	let playbackStartupUnsubscribe: (() => void) | null = null;
+	let cameraProfilesPromise: Promise<CameraListItem[]> | null = null;
 	let playing = $state(false);
 	let playbackRate = $state(1);
 	let pendingSeekSeconds = 0;
@@ -96,6 +146,9 @@
 	let scrubTargetMs: number | null = null;
 	let scrubPump: Promise<void> | null = null;
 	let scrubVersion = 0;
+	let scrubPlayIntent = false;
+	let scrubOpenController: AbortController | null = null;
+	let ignoreNextPauseEvent = false;
 	let mobilePortrait = $state(false);
 	let capabilitiesSeen = false;
 	let reconnectPending = false;
@@ -237,6 +290,10 @@
 			for (const url of keyframePreviewCache.values()) URL.revokeObjectURL(url);
 			recordingLoadController?.abort();
 			targetLoadController?.abort();
+			playbackOpenController?.abort();
+			scrubOpenController?.abort();
+			clearPlaybackStartupTimer();
+			detachPlaybackObservers();
 			timelineRepository.dispose();
 			playbackVersion += 1;
 			void closeStoredPlayback();
@@ -245,6 +302,10 @@
 
 	async function initialize() {
 		try {
+			playbackPreferences = loadPlaybackPreferences(window.localStorage);
+			playbackMuted = playbackPreferences.media.muted;
+			playbackRate = playbackPreferences.media.playbackRate;
+			const initialPlay = playbackPreferences.media.playing;
 			const params = new URLSearchParams(window.location.search);
 			mode = parseKeepMode(params.get('mode'));
 			const requestedTimestampMs = parseTimestamp(params.get('at'));
@@ -262,29 +323,40 @@
 				cameras = nextCameras;
 				return nextCameras;
 			});
+			cameraProfilesPromise = camerasPromise;
 			const healthPromise = controlClient.getHealth().catch(() => null);
 			let recordingsPromise: Promise<void> | null = null;
 			if (requestedCamera && hasRequestedStream) {
 				cameraId = requestedCamera;
-				recordingsPromise = loadRecordings(initialDate, requestedTimestampMs ?? undefined, true);
+				recordingsPromise = loadRecordings(
+					initialDate,
+					requestedTimestampMs ?? undefined,
+					initialPlay,
+					requestedStream
+				);
 			}
 
 			const nextCameras = await camerasPromise;
 			const resolvedCameraId = nextCameras.some((camera) => camera.id === requestedCamera)
 				? requestedCamera
 				: (nextCameras[0]?.id ?? '');
-			if (!hasRequestedStream) {
-				stream = preferredReplayStream(
-					nextCameras.find((camera) => camera.id === resolvedCameraId) ?? null
-				);
-			}
 			if (cameraId !== resolvedCameraId) {
 				cameraId = resolvedCameraId;
 				recordingsPromise = cameraId
-					? loadRecordings(initialDate, requestedTimestampMs ?? undefined, true)
+					? loadRecordings(
+							initialDate,
+							requestedTimestampMs ?? undefined,
+							initialPlay,
+							hasRequestedStream ? requestedStream : null
+						)
 					: null;
 			} else if (!recordingsPromise && cameraId) {
-				recordingsPromise = loadRecordings(initialDate, requestedTimestampMs ?? undefined, true);
+				recordingsPromise = loadRecordings(
+					initialDate,
+					requestedTimestampMs ?? undefined,
+					initialPlay,
+					hasRequestedStream ? requestedStream : null
+				);
 			}
 
 			const health = await healthPromise;
@@ -308,10 +380,24 @@
 		}
 	}
 
-	async function loadRecordings(date?: string, targetTimestampMs?: number, play = true) {
+	async function loadRecordings(
+		date?: string,
+		targetTimestampMs?: number,
+		play = true,
+		requestedStream: RecordedStreamId | null = null
+	) {
 		if (!cameraId) return;
 		deferSecondaryLoads();
 		const version = ++loadVersion;
+		playbackVersion += 1;
+		scrubVersion += 1;
+		scrubTargetMs = null;
+		scrubOpenController?.abort();
+		scrubOpenController = null;
+		scrubbing = false;
+		playbackOpenController?.abort();
+		playbackOpenController = null;
+		clearPlaybackStartupTimer();
 		targetLoadVersion += 1;
 		targetLoadController?.abort();
 		recordingLoadController?.abort();
@@ -332,17 +418,24 @@
 				version
 			);
 			if (version !== loadVersion) return;
+			await cameraProfilesPromise?.catch(() => []);
+			if (version !== loadVersion || controller.signal.aborted) return;
 			segments = response.segments;
 			recordingCoverage = response.coverage;
 			if (response.segments.length > 0 && !dates.includes(requestedDate)) {
 				dates = [...dates, requestedDate].toSorted().toReversed();
 			}
-			if (
-				response.segments.length > 0 &&
-				!response.segments.some((segment) => segment.stream === stream)
-			) {
-				stream = response.segments.some((segment) => segment.stream === 'main') ? 'main' : 'sub';
+			const selection = chooseRecordedStream(response.segments, requestedStream);
+			if (selection.selectedStream === null) {
+				await selectSegment(null);
+				playerError =
+					response.segments.length === 0 && targetTimestampMs !== undefined
+						? 'No indexed footage is available near that time.'
+						: unsupportedRecordedPlaybackMessage(selection);
+				updateUrl();
+				return;
 			}
+			stream = selection.selectedStream;
 			const candidates = response.segments
 				.filter((segment) => segment.stream === stream)
 				.toSorted((left, right) => left.start_time_ms - right.start_time_ms);
@@ -370,6 +463,54 @@
 		} finally {
 			if (version === loadVersion) loading = false;
 		}
+	}
+
+	function chooseRecordedStream(
+		availableSegments: readonly RecordingSegment[],
+		requestedStream: RecordedStreamId | null,
+		preference = recordedPreference(playbackPreferences, cameraId)
+	): RecordedStreamSelection {
+		const selection = selectRecordedStream(selectedCamera, {
+			availableStreams: new Set(availableSegments.map((segment) => segment.stream)),
+			requestedStream,
+			preference,
+			isEncodingSupported: browserSupportsRecordedEncoding
+		});
+		requestedPlaybackVariant = requestedStream ?? preference;
+		selectedPlaybackReason = selection.reason;
+		selectedPlaybackVariant = selection.selectedStream;
+		fallbackStreams = selection.fallbackStreams;
+		rejectedStreams = selection.rejectedStreams;
+		fallbackAttempted = false;
+		playbackFailureHandling = false;
+		selectedFallbackStream = null;
+		playbackNotice = compatibilityFallbackNotice(selection, requestedStream);
+		return selection;
+	}
+
+	function compatibilityFallbackNotice(
+		selection: RecordedStreamSelection,
+		requestedStream: RecordedStreamId | null
+	): string | null {
+		const rejected =
+			selection.rejectedStreams.find((candidate) => candidate.stream === requestedStream) ??
+			selection.rejectedStreams[0];
+		if (!rejected || selection.selectedStream === null) return null;
+		return `${streamLabel(rejected.stream)} uses ${rejected.encoding}, which this browser cannot decode. Playing ${streamLabel(selection.selectedStream)} instead.`;
+	}
+
+	function unsupportedRecordedPlaybackMessage(selection: RecordedStreamSelection): string {
+		if (selection.rejectedStreams.length === 0) {
+			return 'No recorded variant is available for this camera and time.';
+		}
+		const codecs = selection.rejectedStreams
+			.map((candidate) => `${streamLabel(candidate.stream)} (${candidate.encoding})`)
+			.join(', ');
+		return `This browser cannot decode the available recordings: ${codecs}. Configure an H.264 recording profile; stored playback transcoding is not available.`;
+	}
+
+	function streamLabel(value: RecordedStreamId): string {
+		return value === 'main' ? 'Main' : 'Sub';
 	}
 
 	async function loadInitialRecordingWindow(
@@ -436,7 +577,7 @@
 				nextDates[0] &&
 				nextDates[0] !== selectedDate
 			) {
-				await loadRecordings(nextDates[0]);
+				await loadRecordings(nextDates[0], undefined, playbackIntent());
 			}
 		} catch {
 			if (version === loadVersion && segments.length > 0 && !dates.includes(selectedDate)) {
@@ -539,12 +680,18 @@
 		showNearestCachedPreview(timestampMs);
 		if (!scrubPump) {
 			const version = scrubVersion;
-			scrubPump = drainTimelineScrub(version).finally(() => {
-				scrubPump = null;
-				if (scrubTargetMs !== null && version === scrubVersion) {
-					void queueTimelineScrub(scrubTargetMs);
-				}
-			});
+			scrubPump = drainTimelineScrub(version)
+				.catch((cause) => {
+					if (version !== scrubVersion) return;
+					clearColdSeek();
+					playerError = storedPlaybackError(cause);
+				})
+				.finally(() => {
+					scrubPump = null;
+					if (scrubTargetMs !== null && version === scrubVersion) {
+						void queueTimelineScrub(scrubTargetMs);
+					}
+				});
 		}
 		return scrubPump;
 	}
@@ -586,15 +733,27 @@
 		}
 		const previous = storedPlayback;
 		previous?.setPlaying(false);
-		const playback = await controlClient.openStoredMedia({
-			sourceId: cameraId,
-			streamId: segment.stream,
-			timestampMs,
-			endTimeMs: dayStartMs + 86_400_000,
-			playing: false,
-			playbackRate: 1,
-			mode: scrubUsesFragmentFallback ? 'playback' : 'scrub'
-		});
+		scrubOpenController?.abort();
+		const openController = new AbortController();
+		scrubOpenController = openController;
+		let playback: StoredMediaPlayback;
+		try {
+			playback = await controlClient.openStoredMedia({
+				sourceId: cameraId,
+				streamId: segment.stream,
+				timestampMs,
+				endTimeMs: dayStartMs + 86_400_000,
+				playing: false,
+				playbackRate: 1,
+				mode: scrubUsesFragmentFallback ? 'playback' : 'scrub',
+				signal: openController.signal
+			});
+		} catch (cause) {
+			if (openController.signal.aborted || version !== scrubVersion) return null;
+			throw cause;
+		} finally {
+			if (scrubOpenController === openController) scrubOpenController = null;
+		}
 		if (version !== scrubVersion) {
 			await playback.close().catch(() => undefined);
 			return null;
@@ -611,9 +770,11 @@
 
 	function beginTimelineScrub(timestampMs: number): void {
 		scrubVersion += 1;
+		scrubOpenController?.abort();
+		scrubPlayIntent = playbackIntent();
 		scrubbing = true;
 		playing = false;
-		video?.pause();
+		pauseVideoForTransition();
 		void queueTimelineScrub(timestampMs);
 	}
 
@@ -629,12 +790,12 @@
 			scrubbing = false;
 			return;
 		}
-		await playback.commitPlayback(true, playbackRate);
+		await playback.commitPlayback(scrubPlayIntent, playbackRate);
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
-		pendingPlay = true;
-		playing = true;
+		pendingPlay = scrubPlayIntent;
+		playing = scrubPlayIntent;
 		scrubbing = false;
 		await tick();
 		applyPendingSeek();
@@ -642,9 +803,13 @@
 
 	function cancelTimelineScrub(): void {
 		scrubVersion += 1;
+		scrubOpenController?.abort();
+		scrubOpenController = null;
 		scrubTargetMs = null;
 		scrubbing = false;
-		void storedPlayback?.commitPlayback(false, playbackRate);
+		playing = scrubPlayIntent;
+		void storedPlayback?.commitPlayback(scrubPlayIntent, playbackRate);
+		if (scrubPlayIntent) void startReplay();
 	}
 
 	async function previewEvent(event: RecordingEvent): Promise<void> {
@@ -721,6 +886,8 @@
 	}
 
 	function handlePlayerLoadedData(): void {
+		clearPlaybackStartupTimer();
+		playbackStartupPhase = 'first-frame';
 		const shouldAnimate = cameraSwitchPending;
 		clearStillPreview();
 		if (!shouldAnimate) return;
@@ -739,6 +906,121 @@
 		coldSeekTimestampMs = null;
 		coldSeekElapsedMs = 0;
 		coldSeekStartedAt = 0;
+	}
+
+	function clearPlaybackStartupTimer(): void {
+		if (playbackStartupTimer === null) return;
+		clearTimeout(playbackStartupTimer);
+		playbackStartupTimer = null;
+	}
+
+	function detachPlaybackObservers(): void {
+		playbackErrorUnsubscribe?.();
+		playbackErrorUnsubscribe = null;
+		playbackStartupUnsubscribe?.();
+		playbackStartupUnsubscribe = null;
+	}
+
+	function observePlaybackStartup(
+		playback: StoredMediaPlayback,
+		version: number,
+		segment: RecordingSegment,
+		timestampMs: number
+	): void {
+		detachPlaybackObservers();
+		playbackErrorUnsubscribe = playback.onError((message) => {
+			if (version !== playbackVersion || playback !== storedPlayback) return;
+			void handlePlaybackFailure(
+				message,
+				version,
+				selected ?? segment,
+				playheadMs ?? timestampMs,
+				playbackIntent()
+			);
+		});
+		playbackStartupUnsubscribe = playback.onStartup((event) => {
+			if (version !== playbackVersion || playback !== storedPlayback) return;
+			playbackStartupPhase = event.phase;
+			playbackContentType = event.contentType;
+			armPlaybackStartupDeadline(version, segment, timestampMs, event.phase);
+		});
+	}
+
+	function armPlaybackStartupDeadline(
+		version: number,
+		segment: RecordingSegment,
+		timestampMs: number,
+		phase: StoredMediaStartupPhase
+	): void {
+		clearPlaybackStartupTimer();
+		const expected =
+			phase === 'metadata'
+				? 'recording initialization'
+				: phase === 'initialization'
+					? 'first media fragment'
+					: 'first decoded frame';
+		playbackStartupTimer = setTimeout(() => {
+			playbackStartupTimer = null;
+			if (version !== playbackVersion || playbackStartupPhase === 'first-frame') return;
+			void handlePlaybackFailure(
+				`No ${expected} arrived within ${startupPhaseTimeoutMs / 1_000} seconds.`,
+				version,
+				selected ?? segment,
+				playheadMs ?? timestampMs,
+				playbackIntent()
+			);
+		}, startupPhaseTimeoutMs);
+	}
+
+	async function handlePlaybackFailure(
+		message: string,
+		version: number,
+		failedSegment: RecordingSegment,
+		timestampMs: number,
+		play: boolean
+	): Promise<void> {
+		if (version !== playbackVersion || playbackFailureHandling) return;
+		playbackFailureHandling = true;
+		clearPlaybackStartupTimer();
+		clearColdSeek();
+		const fallbackStream = fallbackStreams.find((candidate) => candidate !== failedSegment.stream);
+		if (!fallbackAttempted && fallbackStream) {
+			const candidates = allSegments
+				.filter((segment) => segment.stream === fallbackStream)
+				.toSorted((left, right) => left.start_time_ms - right.start_time_ms);
+			const target = recordingTarget(candidates, timestampMs);
+			if (target) {
+				fallbackAttempted = true;
+				selectedFallbackStream = fallbackStream;
+				selectedPlaybackVariant = fallbackStream;
+				stream = fallbackStream;
+				playbackNotice = `${safePlaybackFailure(message, failedSegment.stream)} Playing ${streamLabel(fallbackStream)} instead.`;
+				playbackFailureHandling = false;
+				await selectSegment(target.segment, target.offsetSeconds, play);
+				updateUrl();
+				return;
+			}
+		}
+		cameraSwitchPending = false;
+		cameraSwitchAnimating = false;
+		playerError = terminalPlaybackFailure(message, failedSegment.stream);
+		releaseSecondaryLoads();
+		playbackFailureHandling = false;
+	}
+
+	function safePlaybackFailure(message: string, failedStream: RecordedStreamId): string {
+		if (message.startsWith('Browser does not support ')) return message;
+		if (message.startsWith('No ')) return message;
+		if (message.includes('timed out')) {
+			return `${streamLabel(failedStream)} playback did not open within 4 seconds.`;
+		}
+		return `${streamLabel(failedStream)} playback failed before its first frame.`;
+	}
+
+	function terminalPlaybackFailure(message: string, failedStream: RecordedStreamId): string {
+		const detail = safePlaybackFailure(message, failedStream);
+		const fallbackDetail = fallbackAttempted ? ' The compatible fallback also failed.' : '';
+		return `${detail}${fallbackDetail} Retry the recording or configure an H.264 recording profile.`;
 	}
 
 	function deferSecondaryLoads(): void {
@@ -813,19 +1095,19 @@
 		timestampMs = playheadMs ?? undefined
 	): void {
 		if (nextCameraId === cameraId) return;
+		const play = playbackIntent();
 		beginCameraSwitch(direction);
 		timelineRepository.deactivate();
 		latestTimelineViewport = null;
 		cameraId = nextCameraId;
-		stream = preferredReplayStream(cameras.find((camera) => camera.id === nextCameraId) ?? null);
-		void loadRecordings(selectedDate || undefined, timestampMs, true).then(() =>
+		void loadRecordings(selectedDate || undefined, timestampMs, play).then(() =>
 			discoverRecordingDates(false)
 		);
 	}
 
 	function openTimestamp(timestampMs: number): void {
 		mode = 'timeline';
-		seekToTimestamp(timestampMs, true);
+		seekToTimestamp(timestampMs, playbackIntent());
 		updateUrl();
 	}
 
@@ -835,7 +1117,7 @@
 			selectCamera(nextCameraId, cameraDirection(nextCameraId), timestampMs);
 			return;
 		}
-		void loadRecordings(selectedDate || undefined, timestampMs, true).then(() =>
+		void loadRecordings(selectedDate || undefined, timestampMs, playbackIntent()).then(() =>
 			discoverRecordingDates(false)
 		);
 	}
@@ -850,24 +1132,27 @@
 		return value.charAt(0).toUpperCase() + value.slice(1);
 	}
 
-	function preferredReplayStream(camera: CameraListItem | null): 'main' | 'sub' {
-		return (
-			camera?.profiles.find(
-				(profile) => profile.stream === 'sub' && profile.encoding?.toLowerCase() === 'h264'
-			)?.stream ?? 'main'
-		);
-	}
-
 	function changeDate(date: string) {
 		if (!date || date === selectedDate) return;
 		latestTimelineViewport = null;
-		void loadRecordings(date);
+		void loadRecordings(date, undefined, playbackIntent());
 	}
 
-	function changeStream(next: 'main' | 'sub') {
-		if (next === stream || !availableStreams.has(next)) return;
+	function changeRecordedQuality(next: RecordedQualityPreference): void {
+		const selection = chooseRecordedStream(allSegments, null, next);
+		if (selection.selectedStream === null) {
+			playerError = unsupportedRecordedPlaybackMessage(selection);
+			return;
+		}
+		if ((next === 'main' || next === 'sub') && selection.selectedStream !== next) {
+			playerError = null;
+			return;
+		}
+		playbackPreferences = withRecordedPreference(playbackPreferences, cameraId, next);
+		savePlaybackPreferences(window.localStorage, playbackPreferences);
+		if (selection.selectedStream === stream && selected !== null) return;
 		const targetTimestampMs = playheadMs;
-		stream = next;
+		stream = selection.selectedStream;
 		const candidates = allSegments
 			.filter((segment) => segment.stream === stream)
 			.toSorted((left, right) => left.start_time_ms - right.start_time_ms);
@@ -876,18 +1161,30 @@
 		void selectSegment(
 			target?.segment ?? candidates.at(-1) ?? null,
 			target?.offsetSeconds ?? 0,
-			true
+			playbackIntent()
 		);
 		updateUrl();
 	}
 
+	function handleRecordedQualityChange(event: Event): void {
+		const target = event.currentTarget;
+		if (!(target instanceof HTMLSelectElement)) return;
+		const option = recordedQualityOptions.find((candidate) => candidate.value === target.value);
+		if (option) changeRecordedQuality(option.value);
+	}
+
 	function handlePlayerError(event: Event) {
-		void event;
-		clearColdSeek();
-		cameraSwitchPending = false;
-		cameraSwitchAnimating = false;
-		playerError = 'This recording could not be played.';
-		releaseSecondaryLoads();
+		const media = event.currentTarget;
+		const segment = selected;
+		if (!(media instanceof HTMLVideoElement) || !segment) return;
+		const message = media.error?.message || 'The browser rejected stored playback.';
+		void handlePlaybackFailure(
+			message,
+			playbackVersion,
+			segment,
+			playheadMs ?? segment.start_time_ms,
+			pendingPlay || playing
+		);
 	}
 
 	function recordingSegment(
@@ -922,6 +1219,11 @@
 			cameraSwitchAnimating = false;
 			clearCameraSwitchFrame();
 			playbackVersion += 1;
+			playbackOpenController?.abort();
+			playbackOpenController = null;
+			clearPlaybackStartupTimer();
+			detachPlaybackObservers();
+			playbackStartupPhase = 'idle';
 			await closeStoredPlayback();
 			selected = null;
 			playheadMs = null;
@@ -980,7 +1282,7 @@
 		const version = ++playbackVersion;
 		const previousPlayback = storedPlayback;
 		if (previousPlayback) {
-			video?.pause();
+			pauseVideoForTransition();
 			previousPlayback.setPlaying(false);
 			coldSeekTimestampMs = requestedTimestampMs;
 			coldSeekElapsedMs = 0;
@@ -1011,6 +1313,11 @@
 			return;
 		}
 		let playback: StoredMediaPlayback;
+		playbackOpenController?.abort();
+		const openController = new AbortController();
+		playbackOpenController = openController;
+		playbackStartupPhase = 'opening';
+		playbackContentType = null;
 		try {
 			playback = await controlClient.openStoredMedia({
 				sourceId: cameraId,
@@ -1018,15 +1325,22 @@
 				timestampMs: requestedTimestampMs,
 				endTimeMs: dayStartMs + 86_400_000,
 				playing: play,
-				playbackRate
+				playbackRate,
+				signal: openController.signal
 			});
 		} catch (cause) {
 			clearColdSeek();
-			if (previousPlayback) {
-				playerError = storedPlaybackError(cause);
-				return;
-			}
-			throw cause;
+			if (openController.signal.aborted || version !== playbackVersion) return;
+			await handlePlaybackFailure(
+				storedPlaybackError(cause),
+				version,
+				segment,
+				requestedTimestampMs,
+				play
+			);
+			return;
+		} finally {
+			if (playbackOpenController === openController) playbackOpenController = null;
 		}
 		if (version !== playbackVersion) {
 			await playback.close().catch(() => undefined);
@@ -1038,6 +1352,7 @@
 		playheadMs = requestedTimestampMs;
 		storedPlayback = playback;
 		attachKeyFramePreview(playback);
+		observePlaybackStartup(playback, version, segment, requestedTimestampMs);
 		playbackUrl = playback.url;
 		playbackAnchorMs = playback.anchorTimeMs;
 		pendingSeekSeconds = playback.initialOffsetSeconds;
@@ -1050,12 +1365,21 @@
 
 	async function closeStoredPlayback() {
 		const playback = storedPlayback;
+		playbackOpenController?.abort();
+		playbackOpenController = null;
+		scrubOpenController?.abort();
+		scrubOpenController = null;
+		clearPlaybackStartupTimer();
+		detachPlaybackObservers();
 		keyFrameUnsubscribe?.();
 		keyFrameUnsubscribe = null;
 		storedPlayback = null;
 		scrubUsesFragmentFallback = false;
 		playbackUrl = null;
-		if (playback) await playback.close().catch(() => undefined);
+		if (playback) {
+			await tick();
+			await playback.close().catch(() => undefined);
+		}
 	}
 
 	function seekToTimestamp(timestampMs: number, play = true) {
@@ -1182,12 +1506,15 @@
 	function setPlaybackSpeed(speed: number): void {
 		shuttleSpeed = speed;
 		playbackRate = speed;
+		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate: speed });
+		savePlaybackPreferences(window.localStorage, playbackPreferences);
 		if (video) video.playbackRate = speed;
 		storedPlayback?.setPlaybackRate(speed);
 	}
 
 	function setPlaying(nextPlaying: boolean): void {
 		playing = nextPlaying;
+		rememberPlayIntent(nextPlaying);
 		storedPlayback?.setPlaying(nextPlaying);
 		if (!video) {
 			pendingPlay = nextPlaying;
@@ -1265,6 +1592,7 @@
 	function applyPendingSeek() {
 		if (!video || !selected) return;
 		video.playbackRate = playbackRate;
+		video.muted = scrubbing || playbackMuted;
 		const requestedTime = Math.max(
 			0,
 			Math.min(pendingSeekSeconds, video.duration || pendingSeekSeconds)
@@ -1279,12 +1607,17 @@
 	}
 
 	async function startReplay(): Promise<void> {
-		if (!video) return;
+		const player = video;
+		if (!player) return;
 		try {
-			await video.play();
+			await player.play();
 		} catch {
-			video.muted = true;
-			await video.play().catch(() => (playing = false));
+			if (video !== player) return;
+			player.muted = true;
+			playbackMuted = true;
+			playbackPreferences = withMediaPreferences(playbackPreferences, { muted: true });
+			savePlaybackPreferences(window.localStorage, playbackPreferences);
+			await player.play().catch(() => (playing = false));
 		}
 	}
 
@@ -1297,19 +1630,51 @@
 	function updatePlaybackRate() {
 		if (!video) return;
 		playbackRate = video.playbackRate;
+		playbackPreferences = withMediaPreferences(playbackPreferences, { playbackRate });
+		savePlaybackPreferences(window.localStorage, playbackPreferences);
 		storedPlayback?.setPlaybackRate(playbackRate);
+	}
+
+	function updateMutedPreference(): void {
+		if (!video || scrubbing || video.muted === playbackMuted) return;
+		playbackMuted = video.muted;
+		playbackPreferences = withMediaPreferences(playbackPreferences, { muted: playbackMuted });
+		savePlaybackPreferences(window.localStorage, playbackPreferences);
+	}
+
+	function playbackIntent(): boolean {
+		if (pendingPlay || playing || (video !== null && !video.paused)) return true;
+		return storedPlayback === null && playbackPreferences.media.playing;
 	}
 
 	function handlePlay() {
 		playing = true;
+		rememberPlayIntent(true);
 		shuttleDirection = 1;
 		storedPlayback?.setPlaying(true);
 	}
 
 	function handlePause() {
+		if (ignoreNextPauseEvent) {
+			ignoreNextPauseEvent = false;
+			return;
+		}
 		playing = false;
+		rememberPlayIntent(false);
 		if (shuttleDirection === 1) shuttleDirection = 0;
 		storedPlayback?.setPlaying(false);
+	}
+
+	function rememberPlayIntent(nextPlaying: boolean): void {
+		if (playbackPreferences.media.playing === nextPlaying) return;
+		playbackPreferences = withMediaPreferences(playbackPreferences, { playing: nextPlaying });
+		savePlaybackPreferences(window.localStorage, playbackPreferences);
+	}
+
+	function pauseVideoForTransition(): void {
+		if (!video || video.paused) return;
+		ignoreNextPauseEvent = true;
+		video.pause();
 	}
 
 	function handleEnded() {
@@ -1426,21 +1791,21 @@
 				</div>
 			</div>
 
-			{#if availableStreams.size > 1}
+			{#if availableStreams.size > 0}
 				<div class="grid gap-1">
-					<span class="text-xs font-medium text-muted-foreground">Stream</span>
-					<div class="flex rounded-md border bg-background p-0.5">
-						<Button
-							variant={stream === 'main' ? 'secondary' : 'ghost'}
-							size="sm"
-							onclick={() => changeStream('main')}>Main</Button
-						>
-						<Button
-							variant={stream === 'sub' ? 'secondary' : 'ghost'}
-							size="sm"
-							onclick={() => changeStream('sub')}>Sub</Button
-						>
-					</div>
+					<label for="recorded-quality" class="text-xs font-medium text-muted-foreground">
+						Quality
+					</label>
+					<select
+						id="recorded-quality"
+						value={recordedPreference(playbackPreferences, cameraId)}
+						class="h-9 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						onchange={handleRecordedQualityChange}
+					>
+						{#each recordedQualityOptions as option (option.value)}
+							<option value={option.value}>{option.label}</option>
+						{/each}
+					</select>
 				</div>
 			{/if}
 
@@ -1449,7 +1814,7 @@
 				size="icon"
 				title="Refresh recordings"
 				disabled={!cameraId || loading}
-				onclick={() => void loadRecordings(selectedDate || undefined)}
+				onclick={() => void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
 			>
 				<RefreshCwIcon class={loading ? 'animate-spin' : ''} />
 			</Button>
@@ -1495,6 +1860,15 @@
 		<div class="grid min-h-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24.75rem]">
 			<section
 				data-keep-player
+				data-recording-requested-variant={requestedPlaybackVariant}
+				data-recording-selected-variant={selectedPlaybackVariant ?? undefined}
+				data-recording-fallback-variant={selectedFallbackStream ?? undefined}
+				data-recording-selection-reason={selectedPlaybackReason}
+				data-recording-startup-phase={playbackStartupPhase}
+				data-recording-content-type={playbackContentType ?? undefined}
+				data-recording-rejected-variants={rejectedStreams
+					.map((candidate) => `${candidate.stream}:${candidate.encoding}`)
+					.join(',') || undefined}
 				data-keyboard-shuttle-direction={shuttleDirection}
 				data-keyboard-shuttle-speed={shuttleSpeed}
 				data-keyboard-playing={playing}
@@ -1516,7 +1890,7 @@
 								bind:this={video}
 								controls
 								playsinline
-								muted={scrubbing}
+								muted={scrubbing || playbackMuted}
 								preload="metadata"
 								src={playbackUrl}
 								class="aspect-video w-full object-contain {cameraSwitchAnimating
@@ -1533,6 +1907,7 @@
 								onplay={handlePlay}
 								onpause={handlePause}
 								onratechange={updatePlaybackRate}
+								onvolumechange={updateMutedPreference}
 								onerror={handlePlayerError}
 							></video>
 						{/key}
@@ -1577,8 +1952,14 @@
 					{/if}
 				</div>
 
+				{#if playbackNotice}
+					<p class="text-sm text-amber-700 dark:text-amber-300" role="status">
+						{playbackNotice}
+					</p>
+				{/if}
+
 				{#if playerError}
-					<p class="text-sm text-destructive">{playerError}</p>
+					<p class="text-sm text-destructive" role="alert">{playerError}</p>
 				{/if}
 
 				<div

@@ -3,6 +3,7 @@ import type { CameraListItem, RecordingEvent } from './types';
 import {
 	EVENT_BROWSER_INITIAL_WINDOW_MS,
 	eventBrowserDayBounds,
+	eventBrowserQueryBounds,
 	eventBrowserRecordKey,
 	eventBrowserSearchParams,
 	eventFilterSummary,
@@ -68,23 +69,46 @@ describe('Events browser contract', () => {
 	it('parses known structured filters and rejects invalid values', () => {
 		const filters = parseEventBrowserFilters(
 			new URLSearchParams(
-				'date=2026-08-18&camera=front-door&type=person&source=camera&confidence=0.8&image=without&q=porch'
+				'date=2026-08-18&from=06%3A15&to=12%3A30&camera=front-door&type=person&source=camera&zone=porch&confidence=0.8&image=without&q=porch'
 			),
 			'2026-08-19'
 		);
 
 		expect(filters).toEqual({
 			date: '2026-08-18',
+			startTime: '06:15',
+			endTime: '12:30',
 			cameraId: 'front-door',
 			type: 'person',
 			source: 'camera',
+			zone: 'porch',
 			minimumConfidence: 0.8,
 			image: 'without',
 			query: 'porch'
 		});
 		expect(
-			parseEventBrowserFilters(new URLSearchParams('date=nope&confidence=4'), '2026-08-19')
-		).toMatchObject({ date: '2026-08-19', minimumConfidence: null });
+			parseEventBrowserFilters(
+				new URLSearchParams('date=nope&from=18%3A00&to=06%3A00&confidence=4'),
+				'2026-08-19'
+			)
+		).toMatchObject({
+			date: '2026-08-19',
+			startTime: null,
+			endTime: null,
+			minimumConfidence: null
+		});
+	});
+
+	it('builds a bounded UTC time range within the selected day', () => {
+		expect(
+			eventBrowserQueryBounds(
+				{ date: '2026-08-18', startTime: '06:15', endTime: '12:30' },
+				Date.parse('2026-08-19T00:00:00Z')
+			)
+		).toEqual({
+			startMs: Date.parse('2026-08-18T06:15:00Z'),
+			endMs: Date.parse('2026-08-18T12:30:00Z')
+		});
 	});
 
 	it('serializes filters and selected evidence without defaults', () => {
@@ -92,9 +116,12 @@ describe('Events browser contract', () => {
 		const params = eventBrowserSearchParams(
 			{
 				date: '2026-08-18',
+				startTime: '06:15',
+				endTime: '12:30',
 				cameraId: null,
 				type: 'person',
 				source: null,
+				zone: 'porch',
 				minimumConfidence: null,
 				image: 'all',
 				query: ''
@@ -103,7 +130,7 @@ describe('Events browser contract', () => {
 		);
 
 		expect(params.toString()).toBe(
-			'date=2026-08-18&type=person&event=person%2F1&eventCamera=front-door'
+			'date=2026-08-18&from=06%3A15&to=12%3A30&type=person&zone=porch&event=person%2F1&eventCamera=front-door'
 		);
 	});
 
@@ -115,9 +142,12 @@ describe('Events browser contract', () => {
 		];
 		const filtered = filterEventBrowserRecords(records, {
 			date: '2026-08-18',
+			startTime: null,
+			endTime: null,
 			cameraId: 'front-door',
 			type: 'person',
 			source: 'camera',
+			zone: 'porch',
 			minimumConfidence: 0.8,
 			image: 'with',
 			query: 'porch'
@@ -133,9 +163,12 @@ describe('Events browser contract', () => {
 		expect(
 			eventFilterSummary({
 				date: '2026-08-18',
+				startTime: null,
+				endTime: null,
 				cameraId: null,
 				type: 'person',
 				source: null,
+				zone: null,
 				minimumConfidence: 0.8,
 				image: 'without',
 				query: ''
@@ -151,9 +184,12 @@ describe('Events browser contract', () => {
 		expect(
 			eventNoResultsSuggestion(records, {
 				date: '2026-08-18',
+				startTime: null,
+				endTime: null,
 				cameraId: null,
 				type: 'person',
 				source: null,
+				zone: null,
 				minimumConfidence: null,
 				image: 'all',
 				query: 'missing'

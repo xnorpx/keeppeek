@@ -34,6 +34,16 @@ import {
 	EventAttachmentDescriptorSchema,
 	EventAttachmentChunkSchema,
 	EventBoundingBoxSchema,
+	EventSearchDeliverySchema,
+	EventSearchHitSchema,
+	EventSearchKeyframeSchema,
+	EventSearchMediaChunkSchema,
+	EventSearchMediaDeliverySchema,
+	EventSearchMediaEndSchema,
+	EventSearchMessageSchema,
+	EventSearchQueryEndSchema,
+	EventSearchResultSchema,
+	EventImageFilter,
 	EventMessageSchema,
 	EventOrigin,
 	EventSchema,
@@ -87,6 +97,7 @@ import {
 	StoredMediaRangeSchema,
 	StoredMediaStateSchema,
 	StoredMediaStatus,
+	StoredMediaObjectRepresentation,
 	StoredMediaSourceCapabilitySchema,
 	StoredMediaStreamCapabilitySchema,
 	SubscriptionResultSchema,
@@ -207,6 +218,22 @@ export type StoredTimelineControlRequest = {
 	includeAvailability: boolean;
 };
 
+export type EventSearchControlRequest = {
+	queryId: string;
+	eventIds: string[];
+	sourceIds: string[];
+	startMs: number;
+	endMs: number;
+	eventTypes: string[];
+	origins: EventOrigin[];
+	zones: string[];
+	minimumConfidence: number | null;
+	image: EventImageFilter;
+	text: string | null;
+	pageSize: number;
+	pageToken: string;
+};
+
 export type ControlRequests = {
 	motion: MotionControlRequest[];
 	ptz: PtzControlRequest[];
@@ -229,9 +256,15 @@ export type ControlRequests = {
 		streamId: string;
 		timestampMs: number;
 	}>;
+	storedCloses: string[];
 	storedSeeks: Array<{ storedMediaId: string; timestampMs: number }>;
 	storedRefills: Array<{ storedMediaId: string; playbackTimeMs: number }>;
 	storedTimelineQueries: StoredTimelineControlRequest[];
+	eventSearchQueries: EventSearchControlRequest[];
+	cancelledEventSearchQueries: string[];
+	eventMediaFetches: string[];
+	cancelledEventMedia: string[];
+	maxConcurrentEventMedia: number;
 	exportJobs: ExportControlRequest[];
 	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
 };
@@ -266,6 +299,9 @@ export type MockControlPeerOptions = {
 	storedBucketedRanges?: readonly StoredRangeFixture[];
 	storedEvents?: readonly StoredEventFixture[];
 	storedTimelineGates?: readonly Promise<void>[];
+	eventSearchGates?: readonly Promise<void>[];
+	eventSearchPageError?: string;
+	eventMediaGates?: readonly Promise<void>[];
 	storedOpenGates?: readonly Promise<void>[];
 	storedSeekError?: string;
 	capabilityIds?: readonly string[];
@@ -332,9 +368,15 @@ export async function mockControlPeer(
 		runtimeUpdates: [],
 		storageProbePaths: [],
 		storedOpens: [],
+		storedCloses: [],
 		storedSeeks: [],
 		storedRefills: [],
 		storedTimelineQueries: [],
+		eventSearchQueries: [],
+		cancelledEventSearchQueries: [],
+		eventMediaFetches: [],
+		cancelledEventMedia: [],
+		maxConcurrentEventMedia: 0,
 		exportJobs: []
 	};
 	let activeFilter = 'info,keeppeek=debug';
@@ -344,6 +386,9 @@ export async function mockControlPeer(
 	const pendingDataMessages: number[][] = [];
 	const storedCursors = new Map<string, StoredMediaState>();
 	const storedTimelineGates = [...(options.storedTimelineGates ?? [])];
+	const eventSearchGates = [...(options.eventSearchGates ?? [])];
+	const eventMediaGates = [...(options.eventMediaGates ?? [])];
+	let activeEventMedia = 0;
 	const storedOpenGates = [...(options.storedOpenGates ?? [])];
 	const healthSequence = [...(options.healthSequence ?? [])];
 	let healthSequenceIndex = 0;
@@ -380,6 +425,256 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'unsubscribe') {
 			return encodedOk(request.requestId, undefined);
+		}
+		if (request.command.case === 'eventSearchCommand') {
+			const action = request.command.value.action;
+			if (action.case === 'query') {
+				await eventSearchGates.shift();
+				const query = action.value;
+				if (query.search.case !== 'metadata') {
+					return encodedError(request.requestId, 'mock supports metadata event search only');
+				}
+				const search = query.search.value;
+				const startMs = query.startTime ? timestampFromProto(query.startTime) : 0;
+				const endMs = query.endTime ? timestampFromProto(query.endTime) : Number.MAX_SAFE_INTEGER;
+				requests.eventSearchQueries.push({
+					queryId: query.queryId,
+					eventIds: [...search.eventIds],
+					sourceIds: [...search.sourceIds],
+					startMs,
+					endMs,
+					eventTypes: [...search.eventTypes],
+					origins: [...search.origins],
+					zones: [...search.zones],
+					minimumConfidence: search.minimumConfidence ?? null,
+					image: search.image,
+					text: search.text ?? null,
+					pageSize: query.pageSize,
+					pageToken: query.pageToken
+				});
+				if (query.pageToken && options.eventSearchPageError) {
+					return encodedError(request.requestId, options.eventSearchPageError);
+				}
+				const sourceIds = new Set(search.sourceIds);
+				const eventIds = new Set(search.eventIds);
+				const eventTypes = new Set(search.eventTypes.map((value) => value.toLocaleLowerCase()));
+				const origins = new Set(search.origins);
+				const zones = new Set(search.zones.map((value) => value.toLocaleLowerCase()));
+				const text = search.text?.trim().toLocaleLowerCase() ?? '';
+				const matching = (options.storedEvents ?? [])
+					.filter((fixture) => {
+						const event = fixture.event;
+						const hasImage =
+							fixture.thumbnail !== undefined ||
+							fixture.thumbnailDescriptorOnly === true ||
+							event.thumbnail_url !== null;
+						const origin = event.source === 'keeppeek' ? EventOrigin.KEEPPEEK : EventOrigin.CAMERA;
+						return (
+							(eventIds.size === 0 || eventIds.has(event.id)) &&
+							(sourceIds.size === 0 || sourceIds.has(fixture.sourceId)) &&
+							event.start_time_ms < endMs &&
+							(event.end_time_ms ?? event.start_time_ms + 1) > startMs &&
+							(eventTypes.size === 0 || eventTypes.has(event.kind.toLocaleLowerCase())) &&
+							(origins.size === 0 || origins.has(origin)) &&
+							(zones.size === 0 || zones.has(event.zone?.toLocaleLowerCase() ?? '')) &&
+							(search.minimumConfidence === undefined ||
+								(event.confidence !== null && event.confidence >= search.minimumConfidence)) &&
+							(search.image === EventImageFilter.ANY ||
+								(search.image === EventImageFilter.WITH_IMAGE && hasImage) ||
+								(search.image === EventImageFilter.WITHOUT_IMAGE && !hasImage)) &&
+							(!text ||
+								[event.kind, event.text]
+									.filter((value): value is string => value !== null && value !== undefined)
+									.some((value) => value.toLocaleLowerCase().startsWith(text)))
+						);
+					})
+					.toSorted(
+						(left, right) =>
+							right.event.start_time_ms - left.event.start_time_ms ||
+							left.event.id.localeCompare(right.event.id)
+					);
+				const offset = query.pageToken.startsWith('page:')
+					? Number(query.pageToken.slice('page:'.length))
+					: 0;
+				const pageSize = query.pageSize || 50;
+				const hits = matching.slice(offset, offset + pageSize);
+				for (const [index, fixture] of hits.entries()) {
+					const event = fixture.event;
+					const hasImage =
+						fixture.thumbnail !== undefined ||
+						fixture.thumbnailDescriptorOnly === true ||
+						event.thumbnail_url !== null;
+					const keyframes = fixture.thumbnail
+						? [
+								create(EventSearchKeyframeSchema, {
+									sourceId: fixture.sourceId,
+									streamId: query.streamId,
+									recordingId: event.id,
+									fragmentSequence: 1n,
+									eventTime: timestampFromDate(new Date(event.start_time_ms)),
+									fragmentStartTime: timestampFromDate(new Date(event.start_time_ms)),
+									byteLen: BigInt(fixture.thumbnail.byteLength)
+								})
+							]
+						: [];
+					pendingDataMessages.push(
+						encodedData(
+							create(MessageSchema, {
+								message: {
+									case: 'eventSearch',
+									value: create(EventSearchMessageSchema, {
+										message: {
+											case: 'result',
+											value: create(EventSearchResultSchema, {
+												queryId: query.queryId,
+												sequence: BigInt(index + 1),
+												hit: create(EventSearchHitSchema, {
+													eventId: event.id,
+													sourceId: fixture.sourceId,
+													eventType: event.kind,
+													origin:
+														event.source === 'keeppeek' ? EventOrigin.KEEPPEEK : EventOrigin.CAMERA,
+													startTime: timestampFromDate(new Date(event.start_time_ms)),
+													endTime:
+														event.end_time_ms === null
+															? undefined
+															: timestampFromDate(new Date(event.end_time_ms)),
+													confidence: event.confidence ?? undefined,
+													boundingBox: event.bbox
+														? create(EventBoundingBoxSchema, {
+																x: event.bbox[0],
+																y: event.bbox[1],
+																width: event.bbox[2],
+																height: event.bbox[3]
+															})
+														: undefined,
+													zone: event.zone ?? undefined,
+													text: event.text ?? undefined,
+													hasImageAttachment: hasImage,
+													previewStartTime: timestampFromDate(
+														new Date(event.start_time_ms - 5_000)
+													),
+													previewEndTime: timestampFromDate(
+														new Date((event.end_time_ms ?? event.start_time_ms) + 10_000)
+													),
+													keyframes
+												})
+											})
+										}
+									})
+								}
+							})
+						)
+					);
+				}
+				const nextOffset = offset + hits.length;
+				pendingDataMessages.push(
+					encodedData(
+						create(MessageSchema, {
+							message: {
+								case: 'eventSearch',
+								value: create(EventSearchMessageSchema, {
+									message: {
+										case: 'queryEnd',
+										value: create(EventSearchQueryEndSchema, {
+											queryId: query.queryId,
+											resultCount: BigInt(hits.length),
+											nextPageToken: nextOffset < matching.length ? `page:${nextOffset}` : ''
+										})
+									}
+								})
+							}
+						})
+					)
+				);
+				return encodedOk(request.requestId, {
+					case: 'eventSearchDelivery',
+					value: create(EventSearchDeliverySchema, {
+						queryId: query.queryId,
+						channel: DataChannelKind.RELIABLE_DATA
+					})
+				});
+			}
+			if (action.case === 'cancelQuery') {
+				requests.cancelledEventSearchQueries.push(action.value.queryId);
+				return encodedOk(request.requestId, undefined);
+			}
+			if (action.case === 'fetchMedia') {
+				const transfer = action.value;
+				requests.eventMediaFetches.push(transfer.transferId);
+				activeEventMedia += 1;
+				requests.maxConcurrentEventMedia = Math.max(
+					requests.maxConcurrentEventMedia,
+					activeEventMedia
+				);
+				await eventMediaGates.shift();
+				activeEventMedia -= 1;
+				for (const object of transfer.objects) {
+					const fixture = (options.storedEvents ?? []).find(
+						(candidate) => candidate.event.id === object.recordingId
+					);
+					if (!fixture?.thumbnail) continue;
+					pendingDataMessages.push(
+						encodedData(
+							create(MessageSchema, {
+								message: {
+									case: 'eventSearch',
+									value: create(EventSearchMessageSchema, {
+										message: {
+											case: 'mediaChunk',
+											value: create(EventSearchMediaChunkSchema, {
+												transferId: transfer.transferId,
+												objectId: object.objectId,
+												representation: StoredMediaObjectRepresentation.ENCODED_KEYFRAME,
+												contentType: 'video/avc',
+												byteLen: BigInt(fixture.thumbnail.byteLength),
+												chunkCount: 1,
+												payload: fixture.thumbnail,
+												codec: 'avc1.42C01F',
+												width: 1,
+												height: 1,
+												decoderConfig: Uint8Array.from([1]),
+												nalLengthSize: 4
+											})
+										}
+									})
+								}
+							})
+						)
+					);
+				}
+				pendingDataMessages.push(
+					encodedData(
+						create(MessageSchema, {
+							message: {
+								case: 'eventSearch',
+								value: create(EventSearchMessageSchema, {
+									message: {
+										case: 'mediaEnd',
+										value: create(EventSearchMediaEndSchema, {
+											transferId: transfer.transferId,
+											objectCount: transfer.objects.length
+										})
+									}
+								})
+							}
+						})
+					)
+				);
+				return encodedOk(request.requestId, {
+					case: 'eventSearchMediaDelivery',
+					value: create(EventSearchMediaDeliverySchema, {
+						transferId: transfer.transferId,
+						channel: DataChannelKind.RELIABLE_DATA,
+						objectCount: transfer.objects.length
+					})
+				});
+			}
+			if (action.case === 'cancelMedia') {
+				requests.cancelledEventMedia.push(action.value.transferId);
+				return encodedOk(request.requestId, undefined);
+			}
+			throw new Error(`unexpected event search action ${action.case}`);
 		}
 		if (request.command.case === 'storedMediaCommand') {
 			const action = request.command.value.action;
@@ -509,7 +804,6 @@ export async function mockControlPeer(
 				});
 			}
 			if (action.case === 'open') {
-				await storedOpenGates.shift();
 				const open = action.value;
 				requests.storedOpens.push({
 					storedMediaId: open.storedMediaId,
@@ -517,6 +811,7 @@ export async function mockControlPeer(
 					streamId: open.streamId,
 					timestampMs: open.timestamp ? timestampFromProto(open.timestamp) : 0
 				});
+				await storedOpenGates.shift();
 				const state = create(StoredMediaStateSchema, {
 					storedMediaId: open.storedMediaId,
 					status: StoredMediaStatus.ACTIVE,
@@ -585,6 +880,7 @@ export async function mockControlPeer(
 				return encodedOk(request.requestId, { case: 'storedMediaState', value: state });
 			}
 			if (action.case === 'close') {
+				requests.storedCloses.push(action.value.storedMediaId);
 				storedCursors.delete(action.value.storedMediaId);
 				return encodedOk(request.requestId, undefined);
 			}
@@ -1259,6 +1555,47 @@ export async function mockControlPeer(
 		}
 
 		Object.defineProperty(window, 'RTCPeerConnection', { value: MockPeerConnection });
+		class MockVideoFrame {
+			displayWidth = 1;
+			displayHeight = 1;
+			close(): void {}
+		}
+		class MockVideoDecoder {
+			static async isConfigSupported(config: VideoDecoderConfig) {
+				return { supported: true, config };
+			}
+			state: CodecState = 'unconfigured';
+			constructor(
+				private readonly callbacks: {
+					output(frame: VideoFrame): void;
+					error(error: DOMException): void;
+				}
+			) {}
+			configure(): void {
+				this.state = 'configured';
+			}
+			decode(): void {
+				queueMicrotask(() => this.callbacks.output(new MockVideoFrame() as unknown as VideoFrame));
+			}
+			async flush(): Promise<void> {}
+			close(): void {
+				this.state = 'closed';
+			}
+		}
+		class MockOffscreenCanvas {
+			constructor(
+				readonly width: number,
+				readonly height: number
+			) {}
+			getContext() {
+				return { drawImage() {} };
+			}
+			async convertToBlob(): Promise<Blob> {
+				return new Blob([Uint8Array.from([1])], { type: 'image/jpeg' });
+			}
+		}
+		Object.defineProperty(window, 'VideoDecoder', { value: MockVideoDecoder });
+		Object.defineProperty(window, 'OffscreenCanvas', { value: MockOffscreenCanvas });
 		Object.defineProperty(navigator, 'sendBeacon', { value: () => true });
 	});
 	await page.route('**/create', async (route) => {
@@ -1870,6 +2207,7 @@ function protoEvent(fixture: StoredEventFixture) {
 				})
 			: undefined,
 		zone: event.zone ?? undefined,
+		text: event.text ?? undefined,
 		attachments:
 			fixture.thumbnail || fixture.thumbnailDescriptorOnly
 				? [

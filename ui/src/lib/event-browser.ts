@@ -1,4 +1,5 @@
 import type { CameraListItem, RecordingEvent } from './types';
+import type { EventPreviewKeyframe } from './control-client';
 
 export type EventImageFilter = 'all' | 'with' | 'without';
 
@@ -6,9 +7,12 @@ export type EventPreviewState = 'idle' | 'queued' | 'loading' | 'unavailable';
 
 export type EventBrowserFilters = {
 	date: string;
+	startTime: string | null;
+	endTime: string | null;
 	cameraId: string | null;
 	type: string | null;
 	source: RecordingEvent['source'] | null;
+	zone: string | null;
 	minimumConfidence: number | null;
 	image: EventImageFilter;
 	query: string;
@@ -17,6 +21,8 @@ export type EventBrowserFilters = {
 export type EventBrowserRecord = {
 	camera: CameraListItem;
 	event: RecordingEvent;
+	previewKeyframe?: EventPreviewKeyframe;
+	previewObjectUrl?: boolean;
 };
 
 export type EventNoResultsSuggestion = {
@@ -26,6 +32,7 @@ export type EventNoResultsSuggestion = {
 };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const UTC_TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 export const EVENT_BROWSER_PAGE_SIZE = 18;
 export const EVENT_BROWSER_INITIAL_WINDOW_MS = 5 * 60_000;
 const EVENT_BROWSER_MAX_WINDOW_MS = 6 * 60 * 60_000;
@@ -46,6 +53,24 @@ export function eventBrowserDayBounds(
 	}
 	const dayEndMs = startMs + 86_400_000;
 	return { startMs, endMs: nowMs >= startMs && nowMs < dayEndMs ? nowMs : dayEndMs };
+}
+
+export function eventBrowserQueryBounds(
+	filters: Pick<EventBrowserFilters, 'date' | 'startTime' | 'endTime'>,
+	nowMs = Date.now()
+): { startMs: number; endMs: number } {
+	const day = eventBrowserDayBounds(filters.date, nowMs);
+	const startMs = filters.startTime
+		? Date.parse(`${filters.date}T${filters.startTime}:00Z`)
+		: day.startMs;
+	const requestedEndMs = filters.endTime
+		? Date.parse(`${filters.date}T${filters.endTime}:00Z`)
+		: day.endMs;
+	const endMs = Math.min(requestedEndMs, day.endMs);
+	if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs >= endMs) {
+		throw new Error('Event time range is invalid.');
+	}
+	return { startMs, endMs };
 }
 
 export function previousEventBrowserWindow(
@@ -70,11 +95,21 @@ export function parseEventBrowserFilters(
 	const parsedConfidence = confidenceValue === null ? Number.NaN : Number(confidenceValue);
 	const requestedSource = params.get('source');
 	const requestedImage = params.get('image');
+	const requestedStartTime = params.get('from');
+	const requestedEndTime = params.get('to');
+	const startTime =
+		requestedStartTime !== null && UTC_TIME.test(requestedStartTime) ? requestedStartTime : null;
+	const endTime =
+		requestedEndTime !== null && UTC_TIME.test(requestedEndTime) ? requestedEndTime : null;
+	const validTimeRange = startTime === null || endTime === null || startTime < endTime;
 	return {
 		date: requestedDate !== null && ISO_DATE.test(requestedDate) ? requestedDate : fallbackDate,
+		startTime: validTimeRange ? startTime : null,
+		endTime: validTimeRange ? endTime : null,
 		cameraId: clean(params.get('camera')),
 		type: clean(params.get('type')),
 		source: requestedSource === 'camera' || requestedSource === 'keeppeek' ? requestedSource : null,
+		zone: clean(params.get('zone')),
 		minimumConfidence:
 			Number.isFinite(parsedConfidence) && parsedConfidence >= 0 && parsedConfidence <= 1
 				? parsedConfidence
@@ -90,9 +125,12 @@ export function eventBrowserSearchParams(
 ): URLSearchParams {
 	return new URLSearchParams({
 		date: filters.date,
+		...(filters.startTime ? { from: filters.startTime } : {}),
+		...(filters.endTime ? { to: filters.endTime } : {}),
 		...(filters.cameraId ? { camera: filters.cameraId } : {}),
 		...(filters.type ? { type: filters.type } : {}),
 		...(filters.source ? { source: filters.source } : {}),
+		...(filters.zone ? { zone: filters.zone } : {}),
 		...(filters.minimumConfidence === null
 			? {}
 			: { confidence: String(filters.minimumConfidence) }),
@@ -117,6 +155,12 @@ export function filterEventBrowserRecords(
 				return false;
 			}
 			if (filters.source !== null && record.event.source !== filters.source) return false;
+			if (
+				filters.zone !== null &&
+				record.event.zone?.toLocaleLowerCase() !== filters.zone.toLocaleLowerCase()
+			) {
+				return false;
+			}
 			if (
 				filters.minimumConfidence !== null &&
 				(record.event.confidence === null || record.event.confidence < filters.minimumConfidence)
@@ -152,9 +196,12 @@ export function eventBrowserRecordKey(record: EventBrowserRecord): string {
 
 export function eventFilterSummary(filters: EventBrowserFilters): string {
 	const clauses = [
+		filters.startTime ? `from ${filters.startTime} UTC` : null,
+		filters.endTime ? `until ${filters.endTime} UTC` : null,
 		filters.cameraId ? `camera ${filters.cameraId}` : null,
 		filters.type ? `type ${filters.type}` : null,
 		filters.source ? `source ${filters.source}` : null,
+		filters.zone ? `zone ${filters.zone}` : null,
 		filters.minimumConfidence === null ? null : `confidence at least ${filters.minimumConfidence}`,
 		filters.image === 'with'
 			? 'with images'
@@ -198,6 +245,9 @@ export function eventNoResultsSuggestion(
 			: []),
 		...(filters.source
 			? [{ label: (count: number) => `Any source · ${count} results`, update: { source: null } }]
+			: []),
+		...(filters.zone
+			? [{ label: (count: number) => `Any zone · ${count} results`, update: { zone: null } }]
 			: []),
 		...(filters.image !== 'all'
 			? [
