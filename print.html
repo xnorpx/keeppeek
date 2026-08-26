@@ -199,7 +199,8 @@ reason code.</p>
 <li>Fresh battery registration without a connected transport or pending wake request: <code>stopped</code>
 with <code>battery_sleeping</code>. An accepted wake remains pending until connected media clears it;
 failures therefore become <code>reconnecting</code> or <code>offline</code>, not sleeping.</li>
-<li>Initial grace period without complete evidence: <code>starting</code>.</li>
+<li>During initial grace, incomplete or transiently unhealthy evidence remains <code>starting</code>; a complete
+healthy snapshot may promote immediately.</li>
 <li>Reconnecting transport: <code>reconnecting</code>, or <code>offline</code> after recent evidence expires.</li>
 <li>No report, an old report, or frames that stopped advancing: <code>stale</code>.</li>
 <li>Missing keyframes, stalled requested recording, low frame rate, partial transport, recent errors,
@@ -226,12 +227,30 @@ configuration is unavailable. It is clamped to 30 through 120 seconds.</li>
 seconds.</li>
 <li>Initial startup grace is two ingress report intervals, currently 20 seconds.</li>
 </ul>
+<p>The first ingress report establishes the baseline for cumulative reconnect, drop, and error
+counters. An initial connection is therefore not reported as a recent reconnect. During startup
+grace, partial-window frame rates and other transient evidence remain <code>starting</code>; if they have not
+recovered when grace expires, the canonical degraded or offline reason becomes visible.</p>
 <p>These thresholds are the bounded debounce window. One missed 10-second ingress report does not
 change a camera to <code>stale</code>; report evidence must age beyond 30 seconds. Recovery is intentionally
 asymmetric: a new advancing frame or keyframe counter can recover the state immediately. The API
 still returns the actual evidence ages, and clients do not add another timer or rewrite the state.</p>
 <p>These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.</p>
+<h2 id="session-durations"><a class="header" href="#session-durations">Session durations</a></h2>
+<p>Camera health reports current-process session durations separately from historical archive
+coverage:</p>
+<ul>
+<li><code>session_duration_ms</code> is the longest observed ingress-worker duration for the camera's expected
+video streams;</li>
+<li><code>recorded_main_duration_ms</code> and <code>recorded_sub_duration_ms</code> accumulate video sample durations only
+after those samples are successfully appended to MP4 during the current process run;</li>
+<li><code>recorded_total_duration_ms</code> is the sum of all requested stream durations for that camera session.</li>
+</ul>
+<p>The total can exceed camera session elapsed time when Main and Sub record concurrently. These
+counters reset when KeepPeek restarts or the corresponding recording-health registry is replaced;
+they do not claim lifetime or retained archive coverage. A recording indicator uses writer progress
+state, not a comparison between these counters and wall time.</p>
 <h2 id="reasons-and-detail"><a class="header" href="#reasons-and-detail">Reasons and detail</a></h2>
 <p>Every camera and stream includes:</p>
 <ul>
