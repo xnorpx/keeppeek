@@ -1,8 +1,9 @@
 use crate::api::proto::{
     self, camera_configuration_command, camera_control_command, event_search_command,
-    health_command, logging_command, ok as control_ok, optional_string_update,
-    request as control_request, response as control_response, runtime_configuration_command,
-    server_command, stored_media_command,
+    health_command, logging_command, notification_rule_command, notification_rule_result,
+    ok as control_ok, optional_string_update, request as control_request,
+    response as control_response, runtime_configuration_command, server_command,
+    stored_media_command,
 };
 use crate::{
     access::{AccessKey, AccessKeyFingerprint},
@@ -27,6 +28,10 @@ use crate::{
     },
     keeppeek::{KeepPeekControl, StreamKind},
     logging::{LogStreamError, LoggingService, LoggingSettings},
+    notifications::{
+        AttemptRecord, ClearScope, Handle as NotificationHandle, HistoryEvent, HistoryGroup, Inbox,
+        NotificationItem, RuleRecord, RuleStoreError, Stage, model::Rule as NotificationRule,
+    },
     rtsp::{RtspTransport, probe_rtsp_video},
     runtime::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
@@ -108,6 +113,7 @@ const MAX_CAMERA_DISCOVERY_TASKS: usize = 16;
 const MAX_CAMERA_METADATA_WORKERS: usize = 4;
 // Limits user-provided search text before it becomes part of in-memory matching work.
 const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
+const MAX_NOTIFICATION_RULE_JSON_BYTES: usize = 64 * 1_024;
 
 static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
 
@@ -258,6 +264,7 @@ struct ControlCommandError {
     code: proto::ErrorCode,
     _http_status: u16,
     message: String,
+    details: Vec<prost_types::Any>,
 }
 
 impl ControlCommandError {
@@ -266,7 +273,13 @@ impl ControlCommandError {
             code,
             _http_status: http_status,
             message: message.into(),
+            details: Vec::new(),
         }
+    }
+
+    fn with_detail(mut self, detail: prost_types::Any) -> Self {
+        self.details.push(detail);
+        self
     }
 }
 
@@ -327,6 +340,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Err(error) => Err(error),
                 }
             }
+            Some(control_request::Command::NotificationRuleCommand(command)) => self
+                .handle_notification_rules(session_id, command)
+                .map(Some),
             Some(control_request::Command::StoredMediaCommand(command)) => {
                 match self.handle_stored_media(session_id, command) {
                     Ok(dispatch) => {
@@ -359,7 +375,7 @@ impl ControlRequestHandler for ServerControlHandler {
                     Err(error) => control_response::Result::Error(proto::Error {
                         code: error.code as i32,
                         message: error.message,
-                        details: Vec::new(),
+                        details: error.details,
                     }),
                 }),
             },
@@ -460,18 +476,22 @@ impl ControlRequestHandler for ServerControlHandler {
             .iter()
             .filter_map(proto_camera_stored_media_source)
             .collect();
+        let mut capability_ids = vec![
+            "keeppeek.media-export.v1".to_owned(),
+            "keeppeek.event-search".to_owned(),
+            "keeppeek.event-publication.v1".to_owned(),
+            "stored-media-keyframe-preview.v1".to_owned(),
+        ];
+        if self.state.notifications.is_some() {
+            capability_ids.push("keeppeek.rules.v1".to_owned());
+        }
         Some(proto::ServerCapabilities {
             revision: 1,
             cameras,
             source_sessions,
             stored_media_sources,
             self_source_session_id,
-            capability_ids: vec![
-                "keeppeek.media-export.v1".to_owned(),
-                "keeppeek.event-search".to_owned(),
-                "keeppeek.event-publication.v1".to_owned(),
-                "stored-media-keyframe-preview.v1".to_owned(),
-            ],
+            capability_ids,
         })
     }
 
@@ -947,6 +967,236 @@ impl ServerControlHandler {
                 "camera catalog is unavailable",
             )
         })
+    }
+
+    fn handle_notification_rules(
+        &self,
+        session_id: SessionId,
+        command: proto::NotificationRuleCommand,
+    ) -> Result<control_ok::Result, ControlCommandError> {
+        let principal_id = self.notification_principal(session_id)?;
+        let notifications = self.state.notifications.as_ref().ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "notification runtime is unavailable",
+            )
+        })?;
+        let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+        let result = match command.action {
+            Some(notification_rule_command::Action::ListRules(_)) => {
+                let rules = notifications
+                    .rules(principal_id)
+                    .map_err(|error| notification_command_error("list rules", error, false))?
+                    .into_iter()
+                    .map(proto_notification_rule_record)
+                    .collect::<anyhow::Result<Vec<_>>>()
+                    .map_err(|error| notification_command_error("encode rules", error, false))?;
+                notification_rule_result::Result::Rules(proto::NotificationRuleList { rules })
+            }
+            Some(notification_rule_command::Action::SaveDraft(request)) => {
+                if request.definition_json.len() > MAX_NOTIFICATION_RULE_JSON_BYTES {
+                    return Err(ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        413,
+                        "notification rule definition is too large",
+                    ));
+                }
+                let mut definition: serde_json::Value =
+                    serde_json::from_str(&request.definition_json).map_err(|_| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            400,
+                            "notification rule definition is invalid",
+                        )
+                    })?;
+                let rule_id = definition
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            400,
+                            "notification rule definition has no rule ID",
+                        )
+                    })?;
+                let existing = notifications
+                    .rules(principal_id)
+                    .map_err(|error| notification_command_error("load rule draft", error, false))?
+                    .into_iter()
+                    .find(|record| record.id == rule_id);
+                restore_notification_destinations(&mut definition, existing.as_ref())?;
+                let mut rule: NotificationRule =
+                    serde_json::from_value(definition).map_err(|_| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            400,
+                            "notification rule definition is invalid",
+                        )
+                    })?;
+                rule.owner_id = principal_id.to_owned();
+                let record = notifications
+                    .save_draft(rule, request.expected_draft_revision, now_ms)
+                    .map_err(|error| notification_command_error("save draft", error, true))?;
+                notification_rule_result::Result::Rule(
+                    proto_notification_rule_record(record).map_err(|error| {
+                        notification_command_error("encode saved rule", error, false)
+                    })?,
+                )
+            }
+            Some(notification_rule_command::Action::Activate(request)) => {
+                validate_client_id(&request.rule_id, "notification rule ID")?;
+                let record = notifications
+                    .activate(
+                        request.rule_id,
+                        principal_id,
+                        request.expected_active_revision,
+                        request.expected_draft_revision,
+                        now_ms,
+                    )
+                    .map_err(|error| notification_command_error("activate rule", error, true))?;
+                notification_rule_result::Result::Rule(
+                    proto_notification_rule_record(record).map_err(|error| {
+                        notification_command_error("encode activated rule", error, false)
+                    })?,
+                )
+            }
+            Some(notification_rule_command::Action::Delete(request)) => {
+                validate_client_id(&request.rule_id, "notification rule ID")?;
+                notifications
+                    .delete(
+                        request.rule_id.clone(),
+                        principal_id,
+                        request.expected_active_revision,
+                        request.expected_draft_revision,
+                        now_ms,
+                    )
+                    .map_err(|error| notification_command_error("delete rule", error, false))?;
+                notification_rule_result::Result::Mutation(proto::NotificationMutationResult {
+                    logical_id: request.rule_id,
+                })
+            }
+            Some(notification_rule_command::Action::Test(request)) => {
+                validate_client_id(&request.rule_id, "notification rule ID")?;
+                let summary = notifications
+                    .test_rule(request.rule_id, principal_id, now_ms)
+                    .map_err(|error| notification_command_error("test rule", error, true))?;
+                notification_rule_result::Result::Test(proto::NotificationTestResult {
+                    matched_rules: summary.matched,
+                    created_notifications: summary.created,
+                    queued_attempts: summary.queued_attempts,
+                })
+            }
+            Some(notification_rule_command::Action::GetInbox(request)) => {
+                let inbox = notifications
+                    .inbox(principal_id, notification_page_limit(request.limit))
+                    .map_err(|error| notification_command_error("load inbox", error, false))?;
+                notification_rule_result::Result::Inbox(proto_notification_inbox(inbox))
+            }
+            Some(notification_rule_command::Action::GetHistory(request)) => {
+                let groups = notifications
+                    .history(principal_id, notification_page_limit(request.limit))
+                    .map_err(|error| notification_command_error("load history", error, false))?;
+                notification_rule_result::Result::History(proto::NotificationHistory {
+                    groups: groups
+                        .into_iter()
+                        .map(proto_notification_history_group)
+                        .collect(),
+                })
+            }
+            Some(notification_rule_command::Action::MarkSeen(request)) => {
+                validate_client_id(&request.logical_id, "logical notification ID")?;
+                notifications
+                    .mark_seen(request.logical_id.clone(), principal_id, now_ms)
+                    .map_err(|error| {
+                        notification_command_error("mark notification seen", error, false)
+                    })?;
+                notification_rule_result::Result::Mutation(proto::NotificationMutationResult {
+                    logical_id: request.logical_id,
+                })
+            }
+            Some(notification_rule_command::Action::Acknowledge(request)) => {
+                validate_client_id(&request.logical_id, "logical notification ID")?;
+                notifications
+                    .acknowledge(request.logical_id.clone(), principal_id, now_ms)
+                    .map_err(|error| {
+                        notification_command_error("acknowledge notification", error, false)
+                    })?;
+                notification_rule_result::Result::Mutation(proto::NotificationMutationResult {
+                    logical_id: request.logical_id,
+                })
+            }
+            Some(notification_rule_command::Action::Clear(request)) => {
+                validate_client_id(&request.logical_id, "logical notification ID")?;
+                notifications
+                    .clear(request.logical_id.clone(), principal_id, now_ms)
+                    .map_err(|error| {
+                        notification_command_error("clear notification", error, false)
+                    })?;
+                notification_rule_result::Result::Mutation(proto::NotificationMutationResult {
+                    logical_id: request.logical_id,
+                })
+            }
+            Some(notification_rule_command::Action::ClearScope(request)) => {
+                let scope = match request.scope {
+                    Some(proto::clear_notifications::Scope::All(true)) => ClearScope::All,
+                    Some(proto::clear_notifications::Scope::RuleId(rule_id)) => {
+                        validate_client_id(&rule_id, "notification rule ID")?;
+                        ClearScope::Rule(rule_id)
+                    }
+                    Some(proto::clear_notifications::Scope::BeforeMs(before_ms)) => {
+                        ClearScope::Before(before_ms)
+                    }
+                    Some(proto::clear_notifications::Scope::All(false)) | None => {
+                        return Err(ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            400,
+                            "notification clear scope is required",
+                        ));
+                    }
+                };
+                let cleared_count = notifications
+                    .clear_scope(principal_id, scope, now_ms)
+                    .map_err(|error| {
+                        notification_command_error("clear notifications", error, false)
+                    })?;
+                notification_rule_result::Result::Cleared(proto::NotificationClearResult {
+                    cleared_count,
+                })
+            }
+            None => {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "notification rule command has no action",
+                ));
+            }
+        };
+        Ok(control_ok::Result::NotificationRuleResult(
+            proto::NotificationRuleResult {
+                result: Some(result),
+            },
+        ))
+    }
+
+    fn notification_principal(
+        &self,
+        session_id: SessionId,
+    ) -> Result<&'static str, ControlCommandError> {
+        let owners = self
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owners.contains_key(&session_id) {
+            Ok("administrator")
+        } else {
+            Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                403,
+                "notification commands require an authenticated API session",
+            ))
+        }
     }
 
     fn handle_camera_control(
@@ -6957,6 +7207,7 @@ pub struct ServerState {
     camera_database: Option<Arc<CameraDatabase>>,
     catalog: Option<RecordingCatalogHandle>,
     logging: Option<LoggingService>,
+    notifications: Option<NotificationHandle>,
     started_at: Instant,
 }
 
@@ -7017,6 +7268,7 @@ impl ServerState {
             camera_database: None,
             catalog: None,
             logging: None,
+            notifications: None,
             started_at: Instant::now(),
         }
     }
@@ -7218,6 +7470,257 @@ impl ServerState {
     pub fn with_logging(mut self, logging: LoggingService) -> Self {
         self.logging = Some(logging);
         self
+    }
+
+    pub(crate) fn with_notifications(mut self, notifications: NotificationHandle) -> Self {
+        self.notifications = Some(notifications);
+        self
+    }
+}
+
+fn notification_command_error(
+    operation: &str,
+    error: anyhow::Error,
+    invalid_fallback: bool,
+) -> ControlCommandError {
+    match error.downcast_ref::<RuleStoreError>() {
+        Some(RuleStoreError::Conflict {
+            active_revision,
+            draft_revision,
+        }) => ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "notification rule revision conflict",
+        )
+        .with_detail(prost_types::Any {
+            type_url: "type.keeppeek.dev/notification-rule-conflict.v1".to_owned(),
+            value: serde_json::to_vec(&serde_json::json!({
+                "active_revision": active_revision,
+                "draft_revision": draft_revision,
+            }))
+            .unwrap_or_default(),
+        }),
+        Some(RuleStoreError::NotFound) => ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "notification rule was not found",
+        ),
+        Some(RuleStoreError::NotAuthorized) => ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            403,
+            "notification resource is not owned by this principal",
+        ),
+        None if invalid_fallback => ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            format!("unable to {operation}: {error}"),
+        ),
+        None => {
+            tracing::warn!(%operation, error = %error, "notification command failed");
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                format!("unable to {operation}"),
+            )
+        }
+    }
+}
+
+fn notification_page_limit(limit: Option<u32>) -> usize {
+    usize::try_from(limit.unwrap_or(100).clamp(1, 200)).unwrap_or(200)
+}
+
+fn proto_notification_rule_record(
+    record: RuleRecord,
+) -> anyhow::Result<proto::NotificationRuleRecord> {
+    Ok(proto::NotificationRuleRecord {
+        rule_id: record.id,
+        owner_id: record.owner_id,
+        active_definition_json: record
+            .active
+            .map(|rule| redacted_notification_rule_json(&rule))
+            .transpose()?,
+        active_revision: record.active_revision,
+        draft_definition_json: redacted_notification_rule_json(&record.draft)?,
+        draft_revision: record.draft_revision,
+        created_at_ms: record.created_at_ms,
+        updated_at_ms: record.updated_at_ms,
+        last_match_at_ms: record.last_match_at_ms,
+        last_delivery_at_ms: record.last_delivery_at_ms,
+    })
+}
+
+fn redacted_notification_rule_json(rule: &NotificationRule) -> anyhow::Result<String> {
+    let mut definition = serde_json::to_value(rule)?;
+    if let Some(actions) = definition
+        .get_mut("actions")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for (action, configured_action) in actions.iter_mut().zip(&rule.actions) {
+            let Some(action) = action.as_object_mut() else {
+                continue;
+            };
+            if !configured_action.destination.is_empty() {
+                action.insert(
+                    "destination".to_owned(),
+                    serde_json::Value::String(String::new()),
+                );
+                action.insert(
+                    "destination_configured".to_owned(),
+                    serde_json::Value::Bool(true),
+                );
+                action.insert(
+                    "destination_ref".to_owned(),
+                    serde_json::Value::String(notification_destination_ref(
+                        &configured_action.destination,
+                    )),
+                );
+            }
+        }
+    }
+    serde_json::to_string(&definition).map_err(Into::into)
+}
+
+fn restore_notification_destinations(
+    definition: &mut serde_json::Value,
+    existing: Option<&RuleRecord>,
+) -> Result<(), ControlCommandError> {
+    let Some(actions) = definition
+        .get_mut("actions")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+    for action in actions.iter_mut() {
+        let Some(action) = action.as_object_mut() else {
+            continue;
+        };
+        let preserve = action
+            .remove("destination_configured")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        if !preserve {
+            action.remove("destination_ref");
+            continue;
+        }
+        let destination_ref = action
+            .remove("destination_ref")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "configured notification destination has no redacted reference",
+                )
+            })?;
+        let channel = action.get("channel").and_then(serde_json::Value::as_str);
+        let previous = existing
+            .into_iter()
+            .flat_map(|record| record.draft.actions.iter())
+            .find(|previous| {
+                Some(previous.channel.as_str()) == channel
+                    && notification_destination_ref(&previous.destination) == destination_ref
+            })
+            .map(|previous| previous.destination.as_str())
+            .filter(|destination| !destination.is_empty())
+            .ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    400,
+                    "configured notification destination could not be preserved",
+                )
+            })?;
+        action.insert(
+            "destination".to_owned(),
+            serde_json::Value::String(previous.to_owned()),
+        );
+    }
+    Ok(())
+}
+
+fn notification_destination_ref(destination: &str) -> String {
+    encode_lower_hex(Sha256::digest(destination.as_bytes()))
+}
+
+fn proto_notification_inbox(inbox: Inbox) -> proto::NotificationInbox {
+    proto::NotificationInbox {
+        items: inbox
+            .items
+            .into_iter()
+            .map(proto_notification_item)
+            .collect(),
+        unread_count: inbox.unread_count,
+    }
+}
+
+fn proto_notification_item(item: NotificationItem) -> proto::NotificationItem {
+    proto::NotificationItem {
+        logical_id: item.logical_id,
+        rule_id: item.rule_id,
+        source_id: item.source_id,
+        lifecycle: item.lifecycle,
+        stage: notification_stage_name(item.stage).to_owned(),
+        revision: item.revision,
+        title: item.title,
+        body: item.body,
+        deep_link: item.deep_link,
+        attachment_available: item.attachment_available,
+        severity: item.severity.as_str().to_owned(),
+        created_at_ms: item.created_at_ms,
+        updated_at_ms: item.updated_at_ms,
+        seen_at_ms: item.seen_at_ms,
+        acknowledged_at_ms: item.acknowledged_at_ms,
+    }
+}
+
+fn proto_notification_history_group(group: HistoryGroup) -> proto::NotificationHistoryGroup {
+    proto::NotificationHistoryGroup {
+        notification: Some(proto_notification_item(group.notification)),
+        events: group
+            .events
+            .into_iter()
+            .map(proto_notification_history_event)
+            .collect(),
+        attempts: group
+            .attempts
+            .into_iter()
+            .map(proto_notification_attempt)
+            .collect(),
+    }
+}
+
+fn proto_notification_history_event(event: HistoryEvent) -> proto::NotificationHistoryEvent {
+    proto::NotificationHistoryEvent {
+        sequence: event.sequence,
+        revision: event.revision,
+        stage: notification_stage_name(event.stage).to_owned(),
+        outcome: event.outcome,
+        reason: event.reason,
+        occurred_at_ms: event.occurred_at_ms,
+        next_eligible_at_ms: event.next_eligible_at_ms,
+    }
+}
+
+fn proto_notification_attempt(attempt: AttemptRecord) -> proto::NotificationDeliveryAttempt {
+    proto::NotificationDeliveryAttempt {
+        sequence: attempt.sequence,
+        channel: attempt.channel,
+        stage: notification_stage_name(attempt.stage).to_owned(),
+        attempt: attempt.attempt,
+        outcome: attempt.outcome,
+        target_hash: attempt.target_hash,
+        provider_status: attempt.provider_status.map(u32::from),
+        reason: attempt.reason,
+        attempted_at_ms: attempt.attempted_at_ms,
+        retry_at_ms: attempt.retry_at_ms,
+    }
+}
+
+const fn notification_stage_name(stage: Stage) -> &'static str {
+    match stage {
+        Stage::Preliminary => "preliminary",
+        Stage::Enriched => "enriched",
+        Stage::Recovery => "recovery",
     }
 }
 
@@ -11021,6 +11524,241 @@ mod tests {
                 "stored-media-keyframe-preview.v1"
             ]
         );
+    }
+
+    #[test]
+    fn notification_rules_require_auth_and_preserve_conflict_revisions() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-notification-control-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let runtime =
+            crate::notifications::Runtime::open(&directory.join("notifications.db")).unwrap();
+        let session_id = SessionId::from_u64(501);
+        let state = ServerState::empty().with_notifications(runtime.handle());
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session_id, ApiPrincipal::LoopbackAdministrator);
+        let handler = test_control_handler(state);
+        let capabilities = handler.initial_capabilities(session_id).unwrap();
+        assert!(
+            capabilities
+                .capability_ids
+                .contains(&"keeppeek.rules.v1".to_owned())
+        );
+
+        let definition = serde_json::json!({
+            "id": "front-door-person",
+            "name": "Front door person",
+            "enabled": true,
+            "revision": 0,
+            "owner_id": "ignored-client-owner",
+            "triggers": ["event_created", "event_updated"],
+            "filter": { "event_kinds": ["person"] },
+            "schedule": {
+                "timezone": "UTC",
+                "active_windows": [],
+                "quiet_hours": null
+            },
+            "cooldowns": [{ "scope": "event", "duration_ms": 30000 }],
+            "rate_limits": [],
+            "critical_bypass": null,
+            "enrichment": {
+                "deadline_ms": 10000,
+                "maximum_revisions": 4,
+                "maximum_attempts": 2,
+                "maximum_attachment_bytes": 1048576,
+                "wake_after_deadline": false
+            },
+            "actions": [
+                {
+                    "channel": "browser",
+                    "destination": "",
+                    "template": {
+                        "title": "Person at {{source.id}}",
+                        "body": "Open {{notification.deep_link}}"
+                    },
+                    "attachment": "when_available",
+                    "allow_second_delivery": false
+                },
+                {
+                    "channel": "webhook",
+                    "destination": "https://hooks.example.invalid/keeppeek?token=secret-target",
+                    "template": {
+                        "title": "Person at {{source.id}}",
+                        "body": "Open {{notification.deep_link}}"
+                    },
+                    "attachment": "never",
+                    "allow_second_delivery": false
+                }
+            ],
+            "failure": {
+                "maximum_attempts": 3,
+                "maximum_retry_interval_ms": 60000,
+                "expiry_ms": 3600000
+            }
+        })
+        .to_string();
+        let save = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::NotificationRuleCommand(
+                    proto::NotificationRuleCommand {
+                        action: Some(notification_rule_command::Action::SaveDraft(
+                            proto::SaveNotificationRuleDraft {
+                                definition_json: definition.clone(),
+                                expected_draft_revision: 0,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let saved = match save.response.result.unwrap() {
+            control_response::Result::Ok(proto::Ok {
+                result:
+                    Some(control_ok::Result::NotificationRuleResult(proto::NotificationRuleResult {
+                        result: Some(notification_rule_result::Result::Rule(rule)),
+                    })),
+            }) => rule,
+            other => panic!("unexpected notification save response: {other:?}"),
+        };
+        assert_eq!(saved.owner_id, "administrator");
+        assert_eq!(saved.draft_revision, 1);
+        assert!(!saved.draft_definition_json.contains("secret-target"));
+        let mut redacted: serde_json::Value =
+            serde_json::from_str(&saved.draft_definition_json).unwrap();
+        assert_eq!(redacted["actions"][1]["destination"], "");
+        assert_eq!(redacted["actions"][1]["destination_configured"], true);
+        assert_eq!(
+            redacted["actions"][1]["destination_ref"]
+                .as_str()
+                .map(str::len),
+            Some(64)
+        );
+        redacted["actions"].as_array_mut().unwrap().swap(0, 1);
+        let reordered_redacted = serde_json::to_string(&redacted).unwrap();
+
+        let activate = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 2,
+                command: Some(control_request::Command::NotificationRuleCommand(
+                    proto::NotificationRuleCommand {
+                        action: Some(notification_rule_command::Action::Activate(
+                            proto::ActivateNotificationRule {
+                                rule_id: saved.rule_id.clone(),
+                                expected_active_revision: 0,
+                                expected_draft_revision: saved.draft_revision,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let active_revision = match activate.response.result.unwrap() {
+            control_response::Result::Ok(proto::Ok {
+                result:
+                    Some(control_ok::Result::NotificationRuleResult(proto::NotificationRuleResult {
+                        result: Some(notification_rule_result::Result::Rule(rule)),
+                    })),
+            }) => rule.active_revision,
+            other => panic!("unexpected notification activation response: {other:?}"),
+        };
+        assert_eq!(active_revision, 1);
+
+        let preserved = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 3,
+                command: Some(control_request::Command::NotificationRuleCommand(
+                    proto::NotificationRuleCommand {
+                        action: Some(notification_rule_command::Action::SaveDraft(
+                            proto::SaveNotificationRuleDraft {
+                                definition_json: reordered_redacted,
+                                expected_draft_revision: saved.draft_revision,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let preserved = match preserved.response.result.unwrap() {
+            control_response::Result::Ok(proto::Ok {
+                result:
+                    Some(control_ok::Result::NotificationRuleResult(proto::NotificationRuleResult {
+                        result: Some(notification_rule_result::Result::Rule(rule)),
+                    })),
+            }) => rule,
+            other => panic!("unexpected preserved notification response: {other:?}"),
+        };
+        assert_eq!(preserved.draft_revision, 2);
+        assert!(!preserved.draft_definition_json.contains("secret-target"));
+        let stored = runtime.handle().rules("administrator").unwrap();
+        assert_eq!(
+            stored[0]
+                .draft
+                .actions
+                .iter()
+                .find(|action| action.channel == crate::notifications::model::Channel::Webhook)
+                .unwrap()
+                .destination,
+            "https://hooks.example.invalid/keeppeek?token=secret-target"
+        );
+
+        let conflict = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 4,
+                command: Some(control_request::Command::NotificationRuleCommand(
+                    proto::NotificationRuleCommand {
+                        action: Some(notification_rule_command::Action::SaveDraft(
+                            proto::SaveNotificationRuleDraft {
+                                definition_json: definition,
+                                expected_draft_revision: 0,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let error = match conflict.response.result.unwrap() {
+            control_response::Result::Error(error) => error,
+            other => panic!("expected notification conflict: {other:?}"),
+        };
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        assert_eq!(error.details.len(), 1);
+        let details: serde_json::Value = serde_json::from_slice(&error.details[0].value).unwrap();
+        assert_eq!(details["active_revision"], 1);
+        assert_eq!(details["draft_revision"], 2);
+
+        let unauthorized = handler.handle_for_session(
+            SessionId::from_u64(999),
+            proto::Request {
+                request_id: 5,
+                command: Some(control_request::Command::NotificationRuleCommand(
+                    proto::NotificationRuleCommand {
+                        action: Some(notification_rule_command::Action::ListRules(
+                            proto::ListNotificationRules {},
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            unauthorized.response.result,
+            Some(control_response::Result::Error(proto::Error {
+                code,
+                ..
+            })) if code == proto::ErrorCode::Rejected as i32
+        ));
+        drop(handler);
+        runtime.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

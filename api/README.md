@@ -43,6 +43,9 @@ compatibility guarantees begin with the 1.0 release.
   optionally host live participants, with group discovery, optional passwords, individual
   participant subscriptions, full-duplex audio with client-side push to talk, and per-medium
   recording policy.
+- [Notification rules](../docs/notifications.md) describes revisioned rules, deterministic collapse
+  identity, cooldowns, staged enrichment, durable delivery history, and principal-scoped unread
+  state.
 - [Home Assistant card](../docs/home-assistant.md) shows a direct browser-to-KeepPeek Lovelace card with
   one configured token, direct live media/events/timeline review, and no Home Assistant proxy.
 

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
-import { durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
+import { AnySchema, durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Page } from '@playwright/test';
 import {
 	CameraDiscoveryResultSchema,
@@ -71,6 +71,18 @@ import {
 	NetworkHealthSnapshotSchema,
 	OkSchema,
 	NotificationSchema,
+	NotificationClearResultSchema,
+	NotificationDeliveryAttemptSchema,
+	NotificationHistoryEventSchema,
+	NotificationHistoryGroupSchema,
+	NotificationHistorySchema,
+	NotificationInboxSchema,
+	NotificationItemSchema,
+	NotificationMutationResultSchema,
+	NotificationRuleListSchema,
+	NotificationRuleRecordSchema,
+	NotificationRuleResultSchema,
+	NotificationTestResultSchema,
 	PtzCapabilitySchema,
 	PtzPresetSchema,
 	PtzResultSchema,
@@ -134,6 +146,13 @@ import type {
 	SettingsConfigUpdate,
 	SettingsConfigUpdateResponse
 } from '../../src/lib/types';
+import type {
+	NotificationHistoryGroup,
+	NotificationInbox,
+	NotificationItem,
+	NotificationRuleDefinition,
+	NotificationRuleRecord
+} from '../../src/lib/notifications';
 
 type DeepPartial<T> = T extends readonly (infer Item)[]
 	? DeepPartial<Item>[]
@@ -268,6 +287,7 @@ export type ControlRequests = {
 	maxConcurrentEventMedia: number;
 	exportJobs: ExportControlRequest[];
 	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
+	notificationActions: string[];
 };
 
 export type MockControlPeerOptions = {
@@ -312,6 +332,10 @@ export type MockControlPeerOptions = {
 	exportGetResults?: readonly ExportJobFixture[];
 	exportRetryResult?: ExportJobFixture;
 	exportFile?: Uint8Array;
+	notificationRules?: readonly NotificationRuleRecord[];
+	notificationInbox?: NotificationInbox;
+	notificationHistory?: readonly NotificationHistoryGroup[];
+	notificationConflictOnSave?: boolean;
 };
 
 function encodedOk(requestId: bigint, result?: Ok['result']): number[] {
@@ -341,6 +365,107 @@ function encodedError(requestId: bigint, message: string): number[] {
 		}
 	});
 	return Array.from(toBinary(ControlEnvelopeSchema, response));
+}
+
+function encodedNotificationConflict(
+	requestId: bigint,
+	activeRevision: bigint,
+	draftRevision: bigint
+): number[] {
+	const response = create(ControlEnvelopeSchema, {
+		message: {
+			case: 'response',
+			value: create(ResponseSchema, {
+				requestId,
+				result: {
+					case: 'error',
+					value: create(ErrorSchema, {
+						code: ErrorCode.REJECTED,
+						message: 'notification rule revision conflict',
+						details: [
+							create(AnySchema, {
+								typeUrl: 'type.keeppeek.dev/notification-rule-conflict.v1',
+								value: new TextEncoder().encode(
+									JSON.stringify({
+										active_revision: Number(activeRevision),
+										draft_revision: Number(draftRevision)
+									})
+								)
+							})
+						]
+					})
+				}
+			})
+		}
+	});
+	return Array.from(toBinary(ControlEnvelopeSchema, response));
+}
+
+function protoNotificationRule(record: NotificationRuleRecord) {
+	return create(NotificationRuleRecordSchema, {
+		ruleId: record.id,
+		ownerId: record.ownerId,
+		activeDefinitionJson: record.active ? JSON.stringify(record.active) : undefined,
+		activeRevision: record.activeRevision,
+		draftDefinitionJson: JSON.stringify(record.draft),
+		draftRevision: record.draftRevision,
+		createdAtMs: BigInt(record.createdAtMs),
+		updatedAtMs: BigInt(record.updatedAtMs),
+		lastMatchAtMs: record.lastMatchAtMs === null ? undefined : BigInt(record.lastMatchAtMs),
+		lastDeliveryAtMs: record.lastDeliveryAtMs === null ? undefined : BigInt(record.lastDeliveryAtMs)
+	});
+}
+
+function protoNotificationItem(item: NotificationItem) {
+	return create(NotificationItemSchema, {
+		logicalId: item.logicalId,
+		ruleId: item.ruleId,
+		sourceId: item.sourceId,
+		lifecycle: item.lifecycle,
+		stage: item.stage,
+		revision: item.revision,
+		title: item.title,
+		body: item.body,
+		deepLink: item.deepLink,
+		attachmentAvailable: item.attachmentAvailable,
+		severity: item.severity,
+		createdAtMs: BigInt(item.createdAtMs),
+		updatedAtMs: BigInt(item.updatedAtMs),
+		seenAtMs: item.seenAtMs === null ? undefined : BigInt(item.seenAtMs),
+		acknowledgedAtMs: item.acknowledgedAtMs === null ? undefined : BigInt(item.acknowledgedAtMs)
+	});
+}
+
+function protoNotificationHistory(group: NotificationHistoryGroup) {
+	return create(NotificationHistoryGroupSchema, {
+		notification: protoNotificationItem(group.notification),
+		events: group.events.map((event) =>
+			create(NotificationHistoryEventSchema, {
+				sequence: event.sequence,
+				revision: event.revision,
+				stage: event.stage,
+				outcome: event.outcome,
+				reason: event.reason ?? undefined,
+				occurredAtMs: BigInt(event.occurredAtMs),
+				nextEligibleAtMs:
+					event.nextEligibleAtMs === null ? undefined : BigInt(event.nextEligibleAtMs)
+			})
+		),
+		attempts: group.attempts.map((attempt) =>
+			create(NotificationDeliveryAttemptSchema, {
+				sequence: attempt.sequence,
+				channel: attempt.channel,
+				stage: attempt.stage,
+				attempt: attempt.attempt,
+				outcome: attempt.outcome,
+				targetHash: attempt.targetHash,
+				providerStatus: attempt.providerStatus ?? undefined,
+				reason: attempt.reason ?? undefined,
+				attemptedAtMs: BigInt(attempt.attemptedAtMs),
+				retryAtMs: attempt.retryAtMs === null ? undefined : BigInt(attempt.retryAtMs)
+			})
+		)
+	});
 }
 
 function encodedData(message: ReturnType<typeof create<typeof MessageSchema>>): number[] {
@@ -379,7 +504,8 @@ export async function mockControlPeer(
 		eventMediaFetches: [],
 		cancelledEventMedia: [],
 		maxConcurrentEventMedia: 0,
-		exportJobs: []
+		exportJobs: [],
+		notificationActions: []
 	};
 	let activeFilter = 'info,keeppeek=debug';
 	let activeDiscoveryId = '';
@@ -403,6 +529,13 @@ export async function mockControlPeer(
 	}
 	const exportCreateResults = [...(options.exportCreateResults ?? [])];
 	const exportGetResults = [...(options.exportGetResults ?? [])];
+	let notificationRules: NotificationRuleRecord[] = structuredClone([
+		...(options.notificationRules ?? [])
+	]);
+	let notificationInbox: NotificationInbox = structuredClone(
+		options.notificationInbox ?? { items: [], unreadCount: 0n }
+	);
+	const notificationHistory = structuredClone(options.notificationHistory ?? []);
 	await page.exposeFunction('takeKeepPeekData', () => pendingDataMessages.splice(0));
 	await page.exposeFunction('getKeepPeekCapabilities', () =>
 		encodedCapabilities(
@@ -427,6 +560,207 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'unsubscribe') {
 			return encodedOk(request.requestId, undefined);
+		}
+		if (request.command.case === 'notificationRuleCommand') {
+			const action = request.command.value.action;
+			if (!action.case) return encodedError(request.requestId, 'notification action is required');
+			requests.notificationActions.push(action.case);
+			if (action.case === 'listRules') {
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: {
+							case: 'rules',
+							value: create(NotificationRuleListSchema, {
+								rules: notificationRules.map(protoNotificationRule)
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'saveDraft') {
+				const definition = JSON.parse(action.value.definitionJson) as NotificationRuleDefinition;
+				const index = notificationRules.findIndex((record) => record.id === definition.id);
+				const existing = notificationRules[index];
+				const activeRevision = existing?.activeRevision ?? 0n;
+				const draftRevision = existing?.draftRevision ?? 0n;
+				if (
+					options.notificationConflictOnSave ||
+					action.value.expectedDraftRevision !== draftRevision
+				) {
+					return encodedNotificationConflict(request.requestId, activeRevision, draftRevision);
+				}
+				const nextDraftRevision = draftRevision + 1n;
+				definition.owner_id = 'administrator';
+				definition.revision = Number(nextDraftRevision);
+				const now = Date.now();
+				const record: NotificationRuleRecord = {
+					id: definition.id,
+					ownerId: 'administrator',
+					active: existing?.active ?? null,
+					activeRevision,
+					draft: definition,
+					draftRevision: nextDraftRevision,
+					createdAtMs: existing?.createdAtMs ?? now,
+					updatedAtMs: now,
+					lastMatchAtMs: existing?.lastMatchAtMs ?? null,
+					lastDeliveryAtMs: existing?.lastDeliveryAtMs ?? null
+				};
+				if (index === -1) notificationRules.push(record);
+				else notificationRules[index] = record;
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: { case: 'rule', value: protoNotificationRule(record) }
+					})
+				});
+			}
+			if (action.case === 'activate') {
+				const index = notificationRules.findIndex((record) => record.id === action.value.ruleId);
+				const existing = notificationRules[index];
+				if (!existing) return encodedError(request.requestId, 'notification rule was not found');
+				if (
+					action.value.expectedActiveRevision !== existing.activeRevision ||
+					action.value.expectedDraftRevision !== existing.draftRevision
+				) {
+					return encodedNotificationConflict(
+						request.requestId,
+						existing.activeRevision,
+						existing.draftRevision
+					);
+				}
+				const activeRevision = existing.activeRevision + 1n;
+				const record: NotificationRuleRecord = {
+					...existing,
+					active: { ...structuredClone(existing.draft), revision: Number(activeRevision) },
+					activeRevision,
+					updatedAtMs: Date.now()
+				};
+				notificationRules[index] = record;
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: { case: 'rule', value: protoNotificationRule(record) }
+					})
+				});
+			}
+			if (action.case === 'delete') {
+				notificationRules = notificationRules.filter((record) => record.id !== action.value.ruleId);
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: {
+							case: 'mutation',
+							value: create(NotificationMutationResultSchema, { logicalId: action.value.ruleId })
+						}
+					})
+				});
+			}
+			if (action.case === 'test') {
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: {
+							case: 'test',
+							value: create(NotificationTestResultSchema, {
+								matchedRules: 1,
+								createdNotifications: 1,
+								queuedAttempts: 1
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'getInbox') {
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: {
+							case: 'inbox',
+							value: create(NotificationInboxSchema, {
+								items: notificationInbox.items.map(protoNotificationItem),
+								unreadCount: notificationInbox.unreadCount
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'getHistory') {
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: {
+							case: 'history',
+							value: create(NotificationHistorySchema, {
+								groups: notificationHistory.map(protoNotificationHistory)
+							})
+						}
+					})
+				});
+			}
+			if (action.case === 'markSeen' || action.case === 'acknowledge' || action.case === 'clear') {
+				const logicalId = action.value.logicalId;
+				if (action.case === 'clear') {
+					notificationInbox = {
+						...notificationInbox,
+						items: notificationInbox.items.filter((item) => item.logicalId !== logicalId)
+					};
+				} else {
+					notificationInbox = {
+						...notificationInbox,
+						items: notificationInbox.items.map((item) =>
+							item.logicalId === logicalId
+								? {
+										...item,
+										seenAtMs: action.case === 'markSeen' ? Date.now() : item.seenAtMs,
+										acknowledgedAtMs:
+											action.case === 'acknowledge' ? Date.now() : item.acknowledgedAtMs
+									}
+								: item
+						)
+					};
+				}
+				notificationInbox.unreadCount = BigInt(
+					notificationInbox.items.filter((item) => item.seenAtMs === null).length
+				);
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: {
+							case: 'mutation',
+							value: create(NotificationMutationResultSchema, { logicalId })
+						}
+					})
+				});
+			}
+			if (action.case === 'clearScope') {
+				const previousCount = notificationInbox.items.length;
+				const scope = action.value.scope;
+				notificationInbox = {
+					items: notificationInbox.items.filter((item) => {
+						if (scope.case === 'all') return !scope.value;
+						if (scope.case === 'ruleId') return item.ruleId !== scope.value;
+						if (scope.case === 'beforeMs') return item.updatedAtMs >= Number(scope.value);
+						return true;
+					}),
+					unreadCount: 0n
+				};
+				notificationInbox.unreadCount = BigInt(
+					notificationInbox.items.filter((item) => item.seenAtMs === null).length
+				);
+				return encodedOk(request.requestId, {
+					case: 'notificationRuleResult',
+					value: create(NotificationRuleResultSchema, {
+						result: {
+							case: 'cleared',
+							value: create(NotificationClearResultSchema, {
+								clearedCount: BigInt(previousCount - notificationInbox.items.length)
+							})
+						}
+					})
+				});
+			}
+			return encodedError(request.requestId, 'unsupported notification action');
 		}
 		if (request.command.case === 'eventSearchCommand') {
 			const action = request.command.value.action;

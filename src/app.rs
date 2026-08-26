@@ -10,6 +10,7 @@ use crate::{
     config::{self, Config},
     keeppeek::KeepPeekLoop,
     logging::LoggingService,
+    notifications::{HealthMonitor as NotificationHealthMonitor, Runtime as NotificationRuntime},
     runtime::{Router, RouterMessage, WorkerEvent},
     server::{ServerState, run_server},
     shutdown::{Restart, Shutdown},
@@ -137,8 +138,19 @@ pub fn run(
         &storage_config.event_thumbnail_path,
         storage_config.event_thumbnail_max_bytes,
     )?;
+    let notification_path = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("notifications.db");
+    let notification_runtime = NotificationRuntime::open(&notification_path)?;
+    let notification_handle = notification_runtime.handle();
     let recording_demand = storage_engine.demand();
     let recording_health = storage_engine.health();
+    let notification_health = NotificationHealthMonitor::start(
+        recording_health.clone(),
+        notification_handle.clone(),
+        shutdown.clone(),
+    )?;
     let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
     let health_registry = HealthRegistry::new();
     let server_state = ServerState::new(
@@ -158,6 +170,7 @@ pub fn run(
     .with_recording_catalog(recording_catalog.handle())
     .with_recording_health(recording_health)
     .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
+    let server_state = server_state.with_notifications(notification_handle.clone());
 
     let (mut router, router_tx) = Router::new()?;
     for camera in cameras.values() {
@@ -184,6 +197,7 @@ pub fn run(
     keeppeek.set_event_store(event_store);
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
+    keeppeek.set_notifications(notification_handle);
     if let Some(battery_wake) = &battery_wake {
         keeppeek.set_battery_wake(battery_wake.handle());
     }
@@ -233,6 +247,8 @@ pub fn run(
         battery_wake.join();
     }
 
+    notification_health.join();
+    notification_runtime.shutdown();
     tracing::info!("flushing and finalizing all recordings...");
     storage_engine.shutdown();
     recording_catalog.shutdown();

@@ -82,6 +82,8 @@ test = false
 anyhow = { version = "*" }
 base64 = { version = "*" }
 bytes = { version = "*" }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
 clap = { version = "*", default-features = false, features = [
   "std",
   "derive",
