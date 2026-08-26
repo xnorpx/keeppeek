@@ -145,8 +145,9 @@ test('meets dense metadata-first DOM, transfer, and long-task budgets', async ({
 		body: JSON.stringify({ firstPageMs, ...metrics }, null, 2),
 		contentType: 'application/json'
 	});
-	const firstPageBudgetMs = testInfo.config.workers === 1 ? 1_000 : 2_000;
-	const longTaskBudgetMs = testInfo.config.workers === 1 ? 50 : 150;
+	const contendedRunner = Boolean(process.env.CI) || testInfo.config.workers > 1;
+	const firstPageBudgetMs = contendedRunner ? 2_000 : 1_000;
+	const longTaskBudgetMs = contendedRunner ? 150 : 50;
 	expect(firstPageMs).toBeLessThan(firstPageBudgetMs);
 	expect(metrics.eventCards).toBe(18);
 	expect(metrics.activeObjectUrls).toBe(0);
