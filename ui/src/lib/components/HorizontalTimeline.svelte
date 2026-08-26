@@ -83,8 +83,8 @@
 	let timelineWidth = $derived(
 		Math.max(viewportExtentPx, (timelineDurationMs / zoomLevel.tickMs) * TICK_EXTENT_PX)
 	);
-	let renderLeftPx = $derived(Math.max(0, viewportLeftPx - viewportExtentPx * 2));
-	let renderRightPx = $derived(Math.min(timelineWidth, viewportLeftPx + viewportExtentPx * 3));
+	let renderLeftPx = $derived(Math.max(0, viewportLeftPx - viewportExtentPx));
+	let renderRightPx = $derived(Math.min(timelineWidth, viewportLeftPx + viewportExtentPx * 2));
 	let renderStartMs = $derived(timestampAtLeft(renderLeftPx));
 	let renderEndMs = $derived(timestampAtLeft(renderRightPx));
 	let viewportStartMs = $derived(timestampAtLeft(viewportLeftPx));

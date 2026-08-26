@@ -1,8 +1,10 @@
 import { page, userEvent } from 'vitest/browser';
 import { describe, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
-import type { RecordingSegment } from '$lib/types';
+import type { RecordingEvent, RecordingSegment } from '$lib/types';
 import VerticalTimeline from './VerticalTimeline.svelte';
+
+const DAY_MS = 24 * 60 * 60_000;
 
 function pointer(type: string, pointerId: number, clientY: number): PointerEvent {
 	return new PointerEvent(type, {
@@ -247,6 +249,89 @@ describe('VerticalTimeline', () => {
 		await userEvent.click(zoomIn);
 		expect(timeline?.dataset.timelineZoom).toBe('1m');
 		expect(container.querySelectorAll('[data-timeline-tick]').length).toBeLessThan(200);
+	});
+
+	it('bounds the initial render for a dense full-day history before viewport measurement', async () => {
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		const segments = Array.from({ length: 24 * 60 }, (_, index): RecordingSegment => {
+			const startTimeMs = dayStartMs + index * 60_000;
+			return {
+				stream: 'main',
+				date: '2026-08-10',
+				hour: Math.floor(index / 60)
+					.toString()
+					.padStart(2, '0'),
+				filename: `${index}.mp4`,
+				url: `/recording-${index}.mp4`,
+				start_time_ms: startTimeMs,
+				end_time_ms: startTimeMs + 60_000,
+				duration_ms: 60_000
+			};
+		});
+		const events = Array.from({ length: 600 }, (_, index): RecordingEvent => {
+			const startTimeMs = dayStartMs + Math.floor((index * DAY_MS) / 600);
+			return {
+				id: `event-${index}`,
+				source: 'camera',
+				kind: index % 2 === 0 ? 'person' : 'motion',
+				start_time_ms: startTimeMs,
+				end_time_ms: startTimeMs + 10_000,
+				confidence: 0.9,
+				bbox: null,
+				zone: null,
+				thumbnail_url: null
+			};
+		});
+		const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(0);
+
+		try {
+			const view = await render(VerticalTimeline, {
+				props: {
+					segments,
+					events,
+					selectedUrl: null,
+					playheadMs: dayStartMs + DAY_MS,
+					dayStartMs,
+					nowMs: dayStartMs + DAY_MS,
+					onSeek: vi.fn()
+				}
+			});
+			const renderedNodes = view.container.querySelectorAll(
+				'[data-timeline-tick], [data-timeline-availability], [data-timeline-gap], [data-timeline-activity], [data-timeline-event-marker], [data-timeline-event]'
+			).length;
+			const offscreenEvents = Array.from({ length: 1_200 }, (_, index): RecordingEvent => {
+				const startTimeMs = dayStartMs + Math.floor((index * 12 * 60 * 60_000) / 1_200);
+				return {
+					id: `offscreen-event-${index}`,
+					source: 'camera',
+					kind: 'motion',
+					start_time_ms: startTimeMs,
+					end_time_ms: startTimeMs + 10_000,
+					confidence: null,
+					bbox: null,
+					zone: null,
+					thumbnail_url: null
+				};
+			});
+
+			await view.rerender({
+				segments,
+				events: [...events, ...offscreenEvents],
+				selectedUrl: null,
+				playheadMs: dayStartMs + DAY_MS,
+				dayStartMs,
+				nowMs: dayStartMs + DAY_MS,
+				onSeek: vi.fn()
+			});
+			const nodesWithOffscreenHistory = view.container.querySelectorAll(
+				'[data-timeline-tick], [data-timeline-availability], [data-timeline-gap], [data-timeline-activity], [data-timeline-event-marker], [data-timeline-event]'
+			).length;
+
+			expect(renderedNodes).toBeLessThan(800);
+			expect(nodesWithOffscreenHistory).toBe(renderedNodes);
+		} finally {
+			clientHeight.mockRestore();
+		}
 	});
 
 	it('reports a zoom-aligned viewport instead of requesting the full day', async () => {
