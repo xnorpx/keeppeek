@@ -31,6 +31,7 @@ use str0m::{
     bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer},
     channel::{ChannelConfig, ChannelId, Reliability},
+    crypto::dtls::DtlsVersion,
     format::Codec,
     media::{MediaKind, MediaTime, Mid},
     net::{Protocol, Receive},
@@ -2512,12 +2513,14 @@ fn rtc_config() -> RtcConfig {
     #[cfg(all(target_os = "macos", not(feature = "macos-test-aws-crypto")))]
     let provider = str0m_apple_crypto::default_provider();
     #[cfg(target_os = "linux")]
-    let provider = str0m_openssl::default_provider();
+    let provider = str0m::crypto::from_feature_flags();
     #[cfg(windows)]
-    let provider = str0m_wincrypto::default_provider();
+    let provider = str0m::crypto::from_feature_flags();
 
     RtcConfig::new()
         .set_crypto_provider(Arc::new(provider))
+        .set_snap_enabled(true)
+        .set_dtls_version(DtlsVersion::Auto)
         .clear_codecs()
         .enable_h264(true)
         .enable_h265(true)
@@ -4053,6 +4056,17 @@ mod tests {
     #[test]
     fn candidate_list_always_supports_local_browser() {
         assert!(candidate_addresses().contains(&Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn session_rtc_config_enables_snap_and_automatic_dtls() {
+        assert_eq!(rtc_config().dtls_version(), DtlsVersion::Auto);
+        assert!(
+            test_api_offer()
+                .to_sdp_string()
+                .lines()
+                .any(|line| line.starts_with("a=sctp-init:"))
+        );
     }
 
     #[test]
