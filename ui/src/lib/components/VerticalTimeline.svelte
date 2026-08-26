@@ -57,6 +57,7 @@
 	const EVENT_CARD_HEIGHT = 68;
 	const EVENT_CLUSTER_GAP = 72;
 	const ARROW_SCROLL_PX = 72;
+	const INITIAL_VIEWPORT_EXTENT_PX = 400;
 	const timeFormatter = new Intl.DateTimeFormat(undefined, {
 		hour: '2-digit',
 		minute: '2-digit',
@@ -134,14 +135,9 @@
 	let timelineStartMs = $derived(dayStartMs);
 	let timelineDurationMs = $derived(Math.max(1, timelineEndMs - timelineStartMs));
 	let timelineHeight = $derived((pixelsPerHour * timelineDurationMs) / (60 * MINUTE_MS));
-	let renderTopPx = $derived(
-		viewportExtentPx > 0 ? Math.max(0, viewportTopPx - viewportExtentPx * 2) : 0
-	);
-	let renderBottomPx = $derived(
-		viewportExtentPx > 0
-			? Math.min(timelineHeight, viewportTopPx + viewportExtentPx * 3)
-			: timelineHeight
-	);
+	let renderExtentPx = $derived(viewportExtentPx || INITIAL_VIEWPORT_EXTENT_PX);
+	let renderTopPx = $derived(Math.max(0, viewportTopPx - renderExtentPx));
+	let renderBottomPx = $derived(Math.min(timelineHeight, viewportTopPx + renderExtentPx * 2));
 	let renderStartMs = $derived(timestampAtTop(renderBottomPx));
 	let renderEndMs = $derived(timestampAtTop(renderTopPx));
 	let viewportStartMs = $derived(

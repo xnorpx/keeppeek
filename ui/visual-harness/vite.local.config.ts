@@ -14,6 +14,13 @@ export default defineConfig({
 			'$app/paths': fileURLToPath(new URL('./stories/sveltekit-paths.ts', import.meta.url))
 		}
 	},
+	build: {
+		outDir: '../.svelte-kit/timeline-performance',
+		emptyOutDir: true,
+		rollupOptions: {
+			input: fileURLToPath(new URL('./local-preview.html', import.meta.url))
+		}
+	},
 	server: {
 		fs: {
 			allow: [

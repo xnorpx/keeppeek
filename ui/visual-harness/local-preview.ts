@@ -32,6 +32,7 @@ import Board25MobileAddCameraStory from './stories/Board25MobileAddCameraStory.s
 import Board24MobileCameraStory from './stories/Board24MobileCameraStory.svelte';
 import Board23CameraConfigurationStory from './stories/Board23CameraConfigurationStory.svelte';
 import Board22MobileMediaStory from './stories/Board22MobileMediaStory.svelte';
+import TimelinePerformanceHarness from './stories/TimelinePerformanceHarness.svelte';
 
 const target = document.querySelector('#app');
 if (!(target instanceof HTMLElement)) throw new Error('Visual preview target is unavailable');
@@ -46,6 +47,8 @@ const previewUrl = new URL(window.location.href);
 const scenarioId = previewUrl.searchParams.get('scenario');
 const demoMode = previewUrl.searchParams.get('demo') === 'true';
 const demoAssetId = previewUrl.searchParams.get('demoAsset');
+const performanceOrientation =
+	previewUrl.searchParams.get('orientation') === 'horizontal' ? 'horizontal' : 'vertical';
 if (demoMode) {
 	document.documentElement.dataset.demo = 'true';
 	if (demoAssetId) document.documentElement.dataset.demoAsset = demoAssetId;
@@ -59,7 +62,22 @@ const board33States = {
 	'cameras.waiting.fleet-skeleton': 'fleet-skeleton'
 } as const;
 
-if (scenarioId === 'keep.desktop.timeline-anatomy') {
+if (scenarioId === 'keep.performance.timeline') {
+	document.documentElement.classList.add('dark');
+	document.documentElement.dataset.theme = 'dark';
+	const startedAtMs = performance.now();
+	mount(TimelinePerformanceHarness, {
+		target,
+		props: { orientation: performanceOrientation }
+	});
+	requestAnimationFrame(() =>
+		requestAnimationFrame(() => {
+			document.documentElement.dataset.timelineInitialRenderMs = (
+				performance.now() - startedAtMs
+			).toString();
+		})
+	);
+} else if (scenarioId === 'keep.desktop.timeline-anatomy') {
 	document.documentElement.classList.add('dark');
 	document.documentElement.dataset.theme = 'dark';
 	mount(Board04KeepTimelineStory, { target });
