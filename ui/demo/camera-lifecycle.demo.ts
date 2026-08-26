@@ -9,6 +9,7 @@ import {
 	createFfprobeDurationArgs,
 	createFfprobeStreamsArgs,
 	createSilentDemoVideoMuxArgs,
+	finalizeDemoRecordingDirectory,
 	parseFfprobeDurationMs
 } from '../src/lib/server/storybook/demo-video';
 import { createDemoWebVtt } from '../src/lib/storybook/demo';
@@ -35,7 +36,7 @@ const cameraDraftPath = resolve('../target/ui-logging-e2e/camera-draft.json');
 const scenarioStem = join(outputDirectory, cameraLifecycleStory.paper.scenarioId);
 const recordingTailMs = 500;
 
-test('add a verified camera through the real server', async ({ browser }) => {
+test('add a verified camera through the real server', async ({ browser }, testInfo) => {
 	const draft = await readCameraDraft();
 	await mkdir(outputDirectory, { recursive: true });
 	await rm(recordingDirectory, { recursive: true, force: true });
@@ -52,7 +53,9 @@ test('add a verified camera through the real server', async ({ browser }) => {
 	});
 	const pageCreatedAt = performance.now();
 	const page = await context.newPage();
+	const recording = page.video();
 	let contextClosed = false;
+	let recordingCompleted = false;
 
 	try {
 		await page.goto('/cameras');
@@ -163,6 +166,7 @@ test('add a verified camera through the real server', async ({ browser }) => {
 			}
 		};
 		await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+		recordingCompleted = true;
 		console.log(
 			JSON.stringify({
 				scenarioId: cameraLifecycleStory.paper.scenarioId,
@@ -176,7 +180,16 @@ test('add a verified camera through the real server', async ({ browser }) => {
 		);
 	} finally {
 		if (!contextClosed) await context.close().catch(() => {});
-		await rm(recordingDirectory, { recursive: true, force: true });
+		await finalizeDemoRecordingDirectory({ recordingDirectory, completed: recordingCompleted });
+		if (!recordingCompleted && recording) {
+			const rawVideoPath = await recording.path().catch(() => null);
+			if (rawVideoPath) {
+				await testInfo.attach('failed-camera-lifecycle-demo.webm', {
+					path: rawVideoPath,
+					contentType: 'video/webm'
+				});
+			}
+		}
 	}
 });
 

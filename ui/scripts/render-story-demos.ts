@@ -10,6 +10,7 @@ import {
 	createFfprobeDurationArgs,
 	createFfprobeStreamsArgs,
 	createSilentDemoVideoMuxArgs,
+	finalizeDemoRecordingDirectory,
 	parseFfprobeDurationMs
 } from '../src/lib/server/storybook/demo-video';
 import {
@@ -63,6 +64,7 @@ const server = await createServer({
 	server: { host: '127.0.0.1', port: 0, strictPort: false }
 });
 let browser: Browser | null = null;
+let renderingCompleted = false;
 
 try {
 	await server.listen();
@@ -72,10 +74,11 @@ try {
 	for (const scenario of selectedScenarios) {
 		await renderScenario(browser, baseUrl, scenario);
 	}
+	renderingCompleted = true;
 } finally {
 	await browser?.close();
 	await server.close();
-	await rm(recordingDirectory, { recursive: true, force: true });
+	await finalizeDemoRecordingDirectory({ recordingDirectory, completed: renderingCompleted });
 }
 
 async function renderScenario(

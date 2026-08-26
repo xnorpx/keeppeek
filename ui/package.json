@@ -73,6 +73,7 @@
 		"demo:render:camera-lifecycle": "bun run test:e2e:prepare && playwright test --config playwright.demo.config.ts",
 		"demo:render:nine-camera": "bun run demo:fixtures:prepare && bun run test:e2e:prepare && playwright test --config playwright.nine-camera-demo.config.ts",
 		"demo:render": "bun run demo:render:storybook && bun run demo:render:camera-lifecycle && bun run demo:render:nine-camera",
+		"demo:gate": "bun run demo:typecheck && bun run demo:check && bun run demo:render",
 		"demo:render:narrated": "bun run demo:render && bun run demo:narrate:all",
 		"demo:mux": "bun scripts/mux-demo-video.ts",
 		"demo:publish:prepare": "bun scripts/prepare-demo-publish.ts",
