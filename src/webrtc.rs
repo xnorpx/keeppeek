@@ -31,7 +31,7 @@ use str0m::{
     bwe::{Bitrate, BweKind},
     change::{SdpAnswer, SdpOffer},
     channel::{ChannelConfig, ChannelId, Reliability},
-    crypto::DtlsVersion,
+    crypto::dtls::DtlsVersion,
     format::Codec,
     media::{MediaKind, MediaTime, Mid},
     net::{Protocol, Receive},
