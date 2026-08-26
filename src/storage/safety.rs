@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use sysinfo::Disks;
 
 const MAX_ERROR_CHARS: usize = 240;
 
@@ -370,23 +369,26 @@ pub fn filesystem_capacity(
     keeppeek_bytes: u64,
 ) -> std::io::Result<FilesystemCapacity> {
     let path = absolute_path(path)?;
-    let disks = Disks::new_with_refreshed_list();
-    let disk = disks
-        .list()
-        .iter()
-        .filter(|disk| path.starts_with(disk.mount_point()))
-        .max_by_key(|disk| disk.mount_point().components().count())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "configured recording filesystem is unavailable",
-            )
-        })?;
+    let query_path = nearest_existing_path(&path)?;
+    let stats = fs4::statvfs(query_path)?;
     Ok(FilesystemCapacity {
-        total_bytes: disk.total_space(),
-        available_bytes: disk.available_space(),
+        total_bytes: stats.total_space(),
+        available_bytes: stats.available_space(),
         keeppeek_bytes,
     })
+}
+
+fn nearest_existing_path(path: &Path) -> std::io::Result<&Path> {
+    let mut candidate = path;
+    loop {
+        match std::fs::metadata(candidate) {
+            Ok(_) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                candidate = candidate.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn absolute_path(path: &Path) -> std::io::Result<PathBuf> {
@@ -553,5 +555,21 @@ mod tests {
         assert!(warning.cleanup_required);
         assert_eq!(critical.pressure, StoragePressure::Critical);
         assert!(critical.cleanup_required);
+    }
+
+    #[test]
+    fn filesystem_capacity_queries_the_nearest_existing_parent() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-storage-capacity-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let capacity = filesystem_capacity(&root.join("not-created/archive"), 42).unwrap();
+
+        assert!(capacity.total_bytes > 0);
+        assert!(capacity.available_bytes <= capacity.total_bytes);
+        assert_eq!(capacity.keeppeek_bytes, 42);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

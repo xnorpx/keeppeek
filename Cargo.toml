@@ -91,6 +91,7 @@ csv = { version = "*" }
 crossbeam-channel = "0.5.16"
 ctrlc = { version = "*" }
 flate2 = "1"
+fs4 = { version = "1.1.0", default-features = false }
 hdrhistogram = { version = "7.6.0", default-features = false }
 hmac = "0.13.0"
 image = { version = "*", default-features = false, features = ["jpeg"] }

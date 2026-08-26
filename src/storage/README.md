@@ -230,9 +230,11 @@ value and the nonzero archive cap. Health, metrics, and the Settings UI consume 
 evaluation.
 
 The storage writer evaluates pressure at startup, after each segment is finalized, and every five
-minutes. It deletes one oldest eligible catalog recording at a time until the recovery target is
-met. Active writers, protected recordings, exports, links, non-MP4 files, unindexed files, and paths
-outside the configured long-term root are ineligible.
+minutes. Capacity is queried from the configured path rather than inferred only from enumerated
+local disks, so mounted and network roots retain safety and health evidence. The worker deletes one
+oldest eligible catalog recording at a time until the recovery target is met. Active writers,
+protected recordings, exports, links, non-MP4 files, unindexed files, and paths outside the
+configured long-term root are ineligible.
 
 Cleanup uses a recoverable sequence: mark the catalog row pending, remove the exact file, then
 delete the catalog row. Startup reconciliation resumes a pending row whether a crash happened

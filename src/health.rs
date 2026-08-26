@@ -1,4 +1,4 @@
-use crate::storage::safety::StorageSafetyHealthSnapshot;
+use crate::storage::safety::{StorageSafetyHealthSnapshot, filesystem_capacity};
 use crate::{
     api::{CameraLifecycle, ProfileSummary},
     stats::StreamHealthReport,
@@ -652,6 +652,11 @@ impl SystemMonitor {
                     .is_some_and(|mount| mount == disk.mount_point()),
             })
             .collect::<Vec<_>>();
+        if recording_mount.is_none()
+            && let Some(recording_disk) = fallback_recording_disk(&recording_path)
+        {
+            disks.push(recording_disk);
+        }
         disks.sort_unstable_by(|left, right| left.mount_point.cmp(&right.mount_point));
 
         let mut temperatures = self
@@ -734,6 +739,23 @@ impl SystemMonitor {
     }
 }
 
+fn fallback_recording_disk(recording_path: &Path) -> Option<DiskHealth> {
+    let capacity = filesystem_capacity(recording_path, 0).ok()?;
+    Some(DiskHealth {
+        name: "recording filesystem".to_owned(),
+        kind: "unknown".to_owned(),
+        file_system: "unknown".to_owned(),
+        mount_point: recording_path.to_string_lossy().into_owned(),
+        total_bytes: capacity.total_bytes,
+        available_bytes: capacity.available_bytes,
+        used_bytes: capacity
+            .total_bytes
+            .saturating_sub(capacity.available_bytes),
+        removable: false,
+        stores_recordings: true,
+    })
+}
+
 fn rate(value: u64, elapsed_seconds: f64) -> u64 {
     (value as f64 / elapsed_seconds).round() as u64
 }
@@ -783,6 +805,25 @@ fn is_loopback_interface(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_recording_disk_reports_unenumerated_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-health-capacity-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let recording_path = root.join("not-created/archive");
+
+        let disk = fallback_recording_disk(&recording_path).unwrap();
+
+        assert_eq!(disk.mount_point, recording_path.to_string_lossy());
+        assert_eq!(disk.name, "recording filesystem");
+        assert!(disk.total_bytes > 0);
+        assert!(disk.available_bytes <= disk.total_bytes);
+        assert!(disk.stores_recordings);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn healthy_camera_evidence() -> CameraHealthEvidence {
         CameraHealthEvidence {
