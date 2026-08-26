@@ -12,6 +12,7 @@ pub mod keeppeek;
 pub mod logging;
 mod media_time;
 mod metrics;
+mod notifications;
 pub mod reolink;
 pub mod rtsp;
 pub mod runtime;

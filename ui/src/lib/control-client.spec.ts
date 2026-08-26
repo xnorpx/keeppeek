@@ -1,5 +1,10 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
-import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
+import {
+	AnySchema,
+	durationFromMs,
+	timestampDate,
+	timestampFromDate
+} from '@bufbuild/protobuf/wkt';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
 	CameraManufacturerResultSchema,
@@ -38,6 +43,8 @@ import {
 	EventSearchMessageSchema,
 	EventSearchQueryEndSchema,
 	EventSearchResultSchema,
+	ErrorCode,
+	ErrorSchema,
 	ExportDownloadResultSchema,
 	ExportFileChunkSchema,
 	ExportJobListSchema,
@@ -58,6 +65,9 @@ import {
 	MediaVariantCapabilitySchema,
 	MessageSchema,
 	NotificationSchema,
+	NotificationRuleListSchema,
+	NotificationRuleRecordSchema,
+	NotificationRuleResultSchema,
 	OkSchema,
 	PtzPresetSchema,
 	PtzResultSchema,
@@ -105,7 +115,7 @@ const api = vi.hoisted(() => ({
 
 vi.mock('./api', () => api);
 
-import { ControlClient, StoredMediaPlayback } from './control-client';
+import { ControlClient, NotificationConflictError, StoredMediaPlayback } from './control-client';
 
 function catalogCamera() {
 	return create(CameraCatalogCameraSchema, {
@@ -148,6 +158,7 @@ class FakeDataChannel {
 		readonly options: RTCDataChannelInit
 	) {}
 	activeFilter = 'info';
+	notificationConflict = false;
 	ptzActions: string[] = [];
 	storedTimelineQueries: QueryStoredMediaTimeline[] = [];
 	cancelledTimelineQueryIds: string[] = [];
@@ -162,6 +173,70 @@ class FakeDataChannel {
 		const request = fromBinary(ControlEnvelopeSchema, bytes);
 		if (request.message.case !== 'request') throw new Error('expected request');
 		const command = request.message.value.command;
+		if (command.case === 'notificationRuleCommand') {
+			const definition = JSON.stringify({
+				id: 'front-door-person',
+				name: 'Front door person',
+				actions: []
+			});
+			const rule = create(NotificationRuleRecordSchema, {
+				ruleId: 'front-door-person',
+				ownerId: 'administrator',
+				activeDefinitionJson: definition,
+				activeRevision: 3n,
+				draftDefinitionJson: definition,
+				draftRevision: 4n,
+				createdAtMs: 1_777_000_000_000n,
+				updatedAtMs: 1_777_000_010_000n
+			});
+			const result =
+				command.value.action.case === 'saveDraft' && this.notificationConflict
+					? {
+							case: 'error' as const,
+							value: create(ErrorSchema, {
+								code: ErrorCode.REJECTED,
+								message: 'notification rule revision conflict',
+								details: [
+									create(AnySchema, {
+										typeUrl: 'type.keeppeek.dev/notification-rule-conflict.v1',
+										value: new TextEncoder().encode(
+											JSON.stringify({ active_revision: 3, draft_revision: 4 })
+										)
+									})
+								]
+							})
+						}
+					: {
+							case: 'ok' as const,
+							value: create(OkSchema, {
+								result: {
+									case: 'notificationRuleResult',
+									value: create(NotificationRuleResultSchema, {
+										result:
+											command.value.action.case === 'listRules'
+												? {
+														case: 'rules',
+														value: create(NotificationRuleListSchema, { rules: [rule] })
+													}
+												: { case: 'rule', value: rule }
+									})
+								}
+							})
+						};
+			const response = create(ControlEnvelopeSchema, {
+				message: {
+					case: 'response',
+					value: create(ResponseSchema, {
+						requestId: request.message.value.requestId,
+						result
+					})
+				}
+			});
+			queueMicrotask(() =>
+				this.onmessage?.({ data: toBinary(ControlEnvelopeSchema, response).buffer } as MessageEvent)
+			);
+			return;
+		}
 		if (command.case === 'eventSearchCommand') {
 			const action = command.value.action;
 			if (action.case === 'query') {
@@ -1130,6 +1205,36 @@ afterEach(() => {
 });
 
 describe('ControlClient', () => {
+	it('maps notification rules and decodes revision conflicts', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-notifications',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+
+		const rules = await client.listNotificationRules();
+		expect(rules).toHaveLength(1);
+		expect(rules[0]).toMatchObject({
+			id: 'front-door-person',
+			ownerId: 'administrator',
+			activeRevision: 3n,
+			draftRevision: 4n
+		});
+
+		const control = FakePeerConnection.latest?.channels.find(
+			(channel) => channel.label === 'control-channel'
+		);
+		expect(control).toBeDefined();
+		control!.notificationConflict = true;
+		await expect(client.saveNotificationRuleDraft(rules[0]!.draft, 0n)).rejects.toMatchObject({
+			name: 'NotificationConflictError',
+			activeRevision: 3n,
+			draftRevision: 4n
+		} satisfies Partial<NotificationConflictError>);
+	});
+
 	it('uses the canonical negotiated channels and correlates binary motion control', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

@@ -43,6 +43,7 @@ message Request {
     HealthCommand health_command = 21;
     ExportCommand export_command = 22;
     EventSearchCommand event_search_command = 23;
+    NotificationRuleCommand notification_rule_command = 24;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -1154,6 +1155,172 @@ message StateStoreCommand {
   }
 }
 
+message NotificationRuleCommand {
+  oneof action {
+    ListNotificationRules list_rules = 1;
+    SaveNotificationRuleDraft save_draft = 2;
+    ActivateNotificationRule activate = 3;
+    DeleteNotificationRule delete = 4;
+    TestNotificationRule test = 5;
+    GetNotificationInbox get_inbox = 6;
+    GetNotificationHistory get_history = 7;
+    MarkNotificationSeen mark_seen = 8;
+    AcknowledgeNotification acknowledge = 9;
+    ClearNotification clear = 10;
+    ClearNotifications clear_scope = 11;
+  }
+}
+
+message ListNotificationRules {}
+
+message SaveNotificationRuleDraft {
+  string definition_json = 1;
+  uint64 expected_draft_revision = 2;
+}
+
+message ActivateNotificationRule {
+  string rule_id = 1;
+  uint64 expected_active_revision = 2;
+  uint64 expected_draft_revision = 3;
+}
+
+message DeleteNotificationRule {
+  string rule_id = 1;
+  uint64 expected_active_revision = 2;
+  uint64 expected_draft_revision = 3;
+}
+
+message TestNotificationRule {
+  string rule_id = 1;
+}
+
+message GetNotificationInbox {
+  optional uint32 limit = 1;
+}
+
+message GetNotificationHistory {
+  optional uint32 limit = 1;
+}
+
+message MarkNotificationSeen {
+  string logical_id = 1;
+}
+
+message AcknowledgeNotification {
+  string logical_id = 1;
+}
+
+message ClearNotification {
+  string logical_id = 1;
+}
+
+message ClearNotifications {
+  oneof scope {
+    bool all = 1;
+    string rule_id = 2;
+    int64 before_ms = 3;
+  }
+}
+
+message NotificationRuleRecord {
+  string rule_id = 1;
+  string owner_id = 2;
+  optional string active_definition_json = 3;
+  uint64 active_revision = 4;
+  string draft_definition_json = 5;
+  uint64 draft_revision = 6;
+  int64 created_at_ms = 7;
+  int64 updated_at_ms = 8;
+  optional int64 last_match_at_ms = 9;
+  optional int64 last_delivery_at_ms = 10;
+}
+
+message NotificationRuleList {
+  repeated NotificationRuleRecord rules = 1;
+}
+
+message NotificationItem {
+  string logical_id = 1;
+  string rule_id = 2;
+  string source_id = 3;
+  string lifecycle = 4;
+  string stage = 5;
+  uint64 revision = 6;
+  string title = 7;
+  string body = 8;
+  string deep_link = 9;
+  bool attachment_available = 10;
+  string severity = 11;
+  int64 created_at_ms = 12;
+  int64 updated_at_ms = 13;
+  optional int64 seen_at_ms = 14;
+  optional int64 acknowledged_at_ms = 15;
+}
+
+message NotificationInbox {
+  repeated NotificationItem items = 1;
+  uint64 unread_count = 2;
+}
+
+message NotificationHistoryEvent {
+  uint64 sequence = 1;
+  uint64 revision = 2;
+  string stage = 3;
+  string outcome = 4;
+  optional string reason = 5;
+  int64 occurred_at_ms = 6;
+  optional int64 next_eligible_at_ms = 7;
+}
+
+message NotificationDeliveryAttempt {
+  uint64 sequence = 1;
+  string channel = 2;
+  string stage = 3;
+  uint32 attempt = 4;
+  string outcome = 5;
+  string target_hash = 6;
+  optional uint32 provider_status = 7;
+  optional string reason = 8;
+  int64 attempted_at_ms = 9;
+  optional int64 retry_at_ms = 10;
+}
+
+message NotificationHistoryGroup {
+  NotificationItem notification = 1;
+  repeated NotificationHistoryEvent events = 2;
+  repeated NotificationDeliveryAttempt attempts = 3;
+}
+
+message NotificationHistory {
+  repeated NotificationHistoryGroup groups = 1;
+}
+
+message NotificationMutationResult {
+  string logical_id = 1;
+}
+
+message NotificationClearResult {
+  uint64 cleared_count = 1;
+}
+
+message NotificationTestResult {
+  uint32 matched_rules = 1;
+  uint32 created_notifications = 2;
+  uint32 queued_attempts = 3;
+}
+
+message NotificationRuleResult {
+  oneof result {
+    NotificationRuleList rules = 1;
+    NotificationRuleRecord rule = 2;
+    NotificationInbox inbox = 3;
+    NotificationHistory history = 4;
+    NotificationMutationResult mutation = 5;
+    NotificationClearResult cleared = 6;
+    NotificationTestResult test = 7;
+  }
+}
+
 message GetState {
   string namespace = 1;
   string key = 2;
@@ -1452,6 +1619,7 @@ message Ok {
     CameraOnboardingDefaults camera_onboarding_defaults = 29;
     StorageWriteProbeResult storage_write_probe_result = 30;
     AccessKeyResult access_key_result = 31;
+    NotificationRuleResult notification_rule_result = 32;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";

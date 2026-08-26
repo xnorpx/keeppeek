@@ -18,9 +18,13 @@ export default defineConfig({
 	optimizeDeps: {
 		include: [
 			'@lucide/svelte/icons/arrow-up',
+			'@lucide/svelte/icons/check-check',
+			'@lucide/svelte/icons/chevron-up',
 			'@lucide/svelte/icons/copy',
 			'@lucide/svelte/icons/eye',
 			'@lucide/svelte/icons/eye-off',
+			'@lucide/svelte/icons/flask-conical',
+			'@lucide/svelte/icons/inbox',
 			'@lucide/svelte/icons/loader-circle',
 			'@lucide/svelte/icons/rotate-cw'
 		]

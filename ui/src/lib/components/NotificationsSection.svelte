@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { capabilityActions } from '$lib/capability-actions';
+	import { useCapabilityState } from '$lib/capability-context';
 	import CapabilityGate from '$lib/components/CapabilityGate.svelte';
 	import { notificationsEvidence } from '$lib/notifications';
 	import BellIcon from '@lucide/svelte/icons/bell';
@@ -9,6 +10,7 @@
 	import MonitorIcon from '@lucide/svelte/icons/monitor';
 	import RadioTowerIcon from '@lucide/svelte/icons/radio-tower';
 	import NotificationsPaperFrame from './NotificationsPaperFrame.svelte';
+	import NotificationsRuntime from './NotificationsRuntime.svelte';
 
 	type Props = {
 		paperFrame?: boolean;
@@ -17,6 +19,8 @@
 	let { paperFrame = false }: Props = $props();
 
 	const evidence = notificationsEvidence();
+	const capabilities = useCapabilityState();
+	let runtimeSupported = $derived(capabilities.supports('keeppeek.rules.v1'));
 	const icons = {
 		push: BellIcon,
 		email: MailIcon,
@@ -34,6 +38,8 @@
 
 {#if paperFrame}
 	<NotificationsPaperFrame />
+{:else if runtimeSupported}
+	<NotificationsRuntime />
 {:else}
 	<section
 		id="notifications"

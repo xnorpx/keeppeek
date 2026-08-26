@@ -2,6 +2,11 @@ use crate::{
     api::{CameraId, CameraLifecycle, CameraStatus},
     battery_wake::BatteryWakeHandle,
     cameras::{AudioEncoding, Camera, CameraBackend, CameraTransport, VideoEncoding},
+    notifications::{
+        Handle as NotificationHandle, Lifecycle as NotificationLifecycle,
+        Stage as NotificationStage,
+        model::{Candidate as NotificationCandidate, Severity, Trigger},
+    },
     reolink::ReolinkLoop,
     rtsp::{RtspLoop, RtspTransport},
     runtime::{FacadeSender, RouterMessage, WorkerEvent},
@@ -16,13 +21,14 @@ use std::{
     net::IpAddr,
     sync::mpsc::{self, Receiver, Sender, SyncSender},
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 
 const CHANNEL_BUFFER: usize = 256;
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CAMERA_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_TRACKED_EVENT_REVISIONS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CameraRoute {
@@ -290,6 +296,9 @@ pub struct KeepPeekLoop {
     stream_statuses: HashMap<IpAddr, CameraStreamStatus>,
     battery_uids: HashMap<IpAddr, String>,
     battery_wake: Option<BatteryWakeHandle>,
+    notifications: Option<NotificationHandle>,
+    event_revisions: HashMap<String, u64>,
+    active_outages: HashMap<String, String>,
 }
 
 impl KeepPeekLoop {
@@ -311,6 +320,9 @@ impl KeepPeekLoop {
             stream_statuses: HashMap::new(),
             battery_uids: HashMap::new(),
             battery_wake: None,
+            notifications: None,
+            event_revisions: HashMap::new(),
+            active_outages: HashMap::new(),
         }
     }
 
@@ -340,6 +352,10 @@ impl KeepPeekLoop {
         self.battery_wake = Some(battery_wake);
     }
 
+    pub(crate) fn set_notifications(&mut self, notifications: NotificationHandle) {
+        self.notifications = Some(notifications);
+    }
+
     fn expect_stream(&mut self, camera_ip: IpAddr, camera_name: Option<&str>, stream: StreamKind) {
         self.stream_statuses
             .entry(camera_ip)
@@ -359,7 +375,8 @@ impl KeepPeekLoop {
         self.publish_status(status);
     }
 
-    fn publish_status(&self, status: CameraStatus) {
+    fn publish_status(&mut self, status: CameraStatus) {
+        self.publish_health_transition(&status);
         let Some(status_tx) = &self.status_tx else {
             return;
         };
@@ -793,20 +810,52 @@ impl KeepPeekLoop {
                 if let Some(storage) = &self.storage {
                     storage.note_camera_event(&event.camera_id);
                 }
-                if let Some(events) = &self.events {
+                if let Some(events) = self.events.clone() {
                     let event_id = event.id.clone();
                     let camera_id = event.camera_id.clone();
                     let kind = event.kind.clone();
-                    if let Err(error) = events.insert(event) {
+                    if let Err(error) = events.insert(event.clone()) {
                         tracing::warn!(%event_id, %camera_id, %kind, %error, "unable to store camera event");
+                    } else {
+                        self.track_initial_event_revision(&event_id);
+                        self.publish_event_revision(
+                            &event,
+                            Trigger::EventCreated,
+                            1,
+                            NotificationStage::Preliminary,
+                            None,
+                            event.start_time_ms,
+                        );
                     }
                 }
             }
             KeepPeekEvent::TimelineEventEnded { id, end_time_ms } => {
-                if let Some(events) = &self.events
-                    && let Err(error) = events.close(&id, end_time_ms)
-                {
-                    tracing::warn!(event_id = %id, %error, "unable to close camera event");
+                if let Some(events) = self.events.clone() {
+                    if let Err(error) = events.close(&id, end_time_ms) {
+                        tracing::warn!(event_id = %id, %error, "unable to close camera event");
+                    } else {
+                        match events.event_by_id(&id) {
+                            Ok(Some(event)) => {
+                                let revision = self.next_event_revision(&id);
+                                let attachment_path =
+                                    events.thumbnail_path(&event.camera_id, &id).ok().flatten();
+                                self.publish_event_revision(
+                                    &event,
+                                    Trigger::EventEnded,
+                                    revision,
+                                    NotificationStage::Enriched,
+                                    attachment_path.as_deref(),
+                                    end_time_ms,
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::warn!(event_id = %id, "closed camera event disappeared");
+                            }
+                            Err(error) => {
+                                tracing::warn!(event_id = %id, %error, "unable to load closed camera event");
+                            }
+                        }
+                    }
                 }
             }
             KeepPeekEvent::TimelineEventThumbnail {
@@ -814,12 +863,147 @@ impl KeepPeekLoop {
                 event_id,
                 jpeg,
             } => {
-                if let Some(events) = &self.events
-                    && let Err(error) = events.save_thumbnail(&camera_id, &event_id, &jpeg)
-                {
-                    tracing::warn!(%camera_id, %event_id, %error, "unable to store event thumbnail");
+                if let Some(events) = self.events.clone() {
+                    if let Err(error) = events.save_thumbnail(&camera_id, &event_id, &jpeg) {
+                        tracing::warn!(%camera_id, %event_id, %error, "unable to store event thumbnail");
+                    } else {
+                        match events.event_by_id(&event_id) {
+                            Ok(Some(event)) => {
+                                let revision = self.next_event_revision(&event_id);
+                                let attachment_path =
+                                    events.thumbnail_path(&camera_id, &event_id).ok().flatten();
+                                self.publish_event_revision(
+                                    &event,
+                                    Trigger::EventUpdated,
+                                    revision,
+                                    NotificationStage::Enriched,
+                                    attachment_path.as_deref(),
+                                    unix_time_ms(),
+                                );
+                            }
+                            Ok(None) => {
+                                tracing::warn!(%event_id, "camera event with thumbnail disappeared");
+                            }
+                            Err(error) => {
+                                tracing::warn!(%event_id, %error, "unable to load enriched camera event");
+                            }
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    fn track_initial_event_revision(&mut self, event_id: &str) {
+        if self.event_revisions.len() >= MAX_TRACKED_EVENT_REVISIONS
+            && !self.event_revisions.contains_key(event_id)
+            && let Some(oldest) = self.event_revisions.keys().next().cloned()
+        {
+            self.event_revisions.remove(&oldest);
+        }
+        self.event_revisions.insert(event_id.to_owned(), 1);
+    }
+
+    fn next_event_revision(&mut self, event_id: &str) -> u64 {
+        let revision = self.event_revisions.entry(event_id.to_owned()).or_insert(1);
+        *revision = revision.saturating_add(1);
+        *revision
+    }
+
+    fn publish_event_revision(
+        &self,
+        event: &TimelineEvent,
+        trigger: Trigger,
+        revision: u64,
+        stage: NotificationStage,
+        attachment_path: Option<&std::path::Path>,
+        occurred_at_ms: i64,
+    ) {
+        let Some(notifications) = &self.notifications else {
+            return;
+        };
+        let duration_ms = event.end_time_ms.and_then(|end_time_ms| {
+            u64::try_from(end_time_ms.saturating_sub(event.start_time_ms)).ok()
+        });
+        notifications.publish(NotificationCandidate {
+            trigger,
+            source_id: event.camera_id.clone(),
+            source_identity: event.id.clone(),
+            lifecycle: NotificationLifecycle::Event,
+            event_kind: Some(event.kind.clone()),
+            group_ids: Vec::new(),
+            zone: event.zone.clone(),
+            confidence: event.confidence,
+            attachment_path: attachment_path.map(|path| path.to_string_lossy().into_owned()),
+            duration_ms,
+            severity: Severity::Info,
+            reviewed: None,
+            bookmarked: None,
+            privacy_active: false,
+            revision,
+            stage,
+            occurred_at_ms,
+            deep_link: event_deep_link(&event.camera_id, &event.id),
+        });
+    }
+
+    fn publish_health_transition(&mut self, status: &CameraStatus) {
+        let Some(notifications) = self.notifications.clone() else {
+            return;
+        };
+        let source_id = status.id.to_string();
+        if status.lifecycle == CameraLifecycle::Reconnecting {
+            if self.active_outages.contains_key(&source_id) {
+                return;
+            }
+            let outage_id = format!("outage-{}", uuid::Uuid::new_v4());
+            self.active_outages
+                .insert(source_id.clone(), outage_id.clone());
+            notifications.publish(NotificationCandidate {
+                trigger: Trigger::OutageStarted,
+                source_id: source_id.clone(),
+                source_identity: outage_id,
+                lifecycle: NotificationLifecycle::Outage,
+                event_kind: Some("camera_outage".to_owned()),
+                group_ids: Vec::new(),
+                zone: None,
+                confidence: None,
+                attachment_path: None,
+                duration_ms: None,
+                severity: Severity::Warning,
+                reviewed: None,
+                bookmarked: None,
+                privacy_active: false,
+                revision: 1,
+                stage: NotificationStage::Preliminary,
+                occurred_at_ms: unix_time_ms(),
+                deep_link: health_deep_link(&source_id),
+            });
+        } else if matches!(
+            status.lifecycle,
+            CameraLifecycle::Connected | CameraLifecycle::Degraded
+        ) && let Some(outage_id) = self.active_outages.remove(&source_id)
+        {
+            notifications.publish(NotificationCandidate {
+                trigger: Trigger::Recovery,
+                source_id: source_id.clone(),
+                source_identity: outage_id,
+                lifecycle: NotificationLifecycle::Outage,
+                event_kind: Some("camera_outage".to_owned()),
+                group_ids: Vec::new(),
+                zone: None,
+                confidence: None,
+                attachment_path: None,
+                duration_ms: None,
+                severity: Severity::Info,
+                reviewed: None,
+                bookmarked: None,
+                privacy_active: false,
+                revision: 2,
+                stage: NotificationStage::Recovery,
+                occurred_at_ms: unix_time_ms(),
+                deep_link: health_deep_link(&source_id),
+            });
         }
     }
 
@@ -855,6 +1039,27 @@ impl KeepPeekLoop {
             }
         }
     }
+}
+
+fn event_deep_link(camera_id: &str, event_id: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("camera", camera_id);
+    query.append_pair("event", event_id);
+    format!("/events?{}", query.finish())
+}
+
+fn health_deep_link(camera_id: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("camera", camera_id);
+    format!("/system-health?{}", query.finish())
+}
+
+fn unix_time_ms() -> i64 {
+    let milliseconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    i64::try_from(milliseconds).unwrap_or(i64::MAX)
 }
 
 #[cfg(test)]

@@ -3,6 +3,8 @@ import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/prot
 import { createSession, deleteSession } from './api';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import {
+	AcknowledgeNotificationSchema,
+	ActivateNotificationRuleSchema,
 	CameraControlCommandSchema,
 	CameraConfigurationCommandSchema,
 	CameraBackend as ProtoCameraBackend,
@@ -12,10 +14,13 @@ import {
 	CancelEventSearchMediaSchema,
 	CancelEventSearchQuerySchema,
 	CancelStoredMediaTimelineQuerySchema,
+	ClearNotificationSchema,
+	ClearNotificationsSchema,
 	ControlEnvelopeSchema,
 	CloseStoredMediaSchema,
 	DataChannelKind,
 	DiscoverCamerasSchema,
+	DeleteNotificationRuleSchema,
 	DownloadExportSchema,
 	EventSearchCommandSchema,
 	EventSearchField,
@@ -35,12 +40,17 @@ import {
 	GetHealthSchema,
 	GetLoggingSettingsSchema,
 	GetMotionDetectionSchema,
+	GetNotificationHistorySchema,
+	GetNotificationInboxSchema,
 	GetRuntimeConfigurationSchema,
 	FetchEventSearchMediaSchema,
 	ListExportJobsSchema,
+	ListNotificationRulesSchema,
 	LoggingCommandSchema,
 	HealthCommandSchema,
 	MessageSchema,
+	MarkNotificationSeenSchema,
+	NotificationRuleCommandSchema,
 	OpenStoredMediaSchema,
 	RefillStoredMediaSchema,
 	RetryExportJobSchema,
@@ -60,6 +70,7 @@ import {
 	RestartServerSchema,
 	RotateAccessKeySchema,
 	SearchCameraCatalogSchema,
+	SaveNotificationRuleDraftSchema,
 	ServerCommandSchema,
 	SeekStoredMediaSchema,
 	SetCameraManufacturerSchema,
@@ -70,6 +81,7 @@ import {
 	StoredMediaEventQuerySchema,
 	StoredMediaMode,
 	StoredMediaStatus,
+	TestNotificationRuleSchema,
 	CancelExportJobSchema,
 	CreateExportJobSchema,
 	QueryStoredMediaTimelineSchema,
@@ -91,10 +103,31 @@ import {
 	type StoredMediaKeyFrame,
 	type StoredMediaState,
 	type MotionDetectionResult,
+	type NotificationDeliveryAttempt as ProtoNotificationDeliveryAttempt,
+	type NotificationHistoryEvent as ProtoNotificationHistoryEvent,
+	type NotificationHistoryGroup as ProtoNotificationHistoryGroup,
+	type NotificationInbox as ProtoNotificationInbox,
+	type NotificationItem as ProtoNotificationItem,
+	type NotificationRuleRecord as ProtoNotificationRuleRecord,
 	type Request,
 	type QueryEvents,
 	type Response as ControlResponse
 } from './proto/webrtc_pb';
+import {
+	parseNotificationRuleDefinition,
+	type NotificationChannel,
+	type NotificationClearScope,
+	type NotificationDeliveryAttempt,
+	type NotificationHistoryEvent,
+	type NotificationHistoryGroup,
+	type NotificationInbox,
+	type NotificationItem,
+	type NotificationRuleDefinition,
+	type NotificationRuleRecord,
+	type NotificationSeverity,
+	type NotificationStage,
+	type NotificationTestResult
+} from './notifications';
 import type {
 	MotionDetection,
 	RecordingEvent,
@@ -149,6 +182,17 @@ type PendingRequest = {
 type CapabilityListener = (capabilityIds: readonly string[]) => void;
 
 export type PtzPreset = { id: number; name: string };
+
+export class NotificationConflictError extends Error {
+	constructor(
+		message: string,
+		readonly activeRevision: bigint,
+		readonly draftRevision: bigint
+	) {
+		super(message);
+		this.name = 'NotificationConflictError';
+	}
+}
 
 export type MediaExportJobStatus =
 	'running' | 'partial' | 'ready' | 'failed' | 'cancelled' | 'expired';
@@ -761,6 +805,174 @@ export class ControlClient {
 			throw new Error('Server returned an unexpected health response.');
 		}
 		return serverHealth(result.value);
+	}
+
+	async listNotificationRules(): Promise<NotificationRuleRecord[]> {
+		const command = create(NotificationRuleCommandSchema, {
+			action: { case: 'listRules', value: create(ListNotificationRulesSchema) }
+		});
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'rules') {
+			throw new Error('Server returned an unexpected notification rule list response.');
+		}
+		return result.value.rules.map(notificationRuleRecord);
+	}
+
+	async saveNotificationRuleDraft(
+		rule: NotificationRuleDefinition,
+		expectedDraftRevision: bigint
+	): Promise<NotificationRuleRecord> {
+		const command = create(NotificationRuleCommandSchema, {
+			action: {
+				case: 'saveDraft',
+				value: create(SaveNotificationRuleDraftSchema, {
+					definitionJson: JSON.stringify(rule),
+					expectedDraftRevision
+				})
+			}
+		});
+		return this.notificationRuleMutation(command);
+	}
+
+	async activateNotificationRule(
+		ruleId: string,
+		expectedActiveRevision: bigint,
+		expectedDraftRevision: bigint
+	): Promise<NotificationRuleRecord> {
+		const command = create(NotificationRuleCommandSchema, {
+			action: {
+				case: 'activate',
+				value: create(ActivateNotificationRuleSchema, {
+					ruleId,
+					expectedActiveRevision,
+					expectedDraftRevision
+				})
+			}
+		});
+		return this.notificationRuleMutation(command);
+	}
+
+	async deleteNotificationRule(
+		ruleId: string,
+		expectedActiveRevision: bigint,
+		expectedDraftRevision: bigint
+	): Promise<void> {
+		const command = create(NotificationRuleCommandSchema, {
+			action: {
+				case: 'delete',
+				value: create(DeleteNotificationRuleSchema, {
+					ruleId,
+					expectedActiveRevision,
+					expectedDraftRevision
+				})
+			}
+		});
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'mutation' || result.value.logicalId !== ruleId) {
+			throw new Error('Server returned an unexpected notification rule deletion response.');
+		}
+	}
+
+	async testNotificationRule(ruleId: string): Promise<NotificationTestResult> {
+		const command = create(NotificationRuleCommandSchema, {
+			action: {
+				case: 'test',
+				value: create(TestNotificationRuleSchema, { ruleId })
+			}
+		});
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'test') {
+			throw new Error('Server returned an unexpected notification test response.');
+		}
+		return {
+			matchedRules: result.value.matchedRules,
+			createdNotifications: result.value.createdNotifications,
+			queuedAttempts: result.value.queuedAttempts
+		};
+	}
+
+	async getNotificationInbox(limit = 100): Promise<NotificationInbox> {
+		const command = create(NotificationRuleCommandSchema, {
+			action: {
+				case: 'getInbox',
+				value: create(GetNotificationInboxSchema, { limit })
+			}
+		});
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'inbox') {
+			throw new Error('Server returned an unexpected notification inbox response.');
+		}
+		return notificationInbox(result.value);
+	}
+
+	async getNotificationHistory(limit = 100): Promise<NotificationHistoryGroup[]> {
+		const command = create(NotificationRuleCommandSchema, {
+			action: {
+				case: 'getHistory',
+				value: create(GetNotificationHistorySchema, { limit })
+			}
+		});
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'history') {
+			throw new Error('Server returned an unexpected notification history response.');
+		}
+		return result.value.groups.map(notificationHistoryGroup);
+	}
+
+	async markNotificationSeen(logicalId: string): Promise<void> {
+		await this.notificationReceiptMutation(
+			logicalId,
+			create(NotificationRuleCommandSchema, {
+				action: {
+					case: 'markSeen',
+					value: create(MarkNotificationSeenSchema, { logicalId })
+				}
+			})
+		);
+	}
+
+	async acknowledgeNotification(logicalId: string): Promise<void> {
+		await this.notificationReceiptMutation(
+			logicalId,
+			create(NotificationRuleCommandSchema, {
+				action: {
+					case: 'acknowledge',
+					value: create(AcknowledgeNotificationSchema, { logicalId })
+				}
+			})
+		);
+	}
+
+	async clearNotification(logicalId: string): Promise<void> {
+		await this.notificationReceiptMutation(
+			logicalId,
+			create(NotificationRuleCommandSchema, {
+				action: {
+					case: 'clear',
+					value: create(ClearNotificationSchema, { logicalId })
+				}
+			})
+		);
+	}
+
+	async clearNotifications(scope: NotificationClearScope): Promise<bigint> {
+		const wireScope =
+			scope.kind === 'all'
+				? ({ case: 'all', value: true } as const)
+				: scope.kind === 'rule'
+					? ({ case: 'ruleId', value: scope.ruleId } as const)
+					: ({ case: 'beforeMs', value: BigInt(scope.beforeMs) } as const);
+		const command = create(NotificationRuleCommandSchema, {
+			action: {
+				case: 'clearScope',
+				value: create(ClearNotificationsSchema, { scope: wireScope })
+			}
+		});
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'cleared') {
+			throw new Error('Server returned an unexpected notification clear response.');
+		}
+		return result.value.clearedCount;
 	}
 
 	async getCameraDetails(sourceId: string, signal?: AbortSignal): Promise<CameraDetailsResponse> {
@@ -1628,11 +1840,65 @@ export class ControlClient {
 		try {
 			channel.send(toBinary(ControlEnvelopeSchema, envelope));
 			const reply = await response;
-			if (reply.result.case === 'error') throw new Error(reply.result.value.message);
+			if (reply.result.case === 'error') {
+				const conflict = reply.result.value.details.find(
+					(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
+				);
+				if (conflict) {
+					try {
+						const detail: unknown = JSON.parse(new TextDecoder().decode(conflict.value));
+						if (
+							detail &&
+							typeof detail === 'object' &&
+							'active_revision' in detail &&
+							'draft_revision' in detail
+						) {
+							throw new NotificationConflictError(
+								reply.result.value.message,
+								BigInt(String(detail.active_revision)),
+								BigInt(String(detail.draft_revision))
+							);
+						}
+					} catch (error) {
+						if (error instanceof NotificationConflictError) throw error;
+					}
+				}
+				throw new Error(reply.result.value.message);
+			}
 			if (reply.result.case !== 'ok') throw new Error('Server returned an empty control response.');
 			return reply.result.value.result;
 		} finally {
 			signal?.removeEventListener('abort', abort);
+		}
+	}
+
+	private async notificationRequest(
+		command: ReturnType<typeof create<typeof NotificationRuleCommandSchema>>
+	) {
+		const result = await this.request({ case: 'notificationRuleCommand', value: command });
+		if (result.case !== 'notificationRuleResult' || !result.value.result.case) {
+			throw new Error('Server returned an unexpected notification response.');
+		}
+		return result.value.result;
+	}
+
+	private async notificationRuleMutation(
+		command: ReturnType<typeof create<typeof NotificationRuleCommandSchema>>
+	): Promise<NotificationRuleRecord> {
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'rule') {
+			throw new Error('Server returned an unexpected notification rule response.');
+		}
+		return notificationRuleRecord(result.value);
+	}
+
+	private async notificationReceiptMutation(
+		logicalId: string,
+		command: ReturnType<typeof create<typeof NotificationRuleCommandSchema>>
+	): Promise<void> {
+		const result = await this.notificationRequest(command);
+		if (result.case !== 'mutation' || result.value.logicalId !== logicalId) {
+			throw new Error('Server returned an unexpected notification receipt response.');
 		}
 	}
 
@@ -3053,6 +3319,107 @@ function hexDigest(payload: ArrayBuffer): string {
 
 function protoDurationMs(duration: import('@bufbuild/protobuf/wkt').Duration): number {
 	return Number(duration.seconds) * 1_000 + duration.nanos / 1_000_000;
+}
+
+function notificationRuleRecord(record: ProtoNotificationRuleRecord): NotificationRuleRecord {
+	return {
+		id: record.ruleId,
+		ownerId: record.ownerId,
+		active: record.activeDefinitionJson
+			? parseNotificationRuleDefinition(record.activeDefinitionJson)
+			: null,
+		activeRevision: record.activeRevision,
+		draft: parseNotificationRuleDefinition(record.draftDefinitionJson),
+		draftRevision: record.draftRevision,
+		createdAtMs: Number(record.createdAtMs),
+		updatedAtMs: Number(record.updatedAtMs),
+		lastMatchAtMs: record.lastMatchAtMs === undefined ? null : Number(record.lastMatchAtMs),
+		lastDeliveryAtMs: record.lastDeliveryAtMs === undefined ? null : Number(record.lastDeliveryAtMs)
+	};
+}
+
+function notificationInbox(inbox: ProtoNotificationInbox): NotificationInbox {
+	return {
+		items: inbox.items.map(notificationItem),
+		unreadCount: inbox.unreadCount
+	};
+}
+
+function notificationItem(item: ProtoNotificationItem): NotificationItem {
+	return {
+		logicalId: item.logicalId,
+		ruleId: item.ruleId,
+		sourceId: item.sourceId,
+		lifecycle: item.lifecycle,
+		stage: notificationStage(item.stage),
+		revision: item.revision,
+		title: item.title,
+		body: item.body,
+		deepLink: item.deepLink,
+		attachmentAvailable: item.attachmentAvailable,
+		severity: notificationSeverity(item.severity),
+		createdAtMs: Number(item.createdAtMs),
+		updatedAtMs: Number(item.updatedAtMs),
+		seenAtMs: item.seenAtMs === undefined ? null : Number(item.seenAtMs),
+		acknowledgedAtMs: item.acknowledgedAtMs === undefined ? null : Number(item.acknowledgedAtMs)
+	};
+}
+
+function notificationHistoryGroup(group: ProtoNotificationHistoryGroup): NotificationHistoryGroup {
+	if (!group.notification) {
+		throw new Error('Server returned notification history without its logical notification.');
+	}
+	return {
+		notification: notificationItem(group.notification),
+		events: group.events.map(notificationHistoryEvent),
+		attempts: group.attempts.map(notificationDeliveryAttempt)
+	};
+}
+
+function notificationHistoryEvent(event: ProtoNotificationHistoryEvent): NotificationHistoryEvent {
+	return {
+		sequence: event.sequence,
+		revision: event.revision,
+		stage: notificationStage(event.stage),
+		outcome: event.outcome,
+		reason: event.reason ?? null,
+		occurredAtMs: Number(event.occurredAtMs),
+		nextEligibleAtMs: event.nextEligibleAtMs === undefined ? null : Number(event.nextEligibleAtMs)
+	};
+}
+
+function notificationDeliveryAttempt(
+	attempt: ProtoNotificationDeliveryAttempt
+): NotificationDeliveryAttempt {
+	return {
+		sequence: attempt.sequence,
+		channel: notificationChannel(attempt.channel),
+		stage: notificationStage(attempt.stage),
+		attempt: attempt.attempt,
+		outcome: attempt.outcome,
+		targetHash: attempt.targetHash,
+		providerStatus: attempt.providerStatus ?? null,
+		reason: attempt.reason ?? null,
+		attemptedAtMs: Number(attempt.attemptedAtMs),
+		retryAtMs: attempt.retryAtMs === undefined ? null : Number(attempt.retryAtMs)
+	};
+}
+
+function notificationStage(value: string): NotificationStage {
+	if (value === 'preliminary' || value === 'enriched' || value === 'recovery') return value;
+	throw new Error(`Server returned unsupported notification stage '${value}'.`);
+}
+
+function notificationSeverity(value: string): NotificationSeverity {
+	if (value === 'info' || value === 'warning' || value === 'critical') return value;
+	throw new Error(`Server returned unsupported notification severity '${value}'.`);
+}
+
+function notificationChannel(value: string): NotificationChannel {
+	if (value === 'browser' || value === 'push' || value === 'webhook' || value === 'forwarder') {
+		return value;
+	}
+	throw new Error(`Server returned unsupported notification channel '${value}'.`);
 }
 
 function mediaExportJob(job: ProtoExportJob): MediaExportJob {
