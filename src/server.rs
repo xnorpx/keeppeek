@@ -10914,7 +10914,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_camera_without_frame_progress_is_stale_in_api_counts_and_metrics() {
+    fn connected_camera_without_frame_progress_is_starting_during_startup_grace() {
         let camera = CameraConfig {
             ip: "192.0.2.40".parse().unwrap(),
             name: Some("front-door".to_owned()),
@@ -10997,11 +10997,8 @@ mod tests {
 
         let health = server_health(&router_tx, &state);
         assert_eq!(router_worker.join().unwrap().unwrap(), 1);
-        assert_eq!(health.cameras[0].state, CameraHealthState::Stale);
-        assert_eq!(
-            health.cameras[0].reason,
-            CameraHealthReason::FramesNotArriving
-        );
+        assert_eq!(health.cameras[0].state, CameraHealthState::Starting);
+        assert_eq!(health.cameras[0].reason, CameraHealthReason::Starting);
         assert_eq!(health.totals.connected_cameras, 1);
         assert_eq!(health.totals.fresh_cameras, 0);
         assert_eq!(health.totals.decodable_cameras, 0);
@@ -11026,7 +11023,7 @@ mod tests {
         );
 
         let metrics = crate::metrics::encode_health(&health).unwrap();
-        assert!(metrics.contains("state=\"stale\""));
+        assert!(metrics.contains("state=\"starting\""));
         assert!(!metrics.contains("keeppeek_camera_online"));
         assert!(!metrics.contains("keeppeek_camera_degraded"));
         assert!(metrics.contains("dimension=\"frames_fresh\""));
@@ -11035,8 +11032,8 @@ mod tests {
             proto.health_contract_version,
             CAMERA_HEALTH_CONTRACT_VERSION
         );
-        assert_eq!(proto.cameras[0].state, "stale");
-        assert_eq!(proto.cameras[0].reason, "frames_not_arriving");
+        assert_eq!(proto.cameras[0].state, "starting");
+        assert_eq!(proto.cameras[0].reason, "starting");
         let dimensions = proto.cameras[0].dimensions.as_ref().unwrap();
         assert_eq!(dimensions.session_duration_ms, Some(10_000));
         assert_eq!(dimensions.recorded_main_duration_ms, 480_000);

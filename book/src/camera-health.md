@@ -52,7 +52,7 @@ reason code.
    with `battery_sleeping`. An accepted wake remains pending until connected media clears it;
    failures therefore become `reconnecting` or `offline`, not sleeping.
 3. During initial grace, incomplete or transiently unhealthy evidence remains `starting`; a complete
-  healthy snapshot may promote immediately.
+   healthy snapshot may promote immediately.
 4. Reconnecting transport: `reconnecting`, or `offline` after recent evidence expires.
 5. No report, an old report, or frames that stopped advancing: `stale`.
 6. Missing keyframes, stalled requested recording, low frame rate, partial transport, recent errors,
