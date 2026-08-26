@@ -100,6 +100,15 @@ export type NotificationSeverity = 'info' | 'warning' | 'critical';
 export type NotificationStage = 'preliminary' | 'enriched' | 'recovery';
 export type NotificationChannel = 'browser' | 'push' | 'webhook' | 'forwarder';
 export type NotificationAttachmentPolicy = 'never' | 'when_available' | 'required';
+export type PushoverPriority = -2 | -1 | 0 | 1 | 2;
+export type PushoverPublicConfig = {
+	device: string | null;
+	sound: string | null;
+	priority: PushoverPriority;
+	retry_seconds: number | null;
+	expire_seconds: number | null;
+	deep_link_base_url: string | null;
+};
 export type NotificationCooldownScope = 'event' | 'camera_event_kind' | 'group' | 'rule' | 'outage';
 export type NotificationRateLimitScope = 'rule' | 'channel' | 'principal' | 'global';
 export type NotificationWeekday =
@@ -150,10 +159,12 @@ export type NotificationRuleDefinition = {
 		wake_after_deadline: boolean;
 	};
 	actions: Array<{
+		enabled: boolean;
 		channel: NotificationChannel;
 		destination: string;
 		destination_configured?: boolean;
 		destination_ref?: string;
+		pushover?: PushoverPublicConfig;
 		template: { title: string; body: string };
 		attachment: NotificationAttachmentPolicy;
 		allow_second_delivery: boolean;
@@ -164,6 +175,17 @@ export type NotificationRuleDefinition = {
 		expiry_ms: number;
 	};
 };
+
+export function createPushoverConfig(): PushoverPublicConfig {
+	return {
+		device: null,
+		sound: null,
+		priority: 0,
+		retry_seconds: null,
+		expire_seconds: null,
+		deep_link_base_url: null
+	};
+}
 
 export type NotificationRuleRecord = {
 	id: string;
@@ -219,6 +241,11 @@ export type NotificationDeliveryAttempt = {
 	outcome: string;
 	targetHash: string;
 	providerStatus: number | null;
+	providerRequestId: string | null;
+	providerAcknowledgedAtMs: number | null;
+	providerExpiredAtMs: number | null;
+	providerAcknowledgedByHash: string | null;
+	providerAcknowledgementState: 'pending' | 'acknowledged' | 'expired' | 'failed' | null;
 	reason: string | null;
 	attemptedAtMs: number;
 	retryAtMs: number | null;
@@ -276,6 +303,7 @@ export function createNotificationRule(id: string, timezone: string): Notificati
 		},
 		actions: [
 			{
+				enabled: true,
 				channel: 'browser',
 				destination: '',
 				template: {

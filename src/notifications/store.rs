@@ -188,6 +188,7 @@ impl Store {
                         ],
                     )
                     .await?;
+                cancel_disabled_outbox(&self.connection, rule_id, Some(&active), now_ms).await?;
                 record_audit(
                     &self.connection,
                     owner_id,
@@ -222,6 +223,7 @@ impl Store {
                     .ok_or(RuleStoreError::NotFound)?;
                 ensure_owner(&existing, owner_id)?;
                 ensure_revisions(&existing, expected_active_revision, expected_draft_revision)?;
+                cancel_disabled_outbox(&self.connection, rule_id, None, now_ms).await?;
                 self.connection
                     .execute(
                         "DELETE FROM notification_rules WHERE id = ?1",
@@ -389,6 +391,13 @@ async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()>
                  created_at_ms INTEGER NOT NULL,
                  updated_at_ms INTEGER NOT NULL,
                  last_reason TEXT,
+                 provider_request_id TEXT,
+                 provider_receipt TEXT,
+                 next_receipt_check_at_ms INTEGER,
+                 provider_receipt_expires_at_ms INTEGER,
+                 provider_acknowledged_at_ms INTEGER,
+                 provider_expired_at_ms INTEGER,
+                 provider_acknowledged_by_hash TEXT,
                  UNIQUE(logical_id, action_index, stage)
              );
              CREATE INDEX IF NOT EXISTS notification_outbox_due
@@ -403,6 +412,7 @@ async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()>
                  outcome TEXT NOT NULL,
                  target_hash TEXT NOT NULL,
                  provider_status INTEGER,
+                 provider_request_id TEXT,
                  reason TEXT,
                  attempted_at_ms INTEGER NOT NULL,
                  retry_at_ms INTEGER
@@ -462,6 +472,62 @@ async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()>
         "notification_outbox",
         "max_retry_interval_ms",
         "INTEGER NOT NULL DEFAULT 1000",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_outbox",
+        "provider_request_id",
+        "TEXT",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_outbox",
+        "provider_receipt",
+        "TEXT",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_outbox",
+        "next_receipt_check_at_ms",
+        "INTEGER",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_outbox",
+        "provider_receipt_expires_at_ms",
+        "INTEGER",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_outbox",
+        "provider_acknowledged_at_ms",
+        "INTEGER",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_outbox",
+        "provider_expired_at_ms",
+        "INTEGER",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_outbox",
+        "provider_acknowledged_by_hash",
+        "TEXT",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "notification_attempts",
+        "provider_request_id",
+        "TEXT",
     )
     .await?;
     Ok(())
@@ -591,6 +657,69 @@ async fn record_audit(
     Ok(())
 }
 
+async fn cancel_disabled_outbox(
+    connection: &turso::Connection,
+    rule_id: &str,
+    active: Option<&Rule>,
+    now_ms: i64,
+) -> anyhow::Result<()> {
+    let mut rows = connection
+        .query(
+            "SELECT o.id, o.logical_id, o.action_index, o.channel, o.stage
+             FROM notification_outbox AS o
+             JOIN logical_notifications AS l ON l.id = o.logical_id
+             WHERE l.rule_id = ?1 AND o.status IN ('pending', 'retrying')",
+            turso::params![rule_id],
+        )
+        .await?;
+    let mut cancelled = Vec::new();
+    while let Some(row) = rows.next().await? {
+        let action_index = row.get::<i64>(2)?;
+        let channel = row.get::<String>(3)?;
+        let allowed = active.is_some_and(|rule| {
+            rule.enabled
+                && usize::try_from(action_index)
+                    .ok()
+                    .and_then(|index| rule.actions.get(index))
+                    .is_some_and(|action| action.enabled && action.channel.as_str() == channel)
+        });
+        if !allowed {
+            cancelled.push((
+                row.get::<i64>(0)?,
+                row.get::<String>(1)?,
+                row.get::<String>(4)?,
+            ));
+        }
+    }
+    drop(rows);
+    for (outbox_id, logical_id, stage) in cancelled {
+        let changed = connection
+            .execute(
+                "UPDATE notification_outbox
+                 SET status = 'expired', updated_at_ms = ?2,
+                     last_reason = 'rule_or_action_disabled'
+                 WHERE id = ?1 AND status IN ('pending', 'retrying')",
+                turso::params![outbox_id, now_ms],
+            )
+            .await?;
+        if changed == 0 {
+            continue;
+        }
+        connection
+            .execute(
+                "INSERT INTO notification_history (
+                     logical_id, rule_id, transition_revision, stage, outcome,
+                     reason, occurred_at_ms
+                 ) SELECT id, rule_id, highest_revision, ?3, 'expired',
+                          'rule_or_action_disabled', ?4
+                   FROM logical_notifications WHERE id = ?1 AND rule_id = ?2",
+                turso::params![logical_id, rule_id, stage, now_ms],
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 async fn finish_transaction<T>(
     connection: &turso::Connection,
     result: anyhow::Result<T>,
@@ -666,6 +795,7 @@ mod tests {
                 wake_after_deadline: false,
             },
             actions: vec![Action {
+                enabled: true,
                 channel: Channel::Browser,
                 destination: String::new(),
                 template: Template {

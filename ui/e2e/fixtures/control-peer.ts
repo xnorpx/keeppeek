@@ -462,6 +462,15 @@ function protoNotificationHistory(group: NotificationHistoryGroup) {
 				outcome: attempt.outcome,
 				targetHash: attempt.targetHash,
 				providerStatus: attempt.providerStatus ?? undefined,
+				providerRequestId: attempt.providerRequestId ?? undefined,
+				providerAcknowledgedAtMs:
+					attempt.providerAcknowledgedAtMs === null
+						? undefined
+						: BigInt(attempt.providerAcknowledgedAtMs),
+				providerExpiredAtMs:
+					attempt.providerExpiredAtMs === null ? undefined : BigInt(attempt.providerExpiredAtMs),
+				providerAcknowledgedByHash: attempt.providerAcknowledgedByHash ?? undefined,
+				providerAcknowledgementState: attempt.providerAcknowledgementState ?? undefined,
 				reason: attempt.reason ?? undefined,
 				attemptedAtMs: BigInt(attempt.attemptedAtMs),
 				retryAtMs: attempt.retryAtMs === null ? undefined : BigInt(attempt.retryAtMs)

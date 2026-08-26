@@ -172,6 +172,7 @@ fn health_candidate(
     Candidate {
         trigger,
         source_id: source_id.to_owned(),
+        source_name: None,
         source_identity,
         lifecycle,
         event_kind: Some(event_kind.to_owned()),

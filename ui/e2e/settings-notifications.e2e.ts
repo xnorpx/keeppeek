@@ -95,6 +95,11 @@ function notificationFixtures(): {
 						outcome: 'delivered',
 						targetHash: '0123456789abcdef0123456789abcdef',
 						providerStatus: null,
+						providerRequestId: null,
+						providerAcknowledgedAtMs: null,
+						providerExpiredAtMs: null,
+						providerAcknowledgedByHash: null,
+						providerAcknowledgementState: null,
 						reason: null,
 						attemptedAtMs: now - 44_000,
 						retryAtMs: null

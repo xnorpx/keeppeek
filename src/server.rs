@@ -7551,6 +7551,13 @@ fn redacted_notification_rule_json(rule: &NotificationRule) -> anyhow::Result<St
                 continue;
             };
             if !configured_action.destination.is_empty() {
+                if configured_action.channel == crate::notifications::model::Channel::Push
+                    && let Ok(public_config) = crate::notifications::pushover::public_config(
+                        &configured_action.destination,
+                    )
+                {
+                    action.insert("pushover".to_owned(), serde_json::to_value(public_config)?);
+                }
                 action.insert(
                     "destination".to_owned(),
                     serde_json::Value::String(String::new()),
@@ -7585,6 +7592,7 @@ fn restore_notification_destinations(
         let Some(action) = action.as_object_mut() else {
             continue;
         };
+        let pushover_config = action.remove("pushover");
         let preserve = action
             .remove("destination_configured")
             .and_then(|value| value.as_bool())
@@ -7620,9 +7628,27 @@ fn restore_notification_destinations(
                     "configured notification destination could not be preserved",
                 )
             })?;
+        let destination = if channel == Some("push") {
+            pushover_config
+                .map(|config| {
+                    crate::notifications::pushover::merge_public_config(previous, config).map_err(
+                        |_| {
+                            ControlCommandError::new(
+                                proto::ErrorCode::InvalidRequest,
+                                400,
+                                "Pushover public configuration is invalid",
+                            )
+                        },
+                    )
+                })
+                .transpose()?
+                .unwrap_or_else(|| previous.to_owned())
+        } else {
+            previous.to_owned()
+        };
         action.insert(
             "destination".to_owned(),
-            serde_json::Value::String(previous.to_owned()),
+            serde_json::Value::String(destination),
         );
     }
     Ok(())
@@ -7703,6 +7729,11 @@ fn proto_notification_attempt(attempt: AttemptRecord) -> proto::NotificationDeli
         reason: attempt.reason,
         attempted_at_ms: attempt.attempted_at_ms,
         retry_at_ms: attempt.retry_at_ms,
+        provider_request_id: attempt.provider_request_id,
+        provider_acknowledged_at_ms: attempt.provider_acknowledged_at_ms,
+        provider_expired_at_ms: attempt.provider_expired_at_ms,
+        provider_acknowledged_by_hash: attempt.provider_acknowledged_by_hash,
+        provider_acknowledgement_state: attempt.provider_acknowledgement_state,
     }
 }
 
@@ -11627,6 +11658,17 @@ mod tests {
                 .contains(&"keeppeek.rules.v1".to_owned())
         );
 
+        let pushover_application_token = "a23456789012345678901234567890";
+        let pushover_user_key = "u23456789012345678901234567890";
+        let pushover_destination = serde_json::json!({
+            "application_token": pushover_application_token,
+            "user_key": pushover_user_key,
+            "device": "front-door-phone",
+            "sound": "pushover",
+            "priority": 0,
+            "deep_link_base_url": "https://keeppeek.example/"
+        })
+        .to_string();
         let definition = serde_json::json!({
             "id": "front-door-person",
             "name": "Front door person",
@@ -11670,6 +11712,16 @@ mod tests {
                     },
                     "attachment": "never",
                     "allow_second_delivery": false
+                },
+                {
+                    "channel": "push",
+                    "destination": pushover_destination,
+                    "template": {
+                        "title": "Person at {{source.id}}",
+                        "body": "Open {{notification.deep_link}}"
+                    },
+                    "attachment": "when_available",
+                    "allow_second_delivery": false
                 }
             ],
             "failure": {
@@ -11707,6 +11759,12 @@ mod tests {
         assert_eq!(saved.owner_id, "administrator");
         assert_eq!(saved.draft_revision, 1);
         assert!(!saved.draft_definition_json.contains("secret-target"));
+        assert!(
+            !saved
+                .draft_definition_json
+                .contains(pushover_application_token)
+        );
+        assert!(!saved.draft_definition_json.contains(pushover_user_key));
         let mut redacted: serde_json::Value =
             serde_json::from_str(&saved.draft_definition_json).unwrap();
         assert_eq!(redacted["actions"][1]["destination"], "");
@@ -11717,6 +11775,19 @@ mod tests {
                 .map(str::len),
             Some(64)
         );
+        let push = redacted["actions"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|action| action["channel"] == "push")
+            .unwrap();
+        assert_eq!(push["destination"], "");
+        assert_eq!(push["destination_configured"], true);
+        assert_eq!(push["pushover"]["device"], "front-door-phone");
+        assert_eq!(push["pushover"]["priority"], 0);
+        push["pushover"]["priority"] = 2.into();
+        push["pushover"]["retry_seconds"] = 60.into();
+        push["pushover"]["expire_seconds"] = 600.into();
         redacted["actions"].as_array_mut().unwrap().swap(0, 1);
         let reordered_redacted = serde_json::to_string(&redacted).unwrap();
 
@@ -11775,6 +11846,12 @@ mod tests {
         };
         assert_eq!(preserved.draft_revision, 2);
         assert!(!preserved.draft_definition_json.contains("secret-target"));
+        assert!(
+            !preserved
+                .draft_definition_json
+                .contains(pushover_application_token)
+        );
+        assert!(!preserved.draft_definition_json.contains(pushover_user_key));
         let stored = runtime.handle().rules("administrator").unwrap();
         assert_eq!(
             stored[0]
@@ -11786,6 +11863,22 @@ mod tests {
                 .destination,
             "https://hooks.example.invalid/keeppeek?token=secret-target"
         );
+        let push_destination = &stored[0]
+            .draft
+            .actions
+            .iter()
+            .find(|action| action.channel == crate::notifications::model::Channel::Push)
+            .unwrap()
+            .destination;
+        let push_destination: serde_json::Value = serde_json::from_str(push_destination).unwrap();
+        assert_eq!(
+            push_destination["application_token"],
+            pushover_application_token
+        );
+        assert_eq!(push_destination["user_key"], pushover_user_key);
+        assert_eq!(push_destination["priority"], 2);
+        assert_eq!(push_destination["retry_seconds"], 60);
+        assert_eq!(push_destination["expire_seconds"], 600);
 
         let conflict = handler.handle_for_session(
             session_id,

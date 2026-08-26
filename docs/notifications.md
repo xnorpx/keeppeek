@@ -66,12 +66,12 @@ an attachment. Privacy-active candidates treat imagery as unavailable.
 
 Channel behavior is explicit:
 
-| Channel   | Replacement                                 | Current adapter policy                                                                         |
-| --------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Browser   | Same collapse key replaces the browser item | Delivered to the server inbox; a permitted browser uses the logical ID as its notification tag |
-| Push      | Supported by the orchestration contract     | Fails visibly as `channel_unavailable` until the provider from issue #64 is configured         |
-| Webhook   | No replacement guarantee                    | Enriched second delivery occurs only when the action opts in                                   |
-| Forwarder | No replacement guarantee                    | Fails visibly as `channel_unavailable` until forwarding from issue #65 is configured           |
+| Channel   | Replacement                                        | Current adapter policy                                                                                   |
+| --------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Browser   | Same collapse key replaces the browser item        | Delivered to the server inbox; a permitted browser uses the logical ID as its notification tag           |
+| Push      | Same logical ID and stage retain one history group | Delivered through Pushover with device, sound, priority, deep-link, image, and emergency receipt support |
+| Webhook   | No replacement guarantee                           | Enriched second delivery occurs only when the action opts in                                             |
+| Forwarder | No replacement guarantee                           | Fails visibly as `channel_unavailable` until forwarding from issue #65 is configured                     |
 
 Webhook requests have a five-second global timeout, no redirects, no arbitrary headers, and no URL
 credentials. Provider payloads may contain bounded base64 JPEG bytes; local paths are never sent.
@@ -91,6 +91,9 @@ row to `retrying`.
 
 Provider workers have separate database connections and queues. A slow or unavailable channel does
 not block camera ingest, event storage, recording, health projection, or another channel.
+
+See [Pushover notifications](pushover.md) for provider setup, supported fields, write-only secret
+handling, privacy, limits, failure behavior, and emergency acknowledgement tracking.
 
 ## Inbox and acknowledgement
 

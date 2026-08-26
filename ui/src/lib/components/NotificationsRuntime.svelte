@@ -5,13 +5,15 @@
 	import { NotificationConflictError } from '$lib/control-client';
 	import {
 		createNotificationRule,
+		createPushoverConfig,
 		type NotificationChannel,
 		type NotificationHistoryGroup,
 		type NotificationInbox,
 		type NotificationItem,
 		type NotificationRuleDefinition,
 		type NotificationRuleRecord,
-		type NotificationTrigger
+		type NotificationTrigger,
+		type PushoverPublicConfig
 	} from '$lib/notifications';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -33,8 +35,15 @@
 	import SaveIcon from '@lucide/svelte/icons/save';
 	import TrashIcon from '@lucide/svelte/icons/trash-2';
 	import XIcon from '@lucide/svelte/icons/x';
+	import PushoverActionFields from './PushoverActionFields.svelte';
 
 	type View = 'rules' | 'inbox' | 'history';
+	type NotificationAction = NotificationRuleDefinition['actions'][number];
+	type PushoverSecret = 'application_token' | 'user_key';
+	type PushoverDestination = PushoverPublicConfig & {
+		application_token: string;
+		user_key: string;
+	};
 	const controlClient = useControlClient();
 	const allWeekdays = [
 		'monday',
@@ -342,6 +351,10 @@
 
 	function editableDraft(rule: NotificationRuleDefinition): NotificationRuleDefinition {
 		const draft = structuredClone(rule);
+		for (const action of draft.actions) {
+			action.enabled ??= true;
+			if (action.channel === 'push') action.pushover ??= createPushoverConfig();
+		}
 		if (draft.cooldowns.length === 0) {
 			draft.cooldowns.push({ scope: 'camera_event_kind', duration_ms: 30_000 });
 		}
@@ -396,6 +409,7 @@
 	function addAction(): void {
 		if (!editorDraft || editorDraft.actions.length >= 8) return;
 		editorDraft.actions.push({
+			enabled: true,
 			channel: 'browser',
 			destination: '',
 			template: {
@@ -420,6 +434,61 @@
 		action.destination = '';
 		action.destination_configured = false;
 		action.destination_ref = undefined;
+		action.pushover = channel === 'push' ? createPushoverConfig() : undefined;
+	}
+
+	function pushoverConfig(action: NotificationAction): PushoverPublicConfig {
+		return action.pushover ?? createPushoverConfig();
+	}
+
+	function pushoverSecret(action: NotificationAction, field: PushoverSecret): string {
+		if (action.destination === '') return '';
+		try {
+			const destination = JSON.parse(action.destination) as Partial<PushoverDestination>;
+			return typeof destination[field] === 'string' ? destination[field] : '';
+		} catch {
+			return '';
+		}
+	}
+
+	function updatePushoverSecret(
+		action: NotificationAction,
+		field: PushoverSecret,
+		value: string
+	): void {
+		const destination: PushoverDestination = {
+			application_token: pushoverSecret(action, 'application_token'),
+			user_key: pushoverSecret(action, 'user_key'),
+			...pushoverConfig(action),
+			[field]: value
+		};
+		action.destination = JSON.stringify(destination);
+		action.destination_configured = false;
+		action.destination_ref = undefined;
+	}
+
+	function updatePushoverConfig(
+		action: NotificationAction,
+		field: keyof PushoverPublicConfig,
+		value: string | number | null
+	): void {
+		action.pushover = { ...pushoverConfig(action), [field]: value } as PushoverPublicConfig;
+		if (field === 'priority') {
+			if (value === 2) {
+				action.pushover.retry_seconds ??= 30;
+				action.pushover.expire_seconds ??= 300;
+			} else {
+				action.pushover.retry_seconds = null;
+				action.pushover.expire_seconds = null;
+			}
+		}
+		if (action.destination !== '') {
+			action.destination = JSON.stringify({
+				application_token: pushoverSecret(action, 'application_token'),
+				user_key: pushoverSecret(action, 'user_key'),
+				...action.pushover
+			});
+		}
 	}
 
 	function updateActionDestination(
@@ -443,7 +512,6 @@
 
 	function actionDestinationLabel(channel: NotificationChannel): string {
 		if (channel === 'webhook') return 'Webhook URL';
-		if (channel === 'push') return 'Push target';
 		if (channel === 'forwarder') return 'Forwarder target';
 		return 'Current principal';
 	}
@@ -479,6 +547,12 @@
 			.filter((candidate) => candidate.channel === channel)
 			.toSorted((left, right) => right.attemptedAtMs - left.attemptedAtMs)[0];
 		if (!attempt) return channel === 'browser' ? 'Ready' : 'Not tested';
+		if (attempt.providerAcknowledgementState === 'pending') return 'Awaiting acknowledgement';
+		if (
+			attempt.providerAcknowledgementState === 'expired' ||
+			attempt.providerAcknowledgementState === 'failed'
+		)
+			return 'Attention';
 		if (attempt.outcome === 'delivered') return 'Healthy';
 		if (attempt.outcome === 'retried') return 'Retrying';
 		return 'Attention';
@@ -826,7 +900,15 @@
 												>{attempt.channel} · {attempt.outcome}</strong
 											><span class="font-mono text-2xs text-text-faint">
 												· {attempt.targetHash.slice(0, 10)}</span
-											>{#if attempt.reason}<span class="text-text-muted">
+											>{#if attempt.providerRequestId}<span
+													class="font-mono text-2xs text-text-faint"
+												>
+													· request {attempt.providerRequestId.slice(0, 12)}</span
+												>{/if}{#if attempt.providerAcknowledgementState}<span
+													class="text-text-muted"
+												>
+													· {attempt.providerAcknowledgementState}</span
+												>{/if}{#if attempt.reason}<span class="text-text-muted">
 													· {attempt.reason}</span
 												>{/if}</span
 										><time class="shrink-0 font-mono text-2xs text-text-faint"
@@ -1057,32 +1139,50 @@
 						<div class="mt-3 divide-y divide-hairline border-y border-hairline">
 							{#each editorDraft.actions as action, index (index)}
 								<div class="grid gap-3 py-4 sm:grid-cols-[120px_minmax(0,1fr)_auto]">
-									<label class="space-y-1.5 text-xs font-medium"
-										>Channel<select
-											value={action.channel}
-											onchange={(event) =>
-												updateActionChannel(
-													action,
-													event.currentTarget.value as NotificationChannel
-												)}
-											class="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-											><option value="browser">Browser</option><option value="push">Push</option
-											><option value="webhook">Webhook</option><option value="forwarder"
-												>Forwarder</option
-											></select
-										></label
-									>
-									<div class="grid gap-3 sm:grid-cols-2">
-										<label class="space-y-1.5 text-xs font-medium"
-											>{actionDestinationLabel(action.channel)}<Input
-												value={action.destination}
-												placeholder={action.destination_configured ? 'Configured' : ''}
-												oninput={(event) =>
-													updateActionDestination(action, event.currentTarget.value)}
-												disabled={action.channel === 'browser'}
-												required={action.channel !== 'browser' && !action.destination_configured}
-											/></label
+									<div class="space-y-3">
+										<label class="flex items-center gap-2 text-xs font-medium"
+											><input
+												type="checkbox"
+												bind:checked={action.enabled}
+												class="size-4 accent-primary"
+											/> Enabled</label
 										>
+										<label class="space-y-1.5 text-xs font-medium"
+											>Channel<select
+												value={action.channel}
+												onchange={(event) =>
+													updateActionChannel(
+														action,
+														event.currentTarget.value as NotificationChannel
+													)}
+												class="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+												><option value="browser">Browser</option><option value="push">Push</option
+												><option value="webhook">Webhook</option><option value="forwarder"
+													>Forwarder</option
+												></select
+											></label
+										>
+									</div>
+									<div class="grid gap-3 sm:grid-cols-2">
+										{#if action.channel === 'push'}
+											<PushoverActionFields
+												{action}
+												secret={(field) => pushoverSecret(action, field)}
+												onsecret={(field, value) => updatePushoverSecret(action, field, value)}
+												onconfig={(field, value) => updatePushoverConfig(action, field, value)}
+											/>
+										{:else}
+											<label class="space-y-1.5 text-xs font-medium"
+												>{actionDestinationLabel(action.channel)}<Input
+													value={action.destination}
+													placeholder={action.destination_configured ? 'Configured' : ''}
+													oninput={(event) =>
+														updateActionDestination(action, event.currentTarget.value)}
+													disabled={action.channel === 'browser'}
+													required={action.channel !== 'browser' && !action.destination_configured}
+												/></label
+											>
+										{/if}
 										<label class="space-y-1.5 text-xs font-medium"
 											>Attachment<select
 												bind:value={action.attachment}

@@ -297,6 +297,7 @@ pub struct KeepPeekLoop {
     battery_uids: HashMap<IpAddr, String>,
     battery_wake: Option<BatteryWakeHandle>,
     notifications: Option<NotificationHandle>,
+    camera_names: HashMap<String, String>,
     event_revisions: HashMap<String, u64>,
     active_outages: HashMap<String, String>,
 }
@@ -321,6 +322,7 @@ impl KeepPeekLoop {
             battery_uids: HashMap::new(),
             battery_wake: None,
             notifications: None,
+            camera_names: HashMap::new(),
             event_revisions: HashMap::new(),
             active_outages: HashMap::new(),
         }
@@ -401,6 +403,11 @@ impl KeepPeekLoop {
         enable_main: bool,
         enable_sub: bool,
     ) -> anyhow::Result<()> {
+        if let Some(name) = &camera.config.name {
+            self.camera_names
+                .insert(camera.config.ip.to_string(), name.clone());
+            self.camera_names.insert(name.clone(), name.clone());
+        }
         if let Some(storage) = &self.storage {
             storage.configure_camera_recording(
                 &camera.config.ip.to_string(),
@@ -928,6 +935,7 @@ impl KeepPeekLoop {
         notifications.publish(NotificationCandidate {
             trigger,
             source_id: event.camera_id.clone(),
+            source_name: self.camera_names.get(&event.camera_id).cloned(),
             source_identity: event.id.clone(),
             lifecycle: NotificationLifecycle::Event,
             event_kind: Some(event.kind.clone()),
@@ -962,6 +970,7 @@ impl KeepPeekLoop {
             notifications.publish(NotificationCandidate {
                 trigger: Trigger::OutageStarted,
                 source_id: source_id.clone(),
+                source_name: self.camera_names.get(&source_id).cloned(),
                 source_identity: outage_id,
                 lifecycle: NotificationLifecycle::Outage,
                 event_kind: Some("camera_outage".to_owned()),
@@ -987,6 +996,7 @@ impl KeepPeekLoop {
             notifications.publish(NotificationCandidate {
                 trigger: Trigger::Recovery,
                 source_id: source_id.clone(),
+                source_name: self.camera_names.get(&source_id).cloned(),
                 source_identity: outage_id,
                 lifecycle: NotificationLifecycle::Outage,
                 event_kind: Some("camera_outage".to_owned()),
