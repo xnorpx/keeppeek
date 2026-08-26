@@ -842,7 +842,7 @@ impl ReolinkClient {
             sample_rate: cfg
                 .get("sampleRate")
                 .and_then(|v| v.as_u64())
-                .map(|v| v as u32),
+                .and_then(normalize_reolink_sample_rate),
             bitrate_kbps: cfg
                 .get("bitRate")
                 .and_then(|v| v.as_u64())
@@ -1580,6 +1580,26 @@ impl ReolinkClient {
     }
 }
 
+fn normalize_reolink_sample_rate(rate: u64) -> Option<u32> {
+    let rate = u32::try_from(rate).ok()?;
+    match rate {
+        8 => Some(8_000),
+        11 => Some(11_025),
+        12 => Some(12_000),
+        16 => Some(16_000),
+        22 => Some(22_050),
+        24 => Some(24_000),
+        32 => Some(32_000),
+        44 => Some(44_100),
+        48 => Some(48_000),
+        64 => Some(64_000),
+        88 => Some(88_200),
+        96 => Some(96_000),
+        1_000.. => Some(rate),
+        _ => None,
+    }
+}
+
 fn parse_resolution(stream: &RspStreamEnc) -> (u32, u32) {
     if let (Some(w), Some(h)) = (stream.width, stream.height)
         && w > 0
@@ -1640,5 +1660,13 @@ mod tests {
             VideoEncoding::H264
         );
         assert_eq!(parse_video_encoding(None), VideoEncoding::H264);
+    }
+
+    #[test]
+    fn normalizes_reolink_audio_sample_rates_to_hertz() {
+        assert_eq!(normalize_reolink_sample_rate(16), Some(16_000));
+        assert_eq!(normalize_reolink_sample_rate(44), Some(44_100));
+        assert_eq!(normalize_reolink_sample_rate(48_000), Some(48_000));
+        assert_eq!(normalize_reolink_sample_rate(0), None);
     }
 }

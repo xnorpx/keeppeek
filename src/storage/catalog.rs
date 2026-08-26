@@ -291,10 +291,6 @@ enum Command {
         stream_id: String,
         reply: SyncSender<anyhow::Result<Option<EventKeyframeLocation>>>,
     },
-    ResolveEventPreviewKeyframes {
-        requests: Vec<EventPreviewRequest>,
-        reply: SyncSender<anyhow::Result<Vec<EventPreviewResolution>>>,
-    },
     ResolveMediaObject {
         source_id: String,
         logical_stream_id: String,
@@ -369,6 +365,13 @@ enum SearchCommand {
     Semantic {
         query: EventSemanticSearchQuery,
         reply: SyncSender<anyhow::Result<EventSearchPage>>,
+    },
+    Availability {
+        stream_id: String,
+        start_ms: i64,
+        end_ms: i64,
+        bucket_ms: u64,
+        reply: SyncSender<anyhow::Result<Vec<(i64, i64)>>>,
     },
     Shutdown,
 }
@@ -656,6 +659,31 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub(crate) fn availability_ranges_in_range(
+        &self,
+        stream_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+        bucket_ms: u64,
+    ) -> anyhow::Result<Vec<(i64, i64)>> {
+        if start_ms >= end_ms || bucket_ms == 0 {
+            anyhow::bail!("availability range and bucket must be positive");
+        }
+        let (reply, response) = mpsc::sync_channel(1);
+        self.search_tx
+            .send(SearchCommand::Availability {
+                stream_id: stream_id.to_owned(),
+                start_ms,
+                end_ms,
+                bucket_ms,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
     pub fn insert_event(&self, event: TimelineEvent) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -771,19 +799,6 @@ impl RecordingCatalogHandle {
                 stream_id: stream_id.to_owned(),
                 reply,
             })
-            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
-        response
-            .recv()
-            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
-    }
-
-    pub(crate) fn resolve_event_preview_keyframes(
-        &self,
-        requests: Vec<EventPreviewRequest>,
-    ) -> anyhow::Result<Vec<EventPreviewResolution>> {
-        let (reply, response) = mpsc::sync_channel(1);
-        self.tx
-            .send(Command::ResolveEventPreviewKeyframes { requests, reply })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
             .recv()
@@ -1158,12 +1173,6 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     &stream_id,
                 )));
             }
-            Command::ResolveEventPreviewKeyframes { requests, reply } => {
-                let _ = reply.send(pollster::block_on(resolve_event_preview_batch(
-                    &connection,
-                    requests,
-                )));
-            }
             Command::ResolveMediaObject {
                 source_id,
                 logical_stream_id,
@@ -1301,6 +1310,21 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
                 let _ = reply.send(pollster::block_on(search_event_semantic(
                     &connection,
                     query,
+                )));
+            }
+            SearchCommand::Availability {
+                stream_id,
+                start_ms,
+                end_ms,
+                bucket_ms,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(availability_ranges_in_range(
+                    &connection,
+                    &stream_id,
+                    start_ms,
+                    end_ms,
+                    bucket_ms,
                 )));
             }
             SearchCommand::Shutdown => break,
@@ -2151,6 +2175,54 @@ async fn media_fragments_in_range(
     Ok(fragments)
 }
 
+async fn availability_ranges_in_range(
+    connection: &turso::Connection,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+    bucket_ms: u64,
+) -> anyhow::Result<Vec<(i64, i64)>> {
+    let bucket_ms = to_i64(bucket_ms, "availability bucket")?;
+    let sql = if bucket_ms >= 86_400_000 {
+        "SELECT bucket_start, MAX(bucket_end)
+         FROM (
+             SELECT MAX(?2, (r.started_at_ms / ?4) * ?4) AS bucket_start,
+                    MIN(?3, ((COALESCE(r.ended_at_ms, ?3) + ?4 - 1) / ?4) * ?4)
+                        AS bucket_end
+             FROM recording_files AS r
+             WHERE r.stream_id = ?1
+               AND r.started_at_ms < ?3
+               AND COALESCE(r.ended_at_ms, ?3) > ?2
+         )
+         GROUP BY bucket_start
+         ORDER BY bucket_start"
+    } else {
+        "SELECT bucket_start, MAX(bucket_end)
+         FROM (
+             SELECT MAX(?2, (f.start_ms / ?4) * ?4) AS bucket_start,
+                    MIN(?3, ((f.start_ms + f.duration_ms + ?4 - 1) / ?4) * ?4)
+                        AS bucket_end
+             FROM recording_fragments AS f
+             JOIN recording_files AS r ON r.id = f.recording_id
+             WHERE r.stream_id = ?1
+               AND r.started_at_ms < ?3
+               AND COALESCE(r.ended_at_ms, ?3) > ?2
+               AND f.start_ms < ?3
+               AND f.start_ms + f.duration_ms > ?2
+         )
+         GROUP BY bucket_start
+         ORDER BY bucket_start"
+    };
+    let mut rows = connection
+        .query(sql, (stream_id, start_ms, end_ms, bucket_ms))
+        .await?;
+    let mut ranges = Vec::new();
+    while let Some(row) = rows.next().await? {
+        ranges.push((row.get(0)?, row.get(1)?));
+    }
+    Ok(ranges)
+}
+
 async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> anyhow::Result<()> {
     if event.kind.is_empty() {
         anyhow::bail!("event kind must not be empty");
@@ -2693,7 +2765,9 @@ async fn search_event_metadata(
             query.preview_after_ms,
         )?);
     }
-    attach_default_previews(connection, &mut hits, &query.stream_id).await?;
+    if query.include_preview_keyframes {
+        attach_default_previews(connection, &mut hits, &query.stream_id).await?;
+    }
     ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
     let next_page_token = has_more
         .then(|| {
@@ -3318,31 +3392,46 @@ async fn resolve_event_preview_batch(
     }
     let sql = format!(
         "WITH requested(
-             request_index, event_id, source_id, stream_id, recording_stream_id,
-             event_time_ms, start_time_ms, end_time_ms
-         ) AS (VALUES {values}),
-         ranked AS (
-             SELECT q.request_index, q.event_id, q.stream_id, q.event_time_ms,
-                    r.id AS recording_id, f.sequence, f.start_ms, r.path,
-                    k.byte_offset, k.byte_len,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY q.request_index
-                        ORDER BY f.start_ms, r.id, f.sequence
-                    ) AS rank
-             FROM requested AS q
+                         request_index, event_id, source_id, stream_id, recording_stream_id,
+                         event_time_ms, start_time_ms, end_time_ms
+                 ) AS (VALUES {values}),
+                 candidates AS (
+                         SELECT q.request_index, q.event_id, q.stream_id, q.event_time_ms,
+                                        r.id AS recording_id, f.sequence, f.start_ms, r.path,
+                                        k.byte_offset, k.byte_len
+                         FROM requested AS q
                          JOIN recording_files AS r
-                             ON (r.source_id = q.source_id AND r.logical_stream_id = q.stream_id)
-                             OR (
-                                 r.source_id IS NULL
-                                 AND r.stream_id = q.recording_stream_id
-                             )
-             JOIN recording_fragments AS f ON f.recording_id = r.id
-             JOIN recording_keyframes AS k
-               ON k.recording_id = f.recording_id
-              AND k.fragment_sequence = f.sequence
-             WHERE f.start_ms < q.end_time_ms
-               AND f.start_ms + f.duration_ms > q.start_time_ms
-         )
+                             ON r.source_id = q.source_id
+                            AND r.logical_stream_id = q.stream_id
+                         JOIN recording_fragments AS f ON f.recording_id = r.id
+                         JOIN recording_keyframes AS k
+                             ON k.recording_id = f.recording_id
+                            AND k.fragment_sequence = f.sequence
+                         WHERE f.start_ms < q.end_time_ms
+                             AND f.start_ms + f.duration_ms > q.start_time_ms
+                         UNION ALL
+                         SELECT q.request_index, q.event_id, q.stream_id, q.event_time_ms,
+                                        r.id AS recording_id, f.sequence, f.start_ms, r.path,
+                                        k.byte_offset, k.byte_len
+                         FROM requested AS q
+                         JOIN recording_files AS r
+                             ON r.source_id IS NULL
+                            AND r.stream_id = q.recording_stream_id
+                         JOIN recording_fragments AS f ON f.recording_id = r.id
+                         JOIN recording_keyframes AS k
+                             ON k.recording_id = f.recording_id
+                            AND k.fragment_sequence = f.sequence
+                         WHERE f.start_ms < q.end_time_ms
+                             AND f.start_ms + f.duration_ms > q.start_time_ms
+                 ),
+                 ranked AS (
+                         SELECT candidates.*,
+                                        ROW_NUMBER() OVER (
+                                                PARTITION BY request_index
+                                                ORDER BY start_ms, recording_id, sequence
+                                        ) AS rank
+                         FROM candidates
+                 )
          SELECT request_index, event_id, stream_id, event_time_ms,
                 recording_id, sequence, start_ms, path, byte_offset, byte_len, rank
          FROM ranked
@@ -3909,25 +3998,11 @@ mod tests {
         handle
             .backfill_recording_identity("front-door/main", "192.0.2.10", "main")
             .unwrap();
-        assert!(
-            handle
-                .resolve_event_keyframe("legacy-event", "main")
-                .unwrap()
-                .is_some()
-        );
-        let resolution = handle
-            .resolve_event_preview_keyframes(vec![EventPreviewRequest {
-                event_id: "legacy-event".to_owned(),
-                source_id: "192.0.2.10".to_owned(),
-                stream_id: "main".to_owned(),
-                recording_stream_id: "front-door/main".to_owned(),
-                event_time_ms: 1_500,
-                start_time_ms: 1_000,
-                end_time_ms: 2_000,
-            }])
+        let location = handle
+            .resolve_event_keyframe("legacy-event", "main")
             .unwrap()
-            .remove(0);
-        assert_eq!(resolution.keyframes[0].recording_id, "legacy-recording");
+            .unwrap();
+        assert_eq!(location.recording_id, "legacy-recording");
         assert_eq!(handle.stats().unwrap().recording_files, 1);
         drop(handle);
         catalog.shutdown();

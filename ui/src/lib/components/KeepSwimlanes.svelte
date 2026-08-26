@@ -95,31 +95,70 @@
 	async function loadLanes(
 		cameraList: readonly CameraListItem[],
 		selectedDate: string,
+		anchorTimestampMs: number,
 		signal: AbortSignal,
 		version: number
 	): Promise<void> {
-		const [recordings, loadedEvents] = await Promise.all([
-			controlClient.getRecordingsForDate(
-				cameraList.map((camera) => camera.id),
-				selectedDate,
+		const dayStartMs = Date.parse(`${selectedDate}T00:00:00Z`);
+		const dayEndMs = dayStartMs + 86_400_000;
+		const requestedWindow = createSwimlaneWindow([], anchorTimestampMs);
+		const startMs = Math.max(dayStartMs, requestedWindow.startMs);
+		const endMs = Math.min(dayEndMs, requestedWindow.endMs);
+		const sourceIds = cameraList.map((camera) => camera.id);
+		const [timeline, eventPage] = await Promise.all([
+			controlClient.queryStoredTimeline({
+				sourceIds,
+				startMs,
+				endMs,
+				availabilityBucketMs: 60_000,
+				includeEvents: false,
+				includeAttachments: false,
 				signal
-			),
-			Promise.all(
-				cameraList.map(async (camera) => {
-					const events = await controlClient
-						.getRecordingEvents(camera.id, selectedDate, signal)
-						.catch((cause) => {
-							if (signal.aborted) throw cause;
-							return { events: [] as RecordingEvent[] };
-						});
-					return [camera.id, events.events] as const;
-				})
-			)
+			}),
+			controlClient.searchEventMetadata({
+				sourceIds,
+				streamId: 'main',
+				startMs,
+				endMs,
+				pageSize: 128,
+				signal
+			})
 		]);
-		const segmentsByCamera = new Map(
-			recordings.map((response) => [response.camera_id, response.segments] as const)
-		);
-		const eventsByCamera = new Map(loadedEvents);
+		const segmentsByCamera = new Map<string, RecordingSegment[]>();
+		for (const range of timeline.ranges) {
+			if (range.streamId !== 'main' && range.streamId !== 'sub') continue;
+			const segments = segmentsByCamera.get(range.sourceId) ?? [];
+			segments.push({
+				stream: range.streamId,
+				date: selectedDate,
+				hour: new Date(range.startMs).toISOString().slice(11, 13),
+				filename: `indexed-${range.startMs}.mp4`,
+				url: `indexed:${range.sourceId}:${range.streamId}:${range.startMs}`,
+				start_time_ms: range.startMs,
+				end_time_ms: range.endMs,
+				duration_ms: range.endMs - range.startMs
+			});
+			segmentsByCamera.set(range.sourceId, segments);
+		}
+		const eventsByCamera = new Map<string, RecordingEvent[]>();
+		for (const hit of eventPage.hits) {
+			const cameraEvents = eventsByCamera.get(hit.sourceId) ?? [];
+			cameraEvents.push({
+				id: hit.eventId,
+				source_id: hit.sourceId,
+				source: hit.origin,
+				kind: hit.eventType,
+				start_time_ms: hit.startMs,
+				end_time_ms: hit.endMs,
+				confidence: hit.confidence,
+				bbox: hit.bbox,
+				zone: hit.zone,
+				text: hit.text,
+				thumbnail_url: null,
+				attachments: []
+			});
+			eventsByCamera.set(hit.sourceId, cameraEvents);
+		}
 		const loaded = cameraList.map<LaneData>((camera) => ({
 			camera,
 			segments: segmentsByCamera.get(camera.id) ?? [],
@@ -131,6 +170,7 @@
 	$effect(() => {
 		const cameraList = selectedCameras;
 		const selectedDate = date;
+		const selectedAnchorMs = anchorMs;
 		const providedLanes = lanes;
 		const version = ++requestVersion;
 		if (providedLanes !== undefined) {
@@ -146,7 +186,7 @@
 
 		const controller = new AbortController();
 		loading = true;
-		void loadLanes(cameraList, selectedDate, controller.signal, version)
+		void loadLanes(cameraList, selectedDate, selectedAnchorMs, controller.signal, version)
 			.catch(() => {})
 			.finally(() => {
 				if (!controller.signal.aborted && version === requestVersion) loading = false;

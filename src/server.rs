@@ -4632,9 +4632,11 @@ fn query_events(
 
     let catalog = event_search_catalog(state)?;
     let search = EventSearch::new(catalog.clone());
+    let mut include_preview_keyframes = true;
     let mut page = match request.search {
         Some(proto::query_events::Search::Metadata(metadata)) => {
             validate_event_metadata_search(&metadata)?;
+            include_preview_keyframes = metadata.include_preview_keyframes;
             if request.source_id.is_some() {
                 return Err(ControlCommandError::new(
                     proto::ErrorCode::InvalidRequest,
@@ -4702,6 +4704,7 @@ fn query_events(
                         preview_after_ms,
                         page_size,
                         page_token,
+                        include_preview_keyframes: false,
                     })
                     .map_err(|error| event_search_error("search event metadata", error))?
             }
@@ -4752,7 +4755,9 @@ fn query_events(
             ));
         }
     };
-    remap_event_search_keyframes(state, catalog, &request.stream_id, &mut page.hits)?;
+    if include_preview_keyframes {
+        remap_event_search_keyframes(state, catalog, &request.stream_id, &mut page.hits)?;
+    }
     let next_page_token = page
         .next_page_token
         .take()
@@ -5382,44 +5387,21 @@ fn remap_event_search_keyframes(
     stream_id: &str,
     hits: &mut [crate::storage::EventSearchHit],
 ) -> Result<(), ControlCommandError> {
-    let mut hit_indexes = Vec::new();
-    let mut requests = Vec::new();
-    for (hit_index, hit) in hits.iter().enumerate() {
+    for hit in hits {
         if !hit.keyframes.is_empty() {
             continue;
         }
         let Some(camera) = state.camera(&hit.source_id) else {
             continue;
         };
-        hit_indexes.push(hit_index);
         let stored_stream_id = recording_stream(&camera, stream_id);
-        requests.push(crate::storage::catalog::EventPreviewRequest {
-            event_id: hit.event_id.clone(),
-            source_id: hit.source_id.clone(),
-            stream_id: stored_stream_id.to_owned(),
-            recording_stream_id: format!("{}/{}", camera.recording_label, stored_stream_id),
-            event_time_ms: hit.start_time_ms,
-            start_time_ms: hit.preview_start_ms,
-            end_time_ms: hit.preview_end_ms,
-        });
-    }
-    let resolutions = catalog
-        .resolve_event_preview_keyframes(requests)
-        .map_err(|error| stored_catalog_error("resolve event preview keyframes", error))?;
-    for (hit_index, mut resolution) in hit_indexes.into_iter().zip(resolutions) {
-        let hit = &mut hits[hit_index];
-        if hit.event_id != resolution.event_id {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                "event preview resolution order changed",
-            ));
-        }
-        for keyframe in &mut resolution.keyframes {
+        if let Some(mut keyframe) = catalog
+            .resolve_event_keyframe(&hit.event_id, stored_stream_id)
+            .map_err(|error| stored_catalog_error("resolve event keyframe", error))?
+        {
             keyframe.stream_id = stream_id.to_owned();
+            hit.keyframes = vec![keyframe];
         }
-        hit.keyframes = resolution.keyframes;
-        hit.keyframes_truncated |= resolution.truncated;
     }
     Ok(())
 }
@@ -5656,6 +5638,7 @@ fn query_stored_media_timeline(
     let mut ranges = Vec::new();
     if !query.omit_availability {
         for camera in &cameras {
+            let mut physical_ranges = HashMap::<String, Vec<(i64, i64)>>::new();
             let mut streams = camera
                 .info
                 .profiles
@@ -5667,24 +5650,42 @@ fn query_stored_media_timeline(
             streams.dedup();
             for stream in streams {
                 let stream_id = recording_stream_id(camera, stream);
-                let fragments = catalog
-                    .media_fragments_in_range(&stream_id, start_ms, end_ms)
-                    .map_err(|error| {
-                        ControlCommandError::new(
-                            proto::ErrorCode::Internal,
-                            500,
-                            format!("unable to query recording availability: {error}"),
-                        )
-                    })?;
-                ranges.extend(fragments.into_iter().map(|fragment| {
-                    let fragment_end = fragment
-                        .start_ms
-                        .saturating_add(i64::try_from(fragment.duration_ms).unwrap_or(i64::MAX));
-                    let (range_start, range_end) = bucket_range(
-                        fragment.start_ms.max(start_ms),
-                        fragment_end.min(end_ms),
-                        bucket_ms,
-                    );
+                let physical = if let Some(ranges) = physical_ranges.get(&stream_id) {
+                    ranges.clone()
+                } else {
+                    let queried = if bucket_ms > 0 {
+                        catalog
+                            .availability_ranges_in_range(&stream_id, start_ms, end_ms, bucket_ms)
+                            .map_err(|error| {
+                                ControlCommandError::new(
+                                    proto::ErrorCode::Internal,
+                                    500,
+                                    format!("unable to query recording availability: {error}"),
+                                )
+                            })?
+                    } else {
+                        catalog
+                            .media_fragments_in_range(&stream_id, start_ms, end_ms)
+                            .map_err(|error| {
+                                ControlCommandError::new(
+                                    proto::ErrorCode::Internal,
+                                    500,
+                                    format!("unable to query recording availability: {error}"),
+                                )
+                            })?
+                            .into_iter()
+                            .map(|fragment| {
+                                let end = fragment.start_ms.saturating_add(
+                                    i64::try_from(fragment.duration_ms).unwrap_or(i64::MAX),
+                                );
+                                (fragment.start_ms.max(start_ms), end.min(end_ms))
+                            })
+                            .collect()
+                    };
+                    physical_ranges.insert(stream_id.clone(), queried.clone());
+                    queried
+                };
+                ranges.extend(physical.into_iter().map(|(range_start, range_end)| {
                     StoredTimelineRange {
                         source_id: camera.info.id.clone(),
                         stream_id: stream.to_owned(),
@@ -6022,23 +6023,6 @@ fn data_channel_target(
             "stored media query requires a negotiated data channel",
         )),
     }
-}
-
-fn bucket_range(start_ms: i64, end_ms: i64, bucket_ms: u64) -> (i64, i64) {
-    let Ok(bucket_ms) = i64::try_from(bucket_ms) else {
-        return (start_ms, end_ms);
-    };
-    if bucket_ms == 0 {
-        return (start_ms, end_ms);
-    }
-    let start = start_ms.div_euclid(bucket_ms).saturating_mul(bucket_ms);
-    let end_bucket = end_ms.div_euclid(bucket_ms);
-    let end = if end_ms.rem_euclid(bucket_ms) == 0 {
-        end_bucket.saturating_mul(bucket_ms)
-    } else {
-        end_bucket.saturating_add(1).saturating_mul(bucket_ms)
-    };
-    (start, end)
 }
 
 fn coalesce_timeline_ranges(ranges: Vec<StoredTimelineRange>) -> Vec<StoredTimelineRange> {
@@ -8019,7 +8003,7 @@ fn api_preflight(request: &Request, state: &ServerState) -> Response {
         .with_additional_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         .with_additional_header(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Content-Encoding",
+            "Authorization, Content-Type, Content-Encoding, Prefer",
         )
 }
 
@@ -8188,6 +8172,9 @@ fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrin
     let Ok(session_id) = delete.session_id.parse::<u64>() else {
         return api_status(404, "WebRTC session not found");
     };
+    let return_representation = request
+        .header("Prefer")
+        .is_some_and(|value| value.eq_ignore_ascii_case("return=representation"));
     let session_id = SessionId::from_u64(session_id);
     let owns_session = {
         let mut owners = state
@@ -8195,7 +8182,13 @@ fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrin
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match owners.get(&session_id) {
-            None => return Response::empty_204(),
+            None => {
+                return if return_representation {
+                    Response::text("deleted").with_status_code(200)
+                } else {
+                    Response::empty_204()
+                };
+            }
             Some(owner) if owner != &principal => false,
             Some(_) => {
                 owners.remove(&session_id);
@@ -8206,8 +8199,39 @@ fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrin
     if !owns_session {
         return api_status(404, "WebRTC session not found");
     }
-    state.webrtc.close_api_session(session_id);
-    Response::empty_204()
+    if return_representation {
+        state.webrtc.close_api_session(session_id);
+        return Response::text("deleted").with_status_code(200);
+    }
+    Response {
+        status_code: 204,
+        headers: Vec::new(),
+        data: ResponseBody::from_reader_and_size(
+            CloseApiSessionAfterResponse {
+                webrtc: state.webrtc.clone(),
+                session_id,
+            },
+            0,
+        ),
+        upgrade: None,
+    }
+}
+
+struct CloseApiSessionAfterResponse {
+    webrtc: WebRtc,
+    session_id: SessionId,
+}
+
+impl Read for CloseApiSessionAfterResponse {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        Ok(0)
+    }
+}
+
+impl Drop for CloseApiSessionAfterResponse {
+    fn drop(&mut self) {
+        self.webrtc.close_api_session(self.session_id);
+    }
 }
 
 fn api_status(status: u16, message: &str) -> Response {
@@ -11151,7 +11175,7 @@ mod tests {
         }));
         assert!(allowed.headers.iter().any(|(name, value)| {
             name.eq_ignore_ascii_case("Access-Control-Allow-Headers")
-                && value == "Authorization, Content-Type, Content-Encoding"
+                && value == "Authorization, Content-Type, Content-Encoding, Prefer"
         }));
 
         let unauthenticated = handle_request(
@@ -12304,6 +12328,14 @@ mod tests {
                 thumbnail_filename: Some("face-1.jpg".to_owned()),
             })
             .unwrap();
+        handle
+            .link_event_keyframe(crate::storage::CatalogEventKeyframeLink {
+                event_id: "face-1".to_owned(),
+                stream_id: "sub".to_owned(),
+                recording_id: fragments[0].recording_id.clone(),
+                fragment_sequence: fragments[0].sequence,
+            })
+            .unwrap();
 
         let mut state = media_test_state();
         state.catalog = Some(handle);
@@ -12460,6 +12492,7 @@ mod tests {
                                 minimum_confidence: Some(0.95),
                                 image: proto::EventImageFilter::WithImage as i32,
                                 text: Some("ali".to_owned()),
+                                include_preview_keyframes: true,
                             },
                         )),
                         source_id: None,
@@ -12570,7 +12603,7 @@ mod tests {
         };
         let hit = result.hit.as_ref().unwrap();
         assert_eq!(hit.event_id, "face-1");
-        assert_eq!(hit.keyframes.len(), 2);
+        assert_eq!(hit.keyframes.len(), 1);
         assert_eq!(hit.keyframes[0].source_id, "127.0.0.1");
         assert_eq!(hit.keyframes[0].stream_id, "main");
 

@@ -160,6 +160,44 @@ test('defaults to the compatible H.264 main stream and autoplays when no stream 
 	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
 });
 
+test('selects the newest indexed day before querying an implicit empty current day', async ({
+	page
+}) => {
+	await page.addInitScript(() => {
+		const state = window as Window & { __keepFirstSegmentMs?: number[] };
+		state.__keepFirstSegmentMs = [];
+		window.addEventListener('keeppeek:timeline-performance', (event) => {
+			const detail = (event as CustomEvent<{ name: string; durationMs?: number }>).detail;
+			if (detail.name === 'KeepFirstSegment' && detail.durationMs !== undefined) {
+				state.__keepFirstSegmentMs?.push(detail.durationMs);
+			}
+		});
+	});
+	const requests = await mockKeepTimeline(page);
+	await page.goto('/keep?camera=front-door&stream=main');
+
+	await expect(page).toHaveURL(new RegExp(`date=${date}`));
+	await expect(page.locator('video')).toBeVisible();
+	const currentDayStartMs = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`);
+	expect(requests.storedTimelineQueries[0]?.startMs).toBe(0);
+	expect(
+		requests.storedTimelineQueries.filter(
+			(query) => query.startMs >= currentDayStartMs && query.endMs > query.startMs
+		)
+	).toHaveLength(0);
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() => (window as Window & { __keepFirstSegmentMs?: number[] }).__keepFirstSegmentMs ?? []
+			)
+		)
+		.toHaveLength(1);
+	const [firstSegmentMs] = await page.evaluate(
+		() => (window as Window & { __keepFirstSegmentMs?: number[] }).__keepFirstSegmentMs ?? []
+	);
+	expect(firstSegmentMs).toBeLessThan(1_000);
+});
+
 test('explains a known codec fallback before opening the compatible substream', async ({
 	page
 }) => {
@@ -170,6 +208,7 @@ test('explains a known codec fallback before opening the compatible substream', 
 	await expect(page.getByRole('status')).toContainText(
 		'Main uses h265, which this browser cannot decode. Playing Sub instead.'
 	);
+
 	await expect(page.locator('[data-keep-player]')).toHaveAttribute(
 		'data-recording-rejected-variants',
 		'main:h265'
@@ -514,6 +553,25 @@ test('contains the Paper timeline lanes at the authored mobile viewport', async 
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
+	const touchTargets = [
+		page.getByRole('button', { name: 'Timeline', exact: true }),
+		page.getByRole('button', { name: 'Stories', exact: true }),
+		page.getByRole('button', { name: 'Swimlanes', exact: true }),
+		page.getByRole('button', { name: 'Export', exact: true }),
+		page.getByRole('button', { name: /^Previous camera,/ }),
+		page.getByRole('button', { name: /^Next camera,/ }),
+		page.getByRole('button', { name: 'Back 10 seconds' }),
+		page.getByRole('button', { name: 'Forward 10 seconds' }),
+		page.getByRole('button', { name: 'Zoom timeline out' }),
+		page.getByRole('button', { name: 'Zoom timeline in' })
+	];
+	for (const target of touchTargets) {
+		const bounds = await target.boundingBox();
+		const label = (await target.getAttribute('title')) ?? (await target.textContent()) ?? 'control';
+		expect(bounds).not.toBeNull();
+		expect(bounds!.width, label).toBeGreaterThanOrEqual(44);
+		expect(bounds!.height, label).toBeGreaterThanOrEqual(44);
+	}
 });
 
 test('names a cold seek after 400ms while preserving the current frame', async ({ page }) => {

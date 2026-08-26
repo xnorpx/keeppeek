@@ -94,13 +94,13 @@
 		Camera
 	</span>
 	<div
-		class="flex h-9 items-stretch overflow-hidden rounded-md border bg-background shadow-xs"
+		class="flex h-[46px] items-stretch overflow-hidden rounded-md border bg-background shadow-xs md:h-9"
 		role="group"
 		aria-labelledby="keep-camera-switcher-label"
 	>
 		<button
 			type="button"
-			class="grid w-9 shrink-0 place-items-center border-r text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+			class="grid w-11 shrink-0 place-items-center border-r text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 md:w-9"
 			disabled={cameras.length <= 1 || switching}
 			title={`Previous camera: ${cameraName(cameraAtOffset(-1))}`}
 			aria-label={`Previous camera, ${cameraName(cameraAtOffset(-1))}`}
@@ -201,7 +201,7 @@
 
 		<button
 			type="button"
-			class="grid w-9 shrink-0 place-items-center border-l text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+			class="grid w-11 shrink-0 place-items-center border-l text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 md:w-9"
 			disabled={cameras.length <= 1 || switching}
 			title={`Next camera: ${cameraName(cameraAtOffset(1))}`}
 			aria-label={`Next camera, ${cameraName(cameraAtOffset(1))}`}

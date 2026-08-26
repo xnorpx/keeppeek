@@ -15,7 +15,7 @@ servers:
       host:
         default: localhost
       port:
-        default: '8081'
+        default: "8081"
 security:
   - LocalApiKey: []
 paths:
@@ -33,35 +33,35 @@ paths:
         always answers the client offer, and does not use trickle ICE. The
         offer need not contain ICE candidates.
       parameters:
-        - $ref: '#/components/parameters/GzipContentEncoding'
+        - $ref: "#/components/parameters/GzipContentEncoding"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateRequest'
+              $ref: "#/components/schemas/CreateRequest"
       responses:
-        '201':
+        "201":
           description: The session was created.
           headers:
             Access-Control-Allow-Origin:
-              $ref: '#/components/headers/AccessControlAllowOrigin'
+              $ref: "#/components/headers/AccessControlAllowOrigin"
             Content-Encoding:
-              $ref: '#/components/headers/GzipContentEncoding'
+              $ref: "#/components/headers/GzipContentEncoding"
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreateResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '415':
-          $ref: '#/components/responses/OfferNotGzipEncoded'
-        '422':
-          $ref: '#/components/responses/OfferRejected'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+                $ref: "#/components/schemas/CreateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "415":
+          $ref: "#/components/responses/OfferNotGzipEncoded"
+        "422":
+          $ref: "#/components/responses/OfferRejected"
+        "503":
+          $ref: "#/components/responses/Unavailable"
     options:
       operationId: createOptions
       summary: CORS preflight for session create
@@ -70,42 +70,55 @@ paths:
         Content-Encoding. Allowed origins are configured server-side.
       security: []
       responses:
-        '204':
+        "204":
           description: Preflight accepted for a configured origin.
           headers:
             Access-Control-Allow-Origin:
-              $ref: '#/components/headers/AccessControlAllowOrigin'
+              $ref: "#/components/headers/AccessControlAllowOrigin"
             Access-Control-Allow-Methods:
-              $ref: '#/components/headers/AccessControlAllowMethods'
+              $ref: "#/components/headers/AccessControlAllowMethods"
             Access-Control-Allow-Headers:
-              $ref: '#/components/headers/AccessControlAllowHeaders'
-        '403':
-          $ref: '#/components/responses/CorsOriginRejected'
+              $ref: "#/components/headers/AccessControlAllowHeaders"
+        "403":
+          $ref: "#/components/responses/CorsOriginRejected"
   /delete:
     post:
       operationId: delete
       summary: Delete a WebRTC session
       description: Only the access key that created the session can delete it.
+      parameters:
+        - name: Prefer
+          in: header
+          required: false
+          description: Use `return=representation` when the client must observe a complete response body.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/DeleteRequest'
+              $ref: "#/components/schemas/DeleteRequest"
       responses:
-        '204':
+        "200":
+          description: The session was deleted and a representation was requested.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "204":
           description: The session was deleted.
           headers:
             Access-Control-Allow-Origin:
-              $ref: '#/components/headers/AccessControlAllowOrigin'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/SessionNotFound'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+              $ref: "#/components/headers/AccessControlAllowOrigin"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/SessionNotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
     options:
       operationId: deleteOptions
       summary: CORS preflight for session delete
@@ -114,17 +127,17 @@ paths:
         are configured server-side.
       security: []
       responses:
-        '204':
+        "204":
           description: Preflight accepted for a configured origin.
           headers:
             Access-Control-Allow-Origin:
-              $ref: '#/components/headers/AccessControlAllowOrigin'
+              $ref: "#/components/headers/AccessControlAllowOrigin"
             Access-Control-Allow-Methods:
-              $ref: '#/components/headers/AccessControlAllowMethods'
+              $ref: "#/components/headers/AccessControlAllowMethods"
             Access-Control-Allow-Headers:
-              $ref: '#/components/headers/AccessControlAllowHeaders'
-        '403':
-          $ref: '#/components/responses/CorsOriginRejected'
+              $ref: "#/components/headers/AccessControlAllowHeaders"
+        "403":
+          $ref: "#/components/responses/CorsOriginRejected"
 
   /logs:
     get:
@@ -132,7 +145,7 @@ paths:
       summary: Read server logs as Server-Sent Events
       description: Each log event contains one JSON LogEntry payload.
       responses:
-        '200':
+        "200":
           description: A stream of server log events.
           content:
             text/event-stream:
@@ -144,10 +157,10 @@ paths:
                     id: 42
                     event: log
                     data: {"sequence":42,"timestamp_ms":0,"level":"info","target":"keeppeek","message":"ready","fields":{}}
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /logs/snapshot:
     get:
       operationId: logSnapshot
@@ -157,7 +170,7 @@ paths:
         bounded in-memory log hub. The response is not cached and is intended
         for diagnostics package creation rather than polling.
       responses:
-        '200':
+        "200":
           description: The complete bounded retained log snapshot.
           headers:
             Cache-Control:
@@ -168,11 +181,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LogSnapshot'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+                $ref: "#/components/schemas/LogSnapshot"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /metrics:
     get:
       operationId: metrics
@@ -183,16 +196,16 @@ paths:
         ServerCapabilities snapshot. Any configured local API key may scrape
         this endpoint; no separate metrics credential exists.
       responses:
-        '200':
+        "200":
           description: Prometheus text exposition metrics.
           content:
             text/plain:
               schema:
                 type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 components:
   parameters:
     GzipContentEncoding:
@@ -215,12 +228,12 @@ components:
       description: Session bootstrap allows POST and OPTIONS.
       schema:
         type: string
-        const: 'POST, OPTIONS'
+        const: "POST, OPTIONS"
     AccessControlAllowHeaders:
       description: Headers sent by the browser card preflight.
       schema:
         type: string
-        const: 'Authorization, Content-Type, Content-Encoding'
+        const: "Authorization, Content-Type, Content-Encoding, Prefer"
     GzipContentEncoding:
       description: >-
         A successful create response gzip-compresses the complete UTF-8 JSON
@@ -246,19 +259,19 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Status'
+            $ref: "#/components/schemas/Status"
     OfferNotGzipEncoded:
       description: The request did not use gzip encoding.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Status'
+            $ref: "#/components/schemas/Status"
     OfferRejected:
       description: The SDP offer validation failed.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Status'
+            $ref: "#/components/schemas/Status"
     Unauthorized:
       description: >-
         A non-loopback or forwarded request has no valid API key. Only direct
@@ -266,25 +279,25 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Status'
+            $ref: "#/components/schemas/Status"
     SessionNotFound:
       description: The session does not exist or was created by another API key.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Status'
+            $ref: "#/components/schemas/Status"
     CorsOriginRejected:
       description: The request Origin is not in the configured allowed-origin list.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Status'
+            $ref: "#/components/schemas/Status"
     Unavailable:
       description: KeepPeek cannot currently serve the request.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Status'
+            $ref: "#/components/schemas/Status"
   schemas:
     CreateRequest:
       type: object
@@ -296,7 +309,7 @@ components:
         - offer
       properties:
         offer:
-          $ref: '#/components/schemas/SdpOffer'
+          $ref: "#/components/schemas/SdpOffer"
     CreateResponse:
       type: object
       additionalProperties: false
@@ -312,7 +325,7 @@ components:
           minLength: 1
           description: Opaque identifier used by its creator with /delete.
         answer:
-          $ref: '#/components/schemas/SdpAnswer'
+          $ref: "#/components/schemas/SdpAnswer"
     DeleteRequest:
       type: object
       additionalProperties: false
@@ -434,21 +447,21 @@ components:
         entries:
           type: array
           items:
-            $ref: '#/components/schemas/LogEntry'
+            $ref: "#/components/schemas/LogEntry"
         oldest_sequence:
           type:
             - integer
-            - 'null'
+            - "null"
           format: uint64
         newest_sequence:
           type:
             - integer
-            - 'null'
+            - "null"
           format: uint64
         truncated:
           type: boolean
         stats:
-          $ref: '#/components/schemas/LogBufferStats'
+          $ref: "#/components/schemas/LogBufferStats"
     Status:
       type: object
       additionalProperties: false

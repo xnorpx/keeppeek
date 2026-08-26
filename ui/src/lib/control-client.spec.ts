@@ -1750,6 +1750,22 @@ describe('ControlClient', () => {
 		expect(result.ranges).toHaveLength(1);
 	});
 
+	it('loads legacy event metadata without full-day attachments', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-event-metadata-only',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+
+		await client.getRecordingEvents('front-door', '2026-08-20');
+
+		const query = FakePeerConnection.latest?.channels.find(
+			(channel) => channel.label === 'control-channel'
+		)?.storedTimelineQueries[0];
+		expect(query?.events?.includeAttachments).toBe(false);
+	});
+
 	it('searches indexed event previews and fetches a decoder-ready keyframe', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

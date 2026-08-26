@@ -1,13 +1,18 @@
 use std::{
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
+#[cfg(any(windows, test))]
+use std::fs::File;
+
 use serde::Serialize;
 use tracing::info;
 use tracing_subscriber::{
     EnvFilter, Registry,
+    fmt::MakeWriter,
     prelude::*,
     reload::{self, Handle},
     util::SubscriberInitExt,
@@ -58,7 +63,9 @@ pub fn initialize_global_logging(config_path: &Path) -> anyhow::Result<LoggingSe
 
     Registry::default()
         .with(filter_layer)
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer().with_writer(RedactingMakeWriter::stderr(hub.clone())),
+        )
         .with(LogCaptureLayer::new(hub.clone()))
         .try_init()?;
 
@@ -103,7 +110,7 @@ pub fn initialize_service_logging(
                 .with(
                     tracing_subscriber::fmt::layer()
                         .with_ansi(false)
-                        .with_writer(std::sync::Mutex::new(log_file)),
+                        .with_writer(RedactingMakeWriter::file(hub.clone(), log_file)),
                 )
                 .with(LogCaptureLayer::new(hub.clone()))
                 .try_init()?;
@@ -120,8 +127,111 @@ pub fn initialize_service_logging(
 }
 
 fn configure_secret_redaction(hub: &LogHub, config_path: &Path) -> anyhow::Result<()> {
-    hub.set_sensitive_values(config::load_secrets(config_path)?.redaction_values());
+    let mut values = config::load_secrets(config_path)?.redaction_values();
+    if let Ok(cameras) = config::load_cameras(config_path) {
+        for camera in cameras.into_values().flatten() {
+            values.push(camera.ip.to_string());
+            values.push(camera.username);
+            values.push(camera.password);
+            values.extend(camera.uid);
+            values.extend(camera.main_rtsp_url);
+            values.extend(camera.sub_rtsp_url);
+        }
+    }
+    values.push(config_path.to_string_lossy().into_owned());
+    if let Some(parent) = config_path
+        .parent()
+        .filter(|parent| *parent != Path::new("/"))
+    {
+        values.push(parent.to_string_lossy().into_owned());
+    }
+    if let Ok(configuration) = config::load_config(config_path) {
+        values.extend(configuration.storage.medium_term_path);
+        values.extend(configuration.storage.long_term_path);
+        values.extend(configuration.storage.recording_catalog_path);
+        values.extend(configuration.storage.event_thumbnail_path);
+    }
+    hub.set_sensitive_values(values);
     Ok(())
+}
+
+#[derive(Clone)]
+struct RedactingMakeWriter {
+    hub: LogHub,
+    destination: RedactingDestination,
+}
+
+#[derive(Clone)]
+enum RedactingDestination {
+    Stderr,
+    #[cfg(any(windows, test))]
+    File(Arc<Mutex<File>>),
+}
+
+impl RedactingMakeWriter {
+    const fn stderr(hub: LogHub) -> Self {
+        Self {
+            hub,
+            destination: RedactingDestination::Stderr,
+        }
+    }
+
+    #[cfg(any(windows, test))]
+    fn file(hub: LogHub, file: File) -> Self {
+        Self {
+            hub,
+            destination: RedactingDestination::File(Arc::new(Mutex::new(file))),
+        }
+    }
+}
+
+impl<'writer> MakeWriter<'writer> for RedactingMakeWriter {
+    type Writer = RedactingWriter;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        RedactingWriter {
+            hub: self.hub.clone(),
+            destination: self.destination.clone(),
+            buffer: Vec::new(),
+        }
+    }
+}
+
+struct RedactingWriter {
+    hub: LogHub,
+    destination: RedactingDestination,
+    buffer: Vec<u8>,
+}
+
+impl Write for RedactingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.buffer.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for RedactingWriter {
+    fn drop(&mut self) {
+        let output = self
+            .hub
+            .redact_output(String::from_utf8_lossy(&self.buffer).as_ref());
+        match &self.destination {
+            RedactingDestination::Stderr => {
+                let _ = std::io::stderr().write_all(output.as_bytes());
+            }
+            #[cfg(any(windows, test))]
+            RedactingDestination::File(file) => {
+                let _ = file
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .write_all(output.as_bytes());
+            }
+        }
+    }
 }
 
 fn logging_service(
@@ -523,6 +633,34 @@ mod tests {
         let error = initial.error.unwrap();
         assert!(error.contains("invalid saved log filter"));
         assert!(error.contains("invalid RUST_LOG value"));
+        let _ = fs::remove_dir_all(file.path().parent().unwrap());
+    }
+
+    #[test]
+    fn formatted_output_redacts_configured_camera_values() {
+        let file = temporary_filter_file();
+        let output_path = file.path().with_file_name("formatted.log");
+        let hub = LogHub::default();
+        hub.set_sensitive_values([
+            "192.168.2.44".to_owned(),
+            "rtsp://admin:camera-secret@192.168.2.44/main".to_owned(),
+            "camera-secret".to_owned(),
+        ]);
+        let writer = RedactingMakeWriter::file(hub, File::create(&output_path).unwrap());
+        {
+            let mut event = writer.make_writer();
+            writeln!(
+                event,
+                "camera=192.168.2.44 endpoint=rtsp://admin:camera-secret@192.168.2.44/main"
+            )
+            .unwrap();
+        }
+
+        let output = fs::read_to_string(&output_path).unwrap();
+        assert!(output.contains("[REDACTED]"));
+        assert!(!output.contains("192.168.2.44"));
+        assert!(!output.contains("camera-secret"));
+        assert!(!output.contains("rtsp://"));
         let _ = fs::remove_dir_all(file.path().parent().unwrap());
     }
 }

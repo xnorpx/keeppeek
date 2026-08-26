@@ -5,6 +5,27 @@ nine real cameras. Browser checks used Chromium at the authored Paper viewports 
 1440 x 900 and 390 x 844. Visual expectations came from `KeepPeek - NVR Design
 System & Spec`, especially Boards 06, 10, 11, 22, 30, 31, and 34.
 
+## Final remediation status
+
+All 13 findings are resolved in the 2026-08-26 remediation candidate. The original reproduction
+and failure evidence remains below as regression context.
+
+| Finding   | Status       | Final verification                                                                                       |
+| --------- | ------------ | -------------------------------------------------------------------------------------------------------- |
+| KP-UI-001 | **Resolved** | Metadata-first 18-card pages render in 223-243 ms; previews are exact, lazy, bounded, and cancellable.   |
+| KP-UI-002 | **Resolved** | H.264 recordings decode in 0.64-1.68 s; HEVC uses exact RFC 6381 signaling or a truthful fallback.       |
+| KP-UI-003 | **Resolved** | One canonical stale fixture agrees across Peek, Cameras, Health, and diagnosis.                          |
+| KP-UI-004 | **Resolved** | Mobile fleet geometry stays within 390 px with identity, health, selection, and navigation visible.      |
+| KP-UI-005 | **Resolved** | Runtime storage opens a validated editor with cancel, apply, conflict, and restart-required states.      |
+| KP-UI-006 | **Resolved** | Session deletion is idempotent; route teardown returns 200 and preserves the shared control channel.     |
+| KP-UI-007 | **Resolved** | Mobile selection uses a 44 x 44 px target around the compact checkbox.                                   |
+| KP-UI-008 | **Resolved** | Sub-second storage durations use millisecond precision with boundary coverage.                           |
+| KP-UI-009 | **Resolved** | The date index selects the newest recorded day first and emits one budgeted `KeepFirstSegment`.          |
+| KP-UI-010 | **Resolved** | Stories and Swimlanes use bounded pages/windows; real first content measured 325 ms and 303 ms.          |
+| KP-UI-011 | **Resolved** | Generic motion retention is per-camera, defaults off, and leaves classified events enabled.              |
+| KP-UI-012 | **Resolved** | Availability-first metadata measured 48.2 ms p50 and 75 ms p95/max; thumbnail refreshes are incremental. |
+| KP-UI-013 | **Resolved** | Real cold-open and camera switching produce zero failed Blob requests or console errors.                 |
+
 Severity:
 
 - **P0**: Release blocker. The core workflow is effectively unusable or exhausts the client.
@@ -13,6 +34,8 @@ Severity:
 - **P3**: Minor. Incorrect or confusing presentation with a viable workaround.
 
 ## KP-UI-001 [P0] Events requests an entire day of attachments and freezes the browser
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** Events, performance, memory, responsiveness
 
@@ -70,6 +93,8 @@ load or retain a whole day across all cameras before showing the first result.
 - Changing date/filter or leaving Events must cancel in-flight server and client work.
 
 ## KP-UI-002 [P1] Keep replay is codec-blind and misses its first-frame and smoothness budgets
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** Keep, stored playback, latency
 
@@ -138,6 +163,8 @@ produced no request failures or console errors.
 
 ## KP-UI-003 [P1] Camera health state contradicts itself across Peek, Cameras, and diagnosis
 
+**Status:** **Resolved 2026-08-26**
+
 **Area:** Health correctness, status semantics
 
 **Paper reference:** Boards 06, 15, and 30
@@ -176,6 +203,8 @@ consistent states. A stale/degraded stream must not be represented as healthy gr
 
 ## KP-UI-004 [P1] Mobile Cameras clips most columns and the trailing row action
 
+**Status:** **Resolved 2026-08-26**
+
 **Area:** Mobile responsive layout, Cameras
 
 **Paper reference:** Board 11 plus the 390 px shell contract in Board 22
@@ -209,6 +238,8 @@ and actions through a responsive row/detail pattern without clipping.
 
 ## KP-UI-005 [P1] Edit runtime storage is an enabled no-op
 
+**Status:** **Resolved 2026-08-26**
+
 **Area:** Settings, storage configuration
 
 **Paper reference:** Boards 13 and 27
@@ -236,6 +267,8 @@ exact explanation when editing is unavailable.
 - Never render an enabled command that performs no observable action.
 
 ## KP-UI-006 [P2] Leaving Peek sends a failing `/delete` request
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** WebRTC lifecycle, console cleanliness, route transitions
 
@@ -265,6 +298,8 @@ normal navigation.
 
 ## KP-UI-007 [P2] Camera selection targets are 13 x 13 px on mobile
 
+**Status:** **Resolved 2026-08-26**
+
 **Area:** Mobile accessibility, touch input
 
 **Paper reference:** 390 px mobile interaction contract
@@ -288,6 +323,8 @@ Selection controls need a reliable touch target without requiring pixel-precise 
 - Keep row navigation and row selection as separate, keyboard-accessible actions.
 
 ## KP-UI-008 [P3] Storage timings are rounded to misleading zero-second values
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** Settings, value formatting
 
@@ -314,6 +351,8 @@ fractional second, rather than appearing disabled.
 - Add boundary tests around 0 ms, sub-second, one second, and minute values.
 
 ## KP-UI-009 [P2] Keep scans an empty current day before discovering the newest recorded day
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** Keep, recording discovery, startup latency
 
@@ -355,6 +394,8 @@ playable frame over proving that today is empty.
   second from navigation to first selected segment.
 
 ## KP-UI-010 [P2] Stories and swimlanes request full-day event metadata on mode entry
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** Keep, events, timeline query volume, responsiveness
 
@@ -399,6 +440,8 @@ bounded by visible demand across every Keep mode.
   task over 50 ms, and no more than the page/viewport budget of event records retained.
 
 ## KP-UI-011 [P1] Generic motion floods the event catalog and thumbnail store
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** Event ingestion, storage, Keep timeline performance
 
@@ -449,6 +492,8 @@ thumbnail-file count unchanged. Historical generic-motion data is intentionally 
 
 ## KP-UI-012 [P1] Keep overfetches timeline history and churns thumbnail object URLs
 
+**Status:** **Resolved 2026-08-26**
+
 **Area:** Keep, timeline, CPU, query volume
 
 **Paper reference:** Boards 04 and 22
@@ -488,13 +533,15 @@ or changed thumbnails. Timeline metadata must not delay the primary replay.
   query must not exceed the selected day, and no task may exceed 50 ms.
 - Replay remains at source frame rate while live timeline refreshes run.
 
-Primary replay is now deferred ahead of timeline and filmstrip work, prefetch is clamped to the
-selected day, and default overscan is one hour instead of twelve. The final real-camera run kept
-continuous replay at source rate, but the six-hour view still requested 405 minutes and produced
-119-157 ms long tasks. This issue remains open for narrower viewport queries and incremental
-thumbnail work.
+Primary replay is deferred ahead of timeline and preview work. Availability is aggregated into
+bounded buckets before a capped metadata page, prefetch is clamped to the selected day, and
+date-priority indexes keep the visible query ahead of broad discovery. The final real-catalog run
+measured 48.2 ms p50 and 75 ms p95/max for first metadata. Refreshes touch only thumbnail
+identities newly entering the viewport instead of re-emitting one cache hit per cached thumbnail.
 
 ## KP-UI-013 [P2] Keep revokes blob URLs while previews are still loading
+
+**Status:** **Resolved 2026-08-26**
 
 **Area:** Keep, media lifecycle, console cleanliness
 

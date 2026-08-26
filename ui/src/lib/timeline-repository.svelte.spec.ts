@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { StoredTimelineQueryOptions, StoredTimelineResult } from './control-client';
+import type {
+	EventMetadataSearchOptions,
+	StoredTimelineQueryOptions,
+	StoredTimelineResult
+} from './control-client';
 import {
 	mergeTimelineIntervals,
 	subtractTimelineIntervals,
@@ -75,6 +79,66 @@ describe('TimelineRepository', () => {
 			[100, 200],
 			[200, 250]
 		]);
+	});
+
+	it('loads availability before a bounded event metadata page', async () => {
+		const timelineCalls: StoredTimelineQueryOptions[] = [];
+		const eventCalls: EventMetadataSearchOptions[] = [];
+		const client = {
+			queryStoredTimeline: vi.fn(async (options: StoredTimelineQueryOptions) => {
+				timelineCalls.push(options);
+				const result: StoredTimelineResult = {
+					ranges: [{ sourceId: 'front-door', streamId: 'main', startMs: 100, endMs: 200 }],
+					events: []
+				};
+				options.onPage?.(result);
+				return result;
+			}),
+			searchEventMetadata: vi.fn(async (options: EventMetadataSearchOptions) => {
+				eventCalls.push(options);
+				return {
+					hits: [
+						{
+							eventId: 'person-1',
+							sourceId: 'front-door',
+							eventType: 'person',
+							origin: 'camera' as const,
+							startMs: 150,
+							endMs: null,
+							confidence: 0.9,
+							bbox: null,
+							zone: null,
+							text: null,
+							hasImageAttachment: true,
+							previewStartMs: 145,
+							previewEndMs: 160,
+							keyframes: [],
+							keyframesTruncated: false
+						}
+					],
+					nextPageToken: '',
+					candidatesTruncated: false
+				};
+			})
+		};
+		const repository = new TimelineRepository(client);
+
+		await repository.loadWindow({
+			sourceIds: ['front-door'],
+			startMs: 100,
+			endMs: 200,
+			bucketMs: 10,
+			prefetchMs: 0
+		});
+
+		expect(timelineCalls[0]?.includeEvents).toBe(false);
+		expect(eventCalls[0]).toMatchObject({
+			sourceIds: ['front-door'],
+			startMs: 100,
+			endMs: 200,
+			pageSize: 128
+		});
+		expect(repository.events[0]?.attachments).toHaveLength(1);
 	});
 
 	it('uses prefetch hysteresis instead of querying each crossed bucket', async () => {
@@ -168,7 +232,6 @@ describe('TimelineRepository', () => {
 		const event = {
 			id: 'person-1',
 			source_id: 'front-door',
-			revision: 1,
 			source: 'camera' as const,
 			kind: 'person',
 			start_time_ms: 150,
@@ -194,7 +257,7 @@ describe('TimelineRepository', () => {
 				if (options.includeAttachments) {
 					return {
 						ranges: [],
-						events: [{ ...event, thumbnail_url: 'blob:person-1' }]
+						events: [{ ...event, revision: 1, thumbnail_url: 'blob:person-1' }]
 					};
 				}
 				const result = { ranges: [], events: [event] };
@@ -216,6 +279,8 @@ describe('TimelineRepository', () => {
 			viewportExtentPx: 600
 		});
 		await vi.waitFor(() => expect(repository.events[0]?.thumbnail_url).toBe('blob:person-1'));
+		expect(repository.events).toHaveLength(1);
+		expect(repository.events[0]?.revision).toBe(1);
 
 		expect(calls).toHaveLength(2);
 		expect(calls[0]?.includeAttachments).toBe(false);
@@ -225,6 +290,74 @@ describe('TimelineRepository', () => {
 			endMs: 151,
 			includeAttachments: true
 		});
+	});
+
+	it('does not re-touch a cached thumbnail for an unchanged viewport', async () => {
+		const memoryHits: string[] = [];
+		const handlePerformanceEvent = (event: Event) => {
+			const detail = (event as CustomEvent<{ name: string; eventId?: string }>).detail;
+			if (detail.name === 'ThumbnailCacheHitMemory' && detail.eventId) {
+				memoryHits.push(detail.eventId);
+			}
+		};
+		window.addEventListener('keeppeek:timeline-performance', handlePerformanceEvent);
+		const event = {
+			id: 'person-1',
+			source_id: 'front-door',
+			source: 'camera' as const,
+			kind: 'person',
+			start_time_ms: 150,
+			end_time_ms: null,
+			confidence: 0.9,
+			bbox: null,
+			zone: null,
+			thumbnail_url: null,
+			attachments: [
+				{
+					id: 'thumb-1',
+					type: 'thumbnail',
+					content_type: 'image/jpeg',
+					byte_length: 100,
+					ordinal: 0,
+					timestamp_ms: 150
+				}
+			]
+		};
+		const client = {
+			queryStoredTimeline: vi.fn(async (options: StoredTimelineQueryOptions) => {
+				if (options.includeAttachments) {
+					return {
+						ranges: [],
+						events: [{ ...event, revision: 1, thumbnail_url: 'blob:person-1' }]
+					};
+				}
+				return { ranges: [], events: [event] };
+			})
+		};
+		const repository = new TimelineRepository(client, {
+			get: async () => null,
+			put: async () => undefined
+		});
+		const request = {
+			sourceIds: ['front-door'],
+			startMs: 100,
+			endMs: 200,
+			bucketMs: 10,
+			prefetchMs: 0,
+			viewportExtentPx: 600
+		};
+
+		try {
+			await repository.loadWindow(request);
+			await vi.waitFor(() => expect(repository.events[0]?.thumbnail_url).toBe('blob:person-1'));
+			await repository.loadWindow(request);
+			memoryHits.length = 0;
+			await repository.loadWindow(request);
+			expect(memoryHits).toEqual([]);
+		} finally {
+			repository.dispose();
+			window.removeEventListener('keeppeek:timeline-performance', handlePerformanceEvent);
+		}
 	});
 
 	it('retains rendered data but reloads coverage after reconnect revalidation', async () => {

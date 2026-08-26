@@ -2628,6 +2628,7 @@ message EventMetadataSearch {
   EventImageFilter image = 6;
   optional string text = 7;
   repeated string event_ids = 8;
+  bool include_preview_keyframes = 9;
 }
 
 enum EventImageFilter {

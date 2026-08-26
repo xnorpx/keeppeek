@@ -87,6 +87,45 @@ test('Peek diagnostics stays open without interrupting live playback', async ({ 
 	await expect(liveView).toHaveAttribute('data-session-id', sessionId ?? '');
 });
 
+test('leaves and re-enters Peek without a failed session delete', async ({ page }) => {
+	test.skip(
+		skipsRealWebRtcOnWindowsCi,
+		'Windows CI does not establish the real WebRTC control channel used by this full-stack test.'
+	);
+	const browserErrors: string[] = [];
+	const requestFailures: string[] = [];
+	page.on('console', (message) => {
+		if (
+			message.type() === 'error' ||
+			(message.type() === 'warning' && message.text().includes('svelte'))
+		) {
+			browserErrors.push(message.text());
+		}
+	});
+	page.on('pageerror', (error) => browserErrors.push(error.message));
+	page.on('requestfailed', (request) => {
+		requestFailures.push(`${request.method()} ${new URL(request.url()).pathname}`);
+	});
+	await page.goto('/');
+	const liveView = page.locator(`[data-camera-id="${streams[0].cameraId}"]`);
+	await expect(liveView).toHaveAttribute('data-status', 'live', { timeout: 30_000 });
+
+	const deleted = page.waitForResponse(
+		(response) => response.url().endsWith('/delete') && response.request().method() === 'POST'
+	);
+	await page.getByRole('link', { name: 'Keep', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
+	expect((await deleted).status()).toBe(200);
+	await page.getByRole('link', { name: 'Settings', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+	await expect(page.getByText('Settings unavailable', { exact: true })).toHaveCount(0);
+	await page.getByRole('link', { name: 'Peek', exact: true }).click();
+	await expect(liveView).toHaveAttribute('data-status', 'live', { timeout: 30_000 });
+
+	expect(requestFailures).toEqual([]);
+	expect(browserErrors).toEqual([]);
+});
+
 test('Peek focus automatic quality starts on the main stream and preserves explicit switches', async ({
 	page
 }) => {

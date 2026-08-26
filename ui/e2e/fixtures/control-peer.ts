@@ -236,6 +236,7 @@ export type StoredTimelineControlRequest = {
 	endMs: number;
 	includeAttachments: boolean;
 	includeAvailability: boolean;
+	availabilityBucketMs: number | null;
 };
 
 export type EventSearchControlRequest = {
@@ -252,6 +253,7 @@ export type EventSearchControlRequest = {
 	text: string | null;
 	pageSize: number;
 	pageToken: string;
+	includePreviewKeyframes: boolean;
 };
 
 export type ControlRequests = {
@@ -786,7 +788,8 @@ export async function mockControlPeer(
 					image: search.image,
 					text: search.text ?? null,
 					pageSize: query.pageSize,
-					pageToken: query.pageToken
+					pageToken: query.pageToken,
+					includePreviewKeyframes: search.includePreviewKeyframes
 				});
 				if (query.pageToken && options.eventSearchPageError) {
 					return encodedError(request.requestId, options.eventSearchPageError);
@@ -840,19 +843,20 @@ export async function mockControlPeer(
 						fixture.thumbnail !== undefined ||
 						fixture.thumbnailDescriptorOnly === true ||
 						event.thumbnail_url !== null;
-					const keyframes = fixture.thumbnail
-						? [
-								create(EventSearchKeyframeSchema, {
-									sourceId: fixture.sourceId,
-									streamId: query.streamId,
-									recordingId: event.id,
-									fragmentSequence: 1n,
-									eventTime: timestampFromDate(new Date(event.start_time_ms)),
-									fragmentStartTime: timestampFromDate(new Date(event.start_time_ms)),
-									byteLen: BigInt(fixture.thumbnail.byteLength)
-								})
-							]
-						: [];
+					const keyframes =
+						fixture.thumbnail && search.includePreviewKeyframes
+							? [
+									create(EventSearchKeyframeSchema, {
+										sourceId: fixture.sourceId,
+										streamId: query.streamId,
+										recordingId: event.id,
+										fragmentSequence: 1n,
+										eventTime: timestampFromDate(new Date(event.start_time_ms)),
+										fragmentStartTime: timestampFromDate(new Date(event.start_time_ms)),
+										byteLen: BigInt(fixture.thumbnail.byteLength)
+									})
+								]
+							: [];
 					pendingDataMessages.push(
 						encodedData(
 							create(MessageSchema, {
@@ -1024,7 +1028,11 @@ export async function mockControlPeer(
 					startMs,
 					endMs,
 					includeAttachments: query.events?.includeAttachments ?? false,
-					includeAvailability: !query.omitAvailability
+					includeAvailability: !query.omitAvailability,
+					availabilityBucketMs: query.availabilityBucket
+						? Number(query.availabilityBucket.seconds) * 1_000 +
+							query.availabilityBucket.nanos / 1_000_000
+						: null
 				});
 				const sourceIds = new Set(query.sourceIds);
 				const rangeFixtures = query.availabilityBucket

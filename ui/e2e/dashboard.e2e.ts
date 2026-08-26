@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { mockControlPeer } from './fixtures/control-peer';
+import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 import { mixedCameras, mixedHealth, mockMixedHealth } from './fixtures/peek';
 
 test('renders the KeepPeek dashboard without configured cameras', async ({ page }) => {
@@ -86,6 +86,54 @@ test('Board 6 renders healthy, degraded, stale, and offline Paper tile states', 
 	await page.locator('[data-peek-camera="back-yard"]').hover();
 	await expect(page.getByRole('button', { name: 'Rewind Back Yard' })).toHaveCount(0);
 	expect(browserErrors).toEqual([]);
+});
+
+test('refreshes startup health evidence in place without reopening Peek', async ({ page }) => {
+	test.setTimeout(30_000);
+	const staleEvidence = mixedHealth.cameras?.find((camera) => camera.id === 'alley');
+	const offlineEvidence = mixedHealth.cameras?.find((camera) => camera.id === 'back-yard');
+	if (!staleEvidence || !offlineEvidence)
+		throw new Error('mixed health transitions are incomplete');
+	const withFrontDoorEvidence = (evidence: typeof staleEvidence) => ({
+		...mixedHealth,
+		cameras: mixedHealth.cameras?.map((camera) =>
+			camera.id === 'front-door' ? { ...evidence, id: 'front-door' } : camera
+		)
+	});
+	const initialHealth: HealthFixture = {
+		...mixedHealth,
+		cameras: mixedHealth.cameras?.map((camera) =>
+			camera.id === 'front-door'
+				? {
+						...camera,
+						state: 'unknown',
+						reason: 'evidence_unavailable',
+						detail: 'Required camera evidence is unavailable'
+					}
+				: camera
+		)
+	};
+	await mockControlPeer(page, {
+		cameras: mixedCameras,
+		healthSequence: [
+			initialHealth,
+			mixedHealth,
+			withFrontDoorEvidence(staleEvidence),
+			withFrontDoorEvidence(offlineEvidence),
+			mixedHealth
+		]
+	});
+	await page.goto('/');
+
+	const tile = page.locator('[data-peek-camera="front-door"]');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'unknown');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy', { timeout: 12_000 });
+	await expect(tile).toContainText('HEALTHY');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'stale', { timeout: 7_000 });
+	await expect(tile).toContainText('STALE');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'offline', { timeout: 7_000 });
+	await expect(tile).toContainText('OFFLINE');
+	await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy', { timeout: 7_000 });
 });
 
 test('keeps mixed Peek states usable at the authored mobile viewport', async ({ page }) => {

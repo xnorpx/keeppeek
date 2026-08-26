@@ -270,6 +270,7 @@ export type EventMetadataSearchOptions = {
 	text?: string;
 	pageSize?: number;
 	pageToken?: string;
+	includePreviewKeyframes?: boolean;
 	signal?: AbortSignal;
 };
 
@@ -498,7 +499,7 @@ export class ControlClient {
 			startMs,
 			endMs,
 			includeEvents: true,
-			includeAttachments: true,
+			includeAttachments: false,
 			signal
 		});
 		return { camera_id: cameraId, date, events: timeline.events };
@@ -558,7 +559,8 @@ export class ControlClient {
 						zones: [...(options.zones ?? [])],
 						minimumConfidence: options.minimumConfidence,
 						image,
-						text: options.text?.trim() || undefined
+						text: options.text?.trim() || undefined,
+						includePreviewKeyframes: options.includePreviewKeyframes ?? false
 					})
 				},
 				streamId: options.streamId,
