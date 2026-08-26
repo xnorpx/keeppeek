@@ -5,6 +5,8 @@ export interface ProfileSummary {
 	resolution: string | null;
 	framerate: number | null;
 	bitrate_kbps?: number | null;
+	quality_rank?: number | null;
+	recorded_content_type?: string | null;
 	gop?: number | null;
 	h264_profile?: string | null;
 	audio?: AudioProfileSummary | null;

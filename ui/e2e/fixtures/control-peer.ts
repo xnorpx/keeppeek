@@ -256,6 +256,7 @@ export type ControlRequests = {
 		streamId: string;
 		timestampMs: number;
 	}>;
+	storedCloses: string[];
 	storedSeeks: Array<{ storedMediaId: string; timestampMs: number }>;
 	storedRefills: Array<{ storedMediaId: string; playbackTimeMs: number }>;
 	storedTimelineQueries: StoredTimelineControlRequest[];
@@ -367,6 +368,7 @@ export async function mockControlPeer(
 		runtimeUpdates: [],
 		storageProbePaths: [],
 		storedOpens: [],
+		storedCloses: [],
 		storedSeeks: [],
 		storedRefills: [],
 		storedTimelineQueries: [],
@@ -802,7 +804,6 @@ export async function mockControlPeer(
 				});
 			}
 			if (action.case === 'open') {
-				await storedOpenGates.shift();
 				const open = action.value;
 				requests.storedOpens.push({
 					storedMediaId: open.storedMediaId,
@@ -810,6 +811,7 @@ export async function mockControlPeer(
 					streamId: open.streamId,
 					timestampMs: open.timestamp ? timestampFromProto(open.timestamp) : 0
 				});
+				await storedOpenGates.shift();
 				const state = create(StoredMediaStateSchema, {
 					storedMediaId: open.storedMediaId,
 					status: StoredMediaStatus.ACTIVE,
@@ -878,6 +880,7 @@ export async function mockControlPeer(
 				return encodedOk(request.requestId, { case: 'storedMediaState', value: state });
 			}
 			if (action.case === 'close') {
+				requests.storedCloses.push(action.value.storedMediaId);
 				storedCursors.delete(action.value.storedMediaId);
 				return encodedOk(request.requestId, undefined);
 			}

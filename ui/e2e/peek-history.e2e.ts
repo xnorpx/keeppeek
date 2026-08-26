@@ -33,12 +33,10 @@ test('opens Keep history from a focused Peek camera without a rewind gesture', a
 	const history = page.getByRole('link', { name: 'History', exact: true });
 	await expect(history).toHaveAttribute(
 		'href',
-		new RegExp(`/keep\\?camera=${cameraId.replaceAll('.', '\\.')}&stream=main`)
+		new RegExp(`/keep\\?camera=${cameraId.replaceAll('.', '\\.')}$`)
 	);
 	await history.click();
-	await expect(page).toHaveURL(
-		new RegExp(`/keep\\?camera=${cameraId.replaceAll('.', '\\.')}&stream=main`)
-	);
+	await expect(page).toHaveURL(new RegExp(`/keep\\?camera=${cameraId.replaceAll('.', '\\.')}`));
 	await expect(page).not.toHaveURL(/from=peek/);
 	await expect(page.getByRole('heading', { name: 'Keep', exact: true })).toBeVisible();
 });

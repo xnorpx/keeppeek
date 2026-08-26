@@ -342,7 +342,7 @@ export class LivePeer {
 			sourceSessionId,
 			kind: MediaKind.VIDEO,
 			requestedDeliveryTransport: DeliveryTransport.RTP,
-			videoQuality: protoQuality(quality),
+			videoQuality: protoQuality(variantId === null ? quality : 'auto'),
 			variantId: variantId ?? ''
 		});
 		const result = await this.request({ case: 'subscribeMedia', value: subscribe });
