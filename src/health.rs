@@ -174,10 +174,18 @@ pub(crate) fn project_camera_health(evidence: &CameraHealthEvidence) -> CameraHe
             Vec::new(),
         );
     }
-    if evidence.startup_grace
-        && (evidence.report_age_ms.is_none()
-            || evidence.lifecycle == Some(CameraLifecycle::Starting))
-    {
+    let complete_healthy_evidence = evidence.lifecycle == Some(CameraLifecycle::Connected)
+        && evidence
+            .report_age_ms
+            .is_some_and(|age| age <= STREAM_REPORT_FRESHNESS_THRESHOLD_MS)
+        && evidence.frames_fresh == Some(true)
+        && evidence.decodable == Some(true)
+        && evidence.frame_rate_healthy == Some(true)
+        && evidence.recent_reconnects == 0
+        && evidence.recent_drops == 0
+        && evidence.recent_errors == 0
+        && (!evidence.recording_requested || evidence.recording_progressing == Some(true));
+    if evidence.startup_grace && !complete_healthy_evidence {
         return projection(
             CameraHealthState::Starting,
             CameraHealthReason::Starting,
@@ -313,6 +321,10 @@ pub struct CameraHealthDimensions {
     pub recording_progressing_stream_ids: Vec<String>,
     pub recording_progressing: Option<bool>,
     pub recording_progress_age_ms: Option<u64>,
+    pub session_duration_ms: Option<u64>,
+    pub recorded_main_duration_ms: u64,
+    pub recorded_sub_duration_ms: u64,
+    pub recorded_total_duration_ms: u64,
     pub battery_configured: bool,
     pub battery_registered: Option<bool>,
     pub battery_last_seen_age_ms: Option<u64>,
@@ -337,6 +349,8 @@ pub struct StreamHealthDimensions {
     pub recording_requested: bool,
     pub recording_progressing: Option<bool>,
     pub recording_progress_age_ms: Option<u64>,
+    pub session_duration_ms: u64,
+    pub recorded_duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -976,6 +990,25 @@ mod tests {
             ..healthy_camera_evidence()
         });
         assert_eq!(after_reconnect_boundary.state, CameraHealthState::Offline);
+    }
+
+    #[test]
+    fn camera_health_projection_keeps_transient_first_window_evidence_starting() {
+        let transient = project_camera_health(&CameraHealthEvidence {
+            startup_grace: true,
+            frame_rate_healthy: Some(false),
+            recent_reconnects: 1,
+            ..healthy_camera_evidence()
+        });
+        assert_eq!(transient.state, CameraHealthState::Starting);
+        assert_eq!(transient.reason, CameraHealthReason::Starting);
+
+        let healthy = project_camera_health(&CameraHealthEvidence {
+            startup_grace: true,
+            ..healthy_camera_evidence()
+        });
+        assert_eq!(healthy.state, CameraHealthState::Healthy);
+        assert_eq!(healthy.reason, CameraHealthReason::Healthy);
     }
 
     #[test]

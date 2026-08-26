@@ -39,9 +39,7 @@ describe('Board 34 light-theme Peek story', () => {
 		]);
 
 		await expect.element(page.getByText('DEGRADED', { exact: true })).toBeVisible();
-		await expect
-			.element(page.getByText('14% of frames dropped · recording progressing', { exact: true }))
-			.toBeVisible();
+		await expect.element(page.getByText('14% of frames dropped', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('OFFLINE', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('Last report 04:23', { exact: true })).toBeVisible();
 		expect(container.textContent).not.toContain('SUB · 11FPS');

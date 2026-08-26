@@ -70,7 +70,7 @@ test('Peek diagnostics stays open without interrupting live playback', async ({ 
 	const sessionId = await liveView.getAttribute('data-session-id');
 	expect(sessionId).not.toBeNull();
 
-	const trigger = liveView.getByRole('button', { name: /WebRTC stream diagnostics/ });
+	const trigger = liveView.getByRole('button', { name: /camera information/ });
 	await trigger.click();
 	const diagnostics = page.locator(`[data-web-rtc-diagnostics="${stream.cameraId}"]`);
 	await expect(diagnostics).toBeVisible();

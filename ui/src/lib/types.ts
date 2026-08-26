@@ -409,6 +409,10 @@ export interface CameraHealthDimensions {
 	recording_progressing_stream_ids: string[];
 	recording_progressing: boolean | null;
 	recording_progress_age_ms: number | null;
+	session_duration_ms: number | null;
+	recorded_main_duration_ms: number;
+	recorded_sub_duration_ms: number;
+	recorded_total_duration_ms: number;
 	battery_configured: boolean;
 	battery_registered: boolean | null;
 	battery_last_seen_age_ms: number | null;
@@ -451,6 +455,8 @@ export interface StreamHealthDimensions {
 	recording_requested: boolean;
 	recording_progressing: boolean | null;
 	recording_progress_age_ms: number | null;
+	session_duration_ms: number;
+	recorded_duration_ms: number;
 }
 
 export interface StreamHealth {

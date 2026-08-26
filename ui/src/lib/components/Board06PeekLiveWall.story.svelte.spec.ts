@@ -42,7 +42,7 @@ describe('Board 6 Peek live wall story', () => {
 		const frontDoorTile = frame!.querySelector<HTMLElement>('[data-peek-camera="front-door"]');
 		const frontDoorLabel = frontDoorTile?.querySelector<HTMLElement>('[data-peek-camera-label]');
 		const frontDoorDiagnostics = frontDoorTile?.querySelector<HTMLElement>(
-			'[aria-label="Front Door WebRTC stream diagnostics"]'
+			'[aria-label="Front Door camera information"]'
 		);
 		expect(frontDoorTile).not.toBeNull();
 		expect(frontDoorLabel).not.toBeNull();
@@ -62,6 +62,13 @@ describe('Board 6 Peek live wall story', () => {
 		expect(fleetRuntime!.textContent).toContain('KEEPPEEKCPU 4% RAM 0.3 GB');
 		expect(frame!.textContent).not.toContain('last frame');
 		expect(frame!.textContent).not.toContain('SUB ·');
+		await page.getByRole('button', { name: 'Front Door camera information' }).click();
+		await expect.element(page.getByText('Sub stream · recording', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('Camera session', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('10m 00s', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('8m 00s', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('5m 00s', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('13m 00s', { exact: true })).toBeVisible();
 	});
 
 	it('reuses all four production tile states without inventing source pagination', async () => {

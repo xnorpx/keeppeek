@@ -290,6 +290,7 @@ pub(crate) struct CameraReport {
 pub(crate) struct StreamReport {
     #[serde(rename = "type")]
     pub kind: String,
+    pub session_duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codec: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -540,7 +541,7 @@ fn counter_progressed(previous: Option<u64>, current: u64) -> bool {
 }
 
 fn counter_delta(previous: Option<u64>, current: u64) -> u64 {
-    previous.map_or(current, |previous| {
+    previous.map_or(0, |previous| {
         if current >= previous {
             current - previous
         } else {
@@ -563,6 +564,10 @@ pub(crate) fn video_report(
             StreamKind::Main => "video_main".into(),
             StreamKind::Sub => "video_sub".into(),
         },
+        session_duration_ms: Duration::from_secs_f64(snap.uptime_secs)
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
         codec: codec.map(|c| c.to_string()),
         resolution: if width > 0 && height > 0 {
             Some(format!("{width}x{height}"))
@@ -599,6 +604,10 @@ pub(crate) fn audio_report(
     }
     Some(StreamReport {
         kind: "audio".into(),
+        session_duration_ms: Duration::from_secs_f64(snap.uptime_secs)
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
         codec: codec.map(Into::into),
         resolution: None,
         fps: round1(rates.audio_fps),
@@ -717,6 +726,7 @@ mod tests {
         );
 
         assert_eq!(report.kind, "video_main");
+        assert_eq!(report.session_duration_ms, 10_000);
         assert_eq!(report.codec.as_deref(), Some("h265"));
         assert_eq!(report.resolution.as_deref(), Some("3840x2160"));
         assert_eq!(report.fps, 25.0);
@@ -741,6 +751,7 @@ mod tests {
     fn stream(kind: &str, fps: f64) -> StreamReport {
         StreamReport {
             kind: kind.to_owned(),
+            session_duration_ms: 10_000,
             codec: Some("h264".to_owned()),
             resolution: Some("640x360".to_owned()),
             fps,
@@ -818,6 +829,11 @@ mod tests {
             started_at,
             1_000,
         );
+
+        let first = registry.snapshot_at(started_at);
+        assert_eq!(first[0].streams[0].recent_reconnects, 0);
+        assert_eq!(first[0].streams[0].recent_drops, 0);
+        assert_eq!(first[0].streams[0].recent_errors, 0);
 
         let mut next = initial;
         next.frames = Some(120);

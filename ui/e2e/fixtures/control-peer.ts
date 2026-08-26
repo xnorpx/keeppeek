@@ -2447,6 +2447,10 @@ function protoHealthSnapshot(health: HealthFixture) {
 							recordingProgressAgeMs: optionalFixtureBigInt(
 								camera.dimensions.recording_progress_age_ms
 							),
+							sessionDurationMs: optionalFixtureBigInt(camera.dimensions.session_duration_ms),
+							recordedMainDurationMs: fixtureBigInt(camera.dimensions.recorded_main_duration_ms),
+							recordedSubDurationMs: fixtureBigInt(camera.dimensions.recorded_sub_duration_ms),
+							recordedTotalDurationMs: fixtureBigInt(camera.dimensions.recorded_total_duration_ms),
 							batteryConfigured: camera.dimensions.battery_configured ?? false,
 							batteryRegistered: camera.dimensions.battery_registered ?? undefined,
 							batteryLastSeenAgeMs: optionalFixtureBigInt(
@@ -2537,7 +2541,9 @@ function protoHealthSnapshot(health: HealthFixture) {
 									recordingProgressing: stream.dimensions.recording_progressing ?? undefined,
 									recordingProgressAgeMs: optionalFixtureBigInt(
 										stream.dimensions.recording_progress_age_ms
-									)
+									),
+									sessionDurationMs: fixtureBigInt(stream.dimensions.session_duration_ms),
+									recordedDurationMs: fixtureBigInt(stream.dimensions.recorded_duration_ms)
 								})
 							: undefined
 					})

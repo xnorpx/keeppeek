@@ -154,6 +154,67 @@
 		presentation.detail?.replace(/^(\d+)% frames dropped$/i, '$1% of frames dropped') ??
 			'Camera health evidence unavailable'
 	);
+	let recordingDiagnostics = $derived.by(() => {
+		const dimensions = health?.dimensions;
+		if (!dimensions) {
+			return {
+				state: 'unknown' as const,
+				detail: 'Not reported',
+				sessionDurationMs: null,
+				mainDurationMs: null,
+				subDurationMs: null,
+				totalDurationMs: null
+			};
+		}
+		const durations = {
+			sessionDurationMs: dimensions.session_duration_ms ?? null,
+			mainDurationMs: dimensions.recorded_main_duration_ms ?? null,
+			subDurationMs: dimensions.recorded_sub_duration_ms ?? null,
+			totalDurationMs: dimensions.recorded_total_duration_ms ?? null
+		};
+		if (!dimensions.recording_requested) {
+			return { state: 'off' as const, detail: 'Off', ...durations };
+		}
+
+		const requestedStreams = recordingStreamIds(
+			dimensions.recording_video_stream_ids,
+			(stream) => stream.dimensions?.recording_requested === true
+		);
+		const progressingStreams = recordingStreamIds(
+			dimensions.recording_progressing_stream_ids,
+			(stream) => stream.dimensions?.recording_progressing === true
+		);
+		if (progressingStreams.length > 0) {
+			const pendingStreams = requestedStreams.filter(
+				(streamId) => !progressingStreams.includes(streamId)
+			);
+			if (pendingStreams.length > 0) {
+				return {
+					state: 'not-progressing' as const,
+					detail: `${formatRecordingStreams(progressingStreams)} recording · ${formatRecordingStreams(pendingStreams)} not progressing`,
+					...durations
+				};
+			}
+			return {
+				state: 'recording' as const,
+				detail: `${formatRecordingStreams(progressingStreams)} · recording`,
+				...durations
+			};
+		}
+
+		const streamLabel = formatRecordingStreams(requestedStreams);
+		if (dimensions.recording_progressing === true) {
+			return { state: 'recording' as const, detail: `${streamLabel} · recording`, ...durations };
+		}
+		if (dimensions.recording_progressing === false) {
+			return {
+				state: 'not-progressing' as const,
+				detail: `${streamLabel} · not progressing`,
+				...durations
+			};
+		}
+		return { state: 'pending' as const, detail: `${streamLabel} · status pending`, ...durations };
+	});
 
 	$effect(() => {
 		if (!waitingForFirstFrame || firstFrameElapsedMsOverride !== undefined) {
@@ -189,6 +250,27 @@
 		}).format(new Date(timestampMs));
 	}
 
+	function formatRecordingStreams(streamIds: readonly string[]): string {
+		const names = [...new Set(streamIds.map((streamId) => streamId.replace(/^video_/, '')))].map(
+			(streamId) =>
+				streamId === 'main'
+					? 'Main'
+					: streamId === 'sub'
+						? 'Sub'
+						: streamId.charAt(0).toUpperCase() + streamId.slice(1)
+		);
+		if (names.length === 0) return 'Stream not reported';
+		return `${names.join(' + ')} stream${names.length === 1 ? '' : 's'}`;
+	}
+
+	function recordingStreamIds(
+		aggregatedIds: readonly string[] | undefined,
+		matches: (stream: CameraHealth['streams'][number]) => boolean
+	): string[] {
+		if (aggregatedIds && aggregatedIds.length > 0) return [...aggregatedIds];
+		return health?.streams.filter(matches).map((stream) => stream.type) ?? [];
+	}
+
 	function handleFrameActivity(active: boolean): void {
 		hasRecentFrames = active;
 		onframeactivitychange?.(camera.id, active);
@@ -209,6 +291,7 @@
 			showDiagnostics={!compactStatus && !layoutMode}
 			diagnosticsLabel={!compactStatus && !layoutMode ? label : undefined}
 			diagnosticsStatusClass={stateColor}
+			diagnosticsRecording={recordingDiagnostics}
 			onframeactivitychange={handleFrameActivity}
 			class="size-full overflow-hidden rounded-[inherit]"
 		/>
@@ -265,7 +348,7 @@
 					<p class="truncate text-md leading-[18px] font-semibold">{label}</p>
 					{#if presentation.state !== 'healthy' && presentation.state !== 'offline'}
 						<p class="font-mono text-2xs leading-3 tracking-caps text-white/70 uppercase">
-							{compactStateDetail}{presentation.recording ? ' · recording progressing' : ''}
+							{compactStateDetail}
 						</p>
 					{/if}
 				</div>
@@ -296,26 +379,12 @@
 					<span class="truncate">{label}</span>
 					<span class="font-mono text-2xs tracking-caps">{canonicalStateLabel}</span>
 				</span>
-			{:else}
-				<span
-					data-peek-camera-status
-					class="inline-flex h-7 items-center gap-1.5 rounded-sm px-2 font-mono text-2xs tracking-caps {headerSurface}"
-				>
-					<span class="size-1.5 rounded-full {stateColor}"></span>{canonicalStateLabel}
-				</span>
 			{/if}
 			{#if layoutMode && layoutSize && layoutSelected}
 				<span
 					class="flex shrink-0 items-center rounded-sm bg-primary px-2.5 py-1.5 font-mono text-2xs font-semibold tracking-caps text-on-primary"
 				>
 					{layoutSize}
-				</span>
-			{:else if presentation.recording}
-				<span
-					class="shrink-0 items-center gap-1.5 rounded-full bg-video/75 px-2.5 py-1.5 font-mono text-2xs font-semibold tracking-caps text-white {mobileCompactFlexClass}"
-				>
-					<span class="size-1.5 rounded-full bg-white/85"></span>
-					REC
 				</span>
 			{/if}
 			{#if !layoutMode && !rendersVideo}

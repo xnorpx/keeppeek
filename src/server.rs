@@ -6237,6 +6237,10 @@ fn proto_camera_health_dimensions(
         recording_progressing_stream_ids: dimensions.recording_progressing_stream_ids,
         recording_progressing: dimensions.recording_progressing,
         recording_progress_age_ms: dimensions.recording_progress_age_ms,
+        session_duration_ms: dimensions.session_duration_ms,
+        recorded_main_duration_ms: dimensions.recorded_main_duration_ms,
+        recorded_sub_duration_ms: dimensions.recorded_sub_duration_ms,
+        recorded_total_duration_ms: dimensions.recorded_total_duration_ms,
         battery_configured: dimensions.battery_configured,
         battery_registered: dimensions.battery_registered,
         battery_last_seen_age_ms: dimensions.battery_last_seen_age_ms,
@@ -6388,6 +6392,8 @@ fn proto_stream_health(stream: StreamHealth) -> proto::StreamHealthSnapshot {
             recording_requested: dimensions.recording_requested,
             recording_progressing: dimensions.recording_progressing,
             recording_progress_age_ms: dimensions.recording_progress_age_ms,
+            session_duration_ms: dimensions.session_duration_ms,
+            recorded_duration_ms: dimensions.recorded_duration_ms,
         }),
     }
 }
@@ -8645,6 +8651,8 @@ fn project_stream_snapshot(
             recording_requested,
             recording_progressing: recording_progress,
             recording_progress_age_ms: writer_health.and_then(|health| health.progress_age_ms),
+            session_duration_ms: stream.report.session_duration_ms,
+            recorded_duration_ms: writer_health.map_or(0, |health| health.recorded_duration_ms),
         },
         ingress: stream,
     }
@@ -8764,6 +8772,21 @@ fn project_camera_snapshot(
         .iter()
         .filter_map(|(_, _, health)| health.and_then(|health| health.progress_age_ms))
         .max();
+    let recorded_duration_ms = |stream_id: &str| {
+        recording_states
+            .iter()
+            .find(|(candidate, _, _)| candidate == stream_id)
+            .and_then(|(_, _, health)| *health)
+            .map_or(0, |health| health.recorded_duration_ms)
+    };
+    let recorded_main_duration_ms = recorded_duration_ms("main");
+    let recorded_sub_duration_ms = recorded_duration_ms("sub");
+    let recorded_total_duration_ms =
+        recording_states
+            .iter()
+            .fold(0_u64, |total, (_, _, health)| {
+                total.saturating_add(health.map_or(0, |health| health.recorded_duration_ms))
+            });
     let reporting_video_streams = reporting_stream_ids.len();
     let fresh_video_streams = fresh_stream_ids.len();
     let decodable_video_streams = decodable_stream_ids.len();
@@ -8875,6 +8898,13 @@ fn project_camera_snapshot(
             recording_progressing_stream_ids,
             recording_progressing: recording_progress,
             recording_progress_age_ms,
+            session_duration_ms: video_streams
+                .iter()
+                .map(|stream| stream.ingress.report.session_duration_ms)
+                .max(),
+            recorded_main_duration_ms,
+            recorded_sub_duration_ms,
+            recorded_total_duration_ms,
             battery_configured,
             battery_registered: battery_health.map(|health| health.registered),
             battery_last_seen_age_ms: battery_health.and_then(|health| health.last_seen_age_ms),
@@ -10900,7 +10930,7 @@ mod tests {
             backend: CameraBackend::Retina,
             transport: CameraTransport::Tcp,
             record_generic_motion_events: false,
-            recording_mode: CameraRecordingMode::Off,
+            recording_mode: CameraRecordingMode::Both,
             event_recording_duration_secs: 60,
         };
         let config = Config::default();
@@ -10914,6 +10944,7 @@ mod tests {
             port: 554,
             streams: vec![crate::stats::StreamReport {
                 kind: "video_main".to_owned(),
+                session_duration_ms: 10_000,
                 codec: Some("h264".to_owned()),
                 resolution: Some("1920x1080".to_owned()),
                 fps: 0.0,
@@ -10935,6 +10966,9 @@ mod tests {
                 errors: None,
             }],
         });
+        let recording_health = RecordingHealthRegistry::default();
+        recording_health.note_progress("front-door/main", Duration::from_secs(8 * 60));
+        recording_health.note_progress("front-door/sub", Duration::from_secs(5 * 60));
         let state = ServerState::new(
             &config,
             &camera_configs,
@@ -10943,14 +10977,15 @@ mod tests {
             RecordingDemand::new(Duration::ZERO),
             WebRtc::new(),
         )
-        .with_health_registry(registry);
+        .with_health_registry(registry)
+        .with_recording_health(recording_health);
         let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
         router_tx
             .send(RouterMessage::WorkerEvent(
                 crate::runtime::WorkerEvent::StatusChanged(CameraStatus {
                     id: crate::api::CameraId::new("front-door"),
                     lifecycle: CameraLifecycle::Connected,
-                    expected_streams: vec!["main".to_owned()],
+                    expected_streams: vec!["main".to_owned(), "sub".to_owned()],
                     connected_streams: vec!["main".to_owned()],
                     last_error: None,
                 }),
@@ -10973,6 +11008,22 @@ mod tests {
         assert_eq!(health.totals.connected_video_streams, 1);
         assert_eq!(health.totals.fresh_video_streams, 0);
         assert_eq!(health.totals.decodable_video_streams, 0);
+        assert_eq!(
+            health.cameras[0].dimensions.session_duration_ms,
+            Some(10_000)
+        );
+        assert_eq!(
+            health.cameras[0].dimensions.recorded_main_duration_ms,
+            480_000
+        );
+        assert_eq!(
+            health.cameras[0].dimensions.recorded_sub_duration_ms,
+            300_000
+        );
+        assert_eq!(
+            health.cameras[0].dimensions.recorded_total_duration_ms,
+            780_000
+        );
 
         let metrics = crate::metrics::encode_health(&health).unwrap();
         assert!(metrics.contains("state=\"stale\""));
@@ -10986,6 +11037,11 @@ mod tests {
         );
         assert_eq!(proto.cameras[0].state, "stale");
         assert_eq!(proto.cameras[0].reason, "frames_not_arriving");
+        let dimensions = proto.cameras[0].dimensions.as_ref().unwrap();
+        assert_eq!(dimensions.session_duration_ms, Some(10_000));
+        assert_eq!(dimensions.recorded_main_duration_ms, 480_000);
+        assert_eq!(dimensions.recorded_sub_duration_ms, 300_000);
+        assert_eq!(dimensions.recorded_total_duration_ms, 780_000);
         assert_eq!(proto.totals.unwrap().fresh_cameras, 0);
     }
 

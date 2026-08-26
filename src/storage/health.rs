@@ -24,6 +24,7 @@ pub struct RecordingStreamHealthSnapshot {
     pub last_failure_at_ms: Option<u64>,
     pub failure_age_ms: Option<u64>,
     pub last_error: Option<String>,
+    pub recorded_duration_ms: u64,
 }
 
 #[derive(Clone, Default)]
@@ -39,6 +40,7 @@ struct RecordingStreamHealth {
     last_progress: Option<Observation>,
     last_failure: Option<Observation>,
     last_error: Option<String>,
+    recorded_duration: std::time::Duration,
 }
 
 #[derive(Clone, Copy)]
@@ -52,8 +54,8 @@ impl RecordingHealthRegistry {
         self.note_attempt_at(stream_id, Instant::now(), unix_time_ms());
     }
 
-    pub(crate) fn note_progress(&self, stream_id: &str) {
-        self.note_progress_at(stream_id, Instant::now(), unix_time_ms());
+    pub(crate) fn note_progress(&self, stream_id: &str, recorded_duration: std::time::Duration) {
+        self.note_progress_at(stream_id, recorded_duration, Instant::now(), unix_time_ms());
     }
 
     pub(crate) fn note_failure(&self, stream_id: &str, error: &str) {
@@ -79,7 +81,13 @@ impl RecordingHealthRegistry {
         stream.pending_since.get_or_insert(observation);
     }
 
-    fn note_progress_at(&self, stream_id: &str, at: Instant, at_ms: u64) {
+    fn note_progress_at(
+        &self,
+        stream_id: &str,
+        recorded_duration: std::time::Duration,
+        at: Instant,
+        at_ms: u64,
+    ) {
         let mut streams = self
             .inner
             .lock()
@@ -91,6 +99,7 @@ impl RecordingHealthRegistry {
         stream.last_progress = Some(observation);
         stream.last_failure = None;
         stream.last_error = None;
+        stream.recorded_duration = stream.recorded_duration.saturating_add(recorded_duration);
     }
 
     fn note_failure_at(&self, stream_id: &str, error: &str, at: Instant, at_ms: u64) {
@@ -122,6 +131,11 @@ impl RecordingHealthRegistry {
                 last_failure_at_ms: stream.last_failure.map(|observation| observation.at_ms),
                 failure_age_ms: observation_age_ms(stream.last_failure, now),
                 last_error: stream.last_error.clone(),
+                recorded_duration_ms: stream
+                    .recorded_duration
+                    .as_millis()
+                    .try_into()
+                    .unwrap_or(u64::MAX),
             })
             .collect::<Vec<_>>();
         snapshots.sort_unstable_by(|left, right| left.stream_id.cmp(&right.stream_id));
@@ -160,7 +174,12 @@ mod tests {
         let health = RecordingHealthRegistry::default();
         let started_at = Instant::now();
         health.note_attempt_at("front/sub", started_at, 1_000);
-        health.note_progress_at("front/sub", started_at + Duration::from_secs(1), 2_000);
+        health.note_progress_at(
+            "front/sub",
+            Duration::from_millis(1_200),
+            started_at + Duration::from_secs(1),
+            2_000,
+        );
         health.note_failure_at(
             "front/sub",
             &"disk full ".repeat(40),
@@ -180,12 +199,18 @@ mod tests {
             Some(MAX_ERROR_CHARS)
         );
 
-        health.note_progress_at("front/sub", started_at + Duration::from_secs(4), 5_000);
+        health.note_progress_at(
+            "front/sub",
+            Duration::from_millis(800),
+            started_at + Duration::from_secs(4),
+            5_000,
+        );
         let recovered = health.snapshot_at(started_at + Duration::from_secs(5));
         assert_eq!(recovered.streams[0].progress_age_ms, Some(1_000));
         assert_eq!(recovered.streams[0].attempt_age_ms, None);
         assert_eq!(recovered.streams[0].last_failure_at_ms, None);
         assert_eq!(recovered.streams[0].last_error, None);
+        assert_eq!(recovered.streams[0].recorded_duration_ms, 2_000);
     }
 
     #[test]

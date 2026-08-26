@@ -1,4 +1,4 @@
-use crate::media_time::duration_to_ticks;
+use crate::media_time::{duration_to_ticks, ticks_to_duration};
 use crate::storage::{
     adts,
     catalog::{CatalogFragment, CatalogKeyframe, CatalogRecording, RecordingCatalogHandle},
@@ -31,6 +31,7 @@ pub struct MediumTermWriter {
     camera_timestamp_origin: Option<Duration>,
     frames_written: u64,
     bytes_written: u64,
+    recorded_duration: Duration,
     write_buffer_bytes: usize,
 }
 
@@ -133,25 +134,28 @@ impl MediumTermWriter {
             camera_timestamp_origin: None,
             frames_written: 0,
             bytes_written: 0,
+            recorded_duration: Duration::ZERO,
             write_buffer_bytes,
         })
     }
 
-    pub fn append_batch(&mut self, frames: Vec<RecordingFrame>) -> std::io::Result<()> {
+    pub fn append_batch(&mut self, frames: Vec<RecordingFrame>) -> std::io::Result<Duration> {
+        let mut recorded_duration = Duration::ZERO;
         for rf in frames {
-            self.append_one(rf)?;
+            recorded_duration = recorded_duration.saturating_add(self.append_one(rf)?);
         }
-        Ok(())
+        Ok(recorded_duration)
     }
 
-    pub fn append_one(&mut self, rf: RecordingFrame) -> std::io::Result<()> {
+    pub fn append_one(&mut self, rf: RecordingFrame) -> std::io::Result<Duration> {
+        let previous_duration = self.recorded_duration;
         if matches!(self.state, WriterState::WaitingForKeyframe) {
             if rf.frame.is_video_keyframe() {
                 self.segment_origin = Some(rf.received_at);
                 self.camera_timestamp_origin = rf.timestamp;
                 self.state = WriterState::Preparing(vec![rf]);
             }
-            return Ok(());
+            return Ok(Duration::ZERO);
         }
 
         if matches!(self.state, WriterState::Preparing(_)) && rf.frame.is_video_keyframe() {
@@ -166,7 +170,7 @@ impl MediumTermWriter {
                 ));
             }
         }
-        Ok(())
+        Ok(self.recorded_duration.saturating_sub(previous_duration))
     }
 
     fn activate_prepared(&mut self) -> std::io::Result<()> {
@@ -375,6 +379,9 @@ impl MediumTermWriter {
                     .map_err(mp4_err)?;
                 active.last_video_dts = Some(dts);
                 active.last_video_duration = duration;
+                self.recorded_duration = self
+                    .recorded_duration
+                    .saturating_add(ticks_to_duration(u64::from(duration), VIDEO_TIMESCALE));
                 self.frames_written += 1;
                 self.bytes_written += data_len as u64;
             }
@@ -855,6 +862,44 @@ mod tests {
         let path = writer.finalize().unwrap();
         assert!(path.is_file());
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_reports_only_committed_video_duration() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-medium-term-recorded-duration-{}",
+            rand::random::<u64>()
+        ));
+        let started_at = Instant::now();
+        let mut writer = MediumTermWriter::create(&root, "camera/main", started_at, 8 * 1024)
+            .expect("create writer");
+
+        assert_eq!(
+            writer
+                .append_one(video_frame(started_at, Duration::ZERO))
+                .unwrap(),
+            Duration::ZERO
+        );
+        let prepared_duration = writer
+            .append_one(video_frame(
+                started_at + Duration::from_secs(1),
+                Duration::from_secs(1),
+            ))
+            .unwrap();
+        assert!(prepared_duration >= Duration::from_secs(1));
+        assert!(prepared_duration < Duration::from_millis(1_001));
+        assert_eq!(
+            writer
+                .append_one(video_frame(
+                    started_at + Duration::from_secs(2),
+                    Duration::from_secs(2),
+                ))
+                .unwrap(),
+            Duration::from_secs(1)
+        );
+
+        writer.finalize().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 

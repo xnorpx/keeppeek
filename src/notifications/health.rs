@@ -225,6 +225,7 @@ mod tests {
             last_failure_at_ms: failure_at_ms,
             failure_age_ms: failure_at_ms.map(|_| 500),
             last_error: error.map(str::to_owned),
+            recorded_duration_ms: 0,
         }
     }
 

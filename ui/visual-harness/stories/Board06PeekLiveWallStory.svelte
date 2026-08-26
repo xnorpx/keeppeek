@@ -65,6 +65,15 @@
 			const transportConnected = state !== 'offline';
 			const framesFresh = state === 'healthy' || state === 'degraded';
 			const recordingProgressing = framesFresh;
+			const recordingDurations =
+				id === 'front-door'
+					? {
+							session_duration_ms: 600_000,
+							recorded_main_duration_ms: 480_000,
+							recorded_sub_duration_ms: 300_000,
+							recorded_total_duration_ms: 780_000
+						}
+					: {};
 			return [
 				id,
 				{
@@ -83,7 +92,8 @@
 						frames_fresh: framesFresh,
 						decodable: framesFresh,
 						recording_requested: true,
-						recording_progressing: recordingProgressing
+						recording_progressing: recordingProgressing,
+						...recordingDurations
 					} as CameraHealthDimensions,
 					lifecycle: state === 'offline' ? 'Reconnecting' : 'Connected',
 					last_error: state === 'offline' ? 'Not recording. No footage since 04:23.' : null,
