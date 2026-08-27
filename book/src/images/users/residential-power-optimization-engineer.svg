@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Residential Power Optimization Engineer</title>
+  <desc id="desc">A gender-neutral beaver balances a camera, recorder, and edge computer around a household power gauge.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#2c2c2c" stroke-width="1" opacity="0.08"/>
+    </pattern>
+    <pattern id="tail" width="18" height="18" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <path d="M0 0V18M9 0V18" stroke="#8b3a20" stroke-width="2" opacity="0.5"/>
+    </pattern>
+  </defs>
+  <rect width="960" height="540" fill="#f4ebd8"/>
+  <rect width="960" height="540" fill="url(#grid)"/>
+  <path d="M0 350C130 300 240 380 360 338C510 286 618 372 744 326C830 294 904 308 960 330V540H0Z" fill="#8db783"/>
+  <path d="M0 400C164 358 264 426 414 390C590 348 720 430 960 372V540H0Z" fill="#4f7d51"/>
+
+  <g stroke="#243038" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M154 232V333" fill="none"/>
+    <rect x="93" y="118" width="124" height="84" rx="6" fill="#167d7f" transform="rotate(-6 155 160)"/>
+    <path d="M111 151L204 141M122 187L194 178M154 122L164 198" fill="none" stroke="#d7eef0" stroke-width="4"/>
+    <circle cx="154" cy="336" r="12" fill="#e4b84c"/>
+
+    <rect x="744" y="132" width="126" height="200" rx="8" fill="#d9e4e8"/>
+    <rect x="766" y="160" width="82" height="38" rx="4" fill="#2c2c2c"/>
+    <rect x="766" y="216" width="82" height="38" rx="4" fill="#2c2c2c"/>
+    <circle cx="786" cy="179" r="5" fill="#8db783" stroke="none"/>
+    <circle cx="786" cy="235" r="5" fill="#8db783" stroke="none"/>
+    <path d="M817 332V362" fill="none"/>
+
+    <path d="M165 348C260 348 284 403 368 403M590 403C678 403 704 346 816 346" fill="none" stroke="#e4b84c" stroke-width="10"/>
+    <path d="M163 348L181 333M163 348L181 363M816 346L798 331M816 346L798 361" fill="none" stroke="#e4b84c"/>
+
+    <path d="M603 314C683 284 715 328 688 390C660 454 612 482 576 441C548 409 556 333 603 314Z" fill="#d67b53"/>
+    <path d="M603 314C683 284 715 328 688 390C660 454 612 482 576 441C548 409 556 333 603 314Z" fill="url(#tail)"/>
+
+    <ellipse cx="480" cy="377" rx="105" ry="116" fill="#b95f3e"/>
+    <circle cx="410" cy="208" r="30" fill="#8b3a20"/>
+    <circle cx="550" cy="208" r="30" fill="#8b3a20"/>
+    <ellipse cx="480" cy="252" rx="105" ry="91" fill="#d67b53"/>
+    <circle cx="446" cy="239" r="9" fill="#243038" stroke="none"/>
+    <circle cx="514" cy="239" r="9" fill="#243038" stroke="none"/>
+    <ellipse cx="480" cy="276" rx="20" ry="14" fill="#243038"/>
+    <ellipse cx="443" cy="296" rx="39" ry="30" fill="#f4c7a4"/>
+    <ellipse cx="517" cy="296" rx="39" ry="30" fill="#f4c7a4"/>
+    <rect x="460" y="303" width="20" height="35" rx="3" fill="#fffdf5"/>
+    <rect x="480" y="303" width="20" height="35" rx="3" fill="#fffdf5"/>
+
+    <path d="M401 348C354 370 349 414 389 426M559 348C606 370 611 414 571 426" fill="none"/>
+
+    <circle cx="480" cy="413" r="78" fill="#fffdf5"/>
+    <path d="M427 423A56 56 0 0 1 533 423" fill="none" stroke="#167d7f" stroke-width="12"/>
+    <path d="M480 414L518 382" fill="none" stroke="#b7410e" stroke-width="10"/>
+    <circle cx="480" cy="414" r="12" fill="#b7410e"/>
+  </g>
+
+  <g fill="#243038" font-family="IBM Plex Mono, monospace" font-weight="700" text-anchor="middle">
+    <text x="155" y="230" font-size="20">SOLAR</text>
+    <text x="807" y="292" font-size="20">REC</text>
+    <text x="480" y="522" font-size="21">POWER / MEDIA</text>
+  </g>
+</svg>

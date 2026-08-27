@@ -52,7 +52,7 @@ htmlcov/
 !Cargo.toml
 !.cargo/config.toml
 !ui/bunfig.toml
-!example/object_detection_service/pyproject.toml
+!examples/object_detection_service/pyproject.toml
 
-/example/object_detection_service/generated/
+/examples/object_detection_service/generated/
 /data/sample-videos/

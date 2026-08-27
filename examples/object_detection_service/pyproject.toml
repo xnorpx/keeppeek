@@ -5,7 +5,7 @@ required-version = "26.5.1"
 extend-exclude = '''
 /(
     data/sample-videos
-  | example/object_detection_service/generated
+  | examples/object_detection_service/generated
   | generated
   | target
   | ui/build

@@ -322,7 +322,7 @@ def phase_commands() -> list[tuple[str, list[str], Path]]:
                 "black",
                 "--check",
                 "--config",
-                "example/object_detection_service/pyproject.toml",
+                "examples/object_detection_service/pyproject.toml",
                 ".",
             ],
             REPOSITORY_ROOT,
@@ -369,7 +369,7 @@ def main() -> int:
     if importlib.util.find_spec("black") is None:
         raise RuntimeError(
             "Black is required: python -m pip install -r "
-            "example/object_detection_service/requirements.txt"
+            "examples/object_detection_service/requirements.txt"
         )
     REPORT_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_ROOT.mkdir(parents=True, exist_ok=True)

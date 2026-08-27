@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Residential Sysadmin</title>
+  <desc id="desc">A gender-neutral owl watches a home server rack and a KeepPeek health dashboard.</desc>
+  <defs>
+    <pattern id="network" width="80" height="80" patternUnits="userSpaceOnUse">
+      <circle cx="8" cy="8" r="3" fill="#167d7f" opacity="0.2"/>
+      <path d="M8 8H80M8 8V80" stroke="#167d7f" stroke-width="2" opacity="0.1"/>
+    </pattern>
+  </defs>
+  <rect width="960" height="540" fill="#e7f0ed"/>
+  <rect width="960" height="540" fill="url(#network)"/>
+  <path d="M28 148L160 48L292 148V354H28Z" fill="#f4ebd8" stroke="#243038" stroke-width="7" stroke-linejoin="round"/>
+  <rect x="80" y="172" width="160" height="250" rx="8" fill="#4d5961" stroke="#243038" stroke-width="7"/>
+
+  <g stroke="#243038" stroke-width="5" stroke-linejoin="round">
+    <rect x="102" y="198" width="116" height="48" rx="4" fill="#d9e4e8"/>
+    <rect x="102" y="263" width="116" height="48" rx="4" fill="#d9e4e8"/>
+    <rect x="102" y="328" width="116" height="48" rx="4" fill="#d9e4e8"/>
+    <circle cx="123" cy="222" r="6" fill="#6ca56f" stroke="none"/>
+    <circle cx="123" cy="287" r="6" fill="#6ca56f" stroke="none"/>
+    <circle cx="123" cy="352" r="6" fill="#e4b84c" stroke="none"/>
+  </g>
+
+  <g stroke="#243038" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="448" y="74" width="438" height="278" rx="8" fill="#fffdf5"/>
+    <rect x="470" y="98" width="394" height="56" rx="4" fill="#243038"/>
+    <path d="M498 298L562 254L617 276L680 191L736 228L832 174" fill="none" stroke="#b7410e" stroke-width="10"/>
+    <path d="M498 317H834M498 181V317" fill="none" stroke="#9db1b8" stroke-width="4"/>
+    <circle cx="562" cy="254" r="8" fill="#e4b84c"/>
+    <circle cx="680" cy="191" r="8" fill="#e4b84c"/>
+    <circle cx="832" cy="174" r="8" fill="#6ca56f"/>
+    <path d="M632 352V394M552 394H712" fill="none"/>
+
+    <path d="M331 192L280 146L283 225M369 192L420 146L417 225" fill="#6f8791"/>
+    <ellipse cx="350" cy="329" rx="112" ry="135" fill="#6f8791"/>
+    <circle cx="350" cy="238" r="100" fill="#89a2ab"/>
+    <circle cx="309" cy="240" r="42" fill="#f4ebd8"/>
+    <circle cx="391" cy="240" r="42" fill="#f4ebd8"/>
+    <circle cx="309" cy="240" r="13" fill="#243038"/>
+    <circle cx="391" cy="240" r="13" fill="#243038"/>
+    <path d="M350 264L330 289H370Z" fill="#e4b84c"/>
+    <path d="M270 345L321 385M430 345L379 385" fill="none" stroke-width="12"/>
+    <path d="M287 451H413" fill="none" stroke-width="14"/>
+  </g>
+
+  <g font-family="IBM Plex Mono, monospace" font-weight="700">
+    <text x="492" y="135" fill="#fffdf5" font-size="23">KEEPPEEK HEALTH</text>
+    <text x="755" y="335" fill="#4f7d51" font-size="19">HEALTHY</text>
+    <text x="160" y="406" fill="#243038" font-size="18" text-anchor="middle">HOME OPS</text>
+  </g>
+</svg>

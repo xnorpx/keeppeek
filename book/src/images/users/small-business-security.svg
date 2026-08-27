@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Small Business Security</title>
+  <desc id="desc">A gender-neutral fox monitors a shop, yard, and stock area through a tailored security event dashboard.</desc>
+  <defs>
+    <pattern id="zones" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M8 24V8H24M56 40V56H40" fill="none" stroke="#167d7f" stroke-width="3" opacity="0.12"/>
+    </pattern>
+  </defs>
+  <rect width="960" height="540" fill="#e8eef2"/>
+  <rect width="960" height="540" fill="url(#zones)"/>
+  <path d="M0 420C170 376 324 438 490 401C663 363 808 412 960 382V540H0Z" fill="#8db783"/>
+
+  <g stroke="#243038" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="42" y="190" width="246" height="214" rx="7" fill="#fffdf5"/>
+    <path d="M31 190H299L271 125H59Z" fill="#d67b53"/>
+    <path d="M86 127L74 190M140 127L135 190M194 127L199 190M248 127L260 190" fill="none" stroke="#fffdf5"/>
+    <rect x="76" y="248" width="76" height="156" fill="#9ac7d8"/>
+    <rect x="180" y="248" width="74" height="70" fill="#e4b84c"/>
+    <path d="M218 180V92M218 92H276" fill="none"/>
+    <rect x="258" y="69" width="77" height="51" rx="7" fill="#243038"/>
+    <circle cx="296" cy="94" r="14" fill="#9ac7d8"/>
+
+    <rect x="573" y="69" width="337" height="353" rx="8" fill="#243038"/>
+    <rect x="599" y="105" width="285" height="56" rx="5" fill="#fffdf5"/>
+    <rect x="599" y="184" width="285" height="63" rx="5" fill="#9ac7d8"/>
+    <rect x="599" y="266" width="285" height="63" rx="5" fill="#e4b84c"/>
+    <rect x="599" y="348" width="285" height="48" rx="5" fill="#8db783"/>
+    <path d="M621 215L639 232L671 198M621 297L639 314L671 280M621 372L639 386L667 358" fill="none" stroke="#fffdf5" stroke-width="8"/>
+
+    <ellipse cx="411" cy="387" rx="137" ry="91" fill="#b7410e"/>
+    <path d="M323 411C246 388 228 449 284 472C331 491 373 461 398 430" fill="#d67b53"/>
+    <path d="M351 232L322 143L395 190M471 232L500 143L427 190" fill="#b7410e"/>
+    <path d="M338 165L353 211M484 165L469 211" fill="none" stroke="#f4c7a4" stroke-width="14"/>
+    <ellipse cx="411" cy="267" rx="99" ry="85" fill="#d67b53"/>
+    <path d="M360 278C375 247 447 247 462 278C449 323 373 323 360 278Z" fill="#fffdf5"/>
+    <circle cx="377" cy="252" r="10" fill="#243038" stroke="none"/>
+    <circle cx="445" cy="252" r="10" fill="#243038" stroke="none"/>
+    <ellipse cx="411" cy="281" rx="16" ry="11" fill="#243038"/>
+    <path d="M359 364L330 409M463 364L508 399M352 454L333 490M449 454L468 490" fill="none" stroke-width="13"/>
+    <path d="M506 399L576 301" fill="none" stroke-width="12"/>
+    <circle cx="580" cy="296" r="13" fill="#b7410e"/>
+  </g>
+
+  <g fill="#243038" font-family="IBM Plex Mono, monospace" font-weight="700">
+    <text x="741" y="141" font-size="22" text-anchor="middle">CUSTOM EVENTS</text>
+    <text x="692" y="224" font-size="19">SHOP ENTRY</text>
+    <text x="692" y="306" font-size="19">STOCK AREA</text>
+    <text x="692" y="381" font-size="19">YARD CLEAR</text>
+    <text x="165" y="452" font-size="20" text-anchor="middle">SMALL BUSINESS</text>
+  </g>
+</svg>
