@@ -3,8 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>The KeepPeek Book</title>
-        <meta name="robots" content="noindex">
+        <title>Users and design choices - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -175,57 +174,7 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="keeppeek"><a class="header" href="#keeppeek">KeepPeek</a></h1>
-<blockquote>
-<p><strong>Status:</strong> KeepPeek is a proof of concept and is not yet production-ready.</p>
-</blockquote>
-<p>KeepPeek is a local-first network video recorder and WebRTC media gateway for IP cameras. It runs
-on Linux, macOS, and Windows and keeps camera media on hardware controlled by the user without
-requiring a vendor cloud relay.</p>
-<p>The core service has a deliberately focused job:</p>
-<ul>
-<li>discover and connect supported cameras;</li>
-<li>ingest and record their encoded media without re-encoding it;</li>
-<li>store recordings as standard MP4 files;</li>
-<li>provide live and recorded media through WebRTC;</li>
-<li>keep camera, stream, recording, and server health observable;</li>
-<li>accept and store events from supported cameras or independent services.</li>
-</ul>
-<p>KeepPeek does not require object detection or another AI service to record and review video.
-Camera-native analytics can publish events directly, while optional inference, transcoding, home
-automation, and commercial services connect through the open API. Recording remains useful when
-those services are absent or unavailable.</p>
-<p>The server is written in Rust for predictable, memory-safe concurrent media handling. The
-first-party interface uses Svelte and runs in the browser, relying on the browser and operating
-system for compatible video decoding. KeepPeek remains codec-aware without bundling a video codec
-pack into the core service.</p>
-<p>KeepPeek is developed with AI assistance through a human-directed process. AI is used as a tool for
-implementation, validation, documentation, and review; design decisions and accountability remain
-with people.</p>
-<blockquote>
-<p><strong>Small on purpose:</strong> The current release binary is under 40 MB. KeepPeek aims to remain a compact
-native service, not a two-gigabyte spaghetti-script bundle held together by Python and JavaScript
-runtimes. Those ecosystems are welcome in optional services where they fit; the core should not
-make every installation carry them.</p>
-</blockquote>
-<h2 id="reading-the-book"><a class="header" href="#reading-the-book">Reading the book</a></h2>
-<ul>
-<li><a href="#users-and-design-choices">Users and design choices</a> explains who KeepPeek is for and why its
-product, protocol, platform, licensing, and integration boundaries exist.</li>
-<li><a href="#reporting-bugs">Reporting bugs</a> describes how to file a reproducible defect and where to
-take setup questions or feature proposals.</li>
-<li><a href="#get-started">Get started</a> covers installation, persistent data, secrets, and the first
-camera.</li>
-<li><a href="#camera-and-stream-health">Camera and stream health</a> defines the authoritative health model and evidence
-used across the server, API, metrics, and interface.</li>
-<li><a href="#demo-videos">Demo videos</a> shows complete workflows against the real application.</li>
-<li><a href="#open-source-and-licensing">Open source and licensing</a> credits the projects KeepPeek builds
-on and explains the AGPL server and MIT API split.</li>
-<li><a href="#contributing">Contributing</a> explains scope review, interoperability contributions,
-AI-assisted work, pull requests, and validation.</li>
-</ul>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="users-and-design-choices"><a class="header" href="#users-and-design-choices">Users and design choices</a></h1>
+                        <h1 id="users-and-design-choices"><a class="header" href="#users-and-design-choices">Users and design choices</a></h1>
 <p>KeepPeek is a local-first network video recorder and media gateway. Its core job is to ingest
 camera media, record it reliably, make live and stored media available, and provide a stable place
 for events and integrations to meet. It can use analytics events produced directly by a camera,
@@ -253,7 +202,7 @@ available through an open protocol instead of deciding which models every instal
 <blockquote>
 <p><em>I just want it to work.</em></p>
 </blockquote>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="images/users/software-consumer.svg" alt="A relaxed capybara using a simple KeepPeek live and recording interface."><span class="img-wrapper"><img src="images/users/software-consumer.svg" alt="A relaxed capybara using a simple KeepPeek live and recording interface."></span></label></p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/software-consumer.svg" alt="A relaxed capybara using a simple KeepPeek live and recording interface."><span class="img-wrapper"><img src="./images/users/software-consumer.svg" alt="A relaxed capybara using a simple KeepPeek live and recording interface."></span></label></p>
 <h3 id="profile"><a class="header" href="#profile">Profile</a></h3>
 <ul>
 <li><strong>Starting point:</strong> A set of <a href="#cameras-brands-and-protocols">common cameras</a> and an expectation
@@ -280,7 +229,7 @@ open interfaces that let other users go further.</p>
 <blockquote>
 <p><em>Custom detection for the way the business actually works.</em></p>
 </blockquote>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="images/users/small-business-security.svg" alt="A fox monitoring a small business with a tailored security event dashboard."><span class="img-wrapper"><img src="images/users/small-business-security.svg" alt="A fox monitoring a small business with a tailored security event dashboard."></span></label></p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/small-business-security.svg" alt="A fox monitoring a small business with a tailored security event dashboard."><span class="img-wrapper"><img src="./images/users/small-business-security.svg" alt="A fox monitoring a small business with a tailored security event dashboard."></span></label></p>
 <h3 id="profile-1"><a class="header" href="#profile-1">Profile</a></h3>
 <ul>
 <li><strong>Starting point:</strong> A shop, workshop, office, warehouse, or yard with existing cameras and a
@@ -318,7 +267,7 @@ deployment for your specific business needs.</p>
 <blockquote>
 <p><em>Because someone else already wrote it.</em></p>
 </blockquote>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="images/users/open-source-enthusiast.svg" alt="A crow assembling KeepPeek from reusable open protocol and software components."><span class="img-wrapper"><img src="images/users/open-source-enthusiast.svg" alt="A crow assembling KeepPeek from reusable open protocol and software components."></span></label></p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/open-source-enthusiast.svg" alt="A crow assembling KeepPeek from reusable open protocol and software components."><span class="img-wrapper"><img src="./images/users/open-source-enthusiast.svg" alt="A crow assembling KeepPeek from reusable open protocol and software components."></span></label></p>
 <h3 id="profile-2"><a class="header" href="#profile-2">Profile</a></h3>
 <ul>
 <li><strong>Starting point:</strong> A collection of proven open-source tools, libraries, models, and devices.</li>
@@ -337,7 +286,7 @@ better appears.</li>
 <p>The recorder remains a useful shared foundation while every fast-moving or specialized component
 can come from somewhere else.</p>
 <h3 id="product-implications-2"><a class="header" href="#product-implications-2">Product implications</a></h3>
-<p>The <a href="#licensing-model">licensing model</a> protects improvements to the
+<p>The <a href="./open-source-and-licensing.html#licensing-model">licensing model</a> protects improvements to the
 server while allowing independent clients and services to use their own licensing and business
 model.</p>
 <!-- Add examples of existing projects that could be connected rather than rewritten. -->
@@ -345,7 +294,7 @@ model.</p>
 <blockquote>
 <p><em>Because the porch light should have opinions.</em></p>
 </blockquote>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="images/users/home-automation-enthusiast.svg" alt="A gecko connecting camera events to lights, MQTT, Home Assistant, and HAP."><span class="img-wrapper"><img src="images/users/home-automation-enthusiast.svg" alt="A gecko connecting camera events to lights, MQTT, Home Assistant, and HAP."></span></label></p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/home-automation-enthusiast.svg" alt="A gecko connecting camera events to lights, MQTT, Home Assistant, and HAP."><span class="img-wrapper"><img src="./images/users/home-automation-enthusiast.svg" alt="A gecko connecting camera events to lights, MQTT, Home Assistant, and HAP."></span></label></p>
 <h3 id="profile-3"><a class="header" href="#profile-3">Profile</a></h3>
 <ul>
 <li><strong>Starting point:</strong> A local automation system built around Home Assistant, MQTT, HAP/HomeKit,
@@ -376,7 +325,7 @@ trying to replace one.</p>
 <blockquote>
 <p><em>Unnecessarily professional.</em></p>
 </blockquote>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="images/users/residential-sysadmin.svg" alt="An owl monitoring a home server and KeepPeek health dashboard."><span class="img-wrapper"><img src="images/users/residential-sysadmin.svg" alt="An owl monitoring a home server and KeepPeek health dashboard."></span></label></p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/residential-sysadmin.svg" alt="An owl monitoring a home server and KeepPeek health dashboard."><span class="img-wrapper"><img src="./images/users/residential-sysadmin.svg" alt="An owl monitoring a home server and KeepPeek health dashboard."></span></label></p>
 <h3 id="profile-4"><a class="header" href="#profile-4">Profile</a></h3>
 <ul>
 <li><strong>Starting point:</strong> A self-hosted environment with monitoring, backups, and perhaps Home
@@ -402,7 +351,7 @@ a predictable native service, while the open API and external-service boundary k
 failures isolated.</p>
 <!-- Add a representative home-lab deployment and recovery story. -->
 <h2 id="residential-power-optimization-engineer"><a class="header" href="#residential-power-optimization-engineer">Residential Power Optimization Engineer</a></h2>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="images/users/residential-power-optimization-engineer.svg" alt="A beaver balancing camera recording, edge compute, and household power usage."><span class="img-wrapper"><img src="images/users/residential-power-optimization-engineer.svg" alt="A beaver balancing camera recording, edge compute, and household power usage."></span></label></p>
+<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="./images/users/residential-power-optimization-engineer.svg" alt="A beaver balancing camera recording, edge compute, and household power usage."><span class="img-wrapper"><img src="./images/users/residential-power-optimization-engineer.svg" alt="A beaver balancing camera recording, edge compute, and household power usage."></span></label></p>
 <h3 id="profile-5"><a class="header" href="#profile-5">Profile</a></h3>
 <ul>
 <li><strong>Starting point:</strong> A mixed set of cameras and compute devices, each with different power and
@@ -844,641 +793,18 @@ modifications to the AGPL server.</li>
 change camera settings.</li>
 </ul>
 <!-- Add product ideas that were deliberately rejected because they cross these boundaries. -->
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="reporting-bugs"><a class="header" href="#reporting-bugs">Reporting bugs</a></h1>
-<p>GitHub Issues are for reproducible KeepPeek defects. The
-<a href="https://github.com/xnorpx/keeppeek/issues/new?template=bug.yml">bug report form</a> is the canonical
-submission path, and
-<a href="https://github.com/xnorpx/keeppeek/blob/master/.github/ISSUE_TEMPLATE/bug.yml"><code>.github/ISSUE_TEMPLATE/bug.yml</code></a>
-is the source of truth for its required fields.</p>
-<h2 id="choose-the-right-channel"><a class="header" href="#choose-the-right-channel">Choose the right channel</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>What you need</th><th>Where to go</th></tr>
-</thead>
-<tbody>
-<tr><td>Existing KeepPeek behavior reproducibly fails</td><td><a href="https://github.com/xnorpx/keeppeek/issues/new?template=bug.yml">Bug report</a></td></tr>
-<tr><td>Setup help, troubleshooting, or usage guidance</td><td><a href="https://github.com/xnorpx/keeppeek/discussions/categories/q-a">Q&amp;A</a></td></tr>
-<tr><td>New behavior or a feature proposal</td><td><a href="https://github.com/xnorpx/keeppeek/discussions/categories/suggestions">Suggestions</a></td></tr>
-<tr><td>A security vulnerability</td><td><a href="https://github.com/xnorpx/keeppeek/security/advisories/new">Private security report</a></td></tr>
-</tbody>
-</table>
-</div>
-<p>A support request is not yet a bug until the evidence shows existing KeepPeek behavior violating
-its contract. Feature requests belong in Suggestions even when they would solve a real problem.
-Search open and closed Issues before filing so evidence and discussion stay on one report.</p>
-<h2 id="before-submitting"><a class="header" href="#before-submitting">Before submitting</a></h2>
-<p>Confirm all of the following:</p>
-<ul>
-<li>The same defect is not already present in an open or closed Issue.</li>
-<li>The report describes a reproducible KeepPeek defect, not setup help or a feature proposal.</li>
-<li>The defect reproduces on the current release, or the exact affected build is known.</li>
-<li>Relevant Health, camera diagnosis, server log, and browser console evidence has been checked.</li>
-<li>Credentials, private addresses, tokens, cookies, private media, and sensitive data are removed.</li>
-<li>A KeepPeek diagnostics package is attached, or the report explains why it is unavailable.</li>
-</ul>
-<p>Reports that are duplicates, support requests, feature proposals, or missing the required
-reproduction and environment details may be closed or marked <code>needs more info</code>.</p>
-<h2 id="describe-one-observable-defect"><a class="header" href="#describe-one-observable-defect">Describe one observable defect</a></h2>
-<p>Keep one report focused on one failure. State what fails, when it fails, and the effect on
-recording, review, evidence, security, or operation. Include the affected camera, stream, time
-range, or workflow only in sanitized form.</p>
-<p>Select the primary affected area in the form:</p>
-<ul>
-<li>Recording and ingest</li>
-<li>Peek and live video</li>
-<li>Events, search, and previews</li>
-<li>Keep, timeline, and recorded playback</li>
-<li>Export</li>
-<li>Cameras, discovery, and configuration</li>
-<li>Camera controls and vendor integration</li>
-<li>Storage, retention, backup, and restore</li>
-<li>Authentication, authorization, and privacy</li>
-<li>Installation, upgrade, and service lifecycle</li>
-<li>API, WebRTC, and external integrations</li>
-<li>UI, mobile, and accessibility</li>
-<li>Other</li>
-</ul>
-<p>If several areas are involved, select the user-visible workflow that fails first and describe the
-secondary effects in the report.</p>
-<h2 id="provide-a-deterministic-reproduction"><a class="header" href="#provide-a-deterministic-reproduction">Provide a deterministic reproduction</a></h2>
-<p>Start from a known state and give the smallest sequence that reproduces the defect:</p>
-<pre><code class="language-text">Starting state: &lt;configuration, page, camera state, or recording state&gt;
-1. Configure or open ...
-2. Select ...
-3. Perform ...
-4. Observe ...
-
-Frequency: &lt;always, intermittent, or N of M attempts&gt;
-</code></pre>
-<p>Separate expected and actual behavior. Make the difference observable through a state, response,
-error, file, timing, resource measurement, or visible result. “It does not work” is not enough to
-reproduce or verify a fix.</p>
-<h2 id="record-regression-and-impact"><a class="header" href="#record-regression-and-impact">Record regression and impact</a></h2>
-<p>State whether the behavior previously worked. Include the last known good and first known bad
-versions when known, how frequently the defect occurs, its operational or data-loss risk, and any
-verified workaround.</p>
-<p>Use <code>unknown</code> when a relevant fact cannot be established. Do not guess a regression version or
-claim data loss without evidence.</p>
-<h2 id="describe-the-environment"><a class="header" href="#describe-the-environment">Describe the environment</a></h2>
-<p>Include every field relevant to reproduction, using <code>N/A</code> only when it genuinely does not apply:</p>
-<ul>
-<li>KeepPeek version, commit, and build profile</li>
-<li>operating system and architecture</li>
-<li>installation method: native package, Docker, service, or other</li>
-<li>browser or client and version</li>
-<li>camera make, model, and anonymized firmware version</li>
-<li>camera source: Reolink, ONVIF, RTSP, <code>test-camera</code>, or other</li>
-<li>stream codec, resolution, frame rate, and audio</li>
-<li>camera count and relevant catalog or date-range scale</li>
-<li>storage type and free space</li>
-</ul>
-<p>Hardware-specific and intermittent bugs are valid, but the report must distinguish direct evidence
-from a suspected cause and provide a bounded way to collect the next observation.</p>
-<h2 id="attach-sanitized-evidence"><a class="header" href="#attach-sanitized-evidence">Attach sanitized evidence</a></h2>
-<p>After reproducing the defect, open <strong>Settings &gt; Logs &amp; diagnostics &gt; Download diagnostics</strong>. Attach
-the generated <code>keeppeek-diagnostics-*.json.gz</code> file under <strong>Diagnostics package and sanitized
-evidence</strong> so the package contains the relevant retained server and browser logs.</p>
-<p>If the package cannot be generated or attached, state the exact reason. Missing diagnostics do not
-block submission, but a report without enough evidence may be closed as <code>needs more info</code>.</p>
-<p>Add focused timestamps, screenshots, stack traces, protocol fixtures, or small log excerpts when
-they make the defect easier to reproduce. Never publish:</p>
-<ul>
-<li>credentials, access keys, tokens, cookies, or authorization headers;</li>
-<li>camera IP addresses, hostnames, private filesystem prefixes, or stream and snapshot URLs;</li>
-<li>faces, license plates, private recordings, notification text, or location details;</li>
-<li>unsanitized logs, screenshots, packet captures, or diagnostics bundles.</li>
-</ul>
-<p>Redact at the source. Do not attach evidence that cannot be confidently sanitized.</p>
-<h2 id="define-fix-acceptance-criteria"><a class="header" href="#define-fix-acceptance-criteria">Define fix acceptance criteria</a></h2>
-<p>Describe the observable behavior that will make the bug fixed. Keep each criterion unchecked and
-name the test or procedure that will verify it:</p>
-<pre><code class="language-markdown">- [ ] AC-1: &lt;the reported reproduction produces the correct observable outcome&gt;
-  - Expected outcome: &lt;exact state or result&gt;
-  - Verification: &lt;regression test, command, or reproducible procedure&gt;
-
-- [ ] AC-2: &lt;the relevant failure or boundary case behaves correctly&gt;
-  - Expected outcome: &lt;exact state or result&gt;
-  - Verification: &lt;test name, command, or reproducible procedure&gt;
-</code></pre>
-<p>Acceptance criteria should describe corrected behavior, not prescribe an unverified implementation.</p>
-<h2 id="include-performance-evidence"><a class="header" href="#include-performance-evidence">Include performance evidence</a></h2>
-<p>When the defect affects runtime, build time, memory, storage, network traffic, or interaction
-latency, include:</p>
-<ul>
-<li>metric and unit;</li>
-<li>current or before value;</li>
-<li>expected budget or target;</li>
-<li>workload or dataset;</li>
-<li>hardware, operating system, browser, and build profile where relevant;</li>
-<li>exact command or harness;</li>
-<li>run count and statistic, such as median or p95.</li>
-</ul>
-<p>For a correctness-only bug, write <code>Performance: N/A</code> and explain which performance paths the change
-cannot affect. A statement such as “slow” or “no regression” is not performance evidence.</p>
-<h2 id="submit-and-follow-up"><a class="header" href="#submit-and-follow-up">Submit and follow up</a></h2>
-<p>Review the complete report once more for secrets and unsupported claims, then submit it through the
-<a href="https://github.com/xnorpx/keeppeek/issues/new?template=bug.yml">bug report form</a>. Respond to
-requests for focused evidence or clarification on the same Issue rather than opening duplicates.</p>
-<p>A strong report lets another person answer what failed, how to reproduce it, what should have
-happened, which build and environment are affected, what evidence proves it, and how the eventual
-fix will be verified.</p>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="get-started"><a class="header" href="#get-started">Get started</a></h1>
-<blockquote>
-<p><strong>Status:</strong> KeepPeek is a proof of concept and is not yet production-ready.</p>
-</blockquote>
-<p>Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
-use native packages and service integration.</p>
-<h2 id="linux-with-docker"><a class="header" href="#linux-with-docker">Linux with Docker</a></h2>
-<p>The published image supports <code>linux/amd64</code> and <code>linux/arm64</code>. It runs KeepPeek directly as the
-non-root user <code>65532</code> and listens on port <code>8081</code>.</p>
-<p>KeepPeek stores configuration, owner-only secrets, recordings, the recording catalog, thumbnails,
-and logging settings under <code>/config/keeppeek</code> in the container. Mount <code>/config</code> from the host so
-that data survives container replacement:</p>
-<pre><code class="language-sh">mkdir -p keeppeek-data
-docker run --rm --name keeppeek -p 8081:8081 \
-	-v "$(pwd)/keeppeek-data:/config" \
-	ghcr.io/xnorpx/keeppeek:latest
-</code></pre>
-<p>On Linux, make the mounted directory writable by the container user when necessary:</p>
-<pre><code class="language-sh">sudo chown 65532:65532 keeppeek-data
-</code></pre>
-<p>Open <code>http://localhost:8081</code> after the server starts.</p>
-<h2 id="macos"><a class="header" href="#macos">macOS</a></h2>
-<p>Current macOS releases target Apple Silicon and use a signed and notarized application in a DMG.
-Drag <code>KeepPeek.app</code> into Applications and open it once to install and start the per-user <code>launchd</code>
-service. See the
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/macos-installation.md">macOS installation guide</a>
-for checksums, service operation, upgrades, and removal.</p>
-<h2 id="windows"><a class="header" href="#windows">Windows</a></h2>
-<p>Windows releases provide signed x86-64 and ARM64 binaries and a signed NSIS installer. The installer
-can register KeepPeek with the Windows Service Control Manager and manages service upgrades and
-removal. See the
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/windows-service.md">Windows service guide</a> for
-service commands and logging options.</p>
-<h2 id="configuration-and-secrets"><a class="header" href="#configuration-and-secrets">Configuration and secrets</a></h2>
-<p>The first start creates the KeepPeek configuration directory for the selected installation. Reusable
-private values belong in owner-only <code>secrets.toml</code> beside <code>config.toml</code>:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Installation</th><th>Default secrets path</th></tr>
-</thead>
-<tbody>
-<tr><td>macOS</td><td><code>~/Library/Application Support/keeppeek/secrets.toml</code></td></tr>
-<tr><td>Linux</td><td><code>${XDG_CONFIG_HOME:-$HOME/.config}/keeppeek/secrets.toml</code></td></tr>
-<tr><td>Windows</td><td><code>%APPDATA%\keeppeek\secrets.toml</code></td></tr>
-<tr><td>Docker</td><td><code>/config/keeppeek/secrets.toml</code></td></tr>
-</tbody>
-</table>
-</div>
-<p>Never add <code>secrets.toml</code> to source control, logs, screenshots, support bundles, or command
-arguments. Enter camera credentials and other private values directly on the machine running
-KeepPeek. See the
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md">secrets guide</a> for references,
-precedence, and migration behavior.</p>
-<h2 id="add-the-first-camera"><a class="header" href="#add-the-first-camera">Add the first camera</a></h2>
-<p>Open <strong>Cameras</strong> and use <strong>Add camera</strong>. KeepPeek discovers common cameras where possible and keeps
-manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or
-sub streams, keyframes, finalized MP4 recordings, and playback all need to validate.</p>
-<p>Edit an existing camera from its <strong>Camera</strong> page. Use <strong>Settings</strong> only for server-wide
-configuration. Camera-specific credentials and stream choices belong with the camera.</p>
-<p>The <a href="#cameras-brands-and-protocols">Users and design choices</a> chapter
-describes supported vendor paths and the pragmatic camera compatibility policy.</p>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="camera-and-stream-health"><a class="header" href="#camera-and-stream-health">Camera and stream health</a></h1>
-<p>KeepPeek computes camera and stream health on the server. Peek, Cameras, Health, camera
-diagnosis, fleet counts, the control API, and Prometheus metrics consume that same projection.
-Clients do not infer health from display text, local video playback, or issue severity.</p>
-<p>The current health contract version is <code>1</code>. A client that cannot understand a state or reason must
-treat it as <code>unknown</code>, never as healthy.</p>
-<h2 id="evidence-dimensions"><a class="header" href="#evidence-dimensions">Evidence dimensions</a></h2>
-<p>Health keeps these dimensions separate:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Dimension</th><th>Evidence</th></tr>
-</thead>
-<tbody>
-<tr><td>Configured and expected</td><td>Camera configuration, recording policy, and expected stream IDs</td></tr>
-<tr><td>Transport</td><td>Router lifecycle plus the expected and connected stream IDs</td></tr>
-<tr><td>Report freshness</td><td>Monotonic age of the latest periodic ingress report</td></tr>
-<tr><td>Frame freshness</td><td>Monotonic age of the latest advancing frame counter</td></tr>
-<tr><td>Decodability</td><td>Monotonic age of the latest advancing video keyframe counter</td></tr>
-<tr><td>Ingress quality</td><td>Measured frame rate and recent reconnect, drop, and error deltas</td></tr>
-<tr><td>Recording</td><td>Requested stream IDs, writer attempts, successful MP4 appends, and bounded writer errors</td></tr>
-<tr><td>Battery sleep</td><td>Fresh registration heartbeat plus no pending wake request from the optional battery wake service</td></tr>
-</tbody>
-</table>
-</div>
-<p>Native events, external detectors, and other optional services have their own health. Their failure
-does not make otherwise healthy media or recording appear offline.</p>
-<h2 id="canonical-states"><a class="header" href="#canonical-states">Canonical states</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>State</th><th>Meaning</th></tr>
-</thead>
-<tbody>
-<tr><td><code>starting</code></td><td>KeepPeek is inside the initial evidence grace period.</td></tr>
-<tr><td><code>healthy</code></td><td>Required transport, frame, keyframe, frame-rate, and recording evidence is current.</td></tr>
-<tr><td><code>degraded</code></td><td>Media is current, but one or more quality, decodability, transport, ingress, or recording dimensions failed.</td></tr>
-<tr><td><code>stale</code></td><td>A report is missing or old, or frame counters stopped advancing.</td></tr>
-<tr><td><code>reconnecting</code></td><td>Transport is reconnecting and recent media evidence still exists.</td></tr>
-<tr><td><code>offline</code></td><td>Transport is disconnected without recent evidence.</td></tr>
-<tr><td><code>stopped</code></td><td>Media is not expected, the camera is shutting down, or a registered battery camera is sleeping.</td></tr>
-<tr><td><code>unknown</code></td><td>The server or client lacks enough authoritative evidence.</td></tr>
-</tbody>
-</table>
-</div>
-<p><code>healthy</code> is the only healthy state. <code>starting</code>, <code>unknown</code>, and <code>stopped</code> are not included in healthy
-counts. A health request failure makes the current view unavailable; it does not rewrite the last
-server camera state.</p>
-<h2 id="precedence"><a class="header" href="#precedence">Precedence</a></h2>
-<p>The server applies this order. The first matching rule supplies the canonical state and primary
-reason code.</p>
-<ol>
-<li>Not expected, shutting down, or stopped: <code>stopped</code>.</li>
-<li>Fresh battery registration without a connected transport or pending wake request: <code>stopped</code>
-with <code>battery_sleeping</code>. An accepted wake remains pending until connected media clears it;
-failures therefore become <code>reconnecting</code> or <code>offline</code>, not sleeping.</li>
-<li>During initial grace, incomplete or transiently unhealthy evidence remains <code>starting</code>; a complete
-healthy snapshot may promote immediately.</li>
-<li>Reconnecting transport: <code>reconnecting</code>, or <code>offline</code> after recent evidence expires.</li>
-<li>No report, an old report, or frames that stopped advancing: <code>stale</code>.</li>
-<li>Missing keyframes, stalled requested recording, low frame rate, partial transport, recent errors,
-drops, or reconnects: <code>degraded</code>. The primary degraded reason is ordered as partial transport,
-missing keyframes, recording failure, low frame rate, errors, drops, then reconnects; all matching
-codes remain in <code>reason_codes</code>.</li>
-<li>Required evidence unavailable: <code>unknown</code>.</li>
-<li>All required evidence current: <code>healthy</code>.</li>
-</ol>
-<p>A connected transport cannot override stale frames, missing keyframes, or failed recording.
-A decoded browser frame cannot promote server state. A fresh capability snapshot is not media
-evidence.</p>
-<h2 id="thresholds"><a class="header" href="#thresholds">Thresholds</a></h2>
-<p>Ingress publishes every 10 seconds.</p>
-<ul>
-<li>A stream report is stale after 30 seconds.</li>
-<li>Reconnecting becomes offline when the latest stream evidence is older than 90 seconds.</li>
-<li>Frame freshness is
-$\max(20\text{ s}, 3 / \text{expected fps})$, capped at 120 seconds, and also requires a fresh
-stream report.</li>
-<li>Keyframe freshness is three configured GOP intervals, or three observed keyframe intervals when
-configuration is unavailable. It is clamped to 30 through 120 seconds.</li>
-<li>Recording progress is fresh for the configured short-term buffer plus flush interval plus 30
-seconds.</li>
-<li>Initial startup grace is two ingress report intervals, currently 20 seconds.</li>
-</ul>
-<p>The first ingress report establishes the baseline for cumulative reconnect, drop, and error
-counters. An initial connection is therefore not reported as a recent reconnect. During startup
-grace, partial-window frame rates and other transient evidence remain <code>starting</code>; if they have not
-recovered when grace expires, the canonical degraded or offline reason becomes visible.</p>
-<p>These thresholds are the bounded debounce window. One missed 10-second ingress report does not
-change a camera to <code>stale</code>; report evidence must age beyond 30 seconds. Recovery is intentionally
-asymmetric: a new advancing frame or keyframe counter can recover the state immediately. The API
-still returns the actual evidence ages, and clients do not add another timer or rewrite the state.</p>
-<p>These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
-but wall-clock changes do not make stale evidence fresh.</p>
-<h2 id="session-durations"><a class="header" href="#session-durations">Session durations</a></h2>
-<p>Camera health reports current-process session durations separately from historical archive
-coverage:</p>
-<ul>
-<li><code>session_duration_ms</code> is the longest observed ingress-worker duration for the camera’s expected
-video streams;</li>
-<li><code>recorded_main_duration_ms</code> and <code>recorded_sub_duration_ms</code> accumulate video sample durations only
-after those samples are successfully appended to MP4 during the current process run;</li>
-<li><code>recorded_total_duration_ms</code> is the sum of all requested stream durations for that camera session.</li>
-</ul>
-<p>The total can exceed camera session elapsed time when Main and Sub record concurrently. These
-counters reset when KeepPeek restarts or the corresponding recording-health registry is replaced;
-they do not claim lifetime or retained archive coverage. A recording indicator uses writer progress
-state, not a comparison between these counters and wall time.</p>
-<h2 id="reasons-and-detail"><a class="header" href="#reasons-and-detail">Reasons and detail</a></h2>
-<p>Every camera and stream includes:</p>
-<ul>
-<li><code>state</code>: the canonical state;</li>
-<li><code>reason</code>: the primary stable reason code;</li>
-<li><code>reason_codes</code>: all applicable ordered reason codes;</li>
-<li><code>detail</code>: bounded human-readable text;</li>
-<li><code>dimensions</code>: the independent raw evidence and counts.</li>
-</ul>
-<p>Stable reasons include <code>transport_disconnected</code>, <code>transport_reconnecting</code>,
-<code>transport_partially_connected</code>, <code>no_stream_report</code>, <code>stream_report_stale</code>,
-<code>frames_not_arriving</code>, <code>frames_below_expected</code>, <code>keyframes_missing</code>, <code>ingress_reconnects</code>,
-<code>ingress_drops</code>, <code>ingress_errors</code>, and <code>recording_not_progressing</code>.</p>
-<p>Use reason codes for automation. Display text may change.</p>
-<h2 id="fleet-counts"><a class="header" href="#fleet-counts">Fleet counts</a></h2>
-<p>Fleet summaries name the dimension they count:</p>
-<ul>
-<li>configured cameras and expected video streams;</li>
-<li>cameras and streams with connected transports;</li>
-<li>cameras and streams with fresh frames;</li>
-<li>cameras and streams with recent keyframes;</li>
-<li>cameras and streams requested for recording;</li>
-<li>cameras and streams with current writer progress;</li>
-<li>cameras whose evidence is unknown.</li>
-</ul>
-<p>Fleet aggregates count expected video streams. Audio freshness remains available on each stream
-snapshot and is not folded into the video decodability or recording totals.</p>
-<p>Unknown evidence is not counted as connected, fresh, decodable, recording, or healthy. The Cameras
-<code>Not healthy</code> filter counts every state except <code>healthy</code>.</p>
-<h2 id="api-and-metrics"><a class="header" href="#api-and-metrics">API and metrics</a></h2>
-<p><code>HealthCommand</code> returns the versioned protobuf health snapshot. Version 1 includes the canonical
-<code>state</code>, stable reasons, camera and stream dimensions, media progress timestamps, and explicit fleet
-counts. Unknown future state or reason strings are presented as <code>unknown</code>.</p>
-<p><code>GET /metrics</code> exposes the same projection. Important gauges include:</p>
-<ul>
-<li><code>keeppeek_cameras_connected</code>, <code>keeppeek_cameras_fresh</code>,
-<code>keeppeek_cameras_decodable</code>, and <code>keeppeek_cameras_recording</code>;</li>
-<li>corresponding <code>keeppeek_video_streams_*</code> gauges;</li>
-<li><code>keeppeek_camera_info</code> with the canonical state label;</li>
-<li><code>keeppeek_camera_health_dimension</code> and
-<code>keeppeek_camera_health_dimension_known</code>;</li>
-<li>corresponding per-stream dimension and known gauges.</li>
-</ul>
-<p>There is no separate <code>online</code> or <code>degraded</code> gauge. Consumers use the canonical state label and
-explicit dimensions.</p>
-<h2 id="recovery"><a class="header" href="#recovery">Recovery</a></h2>
-<p>Recovery requires new positive evidence:</p>
-<ul>
-<li>a newly advancing frame counter refreshes frame age;</li>
-<li>a newly advancing keyframe counter refreshes decodability;</li>
-<li>a successful writer append clears the previous bounded recording error;</li>
-<li>drop, error, and reconnect reasons use per-report deltas, so old cumulative counters do not keep a
-recovered stream degraded;</li>
-<li>a fresh report can recover stale state, while cached metadata cannot.</li>
-</ul>
-<p>KeepPeek does not yet persist outage intervals or send health notifications. Those features are
-tracked separately and must use this canonical projection rather than reconstructing outages from
-UI labels.</p>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="demo-videos"><a class="header" href="#demo-videos">Demo videos</a></h1>
-<p>These audio-paced H.264/AAC recordings exercise KeepPeek’s production controls and are regenerated
-from the canonical Paper scenarios. Azure OpenAI narration controls each visual phase, and captions
-are available from every player.</p>
-<h2 id="add-nine-cameras-in-settings"><a class="header" href="#add-nine-cameras-in-settings">Add nine cameras in Settings</a></h2>
-<p>Begin with an empty KeepPeek server, enter nine real-time RTSP camera configurations through
-Settings, then inspect the completed live wall and one feed’s WebRTC evidence.</p>
-<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.live-wall.mp4">Download the nine-camera live-wall demo</a>.
-</video>
-<p>The virtual-camera source is <em>Big Buck Bunny</em>, © 2008 Blender Foundation,
-<a href="https://creativecommons.org/licenses/by/3.0/">licensed under CC BY 3.0</a>.</p>
-<h2 id="review-what-just-happened"><a class="header" href="#review-what-just-happened">Review what just happened</a></h2>
-<p>Focus a live camera, then use History to open its timeline in Keep.</p>
-<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/peek.desktop.history-keep.mp4">Download the Peek history demo</a>.
-</video>
-<h2 id="delete-and-re-add-a-camera"><a class="header" href="#delete-and-re-add-a-camera">Delete and re-add a camera</a></h2>
-<p>Remove and restore the deterministic H.264 camera through the real KeepPeek server and production
-Settings UI.</p>
-<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.add-wizard.mp4">Download the camera lifecycle demo</a>.
-</video>
-<h2 id="set-up-a-camera-with-catalog-context"><a class="header" href="#set-up-a-camera-with-catalog-context">Set up a camera with catalog context</a></h2>
-<p>Discover a model, review the embedded catalog facts, open CCTV Database for deeper manual research,
-then apply only the stream declarations you choose before the first configuration write.</p>
-<video controls="" crossorigin="anonymous" preload="metadata" playsinline="" style="width: 100%; height: auto">
-  <source src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4" type="video/mp4">
-  <track src="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.vtt" kind="captions" srclang="en" label="English">
-  <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/assets/cameras.desktop.catalog-guided-setup.mp4">Download the catalog-guided camera setup demo</a>.
-</video>
-<p>The <a href="https://keeppeekdemos.blob.core.windows.net/demo-videos/demos/manifest.json">published manifest</a>
-contains the source commit, generated timestamp, content hashes, and metadata links for every
-recording.</p>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="open-source-and-licensing"><a class="header" href="#open-source-and-licensing">Open source and licensing</a></h1>
-<p>KeepPeek is built in an ecosystem shaped by other open-source camera projects and protocol
-libraries. This chapter gives those projects credit, explains where KeepPeek made different product
-choices, and documents the license boundary between the server and its public API.</p>
-<h2 id="different-products-different-strengths"><a class="header" href="#different-products-different-strengths">Different products, different strengths</a></h2>
-<p><a href="https://www.scrypted.app/">Scrypted</a> and <a href="https://frigate.video/">Frigate</a> are great products with
-strong, distinct designs. KeepPeek is not an argument that those designs are wrong. Their choices
-may fit another user, home, or business better.</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Project</th><th>Distinct design center</th><th>A strong fit when</th></tr>
-</thead>
-<tbody>
-<tr><td><strong><a href="https://www.scrypted.app/">Scrypted</a></strong></td><td>A high-performance video integration platform and NVR with a rich plugin model, smart detections, and low-latency connections to HomeKit, Google Home, and Alexa</td><td>Broad camera and smart-home integration, an extensible plugin ecosystem, and first-class consumer-platform bridges should live in one system</td></tr>
-<tr><td><strong><a href="https://frigate.video/">Frigate</a></strong></td><td>A local NVR built around real-time AI object detection, accelerator-aware processing, zones, focused event review, Home Assistant, and MQTT</td><td>Detection is a central NVR responsibility and the user wants an integrated, highly configurable local AI and home-automation experience</td></tr>
-<tr><td><strong>KeepPeek</strong></td><td>A focused recorder and WebRTC media gateway that accepts camera events and keeps optional inference, transcoding, and ecosystem bridges outside the core</td><td>Recording should remain independent from analytics, and viewers or services should compose through an open media and event boundary</td></tr>
-</tbody>
-</table>
-</div>
-<p>Thank you to the Scrypted and Frigate maintainers and communities. Their work has advanced local
-camera software, demonstrated what polished self-hosted systems can do, and made the trade-offs in
-this space much easier to understand.</p>
-<h2 id="code-foundations"><a class="header" href="#code-foundations">Code foundations</a></h2>
-<p>KeepPeek depends on substantial protocol work from other Rust projects. The local forks retain
-their upstream authorship and licenses; carrying a fork is a maintenance decision, not a claim that
-KeepPeek created the original work.</p>
-<ul>
-<li><strong><a href="https://github.com/scottlamb/retina">Retina</a></strong> by Scott Lamb and its contributors provides the
-high-level RTSP client, RTP depacketization, codec framing, and much of the interoperability
-groundwork used by KeepPeek. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/master/crates/retina">local Retina fork</a> for its camera,
-recording, and compatibility needs.</li>
-<li><strong><a href="https://github.com/lumeohq/onvif-rs">ONVIF-rs</a></strong> by Chris Bruce, Lumeo, and its contributors did
-the difficult work of making ONVIF discovery, schemas, authentication, and camera operations
-usable from Rust. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/master/crates/onvif">local ONVIF-rs fork</a> and continues
-that work for its supported camera surface.</li>
-<li><strong><a href="https://github.com/algesten/str0m">str0m</a></strong> by Martin Algesten and its contributors is the
-upstream WebRTC implementation used by KeepPeek. It is the best Rust WebRTC implementation: its
-Sans I/O design, explicit time and network inputs, RTP and frame APIs, data channels, and lack of
-a hidden async runtime fit a focused media service especially well.</li>
-</ul>
-<p>KeepPeek would be significantly harder to build without these projects. Thank you to every upstream
-author, maintainer, reviewer, and contributor whose work remains in the code.</p>
-<h2 id="licensing-model"><a class="header" href="#licensing-model">Licensing model</a></h2>
-<p>KeepPeek uses two licenses at a deliberate protocol boundary:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Area</th><th>License</th><th>Purpose</th></tr>
-</thead>
-<tbody>
-<tr><td>Server, first-party viewer, and most repository code</td><td><code>AGPL-3.0-only</code></td><td>Keep the shared NVR and media-gateway core open, including modified versions operated over a network</td></tr>
-<tr><td>Public definitions and documentation under <code>api/</code>, plus bindings generated solely from them</td><td>MIT</td><td>Let independent clients and services implement the protocol without adopting the server’s license</td></tr>
-</tbody>
-</table>
-</div>
-<p>The repository root <a href="https://github.com/xnorpx/keeppeek/blob/master/LICENSE">license</a> contains the
-complete KeepPeek licensing notice and AGPL terms. The <code>api/</code> directory has its own
-<a href="https://github.com/xnorpx/keeppeek/blob/master/api/LICENSE">MIT license</a>.</p>
-<h3 id="why-the-server-uses-agpl"><a class="header" href="#why-the-server-uses-agpl">Why the server uses AGPL</a></h3>
-<p>The server is a network service, so the AGPL is the appropriate copyleft boundary for the shared
-core. The intent is that users can inspect, modify, self-host, and retain access to the source of
-the KeepPeek server they use, including modified versions offered over a network.</p>
-<p>KeepPeek’s NVR and first-party viewer remain open source and free to use without a camera-count
-limit. The license protects that common foundation from becoming a private server fork whose users
-cannot inspect the code serving them.</p>
-<h3 id="why-the-api-uses-mit"><a class="header" href="#why-the-api-uses-mit">Why the API uses MIT</a></h3>
-<p>An open server is most useful when other software can talk to it without inheriting the server’s
-implementation choices. The public HTTP, WebRTC, protobuf, and SDP contracts under <code>api/</code> therefore
-use MIT. Bindings generated solely from those definitions remain covered by that directory’s MIT
-license.</p>
-<p>Implementing or using the public protocol does not, by itself, impose KeepPeek’s repository-wide
-AGPL license on an independent client or service. A service can choose the language, WebRTC
-implementation, deployment model, and license appropriate to its users.</p>
-<h3 id="free-and-paid-protocol-services"><a class="header" href="#free-and-paid-protocol-services">Free and paid protocol services</a></h3>
-<p>This split creates a protocol-plugin model rather than an in-process plugin ABI. A free, community,
-or paid service can run as a separate process and subscribe or publish through the documented API.
-That service may be open or closed source without receiving a private extension point inside the
-KeepPeek server.</p>
-<p>The boundary allows commercial integrations to fund specialized inference, transcoding, business
-workflows, viewers, or support while the recorder and media gateway remain shared open-source
-infrastructure. Camera credentials, recording paths, and internal databases remain owned by
-KeepPeek rather than exposed to an in-process plugin.</p>
-<h3 id="what-the-split-means-for-users"><a class="header" href="#what-the-split-means-for-users">What the split means for users</a></h3>
-<ul>
-<li><strong>Software consumers</strong> retain a free recorder and first-party viewer, with optional services only
-when they add value.</li>
-<li><strong>Small businesses</strong> can buy tailored services at the API boundary without depending on a private
-recorder fork.</li>
-<li><strong>Open-source enthusiasts</strong> can audit the server, share core improvements, and build permissively
-licensed clients.</li>
-<li><strong>Home automation enthusiasts</strong> can choose community or commercial bridges.</li>
-<li><strong>Self-hosters</strong> retain control of the server running on their hardware.</li>
-<li><strong>Service authors</strong> can build sustainable offerings without closing the shared core.</li>
-</ul>
-<p>See <a href="#contributing">Contributing</a> for how licenses apply to submitted changes.</p>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="contributing"><a class="header" href="#contributing">Contributing</a></h1>
-<p>KeepPeek welcomes focused contributions that strengthen recording, camera compatibility, media
-routing, observability, the public API, and the first-party experience. A contribution should make
-the supported product more dependable without silently turning the core into a different product.</p>
-<p>Read <a href="#users-and-design-choices">Users and design choices</a> before proposing a substantial
-change. It describes the users, boundaries, and trade-offs that guide review.</p>
-<p>Use <a href="#reporting-bugs">Reporting bugs</a> for a reproducible defect. Use GitHub Discussions for
-setup help, troubleshooting, usage questions, and feature proposals.</p>
-<h2 id="guard-the-product-boundary"><a class="header" href="#guard-the-product-boundary">Guard the product boundary</a></h2>
-<p>The feature set is deliberately and heavily guarded. Any proposal that expands product scope must
-be discussed and reviewed before implementation begins. A complete implementation is not, by
-itself, a reason to add a feature to the core.</p>
-<p>Feature review asks:</p>
-<ol>
-<li>Does this belong in a focused recorder and media gateway?</li>
-<li>Can an independent service or protocol plugin provide it through the public API instead?</li>
-<li>Which documented users need it, and does it make another user’s core workflow worse?</li>
-<li>What permanent maintenance, security, storage, resource, compatibility, and licensing costs
-does it add?</li>
-<li>Can the behavior be tested without depending on one private device, account, or cloud service?</li>
-</ol>
-<p>Open a <a href="https://github.com/xnorpx/keeppeek/discussions">GitHub Discussion</a> before writing a feature
-that changes the product boundary, public protocol, storage model, supported platform contract, or
-long-term maintenance surface. Expect alternatives and non-goals to be reviewed as seriously as
-the proposed implementation. This review is how KeepPeek avoids accidental scope creep.</p>
-<h2 id="contributions-that-fit-well"><a class="header" href="#contributions-that-fit-well">Contributions that fit well</a></h2>
-<p>Focused bug fixes, tests, documentation corrections, diagnostics, and interoperability improvements
-usually have a clear path when they preserve the existing product boundary.</p>
-<h3 id="camera-protocols-and-rtsp-interoperability"><a class="header" href="#camera-protocols-and-rtsp-interoperability">Camera protocols and RTSP interoperability</a></h3>
-<p>Camera protocol fixes and bounded RTSP workarounds are especially welcome. They are often easier to
-submit and review than feature proposals because the expected behavior can be captured in a fixture
-and regression test.</p>
-<p>A useful camera contribution includes:</p>
-<ul>
-<li>manufacturer, model, firmware version, backend, and TCP or UDP transport;</li>
-<li>the smallest reproducible failure with credentials, addresses, and private media removed;</li>
-<li>sanitized protocol, SDP, or packet evidence when it can be shared legally and safely;</li>
-<li>a regression fixture or deterministic fake-camera case;</li>
-<li>a narrow parser, transport, or adapter fix instead of a product-wide brand check;</li>
-<li>successful main/sub frame, keyframe, MP4 finalization, and independent decode validation when the
-change affects recording.</li>
-</ul>
-<p>Never submit camera passwords, access keys, private stream URLs, identifiable recordings, or packet
-captures containing secrets. If private evidence cannot be published, file the bug with only the
-safe evidence and explain what is unavailable rather than attempting a speculative workaround.</p>
-<p>One camera quirk should not weaken validation for every camera. Prefer a protocol-level correction
-when the device is standards-compliant, and a bounded, evidence-backed compatibility rule when it
-is not.</p>
-<h3 id="public-api-and-external-services"><a class="header" href="#public-api-and-external-services">Public API and external services</a></h3>
-<p>API contributions should preserve typed messages, stable identity, explicit capabilities, bounded
-queues, and clear failure behavior. An example client or service should consume the canonical API
-definitions rather than copy handwritten wire types or depend on private server internals.</p>
-<p>New detector, transcoder, automation, and commercial-service ideas generally belong outside the
-core first. A small reference implementation may demonstrate interoperability without becoming a
-promise that KeepPeek will own that service as a product.</p>
-<h2 id="ai-assisted-contributions"><a class="header" href="#ai-assisted-contributions">AI-assisted contributions</a></h2>
-<p>AI is one of the tools used to develop KeepPeek. This section does not take a position on AI in
-general; it defines only how AI-assisted contributions to this repository are reviewed.</p>
-<p>AI-assisted contributions are acceptable. The standard is the same as for code written without an
-assistant, and responsibility never transfers to the model.</p>
-<p>The person submitting the pull request is its first reviewer. Before requesting another review,
-they must:</p>
-<ul>
-<li>inspect every changed line, including generated tests and configuration;</li>
-<li>understand and be able to explain every line in the pull request;</li>
-<li>verify API, security, resource, failure, and compatibility assumptions against the repository;</li>
-<li>remove invented behavior, unnecessary abstractions, unrelated cleanup, and generated commentary;</li>
-<li>run the required validation and investigate failures rather than asking reviewers to debug raw
-model output.</li>
-</ul>
-<p>“The AI wrote it” is not an explanation for a design decision and is not a reason to merge code the
-submitter cannot defend. Reviewers may ask the submitter to explain control flow, ownership,
-protocol behavior, tests, or individual lines. If they cannot, the contribution is not ready.</p>
-<h2 id="pull-request-shape"><a class="header" href="#pull-request-shape">Pull request shape</a></h2>
-<p>Use the repository’s
-<a href="https://github.com/xnorpx/keeppeek/blob/master/.github/pull_request_template.md">pull request template</a>
-as the canonical shape for every pull request. Complete its summary, linked Discussion, acceptance
-criteria verification, performance evidence, validation, and review evidence before requesting
-review. A bug-fix pull request may link its reproducible bug issue instead of a feature Discussion.</p>
-<p>Keep pull requests small enough to review as one coherent behavioral change. State the supported
-user and boundary affected, include focused regression coverage, update public documentation when a
-contract changes, and leave unrelated formatting, dependency updates, and refactors out.</p>
-<p>Use draft pull requests for early feedback when the boundary is clear but the implementation is not
-ready. Do not use a large completed pull request as the first request for product-scope review.</p>
-<h2 id="review-cadence"><a class="header" href="#review-cadence">Review cadence</a></h2>
-<p>Pull request reviews are done on Sundays. If a Sunday review window passes and a pull request is
-missed, leave a short, polite ping on that pull request to remind the maintainer. A reminder on the
-existing pull request is enough; do not open a second Discussion or duplicate pull request.</p>
-<h2 id="development-environment"><a class="header" href="#development-environment">Development environment</a></h2>
-<p>Repository development uses stable Rust, Bun <code>1.4.0</code>, and Python <code>3.12</code>. The pinned Bun and Python
-versions live in <code>ui/.bun-version</code> and <code>examples/object_detection_service/.python-version</code>.</p>
-<p>Formatting and validation require the Python packages in
-<code>examples/object_detection_service/requirements.txt</code>, including Black. The root <code>fix</code> and <code>check</code>
-scripts resolve Python in this order:</p>
-<ol>
-<li><code>KEEPPEEK_PYTHON</code>, when set;</li>
-<li><code>examples/object_detection_service/.venv</code>;</li>
-<li>a system <code>python3.12</code> or compatible Python command.</li>
-</ol>
-<p>The canonical checks also require Bun, <code>cargo-nextest</code>, and <code>cargo-machete</code>. Install UI dependencies
-with Bun from the public npm registry and do not create or commit an npm, pnpm, or Yarn lockfile.</p>
-<h2 id="validation"><a class="header" href="#validation">Validation</a></h2>
-<p>Run the canonical repository check from the repository root before requesting review:</p>
-<ul>
-<li>macOS or Linux: <code>./check.sh</code></li>
-<li>Windows: <code>.\check.bat</code></li>
-</ul>
-<p>During development, run the narrowest relevant test first. The final check covers repository
-formatting, Rust tests and lints, frontend checks, and the supported test suites. Document any test
-that cannot run in the pull request and explain why.</p>
-<p>Camera changes should also be validated against the affected device and independent MP4 tooling.
-Passing a unit test does not prove that a real camera authenticates, advances frames and keyframes,
-finalizes recordings, and produces decodable output.</p>
-<h2 id="licensing"><a class="header" href="#licensing">Licensing</a></h2>
-<p>See <a href="#licensing-model">Open source and licensing</a> for the project-wide
-license model. Contributions are accepted under the license of the area they modify. Submit only
-work you have the right to provide under that license, including fixtures, generated files, and
-AI-assisted output.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="introduction.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
 
+                            <a rel="next prefetch" href="reporting-bugs.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -1486,7 +812,13 @@ AI-assisted output.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="introduction.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
 
+                    <a rel="next prefetch" href="reporting-bugs.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
             </nav>
 
         </div>
@@ -1516,11 +848,6 @@ AI-assisted output.</p>
         <script src="mermaid-eefea253.min.js"></script>
         <script src="mermaid-init-53b67c53.js"></script>
 
-        <script>
-        window.addEventListener('load', function() {
-            window.setTimeout(window.print, 100);
-        });
-        </script>
 
 
     </div>

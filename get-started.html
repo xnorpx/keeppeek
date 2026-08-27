@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Introduction - The KeepPeek Book</title>
+        <title>Get started - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -174,62 +174,78 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="keeppeek"><a class="header" href="#keeppeek">KeepPeek</a></h1>
+                        <h1 id="get-started"><a class="header" href="#get-started">Get started</a></h1>
 <blockquote>
 <p><strong>Status:</strong> KeepPeek is a proof of concept and is not yet production-ready.</p>
 </blockquote>
-<p>KeepPeek is a local-first network video recorder and WebRTC media gateway for IP cameras. It runs
-on Linux, macOS, and Windows and keeps camera media on hardware controlled by the user without
-requiring a vendor cloud relay.</p>
-<p>The core service has a deliberately focused job:</p>
-<ul>
-<li>discover and connect supported cameras;</li>
-<li>ingest and record their encoded media without re-encoding it;</li>
-<li>store recordings as standard MP4 files;</li>
-<li>provide live and recorded media through WebRTC;</li>
-<li>keep camera, stream, recording, and server health observable;</li>
-<li>accept and store events from supported cameras or independent services.</li>
-</ul>
-<p>KeepPeek does not require object detection or another AI service to record and review video.
-Camera-native analytics can publish events directly, while optional inference, transcoding, home
-automation, and commercial services connect through the open API. Recording remains useful when
-those services are absent or unavailable.</p>
-<p>The server is written in Rust for predictable, memory-safe concurrent media handling. The
-first-party interface uses Svelte and runs in the browser, relying on the browser and operating
-system for compatible video decoding. KeepPeek remains codec-aware without bundling a video codec
-pack into the core service.</p>
-<p>KeepPeek is developed with AI assistance through a human-directed process. AI is used as a tool for
-implementation, validation, documentation, and review; design decisions and accountability remain
-with people.</p>
-<blockquote>
-<p><strong>Small on purpose:</strong> The current release binary is under 40 MB. KeepPeek aims to remain a compact
-native service, not a two-gigabyte spaghetti-script bundle held together by Python and JavaScript
-runtimes. Those ecosystems are welcome in optional services where they fit; the core should not
-make every installation carry them.</p>
-</blockquote>
-<h2 id="reading-the-book"><a class="header" href="#reading-the-book">Reading the book</a></h2>
-<ul>
-<li><a href="./users-and-design-choices.html">Users and design choices</a> explains who KeepPeek is for and why its
-product, protocol, platform, licensing, and integration boundaries exist.</li>
-<li><a href="./reporting-bugs.html">Reporting bugs</a> describes how to file a reproducible defect and where to
-take setup questions or feature proposals.</li>
-<li><a href="./get-started.html">Get started</a> covers installation, persistent data, secrets, and the first
-camera.</li>
-<li><a href="./camera-health.html">Camera and stream health</a> defines the authoritative health model and evidence
-used across the server, API, metrics, and interface.</li>
-<li><a href="./demo-videos.html">Demo videos</a> shows complete workflows against the real application.</li>
-<li><a href="./open-source-and-licensing.html">Open source and licensing</a> credits the projects KeepPeek builds
-on and explains the AGPL server and MIT API split.</li>
-<li><a href="./contributing.html">Contributing</a> explains scope review, interoperability contributions,
-AI-assisted work, pull requests, and validation.</li>
-</ul>
+<p>Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
+use native packages and service integration.</p>
+<h2 id="linux-with-docker"><a class="header" href="#linux-with-docker">Linux with Docker</a></h2>
+<p>The published image supports <code>linux/amd64</code> and <code>linux/arm64</code>. It runs KeepPeek directly as the
+non-root user <code>65532</code> and listens on port <code>8081</code>.</p>
+<p>KeepPeek stores configuration, owner-only secrets, recordings, the recording catalog, thumbnails,
+and logging settings under <code>/config/keeppeek</code> in the container. Mount <code>/config</code> from the host so
+that data survives container replacement:</p>
+<pre><code class="language-sh">mkdir -p keeppeek-data
+docker run --rm --name keeppeek -p 8081:8081 \
+	-v "$(pwd)/keeppeek-data:/config" \
+	ghcr.io/xnorpx/keeppeek:latest
+</code></pre>
+<p>On Linux, make the mounted directory writable by the container user when necessary:</p>
+<pre><code class="language-sh">sudo chown 65532:65532 keeppeek-data
+</code></pre>
+<p>Open <code>http://localhost:8081</code> after the server starts.</p>
+<h2 id="macos"><a class="header" href="#macos">macOS</a></h2>
+<p>Current macOS releases target Apple Silicon and use a signed and notarized application in a DMG.
+Drag <code>KeepPeek.app</code> into Applications and open it once to install and start the per-user <code>launchd</code>
+service. See the
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/macos-installation.md">macOS installation guide</a>
+for checksums, service operation, upgrades, and removal.</p>
+<h2 id="windows"><a class="header" href="#windows">Windows</a></h2>
+<p>Windows releases provide signed x86-64 and ARM64 binaries and a signed NSIS installer. The installer
+can register KeepPeek with the Windows Service Control Manager and manages service upgrades and
+removal. See the
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/windows-service.md">Windows service guide</a> for
+service commands and logging options.</p>
+<h2 id="configuration-and-secrets"><a class="header" href="#configuration-and-secrets">Configuration and secrets</a></h2>
+<p>The first start creates the KeepPeek configuration directory for the selected installation. Reusable
+private values belong in owner-only <code>secrets.toml</code> beside <code>config.toml</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Installation</th><th>Default secrets path</th></tr>
+</thead>
+<tbody>
+<tr><td>macOS</td><td><code>~/Library/Application Support/keeppeek/secrets.toml</code></td></tr>
+<tr><td>Linux</td><td><code>${XDG_CONFIG_HOME:-$HOME/.config}/keeppeek/secrets.toml</code></td></tr>
+<tr><td>Windows</td><td><code>%APPDATA%\keeppeek\secrets.toml</code></td></tr>
+<tr><td>Docker</td><td><code>/config/keeppeek/secrets.toml</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Never add <code>secrets.toml</code> to source control, logs, screenshots, support bundles, or command
+arguments. Enter camera credentials and other private values directly on the machine running
+KeepPeek. See the
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md">secrets guide</a> for references,
+precedence, and migration behavior.</p>
+<h2 id="add-the-first-camera"><a class="header" href="#add-the-first-camera">Add the first camera</a></h2>
+<p>Open <strong>Cameras</strong> and use <strong>Add camera</strong>. KeepPeek discovers common cameras where possible and keeps
+manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or
+sub streams, keyframes, finalized MP4 recordings, and playback all need to validate.</p>
+<p>Edit an existing camera from its <strong>Camera</strong> page. Use <strong>Settings</strong> only for server-wide
+configuration. Camera-specific credentials and stream choices belong with the camera.</p>
+<p>The <a href="./users-and-design-choices.html#cameras-brands-and-protocols">Users and design choices</a> chapter
+describes supported vendor paths and the pragmatic camera compatibility policy.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="reporting-bugs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
 
-                            <a rel="next prefetch" href="users-and-design-choices.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="camera-health.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -239,8 +255,11 @@ AI-assisted work, pull requests, and validation.</li>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="reporting-bugs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
 
-                    <a rel="next prefetch" href="users-and-design-choices.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="camera-health.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
