@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c364114f.js";
+            window.path_to_searchindex_js = "searchindex-afbcebed.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-dd4a8346.js"></script>
+        <script src="toc-a34402ce.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1047,6 +1047,187 @@ sub streams, keyframes, finalized MP4 recordings, and playback all need to valid
 configuration. Camera-specific credentials and stream choices belong with the camera.</p>
 <p>The <a href="#cameras-brands-and-protocols">Users and design choices</a> chapter
 describes supported vendor paths and the pragmatic camera compatibility policy.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="authentication-and-access-control"><a class="header" href="#authentication-and-access-control">Authentication and access control</a></h1>
+<p>KeepPeek is local-first: cameras and recordings stay on the recorder, and KeepPeek does not expose
+itself through a cloud relay. Access depends on two decisions:</p>
+<ol>
+<li>Is the client on a trusted local network?</li>
+<li>If not, which remote credential and role does the client have?</li>
+</ol>
+<p>Local clients use KeepPeek as <strong>Administrator</strong> without signing in. Remote clients must sign in
+with a named Bearer credential assigned either the <strong>Administrator</strong> or <strong>User</strong> role.</p>
+<blockquote>
+<p>Treat local network configuration as an authentication boundary. Any device in a configured
+local range receives Administrator access.</p>
+</blockquote>
+<h2 id="first-run"><a class="header" href="#first-run">First run</a></h2>
+<p>On first start, KeepPeek creates a cryptographically random <strong>Initial Administrator</strong> credential.
+Open the setup page from a local client and select <strong>Retrieve initial key</strong>. The key is displayed
+only for that operation.</p>
+<p>Save it immediately using <strong>Copy</strong> or <strong>Download</strong>, then choose <strong>Hide permanently</strong>. KeepPeek does
+not log the key and cannot display it again. If it is lost, a local Administrator can rotate the
+Initial Administrator credential from <strong>Settings &gt; Access &amp; roles</strong>.</p>
+<p>KeepPeek does not report remote access as ready until the initial key has been retrieved. Local
+camera setup remains available while remote access is pending.</p>
+<h2 id="local-and-remote-clients"><a class="header" href="#local-and-remote-clients">Local and remote clients</a></h2>
+<p>KeepPeek classifies the effective client address before checking a credential.</p>
+<ul>
+<li><strong>Local:</strong> the address is in <code>access.local_networks</code>. The client becomes Administrator without a
+sign-in screen.</li>
+<li><strong>Remote:</strong> every other address. The client must provide an active, unexpired Bearer credential.</li>
+<li><strong>Unknown or malformed:</strong> treated as remote and denied without a valid credential.</li>
+</ul>
+<p>The default local networks include IPv4 and IPv6 loopback, RFC 1918 private networks, IPv4 and IPv6
+link-local networks, and IPv6 unique-local networks. IPv4-mapped IPv6 addresses are normalized
+before matching.</p>
+<p>Container bridge networks commonly fall within <code>172.16.0.0/12</code>, which is local by default. Narrow
+the list if other containers on the host must not receive Administrator access.</p>
+<p>Configure the policy in <code>config.toml</code>:</p>
+<pre><code class="language-toml">[access]
+local_networks = ["127.0.0.0/8", "192.168.50.0/24", "::1/128"]
+trusted_proxies = []
+require_secure_remote = true
+failed_authentication_limit = 5
+failed_authentication_window_secs = 60
+session_idle_timeout_secs = 1800
+session_absolute_timeout_secs = 86400
+max_sessions_per_principal = 64
+max_sessions_per_address = 128
+</code></pre>
+<p>Setting <code>local_networks</code> replaces the defaults. Include the loopback ranges explicitly when you
+customize it.</p>
+<p>A VPN can use either policy:</p>
+<ul>
+<li>Add its client range to <code>local_networks</code> when every VPN client should be Administrator.</li>
+<li>Leave it out when each VPN client should sign in with an individual credential and role.</li>
+</ul>
+<p>Restart KeepPeek after changing the network policy.</p>
+<h2 id="roles"><a class="header" href="#roles">Roles</a></h2>
+<p>KeepPeek has two fixed roles.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Operation</th><th style="text-align: center">Administrator</th><th style="text-align: center">User</th></tr>
+</thead>
+<tbody>
+<tr><td>View live and recorded media and events</td><td style="text-align: center">Yes</td><td style="text-align: center">Yes</td></tr>
+<tr><td>Operate PTZ and presets</td><td style="text-align: center">Yes</td><td style="text-align: center">Yes</td></tr>
+<tr><td>Use personal notification and review state</td><td style="text-align: center">Yes</td><td style="text-align: center">Yes</td></tr>
+<tr><td>Configure cameras, storage, recording, and integrations</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>Export, delete, or change retention</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>View logs, health diagnostics, and security audit</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+<tr><td>Manage credentials and sessions</td><td style="text-align: center">Yes</td><td style="text-align: center">No</td></tr>
+</tbody>
+</table>
+</div>
+<p>The server enforces this policy for HTTP and every WebRTC control operation. Hidden navigation and
+controls make the User interface clearer, but they are not the security boundary.</p>
+<p>Custom roles and per-camera permissions are not currently available.</p>
+<h2 id="remote-sign-in"><a class="header" href="#remote-sign-in">Remote sign-in</a></h2>
+<p>Open the recorder through HTTPS and enter the issued UUID in the <strong>Remote sign-in</strong> form. The
+browser keeps the key only in memory for the current page session. It is not placed in the URL,
+rendered as hidden text, logged, or written to <code>localStorage</code> or <code>sessionStorage</code>.</p>
+<p>Reloading or closing the page discards the key and requires sign-in again. Expired or revoked
+sessions return to the sign-in screen without displaying the requested resource.</p>
+<p>API clients send the same credential in the HTTP header:</p>
+<pre><code class="language-http">Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
+</code></pre>
+<p>KeepPeek never accepts credentials in query parameters. Do not put a key in a copied recording
+link, guest link, SDP document, or command line that may be retained in shell history.</p>
+<h2 id="managing-credentials"><a class="header" href="#managing-credentials">Managing credentials</a></h2>
+<p>Open <strong>Settings &gt; Access &amp; roles</strong> as an Administrator. The credential table shows each identity’s
+name, description, role, status, last use, expiry, and revision without revealing its key.</p>
+<h3 id="create"><a class="header" href="#create">Create</a></h3>
+<p>Choose <strong>New credential</strong>, enter a descriptive name, select Administrator or User, and optionally
+set an expiry. The new key is shown once. Store it before hiding the result.</p>
+<p>Use a separate named credential for each person, browser installation, service, or integration.
+This makes audit records useful and allows one client to be revoked without affecting the others.</p>
+<h3 id="rotate"><a class="header" href="#rotate">Rotate</a></h3>
+<p>Rotate a credential when its key may have been copied or exposed. Rotation returns a replacement
+key once, invalidates the previous revision, and closes work authenticated with the old key.</p>
+<h3 id="disable-and-enable"><a class="header" href="#disable-and-enable">Disable and enable</a></h3>
+<p>Disable a credential to suspend it without deleting its identity or history. Disabling closes its
+active sessions. Enabling it increments the revision; clients must establish new sessions.</p>
+<h3 id="revoke"><a class="header" href="#revoke">Revoke</a></h3>
+<p>Revocation is permanent. It closes active sessions and prevents reconnecting with that credential.
+A revoked credential cannot be enabled or rotated; create a replacement identity instead.</p>
+<p>Credential metadata and SHA-256 verifiers are stored in the owner-only <code>access.toml</code> beside
+<code>config.toml</code>. Raw keys are not stored there. The compatibility Initial Administrator key remains
+protected in owner-only <code>secrets.toml</code>.</p>
+<h2 id="sessions-and-revocation"><a class="header" href="#sessions-and-revocation">Sessions and revocation</a></h2>
+<p>Each WebRTC session has a random opaque ID and is bound to its principal, role, effective client
+address, network classification, credential revision, and expiry. A session ID does not authorize a
+request by itself.</p>
+<p>By default, sessions expire after 30 minutes without control activity or after 24 hours absolute,
+whichever comes first. Credential expiry can shorten that lifetime. KeepPeek allows up to 64 active
+sessions per principal and 128 per effective address.</p>
+<p>Administrators can list and revoke sessions from <strong>Settings &gt; Access &amp; roles</strong>. A client can delete
+only its own session. Repeating deletion for an already closed session is safe.</p>
+<p>Credential rotation, disable, revoke, or expiry closes matching WebRTC and authenticated log
+streams. KeepPeek checks expiration every 100 ms. WebRTC gets up to one second for graceful close,
+after which KeepPeek reports a warning. Normal cleanup releases PTZ movement, stored-media cursors,
+searches, discovery, and queued transfers owned by the session.</p>
+<h2 id="reverse-proxies-and-https"><a class="header" href="#reverse-proxies-and-https">Reverse proxies and HTTPS</a></h2>
+<p>Prefer a private VPN for remote access. If KeepPeek is Internet-reachable, terminate HTTPS at a
+maintained reverse proxy, firewall the KeepPeek listener so clients cannot bypass that proxy, and
+trust only the proxy’s exact address.</p>
+<p>Direct remote HTTP is rejected when <code>require_secure_remote = true</code>. A configured trusted proxy is
+the declared TLS boundary: KeepPeek cannot inspect the client-side TLS connection after the proxy
+terminates it.</p>
+<p>KeepPeek accepts one forwarded-client contract: exactly one <code>X-Forwarded-For</code> field containing a
+comma-separated chain of IP addresses without ports or quoted values. The proxy must remove any
+client-supplied forwarding headers before setting it. KeepPeek walks the chain from right to left
+and selects the first address that is not a trusted proxy.</p>
+<p>Other forwarding headers make the contract ambiguous. Remove <code>Forwarded</code>, <code>X-Real-IP</code>,
+<code>X-Forwarded-Host</code>, and <code>X-Forwarded-Proto</code> before forwarding to KeepPeek.</p>
+<p>Example Nginx configuration:</p>
+<pre><code class="language-nginx">location / {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header Forwarded "";
+    proxy_set_header X-Real-IP "";
+    proxy_set_header X-Forwarded-Host "";
+    proxy_set_header X-Forwarded-Proto "";
+    proxy_set_header Host $host;
+}
+</code></pre>
+<p>Pair it with an exact proxy address:</p>
+<pre><code class="language-toml">[access]
+trusted_proxies = ["127.0.0.1/32"]
+require_secure_remote = true
+</code></pre>
+<p>Do not trust a proxy unless its listener, forwarding-header sanitation, network path, and bypass
+firewall are all under the same administrative control.</p>
+<h2 id="audit-and-metrics"><a class="header" href="#audit-and-metrics">Audit and metrics</a></h2>
+<p>KeepPeek keeps a bounded security audit for remote authentication, credential changes, session
+lifecycle, denied commands, sensitive Administrator operations, and proxy-classification failures.
+Each record includes the principal, role, action, target, result, client classification, and UTC
+timestamp. It never contains a raw key, verifier, Authorization header, cookie, SDP, log payload, or
+media.</p>
+<p>New records appear in memory immediately and are written atomically to <code>access.toml</code> within one
+second and during graceful shutdown.</p>
+<p><code>GET /metrics</code> exposes label-free counters and gauges for authentication successes and failures,
+authorization denials, session creation and revocation, active sessions, and active credentials.
+Logs, metrics, diagnostics, and audit access require Administrator.</p>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<h3 id="a-local-browser-shows-remote-sign-in"><a class="header" href="#a-local-browser-shows-remote-sign-in">A local browser shows Remote sign-in</a></h3>
+<p>Check the browser’s source address and <code>access.local_networks</code>. A forwarding header from an
+untrusted peer intentionally forces remote classification. If a proxy is involved, configure its
+exact address in <code>trusted_proxies</code> and send only the supported <code>X-Forwarded-For</code> contract.</p>
+<h3 id="remote-access-returns-http-426"><a class="header" href="#remote-access-returns-http-426">Remote access returns HTTP 426</a></h3>
+<p>The request reached KeepPeek over unprotected direct HTTP while <code>require_secure_remote</code> is enabled.
+Use HTTPS through a configured trusted proxy or connect through a VPN.</p>
+<h3 id="remote-sign-in-is-temporarily-limited"><a class="header" href="#remote-sign-in-is-temporarily-limited">Remote sign-in is temporarily limited</a></h3>
+<p>Five failed attempts from one effective address within 60 seconds are rejected by default. Wait for
+the window to expire, verify the key, and confirm the credential is enabled, unexpired, and not
+revoked.</p>
+<h3 id="a-credential-works-for-viewing-but-not-settings"><a class="header" href="#a-credential-works-for-viewing-but-not-settings">A credential works for viewing but not Settings</a></h3>
+<p>It has the User role. Issue an Administrator credential only when that client must change recorder
+configuration or manage security.</p>
+<h3 id="a-key-was-lost-or-exposed"><a class="header" href="#a-key-was-lost-or-exposed">A key was lost or exposed</a></h3>
+<p>From a local Administrator session, rotate the affected credential. Store the replacement key
+before hiding it, then update only the client or integration that owns that named credential.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="camera-and-stream-health"><a class="header" href="#camera-and-stream-health">Camera and stream health</a></h1>
 <p>KeepPeek computes camera and stream health on the server. Peek, Cameras, Health, camera
