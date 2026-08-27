@@ -47,6 +47,11 @@ pub struct AttemptRecord {
     pub outcome: String,
     pub target_hash: String,
     pub provider_status: Option<u16>,
+    pub provider_request_id: Option<String>,
+    pub provider_acknowledged_at_ms: Option<i64>,
+    pub provider_expired_at_ms: Option<i64>,
+    pub provider_acknowledged_by_hash: Option<String>,
+    pub provider_acknowledgement_state: Option<String>,
     pub reason: Option<String>,
     pub attempted_at_ms: i64,
     pub retry_at_ms: Option<i64>,
@@ -308,9 +313,22 @@ impl Store {
         let mut rows = self
             .connection
             .query(
-                "SELECT sequence, channel, stage, attempt, outcome, target_hash,
-                        provider_status, reason, attempted_at_ms, retry_at_ms
-                 FROM notification_attempts WHERE logical_id = ?1 ORDER BY sequence",
+                "SELECT a.sequence, a.channel, a.stage, a.attempt, a.outcome, a.target_hash,
+                        a.provider_status, a.reason, a.attempted_at_ms, a.retry_at_ms,
+                        a.provider_request_id,
+                        CASE WHEN a.outcome = 'delivered' THEN o.provider_acknowledged_at_ms END,
+                        CASE WHEN a.outcome = 'delivered' THEN o.provider_expired_at_ms END,
+                        CASE WHEN a.outcome = 'delivered' THEN o.provider_acknowledged_by_hash END,
+                        CASE
+                            WHEN a.outcome != 'delivered' OR o.provider_receipt IS NULL THEN NULL
+                            WHEN o.provider_acknowledged_at_ms IS NOT NULL THEN 'acknowledged'
+                            WHEN o.provider_expired_at_ms IS NOT NULL THEN 'expired'
+                            WHEN o.next_receipt_check_at_ms IS NULL THEN 'failed'
+                            ELSE 'pending'
+                        END
+                 FROM notification_attempts AS a
+                 LEFT JOIN notification_outbox AS o ON o.id = a.outbox_id
+                 WHERE a.logical_id = ?1 ORDER BY a.sequence",
                 turso::params![logical_id],
             )
             .await?;
@@ -327,6 +345,11 @@ impl Store {
                 reason: row.get(7)?,
                 attempted_at_ms: row.get(8)?,
                 retry_at_ms: row.get(9)?,
+                provider_request_id: row.get(10)?,
+                provider_acknowledged_at_ms: row.get(11)?,
+                provider_expired_at_ms: row.get(12)?,
+                provider_acknowledged_by_hash: row.get(13)?,
+                provider_acknowledgement_state: row.get(14)?,
             });
         }
         Ok(attempts)

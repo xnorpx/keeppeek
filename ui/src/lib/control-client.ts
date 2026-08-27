@@ -3401,10 +3401,30 @@ function notificationDeliveryAttempt(
 		outcome: attempt.outcome,
 		targetHash: attempt.targetHash,
 		providerStatus: attempt.providerStatus ?? null,
+		providerRequestId: attempt.providerRequestId ?? null,
+		providerAcknowledgedAtMs:
+			attempt.providerAcknowledgedAtMs === undefined
+				? null
+				: Number(attempt.providerAcknowledgedAtMs),
+		providerExpiredAtMs:
+			attempt.providerExpiredAtMs === undefined ? null : Number(attempt.providerExpiredAtMs),
+		providerAcknowledgedByHash: attempt.providerAcknowledgedByHash ?? null,
+		providerAcknowledgementState: providerAcknowledgementState(
+			attempt.providerAcknowledgementState
+		),
 		reason: attempt.reason ?? null,
 		attemptedAtMs: Number(attempt.attemptedAtMs),
 		retryAtMs: attempt.retryAtMs === undefined ? null : Number(attempt.retryAtMs)
 	};
+}
+
+function providerAcknowledgementState(
+	value: string | undefined
+): 'pending' | 'acknowledged' | 'expired' | 'failed' | null {
+	if (value === undefined || value === '') return null;
+	if (value === 'pending' || value === 'acknowledged' || value === 'expired' || value === 'failed')
+		return value;
+	throw new Error(`Server returned unsupported provider acknowledgement state '${value}'.`);
 }
 
 function notificationStage(value: string): NotificationStage {

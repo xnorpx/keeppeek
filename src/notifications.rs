@@ -12,6 +12,7 @@ mod health;
 mod inbox;
 pub mod model;
 mod orchestrator;
+pub mod pushover;
 mod store;
 
 pub use health::HealthMonitor;
@@ -696,6 +697,7 @@ mod performance {
         let candidate = Candidate {
             trigger: Trigger::EventCreated,
             source_id: "front-door".to_owned(),
+            source_name: Some("Front Door".to_owned()),
             source_identity: "event-1".to_owned(),
             lifecycle: Lifecycle::Event,
             event_kind: Some("person".to_owned()),

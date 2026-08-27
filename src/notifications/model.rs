@@ -16,8 +16,10 @@ const MAX_TEMPLATE_BODY_CHARS: usize = 4_096;
 const MAX_DESTINATION_BYTES: usize = 2_048;
 const MAX_POLICY_DURATION_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 const MAX_ATTACHMENT_BYTES: u64 = 4 * 1_024 * 1_024;
-const ALLOWED_TEMPLATE_FIELDS: [&str; 9] = [
+const PUSHOVER_MIN_RETRY_INTERVAL_MS: u64 = 5_000;
+const ALLOWED_TEMPLATE_FIELDS: [&str; 10] = [
     "source.id",
+    "source.name",
     "event.id",
     "event.kind",
     "event.zone",
@@ -63,6 +65,7 @@ impl Severity {
 pub struct Candidate {
     pub trigger: Trigger,
     pub source_id: String,
+    pub source_name: Option<String>,
     pub source_identity: String,
     pub lifecycle: Lifecycle,
     pub event_kind: Option<String>,
@@ -253,6 +256,8 @@ pub struct Template {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Action {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub channel: Channel,
     pub destination: String,
     pub template: Template,
@@ -325,6 +330,14 @@ impl Rule {
         }
         for action in &self.actions {
             validate_action(action)?;
+        }
+        if self
+            .actions
+            .iter()
+            .any(|action| action.enabled && action.channel == Channel::Push)
+            && self.failure.maximum_retry_interval_ms < PUSHOVER_MIN_RETRY_INTERVAL_MS
+        {
+            anyhow::bail!("Pushover maximum retry interval must be at least 5000 ms");
         }
         Ok(())
     }
@@ -503,6 +516,10 @@ fn validate_action(action: &Action) -> anyhow::Result<()> {
     if action.destination.len() > MAX_DESTINATION_BYTES {
         anyhow::bail!("action destination exceeds {MAX_DESTINATION_BYTES} bytes");
     }
+    validate_template(&action.template)?;
+    if !action.enabled {
+        return Ok(());
+    }
     match action.channel {
         Channel::Browser if !action.destination.is_empty() => {
             anyhow::bail!("browser actions use the rule owner and must not set a destination");
@@ -517,12 +534,20 @@ fn validate_action(action: &Action) -> anyhow::Result<()> {
                 anyhow::bail!("webhook destination must be an HTTP(S) URL without credentials");
             }
         }
-        Channel::Push | Channel::Forwarder if action.destination.trim().is_empty() => {
+        Channel::Push => {
+            super::pushover::Destination::parse(&action.destination)?;
+            super::pushover::validate_template(&action.template.title, &action.template.body)?;
+        }
+        Channel::Forwarder if action.destination.trim().is_empty() => {
             anyhow::bail!("{} actions require a destination", action.channel.as_str());
         }
-        Channel::Browser | Channel::Push | Channel::Forwarder => {}
+        Channel::Browser | Channel::Forwarder => {}
     }
-    validate_template(&action.template)
+    Ok(())
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 fn validate_template(template: &Template) -> anyhow::Result<()> {
@@ -634,6 +659,7 @@ mod tests {
                 wake_after_deadline: false,
             },
             actions: vec![Action {
+                enabled: true,
                 channel: Channel::Browser,
                 destination: String::new(),
                 template: Template {
@@ -698,6 +724,7 @@ mod tests {
         let candidate = Candidate {
             trigger: Trigger::EventCreated,
             source_id: "front-door".to_owned(),
+            source_name: Some("Front Door".to_owned()),
             source_identity: "event-1".to_owned(),
             lifecycle: Lifecycle::Event,
             event_kind: Some("person".to_owned()),

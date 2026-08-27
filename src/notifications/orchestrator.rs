@@ -30,6 +30,7 @@ struct Payload<'a> {
     title: &'a str,
     body: &'a str,
     deep_link: &'a str,
+    occurred_at_ms: i64,
 }
 
 struct EnqueueContext<'a> {
@@ -193,6 +194,7 @@ impl Store {
                         .first()
                         .cloned()
                         .unwrap_or_else(|| "notification-test".to_owned()),
+                    source_name: None,
                     source_identity: identity.clone(),
                     lifecycle: Lifecycle::Test,
                     event_kind: rule
@@ -769,6 +771,9 @@ impl Store {
     ) -> anyhow::Result<u32> {
         let mut queued = 0_u32;
         for (index, action) in rule.actions.iter().enumerate() {
+            if !action.enabled {
+                continue;
+            }
             if context.replacement
                 && !supports_replacement(action.channel)
                 && !action.allow_second_delivery
@@ -843,6 +848,7 @@ impl Store {
                 title,
                 body,
                 deep_link: &candidate.deep_link,
+                occurred_at_ms: candidate.occurred_at_ms,
             })?;
             let priority = if candidate.severity == Severity::Critical {
                 100
@@ -1068,6 +1074,10 @@ fn render(template: &str, candidate: &Candidate) -> String {
         .unwrap_or_default();
     let values = [
         ("source.id", candidate.source_id.as_str()),
+        (
+            "source.name",
+            candidate.source_name.as_deref().unwrap_or(""),
+        ),
         ("event.id", candidate.source_identity.as_str()),
         ("event.kind", candidate.event_kind.as_deref().unwrap_or("")),
         ("event.zone", candidate.zone.as_deref().unwrap_or("")),
@@ -1181,6 +1191,7 @@ mod tests {
             },
             actions: vec![
                 Action {
+                    enabled: true,
                     channel: Channel::Browser,
                     destination: String::new(),
                     template: Template {
@@ -1191,6 +1202,7 @@ mod tests {
                     allow_second_delivery: false,
                 },
                 Action {
+                    enabled: true,
                     channel: Channel::Webhook,
                     destination: "https://example.invalid/keeppeek".to_owned(),
                     template: Template {
@@ -1220,6 +1232,7 @@ mod tests {
         Candidate {
             trigger,
             source_id: source_id.to_owned(),
+            source_name: None,
             source_identity: identity.to_owned(),
             lifecycle: if trigger == Trigger::Test {
                 Lifecycle::Test
@@ -1627,6 +1640,81 @@ mod tests {
                 "SELECT COUNT(*) FROM notification_outbox WHERE attachment_enabled = 1"
             ),
             1
+        );
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn disabled_action_preserves_notification_history_without_enqueueing_delivery() {
+        let directory = test_dir("notification-disabled-action");
+        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let mut configured = rule(CooldownScope::Event);
+        configured.actions.truncate(1);
+        configured.cooldowns.clear();
+        activate(&store, configured.clone());
+
+        let first = store
+            .process(candidate(
+                Trigger::EventCreated,
+                "front-door",
+                "event-1",
+                1,
+                Stage::Preliminary,
+                1_000,
+            ))
+            .unwrap();
+        assert_eq!(first.queued_attempts, 1);
+
+        let current = store.rules("owner-1").unwrap().remove(0);
+        configured.actions[0].enabled = false;
+        let saved = store
+            .save_draft(configured, current.draft_revision, 1_500)
+            .unwrap();
+        store
+            .activate(
+                &saved.id,
+                &saved.owner_id,
+                saved.active_revision,
+                saved.draft_revision,
+                1_600,
+            )
+            .unwrap();
+        let second = store
+            .process(candidate(
+                Trigger::EventCreated,
+                "front-door",
+                "event-2",
+                1,
+                Stage::Preliminary,
+                2_000,
+            ))
+            .unwrap();
+
+        assert_eq!(second.created, 1);
+        assert_eq!(second.queued_attempts, 0);
+        assert_eq!(count(&store, "SELECT COUNT(*) FROM notification_outbox"), 1);
+        assert_eq!(
+            text(
+                &store,
+                "SELECT status FROM notification_outbox WHERE logical_id != ''"
+            ),
+            "expired"
+        );
+        assert_eq!(
+            count(
+                &store,
+                "SELECT COUNT(*) FROM notification_history
+                 WHERE outcome = 'expired' AND reason = 'rule_or_action_disabled'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &store,
+                "SELECT COUNT(*) FROM notification_history WHERE outcome = 'created'"
+            ),
+            2
         );
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();

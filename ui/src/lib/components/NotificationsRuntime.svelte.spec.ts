@@ -14,6 +14,7 @@ function ruleRecord(): NotificationRuleRecord {
 	const rule = createNotificationRule('front-door-person', 'Europe/Stockholm');
 	rule.name = 'Front door person';
 	rule.actions.push({
+		enabled: true,
 		channel: 'webhook',
 		destination: '',
 		destination_configured: true,
@@ -80,12 +81,17 @@ function history(): NotificationHistoryGroup[] {
 			attempts: [
 				{
 					sequence: 1n,
-					channel: 'browser',
+					channel: 'push',
 					stage: 'preliminary',
 					attempt: 1,
 					outcome: 'delivered',
 					targetHash: '0123456789abcdef',
-					providerStatus: null,
+					providerStatus: 200,
+					providerRequestId: '647d2300-702c-4b38-8b2f-d56326ae460b',
+					providerAcknowledgedAtMs: null,
+					providerExpiredAtMs: null,
+					providerAcknowledgedByHash: null,
+					providerAcknowledgementState: 'pending',
 					reason: null,
 					attemptedAtMs: notification.createdAtMs,
 					retryAtMs: null
@@ -115,6 +121,7 @@ describe('NotificationsRuntime', () => {
 		await render(NotificationsRuntimeFixture, { props: { client } });
 		await expect.element(page.getByText('Front door person', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('r3 active · r4 draft', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('Awaiting acknowledgement', { exact: true })).toBeVisible();
 
 		await userEvent.click(page.getByRole('tab', { name: /Inbox/ }));
 		await expect.element(page.getByText('Person at front door', { exact: true })).toBeVisible();
@@ -128,5 +135,24 @@ describe('NotificationsRuntime', () => {
 		await expect
 			.element(page.getByLabelText('Webhook URL'))
 			.toHaveAttribute('placeholder', 'Configured');
+
+		await userEvent.selectOptions(page.getByLabelText('Channel').first(), 'push');
+		await expect
+			.element(page.getByLabelText('Application token'))
+			.toHaveAttribute('type', 'password');
+		await expect
+			.element(page.getByLabelText('User or group key'))
+			.toHaveAttribute('type', 'password');
+		await expect.element(page.getByLabelText('Device names')).toBeVisible();
+		await expect.element(page.getByLabelText('Sound')).toBeVisible();
+		await expect.element(page.getByLabelText('Deep-link base URL')).toBeVisible();
+		await userEvent.selectOptions(page.getByLabelText('Priority'), '2');
+		await expect.element(page.getByLabelText('Emergency retry (seconds)')).toHaveValue(30);
+		await expect.element(page.getByLabelText('Emergency expiry (seconds)')).toHaveValue(300);
+
+		await userEvent.click(page.getByRole('tab', { name: 'History' }));
+		await userEvent.click(page.getByText('Person at front door', { exact: true }));
+		await expect.element(page.getByText(/request 647d2300-702/)).toBeVisible();
+		await expect.element(page.getByText(/pending/)).toBeVisible();
 	});
 });

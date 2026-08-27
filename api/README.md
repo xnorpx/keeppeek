@@ -44,8 +44,8 @@ compatibility guarantees begin with the 1.0 release.
   participant subscriptions, full-duplex audio with client-side push to talk, and per-medium
   recording policy.
 - [Notification rules](../docs/notifications.md) describes revisioned rules, deterministic collapse
-  identity, cooldowns, staged enrichment, durable delivery history, and principal-scoped unread
-  state.
+  identity, cooldowns, staged enrichment, durable delivery history, principal-scoped unread state,
+  and [Pushover configuration](../docs/pushover.md).
 - [Home Assistant card](../docs/home-assistant.md) shows a direct browser-to-KeepPeek Lovelace card with
   one configured token, direct live media/events/timeline review, and no Home Assistant proxy.
 
