@@ -123,7 +123,7 @@ turso = { version = "=0.7.2", default-features = false }
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
 url = { version = "*" }
 sysinfo = "0.39.6"
-quick-xml = { version = "0.41.0", features = ["serialize"] }
+quick-xml = { version = "0.42.0", features = ["serialize"] }
 prost = "0.14"
 prost-types = "0.14"
 prometheus-client = "0.25.0"
