@@ -3519,10 +3519,16 @@ fn export_event_seed(
             "export canonical attachment identity is stale",
         ));
     }
-    let image_availability = proto_event_image_availability(
-        event.canonical_attachment_id.is_some(),
-        event.canonical_image_available(),
-    );
+    let image_available = event
+        .canonical_attachment()
+        .is_some_and(|attachment| attachment.attachment_type == "thumbnail")
+        && store
+            .thumbnail_path(&event.camera_id, &event.id)
+            .ok()
+            .flatten()
+            .is_some();
+    let image_availability =
+        proto_event_image_availability(event.canonical_attachment_id.is_some(), image_available);
     Ok(Some(proto::EventExportSeed {
         event_id: event.id,
         revision: event.revision,
@@ -5531,6 +5537,7 @@ fn query_events(
     if include_preview_keyframes {
         remap_event_search_keyframes(state, catalog, &request.stream_id, &mut page.hits)?;
     }
+    refresh_event_search_image_availability(state, &mut page.hits);
     let next_page_token = page
         .next_page_token
         .take()
@@ -5870,6 +5877,13 @@ fn resolve_event_search_attachment(
             "stored event has no canonical attachment descriptor",
         )
     })?;
+    if descriptor.attachment_type != "thumbnail" {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "canonical event attachment is unavailable",
+        ));
+    }
     let path = store
         .thumbnail_path(&event.camera_id, &event.id)
         .map_err(|error| stored_catalog_error("resolve canonical event attachment", error))?
@@ -6316,6 +6330,25 @@ fn remap_event_search_keyframes(
         }
     }
     Ok(())
+}
+
+fn refresh_event_search_image_availability(
+    state: &ServerState,
+    hits: &mut [crate::storage::EventSearchHit],
+) {
+    for hit in hits {
+        hit.image_available = hit
+            .canonical_attachment
+            .as_ref()
+            .is_some_and(|attachment| attachment.attachment_type == "thumbnail")
+            && state.events.as_ref().is_some_and(|store| {
+                store
+                    .thumbnail_path(&hit.source_id, &hit.event_id)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            });
+    }
 }
 
 fn proto_event_search_hit(hit: crate::storage::EventSearchHit) -> proto::EventSearchHit {
@@ -14847,6 +14880,19 @@ mod tests {
         assert_eq!(stale.message, "event attachment revision is stale");
 
         std::fs::remove_file(&thumbnail_path).unwrap();
+        let mut availability_query = EventMetadataQuery::new(
+            "main",
+            event_time_ms.saturating_sub(1),
+            event_time_ms.saturating_add(1_000),
+        );
+        availability_query.event_ids = vec!["face-1".to_owned()];
+        let mut availability_hits =
+            EventSearch::new(handler.state.catalog.as_ref().unwrap().clone())
+                .search_metadata(availability_query.clone())
+                .unwrap()
+                .hits;
+        refresh_event_search_image_availability(&handler.state, &mut availability_hits);
+        assert!(!availability_hits[0].image_available);
         let unavailable =
             fetch_event_search_media(&handler.state, attachment_request.clone()).unwrap_err();
         assert_eq!(unavailable.code, proto::ErrorCode::Unavailable);
@@ -14855,6 +14901,13 @@ mod tests {
             "canonical event attachment is unavailable"
         );
         std::fs::write(&thumbnail_path, [9_u8, 8, 7]).unwrap();
+        let mut availability_hits =
+            EventSearch::new(handler.state.catalog.as_ref().unwrap().clone())
+                .search_metadata(availability_query)
+                .unwrap()
+                .hits;
+        refresh_event_search_image_availability(&handler.state, &mut availability_hits);
+        assert!(availability_hits[0].image_available);
         let (_, retried) = fetch_event_search_media(&handler.state, attachment_request).unwrap();
         assert!(retried.iter().any(|message| matches!(
             message.message.message,

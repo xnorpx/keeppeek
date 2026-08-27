@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::{RuleStoreError, Stage, model::Severity, store::Store};
 use crate::storage::metadata::EventAttachment;
 
@@ -255,7 +257,7 @@ impl Store {
                     "SELECT l.id, l.rule_id, l.source_id, l.source_identity,
                             l.lifecycle, l.stage,
                             l.highest_revision, l.title, l.body, l.deep_link,
-                            l.attachment_path IS NOT NULL, l.severity,
+                            l.attachment_path, l.severity,
                             l.created_at_ms, l.updated_at_ms,
                             r.seen_at_ms, r.acknowledged_at_ms,
                             l.canonical_attachment_json, l.icon_key, l.image_available
@@ -270,6 +272,15 @@ impl Store {
             .await?;
         let mut items = Vec::new();
         while let Some(row) = rows.next().await? {
+            let attachment_path = row.get::<Option<String>>(10)?;
+            let attachment_available = attachment_path
+                .as_deref()
+                .is_some_and(|path| Path::new(path).is_file());
+            let canonical_attachment = row
+                .get::<Option<String>>(16)?
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?;
             items.push(NotificationItem {
                 logical_id: row.get(0)?,
                 rule_id: row.get(1)?,
@@ -281,19 +292,17 @@ impl Store {
                 title: row.get(7)?,
                 body: row.get(8)?,
                 deep_link: row.get(9)?,
-                attachment_available: row.get::<i64>(10)? != 0,
+                attachment_available,
                 severity: parse_severity(&row.get::<String>(11)?)?,
                 created_at_ms: row.get(12)?,
                 updated_at_ms: row.get(13)?,
                 seen_at_ms: row.get(14)?,
                 acknowledged_at_ms: row.get(15)?,
-                canonical_attachment: row
-                    .get::<Option<String>>(16)?
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()?,
+                image_available: canonical_attachment.is_some()
+                    && row.get::<i64>(18)? != 0
+                    && attachment_available,
+                canonical_attachment,
                 icon_key: row.get(17)?,
-                image_available: row.get::<i64>(18)? != 0,
             });
         }
         Ok(items)

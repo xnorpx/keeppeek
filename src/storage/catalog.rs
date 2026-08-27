@@ -1938,7 +1938,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
         "TEXT",
     )
     .await?;
-    ensure_column(
+    let icon_key_added = ensure_column(
         connection,
         "recording_events",
         "icon_key",
@@ -1961,6 +1961,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  ON recording_files(finalized, protected, cleanup_pending, started_at_ms);",
         )
         .await?;
+    backfill_event_presentation(connection, icon_key_added).await?;
     apply_event_search_backfill(connection).await?;
     Ok(())
 }
@@ -1970,13 +1971,13 @@ async fn ensure_column(
     table: &str,
     column: &str,
     declaration: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let mut rows = connection
         .query(format!("PRAGMA table_info({table})"), ())
         .await?;
     while let Some(row) = rows.next().await? {
         if row.get::<String>(1)? == column {
-            return Ok(());
+            return Ok(false);
         }
     }
     connection
@@ -1984,6 +1985,60 @@ async fn ensure_column(
             "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
         ))
         .await?;
+    Ok(true)
+}
+
+async fn backfill_event_presentation(
+    connection: &turso::Connection,
+    icon_key_added: bool,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "UPDATE recording_events
+             SET attachments_json = printf(
+                     '[{\"id\":\"thumbnail\",\"attachment_type\":\"thumbnail\",\"content_type\":\"image/jpeg\",\"byte_len\":null,\"ordinal\":0,\"timestamp_ms\":%lld,\"text\":null}]',
+                     start_time_ms
+                 ),
+                 canonical_attachment_id = 'thumbnail',
+                 bbox_attachment_id = CASE
+                     WHEN bbox_json IS NOT NULL THEN 'thumbnail'
+                     ELSE NULL
+                 END
+             WHERE thumbnail_filename IS NOT NULL
+               AND canonical_attachment_id IS NULL
+               AND attachments_json = '[]'",
+            (),
+        )
+        .await?;
+    if icon_key_added {
+        connection
+            .execute(
+                "UPDATE recording_events
+                 SET icon_key = CASE lower(trim(kind))
+                     WHEN 'person' THEN 'person'
+                     WHEN 'human' THEN 'person'
+                     WHEN 'face' THEN 'person'
+                     WHEN 'vehicle' THEN 'vehicle'
+                     WHEN 'car' THEN 'vehicle'
+                     WHEN 'truck' THEN 'vehicle'
+                     WHEN 'animal' THEN 'animal'
+                     WHEN 'pet' THEN 'animal'
+                     WHEN 'package' THEN 'package'
+                     WHEN 'motion' THEN 'motion'
+                     WHEN 'doorbell' THEN 'doorbell'
+                     WHEN 'sound' THEN 'sound'
+                     WHEN 'audio' THEN 'sound'
+                     WHEN 'story' THEN 'story'
+                     ELSE CASE
+                         WHEN lower(kind) LIKE '%outage%'
+                           OR lower(kind) LIKE '%unavailable%' THEN 'alert'
+                         ELSE 'event'
+                     END
+                 END",
+                (),
+            )
+            .await?;
+    }
     Ok(())
 }
 
@@ -4243,7 +4298,16 @@ mod tests {
     fn schema_migration_backfills_existing_event_types_once() {
         let root = test_dir("turso-event-search-migration");
         let path = root.join("recordings.db");
-        let (term_count, migration_count, identity_column_count) = pollster::block_on(async {
+        let (
+            term_count,
+            migration_count,
+            identity_column_count,
+            revision,
+            bbox_attachment_id,
+            attachments,
+            canonical_attachment_id,
+            icon_key,
+        ) = pollster::block_on(async {
             let database = turso::Builder::new_local(path.to_str().unwrap())
                 .build()
                 .await
@@ -4275,8 +4339,12 @@ mod tests {
                          thumbnail_filename TEXT
                      );
                      INSERT INTO recording_events (
-                         id, camera_id, source, kind, start_time_ms
-                     ) VALUES ('event-1', 'front-door', 'camera', 'Vehicle', 1000);",
+                         id, camera_id, source, kind, start_time_ms,
+                         bbox_json, thumbnail_filename
+                     ) VALUES (
+                         'event-1', 'front-door', 'camera', 'Vehicle', 1000,
+                         '[0.1,0.2,0.3,0.4]', 'event-1.jpg'
+                     );",
                 )
                 .await
                 .unwrap();
@@ -4308,11 +4376,40 @@ mod tests {
                     identity_column_count += 1;
                 }
             }
-            (term_count, migration_count, identity_column_count)
+            let mut rows = connection
+                .query(
+                    "SELECT revision, bbox_attachment_id, attachments_json,
+                            canonical_attachment_id, icon_key
+                     FROM recording_events WHERE id = 'event-1'",
+                    (),
+                )
+                .await
+                .unwrap();
+            let row = rows.next().await.unwrap().unwrap();
+            let attachments =
+                serde_json::from_str::<Vec<EventAttachment>>(&row.get::<String>(2).unwrap())
+                    .unwrap();
+            (
+                term_count,
+                migration_count,
+                identity_column_count,
+                row.get::<i64>(0).unwrap(),
+                row.get::<Option<String>>(1).unwrap(),
+                attachments,
+                row.get::<Option<String>>(3).unwrap(),
+                row.get::<String>(4).unwrap(),
+            )
         });
         assert_eq!(term_count, 1);
         assert_eq!(migration_count, 1);
         assert_eq!(identity_column_count, 2);
+        assert_eq!(revision, 1);
+        assert_eq!(bbox_attachment_id.as_deref(), Some("thumbnail"));
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].id, "thumbnail");
+        assert_eq!(attachments[0].timestamp_ms, Some(1_000));
+        assert_eq!(canonical_attachment_id.as_deref(), Some("thumbnail"));
+        assert_eq!(icon_key, "vehicle");
         std::fs::remove_dir_all(root).unwrap();
     }
 

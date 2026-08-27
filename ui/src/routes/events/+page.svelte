@@ -457,16 +457,22 @@
 			const sameCanonicalRevision =
 				existing?.event.revision === record.event.revision &&
 				existing?.event.canonical_attachment_id === record.event.canonical_attachment_id;
-			if (existing?.previewObjectUrl && !sameCanonicalRevision) {
+			const canReuseCanonicalPreview =
+				sameCanonicalRevision && record.event.image_availability !== 'unavailable';
+			if (existing?.previewObjectUrl && !canReuseCanonicalPreview) {
 				previewControllers.get(key)?.abort();
 				void tick().then(() => releaseEventPreview(existing));
 			}
 			merged.set(
 				key,
-				existing?.previewObjectUrl && sameCanonicalRevision
+				existing?.previewObjectUrl && canReuseCanonicalPreview
 					? {
 							...record,
-							event: { ...record.event, thumbnail_url: existing.event.thumbnail_url },
+							event: {
+								...record.event,
+								thumbnail_url: existing.event.thumbnail_url,
+								thumbnail_blob: existing.event.thumbnail_blob
+							},
 							previewObjectUrl: true
 						}
 					: record
@@ -478,11 +484,7 @@
 	function requestEventPreview(record: EventBrowserRecord): void {
 		const key = eventBrowserRecordKey(record);
 		if (record.event.thumbnail_url || previewKeys.has(key)) return;
-		if (
-			!record.previewKeyframe &&
-			!record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')
-		)
-			return;
+		if (!record.previewKeyframe && !record.event.canonical_attachment_id) return;
 		previewKeys.add(key);
 		setPreviewState(key, 'queued');
 		previewQueue.push(record);
