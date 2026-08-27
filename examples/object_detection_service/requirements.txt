@@ -8,4 +8,4 @@ numpy==2.5.2
 protobuf==7.36.0
 pytest==9.1.1
 ruff==0.16.4
-ultralytics==8.4.126
+ultralytics==8.4.127
