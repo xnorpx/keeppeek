@@ -81,6 +81,18 @@ describe('waitForStorybookIndexBeforeExtract', () => {
 		await preview.extract();
 		expect(storyStoreOf(preview).raw()).toEqual(['story']);
 	});
+
+	test('resolves a story store captured before the index was ready', async () => {
+		const { preview, releaseIndex } = createStorybookPreview();
+
+		waitForStorybookIndexBeforeExtract(preview);
+		const capturedBeforeIndex = (preview as unknown as { storyStore: { raw: () => string[] } })
+			.storyStore;
+
+		releaseIndex();
+		await preview.extract();
+		expect(capturedBeforeIndex.raw()).toEqual(['story']);
+	});
 });
 
 describe('installStorybookReadinessGuard', () => {
