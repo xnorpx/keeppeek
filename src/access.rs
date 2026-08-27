@@ -1068,7 +1068,7 @@ fn make_file_owner_only(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn make_file_owner_only(_path: &Path) -> std::io::Result<()> {
+const fn make_file_owner_only(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
