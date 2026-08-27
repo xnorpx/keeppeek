@@ -1,10 +1,27 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { durationFromMs, timestampDate, timestampFromDate } from '@bufbuild/protobuf/wkt';
-import { createSession, deleteSession } from './api';
+import {
+	ApiRequestError,
+	createSession,
+	deleteSession,
+	fetchLogSnapshot as fetchAuthenticatedLogSnapshot,
+	fetchLogStream as fetchAuthenticatedLogStream,
+	fetchMetricsSnapshot as fetchAuthenticatedMetricsSnapshot
+} from './api';
+import type {
+	AccessAuditEvent,
+	AccessConnectionState,
+	AccessCredential,
+	AccessCredentialInput,
+	AccessRole,
+	AccessSession,
+	IssuedAccessCredential
+} from './access';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import {
 	AcknowledgeNotificationSchema,
 	ActivateNotificationRuleSchema,
+	AccessRole as ProtoAccessRole,
 	CameraControlCommandSchema,
 	CameraConfigurationCommandSchema,
 	CameraBackend as ProtoCameraBackend,
@@ -17,6 +34,7 @@ import {
 	ClearNotificationSchema,
 	ClearNotificationsSchema,
 	ControlEnvelopeSchema,
+	CreateAccessCredentialSchema,
 	CloseStoredMediaSchema,
 	DataChannelKind,
 	DiscoverCamerasSchema,
@@ -37,6 +55,7 @@ import {
 	GetCameraConfigurationsSchema,
 	GetCameraDiscoverySchema,
 	GetAccessKeySchema,
+	GetAccessSessionSchema,
 	GetHealthSchema,
 	GetLoggingSettingsSchema,
 	GetMotionDetectionSchema,
@@ -45,6 +64,9 @@ import {
 	GetRuntimeConfigurationSchema,
 	FetchEventSearchMediaSchema,
 	ListExportJobsSchema,
+	ListAccessAuditSchema,
+	ListAccessCredentialsSchema,
+	ListAccessSessionsSchema,
 	ListNotificationRulesSchema,
 	LoggingCommandSchema,
 	HealthCommandSchema,
@@ -68,7 +90,10 @@ import {
 	RuntimeStorageConfigurationSchema,
 	RequestSchema,
 	RestartServerSchema,
+	RevokeAccessCredentialSchema,
+	RevokeAccessSessionSchema,
 	RotateAccessKeySchema,
+	RotateAccessCredentialSchema,
 	SearchCameraCatalogSchema,
 	SaveNotificationRuleDraftSchema,
 	ServerCommandSchema,
@@ -76,6 +101,7 @@ import {
 	SetCameraManufacturerSchema,
 	SetLoggingFilterSchema,
 	SetMotionDetectionSchema,
+	SetAccessCredentialEnabledSchema,
 	SetStoredMediaPlaybackSchema,
 	StoredMediaCommandSchema,
 	StoredMediaEventQuerySchema,
@@ -103,6 +129,9 @@ import {
 	type StoredMediaKeyFrame,
 	type StoredMediaState,
 	type MotionDetectionResult,
+	type AccessAuditEvent as ProtoAccessAuditEvent,
+	type AccessCredential as ProtoAccessCredential,
+	type AccessSession as ProtoAccessSession,
 	type NotificationDeliveryAttempt as ProtoNotificationDeliveryAttempt,
 	type NotificationHistoryEvent as ProtoNotificationHistoryEvent,
 	type NotificationHistoryGroup as ProtoNotificationHistoryGroup,
@@ -180,6 +209,7 @@ type PendingRequest = {
 };
 
 type CapabilityListener = (capabilityIds: readonly string[]) => void;
+type AccessStateListener = (state: AccessConnectionState) => void;
 
 export type PtzPreset = { id: number; name: string };
 
@@ -410,11 +440,87 @@ export class ControlClient {
 	#objectUrls = new Set<string>();
 	#capabilityIds: readonly string[] = [];
 	#capabilityListeners = new Set<CapabilityListener>();
+	#accessKey: string | null = null;
+	#accessState: AccessConnectionState = {
+		status: 'checking',
+		session: null,
+		message: null,
+		generation: 0
+	};
+	#accessStateListeners = new Set<AccessStateListener>();
 
 	onCapabilities(listener: CapabilityListener): () => void {
 		this.#capabilityListeners.add(listener);
 		listener(this.#capabilityIds);
 		return () => this.#capabilityListeners.delete(listener);
+	}
+
+	onAccessState(listener: AccessStateListener): () => void {
+		this.#accessStateListeners.add(listener);
+		listener(this.#accessState);
+		return () => this.#accessStateListeners.delete(listener);
+	}
+
+	async checkAccess(): Promise<void> {
+		try {
+			await this.getServerCapabilities();
+		} catch (error) {
+			if (this.#accessState.status === 'checking') {
+				this.publishAccessState({
+					status: 'error',
+					session: null,
+					message: error instanceof Error ? error.message : 'KeepPeek could not be reached.'
+				});
+			}
+			throw error;
+		}
+	}
+
+	async signIn(accessKey: string): Promise<void> {
+		const candidate = accessKey.trim();
+		if (candidate.length === 0 || candidate.length > 128) {
+			throw new Error('Enter a valid access key.');
+		}
+		const previousAccessKey = this.#accessKey;
+		const sessionId = this.release();
+		if (sessionId !== null) {
+			await deleteSession(sessionId, previousAccessKey).catch(() => undefined);
+		}
+		this.#accessKey = candidate;
+		this.publishAccessState({ status: 'checking', session: null, message: null });
+		await this.checkAccess();
+	}
+
+	async signOut(): Promise<void> {
+		const accessKey = this.#accessKey;
+		const sessionId = this.release();
+		if (sessionId !== null) await deleteSession(sessionId, accessKey).catch(() => undefined);
+		this.#accessKey = null;
+		this.publishAccessState({
+			status: 'sign-in-required',
+			session: null,
+			message: 'Signed out.'
+		});
+	}
+
+	createWebRtcSession(offer: RTCSessionDescriptionInit) {
+		return createSession(offer, this.#accessKey);
+	}
+
+	deleteWebRtcSession(sessionId: string, options: { keepalive?: boolean } = {}): Promise<void> {
+		return deleteSession(sessionId, this.#accessKey, options);
+	}
+
+	async getLogSnapshot() {
+		return this.authenticatedHttp(() => fetchAuthenticatedLogSnapshot(this.#accessKey));
+	}
+
+	async getMetricsSnapshot(): Promise<string> {
+		return this.authenticatedHttp(() => fetchAuthenticatedMetricsSnapshot(this.#accessKey));
+	}
+
+	async openLogStream(url: string, signal: AbortSignal): Promise<Response> {
+		return this.authenticatedHttp(() => fetchAuthenticatedLogStream(url, this.#accessKey, signal));
 	}
 
 	releaseObjectUrl(url: string): void {
@@ -1282,6 +1388,117 @@ export class ControlClient {
 		return result.value.accessKey;
 	}
 
+	async getAccessSession(): Promise<AccessSession> {
+		const command = create(ServerCommandSchema, {
+			action: { case: 'getAccessSession', value: create(GetAccessSessionSchema) }
+		});
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (result.case !== 'accessSessionResult' || !result.value.current) {
+			throw new Error('Server returned an unexpected access session response.');
+		}
+		return accessSession(result.value.current);
+	}
+
+	async listAccessCredentials(): Promise<AccessCredential[]> {
+		const command = create(ServerCommandSchema, {
+			action: {
+				case: 'listAccessCredentials',
+				value: create(ListAccessCredentialsSchema)
+			}
+		});
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (result.case !== 'accessCredentialResult' || result.value.accessKey !== undefined) {
+			throw new Error('Server returned an unexpected access credential response.');
+		}
+		return result.value.credentials.map(accessCredential);
+	}
+
+	async createAccessCredential(input: AccessCredentialInput): Promise<IssuedAccessCredential> {
+		const command = create(ServerCommandSchema, {
+			action: {
+				case: 'createAccessCredential',
+				value: create(CreateAccessCredentialSchema, {
+					name: input.name,
+					description: input.description || undefined,
+					role: protoAccessRole(input.role),
+					expiresAtMs: input.expiresAtMs === undefined ? undefined : BigInt(input.expiresAtMs)
+				})
+			}
+		});
+		return this.issuedAccessCredential(command);
+	}
+
+	async rotateAccessCredential(credentialId: string): Promise<IssuedAccessCredential> {
+		const command = create(ServerCommandSchema, {
+			action: {
+				case: 'rotateAccessCredential',
+				value: create(RotateAccessCredentialSchema, { credentialId })
+			}
+		});
+		return this.issuedAccessCredential(command);
+	}
+
+	async setAccessCredentialEnabled(
+		credentialId: string,
+		enabled: boolean
+	): Promise<AccessCredential> {
+		const command = create(ServerCommandSchema, {
+			action: {
+				case: 'setAccessCredentialEnabled',
+				value: create(SetAccessCredentialEnabledSchema, { credentialId, enabled })
+			}
+		});
+		return this.accessCredentialMutation(command);
+	}
+
+	async revokeAccessCredential(credentialId: string): Promise<AccessCredential> {
+		const command = create(ServerCommandSchema, {
+			action: {
+				case: 'revokeAccessCredential',
+				value: create(RevokeAccessCredentialSchema, { credentialId })
+			}
+		});
+		return this.accessCredentialMutation(command);
+	}
+
+	async listAccessSessions(): Promise<AccessSession[]> {
+		const command = create(ServerCommandSchema, {
+			action: { case: 'listAccessSessions', value: create(ListAccessSessionsSchema) }
+		});
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (result.case !== 'accessSessionResult') {
+			throw new Error('Server returned an unexpected access session list.');
+		}
+		return result.value.sessions.map(accessSession);
+	}
+
+	async revokeAccessSession(sessionId: string): Promise<void> {
+		const command = create(ServerCommandSchema, {
+			action: {
+				case: 'revokeAccessSession',
+				value: create(RevokeAccessSessionSchema, { sessionId })
+			}
+		});
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (result.case !== 'accessSessionResult') {
+			throw new Error('Server did not acknowledge session revocation.');
+		}
+	}
+
+	async listAccessAudit(limit = 100): Promise<AccessAuditEvent[]> {
+		const command = create(ServerCommandSchema, {
+			action: {
+				case: 'listAccessAudit',
+				value: create(ListAccessAuditSchema, { limit })
+			}
+		});
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (result.case !== 'accessAuditResult') {
+			throw new Error('Server returned an unexpected access audit response.');
+		}
+		return result.value.events.map(accessAuditEvent);
+	}
+
 	async getCameraCatalog(): Promise<CameraCatalogInfo> {
 		const command = create(CameraConfigurationCommandSchema, {
 			action: { case: 'getCatalog', value: create(GetCameraCatalogSchema) }
@@ -1603,16 +1820,13 @@ export class ControlClient {
 
 	async close(): Promise<void> {
 		const sessionId = this.release();
-		if (sessionId !== null) await deleteSession(sessionId);
+		if (sessionId !== null) await deleteSession(sessionId, this.#accessKey);
 	}
 
 	closeOnPageHide(): void {
 		const sessionId = this.release();
 		if (sessionId === null) return;
-		const body = new Blob([JSON.stringify({ session_id: sessionId })], {
-			type: 'application/json'
-		});
-		navigator.sendBeacon('/delete', body);
+		void deleteSession(sessionId, this.#accessKey, { keepalive: true }).catch(() => undefined);
 	}
 
 	async queryStoredTimeline(options: StoredTimelineQueryOptions): Promise<StoredTimelineResult> {
@@ -1874,6 +2088,37 @@ export class ControlClient {
 		}
 	}
 
+	private async issuedAccessCredential(
+		command: ReturnType<typeof create<typeof ServerCommandSchema>>
+	): Promise<IssuedAccessCredential> {
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (
+			result.case !== 'accessCredentialResult' ||
+			result.value.credentials.length !== 1 ||
+			!result.value.accessKey
+		) {
+			throw new Error('Server did not return the issued access credential.');
+		}
+		return {
+			credential: accessCredential(result.value.credentials[0]!),
+			accessKey: result.value.accessKey
+		};
+	}
+
+	private async accessCredentialMutation(
+		command: ReturnType<typeof create<typeof ServerCommandSchema>>
+	): Promise<AccessCredential> {
+		const result = await this.request({ case: 'serverCommand', value: command });
+		if (
+			result.case !== 'accessCredentialResult' ||
+			result.value.credentials.length !== 1 ||
+			result.value.accessKey !== undefined
+		) {
+			throw new Error('Server returned an unexpected access credential mutation.');
+		}
+		return accessCredential(result.value.credentials[0]!);
+	}
+
 	private async notificationRequest(
 		command: ReturnType<typeof create<typeof NotificationRuleCommandSchema>>
 	) {
@@ -1963,8 +2208,13 @@ export class ControlClient {
 		control.onmessage = (event) => this.receive(event);
 		reliable.onmessage = (event) => this.receiveData(event);
 		control.onclose = () => {
-			this.publishCapabilities([]);
-			this.failPending('WebRTC control channel closed.');
+			if (peer !== this.#peer) return;
+			const accessKey = this.#accessKey;
+			const sessionId = this.releaseTransport(false);
+			this.handleUnexpectedAccessDisconnect();
+			if (sessionId !== null) {
+				void deleteSession(sessionId, accessKey).catch(() => undefined);
+			}
 		};
 		reliable.onclose = () => this.failData('WebRTC reliable data channel closed.');
 		peer.onconnectionstatechange = () => {
@@ -1972,8 +2222,12 @@ export class ControlClient {
 				peer === this.#peer &&
 				['failed', 'disconnected', 'closed'].includes(peer.connectionState)
 			) {
+				const accessKey = this.#accessKey;
 				const sessionId = this.releaseTransport(false);
-				if (sessionId !== null) void deleteSession(sessionId).catch(() => undefined);
+				this.handleUnexpectedAccessDisconnect();
+				if (sessionId !== null) {
+					void deleteSession(sessionId, accessKey).catch(() => undefined);
+				}
 			}
 		};
 
@@ -1981,9 +2235,9 @@ export class ControlClient {
 			const offer = await peer.createOffer();
 			await peer.setLocalDescription(offer);
 			if (!peer.localDescription) throw new Error('WebRTC offer is unavailable.');
-			const session = await createSession(peer.localDescription);
+			const session = await createSession(peer.localDescription, this.#accessKey);
 			if (peer !== this.#peer) {
-				await deleteSession(session.session_id);
+				await deleteSession(session.session_id, this.#accessKey);
 				return;
 			}
 			this.#sessionId = session.session_id;
@@ -1994,7 +2248,10 @@ export class ControlClient {
 			if (control.readyState !== 'open') await opened;
 		} catch (error) {
 			const sessionId = this.release();
-			if (sessionId !== null) await deleteSession(sessionId).catch(() => undefined);
+			if (sessionId !== null) {
+				await deleteSession(sessionId, this.#accessKey).catch(() => undefined);
+			}
+			this.publishConnectionError(error);
 			throw error;
 		}
 	}
@@ -2021,6 +2278,13 @@ export class ControlClient {
 				}
 				this.#capabilityWaiters = [];
 				this.publishCapabilities(capabilities.capabilityIds);
+				if (capabilities.accessSession) {
+					this.publishAccessState({
+						status: 'authenticated',
+						session: accessSession(capabilities.accessSession),
+						message: null
+					});
+				}
 			}
 			if (envelope.message.value.event.case === 'storedMediaState') {
 				const state = envelope.message.value.event.value;
@@ -2416,21 +2680,81 @@ export class ControlClient {
 		for (const listener of this.#capabilityListeners) listener(this.#capabilityIds);
 	}
 
+	private publishAccessState(
+		state: Omit<AccessConnectionState, 'generation'> & { generation?: number }
+	): void {
+		const authenticatedSessionChanged =
+			state.status === 'authenticated' && state.session?.id !== this.#accessState.session?.id;
+		this.#accessState = {
+			...state,
+			generation:
+				state.generation ?? this.#accessState.generation + (authenticatedSessionChanged ? 1 : 0)
+		};
+		for (const listener of this.#accessStateListeners) listener(this.#accessState);
+	}
+
+	private publishConnectionError(error: unknown): void {
+		if (error instanceof ApiRequestError && error.status === 401) {
+			const hadCredential = this.#accessKey !== null;
+			this.#accessKey = null;
+			this.publishAccessState({
+				status: 'sign-in-required',
+				session: null,
+				message: hadCredential ? 'The access key is invalid, expired, or revoked.' : null
+			});
+			return;
+		}
+		const message =
+			error instanceof ApiRequestError && error.status === 426
+				? 'Remote access requires HTTPS or a configured trusted proxy.'
+				: error instanceof ApiRequestError && error.status === 429
+					? 'Too many failed sign-in attempts. Try again shortly.'
+					: 'KeepPeek could not establish a secure session.';
+		this.publishAccessState({ status: 'error', session: null, message });
+	}
+
+	private async authenticatedHttp<T>(request: () => Promise<T>): Promise<T> {
+		try {
+			return await request();
+		} catch (error) {
+			if (!(error instanceof DOMException && error.name === 'AbortError')) {
+				this.publishConnectionError(error);
+			}
+			throw error;
+		}
+	}
+
+	private handleUnexpectedAccessDisconnect(): void {
+		const remote = this.#accessState.session?.local === false || this.#accessKey !== null;
+		if (remote) this.#accessKey = null;
+		this.publishAccessState({
+			status: remote ? 'sign-in-required' : 'error',
+			session: null,
+			message: remote
+				? 'The remote session expired, was revoked, or disconnected.'
+				: 'The local session disconnected.'
+		});
+	}
+
 	private release(): string | null {
 		return this.releaseTransport(true);
 	}
 
 	private releaseTransport(revokeObjectUrls: boolean): string | null {
 		const sessionId = this.#sessionId;
+		const controlChannel = this.#controlChannel;
+		const reliableChannel = this.#reliableChannel;
+		const unreliableChannel = this.#unreliableChannel;
+		const peer = this.#peer;
 		this.#sessionId = null;
-		this.#controlChannel?.close();
-		this.#reliableChannel?.close();
-		this.#unreliableChannel?.close();
-		this.#peer?.close();
 		this.#controlChannel = null;
 		this.#reliableChannel = null;
 		this.#unreliableChannel = null;
 		this.#peer = null;
+		controlChannel?.close();
+		reliableChannel?.close();
+		unreliableChannel?.close();
+		peer?.close();
 		this.#serverCapabilities = null;
 		for (const waiter of this.#capabilityWaiters) {
 			clearTimeout(waiter.timeout);
@@ -2448,6 +2772,66 @@ export class ControlClient {
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;
 	}
+}
+
+function protoAccessRole(role: AccessRole): ProtoAccessRole {
+	return role === 'administrator' ? ProtoAccessRole.ADMINISTRATOR : ProtoAccessRole.USER;
+}
+
+function accessRole(role: ProtoAccessRole): AccessRole {
+	if (role === ProtoAccessRole.ADMINISTRATOR) return 'administrator';
+	if (role === ProtoAccessRole.USER) return 'user';
+	throw new Error('Server returned an invalid access role.');
+}
+
+function optionalAccessRole(role: ProtoAccessRole): AccessRole | null {
+	return role === ProtoAccessRole.UNSPECIFIED ? null : accessRole(role);
+}
+
+function accessSession(session: ProtoAccessSession): AccessSession {
+	return {
+		id: session.sessionId,
+		principalId: session.principalId,
+		displayName: session.displayName,
+		role: accessRole(session.role),
+		local: session.local,
+		clientClassification: session.clientClassification,
+		createdAtMs: Number(session.createdAtMs),
+		lastActivityAtMs: Number(session.lastActivityAtMs),
+		absoluteExpiresAtMs: Number(session.absoluteExpiresAtMs),
+		credentialExpiresAtMs:
+			session.credentialExpiresAtMs === undefined ? null : Number(session.credentialExpiresAtMs)
+	};
+}
+
+function accessCredential(credential: ProtoAccessCredential): AccessCredential {
+	return {
+		id: credential.credentialId,
+		name: credential.name,
+		description: credential.description ?? null,
+		role: accessRole(credential.role),
+		createdAtMs: Number(credential.createdAtMs),
+		rotatedAtMs: credential.rotatedAtMs === undefined ? null : Number(credential.rotatedAtMs),
+		lastUsedAtMs: credential.lastUsedAtMs === undefined ? null : Number(credential.lastUsedAtMs),
+		expiresAtMs: credential.expiresAtMs === undefined ? null : Number(credential.expiresAtMs),
+		disabled: credential.disabled,
+		revokedAtMs: credential.revokedAtMs === undefined ? null : Number(credential.revokedAtMs),
+		revision: credential.revision,
+		initialAccessKeyPending: credential.initialAccessKeyPending
+	};
+}
+
+function accessAuditEvent(event: ProtoAccessAuditEvent): AccessAuditEvent {
+	return {
+		id: event.eventId,
+		timestampMs: Number(event.timestampMs),
+		principalId: event.principalId ?? null,
+		role: optionalAccessRole(event.role),
+		action: event.action,
+		targetId: event.targetId ?? null,
+		result: event.result,
+		clientClassification: event.clientClassification
+	};
 }
 
 type CompletedStoredObject = {

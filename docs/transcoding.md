@@ -332,9 +332,10 @@ codec or decoder configuration inside one recording fragment.
 
 ## Security and resource controls
 
-The transcoder authenticates with a dedicated access key. The current pre-1.0 API gives configured
-keys equal rights; a future authorization layer should separate media-read and media-publish
-permissions and restrict allowed source, stream, codec, resolution, and bitrate profiles.
+The transcoder authenticates with a dedicated named credential. The fixed Administrator/User
+policy is enforced before publication commands; per-source, stream, codec, resolution, and bitrate
+credential scopes are not implemented. Use a separate credential for each transcoder and revoke it
+when the service is removed.
 
 KeepPeek validates publication capability, input ownership, lineage, variant uniqueness, codec and
 format, nominal bitrate, quality rank, decoder configuration, frame and fragment sizes, timestamp

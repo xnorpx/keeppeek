@@ -2,16 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { accessEvidence } from '$lib/access';
 
 describe('access evidence', () => {
-	it('keeps identity records and enforcement unavailable', () => {
+	it('reports the server-authoritative identity runtime', () => {
 		expect(accessEvidence()).toMatchObject({
 			identityCapability: 'keeppeek.identity.v1',
-			identityRuntime: 'unavailable',
-			enforcementEvidence: null,
+			identityRuntime: 'available',
+			enforcementEvidence: 'server-authoritative',
 			people: null,
-			roles: null,
-			sessions: null,
-			tokens: null,
-			auditTrail: null
+			roles: 'administrator-user',
+			sessions: 'available',
+			tokens: 'available',
+			auditTrail: 'available'
 		});
 	});
 
@@ -19,7 +19,7 @@ describe('access evidence', () => {
 		const evidence = accessEvidence();
 
 		expect(evidence.targetRoles).toEqual(['Administrator', 'User']);
-		expect(evidence.permissions.filter((permission) => permission.user)).toHaveLength(5);
+		expect(evidence.permissions.filter((permission) => permission.user)).toHaveLength(4);
 		expect(
 			evidence.permissions
 				.filter((permission) => permission.kind === 'configuration')
@@ -27,11 +27,11 @@ describe('access evidence', () => {
 		).toBe(true);
 	});
 
-	it('describes the implemented loopback and shared-key HTTP boundary', () => {
-		expect(accessEvidence().documentedPreIdentityModel).toEqual({
-			loopback: 'administrator-without-sign-in',
-			remote: 'shared-bearer-key',
-			keyScope: 'all-documented-endpoints',
+	it('describes the enforced local and remote boundary', () => {
+		expect(accessEvidence().baselineModel).toEqual({
+			local: 'administrator-without-sign-in',
+			remote: 'named-bearer-credential',
+			roles: 'administrator-user',
 			implementedInCurrentServer: true
 		});
 	});

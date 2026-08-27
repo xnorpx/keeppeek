@@ -5,6 +5,7 @@
 	import { useControlClient } from '$lib/control-context';
 	import FirstRunEmptyStates from '$lib/components/FirstRunEmptyStates.svelte';
 	import FirstRunSetupPanel from '$lib/components/FirstRunSetupPanel.svelte';
+	import InitialAccessKeyClaim from '$lib/components/InitialAccessKeyClaim.svelte';
 	import { detectedBrowserTimeZone } from '$lib/first-run';
 	import type { StorageWriteProbe } from '$lib/first-run';
 	import type { SanitizedConfig, ServerHealthResponse } from '$lib/types';
@@ -20,6 +21,7 @@
 	let error = $state<string | null>(null);
 	let storageProbe = $state.raw<StorageWriteProbe | null>(null);
 	let probingStorage = $state(false);
+	let initialAccessKeyPending = $state(false);
 
 	onMount(() => {
 		timeZone = detectedBrowserTimeZone();
@@ -30,12 +32,16 @@
 		loading = true;
 		error = null;
 		try {
-			const [nextConfig, nextHealth] = await Promise.all([
+			const [nextConfig, nextHealth, credentials] = await Promise.all([
 				controlClient.getRuntimeConfiguration(),
-				controlClient.getHealth()
+				controlClient.getHealth(),
+				controlClient.listAccessCredentials()
 			]);
 			config = nextConfig;
 			health = nextHealth;
+			initialAccessKeyPending = credentials.some(
+				(credential) => credential.initialAccessKeyPending
+			);
 			await probeStorage(nextConfig.storage.medium_term_path);
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'First-run evidence could not be loaded.';
@@ -61,6 +67,12 @@
 	function continueSetup(): void {
 		void goto(config?.camera_count ? resolve('/cameras') : resolve('/cameras/new'));
 	}
+
+	async function claimInitialAccessKey(): Promise<string> {
+		const accessKey = await controlClient.revealAccessKey();
+		initialAccessKeyPending = false;
+		return accessKey;
+	}
 </script>
 
 <svelte:head>
@@ -73,8 +85,7 @@
 			<p class="font-mono text-2xs tracking-caps text-primary-soft">FIRST RUN · LOCAL ONLY</p>
 			<h1 class="mt-1 text-2xl font-semibold">Start with evidence</h1>
 			<p class="mt-1 max-w-3xl text-sm leading-5 text-text-muted">
-				Storage and time stay local. Remote sign-in is optional and requires server identity
-				management.
+				Storage and time stay local. Remote readiness requires a retrieved Administrator credential.
 			</p>
 		</div>
 		{#if health}
@@ -126,7 +137,10 @@
 				onretryprobe={() => void probeStorage(config!.storage.medium_term_path)}
 				onstart={continueSetup}
 			/>
-			<FirstRunEmptyStates cameraCount={config.camera_count} />
+			<div class="space-y-4">
+				<InitialAccessKeyClaim pending={initialAccessKeyPending} onclaim={claimInitialAccessKey} />
+				<FirstRunEmptyStates cameraCount={config.camera_count} />
+			</div>
 		</div>
 	{/if}
 </div>

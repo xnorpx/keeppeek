@@ -9,32 +9,79 @@ export interface LogStreamCallbacks {
 	onreplaytruncated: () => void;
 }
 
-type EventSourceFactory = (url: string) => EventSource;
+export type LogStreamOpener = (url: string, signal: AbortSignal) => Promise<Response>;
+
+type SseEvent = {
+	event: string;
+	data: string;
+	id: string | null;
+};
+
+const reconnectDelayMs = 1_000;
 
 export class ServerLogStream {
-	private source: EventSource | null = null;
+	private controller: AbortController | null = null;
+	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private generation = 0;
+	private running = false;
+	private after: number | undefined;
+	private tail = 200;
 
 	constructor(
 		private readonly callbacks: LogStreamCallbacks,
-		private readonly createEventSource: EventSourceFactory = (url) => new EventSource(url)
+		private readonly openStream: LogStreamOpener = openLocalLogStream
 	) {}
 
 	start(after?: number, tail = 200): void {
 		this.close(false);
-		const params = new URLSearchParams({ tail: String(tail) });
-		if (after !== undefined) params.set('after', String(after));
+		this.running = true;
+		this.after = after;
+		this.tail = tail;
 		this.callbacks.onstate('connecting');
-		const source = this.createEventSource(`/logs?${params.toString()}`);
-		this.source = source;
-		source.onopen = () => this.callbacks.onstate('connected');
-		source.onerror = () => this.callbacks.onstate('reconnecting');
-		source.addEventListener('log', (event) => {
-			const entry = parseServerLogEntry((event as MessageEvent<string>).data);
+		void this.connect(this.generation);
+	}
+
+	close(reportState = true): void {
+		this.running = false;
+		this.generation += 1;
+		this.controller?.abort();
+		this.controller = null;
+		if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+		this.reconnectTimer = null;
+		if (reportState) this.callbacks.onstate('closed');
+	}
+
+	private async connect(generation: number): Promise<void> {
+		const params = new URLSearchParams({ tail: String(this.tail) });
+		if (this.after !== undefined) params.set('after', String(this.after));
+		const controller = new AbortController();
+		this.controller = controller;
+		try {
+			const response = await this.openStream(`/logs?${params.toString()}`, controller.signal);
+			if (!this.current(generation)) return;
+			if (!response.ok) throw new Error(`Server log stream failed with HTTP ${response.status}.`);
+			if (!response.body) throw new Error('Server log stream has no response body.');
+			this.callbacks.onstate('connected');
+			await consumeSse(response.body, controller.signal, (event) => this.dispatch(event));
+			if (this.current(generation)) this.reconnect(generation);
+		} catch (error) {
+			if (this.current(generation) && !isAbortError(error)) this.reconnect(generation);
+		}
+	}
+
+	private dispatch(event: SseEvent): void {
+		if (event.id !== null) {
+			const sequence = Number(event.id);
+			if (Number.isSafeInteger(sequence) && sequence >= 0) this.after = sequence;
+		}
+		if (event.event === 'log') {
+			const entry = parseServerLogEntry(event.data);
 			if (entry) this.callbacks.onentry(entry);
-		});
-		source.addEventListener('gap', (event) => {
+			return;
+		}
+		if (event.event === 'gap') {
 			try {
-				const data: unknown = JSON.parse((event as MessageEvent<string>).data);
+				const data: unknown = JSON.parse(event.data);
 				if (
 					data &&
 					typeof data === 'object' &&
@@ -43,17 +90,81 @@ export class ServerLogStream {
 					this.callbacks.ongap((data as { dropped: number }).dropped);
 				}
 			} catch {
-				// Ignore malformed control events and keep the stream alive.
+				return;
 			}
-		});
-		source.addEventListener('replay-truncated', () => this.callbacks.onreplaytruncated());
+			return;
+		}
+		if (event.event === 'replay-truncated') this.callbacks.onreplaytruncated();
 	}
 
-	close(reportState = true): void {
-		this.source?.close();
-		this.source = null;
-		if (reportState) this.callbacks.onstate('closed');
+	private reconnect(generation: number): void {
+		this.callbacks.onstate('reconnecting');
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = null;
+			if (this.current(generation)) void this.connect(generation);
+		}, reconnectDelayMs);
 	}
+
+	private current(generation: number): boolean {
+		return this.running && this.generation === generation;
+	}
+}
+
+async function openLocalLogStream(url: string, signal: AbortSignal): Promise<Response> {
+	return fetch(url, {
+		headers: { Accept: 'text/event-stream' },
+		cache: 'no-store',
+		signal
+	});
+}
+
+async function consumeSse(
+	body: ReadableStream<Uint8Array>,
+	signal: AbortSignal,
+	onEvent: (event: SseEvent) => void
+): Promise<void> {
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	let pending = '';
+	try {
+		while (!signal.aborted) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			pending += decoder.decode(value, { stream: true });
+			let boundary = eventBoundary(pending);
+			while (boundary) {
+				const frame = pending.slice(0, boundary.index);
+				pending = pending.slice(boundary.index + boundary.length);
+				const event = parseSseEvent(frame);
+				if (event) onEvent(event);
+				boundary = eventBoundary(pending);
+			}
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+function eventBoundary(value: string): { index: number; length: number } | null {
+	const match = /\r?\n\r?\n/.exec(value);
+	return match ? { index: match.index, length: match[0].length } : null;
+}
+
+function parseSseEvent(frame: string): SseEvent | null {
+	let event = 'message';
+	let id: string | null = null;
+	const data: string[] = [];
+	for (const line of frame.split(/\r?\n/)) {
+		if (line.startsWith(':')) continue;
+		const separator = line.indexOf(':');
+		const field = separator === -1 ? line : line.slice(0, separator);
+		const value = separator === -1 ? '' : line.slice(separator + 1).replace(/^ /, '');
+		if (field === 'event') event = value;
+		else if (field === 'data') data.push(value);
+		else if (field === 'id' && !value.includes('\0')) id = value;
+	}
+	if (data.length === 0) return null;
+	return { event, data: data.join('\n'), id };
 }
 
 function parseServerLogEntry(data: string): ServerLogEntry | null {
@@ -76,4 +187,8 @@ function parseServerLogEntry(data: string): ServerLogEntry | null {
 	} catch {
 		return null;
 	}
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof DOMException && error.name === 'AbortError';
 }

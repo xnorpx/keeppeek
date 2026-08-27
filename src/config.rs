@@ -1,5 +1,6 @@
 pub use crate::access::AccessKey;
-use crate::cameras::CameraConfig;
+use crate::{access, cameras::CameraConfig};
+use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -66,6 +67,9 @@ pub struct Config {
     pub access_key: AccessKey,
 
     #[serde(default)]
+    pub access: AccessConfig,
+
+    #[serde(default)]
     pub direct_card: DirectCardConfig,
 
     #[serde(default)]
@@ -96,6 +100,93 @@ impl Config {
             .unwrap_or(resolved)
             .to_owned()
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AccessConfig {
+    #[serde(default = "access::default_local_networks")]
+    pub local_networks: Vec<IpNet>,
+    #[serde(default)]
+    pub trusted_proxies: Vec<IpNet>,
+    #[serde(default = "default_require_secure_remote")]
+    pub require_secure_remote: bool,
+    #[serde(default = "default_failed_authentication_limit")]
+    pub failed_authentication_limit: u32,
+    #[serde(default = "default_failed_authentication_window_secs")]
+    pub failed_authentication_window_secs: u64,
+    #[serde(default = "default_session_idle_timeout_secs")]
+    pub session_idle_timeout_secs: u64,
+    #[serde(default = "default_session_absolute_timeout_secs")]
+    pub session_absolute_timeout_secs: u64,
+    #[serde(default = "default_max_sessions_per_principal")]
+    pub max_sessions_per_principal: u32,
+    #[serde(default = "default_max_sessions_per_address")]
+    pub max_sessions_per_address: u32,
+}
+
+impl AccessConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.local_networks.len() > 64 || self.trusted_proxies.len() > 64 {
+            anyhow::bail!("access network lists may contain at most 64 CIDRs each");
+        }
+        if self.failed_authentication_limit == 0 || self.failed_authentication_window_secs == 0 {
+            anyhow::bail!("failed authentication rate limits must be nonzero");
+        }
+        if self.session_idle_timeout_secs == 0 || self.session_absolute_timeout_secs == 0 {
+            anyhow::bail!("access session timeouts must be nonzero");
+        }
+        if self.session_idle_timeout_secs > self.session_absolute_timeout_secs {
+            anyhow::bail!("access session idle timeout cannot exceed its absolute timeout");
+        }
+        if self.max_sessions_per_principal == 0 || self.max_sessions_per_address == 0 {
+            anyhow::bail!("access session limits must be nonzero");
+        }
+        Ok(())
+    }
+}
+
+impl Default for AccessConfig {
+    fn default() -> Self {
+        Self {
+            local_networks: access::default_local_networks(),
+            trusted_proxies: Vec::new(),
+            require_secure_remote: default_require_secure_remote(),
+            failed_authentication_limit: default_failed_authentication_limit(),
+            failed_authentication_window_secs: default_failed_authentication_window_secs(),
+            session_idle_timeout_secs: default_session_idle_timeout_secs(),
+            session_absolute_timeout_secs: default_session_absolute_timeout_secs(),
+            max_sessions_per_principal: default_max_sessions_per_principal(),
+            max_sessions_per_address: default_max_sessions_per_address(),
+        }
+    }
+}
+
+const fn default_require_secure_remote() -> bool {
+    true
+}
+
+const fn default_failed_authentication_limit() -> u32 {
+    5
+}
+
+const fn default_failed_authentication_window_secs() -> u64 {
+    60
+}
+
+const fn default_session_idle_timeout_secs() -> u64 {
+    30 * 60
+}
+
+const fn default_session_absolute_timeout_secs() -> u64 {
+    24 * 60 * 60
+}
+
+const fn default_max_sessions_per_principal() -> u32 {
+    64
+}
+
+const fn default_max_sessions_per_address() -> u32 {
+    128
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -598,6 +689,7 @@ impl Default for Config {
             host: default_host(),
             port: default_port(),
             access_key: AccessKey::unset(),
+            access: AccessConfig::default(),
             direct_card: DirectCardConfig::default(),
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
@@ -968,6 +1060,7 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     } else if !access_key_is_reference || access_key_arg.is_some() {
         store_access_key_secret(&path, &mut secrets, cfg.access_key)?;
     }
+    cfg.access.validate()?;
     cfg.direct_card.validate()?;
 
     let default_recordings = config_directory
@@ -1271,7 +1364,8 @@ fn camera_defaults_from_table(
 fn is_reserved_section(namespace: &str) -> bool {
     matches!(
         namespace,
-        "storage"
+        "access"
+            | "storage"
             | "battery_wake"
             | "direct_card"
             | "homekit"
@@ -1819,6 +1913,28 @@ mod tests {
         assert_eq!(cameras.len(), 1);
         assert_eq!(cameras["cameras"].len(), 1);
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn access_config_is_not_treated_as_camera_configuration() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-access-config-{}", uuid::Uuid::new_v4()));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [access]
+                local_networks = ["127.0.0.0/8", "192.168.1.0/24"]
+                trusted_proxies = ["127.0.0.1/32"]
+                require_secure_remote = true
+                failed_authentication_limit = 5
+            "#,
+        )
+        .unwrap();
+
+        let cameras = load_cameras(&path).unwrap();
+        assert!(cameras.is_empty());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

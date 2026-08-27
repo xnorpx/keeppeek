@@ -100,7 +100,7 @@ image = { version = "*", default-features = false, features = ["jpeg"] }
 include_dir = "0.7.4"
 mimalloc = { version = "*" }
 mp4 = { path = "crates/mp4" }
-ipnet = "2.12.1"
+ipnet = { version = "2.12.1", features = ["serde"] }
 network-interface = "2.0.5"
 polling = "3.11.0"
 pollster = "1.0.1"
