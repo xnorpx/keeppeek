@@ -52,6 +52,10 @@ const workflow = await readFile(resolve('..', '.github/workflows/visual-regressi
 const localPreviewHtml = await readFile(resolve('visual-harness/local-preview.html'), 'utf8');
 const localPreviewCss = await readFile(resolve('visual-harness/local-preview.css'), 'utf8');
 const storybookReadiness = await readFile(resolve('visual-harness/storybook-readiness.ts'), 'utf8');
+const storybookPreviewEntry = await readFile(
+	resolve('visual-harness/.storybook/preview.ts'),
+	'utf8'
+);
 
 if (
 	!localPreviewHtml.includes('data-visual-fixture-notice') ||
@@ -71,6 +75,18 @@ if (
 	!storybookReadiness.includes('await storybookPreview.ready()')
 ) {
 	throw new Error('Loki story extraction must wait for the Storybook index to be ready.');
+}
+if (
+	!storybookReadiness.includes('registerPendingPromise') ||
+	!storybookReadiness.includes("Object.defineProperty(host, '__STORYBOOK_PREVIEW__'") ||
+	!storybookReadiness.includes("Object.defineProperty(preview, 'storyStore'")
+) {
+	throw new Error(
+		'The readiness guard must survive preview assignment order and hold Loki page load until the index is ready.'
+	);
+}
+if (!storybookPreviewEntry.includes('installStorybookReadinessGuard(window')) {
+	throw new Error('The Storybook preview must install the Loki readiness guard on window.');
 }
 
 for (const skippedStory of ['Foundation/Capability Gate Unsupported', 'Demos/Peek History']) {
