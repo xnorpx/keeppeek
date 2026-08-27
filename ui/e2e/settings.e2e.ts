@@ -49,6 +49,7 @@ test('uses a searchable nine-section mobile administration index with focused ow
 		}
 	});
 	await mockControlPeer(page, {
+		capabilityIds: ['keeppeek.identity.v1'],
 		runtimeConfiguration: {
 			host: '0.0.0.0',
 			port: 3000,
@@ -101,15 +102,14 @@ test('uses a searchable nine-section mobile administration index with focused ow
 	await expect(page.locator('[data-mobile-settings-focus]')).toBeInViewport();
 	const mobileAccess = page.locator('[data-mobile-access]');
 	await expect(mobileAccess).toBeVisible();
-	await expect(mobileAccess).toContainText('Identity runtime unavailable');
-	await expect(mobileAccess).toContainText('Identity directory unavailable');
-	await expect(mobileAccess).toContainText('Token registry unavailable');
-	await expect(page.getByRole('button', { name: 'Reveal key' })).toHaveCount(1);
-	await expect(mobileAccess.getByRole('button', { name: 'Reveal key' })).toBeEnabled();
+	await expect(mobileAccess).toContainText('Access policy active');
+	await expect(mobileAccess).toContainText('Access credentials');
+	await expect(mobileAccess).toContainText('Active sessions');
+	await expect(mobileAccess.getByRole('button', { name: 'Retrieve initial key' })).toBeEnabled();
 	await expect(page.locator('[data-shell-mobile-nav]')).toHaveCount(0);
-	await expect(page.locator('[data-mobile-settings-action-bar]')).toContainText(
-		'Server update required · keeppeek.identity.v1'
-	);
+	await expect(
+		page.locator('[data-mobile-settings-action-bar]').getByRole('button', { name: 'New token' })
+	).toBeEnabled();
 	await expect(page.getByRole('region', { name: 'Storage & retention' })).toBeHidden();
 
 	await page.getByRole('link', { name: 'Back to settings sections' }).click();
@@ -129,7 +129,7 @@ test('uses a searchable nine-section mobile administration index with focused ow
 		.toBe(true);
 });
 
-test('reveals and rotates the shared access key only after explicit local actions', async ({
+test('retrieves the initial key once and rotates it through credential management', async ({
 	page
 }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
@@ -155,23 +155,18 @@ test('reveals and rotates the shared access key only after explicit local action
 		access.getByText('3d813cbb-47fb-4a95-953d-1339b8ff7f54', { exact: true })
 	).toHaveCount(0);
 
-	await access.getByRole('button', { name: 'Reveal key' }).click();
+	await access.getByRole('button', { name: 'Retrieve initial key' }).click();
 	await expect(
 		access.getByText('550e8400-e29b-41d4-a716-446655440000', { exact: true })
 	).toBeVisible();
 	expect(controls.accessKeyReveals).toBe(1);
 
-	await access.getByRole('button', { name: 'Rotate key' }).click();
-	await expect(access.getByRole('button', { name: 'Confirm rotation' })).toBeVisible();
-	expect(controls.accessKeyRotations).toBe(0);
-	await access.getByRole('button', { name: 'Confirm rotation' }).click();
+	await access.getByRole('button', { name: 'Rotate credential' }).click();
 	await expect(
 		access.getByText('3d813cbb-47fb-4a95-953d-1339b8ff7f54', { exact: true })
 	).toBeVisible();
-	expect(controls.accessKeyRotations).toBe(1);
-	await expect(access).toContainText(
-		'The shared bootstrap key above is the only implemented key control.'
-	);
+	expect(controls.accessCredentialRotations).toBe(1);
+	await expect(access).toContainText('Security audit');
 });
 
 test('Board 20 uses real theme, runtime, restart, and log evidence without inventing system controls', async ({

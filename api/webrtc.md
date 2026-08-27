@@ -57,6 +57,25 @@ does not respond to `Notification`s.
 
 The initial `ServerCapabilities` notification is sent when the connection is established over the `control-channel`.
 
+`POST /create` authenticates and allocates the WebRTC session before this channel can open.
+`ServerCapabilities.access_session` then reports the bound principal ID, display name,
+Administrator/User role, local classification, non-secret classification reason, session times,
+and optional credential expiry. It never reports a credential value or verifier.
+
+The server rechecks session existence, idle/absolute expiry, credential revision/status/expiry,
+and the central operation-to-role policy before each request. Media subscribe and unsubscribe are
+checked before their internal WebRTC dispatch, as are commands forwarded to the server handler. A
+rejected User operation returns `ERROR_CODE_REJECTED`; hiding the corresponding UI is not the
+authorization boundary.
+
+`ServerCommand` includes Administrator credential lifecycle, active-session management, and audit
+queries. `CreateAccessCredential` and `RotateAccessCredential` return `AccessCredentialResult`
+with one raw `access_key`; that field is absent from list, enable/disable, and revoke results.
+`GetAccessSession` is available to both roles. Credential listing and mutation,
+`ListAccessSessions`, `RevokeAccessSession`, and `ListAccessAudit` require Administrator. The legacy
+`GetAccessKey` is a one-time local claim for the first-run Administrator credential;
+`RotateAccessKey` remains its compatibility rotation operation.
+
 ## Capabilities and events
 
 `ServerCapabilities` is a complete snapshot for its receiving connection, not a delta. The server

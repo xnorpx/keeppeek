@@ -84,6 +84,12 @@
 		};
 	}
 
+	function beginMobileAccessCredential(): void {
+		document
+			.querySelector<HTMLButtonElement>('[data-mobile-access] [data-new-access-credential]')
+			?.click();
+	}
+
 	function runtimeSettingsFormFromConfig(config: SanitizedConfig): RuntimeSettingsForm {
 		return {
 			host: config.host,
@@ -484,11 +490,13 @@
 
 			<div class={mobileSectionClass('access')}>
 				<MobileAccessSection
+					controller={controlClient}
 					onrevealaccesskey={() => controlClient.revealAccessKey()}
 					onrotateaccesskey={() => controlClient.rotateAccessKey()}
 				/>
 				<div class="hidden md:block">
 					<AccessSection
+						controller={controlClient}
 						onrevealaccesskey={() => controlClient.revealAccessKey()}
 						onrotateaccesskey={() => controlClient.rotateAccessKey()}
 					/>
@@ -496,7 +504,11 @@
 			</div>
 
 			{#if mobileFocus?.id === 'access'}
-				<MobileSettingsActionBar action="New token" capability="keeppeek.identity.v1" />
+				<MobileSettingsActionBar
+					action="New token"
+					capability="keeppeek.identity.v1"
+					onaction={beginMobileAccessCredential}
+				/>
 			{/if}
 
 			<div class={mobileSectionClass('integrations')}>

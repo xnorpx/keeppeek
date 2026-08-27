@@ -3,6 +3,7 @@
 use std::{path::Path, sync::Arc};
 
 use crate::{
+    access::AccessManager,
     api::{CameraId, CameraLifecycle, CameraStatus},
     battery_wake::BatteryWakeService,
     camera_database::CameraDatabase,
@@ -161,6 +162,7 @@ pub fn run(
         recording_demand,
         webrtc.clone(),
     )
+    .with_access_manager(AccessManager::open(config_path, cfg.access_key)?)
     .with_camera_config_path(config_path.to_path_buf())
     .with_camera_database(camera_database)
     .with_logging(logging)

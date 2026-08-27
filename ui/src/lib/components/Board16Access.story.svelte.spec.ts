@@ -62,8 +62,8 @@ describe('Board 16 Access and Roles story', () => {
 			.toBeVisible();
 		await expect.element(page.getByText('AUDIT TRAIL UNAVAILABLE', { exact: true })).toBeVisible();
 		expect(frame!.querySelectorAll('[aria-label="Administrator target allows"]')).toHaveLength(8);
-		expect(frame!.querySelectorAll('[aria-label="User target allows"]')).toHaveLength(5);
-		expect(frame!.querySelectorAll('[aria-label="User target excludes"]')).toHaveLength(3);
+		expect(frame!.querySelectorAll('[aria-label="User target allows"]')).toHaveLength(4);
+		expect(frame!.querySelectorAll('[aria-label="User target excludes"]')).toHaveLength(4);
 		for (const absent of [
 			'Marcus',
 			'Anna',

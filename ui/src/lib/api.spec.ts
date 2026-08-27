@@ -52,6 +52,20 @@ describe('KeepPeek API client', () => {
 		});
 	});
 
+	it('sends an in-memory bearer without reflecting response bodies into errors', async () => {
+		const accessKey = '550e8400-e29b-41d4-a716-446655440000';
+		const fetchMock = vi.fn(async () => new Response(accessKey, { status: 401 }));
+		vi.stubGlobal('fetch', fetchMock);
+
+		const failure = await fetchMetricsSnapshot(accessKey).catch((error: unknown) => error);
+
+		expect(fetchMock).toHaveBeenCalledWith('/metrics', {
+			headers: { Accept: 'text/plain', Authorization: `Bearer ${accessKey}` },
+			cache: 'no-store'
+		});
+		expect(String(failure)).not.toContain(accessKey);
+	});
+
 	it('checks canonical metrics at a changed server origin without requiring CORS', async () => {
 		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
 		vi.stubGlobal('window', { location: { origin: 'http://127.0.0.1:4174' } });

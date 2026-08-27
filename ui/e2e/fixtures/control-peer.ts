@@ -3,6 +3,10 @@ import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { AnySchema, durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Page } from '@playwright/test';
 import {
+	AccessAuditEventSchema,
+	AccessAuditResultSchema,
+	AccessCredentialResultSchema,
+	AccessCredentialSchema,
 	CameraDiscoveryResultSchema,
 	CameraCatalogCameraSchema,
 	CameraCatalogInfoSchema,
@@ -23,6 +27,9 @@ import {
 	CameraHealthSnapshotSchema,
 	CameraHealthDimensionsSnapshotSchema,
 	AccessKeyResultSchema,
+	AccessRole as ProtoAccessRole,
+	AccessSessionResultSchema,
+	AccessSessionSchema,
 	CatalogHealthSnapshotSchema,
 	CameraTransport as ProtoCameraTransport,
 	ControlEnvelopeSchema,
@@ -264,6 +271,11 @@ export type ControlRequests = {
 	restarts: number;
 	accessKeyReveals: number;
 	accessKeyRotations: number;
+	accessCredentialCreates: number;
+	accessCredentialRotations: number;
+	accessCredentialRevocations: number;
+	accessSessionRevocations: number;
+	createAuthorizations: Array<string | null>;
 	discoveryNetworks: string[][];
 	discoveryCancelIds: string[];
 	discoveryPolls: number;
@@ -295,6 +307,10 @@ export type ControlRequests = {
 export type MockControlPeerOptions = {
 	accessKey?: string;
 	rotatedAccessKey?: string;
+	initialAccessKeyPending?: boolean;
+	accessRole?: 'administrator' | 'user';
+	accessLocal?: boolean;
+	requiredAccessKey?: string;
 	reportedManufacturer?: string;
 	discoveredCameras?: readonly DiscoveredCameraSettings[];
 	discoveryPartialCameras?: readonly DiscoveredCameraSettings[];
@@ -496,6 +512,11 @@ export async function mockControlPeer(
 		restarts: 0,
 		accessKeyReveals: 0,
 		accessKeyRotations: 0,
+		accessCredentialCreates: 0,
+		accessCredentialRotations: 0,
+		accessCredentialRevocations: 0,
+		accessSessionRevocations: 0,
+		createAuthorizations: [],
 		discoveryNetworks: [],
 		discoveryCancelIds: [],
 		discoveryPolls: 0,
@@ -547,12 +568,55 @@ export async function mockControlPeer(
 		options.notificationInbox ?? { items: [], unreadCount: 0n }
 	);
 	const notificationHistory = structuredClone(options.notificationHistory ?? []);
+	const accessRole =
+		options.accessRole === 'user' ? ProtoAccessRole.USER : ProtoAccessRole.ADMINISTRATOR;
+	let accessCredentials = [
+		create(AccessCredentialSchema, {
+			credentialId: '550e8400-e29b-41d4-a716-446655440001',
+			name: 'Initial Administrator',
+			description: 'First-run remote Administrator credential',
+			role: ProtoAccessRole.ADMINISTRATOR,
+			createdAtMs: 1_777_000_000_000n,
+			revision: 1n,
+			initialAccessKeyPending: options.initialAccessKeyPending ?? true
+		})
+	];
+	let accessSessions = [
+		create(AccessSessionSchema, {
+			sessionId: 'playwright-control',
+			principalId:
+				options.accessLocal === false
+					? '550e8400-e29b-41d4-a716-446655440001'
+					: 'local-administrator',
+			displayName: options.accessLocal === false ? 'Remote browser' : 'Local Administrator',
+			role: accessRole,
+			local: options.accessLocal !== false,
+			clientClassification: options.accessLocal === false ? 'direct_remote' : 'direct_local',
+			createdAtMs: 1_777_000_000_000n,
+			lastActivityAtMs: 1_777_000_010_000n,
+			absoluteExpiresAtMs: 1_777_086_400_000n
+		})
+	];
+	const accessAudit = [
+		create(AccessAuditEventSchema, {
+			eventId: '550e8400-e29b-41d4-a716-446655440099',
+			timestampMs: 1_777_000_010_000n,
+			principalId: 'local-administrator',
+			role: ProtoAccessRole.ADMINISTRATOR,
+			action: 'session_create',
+			targetId: 'playwright-control',
+			result: 'success',
+			clientClassification: 'direct_local'
+		})
+	];
 	await page.exposeFunction('takeKeepPeekData', () => pendingDataMessages.splice(0));
 	await page.exposeFunction('getKeepPeekCapabilities', () =>
 		encodedCapabilities(
 			options.cameras ?? [],
 			options.storedRanges ?? [],
-			options.capabilityIds ?? []
+			options.capabilityIds ?? [],
+			accessRole,
+			options.accessLocal !== false
 		)
 	);
 	await page.exposeFunction('handleKeepPeekControl', async (payload: number[]) => {
@@ -1391,6 +1455,151 @@ export async function mockControlPeer(
 		}
 		if (
 			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'getAccessSession'
+		) {
+			return encodedOk(request.requestId, {
+				case: 'accessSessionResult',
+				value: create(AccessSessionResultSchema, { current: accessSessions[0], sessions: [] })
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'listAccessCredentials'
+		) {
+			return encodedOk(request.requestId, {
+				case: 'accessCredentialResult',
+				value: create(AccessCredentialResultSchema, { credentials: accessCredentials })
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'createAccessCredential'
+		) {
+			requests.accessCredentialCreates += 1;
+			const action = request.command.value.action.value;
+			const credential = create(AccessCredentialSchema, {
+				credentialId: `550e8400-e29b-41d4-a716-${String(446655440001 + requests.accessCredentialCreates)}`,
+				name: action.name,
+				description: action.description,
+				role: action.role,
+				createdAtMs: 1_777_000_020_000n,
+				expiresAtMs: action.expiresAtMs,
+				revision: 1n
+			});
+			accessCredentials = [...accessCredentials, credential];
+			return encodedOk(request.requestId, {
+				case: 'accessCredentialResult',
+				value: create(AccessCredentialResultSchema, {
+					credentials: [credential],
+					accessKey: '550e8400-e29b-41d4-a716-446655440002'
+				})
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'rotateAccessCredential'
+		) {
+			requests.accessCredentialRotations += 1;
+			const credentialId = request.command.value.action.value.credentialId;
+			const index = accessCredentials.findIndex(
+				(credential) => credential.credentialId === credentialId
+			);
+			const current = accessCredentials[index];
+			if (!current) return encodedError(request.requestId, 'credential not found');
+			const credential = create(AccessCredentialSchema, {
+				...current,
+				rotatedAtMs: 1_777_000_030_000n,
+				revision: current.revision + 1n,
+				initialAccessKeyPending: false
+			});
+			accessCredentials[index] = credential;
+			return encodedOk(request.requestId, {
+				case: 'accessCredentialResult',
+				value: create(AccessCredentialResultSchema, {
+					credentials: [credential],
+					accessKey: options.rotatedAccessKey ?? '3d813cbb-47fb-4a95-953d-1339b8ff7f54'
+				})
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'setAccessCredentialEnabled'
+		) {
+			const action = request.command.value.action.value;
+			const index = accessCredentials.findIndex(
+				(credential) => credential.credentialId === action.credentialId
+			);
+			const current = accessCredentials[index];
+			if (!current) return encodedError(request.requestId, 'credential not found');
+			const credential = create(AccessCredentialSchema, {
+				...current,
+				disabled: !action.enabled,
+				revision: current.revision + 1n
+			});
+			accessCredentials[index] = credential;
+			return encodedOk(request.requestId, {
+				case: 'accessCredentialResult',
+				value: create(AccessCredentialResultSchema, { credentials: [credential] })
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'revokeAccessCredential'
+		) {
+			requests.accessCredentialRevocations += 1;
+			const credentialId = request.command.value.action.value.credentialId;
+			const index = accessCredentials.findIndex(
+				(credential) => credential.credentialId === credentialId
+			);
+			const current = accessCredentials[index];
+			if (!current) return encodedError(request.requestId, 'credential not found');
+			const credential = create(AccessCredentialSchema, {
+				...current,
+				revokedAtMs: 1_777_000_040_000n,
+				revision: current.revision + 1n
+			});
+			accessCredentials[index] = credential;
+			return encodedOk(request.requestId, {
+				case: 'accessCredentialResult',
+				value: create(AccessCredentialResultSchema, { credentials: [credential] })
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'listAccessSessions'
+		) {
+			return encodedOk(request.requestId, {
+				case: 'accessSessionResult',
+				value: create(AccessSessionResultSchema, {
+					current: accessSessions[0],
+					sessions: accessSessions
+				})
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'revokeAccessSession'
+		) {
+			requests.accessSessionRevocations += 1;
+			const sessionId = request.command.value.action.value.sessionId;
+			const current = accessSessions[0];
+			accessSessions = accessSessions.filter((session) => session.sessionId !== sessionId);
+			return encodedOk(request.requestId, {
+				case: 'accessSessionResult',
+				value: create(AccessSessionResultSchema, { current, sessions: [] })
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
+			request.command.value.action.case === 'listAccessAudit'
+		) {
+			return encodedOk(request.requestId, {
+				case: 'accessAuditResult',
+				value: create(AccessAuditResultSchema, { events: accessAudit })
+			});
+		}
+		if (
+			request.command.case === 'serverCommand' &&
 			request.command.value.action.case === 'restart'
 		) {
 			requests.restarts += 1;
@@ -1404,6 +1613,9 @@ export async function mockControlPeer(
 			request.command.value.action.case === 'getAccessKey'
 		) {
 			requests.accessKeyReveals += 1;
+			accessCredentials = accessCredentials.map((credential) =>
+				create(AccessCredentialSchema, { ...credential, initialAccessKeyPending: false })
+			);
 			return encodedOk(request.requestId, {
 				case: 'accessKeyResult',
 				value: create(AccessKeyResultSchema, {
@@ -1802,7 +2014,9 @@ export async function mockControlPeer(
 			handleKeepPeekControl(payload: number[]): Promise<number[]>;
 			takeKeepPeekData(): Promise<number[][]>;
 			getKeepPeekCapabilities(): Promise<number[]>;
+			closeKeepPeekControl(): void;
 		};
+		let activeControlChannel: MockDataChannel | null = null;
 
 		class MockDataChannel {
 			readyState: RTCDataChannelState = 'connecting';
@@ -1857,6 +2071,11 @@ export async function mockControlPeer(
 			close(): void {
 				this.readyState = 'closed';
 			}
+
+			remoteClose(): void {
+				this.readyState = 'closed';
+				this.onclose?.call(this as unknown as RTCDataChannel, new Event('close'));
+			}
 		}
 
 		class MockPeerConnection {
@@ -1875,6 +2094,7 @@ export async function mockControlPeer(
 					this.channels.find((candidate) => candidate.label === target)?.receive(payload);
 				});
 				this.channels.push(channel);
+				if (label === 'control-channel') activeControlChannel = channel;
 				return channel as unknown as RTCDataChannel;
 			}
 
@@ -1911,6 +2131,9 @@ export async function mockControlPeer(
 		}
 
 		Object.defineProperty(window, 'RTCPeerConnection', { value: MockPeerConnection });
+		Object.defineProperty(window, 'closeKeepPeekControl', {
+			value: () => activeControlChannel?.remoteClose()
+		});
 		class MockVideoFrame {
 			displayWidth = 1;
 			displayHeight = 1;
@@ -1955,6 +2178,12 @@ export async function mockControlPeer(
 		Object.defineProperty(navigator, 'sendBeacon', { value: () => true });
 	});
 	await page.route('**/create', async (route) => {
+		const authorization = route.request().headers().authorization ?? null;
+		requests.createAuthorizations.push(authorization);
+		if (options.requiredAccessKey && authorization !== `Bearer ${options.requiredAccessKey}`) {
+			await route.fulfill({ status: 401 });
+			return;
+		}
 		await route.fulfill({
 			json: { session_id: 'playwright-control', answer: { type: 'answer', sdp: 'v=0' } }
 		});
@@ -1968,7 +2197,9 @@ export async function mockControlPeer(
 function encodedCapabilities(
 	cameras: readonly CameraListItem[],
 	storedRanges: readonly StoredRangeFixture[],
-	capabilityIds: readonly string[]
+	capabilityIds: readonly string[],
+	accessRole: ProtoAccessRole,
+	accessLocal: boolean
 ): number[] {
 	const envelope = create(ControlEnvelopeSchema, {
 		message: {
@@ -1977,9 +2208,22 @@ function encodedCapabilities(
 				event: {
 					case: 'initialCapabilities',
 					value: create(ServerCapabilitiesSchema, {
-						revision: 1n,
+						revision: 2n,
 						selfSourceSessionId: 'webrtc-client-playwright',
 						capabilityIds: [...capabilityIds],
+						accessSession: create(AccessSessionSchema, {
+							sessionId: 'playwright-control',
+							principalId: accessLocal
+								? 'local-administrator'
+								: '550e8400-e29b-41d4-a716-446655440001',
+							displayName: accessLocal ? 'Local Administrator' : 'Remote browser',
+							role: accessRole,
+							local: accessLocal,
+							clientClassification: accessLocal ? 'direct_local' : 'direct_remote',
+							createdAtMs: 1_777_000_000_000n,
+							lastActivityAtMs: 1_777_000_010_000n,
+							absoluteExpiresAtMs: 1_777_086_400_000n
+						}),
 						cameras: cameras.map((camera) =>
 							create(CameraInfoSchema, {
 								sourceId: camera.id,

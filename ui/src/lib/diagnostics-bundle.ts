@@ -1,4 +1,3 @@
-import { fetchLogSnapshot, fetchMetricsSnapshot } from './api';
 import { createDiagnosticRedactor, type DiagnosticPrivateValue } from './diagnostic-redaction';
 import type { ControlClient } from './control-client';
 import type {
@@ -25,7 +24,12 @@ export interface DiagnosticsBundleInput {
 
 type DiagnosticsControlClient = Pick<
 	ControlClient,
-	'getLoggingSettings' | 'getHealth' | 'getRuntimeConfiguration' | 'getCameras'
+	| 'getLogSnapshot'
+	| 'getMetricsSnapshot'
+	| 'getLoggingSettings'
+	| 'getHealth'
+	| 'getRuntimeConfiguration'
+	| 'getCameras'
 >;
 
 export async function collectDiagnosticsBundle(
@@ -33,14 +37,14 @@ export async function collectDiagnosticsBundle(
 	browser: BrowserLogEntry[],
 	generatedAt = new Date()
 ): Promise<string> {
-	const server = await fetchLogSnapshot();
+	const server = await controlClient.getLogSnapshot();
 	const [loggingResult, healthResult, configResult, camerasResult, metricsResult] =
 		await Promise.allSettled([
 			controlClient.getLoggingSettings(),
 			controlClient.getHealth(),
 			controlClient.getRuntimeConfiguration(),
 			controlClient.getCameras(),
-			fetchMetricsSnapshot()
+			controlClient.getMetricsSnapshot()
 		]);
 	const collectionErrors: Record<string, string> = {};
 	const logging = settledValue(loggingResult, 'logging-settings', collectionErrors);

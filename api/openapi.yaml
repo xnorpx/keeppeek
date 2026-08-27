@@ -17,7 +17,7 @@ servers:
       port:
         default: "8081"
 security:
-  - LocalApiKey: []
+  - BearerCredential: []
 paths:
   /create:
     post:
@@ -56,6 +56,10 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "415":
           $ref: "#/components/responses/OfferNotGzipEncoded"
         "422":
@@ -85,7 +89,10 @@ paths:
     post:
       operationId: delete
       summary: Delete a WebRTC session
-      description: Only the access key that created the session can delete it.
+      description: >-
+        Only the authenticated principal and effective address that created the
+        session can delete it. Unknown and previously deleted IDs are idempotent
+        success responses; a known session owned by another caller returns 404.
       parameters:
         - name: Prefer
           in: header
@@ -117,6 +124,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/SessionNotFound"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/Unavailable"
     options:
@@ -159,6 +170,12 @@ paths:
                     data: {"sequence":42,"timestamp_ms":0,"level":"info","target":"keeppeek","message":"ready","fields":{}}
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/Unavailable"
   /logs/snapshot:
@@ -184,6 +201,12 @@ paths:
                 $ref: "#/components/schemas/LogSnapshot"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/Unavailable"
   /metrics:
@@ -193,8 +216,8 @@ paths:
       description: >-
         Returns Prometheus text exposition metrics, including camera and server
         health counters. Identity and PTZ support stay on the WebRTC
-        ServerCapabilities snapshot. Any configured local API key may scrape
-        this endpoint; no separate metrics credential exists.
+        ServerCapabilities snapshot. Local Administrators and remote
+        Administrator credentials may scrape this endpoint.
       responses:
         "200":
           description: Prometheus text exposition metrics.
@@ -204,6 +227,12 @@ paths:
                 type: string
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "503":
           $ref: "#/components/responses/Unavailable"
 components:
@@ -243,16 +272,15 @@ components:
         type: string
         const: gzip
   securitySchemes:
-    LocalApiKey:
+    BearerCredential:
       type: http
       scheme: bearer
       bearerFormat: UUID
       description: >-
-        A locally configured random UUID or GUID access key. Required for every
-        non-loopback peer. Same-host loopback requests that did not arrive
-        through a reverse proxy skip it and act as Administrator. Every
-        configured key has identical access to every endpoint, including /logs
-        /logs/snapshot, and /metrics.
+        A named random UUID credential assigned Administrator or User. Required
+        for every policy-classified remote peer. Configured local networks act
+        as Administrator without a credential. Forwarded clients are resolved
+        only through the exact trusted-proxy contract.
   responses:
     BadRequest:
       description: Bad Request. The request could not be accepted, or validation failed.
@@ -274,14 +302,33 @@ components:
             $ref: "#/components/schemas/Status"
     Unauthorized:
       description: >-
-        A non-loopback or forwarded request has no valid API key. Only direct
-        same-host loopback requests may omit it.
+        A remote request has no active, unexpired Bearer credential. The
+        response does not distinguish unknown, disabled, expired, or revoked
+        credentials.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Status"
     SessionNotFound:
-      description: The session does not exist or was created by another API key.
+      description: A known session is owned by another principal or effective address.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    Forbidden:
+      description: The authenticated User role cannot perform this Administrator operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    UpgradeRequired:
+      description: Direct remote access requires HTTPS or a configured trusted proxy.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    RateLimited:
+      description: Remote authentication or active session capacity is temporarily limited.
       content:
         application/json:
           schema:

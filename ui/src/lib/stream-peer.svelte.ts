@@ -13,9 +13,19 @@ import {
 	type Response as ControlResponse,
 	type ServerCapabilities
 } from './proto/webrtc_pb';
-import type { LiveQuality } from './types';
+import type { CreateResponse, LiveQuality } from './types';
 
 const controlTimeoutMs = 10_000;
+
+export type LiveSessionTransport = {
+	create: (offer: RTCSessionDescriptionInit) => Promise<CreateResponse>;
+	delete: (sessionId: string, options?: { keepalive?: boolean }) => Promise<void>;
+};
+
+const defaultSessionTransport: LiveSessionTransport = {
+	create: createSession,
+	delete: (sessionId, options) => deleteSession(sessionId, null, options)
+};
 
 type PendingRequest = {
 	resolve: (response: ControlResponse) => void;
@@ -47,7 +57,7 @@ export type LivePeerTrack = {
 export class LivePeer {
 	connectionState = $state<RTCPeerConnectionState>('new');
 	iceConnectionState = $state<RTCIceConnectionState>('new');
-	sessionId = $state<number | null>(null);
+	sessionId = $state<string | null>(null);
 	estimatedBitrateBps = $state<number | null>(null);
 	error = $state<string | null>(null);
 	tracks = $state.raw<Record<string, LivePeerTrack>>({});
@@ -73,6 +83,11 @@ export class LivePeer {
 	#operation: Promise<void> = Promise.resolve();
 	#closeScheduled = false;
 	#holds = 0;
+	#sessionTransport: LiveSessionTransport;
+
+	constructor(sessionTransport: LiveSessionTransport = defaultSessionTransport) {
+		this.#sessionTransport = sessionTransport;
+	}
 
 	track(cameraId: string): LivePeerTrack | null {
 		return this.tracks[cameraId] ?? null;
@@ -115,10 +130,7 @@ export class LivePeer {
 	closeOnPageHide(): void {
 		const sessionToken = this.releaseLocalResources();
 		if (sessionToken === null) return;
-		const body = new Blob([JSON.stringify({ session_id: sessionToken })], {
-			type: 'application/json'
-		});
-		navigator.sendBeacon('/delete', body);
+		void this.#sessionTransport.delete(sessionToken, { keepalive: true });
 	}
 
 	markPlaying(cameraId: string): void {
@@ -275,15 +287,14 @@ export class LivePeer {
 				}
 			}
 
-			const session = await createSession(peer.localDescription);
+			const session = await this.#sessionTransport.create(peer.localDescription);
 			if (peer !== this.#peer) {
-				await deleteSession(session.session_id);
+				await this.#sessionTransport.delete(session.session_id);
 				return;
 			}
 
 			this.#sessionToken = session.session_id;
-			const numericSessionId = Number(session.session_id);
-			this.sessionId = Number.isSafeInteger(numericSessionId) ? numericSessionId : null;
+			this.sessionId = session.session_id;
 			await peer.setRemoteDescription({
 				type: session.answer.type as RTCSdpType,
 				sdp: session.answer.sdp
@@ -308,7 +319,7 @@ export class LivePeer {
 				this.error = error instanceof Error ? error.message : 'Unable to start shared live view';
 				if (sessionToken !== null) {
 					try {
-						await deleteSession(sessionToken);
+						await this.#sessionTransport.delete(sessionToken);
 					} catch (closeError) {
 						console.debug('Unable to close failed shared live session', closeError);
 					}
@@ -524,7 +535,7 @@ export class LivePeer {
 			return;
 		}
 		try {
-			await deleteSession(sessionToken);
+			await this.#sessionTransport.delete(sessionToken);
 		} catch (error) {
 			console.debug('Unable to close shared live session', error);
 		} finally {

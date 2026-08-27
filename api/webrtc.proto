@@ -115,6 +115,7 @@ message ServerCapabilities {
   string self_source_session_id = 5;
   // Exact versioned server contracts. Unknown IDs must remain disabled.
   repeated string capability_ids = 6;
+  AccessSession access_session = 7;
 }
 
 message CameraInfo {
@@ -610,6 +611,15 @@ message ServerCommand {
     RestartServer restart = 1;
     GetAccessKey get_access_key = 2;
     RotateAccessKey rotate_access_key = 3;
+    GetAccessSession get_access_session = 4;
+    ListAccessCredentials list_access_credentials = 5;
+    CreateAccessCredential create_access_credential = 6;
+    RotateAccessCredential rotate_access_credential = 7;
+    SetAccessCredentialEnabled set_access_credential_enabled = 8;
+    RevokeAccessCredential revoke_access_credential = 9;
+    ListAccessSessions list_access_sessions = 10;
+    RevokeAccessSession revoke_access_session = 11;
+    ListAccessAudit list_access_audit = 12;
   }
 }
 
@@ -618,6 +628,46 @@ message RestartServer {}
 message GetAccessKey {}
 
 message RotateAccessKey {}
+
+message GetAccessSession {}
+
+message ListAccessCredentials {}
+
+message CreateAccessCredential {
+  string name = 1;
+  optional string description = 2;
+  AccessRole role = 3;
+  optional int64 expires_at_ms = 4;
+}
+
+message RotateAccessCredential {
+  string credential_id = 1;
+}
+
+message SetAccessCredentialEnabled {
+  string credential_id = 1;
+  bool enabled = 2;
+}
+
+message RevokeAccessCredential {
+  string credential_id = 1;
+}
+
+message ListAccessSessions {}
+
+message RevokeAccessSession {
+  string session_id = 1;
+}
+
+message ListAccessAudit {
+  uint32 limit = 1;
+}
+
+enum AccessRole {
+  ACCESS_ROLE_UNSPECIFIED = 0;
+  ACCESS_ROLE_ADMINISTRATOR = 1;
+  ACCESS_ROLE_USER = 2;
+}
 
 message SourceSession {
   string source_session_id = 1;
@@ -1625,6 +1675,9 @@ message Ok {
     StorageWriteProbeResult storage_write_probe_result = 30;
     AccessKeyResult access_key_result = 31;
     NotificationRuleResult notification_rule_result = 32;
+    AccessCredentialResult access_credential_result = 33;
+    AccessSessionResult access_session_result = 34;
+    AccessAuditResult access_audit_result = 35;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -2222,6 +2275,59 @@ message RestartResult {
 message AccessKeyResult {
   string access_key = 1;
   bool rotated = 2;
+}
+
+message AccessCredential {
+  string credential_id = 1;
+  string name = 2;
+  optional string description = 3;
+  AccessRole role = 4;
+  int64 created_at_ms = 5;
+  optional int64 last_used_at_ms = 6;
+  optional int64 expires_at_ms = 7;
+  bool disabled = 8;
+  optional int64 revoked_at_ms = 9;
+  uint64 revision = 10;
+  optional int64 rotated_at_ms = 11;
+  bool initial_access_key_pending = 12;
+}
+
+message AccessCredentialResult {
+  repeated AccessCredential credentials = 1;
+  optional string access_key = 2;
+}
+
+message AccessSession {
+  string session_id = 1;
+  string principal_id = 2;
+  string display_name = 3;
+  AccessRole role = 4;
+  bool local = 5;
+  string client_classification = 6;
+  int64 created_at_ms = 7;
+  int64 last_activity_at_ms = 8;
+  int64 absolute_expires_at_ms = 9;
+  optional int64 credential_expires_at_ms = 10;
+}
+
+message AccessSessionResult {
+  AccessSession current = 1;
+  repeated AccessSession sessions = 2;
+}
+
+message AccessAuditEvent {
+  string event_id = 1;
+  int64 timestamp_ms = 2;
+  optional string principal_id = 3;
+  AccessRole role = 4;
+  string action = 5;
+  optional string target_id = 6;
+  string result = 7;
+  string client_classification = 8;
+}
+
+message AccessAuditResult {
+  repeated AccessAuditEvent events = 1;
 }
 
 message Error {
