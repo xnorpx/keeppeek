@@ -1446,12 +1446,7 @@ fn to_u32(value: i64, name: &str) -> anyhow::Result<u32> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        io::{Read as _, Write as _},
-        net::TcpListener,
-        path::PathBuf,
-        sync::mpsc,
-    };
+    use std::{io::Write as _, net::TcpListener, path::PathBuf, sync::mpsc};
 
     use super::*;
     use crate::notifications::{
@@ -1488,7 +1483,7 @@ mod tests {
             let mut request = Vec::new();
             let mut buffer = [0_u8; 4_096];
             let (header_end, content_length) = loop {
-                let read = stream.read(&mut buffer).unwrap();
+                let read = std::io::Read::read(&mut stream, &mut buffer).unwrap();
                 assert_ne!(read, 0, "provider request ended before the headers");
                 request.extend_from_slice(&buffer[..read]);
                 if let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
@@ -1506,7 +1501,7 @@ mod tests {
                 }
             };
             while request.len() < header_end + content_length {
-                let read = stream.read(&mut buffer).unwrap();
+                let read = std::io::Read::read(&mut stream, &mut buffer).unwrap();
                 assert_ne!(read, 0, "provider request ended before the body");
                 request.extend_from_slice(&buffer[..read]);
             }
