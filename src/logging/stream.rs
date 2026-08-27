@@ -1,4 +1,11 @@
-use std::{io, time::Duration};
+use std::{
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use serde::Serialize;
 
@@ -10,6 +17,7 @@ pub struct LogStreamReader {
     initial_frame_pending: bool,
     pending: Vec<u8>,
     pending_offset: usize,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Serialize)]
@@ -25,7 +33,13 @@ impl LogStreamReader {
             initial_frame_pending: true,
             pending: Vec::new(),
             pending_offset: 0,
+            cancellation: None,
         }
+    }
+
+    pub(crate) fn with_cancellation(mut self, cancellation: Arc<AtomicBool>) -> Self {
+        self.cancellation = Some(cancellation);
+        self
     }
 
     fn next_frame(&mut self) -> io::Result<Option<Vec<u8>>> {
@@ -49,12 +63,28 @@ impl LogStreamReader {
                 .map(|data| Some(format!("event: gap\ndata: {data}\n\n").into_bytes()))
                 .map_err(io::Error::other);
         }
-        match self.subscription.next_timeout(self.heartbeat) {
-            Ok(entry) => encode_log_entry(&entry).map(Some),
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                Ok(Some(b": keep-alive\n\n".to_vec()))
+        let started_at = Instant::now();
+        loop {
+            if self
+                .cancellation
+                .as_ref()
+                .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+            {
+                return Ok(None);
             }
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => Ok(None),
+            let remaining = self
+                .heartbeat
+                .saturating_sub(started_at.elapsed())
+                .min(Duration::from_millis(100));
+            match self.subscription.next_timeout(remaining) {
+                Ok(entry) => return encode_log_entry(&entry).map(Some),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout)
+                    if started_at.elapsed() < self.heartbeat => {}
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    return Ok(Some(b": keep-alive\n\n".to_vec()));
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return Ok(None),
+            }
         }
     }
 }
@@ -129,6 +159,22 @@ mod tests {
 
         assert_eq!(&connected, b": connected\n\n");
         assert_eq!(&heartbeat, b": keep-alive\n\n");
+    }
+
+    #[test]
+    fn cancellation_ends_an_authenticated_stream() {
+        let hub = LogHub::default();
+        let subscription = hub.subscribe(None, 10).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut reader = LogStreamReader::new(subscription, Duration::from_secs(1))
+            .with_cancellation(cancelled.clone());
+        let mut connected = [0; 13];
+        reader.read_exact(&mut connected).unwrap();
+        assert_eq!(&connected, b": connected\n\n");
+
+        cancelled.store(true, Ordering::Release);
+        let mut byte = [0; 1];
+        assert_eq!(reader.read(&mut byte).unwrap(), 0);
     }
 
     #[test]

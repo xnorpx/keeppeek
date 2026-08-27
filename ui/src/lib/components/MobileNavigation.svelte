@@ -8,23 +8,44 @@
 
 	type Props = {
 		pathname: string;
+		administrator?: boolean;
 		fixed?: boolean;
 	};
 
-	let { pathname, fixed = true }: Props = $props();
+	let { pathname, administrator = true, fixed = true }: Props = $props();
 
-	const items = [
-		{ href: resolve('/'), label: 'Peek', icon: VideoIcon, paths: ['/'] },
-		{ href: resolve('/keep'), label: 'Keep', icon: ClockIcon, paths: ['/keep', '/recordings'] },
-		{ href: resolve('/events'), label: 'Events', icon: BellIcon, paths: ['/events'] },
+	const allItems = [
+		{ href: resolve('/'), label: 'Peek', icon: VideoIcon, paths: ['/'], administrator: false },
+		{
+			href: resolve('/keep'),
+			label: 'Keep',
+			icon: ClockIcon,
+			paths: ['/keep', '/recordings'],
+			administrator: false
+		},
+		{
+			href: resolve('/events'),
+			label: 'Events',
+			icon: BellIcon,
+			paths: ['/events'],
+			administrator: false
+		},
 		{
 			href: resolve('/system-health'),
 			label: 'Health',
 			icon: ActivityIcon,
-			paths: ['/system-health']
+			paths: ['/system-health'],
+			administrator: true
 		},
-		{ href: resolve('/settings'), label: 'More', icon: MoreHorizontalIcon, paths: ['/settings'] }
+		{
+			href: resolve('/settings'),
+			label: 'More',
+			icon: MoreHorizontalIcon,
+			paths: ['/settings'],
+			administrator: true
+		}
 	] as const;
+	let items = $derived(allItems.filter((item) => administrator || !item.administrator));
 
 	function matchesRoute(paths: readonly string[]): boolean {
 		return paths.some((path) =>
@@ -37,7 +58,9 @@
 	data-shell-mobile-nav
 	class="{fixed
 		? 'fixed inset-x-0 bottom-0 z-50'
-		: 'relative'} grid h-[78px] shrink-0 grid-cols-5 border-t border-sidebar-border bg-sidebar pt-2.5 pb-6 text-sidebar-foreground md:hidden"
+		: 'relative'} grid h-[78px] shrink-0 {administrator
+		? 'grid-cols-5'
+		: 'grid-cols-3'} border-t border-sidebar-border bg-sidebar pt-2.5 pb-6 text-sidebar-foreground md:hidden"
 	aria-label="Primary navigation"
 >
 	{#each items as item (item.href)}

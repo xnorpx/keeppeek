@@ -1,40 +1,82 @@
 import type { CreateRequest, CreateResponse, LogSnapshot, ServerLogEntry } from './types';
 
-export async function fetchLogSnapshot(): Promise<LogSnapshot> {
+export class ApiRequestError extends Error {
+	constructor(
+		readonly status: number,
+		message: string
+	) {
+		super(message);
+		this.name = 'ApiRequestError';
+	}
+}
+
+function authenticatedHeaders(
+	accessKey: string | null | undefined,
+	headers: Record<string, string>
+): Record<string, string> {
+	return accessKey ? { ...headers, Authorization: `Bearer ${accessKey}` } : headers;
+}
+
+export async function fetchLogSnapshot(accessKey?: string | null): Promise<LogSnapshot> {
 	const response = await fetch('/logs/snapshot', {
-		headers: { Accept: 'application/json' },
+		headers: authenticatedHeaders(accessKey, { Accept: 'application/json' }),
 		cache: 'no-store'
 	});
-	if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
 	const value: unknown = await response.json();
 	if (!isLogSnapshot(value)) throw new Error('Server returned an invalid log snapshot.');
 	return value;
 }
 
-export async function fetchMetricsSnapshot(): Promise<string> {
+export async function fetchMetricsSnapshot(accessKey?: string | null): Promise<string> {
 	const response = await fetch('/metrics', {
-		headers: { Accept: 'text/plain' },
+		headers: authenticatedHeaders(accessKey, { Accept: 'text/plain' }),
 		cache: 'no-store'
 	});
-	if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
 	return response.text();
 }
 
-async function postEmpty(path: string, body?: unknown): Promise<void> {
+export async function fetchLogStream(
+	url: string,
+	accessKey: string | null | undefined,
+	signal: AbortSignal
+): Promise<Response> {
+	const response = await fetch(url, {
+		headers: authenticatedHeaders(accessKey, { Accept: 'text/event-stream' }),
+		cache: 'no-store',
+		signal
+	});
+	if (!response.ok) throw new ApiRequestError(response.status, response.statusText);
+	if (!response.body) throw new Error('Server log stream has no response body.');
+	return response;
+}
+
+async function postEmpty(
+	path: string,
+	body?: unknown,
+	accessKey?: string | null,
+	keepalive = false
+): Promise<void> {
 	const res = await fetch(
 		path,
 		body === undefined
-			? { method: 'POST' }
+			? {
+					method: 'POST',
+					headers: authenticatedHeaders(accessKey, {}),
+					keepalive
+				}
 			: {
 					method: 'POST',
-					headers: {
+					headers: authenticatedHeaders(accessKey, {
 						'Content-Type': 'application/json',
 						Prefer: 'return=representation'
-					},
-					body: JSON.stringify(body)
+					}),
+					body: JSON.stringify(body),
+					keepalive
 				}
 	);
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) throw new ApiRequestError(res.status, res.statusText);
 	await res.text();
 }
 
@@ -45,7 +87,10 @@ export async function waitForMetricsAt(origin: string): Promise<void> {
 	if (!crossOrigin && !response.ok) throw new Error(`${response.status} ${response.statusText}`);
 }
 
-export async function createSession(offer: RTCSessionDescriptionInit): Promise<CreateResponse> {
+export async function createSession(
+	offer: RTCSessionDescriptionInit,
+	accessKey?: string | null
+): Promise<CreateResponse> {
 	const request: CreateRequest = { offer: { type: offer.type as string, sdp: offer.sdp! } };
 	const requestString = JSON.stringify(request);
 
@@ -65,23 +110,26 @@ export async function createSession(offer: RTCSessionDescriptionInit): Promise<C
 
 	const res = await fetch('/create', {
 		method: 'POST',
-		headers: {
+		headers: authenticatedHeaders(accessKey, {
 			'Content-Type': 'application/json',
 			'Content-Encoding': 'gzip'
-		},
+		}),
 		body
 	});
 
 	if (!res.ok) {
-		const message = await res.text();
-		throw new Error(`${res.status} ${message || res.statusText}`);
+		throw new ApiRequestError(res.status, res.statusText);
 	}
 
 	return res.json();
 }
 
-export function deleteSession(sessionId: string): Promise<void> {
-	return postEmpty('/delete', { session_id: sessionId });
+export function deleteSession(
+	sessionId: string,
+	accessKey?: string | null,
+	options: { keepalive?: boolean } = {}
+): Promise<void> {
+	return postEmpty('/delete', { session_id: sessionId }, accessKey, options.keepalive);
 }
 
 function isLogSnapshot(value: unknown): value is LogSnapshot {

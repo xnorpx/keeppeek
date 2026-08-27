@@ -11,6 +11,7 @@
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import MoonIcon from '@lucide/svelte/icons/moon';
+	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import SunIcon from '@lucide/svelte/icons/sun';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -20,6 +21,7 @@
 	import { setAppearanceState } from '$lib/appearance-context';
 	import { initializeBrowserLogging } from '$lib/browser-logs';
 	import KeyboardOverlay from '$lib/components/KeyboardOverlay.svelte';
+	import RemoteSignIn from '$lib/components/RemoteSignIn.svelte';
 	import MobileNavigation from '$lib/components/MobileNavigation.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
 	import {
@@ -28,14 +30,24 @@
 		resolveGlobalKeyboardAction,
 		type KeyboardOverlayMode
 	} from '$lib/keyboard-shortcuts';
+	import type { AccessConnectionState } from '$lib/access';
 
 	initializeBrowserLogging();
 
 	let { children }: { children: Snippet } = $props();
-	const livePeer = setLivePeer();
 	const controlClient = setControlClient();
+	const livePeer = setLivePeer({
+		create: (offer) => controlClient.createWebRtcSession(offer),
+		delete: (sessionId, options) => controlClient.deleteWebRtcSession(sessionId, options)
+	});
 	const appearance = setAppearanceState();
 	const capabilities = setCapabilityState();
+	let accessState = $state.raw<AccessConnectionState>({
+		status: 'checking',
+		session: null,
+		message: null,
+		generation: 0
+	});
 	let keyboardOverlay = $state<KeyboardOverlayMode>(null);
 	let keyboardReady = $state(false);
 	let navigationChordPending = $state(false);
@@ -48,6 +60,10 @@
 		const closeCapabilities = controlClient.onCapabilities((capabilityIds) => {
 			capabilities.updateAdvertised(capabilityIds);
 		});
+		const closeAccessState = controlClient.onAccessState((state) => {
+			accessState = state;
+		});
+		void controlClient.checkAccess().catch(() => undefined);
 		const close = () => {
 			livePeer.closeOnPageHide();
 			controlClient.closeOnPageHide();
@@ -59,6 +75,7 @@
 			clearNavigationChord();
 			closeAppearance();
 			closeCapabilities();
+			closeAccessState();
 			window.removeEventListener('keydown', handleGlobalKeyboard, { capture: true });
 			window.removeEventListener('pagehide', close);
 			close();
@@ -145,24 +162,45 @@
 	function moveRailFocus(event: KeyboardEvent, currentIndex: number): void {
 		if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
 		event.preventDefault();
-		const count = navigation.length + 1;
+		const count = navigation.length + (administrator ? 1 : 0);
 		railFocusIndex =
 			event.key === 'ArrowDown' ? (currentIndex + 1) % count : (currentIndex - 1 + count) % count;
 		document.querySelector<HTMLElement>(`[data-shell-rail-link="${railFocusIndex}"]`)?.focus();
 	}
 
-	const navigation = [
-		{ href: '/', label: 'Peek', icon: EyeIcon, paths: ['/'] },
-		{ href: '/keep', label: 'Keep', icon: ArchiveIcon, paths: ['/keep', '/recordings'] },
-		{ href: '/events', label: 'Events', icon: ScanLineIcon, paths: ['/events'] },
-		{ href: '/cameras', label: 'Cameras', icon: CameraIcon, paths: ['/cameras', '/camera'] },
+	const allNavigation = [
+		{ href: '/', label: 'Peek', icon: EyeIcon, paths: ['/'], administrator: false },
+		{
+			href: '/keep',
+			label: 'Keep',
+			icon: ArchiveIcon,
+			paths: ['/keep', '/recordings'],
+			administrator: false
+		},
+		{
+			href: '/events',
+			label: 'Events',
+			icon: ScanLineIcon,
+			paths: ['/events'],
+			administrator: false
+		},
+		{
+			href: '/cameras',
+			label: 'Cameras',
+			icon: CameraIcon,
+			paths: ['/cameras'],
+			administrator: true
+		},
 		{
 			href: '/system-health',
 			label: 'Health',
 			icon: ActivityIcon,
-			paths: ['/system-health']
+			paths: ['/system-health'],
+			administrator: true
 		}
 	] as const;
+	let administrator = $derived(accessState.session?.role === 'administrator');
+	let navigation = $derived(allNavigation.filter((item) => administrator || !item.administrator));
 
 	function matchesRoute(paths: readonly string[], pathname: string): boolean {
 		return paths.some((path) =>
@@ -188,19 +226,31 @@
 				? { label: 'Settings' }
 				: (navigation.find((item) => matchesRoute(item.paths, page.url.pathname)) ?? navigation[0])
 	);
-	const healthNavigation = navigation[4];
+	const healthNavigation = allNavigation[4];
 	let healthActive = $derived(matchesRoute(healthNavigation.paths, page.url.pathname));
+
+	$effect(() => {
+		if (accessState.status !== 'authenticated' || administrator) return;
+		if (
+			['/settings', '/cameras', '/system-health', '/setup'].some(
+				(pathname) => page.url.pathname === pathname || page.url.pathname.startsWith(`${pathname}/`)
+			)
+		) {
+			void goto(resolve('/'));
+		}
+	});
 
 	$effect(() => {
 		const pathname = page.url.pathname;
 		if (pathname === railPathname) return;
 		railPathname = pathname;
-		railFocusIndex = settingsActive
-			? navigation.length
-			: Math.max(
-					0,
-					navigation.findIndex((item) => matchesRoute(item.paths, pathname))
-				);
+		railFocusIndex =
+			settingsActive && administrator
+				? navigation.length
+				: Math.max(
+						0,
+						navigation.findIndex((item) => matchesRoute(item.paths, pathname))
+					);
 	});
 
 	$effect.pre(() => {
@@ -209,187 +259,209 @@
 	});
 </script>
 
-<Tooltip.Provider delayDuration={0}>
-	<div
-		data-keyboard-ready={keyboardReady}
-		class="min-h-svh bg-background text-foreground md:grid md:grid-cols-[64px_minmax(0,1fr)]"
-	>
-		<aside
-			data-shell-rail
-			class="hidden min-h-svh w-16 flex-col items-center gap-2.5 border-r border-sidebar-border bg-ground py-4 text-sidebar-foreground md:flex"
-			aria-label="Desktop navigation"
-		>
-			<a
-				href={resolve('/')}
-				tabindex="-1"
-				class="grid size-[30px] shrink-0 place-items-center rounded-sm bg-primary font-mono text-xs font-semibold text-primary-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
-				aria-label="KeepPeek home"
-			>
-				K
-			</a>
-
-			<div class="h-[18px] shrink-0"></div>
-
-			<nav class="flex w-full flex-col items-center gap-2.5" aria-label="Primary navigation">
-				{#each navigation as item, index (item.href)}
-					{@const active = matchesRoute(item.paths, page.url.pathname)}
-					<Tooltip.Root>
-						<Tooltip.Trigger>
-							{#snippet child({ props })}
-								<a
-									href={item.href}
-									{...props}
-									data-shell-rail-link={index}
-									tabindex={railFocusIndex === index ? 0 : -1}
-									aria-label={item.label}
-									aria-current={active ? 'page' : undefined}
-									class="relative grid size-11 place-items-center text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none focus-visible:ring-inset {active
-										? 'bg-sidebar-accent text-sidebar-accent-foreground'
-										: ''}"
-									onfocus={() => (railFocusIndex = index)}
-									onkeydown={(event) => moveRailFocus(event, index)}
-								>
-									{#if active}
-										<span class="absolute inset-y-2 left-0 w-0.5 bg-primary"></span>
-									{/if}
-									<item.icon class="size-[18px]" strokeWidth={1.75} />
-								</a>
-							{/snippet}
-						</Tooltip.Trigger>
-						<Tooltip.Content side="right" align="center">{item.label}</Tooltip.Content>
-					</Tooltip.Root>
-				{/each}
-				<Tooltip.Root>
-					<Tooltip.Trigger>
-						{#snippet child({ props })}
-							<a
-								href={resolve('/settings')}
-								{...props}
-								data-shell-rail-link={navigation.length}
-								tabindex={railFocusIndex === navigation.length ? 0 : -1}
-								aria-label="Settings"
-								aria-current={settingsActive ? 'page' : undefined}
-								class="relative grid size-11 place-items-center text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none focus-visible:ring-inset {settingsActive
-									? 'bg-sidebar-accent text-sidebar-accent-foreground'
-									: ''}"
-								onfocus={() => (railFocusIndex = navigation.length)}
-								onkeydown={(event) => moveRailFocus(event, navigation.length)}
-							>
-								{#if settingsActive}
-									<span class="absolute inset-y-2 left-0 w-0.5 bg-primary"></span>
-								{/if}
-								<SettingsIcon class="size-[18px]" strokeWidth={1.75} />
-							</a>
-						{/snippet}
-					</Tooltip.Trigger>
-					<Tooltip.Content side="right" align="center">Settings</Tooltip.Content>
-				</Tooltip.Root>
-			</nav>
-		</aside>
-
+{#if accessState.status === 'authenticated'}
+	<Tooltip.Provider delayDuration={0}>
 		<div
-			class="flex min-h-svh min-w-0 flex-col {mobileCameraDetailActive
-				? 'pb-0'
-				: mobileFocusedActionActive
-					? 'pb-[68px]'
-					: 'pb-[78px]'} md:h-svh md:min-h-0 md:pb-0"
+			data-keyboard-ready={keyboardReady}
+			class="min-h-svh bg-background text-foreground md:grid md:grid-cols-[64px_minmax(0,1fr)]"
 		>
-			{#if !cameraDiagnosisActive}
-				{#if settingsActive && page.url.hash.length === 0}
-					<MobileSettingsHeader title="More" />
-				{/if}
-				<header
-					data-shell-context
-					class="h-[50px] shrink-0 items-center gap-3 border-b border-border bg-background px-4 md:h-[52px] {settingsActive ||
-					healthOverviewActive ||
-					mobileCameraWizardActive ||
-					mobileCameraDetailActive
-						? 'hidden md:flex'
-						: 'flex'}"
-				>
-					<a href={resolve('/')} class="font-semibold md:hidden" aria-label="KeepPeek home">
-						KeepPeek
-					</a>
-					<span class="hidden text-sm font-semibold md:inline">{currentRoute.label}</span>
-					<span class="ml-auto flex items-center gap-2 font-mono text-xs text-muted-foreground">
-						<span class="size-1.5 rounded-full bg-availability"></span>
-						Local
-					</span>
-					<button
-						type="button"
-						class="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-						aria-label={appearance.effectiveTheme === 'dark'
-							? 'Switch to light theme'
-							: 'Switch to dark theme'}
-						title={appearance.effectiveTheme === 'dark'
-							? 'Switch to light theme'
-							: 'Switch to dark theme'}
-						onclick={toggleTheme}
-					>
-						{#if appearance.effectiveTheme === 'dark'}
-							<SunIcon class="size-4" strokeWidth={1.75} />
-						{:else}
-							<MoonIcon class="size-4" strokeWidth={1.75} />
-						{/if}
-					</button>
-				</header>
-			{/if}
-
-			<main
-				class="min-h-0 flex-1 overflow-auto {page.url.pathname === '/'
-					? 'live-surface'
-					: 'workspace-surface'}"
+			<aside
+				data-shell-rail
+				class="hidden min-h-svh w-16 flex-col items-center gap-2.5 border-r border-sidebar-border bg-ground py-4 text-sidebar-foreground md:flex"
+				aria-label="Desktop navigation"
 			>
-				{@render children()}
-			</main>
-
-			{#if !cameraDiagnosisActive}
-				<footer
-					data-shell-status
-					class="hidden h-8 shrink-0 items-center border-t border-border bg-surface px-4 font-mono text-xs text-muted-foreground md:flex"
+				<a
+					href={resolve('/')}
+					tabindex="-1"
+					class="grid size-[30px] shrink-0 place-items-center rounded-sm bg-primary font-mono text-xs font-semibold text-primary-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
+					aria-label="KeepPeek home"
 				>
-					<span class="flex items-center gap-2">
-						<span class="size-1.5 rounded-full bg-availability"></span>
-						Local recorder
-					</span>
-					<span class="ml-auto">Shared WebRTC session</span>
-				</footer>
+					K
+				</a>
+
+				<div class="h-[18px] shrink-0"></div>
+
+				<nav class="flex w-full flex-col items-center gap-2.5" aria-label="Primary navigation">
+					{#each navigation as item, index (item.href)}
+						{@const active = matchesRoute(item.paths, page.url.pathname)}
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								{#snippet child({ props })}
+									<a
+										href={item.href}
+										{...props}
+										data-shell-rail-link={index}
+										tabindex={railFocusIndex === index ? 0 : -1}
+										aria-label={item.label}
+										aria-current={active ? 'page' : undefined}
+										class="relative grid size-11 place-items-center text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none focus-visible:ring-inset {active
+											? 'bg-sidebar-accent text-sidebar-accent-foreground'
+											: ''}"
+										onfocus={() => (railFocusIndex = index)}
+										onkeydown={(event) => moveRailFocus(event, index)}
+									>
+										{#if active}
+											<span class="absolute inset-y-2 left-0 w-0.5 bg-primary"></span>
+										{/if}
+										<item.icon class="size-[18px]" strokeWidth={1.75} />
+									</a>
+								{/snippet}
+							</Tooltip.Trigger>
+							<Tooltip.Content side="right" align="center">{item.label}</Tooltip.Content>
+						</Tooltip.Root>
+					{/each}
+					{#if administrator}<Tooltip.Root>
+							<Tooltip.Trigger>
+								{#snippet child({ props })}
+									<a
+										href={resolve('/settings')}
+										{...props}
+										data-shell-rail-link={navigation.length}
+										tabindex={railFocusIndex === navigation.length ? 0 : -1}
+										aria-label="Settings"
+										aria-current={settingsActive ? 'page' : undefined}
+										class="relative grid size-11 place-items-center text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none focus-visible:ring-inset {settingsActive
+											? 'bg-sidebar-accent text-sidebar-accent-foreground'
+											: ''}"
+										onfocus={() => (railFocusIndex = navigation.length)}
+										onkeydown={(event) => moveRailFocus(event, navigation.length)}
+									>
+										{#if settingsActive}
+											<span class="absolute inset-y-2 left-0 w-0.5 bg-primary"></span>
+										{/if}
+										<SettingsIcon class="size-[18px]" strokeWidth={1.75} />
+									</a>
+								{/snippet}
+							</Tooltip.Trigger>
+							<Tooltip.Content side="right" align="center">Settings</Tooltip.Content>
+						</Tooltip.Root>{/if}
+				</nav>
+			</aside>
+
+			<div
+				class="flex min-h-svh min-w-0 flex-col {mobileCameraDetailActive
+					? 'pb-0'
+					: mobileFocusedActionActive
+						? 'pb-[68px]'
+						: 'pb-[78px]'} md:h-svh md:min-h-0 md:pb-0"
+			>
+				{#if !cameraDiagnosisActive}
+					{#if settingsActive && page.url.hash.length === 0}
+						<MobileSettingsHeader title="More" />
+					{/if}
+					<header
+						data-shell-context
+						class="h-[50px] shrink-0 items-center gap-3 border-b border-border bg-background px-4 md:h-[52px] {settingsActive ||
+						healthOverviewActive ||
+						mobileCameraWizardActive ||
+						mobileCameraDetailActive
+							? 'hidden md:flex'
+							: 'flex'}"
+					>
+						<a href={resolve('/')} class="font-semibold md:hidden" aria-label="KeepPeek home">
+							KeepPeek
+						</a>
+						<span class="hidden text-sm font-semibold md:inline">{currentRoute.label}</span>
+						<span class="ml-auto flex items-center gap-2 font-mono text-xs text-muted-foreground">
+							<span class="size-1.5 rounded-full bg-availability"></span>
+							{accessState.session?.local ? 'Local' : 'Remote'} · {accessState.session?.role ===
+							'administrator'
+								? 'Administrator'
+								: 'User'}
+						</span>
+						{#if accessState.session?.local === false}
+							<button
+								type="button"
+								class="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+								aria-label="Sign out"
+								title="Sign out"
+								onclick={() => void controlClient.signOut()}
+							>
+								<LogOutIcon class="size-4" strokeWidth={1.75} />
+							</button>
+						{/if}
+						<button
+							type="button"
+							class="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							aria-label={appearance.effectiveTheme === 'dark'
+								? 'Switch to light theme'
+								: 'Switch to dark theme'}
+							title={appearance.effectiveTheme === 'dark'
+								? 'Switch to light theme'
+								: 'Switch to dark theme'}
+							onclick={toggleTheme}
+						>
+							{#if appearance.effectiveTheme === 'dark'}
+								<SunIcon class="size-4" strokeWidth={1.75} />
+							{:else}
+								<MoonIcon class="size-4" strokeWidth={1.75} />
+							{/if}
+						</button>
+					</header>
+				{/if}
+
+				<main
+					class="min-h-0 flex-1 overflow-auto {page.url.pathname === '/'
+						? 'live-surface'
+						: 'workspace-surface'}"
+				>
+					{@render children()}
+				</main>
+
+				{#if !cameraDiagnosisActive}
+					<footer
+						data-shell-status
+						class="hidden h-8 shrink-0 items-center border-t border-border bg-surface px-4 font-mono text-xs text-muted-foreground md:flex"
+					>
+						<span class="flex items-center gap-2">
+							<span class="size-1.5 rounded-full bg-availability"></span>
+							{accessState.session?.local ? 'Local' : 'Remote'} recorder
+						</span>
+						<span class="ml-auto">{accessState.session?.displayName}</span>
+					</footer>
+				{/if}
+			</div>
+
+			{#if !mobileRouteOwnsBottom}
+				<MobileNavigation pathname={page.url.pathname} {administrator} />
 			{/if}
 		</div>
+	</Tooltip.Provider>
 
-		{#if !mobileRouteOwnsBottom}
-			<MobileNavigation pathname={page.url.pathname} />
-		{/if}
-	</div>
-</Tooltip.Provider>
+	<KeyboardOverlay
+		mode={keyboardOverlay}
+		pathname={page.url.pathname}
+		onclose={() => (keyboardOverlay = null)}
+		onnavigate={navigateFromKeyboard}
+	/>
 
-<KeyboardOverlay
-	mode={keyboardOverlay}
-	pathname={page.url.pathname}
-	onclose={() => (keyboardOverlay = null)}
-	onnavigate={navigateFromKeyboard}
-/>
-
-{#if navigationChordPending}
-	<div
-		data-keyboard-navigation-chord
-		class="fixed bottom-12 left-1/2 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-md border border-hairline-strong bg-raised px-3 py-2 shadow-lg"
-		role="status"
-		aria-live="polite"
-	>
-		<kbd
-			class="rounded-sm border border-primary bg-primary px-1.5 py-1 font-mono text-2xs text-on-primary"
-			>G</kbd
+	{#if navigationChordPending}
+		<div
+			data-keyboard-navigation-chord
+			class="fixed bottom-12 left-1/2 z-[70] flex -translate-x-1/2 items-center gap-2 rounded-md border border-hairline-strong bg-raised px-3 py-2 shadow-lg"
+			role="status"
+			aria-live="polite"
 		>
-		<span class="text-xs text-text-muted">Go to</span>
-		{#each keyboardDestinations as destination (destination.key)}
-			<span class="flex items-center gap-1">
-				<kbd
-					class="rounded-sm border border-hairline-strong bg-surface px-1.5 py-1 font-mono text-2xs uppercase"
-					>{destination.key}</kbd
-				>
-				<span class="hidden text-2xs text-text-faint md:inline">{destination.label}</span>
-			</span>
-		{/each}
-	</div>
+			<kbd
+				class="rounded-sm border border-primary bg-primary px-1.5 py-1 font-mono text-2xs text-on-primary"
+				>G</kbd
+			>
+			<span class="text-xs text-text-muted">Go to</span>
+			{#each keyboardDestinations as destination (destination.key)}
+				<span class="flex items-center gap-1">
+					<kbd
+						class="rounded-sm border border-hairline-strong bg-surface px-1.5 py-1 font-mono text-2xs uppercase"
+						>{destination.key}</kbd
+					>
+					<span class="hidden text-2xs text-text-faint md:inline">{destination.label}</span>
+				</span>
+			{/each}
+		</div>
+	{/if}
+{:else}
+	<RemoteSignIn
+		state={accessState}
+		onsignin={(accessKey) => controlClient.signIn(accessKey)}
+		onretry={() => controlClient.checkAccess()}
+	/>
 {/if}

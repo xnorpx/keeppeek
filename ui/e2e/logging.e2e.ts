@@ -39,6 +39,35 @@ async function installLoggingMocks(page: Page): Promise<void> {
 			body: 'keeppeek_server_info{host="keeppeek-private.local"} 1\n'
 		});
 	});
+	await page.route(
+		(url) => url.pathname === '/logs',
+		async (route) => {
+			const entries = [
+				{
+					sequence: 1,
+					timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 0),
+					level: 'info',
+					target: 'keeppeek::server',
+					message: 'server snapshot ready',
+					fields: {}
+				},
+				{
+					sequence: 2,
+					timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 1),
+					level: 'warn',
+					target: 'str0m',
+					message: 'live packet queue warning',
+					fields: { depth: 512 }
+				}
+			];
+			await route.fulfill({
+				contentType: 'text/event-stream',
+				body: entries
+					.map((entry) => `id: ${entry.sequence}\nevent: log\ndata: ${JSON.stringify(entry)}\n\n`)
+					.join('')
+			});
+		}
+	);
 	await mockControlPeer(page, {
 		runtimeConfiguration: {
 			host: '0.0.0.0',
@@ -65,50 +94,6 @@ async function installLoggingMocks(page: Page): Promise<void> {
 			}
 		}
 	});
-	await page.addInitScript(() => {
-		class TestEventSource extends EventTarget {
-			onopen: ((event: Event) => void) | null = null;
-			onerror: ((event: Event) => void) | null = null;
-			readonly readyState = 1;
-			readonly url: string;
-			readonly withCredentials = false;
-
-			constructor(url: string | URL) {
-				super();
-				this.url = String(url);
-				setTimeout(() => {
-					this.onopen?.(new Event('open'));
-					this.dispatchEvent(
-						new MessageEvent('log', {
-							data: JSON.stringify({
-								sequence: 1,
-								timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 0),
-								level: 'info',
-								target: 'keeppeek::server',
-								message: 'server snapshot ready',
-								fields: {}
-							})
-						})
-					);
-					this.dispatchEvent(
-						new MessageEvent('log', {
-							data: JSON.stringify({
-								sequence: 2,
-								timestamp_ms: Date.UTC(2026, 7, 12, 12, 0, 1),
-								level: 'warn',
-								target: 'str0m',
-								message: 'live packet queue warning',
-								fields: { depth: 512 }
-							})
-						})
-					);
-				}, 0);
-			}
-
-			close(): void {}
-		}
-		Object.defineProperty(window, 'EventSource', { configurable: true, value: TestEventSource });
-	});
 }
 
 test('views, filters, captures, persists, clears, and exports logs', async ({ page }) => {
@@ -120,7 +105,7 @@ test('views, filters, captures, persists, clears, and exports logs', async ({ pa
 	await expect(page.getByRole('heading', { name: 'Logs' })).toBeVisible();
 	await expect(page.getByText('server snapshot ready')).toBeVisible();
 	await expect(page.getByText('live packet queue warning')).toBeVisible();
-	await expect(page.getByText('connected', { exact: true })).toBeVisible();
+	await expect(page.getByText(/connected|reconnecting/, { exact: true })).toBeVisible();
 
 	await page.getByLabel('Server capture filter').fill('info,str0m=warn');
 	await page.getByRole('button', { name: 'Save filter' }).click();

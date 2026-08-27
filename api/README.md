@@ -46,8 +46,10 @@ compatibility guarantees begin with the 1.0 release.
 - [Notification rules](../docs/notifications.md) describes revisioned rules, deterministic collapse
   identity, cooldowns, staged enrichment, durable delivery history, principal-scoped unread state,
   and [Pushover configuration](../docs/pushover.md).
+- [Access control](../docs/access-control.md) defines local network trust, remote credentials,
+  Administrator/User authorization, session revocation, trusted proxies, and audit evidence.
 - [Home Assistant card](../docs/home-assistant.md) shows a direct browser-to-KeepPeek Lovelace card with
-  one configured token, direct live media/events/timeline review, and no Home Assistant proxy.
+  one named credential, direct live media/events/timeline review, and no Home Assistant proxy.
 
 ## HTTP API
 
@@ -60,64 +62,91 @@ The initial API has five operations:
 4. `GET /logs/snapshot` returns the complete bounded retained log buffer as JSON.
 5. `GET /metrics` exposes Prometheus text metrics.
 
-## Access key
+## Access control
 
-KeepPeek uses one operator GUID as the HTTP Bearer secret. The value is a 128-bit integer. On the
-wire it is the usual hyphenated UUID string; `config.toml` stores
-`{secret:KEEPPEEK_ACCESS_KEY}`. The integer `0` is reserved: it means unset, and tests may use
-`access_key = 0` / `AccessKey(0)` without minting a real secret.
-
-Direct same-host loopback requests skip the key and act as Administrator. Every non-loopback
-peer, including private LAN and link-local clients, must send Bearer. Requests carrying reverse
-proxy headers also require Bearer even when the immediate peer is loopback. The first-party UI
-may later receive the same key in an HttpOnly SameSite cookie when KeepPeek serves the origin for
-a remote browser.
-
-### How the key is chosen
-
-Resolution order at process start:
-
-1. `keeppeek --access-key <guid>` when the value is not `0`
-2. `access_key` in the loaded `config.toml` when the value is not `0`, including a secret reference
-3. `KEEPPEEK_SECRET_KEEPPEEK_ACCESS_KEY` or `KEEPPEEK_ACCESS_KEY` in owner-only `secrets.toml`
-4. Otherwise generate a random non-zero master GUID in owner-only `secrets.toml`
-
-CLI and existing inline config values are migrated into `secrets.toml`; `config.toml` retains only
-the reference. A later start reuses that secret and never prints its value.
-
-```toml
-host = "0.0.0.0"
-port = 8081
-access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
-```
-
-```text
-keeppeek --access-key 550e8400-e29b-41d4-a716-446655440000
-keeppeek --config /path/to/config.toml
-```
-
-`--access-key` overrides the file for that process. If the override is a real key, KeepPeek
-writes it back to `access_key` so a restart without the flag still authenticates. Settings
-updates that do not set a key must leave the stored value alone. The settings HTTP JSON must
-never include the raw key.
-
-No HTTP endpoint creates, rotates, or lists keys. A loopback Administrator session may explicitly
-reveal or rotate the shared key through the in-band control channel. Remote sessions cannot use
-either command. Rotation atomically replaces `KEEPPEEK_ACCESS_KEY` in the owner-only secret file,
-updates future Bearer authentication immediately, and closes sessions authenticated with the old
-key. Debug logs must not print either GUID.
-
-Until per-key scopes exist, every configured GUID has the same rights to `/create`, `/delete`,
-`/logs`, `/logs/snapshot`, and `/metrics`. A Home Assistant card token is therefore also a
-metrics and log credential.
-
-Every remote request sends its configured key in the Authorization header:
+KeepPeek resolves one principal before a protected HTTP or WebRTC operation runs. Direct clients
+inside the configured local networks act as Administrator without signing in. Remote clients send
+one named UUID credential through the `Authorization` header:
 
 ```http
 Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
 ```
 
-There are no users, roles, scopes, or per-client resource counters in this API.
+Credential values are never accepted from a query parameter. Direct remote requests require HTTPS
+when `require_secure_remote` is enabled. A configured trusted proxy is treated as the TLS boundary;
+the proxy is responsible for accepting HTTPS from its client and forwarding over its protected
+link to KeepPeek.
+
+### Network policy
+
+The default local CIDRs cover IPv4 loopback, RFC 1918, IPv4 link-local, IPv6 loopback, IPv6 unique
+local, and IPv6 link-local addresses. IPv4-mapped IPv6 addresses are normalized before matching.
+Container bridge addresses in `172.16.0.0/12` are local by default. Carrier-grade NAT
+`100.64.0.0/10`, documentation ranges, and unknown addresses are remote.
+
+```toml
+[access]
+local_networks = [
+  "127.0.0.0/8",
+  "10.0.0.0/8",
+  "172.16.0.0/12",
+  "192.168.0.0/16",
+  "169.254.0.0/16",
+  "::1/128",
+  "fc00::/7",
+  "fe80::/10",
+]
+trusted_proxies = []
+require_secure_remote = true
+failed_authentication_limit = 5
+failed_authentication_window_secs = 60
+session_idle_timeout_secs = 1800
+session_absolute_timeout_secs = 86400
+max_sessions_per_principal = 64
+max_sessions_per_address = 128
+```
+
+Forwarding headers are ignored for an untrusted immediate peer and force remote classification.
+A trusted immediate peer must send exactly one `X-Forwarded-For` field. KeepPeek rejects duplicate,
+empty, malformed, overlong, or mixed forwarding contracts, including `Forwarded`, `X-Real-IP`,
+`X-Forwarded-Host`, and `X-Forwarded-Proto`. It walks the comma-separated chain from right to left
+and selects the first address not covered by `trusted_proxies`; an untrusted public hop therefore
+cannot prepend a private address and become local.
+
+Unix-domain HTTP listeners are not implemented. The server currently listens on IPv4 or IPv6 TCP.
+Unknown classifications fail closed as remote.
+
+### Roles
+
+Administrator includes every User operation and all camera, recording, storage, integration,
+notification, logging, identity, audit, health, deletion, and server configuration operations.
+User permits live and stored viewing, event queries and media fetches, camera PTZ and preset
+operation, group/publication operations, shared-state operations subject to namespace policy, and
+personal notification inbox state. The server checks the centralized command policy before every
+control command. UI visibility is not an authorization boundary.
+
+### Credentials
+
+First start creates a random remote Administrator UUID. The protected legacy value remains in
+owner-only `secrets.toml` for compatibility, while `access.toml` stores its SHA-256 verifier and
+identity metadata. The local setup flow can retrieve that initial value once. Named credentials
+created afterward store only their verifier and return the raw value only in the successful create
+or rotate response.
+
+`access.toml` is written atomically with owner-only permissions. Each credential has a stable UUID,
+name, optional description, fixed role, created/rotated/last-used/expiry/revocation timestamps,
+enabled state, and monotonically increasing revision. Last-used persistence is coalesced to at most
+one write per minute. The catalog holds at most 128 credentials and 1,024 audit events.
+
+Administrator control-channel operations are `list_access_credentials`,
+`create_access_credential`, `rotate_access_credential`, `set_access_credential_enabled`, and
+`revoke_access_credential`. Create and rotate responses contain the new key exactly once. Listing,
+disable, enable, revoke, audit, capabilities, logs, and errors never contain a raw key or verifier.
+
+Remote authentication failures are limited per normalized effective address to five attempts per
+60-second window by default. The address tracker itself is bounded to 1,024 entries. Failure
+responses do not distinguish unknown, disabled, revoked, or expired credentials. Bounded audit
+records retain the internal failure category without storing an Authorization header.
 
 ## Session lifecycle
 
@@ -151,12 +180,32 @@ response is gzip-compressed JSON with `Content-Encoding: gzip`. After decompress
 the opaque `session_id` to retain for cleanup and an `answer` object with `type: "answer"` and its
 SDP string.
 
-Delete the session with `POST /delete` and a JSON body containing that `session_id` when
-the viewer or service is finished. KeepPeek records the key used to create each session and
-accepts deletion only from that same key. An unknown session or a session created by a different
-key returns `404`. The default successful response is `204`. Browser clients may send
+The session ID is a random non-zero 64-bit value reserved across all live WebRTC threads. A session
+record binds it to the principal, role, effective client address, classification reason, credential
+revision, creation time, last activity, and absolute expiry. `ServerCapabilities.access_session`
+reports the current non-secret identity metadata.
+
+Delete the session with `POST /delete` and a JSON body containing that `session_id` when the viewer
+or service is finished. The authenticated principal and effective address must match its owner. An
+unknown or previously deleted session is an idempotent success; a known session owned by another
+caller returns `404`. The default successful response is `204`. Browser clients may send
 `Prefer: return=representation` to receive a complete `200 text/plain` response before the
 associated WebRTC transport closes.
+
+Sessions expire after 30 minutes idle or 24 hours absolute by default, no later than credential
+expiry. The server limits active sessions to 64 per principal and 128 per effective address.
+Administrator operations can list and revoke sessions. Credential rotation, disable, revoke, or
+expiry invalidates its revision, removes matching authorization records, cancels authenticated log
+streams, and requests WebRTC shutdown. The server sweeps expiry every 100 ms; log readers wake for
+cancellation at most every 100 ms. WebRTC shutdown allows up to one second for graceful close and
+then reports a warning; normal session cleanup stops PTZ ownership, event/discovery work, stored
+cursors, and queued data.
+
+Audit events record credential lifecycle, remote login, session lifecycle, denied commands, and
+proxy/authentication failures with principal, role, action, target, result, classification, and UTC
+timestamp. They never contain keys, Authorization fields, SDP, cookies, or media. Prometheus access
+metrics use fixed label-free counters and gauges. Audit entries are visible in memory immediately
+and are flushed atomically to `access.toml` within one second and again during graceful shutdown.
 
 ## Log stream
 

@@ -86,9 +86,12 @@
 		)
 	);
 	let clientTracks = $derived(Object.values(livePeer.tracks));
+	let clientSessionNumericId = $derived(
+		livePeer.sessionId === null ? null : Number(livePeer.sessionId)
+	);
 	let clientQueues = $derived(
-		health && livePeer.sessionId !== null
-			? health.webrtc.session_queues.filter((queue) => queue.session_id === livePeer.sessionId)
+		health && clientSessionNumericId !== null
+			? health.webrtc.session_queues.filter((queue) => queue.session_id === clientSessionNumericId)
 			: []
 	);
 	let clientMainTracks = $derived(
@@ -144,7 +147,7 @@
 		}
 	}
 
-	async function refreshClientReceiverHealth(expectedSessionId: number) {
+	async function refreshClientReceiverHealth(expectedSessionId: string) {
 		if (clientStatsRefreshInFlight) return;
 		clientStatsRefreshInFlight = true;
 		try {

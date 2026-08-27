@@ -71,12 +71,16 @@ reference, `KEEPPEEK_SECRET_<KEY>` from the process environment wins over the sa
 Configuration editors and API responses retain `{secret:...}` instead of returning resolved
 values. Saving an unrelated camera or runtime setting preserves unchanged references. Entering a
 new credential intentionally replaces that one reference with an inline literal; `secrets.toml` is
-not generally editable through the UI. The shared KeepPeek access key is the sole exception: its
-dedicated local-only control can reveal or rotate that value without exposing other secrets.
+not generally editable through the UI. The compatibility first-run KeepPeek access key is the sole
+exception: its dedicated local-only control can retrieve the generated value once or rotate it
+without exposing other secrets.
 
 On first start, KeepPeek generates `KEEPPEEK_ACCESS_KEY` in the owner-only secret file and writes
 only `{secret:KEEPPEEK_ACCESS_KEY}` to `config.toml`. It never prints the generated value. Existing
 inline access keys and non-zero `--access-key` values are migrated into `secrets.toml` on startup.
+The owner-only `access.toml` stores that credential's verifier and lifecycle metadata. Named
+credentials created later store only verifiers in `access.toml`; their raw values are returned once
+and are never added to `secrets.toml`.
 
 Existing inline camera credentials remain supported and are not moved automatically. To migrate
 one, create a key in `secrets.toml`, replace the inline value in `config.toml` with its reference,
@@ -88,11 +92,12 @@ camera loader.
 
 ## Rotation
 
-From a browser on the KeepPeek machine, **Settings > Access** can reveal, copy, or rotate the shared
-remote access key. The key is not rendered until it is explicitly revealed. Rotation requires
-confirmation, atomically replaces only `KEEPPEEK_ACCESS_KEY`, updates authentication immediately,
-and closes remote sessions authenticated with the old key. Remote sessions cannot reveal or rotate
-the key. Rotation is unavailable while `KEEPPEEK_SECRET_KEEPPEEK_ACCESS_KEY` overrides the file.
+On first run, a local Administrator can retrieve, copy, or download the initial remote
+Administrator key once. It is not rendered until that explicit action. **Settings > Access** lists
+credential metadata and can create, rotate, disable, or revoke named Administrator and User
+credentials. Create and rotate show the replacement only for that operation. Lifecycle changes
+invalidate matching HTTP/WebRTC work and active sessions. Rotation of the compatibility initial
+credential is unavailable while `KEEPPEEK_SECRET_KEEPPEEK_ACCESS_KEY` overrides the file.
 
 To rotate any other secret without changing `config.toml`:
 

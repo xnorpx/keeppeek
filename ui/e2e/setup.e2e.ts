@@ -77,7 +77,10 @@ test('Board 21 verifies storage, names empty states, and opens camera onboarding
 	await expect(page.getByText('WRITE PROOF VERIFIED')).toBeVisible();
 	await expect(page.getByText('Write, flush, rename, and cleanup succeeded.')).toBeVisible();
 	await expect(page.getByText('DETECTED FROM THIS BROWSER')).toBeVisible();
-	await expect(page.getByText(/Server update required · keeppeek\.identity\.v1/)).toBeVisible();
+	await expect(
+		page.getByRole('heading', { name: 'Remote Administrator credential' })
+	).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Retrieve initial key' })).toBeEnabled();
 	const startRecorder = page.getByRole('button', { name: 'Continue to camera setup' });
 	await expect(startRecorder).toBeEnabled();
 	await expect(startRecorder).toBeInViewport();

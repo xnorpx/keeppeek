@@ -110,10 +110,11 @@ API returning bucketed availability plus event records.
 plus a severity-scoped issues list), a Prometheus `/metrics` endpoint, and an SSE `/logs` stream.
 Camera lifecycle states are Starting, Connected, Degraded, Reconnecting, ShuttingDown, Stopped.
 
-**Authentication as it stands.** The running server does not yet check a key. The contract is:
-local requests skip authentication; remote requests present one shared bearer UUID. Every key
-has identical access. There is no user model, no role, no per-camera restriction, and no audit
-trail.
+**Authentication as it stands.** The running server classifies the effective client from the
+immediate peer and the one configured trusted-proxy contract. Policy-defined local requests are
+Administrator without sign-in. Remote requests present a named bearer UUID whose verifier,
+fixed role, lifecycle metadata, and revision are durable. Credential/session changes and denied
+operations produce bounded audit records.
 
 **Access model, as decided.** Network position decides whether a request authenticates. Role
 decides what an authenticated remote principal may do.
@@ -121,9 +122,9 @@ decides what an authenticated remote principal may do.
 - **Local** — loopback, link-local, and private LAN source addresses. No sign-in, no key.
   The request is Administrator. This is how the person at the machine watches and configures
   their own recorder.
-- **Remote** — every other source, including a request that arrived through a reverse proxy
-  or a forwarded client address. Authentication is required. Today that is the shared bearer
-  UUID. The target is an identity with one of the two fixed roles.
+- **Remote** — every other effective source. Authentication is required with a named bearer
+  UUID assigned one of the two fixed roles. Forwarded addresses are accepted only from an exact
+  configured trusted proxy; malformed or untrusted forwarding fails closed.
 
 Two fixed roles, deliberately not granular:
 

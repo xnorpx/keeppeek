@@ -6,7 +6,11 @@ use crate::api::proto::{
     stored_media_command,
 };
 use crate::{
-    access::{AccessKey, AccessKeyFingerprint},
+    access::{
+        AccessAuditEvent, AccessKey, AccessManager, AccessRole, AuthenticatedCredential,
+        AuthenticationFailure, ClientClassification, ClientClassificationReason,
+        CredentialMetadata, IssuedCredential, NetworkAccessPolicy, NewAccessAuditEvent,
+    },
     api::{
         ApiError, AudioProfileSummary, CameraInfo, CameraLifecycle, CameraStatus, CreateRequest,
         CreateResponse, DeleteRequest, MotionDetection, ProfileSummary, RecordingCapacityEstimate,
@@ -67,13 +71,14 @@ use std::{
     net::{IpAddr, Ipv4Addr, TcpListener, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, RwLock, Weak,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
 };
 use url::Url;
+use uuid::Uuid;
 
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERVER_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(3);
@@ -283,9 +288,166 @@ impl ControlCommandError {
     }
 }
 
+const fn required_access_role(command: Option<&control_request::Command>) -> AccessRole {
+    match command {
+        Some(control_request::Command::CameraControlCommand(command)) => match command.action {
+            Some(camera_control_command::Action::Ptz(_))
+            | Some(camera_control_command::Action::GetMotionDetection(_)) => AccessRole::User,
+            _ => AccessRole::Administrator,
+        },
+        Some(control_request::Command::EventSearchCommand(command)) => match command.action {
+            Some(event_search_command::Action::Query(_))
+            | Some(event_search_command::Action::CancelQuery(_))
+            | Some(event_search_command::Action::FetchMedia(_))
+            | Some(event_search_command::Action::CancelMedia(_)) => AccessRole::User,
+            _ => AccessRole::Administrator,
+        },
+        Some(control_request::Command::NotificationRuleCommand(command)) => match command.action {
+            Some(notification_rule_command::Action::GetInbox(_))
+            | Some(notification_rule_command::Action::GetHistory(_))
+            | Some(notification_rule_command::Action::MarkSeen(_))
+            | Some(notification_rule_command::Action::Acknowledge(_))
+            | Some(notification_rule_command::Action::Clear(_))
+            | Some(notification_rule_command::Action::ClearScope(_)) => AccessRole::User,
+            _ => AccessRole::Administrator,
+        },
+        Some(control_request::Command::ServerCommand(command)) => match command.action {
+            Some(server_command::Action::GetAccessSession(_)) => AccessRole::User,
+            _ => AccessRole::Administrator,
+        },
+        Some(
+            control_request::Command::SubscribeMedia(_)
+            | control_request::Command::SubscribeEvents(_)
+            | control_request::Command::SubscribeData(_)
+            | control_request::Command::Unsubscribe(_)
+            | control_request::Command::StoredMediaCommand(_)
+            | control_request::Command::GroupCommand(_)
+            | control_request::Command::StateStoreCommand(_)
+            | control_request::Command::PublicationCommand(_)
+            | control_request::Command::EventPublicationCommand(_)
+            | control_request::Command::PublicationReport(_),
+        ) => AccessRole::User,
+        _ => AccessRole::Administrator,
+    }
+}
+
+const fn access_operation(command: Option<&control_request::Command>) -> &'static str {
+    match command {
+        Some(control_request::Command::SubscribeMedia(_)) => "subscribe_media",
+        Some(control_request::Command::SubscribeEvents(_)) => "subscribe_events",
+        Some(control_request::Command::SubscribeData(_)) => "subscribe_data",
+        Some(control_request::Command::Unsubscribe(_)) => "unsubscribe",
+        Some(control_request::Command::PublishEvent(_)) => "publish_event",
+        Some(control_request::Command::PublicationCommand(_)) => "publication",
+        Some(control_request::Command::StoredMediaCommand(_)) => "stored_media",
+        Some(control_request::Command::EventPublicationCommand(_)) => "event_publication",
+        Some(control_request::Command::GroupCommand(_)) => "group",
+        Some(control_request::Command::StateStoreCommand(_)) => "state_store",
+        Some(control_request::Command::CameraControlCommand(_)) => "camera_control",
+        Some(control_request::Command::PublicationReport(_)) => "publication_report",
+        Some(control_request::Command::CameraConfigurationCommand(_)) => "camera_configuration",
+        Some(control_request::Command::RuntimeConfigurationCommand(_)) => "runtime_configuration",
+        Some(control_request::Command::LoggingCommand(_)) => "logging",
+        Some(control_request::Command::ServerCommand(_)) => "server",
+        Some(control_request::Command::HealthCommand(_)) => "health",
+        Some(control_request::Command::ExportCommand(_)) => "export",
+        Some(control_request::Command::EventSearchCommand(_)) => "event_search",
+        Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
+        None => "missing_command",
+    }
+}
+
+const fn sensitive_administrator_operation(
+    command: Option<&control_request::Command>,
+) -> Option<&'static str> {
+    match command {
+        Some(control_request::Command::CameraControlCommand(command)) => match command.action {
+            Some(camera_control_command::Action::SetMotionDetection(_)) => {
+                Some("camera_motion_update")
+            }
+            Some(camera_control_command::Action::SetManufacturer(_)) => {
+                Some("camera_manufacturer_update")
+            }
+            _ => None,
+        },
+        Some(control_request::Command::CameraConfigurationCommand(command)) => {
+            match command.action {
+                Some(camera_configuration_command::Action::Discover(_)) => {
+                    Some("camera_discovery_start")
+                }
+                Some(camera_configuration_command::Action::CancelDiscovery(_)) => {
+                    Some("camera_discovery_cancel")
+                }
+                Some(camera_configuration_command::Action::ProbeStreams(_)) => {
+                    Some("camera_stream_probe")
+                }
+                Some(camera_configuration_command::Action::Update(_)) => {
+                    Some("camera_configuration_update")
+                }
+                Some(camera_configuration_command::Action::Remove(_)) => {
+                    Some("camera_configuration_remove")
+                }
+                _ => None,
+            }
+        }
+        Some(control_request::Command::RuntimeConfigurationCommand(command)) => {
+            match command.action {
+                Some(runtime_configuration_command::Action::Update(_)) => {
+                    Some("runtime_configuration_update")
+                }
+                Some(runtime_configuration_command::Action::ProbeStorage(_)) => {
+                    Some("storage_write_probe")
+                }
+                _ => None,
+            }
+        }
+        Some(control_request::Command::LoggingCommand(command)) => match command.action {
+            Some(logging_command::Action::SetFilter(_)) => Some("logging_filter_update"),
+            _ => None,
+        },
+        Some(control_request::Command::ExportCommand(command)) => match command.action {
+            Some(proto::export_command::Action::Create(_)) => Some("export_create"),
+            Some(proto::export_command::Action::Cancel(_)) => Some("export_cancel"),
+            Some(proto::export_command::Action::Retry(_)) => Some("export_retry"),
+            Some(proto::export_command::Action::Download(_)) => Some("export_download"),
+            _ => None,
+        },
+        Some(control_request::Command::EventSearchCommand(command)) => match command.action {
+            Some(event_search_command::Action::ReplaceTerms(_)) => Some("event_terms_replace"),
+            Some(event_search_command::Action::SetEmbedding(_)) => Some("event_embedding_set"),
+            _ => None,
+        },
+        Some(control_request::Command::NotificationRuleCommand(command)) => match command.action {
+            Some(notification_rule_command::Action::SaveDraft(_)) => Some("notification_rule_save"),
+            Some(notification_rule_command::Action::Activate(_)) => {
+                Some("notification_rule_activate")
+            }
+            Some(notification_rule_command::Action::Delete(_)) => Some("notification_rule_delete"),
+            Some(notification_rule_command::Action::Test(_)) => Some("notification_rule_test"),
+            _ => None,
+        },
+        Some(control_request::Command::PublishEvent(_)) => Some("event_publish"),
+        _ => None,
+    }
+}
+
 impl ControlRequestHandler for ServerControlHandler {
     fn handle(&self, request: proto::Request) -> ControlDispatch {
         self.handle_for_session(SessionId::from_u64(0), request)
+    }
+
+    fn authorize_session_command(
+        &self,
+        session_id: SessionId,
+        request: &proto::Request,
+    ) -> Result<(), ControlHandlerError> {
+        self.authorize_api_session(
+            session_id,
+            required_access_role(request.command.as_ref()),
+            access_operation(request.command.as_ref()),
+        )
+        .map(|_| ())
+        .map_err(|(error, _)| ControlHandlerError::new(error.code, error.message))
     }
 
     fn handle_for_session(
@@ -294,78 +456,109 @@ impl ControlRequestHandler for ServerControlHandler {
         request: proto::Request,
     ) -> ControlDispatch {
         let request_id = request.request_id;
-        let mut after_send = None;
+        let mut after_send: Option<PostSendAction> = None;
         let mut data_messages = Vec::new();
         let mut notifications = Vec::new();
-        let result = match request.command {
-            Some(control_request::Command::CameraControlCommand(command)) => {
-                self.handle_camera_control(session_id, command).map(Some)
-            }
-            Some(control_request::Command::CameraConfigurationCommand(command)) => self
-                .handle_camera_configuration(session_id, command)
-                .map(Some),
-            Some(control_request::Command::LoggingCommand(command)) => {
-                self.handle_logging(command).map(Some)
-            }
-            Some(control_request::Command::ServerCommand(command)) => {
-                match self.handle_server(session_id, command) {
-                    Ok((result, action)) => {
-                        after_send = Some(action);
-                        Ok(Some(result))
-                    }
-                    Err(error) => Err(error),
+        let required_role = required_access_role(request.command.as_ref());
+        let operation = access_operation(request.command.as_ref());
+        let sensitive_operation = sensitive_administrator_operation(request.command.as_ref());
+        let result = match self.authorize_api_session(session_id, required_role, operation) {
+            Err((error, close_session)) => {
+                if close_session {
+                    let webrtc = self.state.webrtc.clone();
+                    after_send = Some(Box::new(move || {
+                        webrtc.request_api_session_close(session_id);
+                    }));
                 }
+                Err(error)
             }
-            Some(control_request::Command::RuntimeConfigurationCommand(command)) => {
-                self.handle_runtime_configuration(command).map(Some)
-            }
-            Some(control_request::Command::HealthCommand(command)) => {
-                self.handle_health(command).map(Some)
-            }
-            Some(control_request::Command::ExportCommand(command)) => {
-                match self.handle_export(command) {
-                    Ok((result, messages)) => {
-                        data_messages = messages;
-                        Ok(Some(result))
+            Ok(principal) => {
+                let result = match request.command {
+                    Some(control_request::Command::CameraControlCommand(command)) => {
+                        self.handle_camera_control(session_id, command).map(Some)
                     }
-                    Err(error) => Err(error),
-                }
-            }
-            Some(control_request::Command::EventSearchCommand(command)) => {
-                match self.handle_event_search(session_id, command) {
-                    Ok((result, messages)) => {
-                        data_messages = messages;
-                        Ok(result)
+                    Some(control_request::Command::CameraConfigurationCommand(command)) => self
+                        .handle_camera_configuration(session_id, command)
+                        .map(Some),
+                    Some(control_request::Command::LoggingCommand(command)) => {
+                        self.handle_logging(command).map(Some)
                     }
-                    Err(error) => Err(error),
-                }
-            }
-            Some(control_request::Command::NotificationRuleCommand(command)) => self
-                .handle_notification_rules(session_id, command)
-                .map(Some),
-            Some(control_request::Command::StoredMediaCommand(command)) => {
-                match self.handle_stored_media(session_id, command) {
-                    Ok(dispatch) => {
-                        data_messages = dispatch.messages;
-                        notifications = dispatch.notifications;
-                        Ok(dispatch.result)
+                    Some(control_request::Command::ServerCommand(command)) => {
+                        match self.handle_server(session_id, &principal, command) {
+                            Ok((result, action)) => {
+                                after_send = Some(action);
+                                Ok(Some(result))
+                            }
+                            Err(error) => Err(error),
+                        }
                     }
-                    Err(error) => Err(error),
+                    Some(control_request::Command::RuntimeConfigurationCommand(command)) => {
+                        self.handle_runtime_configuration(command).map(Some)
+                    }
+                    Some(control_request::Command::HealthCommand(command)) => {
+                        self.handle_health(command).map(Some)
+                    }
+                    Some(control_request::Command::ExportCommand(command)) => {
+                        match self.handle_export(command) {
+                            Ok((result, messages)) => {
+                                data_messages = messages;
+                                Ok(Some(result))
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Some(control_request::Command::EventSearchCommand(command)) => {
+                        match self.handle_event_search(session_id, command) {
+                            Ok((result, messages)) => {
+                                data_messages = messages;
+                                Ok(result)
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Some(control_request::Command::NotificationRuleCommand(command)) => self
+                        .handle_notification_rules(session_id, command)
+                        .map(Some),
+                    Some(control_request::Command::StoredMediaCommand(command)) => {
+                        match self.handle_stored_media(session_id, command) {
+                            Ok(dispatch) => {
+                                data_messages = dispatch.messages;
+                                notifications = dispatch.notifications;
+                                Ok(dispatch.result)
+                            }
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Some(control_request::Command::PublishEvent(command)) => {
+                        self.handle_publish_event(command).map(|()| None)
+                    }
+                    Some(_) => Err(ControlCommandError::new(
+                        proto::ErrorCode::UnsupportedRequest,
+                        501,
+                        "control command is not implemented by this server",
+                    )),
+                    None => Err(ControlCommandError::new(
+                        proto::ErrorCode::InvalidRequest,
+                        400,
+                        "control request has no command",
+                    )),
+                };
+                if result.is_ok()
+                    && let Some(sensitive_operation) = sensitive_operation
+                {
+                    record_access_audit(
+                        &self.state,
+                        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                        Some(&principal.id()),
+                        Some(principal.role),
+                        sensitive_operation,
+                        None,
+                        "success",
+                        self.session_classification(session_id),
+                    );
                 }
+                result
             }
-            Some(control_request::Command::PublishEvent(command)) => {
-                self.handle_publish_event(command).map(|()| None)
-            }
-            Some(_) => Err(ControlCommandError::new(
-                proto::ErrorCode::UnsupportedRequest,
-                501,
-                "control command is not implemented by this server",
-            )),
-            None => Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "control request has no command",
-            )),
         };
         ControlDispatch {
             response: proto::Response {
@@ -386,6 +579,24 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 
     fn session_closed(&self, session_id: SessionId) {
+        let closed_session = self
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
+        if let Some(session) = closed_session {
+            record_access_audit(
+                &self.state,
+                i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                Some(&session.principal.id()),
+                Some(session.principal.role),
+                "session_closed",
+                Some(&session_id.to_string()),
+                "success",
+                session.classification.reason,
+            );
+        }
         let cancelled = self
             .state
             .event_search_tasks
@@ -485,13 +696,36 @@ impl ControlRequestHandler for ServerControlHandler {
         if self.state.notifications.is_some() {
             capability_ids.push("keeppeek.rules.v1".to_owned());
         }
+        capability_ids.push("keeppeek.identity.v1".to_owned());
+        let access_session = if session_id.as_u64() == 0 {
+            Some(proto::AccessSession {
+                session_id: "0".to_owned(),
+                principal_id: "local-administrator".to_owned(),
+                display_name: "Local Administrator".to_owned(),
+                role: proto::AccessRole::Administrator as i32,
+                local: true,
+                client_classification: ClientClassificationReason::DirectLocal.as_str().to_owned(),
+                created_at_ms: 0,
+                last_activity_at_ms: 0,
+                absolute_expires_at_ms: i64::MAX,
+                credential_expires_at_ms: None,
+            })
+        } else {
+            self.state
+                .api_session_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&session_id)
+                .map(|session| proto_access_session(session_id, session))
+        };
         Some(proto::ServerCapabilities {
-            revision: 1,
+            revision: 2,
             cameras,
             source_sessions,
             stored_media_sources,
             self_source_session_id,
             capability_ids,
+            access_session,
         })
     }
 
@@ -791,6 +1025,120 @@ impl ServerControlHandler {
         Self { state, router_tx }
     }
 
+    fn authorize_api_session(
+        &self,
+        session_id: SessionId,
+        required_role: AccessRole,
+        operation: &'static str,
+    ) -> Result<ApiPrincipal, (ControlCommandError, bool)> {
+        if session_id.as_u64() == 0 {
+            return Ok(ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        }
+        let now_at = Instant::now();
+        let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+        let mut sessions = self
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(session) = sessions.get_mut(&session_id) else {
+            drop(sessions);
+            self.state
+                .access_metrics
+                .authorization_denials
+                .fetch_add(1, Ordering::Relaxed);
+            record_access_audit(
+                &self.state,
+                now_ms,
+                None,
+                None,
+                "command_denied",
+                Some(&session_id.to_string()),
+                "unknown_session",
+                ClientClassificationReason::UnknownSession,
+            );
+            return Err((
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    401,
+                    "API session is unavailable",
+                ),
+                false,
+            ));
+        };
+        let credential_active =
+            session
+                .principal
+                .credential_binding()
+                .is_none_or(|(id, revision)| {
+                    self.state
+                        .access_manager
+                        .credential_is_active(id, revision, now_ms)
+                });
+        let expired = now_ms >= session.absolute_expires_at_ms
+            || now_at.saturating_duration_since(session.last_activity)
+                >= self.state.api_session_policy.idle_timeout
+            || !credential_active;
+        if expired {
+            let session = sessions
+                .remove(&session_id)
+                .expect("expired session must still be present");
+            drop(sessions);
+            self.state
+                .access_metrics
+                .sessions_revoked_or_expired
+                .fetch_add(1, Ordering::Relaxed);
+            record_access_audit(
+                &self.state,
+                now_ms,
+                Some(&session.principal.id()),
+                Some(session.principal.role),
+                "command_denied",
+                Some(&session_id.to_string()),
+                "expired_or_revoked_session",
+                session.classification.reason,
+            );
+            return Err((
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    401,
+                    "API session expired or was revoked",
+                ),
+                true,
+            ));
+        }
+        if !session.principal.role.permits(required_role) {
+            let principal = session.principal.clone();
+            let classification = session.classification;
+            drop(sessions);
+            self.state
+                .access_metrics
+                .authorization_denials
+                .fetch_add(1, Ordering::Relaxed);
+            record_access_audit(
+                &self.state,
+                now_ms,
+                Some(&principal.id()),
+                Some(principal.role),
+                "command_denied",
+                Some(operation),
+                "insufficient_role",
+                classification.reason,
+            );
+            return Err((
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    403,
+                    "Administrator role is required for this operation",
+                ),
+                false,
+            ));
+        }
+        session.last_activity = now_at;
+        session.last_activity_at_ms = now_ms;
+        Ok(session.principal.clone())
+    }
+
     fn handle_publish_event(
         &self,
         command: proto::PublishEvent,
@@ -975,6 +1323,7 @@ impl ServerControlHandler {
         command: proto::NotificationRuleCommand,
     ) -> Result<control_ok::Result, ControlCommandError> {
         let principal_id = self.notification_principal(session_id)?;
+        let principal_id = principal_id.as_str();
         let notifications = self.state.notifications.as_ref().ok_or_else(|| {
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
@@ -1179,24 +1528,25 @@ impl ServerControlHandler {
         ))
     }
 
-    fn notification_principal(
-        &self,
-        session_id: SessionId,
-    ) -> Result<&'static str, ControlCommandError> {
+    fn notification_principal(&self, session_id: SessionId) -> Result<String, ControlCommandError> {
+        if session_id.as_u64() == 0 {
+            return Ok("local-administrator".to_owned());
+        }
         let owners = self
             .state
             .api_session_owners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if owners.contains_key(&session_id) {
-            Ok("administrator")
-        } else {
-            Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                403,
-                "notification commands require an authenticated API session",
-            ))
-        }
+        owners
+            .get(&session_id)
+            .map(|session| session.principal.id())
+            .ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    403,
+                    "notification commands require an authenticated API session",
+                )
+            })
     }
 
     fn handle_camera_control(
@@ -2027,8 +2377,11 @@ impl ServerControlHandler {
     fn handle_server(
         &self,
         session_id: SessionId,
+        principal: &ApiPrincipal,
         command: proto::ServerCommand,
     ) -> Result<(control_ok::Result, PostSendAction), ControlCommandError> {
+        let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+        let classification = self.session_classification(session_id);
         match command.action {
             Some(server_command::Action::Restart(_)) => {
                 let Some(control) = self.state.restart_control.clone() else {
@@ -2038,6 +2391,16 @@ impl ServerControlHandler {
                         "server restart is unavailable",
                     ));
                 };
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "server_restart",
+                    None,
+                    "success",
+                    classification,
+                );
                 let action = Box::new(move || {
                     control.restart.request();
                     control.shutdown.cancel();
@@ -2048,7 +2411,7 @@ impl ServerControlHandler {
                 ))
             }
             Some(server_command::Action::GetAccessKey(_)) => {
-                self.require_loopback_administrator(session_id)?;
+                self.require_local_administrator(principal)?;
                 let access_key = *self
                     .state
                     .access_key
@@ -2061,73 +2424,264 @@ impl ServerControlHandler {
                         "remote access key is not configured",
                     ));
                 }
+                let issued = self
+                    .state
+                    .access_manager
+                    .claim_initial_access_key(access_key)
+                    .map_err(|error| access_command_error("retrieve initial access key", error))?;
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "credential_claim",
+                    Some(&issued.metadata.id.to_string()),
+                    "success",
+                    classification,
+                );
                 Ok((
                     control_ok::Result::AccessKeyResult(proto::AccessKeyResult {
-                        access_key: access_key.canonical(),
+                        access_key: issued.access_key.canonical(),
                         rotated: false,
                     }),
                     Box::new(|| {}),
                 ))
             }
             Some(server_command::Action::RotateAccessKey(_)) => {
-                self.require_loopback_administrator(session_id)?;
-                let Some(config_path) = &self.state.camera_config_path else {
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::Unavailable,
-                        409,
-                        "remote access key rotation requires a persisted configuration",
-                    ));
-                };
-                let _update = self
+                self.require_local_administrator(principal)?;
+                let credential_id = self
                     .state
-                    .config_update
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let access_key =
-                    config::rotate_access_key_secret(config_path).map_err(|error| {
+                    .access_manager
+                    .legacy_credential_id()
+                    .ok_or_else(|| {
                         ControlCommandError::new(
                             proto::ErrorCode::Unavailable,
                             409,
-                            format!("remote access key could not be rotated: {error}"),
+                            "initial Administrator credential is unavailable",
                         )
                     })?;
-                *self
-                    .state
-                    .access_key
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = access_key;
-                let remote_sessions = {
-                    let mut owners = self
-                        .state
-                        .api_session_owners
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let sessions = owners
-                        .iter()
-                        .filter_map(|(session_id, principal)| {
-                            matches!(principal, ApiPrincipal::AccessKey(_)).then_some(*session_id)
-                        })
-                        .collect::<Vec<_>>();
-                    owners.retain(|_, principal| !matches!(principal, ApiPrincipal::AccessKey(_)));
-                    sessions
-                };
-                let webrtc = self.state.webrtc.clone();
+                let issued = self.rotate_credential(credential_id, now_ms)?;
+                let revoked_sessions = self.remove_credential_sessions(credential_id);
                 tracing::info!(
-                    revoked_sessions = remote_sessions.len(),
-                    "remote access key rotated by loopback administrator"
+                    revoked_sessions = revoked_sessions.len(),
+                    "initial remote Administrator credential rotated"
+                );
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "credential_rotate",
+                    Some(&credential_id.to_string()),
+                    "success",
+                    classification,
                 );
                 Ok((
                     control_ok::Result::AccessKeyResult(proto::AccessKeyResult {
-                        access_key: access_key.canonical(),
+                        access_key: issued.access_key.canonical(),
                         rotated: true,
                     }),
-                    Box::new(move || {
-                        for session_id in remote_sessions {
-                            webrtc.close_api_session(session_id);
-                        }
-                    }),
+                    close_api_sessions_action(self.state.webrtc.clone(), revoked_sessions),
                 ))
             }
+            Some(server_command::Action::GetAccessSession(_)) => {
+                let current = self.current_access_session(session_id)?;
+                Ok((
+                    control_ok::Result::AccessSessionResult(proto::AccessSessionResult {
+                        current: Some(current),
+                        sessions: Vec::new(),
+                    }),
+                    Box::new(|| {}),
+                ))
+            }
+            Some(server_command::Action::ListAccessCredentials(_)) => Ok((
+                control_ok::Result::AccessCredentialResult(proto::AccessCredentialResult {
+                    credentials: self
+                        .state
+                        .access_manager
+                        .list_credentials()
+                        .into_iter()
+                        .map(proto_access_credential)
+                        .collect(),
+                    access_key: None,
+                }),
+                Box::new(|| {}),
+            )),
+            Some(server_command::Action::CreateAccessCredential(request)) => {
+                let role = access_role_from_proto(request.role)?;
+                let issued = self
+                    .state
+                    .access_manager
+                    .create_credential(
+                        &request.name,
+                        request.description.as_deref(),
+                        role,
+                        request.expires_at_ms,
+                        now_ms,
+                    )
+                    .map_err(|error| access_command_error("create credential", error))?;
+                let credential_id = issued.metadata.id;
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "credential_create",
+                    Some(&credential_id.to_string()),
+                    "success",
+                    classification,
+                );
+                Ok((
+                    control_ok::Result::AccessCredentialResult(proto_issued_credential(issued)),
+                    Box::new(|| {}),
+                ))
+            }
+            Some(server_command::Action::RotateAccessCredential(request)) => {
+                let credential_id = parse_credential_id(&request.credential_id)?;
+                let issued = self.rotate_credential(credential_id, now_ms)?;
+                let revoked_sessions = self.remove_credential_sessions(credential_id);
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "credential_rotate",
+                    Some(&credential_id.to_string()),
+                    "success",
+                    classification,
+                );
+                Ok((
+                    control_ok::Result::AccessCredentialResult(proto_issued_credential(issued)),
+                    close_api_sessions_action(self.state.webrtc.clone(), revoked_sessions),
+                ))
+            }
+            Some(server_command::Action::SetAccessCredentialEnabled(request)) => {
+                let credential_id = parse_credential_id(&request.credential_id)?;
+                let credential = self
+                    .state
+                    .access_manager
+                    .set_credential_enabled(credential_id, request.enabled)
+                    .map_err(|error| access_command_error("change credential", error))?;
+                let revoked_sessions = self.remove_credential_sessions(credential_id);
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    if request.enabled {
+                        "credential_enable"
+                    } else {
+                        "credential_disable"
+                    },
+                    Some(&credential_id.to_string()),
+                    "success",
+                    classification,
+                );
+                Ok((
+                    control_ok::Result::AccessCredentialResult(proto::AccessCredentialResult {
+                        credentials: vec![proto_access_credential(credential)],
+                        access_key: None,
+                    }),
+                    close_api_sessions_action(self.state.webrtc.clone(), revoked_sessions),
+                ))
+            }
+            Some(server_command::Action::RevokeAccessCredential(request)) => {
+                let credential_id = parse_credential_id(&request.credential_id)?;
+                let credential = self
+                    .state
+                    .access_manager
+                    .revoke_credential(credential_id, now_ms)
+                    .map_err(|error| access_command_error("revoke credential", error))?;
+                let revoked_sessions = self.remove_credential_sessions(credential_id);
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "credential_revoke",
+                    Some(&credential_id.to_string()),
+                    "success",
+                    classification,
+                );
+                Ok((
+                    control_ok::Result::AccessCredentialResult(proto::AccessCredentialResult {
+                        credentials: vec![proto_access_credential(credential)],
+                        access_key: None,
+                    }),
+                    close_api_sessions_action(self.state.webrtc.clone(), revoked_sessions),
+                ))
+            }
+            Some(server_command::Action::ListAccessSessions(_)) => {
+                let sessions = self
+                    .state
+                    .api_session_owners
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .map(|(session_id, session)| proto_access_session(*session_id, session))
+                    .collect();
+                Ok((
+                    control_ok::Result::AccessSessionResult(proto::AccessSessionResult {
+                        current: Some(self.current_access_session(session_id)?),
+                        sessions,
+                    }),
+                    Box::new(|| {}),
+                ))
+            }
+            Some(server_command::Action::RevokeAccessSession(request)) => {
+                let current = self.current_access_session(session_id)?;
+                let target_session_id = request
+                    .session_id
+                    .parse::<u64>()
+                    .map(SessionId::from_u64)
+                    .map_err(|_| {
+                        ControlCommandError::new(
+                            proto::ErrorCode::InvalidRequest,
+                            400,
+                            "session ID is invalid",
+                        )
+                    })?;
+                let removed = self
+                    .state
+                    .api_session_owners
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&target_session_id);
+                record_access_audit(
+                    &self.state,
+                    now_ms,
+                    Some(&principal.id()),
+                    Some(principal.role),
+                    "session_revoke",
+                    Some(&target_session_id.to_string()),
+                    if removed.is_some() {
+                        "success"
+                    } else {
+                        "not_found"
+                    },
+                    classification,
+                );
+                let sessions = removed.map(|_| vec![target_session_id]).unwrap_or_default();
+                Ok((
+                    control_ok::Result::AccessSessionResult(proto::AccessSessionResult {
+                        current: Some(current),
+                        sessions: Vec::new(),
+                    }),
+                    close_api_sessions_action(self.state.webrtc.clone(), sessions),
+                ))
+            }
+            Some(server_command::Action::ListAccessAudit(request)) => Ok((
+                control_ok::Result::AccessAuditResult(proto::AccessAuditResult {
+                    events: self
+                        .state
+                        .access_manager
+                        .list_audit(request.limit as usize)
+                        .into_iter()
+                        .map(proto_access_audit_event)
+                        .collect(),
+                }),
+                Box::new(|| {}),
+            )),
             None => Err(ControlCommandError::new(
                 proto::ErrorCode::InvalidRequest,
                 400,
@@ -2136,26 +2690,135 @@ impl ServerControlHandler {
         }
     }
 
-    fn require_loopback_administrator(
+    fn require_local_administrator(
         &self,
-        session_id: SessionId,
+        principal: &ApiPrincipal,
     ) -> Result<(), ControlCommandError> {
-        let owners = self
-            .state
-            .api_session_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(
-            owners.get(&session_id),
-            Some(ApiPrincipal::LoopbackAdministrator)
-        ) {
+        if principal.is_local() && principal.role == AccessRole::Administrator {
             return Ok(());
         }
         Err(ControlCommandError::new(
             proto::ErrorCode::Rejected,
             403,
-            "remote access key material is available only to a loopback administrator session",
+            "initial access key material is available only to a local Administrator session",
         ))
+    }
+
+    fn current_access_session(
+        &self,
+        session_id: SessionId,
+    ) -> Result<proto::AccessSession, ControlCommandError> {
+        if session_id.as_u64() == 0 {
+            return Ok(proto::AccessSession {
+                session_id: "0".to_owned(),
+                principal_id: "local-administrator".to_owned(),
+                display_name: "Local Administrator".to_owned(),
+                role: proto::AccessRole::Administrator as i32,
+                local: true,
+                client_classification: ClientClassificationReason::DirectLocal.as_str().to_owned(),
+                created_at_ms: 0,
+                last_activity_at_ms: 0,
+                absolute_expires_at_ms: i64::MAX,
+                credential_expires_at_ms: None,
+            });
+        }
+        self.state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .map(|session| proto_access_session(session_id, session))
+            .ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    401,
+                    "API session is unavailable",
+                )
+            })
+    }
+
+    fn session_classification(&self, session_id: SessionId) -> ClientClassificationReason {
+        if session_id.as_u64() == 0 {
+            return ClientClassificationReason::DirectLocal;
+        }
+        self.state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&session_id)
+            .map_or(ClientClassificationReason::UnknownSession, |session| {
+                session.classification.reason
+            })
+    }
+
+    fn rotate_credential(
+        &self,
+        credential_id: Uuid,
+        now_ms: i64,
+    ) -> Result<IssuedCredential, ControlCommandError> {
+        if !self
+            .state
+            .access_manager
+            .is_legacy_credential(credential_id)
+        {
+            return self
+                .state
+                .access_manager
+                .rotate_credential(credential_id, now_ms)
+                .map_err(|error| access_command_error("rotate credential", error));
+        }
+        let Some(config_path) = &self.state.camera_config_path else {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                409,
+                "initial credential rotation requires persisted configuration",
+            ));
+        };
+        let _update = self
+            .state
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let access_key = config::rotate_access_key_secret(config_path)
+            .map_err(|error| access_command_error("rotate initial credential", error))?;
+        let issued = self
+            .state
+            .access_manager
+            .replace_credential_key(credential_id, access_key, now_ms)
+            .map_err(|error| access_command_error("rotate initial credential", error))?;
+        *self
+            .state
+            .access_key
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = access_key;
+        Ok(issued)
+    }
+
+    fn remove_credential_sessions(&self, credential_id: Uuid) -> Vec<SessionId> {
+        let mut sessions = self
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revoked = sessions
+            .iter()
+            .filter_map(|(session_id, session)| {
+                session
+                    .principal
+                    .credential_binding()
+                    .is_some_and(|(id, _)| id == credential_id)
+                    .then_some(*session_id)
+            })
+            .collect::<Vec<_>>();
+        let revoked_set = revoked.iter().copied().collect::<HashSet<_>>();
+        sessions.retain(|session_id, _| !revoked_set.contains(session_id));
+        drop(sessions);
+        self.state
+            .access_metrics
+            .sessions_revoked_or_expired
+            .fetch_add(revoked.len() as u64, Ordering::Relaxed);
+        cancel_http_streams_for_credential(&self.state, credential_id);
+        revoked
     }
 
     fn handle_runtime_configuration(
@@ -7132,10 +7795,153 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ApiPrincipal {
-    LoopbackAdministrator,
-    AccessKey(AccessKeyFingerprint),
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ApiPrincipalIdentity {
+    Local(IpAddr),
+    Credential { id: Uuid, revision: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ApiPrincipal {
+    identity: ApiPrincipalIdentity,
+    display_name: String,
+    role: AccessRole,
+    credential_expires_at_ms: Option<i64>,
+}
+
+impl ApiPrincipal {
+    fn local(address: IpAddr) -> Self {
+        Self {
+            identity: ApiPrincipalIdentity::Local(address),
+            display_name: "Local Administrator".to_owned(),
+            role: AccessRole::Administrator,
+            credential_expires_at_ms: None,
+        }
+    }
+
+    fn credential(credential: AuthenticatedCredential) -> Self {
+        Self {
+            identity: ApiPrincipalIdentity::Credential {
+                id: credential.id,
+                revision: credential.revision,
+            },
+            display_name: credential.name,
+            role: credential.role,
+            credential_expires_at_ms: credential.expires_at_ms,
+        }
+    }
+
+    fn id(&self) -> String {
+        match self.identity {
+            ApiPrincipalIdentity::Local(_) => "local-administrator".to_owned(),
+            ApiPrincipalIdentity::Credential { id, .. } => id.to_string(),
+        }
+    }
+
+    const fn is_local(&self) -> bool {
+        matches!(self.identity, ApiPrincipalIdentity::Local(_))
+    }
+
+    const fn credential_binding(&self) -> Option<(Uuid, u64)> {
+        match self.identity {
+            ApiPrincipalIdentity::Local(_) => None,
+            ApiPrincipalIdentity::Credential { id, revision } => Some((id, revision)),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ApiSessionRecord {
+    principal: ApiPrincipal,
+    classification: ClientClassification,
+    created_at_ms: i64,
+    last_activity_at_ms: i64,
+    absolute_expires_at_ms: i64,
+    last_activity: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct ApiSessionPolicy {
+    idle_timeout: Duration,
+    absolute_timeout: Duration,
+    max_per_principal: usize,
+    max_per_address: usize,
+    failed_authentication_limit: u32,
+    failed_authentication_window: Duration,
+}
+
+struct HttpStreamCancellation {
+    credential_id: Uuid,
+    credential_revision: u64,
+    cancelled: Weak<AtomicBool>,
+}
+
+#[derive(Default)]
+struct AccessMetrics {
+    authentication_successes: AtomicU64,
+    authentication_failures: AtomicU64,
+    authorization_denials: AtomicU64,
+    sessions_created: AtomicU64,
+    sessions_revoked_or_expired: AtomicU64,
+}
+
+const fn proto_access_role(role: AccessRole) -> i32 {
+    match role {
+        AccessRole::Administrator => proto::AccessRole::Administrator as i32,
+        AccessRole::User => proto::AccessRole::User as i32,
+    }
+}
+
+fn proto_access_credential(credential: CredentialMetadata) -> proto::AccessCredential {
+    proto::AccessCredential {
+        credential_id: credential.id.to_string(),
+        name: credential.name,
+        description: credential.description,
+        role: proto_access_role(credential.role),
+        created_at_ms: credential.created_at_ms,
+        last_used_at_ms: credential.last_used_at_ms,
+        expires_at_ms: credential.expires_at_ms,
+        disabled: credential.disabled,
+        revoked_at_ms: credential.revoked_at_ms,
+        revision: credential.revision,
+        rotated_at_ms: credential.rotated_at_ms,
+        initial_access_key_pending: credential.initial_access_key_pending,
+    }
+}
+
+fn proto_issued_credential(credential: IssuedCredential) -> proto::AccessCredentialResult {
+    proto::AccessCredentialResult {
+        credentials: vec![proto_access_credential(credential.metadata)],
+        access_key: Some(credential.access_key.canonical()),
+    }
+}
+
+fn proto_access_session(session_id: SessionId, session: &ApiSessionRecord) -> proto::AccessSession {
+    proto::AccessSession {
+        session_id: session_id.to_string(),
+        principal_id: session.principal.id(),
+        display_name: session.principal.display_name.clone(),
+        role: proto_access_role(session.principal.role),
+        local: session.principal.is_local(),
+        client_classification: session.classification.reason.as_str().to_owned(),
+        created_at_ms: session.created_at_ms,
+        last_activity_at_ms: session.last_activity_at_ms,
+        absolute_expires_at_ms: session.absolute_expires_at_ms,
+        credential_expires_at_ms: session.principal.credential_expires_at_ms,
+    }
+}
+
+fn proto_access_audit_event(event: AccessAuditEvent) -> proto::AccessAuditEvent {
+    proto::AccessAuditEvent {
+        event_id: event.id.to_string(),
+        timestamp_ms: event.timestamp_ms,
+        principal_id: event.principal_id,
+        role: event.role.map_or(0, proto_access_role),
+        action: event.action,
+        target_id: event.target_id,
+        result: event.result,
+        client_classification: event.client_classification,
+    }
 }
 
 struct StoredMediaCursor {
@@ -7171,8 +7977,14 @@ pub struct ServerState {
     host: String,
     port: u16,
     access_key: Arc<RwLock<AccessKey>>,
+    access_manager: AccessManager,
+    access_metrics: Arc<AccessMetrics>,
+    network_access: NetworkAccessPolicy,
+    require_secure_remote: bool,
+    api_session_policy: ApiSessionPolicy,
     allowed_origins: Arc<HashSet<String>>,
-    api_session_owners: Arc<Mutex<HashMap<SessionId, ApiPrincipal>>>,
+    api_session_owners: Arc<Mutex<HashMap<SessionId, ApiSessionRecord>>>,
+    http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     ptz_owners: Arc<Mutex<HashMap<String, SessionId>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
@@ -7227,13 +8039,36 @@ impl ServerState {
         entries.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
         let camera_count = entries.len();
         let sanitized_config = sanitized_config(config, storage, camera_count, &entries);
+        let access_manager = AccessManager::ephemeral(config.access_key);
+        access_manager.configure_rate_limit(
+            config.access.failed_authentication_limit,
+            Duration::from_secs(config.access.failed_authentication_window_secs),
+        );
 
         Self {
             host: config.host.clone(),
             port: config.port,
             access_key: Arc::new(RwLock::new(config.access_key)),
+            access_manager,
+            access_metrics: Arc::new(AccessMetrics::default()),
+            network_access: NetworkAccessPolicy::new(
+                config.access.local_networks.clone(),
+                config.access.trusted_proxies.clone(),
+            ),
+            require_secure_remote: config.access.require_secure_remote,
+            api_session_policy: ApiSessionPolicy {
+                idle_timeout: Duration::from_secs(config.access.session_idle_timeout_secs),
+                absolute_timeout: Duration::from_secs(config.access.session_absolute_timeout_secs),
+                max_per_principal: config.access.max_sessions_per_principal as usize,
+                max_per_address: config.access.max_sessions_per_address as usize,
+                failed_authentication_limit: config.access.failed_authentication_limit,
+                failed_authentication_window: Duration::from_secs(
+                    config.access.failed_authentication_window_secs,
+                ),
+            },
             allowed_origins: Arc::new(config.direct_card.allowed_origins.iter().cloned().collect()),
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
+            http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(HashMap::new())),
@@ -7408,6 +8243,15 @@ impl ServerState {
         self
     }
 
+    pub(crate) fn with_access_manager(mut self, access_manager: AccessManager) -> Self {
+        access_manager.configure_rate_limit(
+            self.api_session_policy.failed_authentication_limit,
+            self.api_session_policy.failed_authentication_window,
+        );
+        self.access_manager = access_manager;
+        self
+    }
+
     pub(crate) fn with_camera_database(mut self, camera_database: Arc<CameraDatabase>) -> Self {
         self.camera_database = Some(camera_database);
         self
@@ -7466,6 +8310,84 @@ impl ServerState {
         self.notifications = Some(notifications);
         self
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_access_audit(
+    state: &ServerState,
+    timestamp_ms: i64,
+    principal_id: Option<&str>,
+    role: Option<AccessRole>,
+    action: &str,
+    target_id: Option<&str>,
+    result: &str,
+    classification: ClientClassificationReason,
+) {
+    state.access_manager.record_audit(NewAccessAuditEvent {
+        timestamp_ms,
+        principal_id,
+        role,
+        action,
+        target_id,
+        result,
+        client_classification: classification,
+    });
+}
+
+fn access_role_from_proto(role: i32) -> Result<AccessRole, ControlCommandError> {
+    match proto::AccessRole::try_from(role) {
+        Ok(proto::AccessRole::Administrator) => Ok(AccessRole::Administrator),
+        Ok(proto::AccessRole::User) => Ok(AccessRole::User),
+        Ok(proto::AccessRole::Unspecified) | Err(_) => Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "credential role must be Administrator or User",
+        )),
+    }
+}
+
+fn parse_credential_id(value: &str) -> Result<Uuid, ControlCommandError> {
+    Uuid::parse_str(value).map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "credential ID is invalid",
+        )
+    })
+}
+
+fn access_command_error(operation: &str, error: anyhow::Error) -> ControlCommandError {
+    tracing::warn!(%error, %operation, "access command failed");
+    ControlCommandError::new(
+        proto::ErrorCode::Rejected,
+        409,
+        format!("unable to {operation}: {error}"),
+    )
+}
+
+fn close_api_sessions_action(webrtc: WebRtc, sessions: Vec<SessionId>) -> PostSendAction {
+    Box::new(move || {
+        for session_id in sessions {
+            webrtc.request_api_session_close(session_id);
+        }
+    })
+}
+
+fn cancel_http_streams_for_credential(state: &ServerState, credential_id: Uuid) {
+    let mut streams = state
+        .http_stream_cancellations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    streams.retain(|stream| {
+        let Some(cancelled) = stream.cancelled.upgrade() else {
+            return false;
+        };
+        if stream.credential_id == credential_id {
+            cancelled.store(true, Ordering::Release);
+            return false;
+        }
+        true
+    });
 }
 
 fn notification_command_error(
@@ -7931,6 +8853,7 @@ pub fn serve_with_state_on_listener(
     state: ServerState,
 ) -> anyhow::Result<std::net::SocketAddr> {
     let logging = state.logging.clone();
+    let session_reaper_state = state.clone();
     let control_handler: Arc<dyn ControlRequestHandler> =
         Arc::new(ServerControlHandler::new(state.clone(), router_tx.clone()));
     state
@@ -7945,7 +8868,14 @@ pub fn serve_with_state_on_listener(
     tracing::info!(%addr, port = addr.port(), "KeepPeek is up and listening on http://{addr}");
 
     while !shutdown.is_cancelled() {
+        expire_api_sessions(&session_reaper_state);
+        if let Err(error) = session_reaper_state.access_manager.flush_audit(false) {
+            tracing::warn!(%error, "unable to flush access audit events");
+        }
         server.poll_timeout(SERVER_POLL_INTERVAL);
+    }
+    if let Err(error) = session_reaper_state.access_manager.flush_audit(true) {
+        tracing::warn!(%error, "unable to flush access audit events during shutdown");
     }
     server.poll_timeout(Duration::ZERO);
     if let Some(logging) = logging {
@@ -7959,6 +8889,82 @@ pub fn serve_with_state_on_listener(
     }
 
     Ok(addr)
+}
+
+fn expire_api_sessions(state: &ServerState) {
+    let now_at = Instant::now();
+    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+    let expired = {
+        let mut sessions = state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let expired = sessions
+            .iter()
+            .filter_map(|(session_id, session)| {
+                let result =
+                    if now_ms >= session.absolute_expires_at_ms {
+                        Some("absolute_expiry")
+                    } else if now_at.saturating_duration_since(session.last_activity)
+                        >= state.api_session_policy.idle_timeout
+                    {
+                        Some("idle_expiry")
+                    } else if !session.principal.credential_binding().is_none_or(
+                        |(id, revision)| {
+                            state
+                                .access_manager
+                                .credential_is_active(id, revision, now_ms)
+                        },
+                    ) {
+                        Some("credential_inactive")
+                    } else {
+                        None
+                    }?;
+                Some((*session_id, session.clone(), result))
+            })
+            .collect::<Vec<_>>();
+        let expired_ids = expired
+            .iter()
+            .map(|(session_id, _, _)| *session_id)
+            .collect::<HashSet<_>>();
+        sessions.retain(|session_id, _| !expired_ids.contains(session_id));
+        expired
+    };
+    for (session_id, session, result) in expired {
+        state
+            .access_metrics
+            .sessions_revoked_or_expired
+            .fetch_add(1, Ordering::Relaxed);
+        record_access_audit(
+            state,
+            now_ms,
+            Some(&session.principal.id()),
+            Some(session.principal.role),
+            "session_expiry",
+            Some(&session_id.to_string()),
+            result,
+            session.classification.reason,
+        );
+        state.webrtc.request_api_session_close(session_id);
+    }
+    let mut streams = state
+        .http_stream_cancellations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    streams.retain(|stream| {
+        let Some(cancelled) = stream.cancelled.upgrade() else {
+            return false;
+        };
+        if !state.access_manager.credential_is_active(
+            stream.credential_id,
+            stream.credential_revision,
+            now_ms,
+        ) {
+            cancelled.store(true, Ordering::Release);
+            return false;
+        }
+        true
+    });
 }
 
 pub fn run_server(
@@ -7978,13 +8984,13 @@ fn handle_request(
 ) -> Response {
     router!(request,
         (POST) (/create) => {
-            authenticated_api_request(request, state, true, |principal| {
-                create_api_session(request, state, principal)
+            authenticated_api_request(request, state, true, AccessRole::User, |identity| {
+                create_api_session(request, state, identity)
             })
         },
         (POST) (/delete) => {
-            authenticated_api_request(request, state, true, |principal| {
-                delete_api_session(request, state, principal)
+            authenticated_api_request(request, state, true, AccessRole::User, |identity| {
+                delete_api_session(request, state, identity)
             })
         },
         (OPTIONS) (/create) => {
@@ -7994,13 +9000,17 @@ fn handle_request(
             api_preflight(request, state)
         },
         (GET) (/logs) => {
-            authenticated_api_request(request, state, false, |_| log_stream(request, state))
+            authenticated_api_request(request, state, false, AccessRole::Administrator, |identity| {
+                log_stream(request, state, &identity)
+            })
         },
         (GET) (/logs/snapshot) => {
-            authenticated_api_request(request, state, false, |_| log_snapshot(state))
+            authenticated_api_request(request, state, false, AccessRole::Administrator, |_| {
+                log_snapshot(state)
+            })
         },
         (GET) (/metrics) => {
-            authenticated_api_request(request, state, false, |_| {
+            authenticated_api_request(request, state, false, AccessRole::Administrator, |_| {
                 prometheus_metrics(router_tx, state)
             })
         },
@@ -8012,7 +9022,8 @@ fn authenticated_api_request(
     request: &Request,
     state: &ServerState,
     cors: bool,
-    action: impl FnOnce(ApiPrincipal) -> Response,
+    required_role: AccessRole,
+    action: impl FnOnce(AuthenticatedApiRequest) -> Response,
 ) -> Response {
     let origin = if cors {
         match api_request_origin(request, state) {
@@ -8023,7 +9034,24 @@ fn authenticated_api_request(
         None
     };
     let response = match api_principal(request, state) {
-        Ok(principal) => action(principal),
+        Ok(identity) if identity.principal.role.permits(required_role) => action(identity),
+        Ok(identity) => {
+            state
+                .access_metrics
+                .authorization_denials
+                .fetch_add(1, Ordering::Relaxed);
+            record_access_audit(
+                state,
+                i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                Some(&identity.principal.id()),
+                Some(identity.principal.role),
+                "http_denied",
+                Some(&request.url()),
+                "insufficient_role",
+                identity.classification.reason,
+            );
+            api_status(403, "Administrator role is required for this operation")
+        }
         Err(response) => response,
     };
     with_api_cors(response, origin)
@@ -8072,63 +9100,143 @@ fn with_api_cors(response: Response, origin: Option<String>) -> Response {
         .with_additional_header("Vary", "Origin")
 }
 
-fn api_principal(request: &Request, state: &ServerState) -> Result<ApiPrincipal, Response> {
-    if is_trusted_loopback_request(request) {
-        return Ok(ApiPrincipal::LoopbackAdministrator);
-    }
-    let Some(authorization) = request.header("Authorization") else {
-        return Err(api_status(401, "Bearer access key is required"));
-    };
-    let mut parts = authorization.split_ascii_whitespace();
-    let (Some(scheme), Some(value), None) = (parts.next(), parts.next(), parts.next()) else {
-        return Err(api_status(401, "Bearer access key is invalid"));
-    };
-    let access_key = *state
-        .access_key
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !scheme.eq_ignore_ascii_case("Bearer") || access_key.is_unset() {
-        return Err(api_status(401, "Bearer access key is invalid"));
-    }
-    let Ok(candidate) = AccessKey::parse(value) else {
-        return Err(api_status(401, "Bearer access key is invalid"));
-    };
-    if !candidate.fingerprint().matches(access_key.fingerprint()) {
-        return Err(api_status(401, "Bearer access key is invalid"));
-    }
-    Ok(ApiPrincipal::AccessKey(candidate.fingerprint()))
+#[derive(Clone)]
+struct AuthenticatedApiRequest {
+    principal: ApiPrincipal,
+    classification: ClientClassification,
 }
 
-fn is_trusted_loopback_request(request: &Request) -> bool {
-    const FORWARDED_HEADERS: [&str; 5] = [
-        "Forwarded",
-        "X-Forwarded-For",
-        "X-Forwarded-Host",
-        "X-Forwarded-Proto",
-        "X-Real-IP",
-    ];
-    if FORWARDED_HEADERS
-        .iter()
-        .any(|header| request.header(header).is_some())
-    {
-        return false;
+fn api_principal(
+    request: &Request,
+    state: &ServerState,
+) -> Result<AuthenticatedApiRequest, Response> {
+    let classification = state
+        .network_access
+        .classify(request.remote_addr().ip(), request.headers());
+    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+    if request_has_credential_query(request) {
+        state
+            .access_metrics
+            .authentication_failures
+            .fetch_add(1, Ordering::Relaxed);
+        record_access_audit(
+            state,
+            now_ms,
+            None,
+            None,
+            "authentication_failure",
+            Some(&request.url()),
+            "credential_in_query",
+            classification.reason,
+        );
+        return Err(api_status(
+            400,
+            "credentials are not accepted in query parameters",
+        ));
     }
-    is_loopback_address(request.remote_addr().ip())
-}
-
-const fn is_loopback_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => address.is_loopback(),
-        IpAddr::V6(address) => {
-            if let Some(address) = address.to_ipv4_mapped() {
-                return address.is_loopback();
-            }
-            address.is_loopback()
+    if classification.local {
+        return Ok(AuthenticatedApiRequest {
+            principal: ApiPrincipal::local(classification.effective_address),
+            classification,
+        });
+    }
+    let trusted_proxy = matches!(
+        classification.reason,
+        ClientClassificationReason::TrustedProxyLocal
+            | ClientClassificationReason::TrustedProxyRemote
+    );
+    if state.require_secure_remote && !request.is_secure() && !trusted_proxy {
+        state
+            .access_metrics
+            .authentication_failures
+            .fetch_add(1, Ordering::Relaxed);
+        record_access_audit(
+            state,
+            now_ms,
+            None,
+            None,
+            "authentication_failure",
+            Some(&request.url()),
+            "insecure_remote_transport",
+            classification.reason,
+        );
+        return Err(api_status(
+            426,
+            "remote access requires HTTPS or a configured trusted proxy",
+        ));
+    }
+    let authorizations = request
+        .headers()
+        .filter_map(|(name, value)| name.eq_ignore_ascii_case("Authorization").then_some(value))
+        .collect::<Vec<_>>();
+    let authenticated = state.access_manager.authenticate(
+        classification.effective_address,
+        &authorizations,
+        now_ms,
+        Instant::now(),
+    );
+    let credential = match authenticated {
+        Ok(credential) => credential,
+        Err(failure) => {
+            state
+                .access_metrics
+                .authentication_failures
+                .fetch_add(1, Ordering::Relaxed);
+            record_access_audit(
+                state,
+                now_ms,
+                None,
+                None,
+                "authentication_failure",
+                Some(&request.url()),
+                failure.as_str(),
+                classification.reason,
+            );
+            let response = if failure == AuthenticationFailure::RateLimited {
+                api_status(429, "remote authentication is temporarily rate limited")
+                    .with_additional_header("Retry-After", "60")
+            } else {
+                api_status(401, "Bearer access key is required or invalid")
+            };
+            return Err(response);
         }
+    };
+    state
+        .access_metrics
+        .authentication_successes
+        .fetch_add(1, Ordering::Relaxed);
+    let principal = ApiPrincipal::credential(credential);
+    if request.url() == "/create" {
+        record_access_audit(
+            state,
+            now_ms,
+            Some(&principal.id()),
+            Some(principal.role),
+            "remote_login",
+            None,
+            "success",
+            classification.reason,
+        );
     }
+    Ok(AuthenticatedApiRequest {
+        principal,
+        classification,
+    })
 }
 
-fn create_api_session(request: &Request, state: &ServerState, principal: ApiPrincipal) -> Response {
+fn request_has_credential_query(request: &Request) -> bool {
+    url::form_urlencoded::parse(request.raw_query_string().as_bytes()).any(|(name, _)| {
+        ["access_key", "access_token", "authorization", "token"]
+            .iter()
+            .any(|credential_name| name.eq_ignore_ascii_case(credential_name))
+    })
+}
+
+fn create_api_session(
+    request: &Request,
+    state: &ServerState,
+    identity: AuthenticatedApiRequest,
+) -> Response {
     if request.header("Content-Encoding") != Some("gzip") {
         return api_status(415, "create request must use gzip content encoding");
     }
@@ -8192,13 +9300,79 @@ fn create_api_session(request: &Request, state: &ServerState, principal: ApiPrin
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     owners.retain(|session_id, _| active_sessions.contains(session_id));
-    owners.insert(session.id, principal);
+    let principal_sessions = owners
+        .values()
+        .filter(|owner| owner.principal.identity == identity.principal.identity)
+        .count();
+    let address_sessions = owners
+        .values()
+        .filter(|owner| {
+            owner.classification.effective_address == identity.classification.effective_address
+        })
+        .count();
+    if principal_sessions >= state.api_session_policy.max_per_principal
+        || address_sessions >= state.api_session_policy.max_per_address
+    {
+        drop(owners);
+        state.webrtc.close_api_session(session.id);
+        record_access_audit(
+            state,
+            i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+            Some(&identity.principal.id()),
+            Some(identity.principal.role),
+            "session_create",
+            None,
+            "session_limit",
+            identity.classification.reason,
+        );
+        return api_status(429, "API session limit reached");
+    }
+    let now_at = Instant::now();
+    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+    let absolute_timeout_ms =
+        i64::try_from(state.api_session_policy.absolute_timeout.as_millis()).unwrap_or(i64::MAX);
+    let absolute_expires_at_ms = now_ms.saturating_add(absolute_timeout_ms).min(
+        identity
+            .principal
+            .credential_expires_at_ms
+            .unwrap_or(i64::MAX),
+    );
+    owners.insert(
+        session.id,
+        ApiSessionRecord {
+            principal: identity.principal.clone(),
+            classification: identity.classification,
+            created_at_ms: now_ms,
+            last_activity_at_ms: now_ms,
+            absolute_expires_at_ms,
+            last_activity: now_at,
+        },
+    );
+    drop(owners);
+    state
+        .access_metrics
+        .sessions_created
+        .fetch_add(1, Ordering::Relaxed);
+    record_access_audit(
+        state,
+        now_ms,
+        Some(&identity.principal.id()),
+        Some(identity.principal.role),
+        "session_create",
+        Some(&session.id.to_string()),
+        "success",
+        identity.classification.reason,
+    );
     Response::from_data("application/json", compressed)
         .with_status_code(201)
         .with_additional_header("Content-Encoding", "gzip")
 }
 
-fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrincipal) -> Response {
+fn delete_api_session(
+    request: &Request,
+    state: &ServerState,
+    identity: AuthenticatedApiRequest,
+) -> Response {
     let Some(body) = request.data() else {
         return api_status(400, "missing delete request body");
     };
@@ -8206,14 +9380,14 @@ fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrin
         Ok(delete) => delete,
         Err(error) => return api_status(400, &format!("invalid delete request JSON: {error}")),
     };
-    let Ok(session_id) = delete.session_id.parse::<u64>() else {
-        return api_status(404, "WebRTC session not found");
-    };
     let return_representation = request
         .header("Prefer")
         .is_some_and(|value| value.eq_ignore_ascii_case("return=representation"));
+    let Ok(session_id) = delete.session_id.parse::<u64>() else {
+        return deleted_session_response(return_representation);
+    };
     let session_id = SessionId::from_u64(session_id);
-    let owns_session = {
+    let owned_session = {
         let mut owners = state
             .api_session_owners
             .lock()
@@ -8226,16 +9400,39 @@ fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrin
                     Response::empty_204()
                 };
             }
-            Some(owner) if owner != &principal => false,
-            Some(_) => {
-                owners.remove(&session_id);
-                true
+            Some(owner)
+                if owner.principal != identity.principal
+                    || owner.classification.effective_address
+                        != identity.classification.effective_address =>
+            {
+                None
             }
+            Some(_) => owners.remove(&session_id),
         }
     };
-    if !owns_session {
+    let Some(owned_session) = owned_session else {
+        record_access_audit(
+            state,
+            i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+            Some(&identity.principal.id()),
+            Some(identity.principal.role),
+            "session_delete",
+            Some(&session_id.to_string()),
+            "not_owner",
+            identity.classification.reason,
+        );
         return api_status(404, "WebRTC session not found");
-    }
+    };
+    record_access_audit(
+        state,
+        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+        Some(&owned_session.principal.id()),
+        Some(owned_session.principal.role),
+        "session_delete",
+        Some(&session_id.to_string()),
+        "success",
+        owned_session.classification.reason,
+    );
     if return_representation {
         state.webrtc.close_api_session(session_id);
         return Response::text("deleted").with_status_code(200);
@@ -8251,6 +9448,14 @@ fn delete_api_session(request: &Request, state: &ServerState, principal: ApiPrin
             0,
         ),
         upgrade: None,
+    }
+}
+
+fn deleted_session_response(return_representation: bool) -> Response {
+    if return_representation {
+        Response::text("deleted").with_status_code(200)
+    } else {
+        Response::empty_204()
     }
 }
 
@@ -8339,7 +9544,11 @@ fn log_snapshot(state: &ServerState) -> Response {
         .with_additional_header("Cache-Control", "no-store")
 }
 
-fn log_stream(request: &Request, state: &ServerState) -> Response {
+fn log_stream(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
     let Some(logging) = &state.logging else {
         return service_error(503, "logging service is unavailable");
     };
@@ -8363,7 +9572,7 @@ fn log_stream(request: &Request, state: &ServerState) -> Response {
         Ok(tail) => tail,
         Err(response) => return response,
     };
-    let stream = match logging.stream(after, tail) {
+    let mut stream = match logging.stream(after, tail) {
         Ok(stream) => stream,
         Err(LogStreamError::LimitReached) => {
             return service_error(429, "too many active log streams");
@@ -8372,6 +9581,19 @@ fn log_stream(request: &Request, state: &ServerState) -> Response {
             return service_error(503, "log streaming is shutting down");
         }
     };
+    if let Some((credential_id, credential_revision)) = identity.principal.credential_binding() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .http_stream_cancellations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(HttpStreamCancellation {
+                credential_id,
+                credential_revision,
+                cancelled: Arc::downgrade(&cancelled),
+            });
+        stream = stream.with_cancellation(cancelled);
+    }
     Response {
         status_code: 200,
         headers: vec![
@@ -9231,7 +10453,10 @@ fn server_health(
 }
 
 fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerState) -> Response {
-    match crate::metrics::encode_health(&server_health(router_tx, state)) {
+    match crate::metrics::encode_health_with_access(
+        &server_health(router_tx, state),
+        Some(access_metrics_snapshot(state)),
+    ) {
         Ok(metrics) => Response::from_data(
             "text/plain; version=0.0.4; charset=utf-8",
             metrics.into_bytes(),
@@ -9240,6 +10465,50 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
             tracing::error!(%error, "unable to encode Prometheus metrics");
             api_status(503, "Prometheus metrics are unavailable")
         }
+    }
+}
+
+fn access_metrics_snapshot(state: &ServerState) -> crate::metrics::AccessMetricsSnapshot {
+    let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+    let active_credentials = state
+        .access_manager
+        .list_credentials()
+        .into_iter()
+        .filter(|credential| {
+            !credential.disabled
+                && credential.revoked_at_ms.is_none()
+                && credential
+                    .expires_at_ms
+                    .is_none_or(|expires_at| expires_at > now_ms)
+        })
+        .count() as u64;
+    crate::metrics::AccessMetricsSnapshot {
+        authentication_successes: state
+            .access_metrics
+            .authentication_successes
+            .load(Ordering::Relaxed),
+        authentication_failures: state
+            .access_metrics
+            .authentication_failures
+            .load(Ordering::Relaxed),
+        authorization_denials: state
+            .access_metrics
+            .authorization_denials
+            .load(Ordering::Relaxed),
+        sessions_created: state
+            .access_metrics
+            .sessions_created
+            .load(Ordering::Relaxed),
+        sessions_revoked_or_expired: state
+            .access_metrics
+            .sessions_revoked_or_expired
+            .load(Ordering::Relaxed),
+        active_sessions: state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len() as u64,
+        active_credentials,
     }
 }
 
@@ -10857,11 +12126,45 @@ mod tests {
 
     fn secured_test_state() -> ServerState {
         let mut state = ServerState::empty();
-        state.access_key = Arc::new(RwLock::new(
-            AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap(),
-        ));
+        let access_key = AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        state.access_key = Arc::new(RwLock::new(access_key));
+        state.access_manager = AccessManager::ephemeral(access_key);
+        state.require_secure_remote = false;
         state.allowed_origins = Arc::new(HashSet::from(["https://home.example.net".to_owned()]));
         state
+    }
+
+    fn test_session_record(
+        principal: ApiPrincipal,
+        address: IpAddr,
+        reason: ClientClassificationReason,
+    ) -> ApiSessionRecord {
+        let now_ms = i64::try_from(unix_time_ms()).unwrap_or(i64::MAX);
+        ApiSessionRecord {
+            principal,
+            classification: ClientClassification {
+                peer_address: address,
+                effective_address: address,
+                local: matches!(
+                    reason,
+                    ClientClassificationReason::DirectLocal
+                        | ClientClassificationReason::TrustedProxyLocal
+                ),
+                reason,
+            },
+            created_at_ms: now_ms,
+            last_activity_at_ms: now_ms,
+            absolute_expires_at_ms: now_ms.saturating_add(60_000),
+            last_activity: Instant::now(),
+        }
+    }
+
+    fn local_test_session() -> ApiSessionRecord {
+        test_session_record(
+            ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            ClientClassificationReason::DirectLocal,
+        )
     }
 
     fn bearer_header() -> (String, String) {
@@ -11223,14 +12526,229 @@ mod tests {
         for local_network in [
             SocketAddr::from(([192, 168, 1, 50], 42_000)),
             SocketAddr::from(([169, 254, 1, 50], 42_000)),
+            SocketAddr::from(([0xfd00, 0, 0, 0, 0, 0, 0, 50], 42_000)),
+            SocketAddr::from(([0xfe80, 0, 0, 0, 0, 0, 0, 50], 42_000)),
+            SocketAddr::from(([0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0132], 42_000)),
         ] {
             let response = handle_request(
                 &Request::fake_http_from(local_network, "GET", "/logs", Vec::new(), Vec::new()),
                 &router_tx,
                 &state,
             );
-            assert_eq!(response.status_code, 401);
+            assert_eq!(response.status_code, 503);
         }
+    }
+
+    #[test]
+    fn remote_transport_is_secure_and_credentials_are_never_read_from_queries() {
+        let mut state = secured_test_state();
+        state.require_secure_remote = true;
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let remote = SocketAddr::from(([203, 0, 113, 7], 42_000));
+
+        let insecure = handle_request(
+            &Request::fake_http_from(
+                remote,
+                "GET",
+                "/logs/snapshot",
+                vec![bearer_header()],
+                Vec::new(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(insecure.status_code, 426);
+
+        let secure = handle_request(
+            &Request::fake_https_from(
+                remote,
+                "GET",
+                "/logs/snapshot",
+                vec![bearer_header()],
+                Vec::new(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(secure.status_code, 503);
+
+        for query in [
+            "access_key=550e8400-e29b-41d4-a716-446655440000",
+            "%61ccess_token=550e8400-e29b-41d4-a716-446655440000",
+        ] {
+            let response = handle_request(
+                &Request::fake_http("GET", format!("/metrics?{query}"), Vec::new(), Vec::new()),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(response.status_code, 400);
+        }
+    }
+
+    #[test]
+    fn remote_user_authenticates_but_cannot_run_administrator_operations() {
+        let state = secured_test_state();
+        let issued = state
+            .access_manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let authorization = format!("Bearer {}", issued.access_key.canonical());
+        let remote = SocketAddr::from(([203, 0, 113, 8], 42_000));
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let metrics = handle_request(
+            &Request::fake_https_from(
+                remote,
+                "GET",
+                "/metrics",
+                vec![("Authorization".to_owned(), authorization.clone())],
+                Vec::new(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(metrics.status_code, 403);
+
+        let authenticated = state
+            .access_manager
+            .authenticate(remote.ip(), &[&authorization], 2_000, Instant::now())
+            .unwrap();
+        let session_id = SessionId::from_u64(700);
+        state.api_session_owners.lock().unwrap().insert(
+            session_id,
+            test_session_record(
+                ApiPrincipal::credential(authenticated),
+                remote.ip(),
+                ClientClassificationReason::DirectRemote,
+            ),
+        );
+        let handler = test_control_handler(state);
+        let identity = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::ServerCommand(
+                    proto::ServerCommand {
+                        action: Some(server_command::Action::GetAccessSession(
+                            proto::GetAccessSession {},
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            identity.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::AccessSessionResult(_))
+            }))
+        ));
+
+        let denied = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 2,
+                command: Some(control_request::Command::RuntimeConfigurationCommand(
+                    proto::RuntimeConfigurationCommand {
+                        action: Some(runtime_configuration_command::Action::Get(
+                            proto::GetRuntimeConfiguration {},
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            denied.response.result,
+            Some(control_response::Result::Error(proto::Error { code, .. }))
+                if code == proto::ErrorCode::Rejected as i32
+        ));
+        assert!(
+            handler
+                .state
+                .access_manager
+                .list_audit(10)
+                .iter()
+                .any(|event| {
+                    event.action == "command_denied"
+                        && event.target_id.as_deref() == Some("runtime_configuration")
+                        && event.result == "insufficient_role"
+                })
+        );
+    }
+
+    #[test]
+    fn central_access_policy_covers_each_control_family() {
+        let user_commands = [
+            control_request::Command::SubscribeMedia(proto::SubscribeMedia::default()),
+            control_request::Command::SubscribeEvents(proto::SubscribeEvents::default()),
+            control_request::Command::SubscribeData(proto::SubscribeData::default()),
+            control_request::Command::Unsubscribe(proto::Unsubscribe::default()),
+            control_request::Command::StoredMediaCommand(proto::StoredMediaCommand::default()),
+            control_request::Command::GroupCommand(proto::GroupCommand::default()),
+            control_request::Command::StateStoreCommand(proto::StateStoreCommand::default()),
+            control_request::Command::PublicationCommand(proto::PublicationCommand::default()),
+            control_request::Command::EventPublicationCommand(
+                proto::EventPublicationCommand::default(),
+            ),
+            control_request::Command::PublicationReport(proto::PublicationReport::default()),
+            control_request::Command::CameraControlCommand(proto::CameraControlCommand {
+                action: Some(camera_control_command::Action::GetMotionDetection(
+                    proto::GetMotionDetection::default(),
+                )),
+            }),
+            control_request::Command::EventSearchCommand(proto::EventSearchCommand {
+                action: Some(event_search_command::Action::Query(
+                    proto::QueryEvents::default(),
+                )),
+            }),
+            control_request::Command::NotificationRuleCommand(proto::NotificationRuleCommand {
+                action: Some(notification_rule_command::Action::GetInbox(
+                    proto::GetNotificationInbox::default(),
+                )),
+            }),
+            control_request::Command::ServerCommand(proto::ServerCommand {
+                action: Some(server_command::Action::GetAccessSession(
+                    proto::GetAccessSession {},
+                )),
+            }),
+        ];
+        assert!(
+            user_commands
+                .iter()
+                .all(|command| { required_access_role(Some(command)) == AccessRole::User })
+        );
+
+        let administrator_commands = [
+            control_request::Command::CameraConfigurationCommand(
+                proto::CameraConfigurationCommand::default(),
+            ),
+            control_request::Command::RuntimeConfigurationCommand(
+                proto::RuntimeConfigurationCommand::default(),
+            ),
+            control_request::Command::LoggingCommand(proto::LoggingCommand::default()),
+            control_request::Command::ServerCommand(proto::ServerCommand::default()),
+            control_request::Command::HealthCommand(proto::HealthCommand::default()),
+            control_request::Command::ExportCommand(proto::ExportCommand::default()),
+            control_request::Command::PublishEvent(proto::PublishEvent::default()),
+            control_request::Command::CameraControlCommand(proto::CameraControlCommand {
+                action: Some(camera_control_command::Action::SetMotionDetection(
+                    proto::SetMotionDetection::default(),
+                )),
+            }),
+            control_request::Command::EventSearchCommand(proto::EventSearchCommand {
+                action: Some(event_search_command::Action::ReplaceTerms(
+                    proto::ReplaceEventSearchTerms::default(),
+                )),
+            }),
+            control_request::Command::NotificationRuleCommand(proto::NotificationRuleCommand {
+                action: Some(notification_rule_command::Action::SaveDraft(
+                    proto::SaveNotificationRuleDraft::default(),
+                )),
+            }),
+        ];
+        assert!(
+            administrator_commands.iter().all(|command| {
+                required_access_role(Some(command)) == AccessRole::Administrator
+            })
+        );
     }
 
     #[test]
@@ -11352,6 +12870,43 @@ mod tests {
     }
 
     #[test]
+    fn session_reaper_closes_idle_and_absolute_expiry_but_keeps_active_sessions() {
+        let mut state = ServerState::empty();
+        state.api_session_policy.idle_timeout = Duration::from_secs(1);
+        let idle_id = SessionId::from_u64(801);
+        let absolute_id = SessionId::from_u64(802);
+        let active_id = SessionId::from_u64(803);
+        let mut idle = local_test_session();
+        idle.last_activity = Instant::now() - Duration::from_secs(2);
+        let mut absolute = local_test_session();
+        absolute.absolute_expires_at_ms = i64::try_from(unix_time_ms())
+            .unwrap_or(i64::MAX)
+            .saturating_sub(1);
+        state.api_session_owners.lock().unwrap().extend([
+            (idle_id, idle),
+            (absolute_id, absolute),
+            (active_id, local_test_session()),
+        ]);
+
+        expire_api_sessions(&state);
+
+        let sessions = state.api_session_owners.lock().unwrap();
+        assert!(!sessions.contains_key(&idle_id));
+        assert!(!sessions.contains_key(&absolute_id));
+        assert!(sessions.contains_key(&active_id));
+        drop(sessions);
+        let audit = state.access_manager.list_audit(10);
+        assert!(
+            audit
+                .iter()
+                .any(|event| { event.action == "session_expiry" && event.result == "idle_expiry" })
+        );
+        assert!(audit.iter().any(|event| {
+            event.action == "session_expiry" && event.result == "absolute_expiry"
+        }));
+    }
+
+    #[test]
     fn data_channel_motion_control_preserves_request_id_and_fails_closed() {
         let handler = test_control_handler(ServerState::empty());
         let response = handler
@@ -11459,6 +13014,10 @@ mod tests {
                 http_port: Some(address.port()),
             });
         }
+        state.api_session_owners.lock().unwrap().extend([
+            (SessionId::from_u64(41), local_test_session()),
+            (SessionId::from_u64(42), local_test_session()),
+        ]);
         let handler = test_control_handler(state.clone());
         let capabilities = handler
             .initial_capabilities(SessionId::from_u64(40))
@@ -11611,12 +13170,19 @@ mod tests {
 
     #[test]
     fn initial_capabilities_identify_the_connection_and_advertise_complete_contracts() {
-        let handler = test_control_handler(ServerState::empty());
+        let state = ServerState::empty();
+        let session_id = SessionId::from_u64(19);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session_id, local_test_session());
+        let handler = test_control_handler(state);
         let capabilities = handler
-            .initial_capabilities(SessionId::from_u64(19))
+            .initial_capabilities(session_id)
             .expect("server handler must provide initial capabilities");
 
-        assert_eq!(capabilities.revision, 1);
+        assert_eq!(capabilities.revision, 2);
         assert_eq!(capabilities.self_source_session_id, "webrtc-client-19");
         assert_eq!(capabilities.source_sessions.len(), 1);
         assert_eq!(
@@ -11629,8 +13195,13 @@ mod tests {
                 "keeppeek.media-export.v1",
                 "keeppeek.event-search",
                 "keeppeek.event-publication.v1",
-                "stored-media-keyframe-preview.v1"
+                "stored-media-keyframe-preview.v1",
+                "keeppeek.identity.v1"
             ]
+        );
+        assert_eq!(
+            capabilities.access_session.unwrap().role,
+            proto::AccessRole::Administrator as i32
         );
     }
 
@@ -11649,7 +13220,7 @@ mod tests {
             .api_session_owners
             .lock()
             .unwrap()
-            .insert(session_id, ApiPrincipal::LoopbackAdministrator);
+            .insert(session_id, local_test_session());
         let handler = test_control_handler(state);
         let capabilities = handler.initial_capabilities(session_id).unwrap();
         assert!(
@@ -11756,7 +13327,7 @@ mod tests {
             }) => rule,
             other => panic!("unexpected notification save response: {other:?}"),
         };
-        assert_eq!(saved.owner_id, "administrator");
+        assert_eq!(saved.owner_id, "local-administrator");
         assert_eq!(saved.draft_revision, 1);
         assert!(!saved.draft_definition_json.contains("secret-target"));
         assert!(
@@ -11852,7 +13423,7 @@ mod tests {
                 .contains(pushover_application_token)
         );
         assert!(!preserved.draft_definition_json.contains(pushover_user_key));
-        let stored = runtime.handle().rules("administrator").unwrap();
+        let stored = runtime.handle().rules("local-administrator").unwrap();
         assert_eq!(
             stored[0]
                 .draft
@@ -12062,6 +13633,11 @@ mod tests {
         let mut state = media_test_state();
         state.events = Some(events);
         state.catalog = Some(handle.clone());
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(SessionId::from_u64(7), local_test_session());
         state.webrtc.live().publish(
             crate::webrtc::Source {
                 camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -12126,7 +13702,6 @@ mod tests {
                 proto::PublishEvent { event: Some(event) },
             )),
         };
-
         for request_id in [41, 43] {
             let dispatch = handler.handle_for_session(
                 SessionId::from_u64(7),
@@ -12140,6 +13715,14 @@ mod tests {
                 Some(control_response::Result::Ok(proto::Ok { result: None }))
             ));
         }
+        assert!(
+            handler
+                .state
+                .access_manager
+                .list_audit(10)
+                .iter()
+                .any(|event| { event.action == "event_publish" && event.result == "success" })
+        );
 
         let stored = handle.event_by_id("detector-event-1").unwrap().unwrap();
         assert_eq!(stored.source, EventSource::KeepPeek);
@@ -13023,8 +14606,13 @@ mod tests {
                 .count(),
             2
         );
-        let handler = test_control_handler(state.clone());
         let session_id = SessionId::from_u64(77);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(session_id, local_test_session());
+        let handler = test_control_handler(state.clone());
         let cursor_id = "review-1";
 
         let open = handler.handle_for_session(
@@ -13702,15 +15290,31 @@ mod tests {
         )
         .unwrap();
         let access_key = AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let state = ServerState::empty().with_camera_config_path(config_path.clone());
+        let state = ServerState::empty()
+            .with_access_manager(AccessManager::open(&config_path, access_key).unwrap())
+            .with_camera_config_path(config_path.clone());
         *state.access_key.write().unwrap() = access_key;
         let loopback_session = SessionId::from_u64(81);
         let remote_session = SessionId::from_u64(82);
+        let authorization = format!("Bearer {}", access_key.canonical());
+        let remote_credential = state
+            .access_manager
+            .authenticate(
+                "203.0.113.7".parse().unwrap(),
+                &[&authorization],
+                i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                Instant::now(),
+            )
+            .unwrap();
         state.api_session_owners.lock().unwrap().extend([
-            (loopback_session, ApiPrincipal::LoopbackAdministrator),
+            (loopback_session, local_test_session()),
             (
                 remote_session,
-                ApiPrincipal::AccessKey(access_key.fingerprint()),
+                test_session_record(
+                    ApiPrincipal::credential(remote_credential),
+                    "203.0.113.7".parse().unwrap(),
+                    ClientClassificationReason::DirectRemote,
+                ),
             ),
         ]);
         let handler = test_control_handler(state.clone());
@@ -13779,13 +15383,13 @@ mod tests {
         assert_ne!(result.access_key, access_key.canonical());
         let rotated = AccessKey::parse(&result.access_key).unwrap();
         assert_eq!(*state.access_key.read().unwrap(), rotated);
-        assert_eq!(
+        assert!(
             state
                 .api_session_owners
                 .lock()
                 .unwrap()
-                .get(&remote_session),
-            None
+                .get(&remote_session)
+                .is_none()
         );
         let secret_file = std::fs::read_to_string(config::secrets_path(&config_path)).unwrap();
         assert!(secret_file.contains(&result.access_key));
@@ -13805,7 +15409,7 @@ mod tests {
             .api_session_owners
             .lock()
             .unwrap()
-            .insert(loopback_session, ApiPrincipal::LoopbackAdministrator);
+            .insert(loopback_session, local_test_session());
         let response = test_control_handler(state)
             .handle_for_session(
                 loopback_session,

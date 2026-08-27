@@ -123,6 +123,14 @@ pub(crate) fn test_api_offer() -> SdpOffer {
 pub(crate) trait ControlRequestHandler: Send + Sync {
     fn handle(&self, request: crate::api::proto::Request) -> ControlDispatch;
 
+    fn authorize_session_command(
+        &self,
+        _session_id: SessionId,
+        _request: &crate::api::proto::Request,
+    ) -> Result<(), ControlHandlerError> {
+        Ok(())
+    }
+
     fn handle_for_session(
         &self,
         _session_id: SessionId,
@@ -1180,7 +1188,7 @@ struct Inner {
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
     api_sessions: Mutex<HashMap<SessionId, Arc<ApiSessionControl>>>,
     threads: Mutex<Vec<SessionThread>>,
-    next_session_id: AtomicU64,
+    session_ids: Mutex<HashSet<SessionId>>,
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
     published_frames: AtomicU64,
     published_bytes: AtomicU64,
@@ -1216,9 +1224,15 @@ fn reap_finished_threads(inner: &Inner) {
         finished
     };
     for thread in finished {
+        let session_id = thread.session_id;
         if thread.handle.join().is_err() {
             tracing::warn!("WebRTC session thread panicked");
         }
+        inner
+            .session_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
     }
 }
 
@@ -1233,10 +1247,15 @@ fn join_session_thread(inner: &Inner, session_id: SessionId) {
             .position(|thread| thread.session_id == session_id)
             .map(|index| threads.swap_remove(index))
     };
-    if let Some(thread) = thread
-        && thread.handle.join().is_err()
-    {
-        tracing::warn!(%session_id, "WebRTC session thread panicked");
+    if let Some(thread) = thread {
+        if thread.handle.join().is_err() {
+            tracing::warn!(%session_id, "WebRTC session thread panicked");
+        }
+        inner
+            .session_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
     }
 }
 
@@ -2079,6 +2098,12 @@ impl WebRtc {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&session_id);
+                self.live
+                    .inner
+                    .session_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&session_id);
                 return Err(error.into());
             }
         };
@@ -2117,6 +2142,22 @@ impl WebRtc {
             join_session_thread(&self.live.inner, session_id);
         }
         reap_finished_threads(&self.live.inner);
+        true
+    }
+
+    pub(crate) fn request_api_session_close(&self, session_id: SessionId) -> bool {
+        reap_finished_threads(&self.live.inner);
+        let control = self
+            .live
+            .inner
+            .api_sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session_id);
+        let Some(control) = control else {
+            return false;
+        };
+        control.close();
         true
     }
 
@@ -2356,13 +2397,24 @@ impl WebRtc {
             "webrtc-{}-{}",
             subscription.active_source.camera_ip, subscription.active_source.stream
         );
-        let thread = std::thread::Builder::new()
+        let thread = match std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
                 if let Err(error) = run_session(rtc, socket, poller, rx, subscription, shutdown) {
                     tracing::debug!(%error, "WebRTC session stopped with error");
                 }
-            })?;
+            }) {
+            Ok(thread) => thread,
+            Err(error) => {
+                self.live
+                    .inner
+                    .session_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&session_id);
+                return Err(error.into());
+            }
+        };
         self.live
             .inner
             .threads
@@ -2430,6 +2482,12 @@ impl WebRtc {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.live
+            .inner
+            .session_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 }
 
@@ -2491,12 +2549,16 @@ fn accept_api_session(offer: SdpOffer) -> anyhow::Result<(SessionIo, SessionChan
 }
 
 fn next_session_id(inner: &Inner) -> SessionId {
-    let sequence = inner.next_session_id.fetch_add(1, Ordering::Relaxed);
-    SessionId(
-        sequence
-            .checked_add(1)
-            .expect("WebRTC session ID sequence overflowed"),
-    )
+    let mut session_ids = inner
+        .session_ids
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        let session_id = SessionId(rand::random());
+        if session_id.0 != 0 && session_ids.insert(session_id) {
+            return session_id;
+        }
+    }
 }
 
 const fn initial_stream(has_sub_stream: bool) -> StreamKind {
@@ -3519,11 +3581,18 @@ fn api_control_reply(
         }
     };
     let request_id = request.request_id;
+    let Some(handler) = handler else {
+        return envelope_dispatch(unavailable_control_dispatch(request_id));
+    };
+    if let Err(error) = handler.authorize_session_command(control.session_id, &request) {
+        return envelope_dispatch(failed_control_dispatch(
+            request_id,
+            error.code,
+            error.message,
+        ));
+    }
     let dispatch = match request.command.as_ref() {
         Some(crate::api::proto::request::Command::SubscribeMedia(subscribe)) => {
-            let Some(handler) = handler else {
-                return envelope_dispatch(unavailable_control_dispatch(request_id));
-            };
             match handler
                 .resolve_media_subscription(subscribe)
                 .and_then(|plan| media.subscribe(control, subscribe, plan))
@@ -3556,21 +3625,18 @@ fn api_control_reply(
                 notifications: Vec::new(),
             }
         }
-        _ => handler.map_or_else(
-            || unavailable_control_dispatch(request_id),
-            |handler| {
-                let data_group = control_data_group(request.command.as_ref());
-                let dispatch = handler.handle_for_session(control.session_id, request);
-                if matches!(
-                    dispatch.response.result,
-                    Some(control_response::Result::Ok(_))
-                ) && let Some(data_group) = data_group
-                {
-                    media.cancel_group(&data_group);
-                }
-                dispatch
-            },
-        ),
+        _ => {
+            let data_group = control_data_group(request.command.as_ref());
+            let dispatch = handler.handle_for_session(control.session_id, request);
+            if matches!(
+                dispatch.response.result,
+                Some(control_response::Result::Ok(_))
+            ) && let Some(data_group) = data_group
+            {
+                media.cancel_group(&data_group);
+            }
+            dispatch
+        }
     };
     envelope_dispatch(dispatch)
 }
