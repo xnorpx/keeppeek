@@ -12,6 +12,7 @@ independent viewers, inference services, and integrations consume or publish med
 
 - [KeepPeek Book](https://xnorpx.github.io/keeppeek/)
 - [Get started](https://xnorpx.github.io/keeppeek/get-started.html)
+- [Authentication and access control](https://xnorpx.github.io/keeppeek/authentication.html)
 - [Users and design choices](https://xnorpx.github.io/keeppeek/users-and-design-choices.html)
 - [Public API](api/README.md)
 - [Reporting bugs](https://xnorpx.github.io/keeppeek/reporting-bugs.html)

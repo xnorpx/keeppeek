@@ -75,12 +75,15 @@
 
 	function startStream(after?: number, tail = 200): void {
 		stream?.close(false);
-		stream = new ServerLogStream({
-			onentry: appendServerEntry,
-			onstate: (state) => (streamState = state),
-			ongap: (dropped) => (skippedEntries += dropped),
-			onreplaytruncated: () => (skippedEntries += 1)
-		});
+		stream = new ServerLogStream(
+			{
+				onentry: appendServerEntry,
+				onstate: (state) => (streamState = state),
+				ongap: (dropped) => (skippedEntries += dropped),
+				onreplaytruncated: () => (skippedEntries += 1)
+			},
+			(url, signal) => controlClient.openLogStream(url, signal)
+		);
 		stream.start(after, tail);
 	}
 

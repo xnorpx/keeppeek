@@ -50,6 +50,7 @@ htmlcov/
 
 *.toml
 !Cargo.toml
+!taplo.toml
 !.cargo/config.toml
 !ui/bunfig.toml
 !examples/object_detection_service/pyproject.toml

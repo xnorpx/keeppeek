@@ -7,6 +7,8 @@ import {
 } from '@bufbuild/protobuf/wkt';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	AccessRole as ProtoAccessRole,
+	AccessSessionSchema,
 	CameraManufacturerResultSchema,
 	CameraDiscoveryResultSchema,
 	CameraCatalogCameraSchema,
@@ -108,10 +110,24 @@ import {
 	WebRtcHealthSnapshotSchema
 } from './proto/webrtc_pb';
 
-const api = vi.hoisted(() => ({
-	createSession: vi.fn(),
-	deleteSession: vi.fn()
-}));
+const api = vi.hoisted(() => {
+	class MockApiRequestError extends Error {
+		constructor(
+			readonly status: number,
+			message: string
+		) {
+			super(message);
+		}
+	}
+	return {
+		ApiRequestError: MockApiRequestError,
+		createSession: vi.fn(),
+		deleteSession: vi.fn(),
+		fetchLogSnapshot: vi.fn(),
+		fetchLogStream: vi.fn(),
+		fetchMetricsSnapshot: vi.fn()
+	};
+});
 
 vi.mock('./api', () => api);
 
@@ -1083,8 +1099,19 @@ class FakeDataChannel {
 						event: {
 							case: 'initialCapabilities',
 							value: create(ServerCapabilitiesSchema, {
-								revision: 1n,
+								revision: 2n,
 								capabilityIds: ['keeppeek.runtime-config.v1'],
+								accessSession: create(AccessSessionSchema, {
+									sessionId: 'session-42',
+									principalId: '550e8400-e29b-41d4-a716-446655440001',
+									displayName: 'Remote viewer',
+									role: ProtoAccessRole.USER,
+									local: false,
+									clientClassification: 'direct_remote',
+									createdAtMs: 1_777_000_000_000n,
+									lastActivityAtMs: 1_777_000_000_000n,
+									absoluteExpiresAtMs: 1_777_086_400_000n
+								}),
 								cameras: [
 									create(CameraInfoSchema, {
 										sourceId: 'front-door',
@@ -1205,6 +1232,50 @@ afterEach(() => {
 });
 
 describe('ControlClient', () => {
+	it('keeps the remote bearer private while publishing resolved session metadata', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-42',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const client = new ControlClient();
+		const states: Array<{ status: string; serialized: string }> = [];
+		client.onAccessState((state) => {
+			states.push({ status: state.status, serialized: JSON.stringify(state) });
+		});
+		const accessKey = '550e8400-e29b-41d4-a716-446655440000';
+
+		await client.signIn(accessKey);
+
+		expect(api.createSession).toHaveBeenCalledWith(
+			expect.objectContaining({ type: 'offer' }),
+			accessKey
+		);
+		expect(states.at(-1)?.status).toBe('authenticated');
+		expect(states.at(-1)?.serialized).toContain('Remote viewer');
+		expect(states.every((state) => !state.serialized.includes(accessKey))).toBe(true);
+		await client.close();
+		expect(api.deleteSession).toHaveBeenLastCalledWith('session-42', accessKey);
+	});
+
+	it('clears a rejected bearer and publishes token-free sign-in state', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		const accessKey = '550e8400-e29b-41d4-a716-446655440000';
+		api.createSession.mockRejectedValue(new api.ApiRequestError(401, 'Unauthorized'));
+		const client = new ControlClient();
+		let serializedState = '';
+		client.onAccessState((state) => {
+			serializedState = JSON.stringify(state);
+		});
+
+		await expect(client.signIn(accessKey)).rejects.toMatchObject({ status: 401 });
+
+		expect(api.createSession).toHaveBeenCalledWith(expect.any(Object), accessKey);
+		expect(serializedState).toContain('sign-in-required');
+		expect(serializedState).not.toContain(accessKey);
+	});
+
 	it('maps notification rules and decodes revision conflicts', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({
@@ -1665,7 +1736,7 @@ describe('ControlClient', () => {
 		]);
 
 		await client.close();
-		expect(api.deleteSession).toHaveBeenCalledWith('session-42');
+		expect(api.deleteSession).toHaveBeenCalledWith('session-42', null);
 	});
 
 	it('batches one UTC day across cameras and cancels an abandoned timeline query', async () => {

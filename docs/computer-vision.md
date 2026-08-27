@@ -316,10 +316,10 @@ left open forever silently.
 
 ## Security and resource controls
 
-The service authenticates with a dedicated access key and uses encrypted transport outside an
-explicitly trusted local network. The current pre-1.0 API gives configured keys equal access; a
-future authorization layer should separate media-read and event-publish scopes before running
-third-party model services.
+The service authenticates with a dedicated named Administrator credential and uses encrypted
+transport outside an explicitly trusted local network. A User credential may read media but cannot
+publish events. Per-source and per-event-type credential scopes are not implemented, so use a
+separate credential for each third-party model service and revoke it when the service is removed.
 
 KeepPeek validates source ownership, event type, monotonic revision, UTF-8 and text length,
 bounding-box values, descriptor counts, content types, per-file bytes, aggregate event bytes,

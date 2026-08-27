@@ -60,7 +60,26 @@ struct WebRtcSourceLabels {
     stream: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AccessMetricsSnapshot {
+    pub(crate) authentication_successes: u64,
+    pub(crate) authentication_failures: u64,
+    pub(crate) authorization_denials: u64,
+    pub(crate) sessions_created: u64,
+    pub(crate) sessions_revoked_or_expired: u64,
+    pub(crate) active_sessions: u64,
+    pub(crate) active_credentials: u64,
+}
+
+#[cfg(test)]
 pub fn encode_health(health: &ServerHealthResponse) -> Result<String, std::fmt::Error> {
+    encode_health_with_access(health, None)
+}
+
+pub fn encode_health_with_access(
+    health: &ServerHealthResponse,
+    access: Option<AccessMetricsSnapshot>,
+) -> Result<String, std::fmt::Error> {
     let mut registry = Registry::with_prefix("keeppeek");
 
     let server_info = Family::<ServerInfoLabels, Gauge>::default();
@@ -469,6 +488,51 @@ pub fn encode_health(health: &ServerHealthResponse) -> Result<String, std::fmt::
         "Current health issue count by severity",
         issue_count,
     );
+
+    if let Some(access) = access {
+        register_counter(
+            &mut registry,
+            "access_authentication_successes",
+            "Successful remote bearer authentications",
+            access.authentication_successes,
+        );
+        register_counter(
+            &mut registry,
+            "access_authentication_failures",
+            "Failed remote bearer authentications",
+            access.authentication_failures,
+        );
+        register_counter(
+            &mut registry,
+            "access_authorization_denials",
+            "Denied HTTP and WebRTC operations",
+            access.authorization_denials,
+        );
+        register_counter(
+            &mut registry,
+            "access_sessions_created",
+            "Created authenticated WebRTC sessions",
+            access.sessions_created,
+        );
+        register_counter(
+            &mut registry,
+            "access_sessions_revoked_or_expired",
+            "Revoked or expired authenticated WebRTC sessions",
+            access.sessions_revoked_or_expired,
+        );
+        register_gauge(
+            &mut registry,
+            "access_sessions_active",
+            "Currently active authenticated WebRTC sessions",
+            access.active_sessions,
+        );
+        register_gauge(
+            &mut registry,
+            "access_credentials_active",
+            "Configured credentials that are currently usable",
+            access.active_credentials,
+        );
+    }
 
     let mut output = String::new();
     encode_registry(&mut output, &registry)?;
