@@ -1,22 +1,22 @@
 ## Summary
 
-Describe the user-visible outcome and link the issue this PR closes.
+Describe the user-visible outcome and link the Discussion or reproducible bug issue this PR follows.
 
-Closes #
+Context:
 
 ## Acceptance criteria verification
 
-A PR is not ready for review until every acceptance criterion from the linked issue has one row below. Quote the criterion or use its stable ID. The PR author, whether human or AI, must show what verifies each criterion and the observed result.
+A PR is not ready for review until every acceptance criterion from the linked context has one row below. Quote the criterion or use its stable ID. The PR author, whether human or AI, must show what verifies each criterion and the observed result.
 
 | Acceptance criterion | Testable outcome | Verification test or check | Evidence and observed result |
 | -------------------- | ---------------- | -------------------------- | ---------------------------- |
 | AC-1:                |                  |                            |                              |
 
-- [ ] Every acceptance criterion from the linked issue is represented above.
+- [ ] Every acceptance criterion from the linked context is represented above.
 - [ ] Every outcome is observable and every verification method is reproducible.
 - [ ] Automated tests, benchmarks, static checks, or CI artifacts are linked where available.
 - [ ] Manual checks are used only when automation is impractical and include exact steps, environment, and expected result.
-- [ ] All represented criteria pass. Unmet or unverified criteria remain unchecked in the issue.
+- [ ] All represented criteria pass. Unmet or unverified criteria remain unchecked in the linked context.
 
 ## Performance evidence
 

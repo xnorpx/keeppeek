@@ -60,7 +60,7 @@ ffmpeg -version
 
 ## Environment setup
 
-Run these commands from `example/object_detection_service`.
+Run these commands from `examples/object_detection_service`.
 
 macOS or Linux:
 
@@ -240,10 +240,10 @@ output, decodes a fixture, and runs real inference:
 
 ```sh
 cd target
-PYTHONPATH=../example/object_detection_service \
+PYTHONPATH=../examples/object_detection_service \
   KEEPPEEK_RUN_ULTRALYTICS=1 \
-  ../example/object_detection_service/.venv/bin/python -m pytest -q \
-  ../example/object_detection_service/tests/test_detection_pipeline.py \
+  ../examples/object_detection_service/.venv/bin/python -m pytest -q \
+  ../examples/object_detection_service/tests/test_detection_pipeline.py \
   -k real_ultralytics
 cd ..
 ```
@@ -252,7 +252,7 @@ Then run the complete integration from the repository root:
 
 ```sh
 cargo build -p keeppeek -p test-camera --bin keeppeek --bin test_camera
-cd example/object_detection_service
+cd examples/object_detection_service
 KEEPPEEK_RUN_OBJECT_DETECTION_E2E=1 \
   KEEPPEEK_E2E_MODEL="$PWD/../../target/yolo11n.pt" \
   python -m pytest -q tests/test_e2e.py

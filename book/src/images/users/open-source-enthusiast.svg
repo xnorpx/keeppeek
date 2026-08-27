@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Open Source Enthusiast</title>
+  <desc id="desc">A gender-neutral crow assembles a media system from reusable open-source protocol blocks.</desc>
+  <defs>
+    <pattern id="braces" width="90" height="70" patternUnits="userSpaceOnUse">
+      <text x="12" y="45" fill="#243038" opacity="0.08" font-family="monospace" font-size="34">{ }</text>
+    </pattern>
+  </defs>
+  <rect width="960" height="540" fill="#e8eef2"/>
+  <rect width="960" height="540" fill="url(#braces)"/>
+  <path d="M0 430L960 370V540H0Z" fill="#167d7f"/>
+
+  <g stroke="#243038" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M477 353C526 320 568 321 616 354" fill="none" stroke="#e4b84c" stroke-width="14"/>
+    <path d="M577 354L603 332M577 354L607 370" fill="none" stroke="#e4b84c"/>
+
+    <rect x="586" y="98" width="142" height="86" rx="7" fill="#d67b53"/>
+    <rect x="748" y="98" width="142" height="86" rx="7" fill="#8db783"/>
+    <rect x="586" y="205" width="142" height="86" rx="7" fill="#9ac7d8"/>
+    <rect x="748" y="205" width="142" height="86" rx="7" fill="#e4b84c"/>
+    <rect x="667" y="322" width="142" height="86" rx="7" fill="#fffdf5"/>
+    <path d="M657 184V205M819 184V205M657 291L700 322M819 291L776 322" fill="none"/>
+
+    <path d="M161 182C213 129 292 132 343 188L302 209C289 196 279 181 266 162" fill="#243038"/>
+    <ellipse cx="287" cy="320" rx="112" ry="131" fill="#364750"/>
+    <circle cx="287" cy="208" r="83" fill="#405761"/>
+    <path d="M344 208L430 236L345 255Z" fill="#e4b84c"/>
+    <circle cx="316" cy="194" r="11" fill="#fffdf5"/>
+    <circle cx="319" cy="194" r="5" fill="#243038" stroke="none"/>
+    <path d="M216 292C133 267 111 324 165 367C196 390 224 372 252 344" fill="#2c2c2c"/>
+    <path d="M345 291C431 251 491 265 535 302C479 310 435 337 387 377" fill="#2c2c2c"/>
+    <path d="M252 438L225 479M314 442L338 479M202 480H249M318 480H362" fill="none" stroke-width="12"/>
+    <path d="M535 302L588 248" fill="none" stroke-width="11"/>
+    <circle cx="592" cy="242" r="13" fill="#b7410e"/>
+  </g>
+
+  <g fill="#243038" font-family="IBM Plex Mono, monospace" font-weight="700" font-size="22" text-anchor="middle">
+    <text x="657" y="149">RTSP</text>
+    <text x="819" y="149">WEBRTC</text>
+    <text x="657" y="256">EVENTS</text>
+    <text x="819" y="256">MIT API</text>
+    <text x="738" y="374">KEEPPEEK</text>
+  </g>
+  <text x="40" y="503" fill="#fffdf5" font-family="IBM Plex Mono, monospace" font-size="21" font-weight="700">REUSE, CONNECT, IMPROVE</text>
+</svg>

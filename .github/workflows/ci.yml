@@ -40,6 +40,25 @@ jobs:
         working-directory: ui
         run: bunx prettier --check "../**/*.md"
 
+  book:
+    name: Book
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install mdBook and Mermaid
+        run: |
+          curl --fail --location https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          curl --fail --location https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.1/mdbook-mermaid-v0.17.1-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          chmod +x mdbook mdbook-mermaid
+          mv mdbook mdbook-mermaid /usr/local/bin/
+      - name: Build the book
+        run: mdbook build book
+      - name: Verify Mermaid output
+        run: |
+          grep --fixed-strings '<pre class="mermaid">' book/book/users-and-design-choices.html
+          grep --extended-regexp 'src="mermaid-[^"]+\.min\.js"' book/book/users-and-design-choices.html
+          grep --extended-regexp 'src="mermaid-init-[^"]+\.js"' book/book/users-and-design-choices.html
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -100,9 +119,9 @@ jobs:
           submodules: recursive
       - uses: actions/setup-python@v7
         with:
-          python-version-file: example/object_detection_service/.python-version
+          python-version-file: examples/object_detection_service/.python-version
           cache: pip
-          cache-dependency-path: example/object_detection_service/requirements.txt
+          cache-dependency-path: examples/object_detection_service/requirements.txt
       - name: Install FFmpeg on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -129,27 +148,27 @@ jobs:
           }
           ffmpeg -version
       - name: Install exact Python dependencies
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: python -m pip install -r requirements.txt
       - name: Generate and validate MIT protobuf bindings
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: |
           python generate_protos.py
           python -c "from pathlib import Path; from generated import webrtc_pb2 as pb; assert pb.DESCRIPTOR.package == 'keeppeek.webrtc.v1'; assert Path('generated/webrtc_pb2.py').read_text(encoding='utf-8').startswith('# SPDX-License-Identifier: MIT')"
       - name: Test startup and media failure paths
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: python -m pytest -q tests/test_configuration.py
       - name: Check Python types
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: python -m mypy --strict
       - name: Check Python lint and formatting
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: |
           python -m black --check .
           python -m ruff check .
           python -m ruff format --check .
       - name: Run deterministic object-detection tests
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: python -m pytest -q
 
   object-detection-integration:
@@ -161,9 +180,9 @@ jobs:
           submodules: recursive
       - uses: actions/setup-python@v7
         with:
-          python-version-file: example/object_detection_service/.python-version
+          python-version-file: examples/object_detection_service/.python-version
           cache: pip
-          cache-dependency-path: example/object_detection_service/requirements.txt
+          cache-dependency-path: examples/object_detection_service/requirements.txt
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
@@ -181,10 +200,10 @@ jobs:
           fi
           ffmpeg -version
       - name: Install exact Python dependencies
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: python -m pip install -r requirements.txt
       - name: Generate MIT protobuf bindings
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         run: python generate_protos.py
       - name: Fetch licensed Intel inference video
         shell: bash
@@ -204,7 +223,7 @@ jobs:
       - name: Build KeepPeek integration binaries
         run: cargo build -p keeppeek -p test-camera --bin keeppeek --bin test_camera
       - name: Publish a real Ultralytics detection to local KeepPeek
-        working-directory: example/object_detection_service
+        working-directory: examples/object_detection_service
         env:
           KEEPPEEK_RUN_OBJECT_DETECTION_E2E: "1"
           KEEPPEEK_E2E_MODEL: ${{ github.workspace }}/target/yolo11n.pt
@@ -511,9 +530,9 @@ jobs:
           submodules: recursive
       - uses: actions/setup-python@v7
         with:
-          python-version-file: example/object_detection_service/.python-version
+          python-version-file: examples/object_detection_service/.python-version
           cache: pip
-          cache-dependency-path: example/object_detection_service/requirements.txt
+          cache-dependency-path: examples/object_detection_service/requirements.txt
       - name: Install repository Python formatter
         working-directory: .
         run: python -m pip install black==26.5.1
@@ -646,7 +665,7 @@ jobs:
   main-release-gate:
     name: Main Release Gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [fmt, clippy, machete, build-and-test, ui, coverage]
+    needs: [fmt, book, clippy, machete, build-and-test, ui, coverage]
     runs-on: ubuntu-latest
     steps:
       - run: echo 'Main is ready for signed release builds.'

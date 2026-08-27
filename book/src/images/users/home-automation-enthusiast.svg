@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Home Automation Enthusiast</title>
+  <desc id="desc">A gender-neutral gecko connects camera events to lights, MQTT, Home Assistant, HAP, and monitoring.</desc>
+  <defs>
+    <pattern id="circuit" width="80" height="80" patternUnits="userSpaceOnUse">
+      <path d="M0 40H26L40 26V0M40 80V54L54 40H80" fill="none" stroke="#167d7f" stroke-width="2" opacity="0.11"/>
+      <circle cx="40" cy="40" r="4" fill="#167d7f" opacity="0.13"/>
+    </pattern>
+  </defs>
+  <rect width="960" height="540" fill="#f4ebd8"/>
+  <rect width="960" height="540" fill="url(#circuit)"/>
+  <path d="M0 421C175 379 317 440 488 402C656 365 798 419 960 382V540H0Z" fill="#8db783"/>
+
+  <g stroke="#243038" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M55 252L171 151L287 252V420H55Z" fill="#fffdf5"/>
+    <rect x="139" y="320" width="66" height="100" fill="#9ac7d8"/>
+    <path d="M102 272H135M226 272H259" fill="none"/>
+    <path d="M171 151V94H225" fill="none"/>
+    <rect x="207" y="72" width="78" height="49" rx="7" fill="#243038"/>
+    <circle cx="246" cy="96" r="13" fill="#9ac7d8"/>
+
+    <circle cx="750" cy="116" r="55" fill="#d67b53"/>
+    <circle cx="835" cy="246" r="55" fill="#e4b84c"/>
+    <circle cx="761" cy="388" r="55" fill="#9ac7d8"/>
+    <circle cx="601" cy="405" r="55" fill="#8db783"/>
+    <path d="M698 137L555 232M794 221L563 253M710 377L559 282M610 351L535 291" fill="none" stroke="#167d7f" stroke-width="10"/>
+
+    <path d="M390 226C402 154 476 125 534 167C579 200 573 277 535 322C493 370 410 349 383 289C374 270 376 245 390 226Z" fill="#6ca56f"/>
+    <circle cx="431" cy="218" r="13" fill="#fffdf5"/>
+    <circle cx="500" cy="211" r="13" fill="#fffdf5"/>
+    <circle cx="434" cy="218" r="5" fill="#243038" stroke="none"/>
+    <circle cx="503" cy="211" r="5" fill="#243038" stroke="none"/>
+    <path d="M455 258C469 270 490 268 502 253" fill="none"/>
+    <path d="M395 280C327 306 321 368 377 390C433 412 476 370 491 330" fill="none" stroke="#6ca56f" stroke-width="28"/>
+    <path d="M512 316C553 353 558 414 515 446C471 478 408 455 392 413" fill="none" stroke="#6ca56f" stroke-width="28"/>
+    <path d="M408 201L359 171M523 186L565 145M397 313L352 340M531 305L579 330" fill="none" stroke="#6ca56f" stroke-width="23"/>
+
+    <path d="M737 116L749 128L771 100M818 246H851M835 229V263M742 388H780M590 405H612" fill="none" stroke="#fffdf5" stroke-width="8"/>
+  </g>
+
+  <g fill="#243038" font-family="IBM Plex Mono, monospace" font-weight="700" text-anchor="middle">
+    <text x="750" y="187" font-size="19">LIGHTS</text>
+    <text x="835" y="317" font-size="19">MQTT</text>
+    <text x="761" y="459" font-size="19">HAP</text>
+    <text x="601" y="476" font-size="19">HOME ASSISTANT</text>
+    <text x="472" y="512" font-size="21">IF CAMERA, THEN EVERYTHING</text>
+  </g>
+</svg>
