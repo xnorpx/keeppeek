@@ -582,27 +582,35 @@ function timelineEventFromHit(hit: EventPreviewHit): RecordingEvent {
 	return {
 		id: hit.eventId,
 		source_id: hit.sourceId,
+		revision: hit.revision,
 		source: hit.origin,
 		kind: hit.eventType,
 		start_time_ms: hit.startMs,
 		end_time_ms: hit.endMs,
 		confidence: hit.confidence,
 		bbox: hit.bbox,
+		bbox_attachment_id: hit.bboxAttachmentId,
 		zone: hit.zone,
 		text: hit.text,
 		thumbnail_url: null,
-		attachments: hit.hasImageAttachment
-			? [
-					{
-						id: 'thumbnail',
-						type: 'thumbnail',
-						content_type: 'image/jpeg',
-						byte_length: null,
-						ordinal: 0,
-						timestamp_ms: hit.startMs
-					}
-				]
-			: []
+		attachments: hit.attachments.length
+			? hit.attachments
+			: hit.hasImageAttachment
+				? [
+						{
+							id: 'thumbnail',
+							type: 'thumbnail',
+							content_type: 'image/jpeg',
+							byte_length: null,
+							ordinal: 0,
+							timestamp_ms: hit.startMs
+						}
+					]
+				: [],
+		canonical_attachment_id: hit.canonicalAttachment?.id ?? null,
+		icon_key: hit.iconKey,
+		rejected_icon_key: hit.rejectedIconKey,
+		image_availability: hit.imageAvailability
 	};
 }
 

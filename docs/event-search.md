@@ -1,9 +1,10 @@
 # Event browsing, search, and encoded previews
 
 The storage event-search API supports filtered metadata browsing, structured text search, and
-model-scoped semantic similarity. Search results contain event metadata and immutable keyframe
-descriptors for a bounded preview interval. Encoded bytes are fetched separately so callers can
-lazy-load, prefetch, cancel, or cache media.
+model-scoped semantic similarity. Search results contain event metadata, the complete bounded
+attachment descriptor snapshot, the canonical descriptor, and immutable keyframe descriptors for
+a bounded preview interval. Encoded bytes are fetched separately so callers can lazy-load,
+prefetch, cancel, or cache media.
 
 ## Metadata browsing
 
@@ -13,7 +14,7 @@ keyset continuation token. Ordinary filters compose with `AND` semantics:
 - exact event and source IDs;
 - event type and origin;
 - zone and minimum confidence;
-- presence or absence of a stored image attachment;
+- presence or absence of a supported canonical image descriptor, independent of retention;
 - normalized indexed-text prefixes across event type and producer-supplied search terms.
 
 Repeated values within one filter use `OR` semantics. A metadata page contains at most 128 hits,

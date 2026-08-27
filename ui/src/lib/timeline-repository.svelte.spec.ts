@@ -100,6 +100,7 @@ describe('TimelineRepository', () => {
 					hits: [
 						{
 							eventId: 'person-1',
+							revision: 1,
 							sourceId: 'front-door',
 							eventType: 'person',
 							origin: 'camera' as const,
@@ -110,6 +111,28 @@ describe('TimelineRepository', () => {
 							zone: null,
 							text: null,
 							hasImageAttachment: true,
+							canonicalAttachment: {
+								id: 'thumbnail',
+								type: 'thumbnail',
+								content_type: 'image/jpeg',
+								byte_length: 12,
+								ordinal: 0,
+								timestamp_ms: 150
+							},
+							attachments: [
+								{
+									id: 'thumbnail',
+									type: 'thumbnail',
+									content_type: 'image/jpeg',
+									byte_length: 12,
+									ordinal: 0,
+									timestamp_ms: 150
+								}
+							],
+							imageAvailability: 'available' as const,
+							iconKey: 'person' as const,
+							rejectedIconKey: null,
+							bboxAttachmentId: null,
 							previewStartMs: 145,
 							previewEndMs: 160,
 							keyframes: [],

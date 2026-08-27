@@ -4,10 +4,8 @@
 		type EventBrowserRecord,
 		type EventPreviewState
 	} from '$lib/event-browser';
-	import ImageIcon from '@lucide/svelte/icons/image';
-	import ImageOffIcon from '@lucide/svelte/icons/image-off';
-	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { onMount } from 'svelte';
+	import EventPreview from './EventPreview.svelte';
 
 	type Props = {
 		record: EventBrowserRecord;
@@ -125,54 +123,7 @@
 				? 'max-md:h-[150px] max-md:rounded-b-none md:aspect-video'
 				: 'max-md:h-14 max-md:w-[86px] md:aspect-video'}"
 	>
-		{#if record.event.thumbnail_url}
-			{#if !paperFrame}
-				<img
-					src={record.event.thumbnail_url}
-					alt=""
-					loading="lazy"
-					decoding="async"
-					class="size-full object-cover"
-				/>
-			{/if}
-		{:else if !eventHasImage(record.event)}
-			<div
-				class="grid size-full place-items-center border border-dashed border-hairline-strong font-mono text-2xs tracking-caps text-text-faint"
-			>
-				NO IMAGE
-			</div>
-		{:else if previewState === 'unavailable'}
-			<div
-				class="grid size-full place-items-center border border-dashed border-hairline-strong text-text-faint"
-				aria-label="Event image unavailable"
-			>
-				<span class="grid justify-items-center gap-1.5 font-mono text-2xs tracking-caps">
-					<ImageOffIcon class="size-4" />
-					PREVIEW UNAVAILABLE
-				</span>
-			</div>
-		{:else if previewState === 'loading'}
-			<div
-				class="grid size-full place-items-center bg-raised text-text-faint"
-				aria-label="Loading event image"
-			>
-				<LoaderCircleIcon class="size-4 animate-spin" />
-			</div>
-		{:else if previewState === 'queued'}
-			<div
-				class="grid size-full place-items-center bg-raised text-text-faint"
-				aria-label="Event image queued"
-			>
-				<ImageIcon class="size-4" />
-			</div>
-		{:else}
-			<div
-				class="grid size-full place-items-center bg-video text-text-faint"
-				aria-label="Event image available"
-			>
-				<ImageIcon class="size-4" />
-			</div>
-		{/if}
+		<EventPreview event={record.event} cameraLabel={cameraLabel()} {previewState} />
 		{#if record.event.confidence !== null}
 			<span
 				class="absolute right-1.5 {paperFrame

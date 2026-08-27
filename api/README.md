@@ -25,6 +25,8 @@ compatibility guarantees begin with the 1.0 release.
 
 ## Scenarios
 
+- [Event presentation metadata](../docs/event-presentation.md) defines canonical image selection,
+  semantic icon safety, retention states, bounding-box ownership, and cross-surface identity.
 - [Viewer application](../docs/viewer.md) shows connection setup, live subscriptions, indexed stored-media
   search and scrubbing, MID assignments, quality preferences, limited connection health, and
   optional HTTP server logs and metrics.

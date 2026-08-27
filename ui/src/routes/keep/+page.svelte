@@ -132,6 +132,7 @@
 	let timelineFollowRequest = $state(0);
 	let exportRangeStartMs: number | null = $state(null);
 	let exportRangeEndMs: number | null = $state(null);
+	let exportSeedEvent = $state.raw<RecordingEvent | null>(null);
 	let configuredFrameRates = $state.raw<ReadonlyMap<string, number>>(new Map());
 	let coldSeekTimestampMs: number | null = $state(null);
 	let coldSeekElapsedMs = $state(0);
@@ -335,6 +336,7 @@
 			const params = new URLSearchParams(window.location.search);
 			mode = parseKeepMode(params.get('mode'));
 			const requestedTimestampMs = parseTimestamp(params.get('at'));
+			const requestedEventId = params.get('event')?.trim() ?? '';
 			const requestedCamera = params.get('camera')?.trim() ?? '';
 			const requestedStream = params.get('stream');
 			const hasRequestedStream = requestedStream === 'main' || requestedStream === 'sub';
@@ -412,6 +414,16 @@
 			if (recordingsPromise) {
 				await recordingsPromise;
 				if (!resolveLatestDateFirst) scheduleRecordingDateDiscovery();
+			}
+			if (requestedEventId && requestedTimestampMs !== null && cameraId) {
+				exportSeedEvent = await resolveExportSeedEvent(
+					requestedEventId,
+					cameraId,
+					requestedTimestampMs
+				);
+				if (!exportSeedEvent && mode === 'export') {
+					error = 'The selected event revision is no longer available for export.';
+				}
 			}
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Failed to open Keep';
@@ -682,17 +694,51 @@
 		return {
 			id: hit.eventId,
 			source_id: hit.sourceId,
+			revision: hit.revision,
 			source: hit.origin,
 			kind: hit.eventType,
 			start_time_ms: hit.startMs,
 			end_time_ms: hit.endMs,
 			confidence: hit.confidence,
 			bbox: hit.bbox,
+			bbox_attachment_id: hit.bboxAttachmentId,
 			zone: hit.zone,
 			text: hit.text,
 			thumbnail_url: null,
-			attachments: []
+			attachments: hit.attachments,
+			canonical_attachment_id: hit.canonicalAttachment?.id ?? null,
+			icon_key: hit.iconKey,
+			rejected_icon_key: hit.rejectedIconKey,
+			image_availability: hit.imageAvailability
 		};
+	}
+
+	async function resolveExportSeedEvent(
+		eventId: string,
+		sourceId: string,
+		timestampMs: number
+	): Promise<RecordingEvent | null> {
+		const startMs = timestampMs - 5 * 60_000;
+		const endMs = timestampMs + 5 * 60_000;
+		const pages = await Promise.all(
+			(['main', 'sub'] as const).map((streamId) =>
+				controlClient
+					.searchEventMetadata({
+						eventIds: [eventId],
+						sourceIds: [sourceId],
+						streamId,
+						startMs,
+						endMs,
+						pageSize: 1
+					})
+					.catch(() => null)
+			)
+		);
+		const hit = pages
+			.flatMap((result) => result?.hits ?? [])
+			.filter((candidate) => candidate.eventId === eventId && candidate.sourceId === sourceId)
+			.toSorted((left, right) => right.revision - left.revision)[0];
+		return hit ? recordingEventFromHit(hit) : null;
 	}
 
 	function attachKeyFramePreview(playback: StoredMediaPlayback): void {
@@ -1775,7 +1821,13 @@
 			camera: cameraId,
 			stream,
 			...(selectedDate ? { date: selectedDate } : {}),
-			...(mode === 'timeline' ? {} : { mode })
+			...(mode === 'timeline' ? {} : { mode }),
+			...(exportSeedEvent?.source_id === cameraId
+				? {
+						event: exportSeedEvent.id,
+						at: String(exportSeedEvent.start_time_ms)
+					}
+				: {})
 		});
 		// The base path is resolved before the query string is appended.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
@@ -1935,7 +1987,7 @@
 			onselect={selectSwimlane}
 		/>
 	{:else if mode === 'export'}
-		{#key selected?.url ?? 'empty-export'}
+		{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
 			<KeepExportPanel
 				sourceId={cameraId}
 				sourceName={selectedCamera?.name ?? cameraId}
@@ -1943,6 +1995,7 @@
 				bitrateKbps={selectedBitrateKbps}
 				rangeStartMs={exportRangeStartMs}
 				rangeEndMs={exportRangeEndMs}
+				event={exportSeedEvent}
 			/>
 		{/key}
 	{:else}

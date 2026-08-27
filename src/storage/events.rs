@@ -78,12 +78,16 @@ impl EventStore {
         let decoded = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)?;
         let thumbnail = decoded.thumbnail(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
         let encoded = encode_jpeg(&thumbnail)?;
+        let byte_len = u64::try_from(encoded.len())?;
         let filename = format!("{event_id}.jpg");
         let destination = self.thumbnail_root.join(&filename);
         let temporary = self.thumbnail_root.join(format!(".{event_id}.tmp"));
         fs::write(&temporary, encoded)?;
         fs::rename(&temporary, &destination)?;
-        if let Err(error) = self.catalog.attach_event_thumbnail(event_id, &filename) {
+        if let Err(error) = self
+            .catalog
+            .attach_event_thumbnail(event_id, &filename, byte_len)
+        {
             let _ = fs::remove_file(destination);
             return Err(error);
         }
@@ -182,6 +186,7 @@ mod tests {
         store
             .insert(TimelineEvent {
                 id: "event-1".to_owned(),
+                revision: 1,
                 camera_id: "front-door".to_owned(),
                 stream: Some("sub".to_owned()),
                 source: EventSource::Camera,
@@ -190,7 +195,12 @@ mod tests {
                 end_time_ms: None,
                 confidence: None,
                 bbox: None,
+                bbox_attachment_id: None,
                 zone: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "motion".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: None,
             })
             .unwrap();
@@ -260,6 +270,7 @@ mod tests {
             events
                 .insert_event(TimelineEvent {
                     id: id.to_owned(),
+                    revision: 1,
                     camera_id: "front-door".to_owned(),
                     stream: None,
                     source: EventSource::Camera,
@@ -268,7 +279,12 @@ mod tests {
                     end_time_ms: Some(started_at_ms + 1),
                     confidence: None,
                     bbox: None,
+                    bbox_attachment_id: None,
                     zone: None,
+                    attachments: Vec::new(),
+                    canonical_attachment_id: None,
+                    icon_key: "motion".to_owned(),
+                    rejected_icon_key: None,
                     thumbnail_filename: None,
                 })
                 .unwrap();
@@ -299,6 +315,11 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let pruned = limited.event_by_id("event-1").unwrap().unwrap();
+        assert_eq!(pruned.revision, 2);
+        assert_eq!(pruned.canonical_attachment_id.as_deref(), Some("thumbnail"));
+        assert_eq!(pruned.attachments[0].id, "thumbnail");
+        assert!(pruned.thumbnail_filename.is_none());
 
         drop(limited);
         drop(store);

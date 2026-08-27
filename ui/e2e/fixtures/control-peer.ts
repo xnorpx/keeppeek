@@ -51,6 +51,7 @@ import {
 	EventSearchQueryEndSchema,
 	EventSearchResultSchema,
 	EventImageFilter,
+	EventImageAvailability,
 	EventMessageSchema,
 	EventOrigin,
 	EventSchema,
@@ -930,6 +931,17 @@ export async function mockControlPeer(
 									})
 								]
 							: [];
+					const attachmentId = event.canonical_attachment_id ?? 'thumbnail';
+					const canonicalAttachment = hasImage
+						? create(EventAttachmentDescriptorSchema, {
+								attachmentId,
+								attachmentType: 'thumbnail',
+								contentType: 'image/jpeg',
+								byteLen: fixture.thumbnail ? BigInt(fixture.thumbnail.byteLength) : undefined,
+								ordinal: 0,
+								timestamp: timestampFromDate(new Date(event.start_time_ms))
+							})
+						: undefined;
 					pendingDataMessages.push(
 						encodedData(
 							create(MessageSchema, {
@@ -943,6 +955,7 @@ export async function mockControlPeer(
 												sequence: BigInt(index + 1),
 												hit: create(EventSearchHitSchema, {
 													eventId: event.id,
+													revision: BigInt(event.revision ?? 1),
 													sourceId: fixture.sourceId,
 													eventType: event.kind,
 													origin:
@@ -964,6 +977,17 @@ export async function mockControlPeer(
 													zone: event.zone ?? undefined,
 													text: event.text ?? undefined,
 													hasImageAttachment: hasImage,
+													canonicalAttachment,
+													attachments: canonicalAttachment ? [canonicalAttachment] : [],
+													iconKey: event.icon_key,
+													boundingBoxAttachmentId:
+														event.bbox_attachment_id ??
+														(hasImage && event.bbox ? attachmentId : undefined),
+													imageAvailability: hasImage
+														? fixture.thumbnailDescriptorOnly
+															? EventImageAvailability.UNAVAILABLE
+															: EventImageAvailability.AVAILABLE
+														: EventImageAvailability.NONE,
 													previewStartTime: timestampFromDate(
 														new Date(event.start_time_ms - 5_000)
 													),
@@ -1024,7 +1048,11 @@ export async function mockControlPeer(
 				activeEventMedia -= 1;
 				for (const object of transfer.objects) {
 					const fixture = (options.storedEvents ?? []).find(
-						(candidate) => candidate.event.id === object.recordingId
+						(candidate) =>
+							candidate.event.id ===
+							(object.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT
+								? object.eventId
+								: object.recordingId)
 					);
 					if (!fixture?.thumbnail) continue;
 					pendingDataMessages.push(
@@ -1038,16 +1066,31 @@ export async function mockControlPeer(
 											value: create(EventSearchMediaChunkSchema, {
 												transferId: transfer.transferId,
 												objectId: object.objectId,
-												representation: StoredMediaObjectRepresentation.ENCODED_KEYFRAME,
-												contentType: 'video/avc',
+												representation: object.representation,
+												contentType:
+													object.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT
+														? 'image/jpeg'
+														: 'video/avc',
 												byteLen: BigInt(fixture.thumbnail.byteLength),
 												chunkCount: 1,
 												payload: fixture.thumbnail,
-												codec: 'avc1.42C01F',
+												codec:
+													object.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT
+														? ''
+														: 'avc1.42C01F',
 												width: 1,
 												height: 1,
-												decoderConfig: Uint8Array.from([1]),
-												nalLengthSize: 4
+												decoderConfig:
+													object.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT
+														? new Uint8Array()
+														: Uint8Array.from([1]),
+												nalLengthSize:
+													object.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT
+														? 0
+														: 4,
+												eventId: object.eventId,
+												eventRevision: object.eventRevision,
+												attachmentId: object.attachmentId
 											})
 										}
 									})

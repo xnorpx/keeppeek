@@ -48,7 +48,7 @@ use crate::{
         EventSemanticSearchQuery, EventStore, EventTextSearchQuery, RecordingCatalogHandle,
         RecordingDemand, RecordingDemandGuard, RecordingHealthRegistry,
         RecordingStreamHealthSnapshot, StorageConfig,
-        metadata::{EventSource, TimelineEvent},
+        metadata::{EventAttachment, EventSource, TimelineEvent},
         safety::filesystem_capacity,
     },
     webrtc::{
@@ -1166,6 +1166,13 @@ impl ServerControlHandler {
                 "envelope-only event publication cannot include subscription or attachment data",
             ));
         }
+        if event.canonical_attachment_id.is_some() || event.bounding_box_attachment_id.is_some() {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "envelope-only event publication cannot reference attachments",
+            ));
+        }
         if !PUBLISHED_DETECTION_EVENT_TYPES.contains(&event.event_type.as_str()) {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::UnsupportedRequest,
@@ -1261,8 +1268,11 @@ impl ServerControlHandler {
             })
             .filter(|stream| matches!(*stream, "main" | "sub"))
             .map(str::to_owned);
+        let icon =
+            crate::storage::metadata::event_icon(event.icon_key.as_deref(), &event.event_type);
         let stored_event = TimelineEvent {
             id: event.event_id,
+            revision: event.revision,
             camera_id: event.source_id,
             stream,
             source: EventSource::KeepPeek,
@@ -1271,7 +1281,12 @@ impl ServerControlHandler {
             end_time_ms,
             confidence: event.confidence,
             bbox,
+            bbox_attachment_id: None,
             zone: event.zone,
+            attachments: Vec::new(),
+            canonical_attachment_id: None,
+            icon_key: icon.key.to_owned(),
+            rejected_icon_key: icon.rejected,
             thumbnail_filename: None,
         };
         let events = self.state.events.as_ref().ok_or_else(|| {
@@ -3243,7 +3258,8 @@ struct StoredTimelineEvent {
 
 struct StoredTimelineAttachment {
     event_id: String,
-    timestamp_ms: i64,
+    revision: u64,
+    descriptor: EventAttachment,
     path: PathBuf,
 }
 
@@ -3329,6 +3345,13 @@ fn create_export_job(
             "export range exceeds 2 minutes",
         ));
     }
+    let event_seed = export_event_seed(
+        state,
+        request.event_seed.as_ref(),
+        &request.source_id,
+        start_ms,
+        end_ms,
+    )?;
     {
         let jobs = state
             .export_jobs
@@ -3402,6 +3425,7 @@ fn create_export_job(
         error,
         retryable: false,
         burn_in_timestamp: request.burn_in_timestamp,
+        event_seed,
     };
     state
         .export_jobs
@@ -3420,6 +3444,92 @@ fn create_export_job(
         spawn_export_worker(state.clone(), request, fragments, cancel, end_ms, file_name);
     }
     Ok(job)
+}
+
+fn export_event_seed(
+    state: &ServerState,
+    requested: Option<&proto::EventExportSeed>,
+    source_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Option<proto::EventExportSeed>, ControlCommandError> {
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    validate_client_id(&requested.event_id, "export event ID")?;
+    if requested.revision == 0 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "export event revision must be positive",
+        ));
+    }
+    let store = state.events.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "event storage is unavailable",
+        )
+    })?;
+    let event = store
+        .event_by_id(&requested.event_id)
+        .map_err(|error| stored_catalog_error("load export event seed", error))?
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "export event was not found",
+            )
+        })?;
+    if event.camera_id != source_id
+        || event.start_time_ms >= end_ms
+        || event
+            .end_time_ms
+            .unwrap_or_else(|| event.start_time_ms.saturating_add(1))
+            <= start_ms
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "export event is outside the requested source or range",
+        ));
+    }
+    if event.revision != requested.revision {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "export event revision is stale",
+        ));
+    }
+    let canonical_attachment = event
+        .canonical_attachment()
+        .cloned()
+        .map(proto_event_attachment_descriptor);
+    let requested_attachment_id = requested
+        .canonical_attachment
+        .as_ref()
+        .map(|attachment| attachment.attachment_id.as_str());
+    let actual_attachment_id = canonical_attachment
+        .as_ref()
+        .map(|attachment| attachment.attachment_id.as_str());
+    if requested_attachment_id != actual_attachment_id {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "export canonical attachment identity is stale",
+        ));
+    }
+    let image_availability = proto_event_image_availability(
+        event.canonical_attachment_id.is_some(),
+        event.canonical_image_available(),
+    );
+    Ok(Some(proto::EventExportSeed {
+        event_id: event.id,
+        revision: event.revision,
+        canonical_attachment,
+        icon_key: Some(event.icon_key),
+        image_availability,
+    }))
 }
 
 fn spawn_export_worker(
@@ -5480,6 +5590,9 @@ fn fetch_event_search_media(
 
 struct ResolvedEventSearchMediaObject {
     object_id: String,
+    event_id: String,
+    event_revision: u64,
+    attachment_id: String,
     recording_id: String,
     fragment_sequence: u64,
     representation: proto::StoredMediaObjectRepresentation,
@@ -5516,6 +5629,42 @@ fn stream_event_search_media(
     let mut objects = Vec::with_capacity(request.objects.len());
     for object in &request.objects {
         validate_client_id(&object.object_id, "event search object ID")?;
+        if !object_ids.insert(object.object_id.clone()) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "event search object IDs must be unique within a transfer",
+            ));
+        }
+        let representation = proto::StoredMediaObjectRepresentation::try_from(
+            object.representation,
+        )
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "stored media object representation is invalid",
+            )
+        })?;
+        if representation == proto::StoredMediaObjectRepresentation::EventAttachment {
+            let resolved = resolve_event_search_attachment(state, object)?;
+            total_bytes = total_bytes.checked_add(resolved.length).ok_or_else(|| {
+                ControlCommandError::new(
+                    proto::ErrorCode::InvalidRequest,
+                    413,
+                    "event search media transfer size overflowed",
+                )
+            })?;
+            if total_bytes > MAX_EVENT_SEARCH_MEDIA_BYTES {
+                return Err(ControlCommandError::new(
+                    proto::ErrorCode::Rejected,
+                    413,
+                    "event search media transfer exceeds 32 MiB",
+                ));
+            }
+            objects.push(resolved);
+            continue;
+        }
         validate_client_id(&object.source_id, "event search media source ID")?;
         validate_client_id(&object.recording_id, "event search recording ID")?;
         if object.fragment_sequence == 0 {
@@ -5523,13 +5672,6 @@ fn stream_event_search_media(
                 proto::ErrorCode::InvalidRequest,
                 400,
                 "event search fragment sequence must be positive",
-            ));
-        }
-        if !object_ids.insert(object.object_id.clone()) {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "event search object IDs must be unique within a transfer",
             ));
         }
         validate_event_search_stream(&object.stream_id)?;
@@ -5567,16 +5709,6 @@ fn stream_event_search_media(
             location.fragment_len,
         )?;
         let video_format = indexed_video_format(&initialization, Some(&fragment))?;
-        let representation = proto::StoredMediaObjectRepresentation::try_from(
-            object.representation,
-        )
-        .map_err(|_| {
-            ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "stored media object representation is invalid",
-            )
-        })?;
         let (offset, length, content_type) = match representation {
             proto::StoredMediaObjectRepresentation::EncodedKeyframe => (
                 location.keyframe_offset,
@@ -5593,7 +5725,8 @@ fn stream_event_search_media(
                 location.fragment_len,
                 video_format.mp4_content_type.clone(),
             ),
-            proto::StoredMediaObjectRepresentation::Unspecified => {
+            proto::StoredMediaObjectRepresentation::Unspecified
+            | proto::StoredMediaObjectRepresentation::EventAttachment => {
                 return Err(ControlCommandError::new(
                     proto::ErrorCode::InvalidRequest,
                     400,
@@ -5617,6 +5750,9 @@ fn stream_event_search_media(
         }
         objects.push(ResolvedEventSearchMediaObject {
             object_id: object.object_id.clone(),
+            event_id: String::new(),
+            event_revision: 0,
+            attachment_id: String::new(),
             recording_id: location.recording_id,
             fragment_sequence: location.fragment_sequence,
             representation,
@@ -5633,9 +5769,10 @@ fn stream_event_search_media(
     }
     objects.sort_by_key(|object| match object.representation {
         proto::StoredMediaObjectRepresentation::Fmp4Initialization => 0,
-        proto::StoredMediaObjectRepresentation::EncodedKeyframe => 1,
-        proto::StoredMediaObjectRepresentation::Fmp4Gop => 2,
-        proto::StoredMediaObjectRepresentation::Unspecified => 3,
+        proto::StoredMediaObjectRepresentation::EventAttachment => 1,
+        proto::StoredMediaObjectRepresentation::EncodedKeyframe => 2,
+        proto::StoredMediaObjectRepresentation::Fmp4Gop => 3,
+        proto::StoredMediaObjectRepresentation::Unspecified => 4,
     });
     for object in objects {
         if cancelled.load(Ordering::Acquire) {
@@ -5671,6 +5808,115 @@ fn stream_event_search_media(
         transfer_id: request.transfer_id.clone(),
         channel: channel as i32,
         object_count: u32::try_from(request.objects.len()).unwrap_or(u32::MAX),
+    })
+}
+
+fn resolve_event_search_attachment(
+    state: &ServerState,
+    object: &proto::EventSearchMediaObject,
+) -> Result<ResolvedEventSearchMediaObject, ControlCommandError> {
+    validate_client_id(&object.source_id, "event attachment source ID")?;
+    validate_client_id(&object.event_id, "event attachment event ID")?;
+    validate_client_id(&object.attachment_id, "event attachment ID")?;
+    if object.event_revision == 0 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "event attachment revision must be positive",
+        ));
+    }
+    let store = state.events.as_ref().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "event attachment storage is unavailable",
+        )
+    })?;
+    let event = store
+        .event_by_id(&object.event_id)
+        .map_err(|error| stored_catalog_error("load event attachment metadata", error))?
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "event attachment was not found",
+            )
+        })?;
+    if event.camera_id != object.source_id {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::NotFound,
+            404,
+            "event attachment was not found",
+        ));
+    }
+    if event.revision != object.event_revision {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "event attachment revision is stale",
+        ));
+    }
+    if event.canonical_attachment_id.as_deref() != Some(object.attachment_id.as_str()) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "requested attachment is not canonical for this event revision",
+        ));
+    }
+    let descriptor = event.canonical_attachment().cloned().ok_or_else(|| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            "stored event has no canonical attachment descriptor",
+        )
+    })?;
+    let path = store
+        .thumbnail_path(&event.camera_id, &event.id)
+        .map_err(|error| stored_catalog_error("resolve canonical event attachment", error))?
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "canonical event attachment is unavailable",
+            )
+        })?;
+    let length = path
+        .metadata()
+        .map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::Unavailable,
+                503,
+                "canonical event attachment is unavailable",
+            )
+        })?
+        .len();
+    if descriptor
+        .byte_len
+        .is_some_and(|expected| expected != length)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Unavailable,
+            503,
+            "canonical event attachment length changed",
+        ));
+    }
+    Ok(ResolvedEventSearchMediaObject {
+        object_id: object.object_id.clone(),
+        event_id: event.id,
+        event_revision: event.revision,
+        attachment_id: descriptor.id,
+        recording_id: String::new(),
+        fragment_sequence: 0,
+        representation: proto::StoredMediaObjectRepresentation::EventAttachment,
+        content_type: descriptor.content_type,
+        path,
+        offset: 0,
+        length,
+        codec: String::new(),
+        width: 0,
+        height: 0,
+        decoder_config: Vec::new(),
+        nal_length_size: 0,
     })
 }
 
@@ -5755,6 +6001,9 @@ fn stream_event_search_object(
                 height: object.height,
                 decoder_config: object.decoder_config.clone(),
                 nal_length_size: object.nal_length_size,
+                event_id: object.event_id.clone(),
+                event_revision: object.event_revision,
+                attachment_id: object.attachment_id.clone(),
             }),
         ))?;
         remaining -= length as u64;
@@ -6071,8 +6320,11 @@ fn remap_event_search_keyframes(
 
 fn proto_event_search_hit(hit: crate::storage::EventSearchHit) -> proto::EventSearchHit {
     let source_id = hit.source_id.clone();
+    let image_availability =
+        proto_event_image_availability(hit.has_image_attachment, hit.image_available);
     proto::EventSearchHit {
         event_id: hit.event_id,
+        revision: hit.revision,
         source_id: source_id.clone(),
         event_type: hit.event_type,
         origin: match hit.origin {
@@ -6093,6 +6345,18 @@ fn proto_event_search_hit(hit: crate::storage::EventSearchHit) -> proto::EventSe
         zone: hit.zone,
         text: hit.text,
         has_image_attachment: hit.has_image_attachment,
+        canonical_attachment: hit
+            .canonical_attachment
+            .map(proto_event_attachment_descriptor),
+        attachments: hit
+            .attachments
+            .into_iter()
+            .map(proto_event_attachment_descriptor)
+            .collect(),
+        icon_key: Some(hit.icon_key),
+        rejected_icon_key: hit.rejected_icon_key,
+        bounding_box_attachment_id: hit.bbox_attachment_id,
+        image_availability,
         score: hit.score,
         preview_start_time: Some(millis_timestamp(hit.preview_start_ms)),
         preview_end_time: Some(millis_timestamp(hit.preview_end_ms)),
@@ -6110,6 +6374,30 @@ fn proto_event_search_hit(hit: crate::storage::EventSearchHit) -> proto::EventSe
             })
             .collect(),
         keyframes_truncated: hit.keyframes_truncated,
+    }
+}
+
+fn proto_event_attachment_descriptor(
+    attachment: EventAttachment,
+) -> proto::EventAttachmentDescriptor {
+    proto::EventAttachmentDescriptor {
+        attachment_id: attachment.id,
+        attachment_type: attachment.attachment_type,
+        content_type: attachment.content_type,
+        byte_len: attachment.byte_len,
+        ordinal: attachment.ordinal,
+        timestamp: attachment.timestamp_ms.map(millis_timestamp),
+        text: attachment.text,
+    }
+}
+
+const fn proto_event_image_availability(has_image: bool, available: bool) -> i32 {
+    if !has_image {
+        proto::EventImageAvailability::None as i32
+    } else if available {
+        proto::EventImageAvailability::Available as i32
+    } else {
+        proto::EventImageAvailability::Unavailable as i32
     }
 }
 
@@ -6430,13 +6718,16 @@ fn query_stored_media_timeline(
         let Some(attachment) = &event.attachment else {
             continue;
         };
-        let payload = std::fs::read(&attachment.path).map_err(|error| {
-            ControlCommandError::new(
-                proto::ErrorCode::Internal,
-                500,
-                format!("unable to read stored event attachment: {error}"),
-            )
-        })?;
+        let Ok(payload) = std::fs::read(&attachment.path) else {
+            continue;
+        };
+        if attachment
+            .descriptor
+            .byte_len
+            .is_some_and(|byte_len| byte_len != payload.len() as u64)
+        {
+            continue;
+        }
         attachment_count = attachment_count.saturating_add(1);
         let chunk_count = payload.len().div_ceil(DATA_MESSAGE_CHUNK_BYTES).max(1);
         let chunk_count = u32::try_from(chunk_count).map_err(|_| {
@@ -6458,12 +6749,12 @@ fn query_stored_media_timeline(
                                     query.query_id.clone(),
                                 )),
                                 event_id: attachment.event_id.clone(),
-                                revision: 1,
-                                attachment_id: "thumbnail".to_owned(),
-                                attachment_type: "thumbnail".to_owned(),
-                                content_type: "image/jpeg".to_owned(),
-                                ordinal: 0,
-                                timestamp: Some(millis_timestamp(attachment.timestamp_ms)),
+                                revision: attachment.revision,
+                                attachment_id: attachment.descriptor.id.clone(),
+                                attachment_type: attachment.descriptor.attachment_type.clone(),
+                                content_type: attachment.descriptor.content_type.clone(),
+                                ordinal: attachment.descriptor.ordinal,
+                                timestamp: attachment.descriptor.timestamp_ms.map(millis_timestamp),
                                 sequence: attachment_count,
                                 chunk_index: u32::try_from(chunk_index).unwrap_or(u32::MAX),
                                 chunk_count,
@@ -6519,9 +6810,10 @@ fn query_stored_events(
             if !event_types.is_empty() && !event_types.contains(&event.kind) {
                 continue;
             }
-            let attachment = event
-                .thumbnail_filename
+            let canonical_descriptor = event.canonical_attachment().cloned();
+            let attachment = canonical_descriptor
                 .as_ref()
+                .filter(|descriptor| descriptor.attachment_type == "thumbnail")
                 .and_then(|_| {
                     store
                         .thumbnail_path(&camera.info.id, &event.id)
@@ -6532,34 +6824,37 @@ fn query_stored_events(
                     let byte_len = path.metadata().ok()?.len();
                     Some((path, byte_len))
                 });
-            let descriptors = attachment
-                .as_ref()
-                .map(|(_, byte_len)| {
-                    vec![proto::EventAttachmentDescriptor {
-                        attachment_id: "thumbnail".to_owned(),
-                        attachment_type: "thumbnail".to_owned(),
-                        content_type: "image/jpeg".to_owned(),
-                        byte_len: Some(*byte_len),
-                        ordinal: 0,
-                        timestamp: Some(millis_timestamp(event.start_time_ms)),
-                        text: None,
-                    }]
-                })
-                .unwrap_or_default();
-            let stored_attachment = selection
-                .include_attachments
-                .then(|| {
-                    attachment.map(|(path, _)| StoredTimelineAttachment {
+            let image_available = attachment.is_some();
+            let descriptors = event
+                .attachments
+                .clone()
+                .into_iter()
+                .map(proto_event_attachment_descriptor)
+                .collect();
+            let stored_attachment = if selection.include_attachments {
+                attachment.and_then(|(path, byte_len)| {
+                    let descriptor = canonical_descriptor.clone()?;
+                    (descriptor
+                        .byte_len
+                        .is_none_or(|expected| expected == byte_len))
+                    .then_some(StoredTimelineAttachment {
                         event_id: event.id.clone(),
-                        timestamp_ms: event.start_time_ms,
+                        revision: event.revision,
+                        descriptor,
                         path,
                     })
                 })
-                .flatten();
+            } else {
+                None
+            };
+            let image_availability = proto_event_image_availability(
+                event.canonical_attachment_id.is_some(),
+                image_available,
+            );
             results.push(StoredTimelineEvent {
                 event: proto::Event {
                     event_id: event.id,
-                    revision: 1,
+                    revision: event.revision,
                     source_id: event.camera_id,
                     media_kind: event
                         .stream
@@ -6591,6 +6886,11 @@ fn query_stored_events(
                     attachments: descriptors,
                     source_session_id: None,
                     subscription_id: None,
+                    canonical_attachment_id: event.canonical_attachment_id,
+                    icon_key: Some(event.icon_key),
+                    rejected_icon_key: event.rejected_icon_key,
+                    bounding_box_attachment_id: event.bbox_attachment_id,
+                    image_availability,
                 },
                 attachment: stored_attachment,
             });
@@ -8592,10 +8892,12 @@ fn proto_notification_inbox(inbox: Inbox) -> proto::NotificationInbox {
 }
 
 fn proto_notification_item(item: NotificationItem) -> proto::NotificationItem {
+    let has_image = item.canonical_attachment.is_some();
     proto::NotificationItem {
         logical_id: item.logical_id,
         rule_id: item.rule_id,
         source_id: item.source_id,
+        source_identity: item.source_identity,
         lifecycle: item.lifecycle,
         stage: notification_stage_name(item.stage).to_owned(),
         revision: item.revision,
@@ -8603,6 +8905,11 @@ fn proto_notification_item(item: NotificationItem) -> proto::NotificationItem {
         body: item.body,
         deep_link: item.deep_link,
         attachment_available: item.attachment_available,
+        canonical_attachment: item
+            .canonical_attachment
+            .map(proto_event_attachment_descriptor),
+        icon_key: item.icon_key,
+        image_availability: proto_event_image_availability(has_image, item.image_available),
         severity: item.severity.as_str().to_owned(),
         created_at_ms: item.created_at_ms,
         updated_at_ms: item.updated_at_ms,
@@ -13695,6 +14002,11 @@ mod tests {
             attachments: Vec::new(),
             source_session_id: Some(camera_source_session_id("127.0.0.1")),
             subscription_id: None,
+            canonical_attachment_id: None,
+            icon_key: Some("<svg onload=alert(1)>".to_owned()),
+            rejected_icon_key: None,
+            bounding_box_attachment_id: None,
+            image_availability: proto::EventImageAvailability::None as i32,
         };
         let request = proto::Request {
             request_id: 41,
@@ -13732,6 +14044,11 @@ mod tests {
         assert_eq!(stored.start_time_ms, 12_345);
         assert_eq!(stored.confidence, Some(0.91));
         assert_eq!(stored.bbox, Some([0.1, 0.2, 0.3, 0.4]));
+        assert_eq!(stored.icon_key, "person");
+        assert_eq!(
+            stored.rejected_icon_key.as_deref(),
+            Some("<svg?onload=alert(1)>")
+        );
 
         drop(handler);
         drop(handle);
@@ -13829,6 +14146,7 @@ mod tests {
         event_store
             .insert(TimelineEvent {
                 id: "motion-1".to_owned(),
+                revision: 1,
                 camera_id: "127.0.0.1".to_owned(),
                 stream: Some("main".to_owned()),
                 source: EventSource::Camera,
@@ -13837,7 +14155,12 @@ mod tests {
                 end_time_ms: Some(1_700),
                 confidence: Some(0.8),
                 bbox: Some([0.1, 0.2, 0.3, 0.4]),
+                bbox_attachment_id: None,
                 zone: Some("porch".to_owned()),
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "motion".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: None,
             })
             .unwrap();
@@ -14045,6 +14368,7 @@ mod tests {
         handle
             .insert_event(TimelineEvent {
                 id: "face-1".to_owned(),
+                revision: 1,
                 camera_id: "127.0.0.1".to_owned(),
                 stream: Some("main".to_owned()),
                 source: EventSource::KeepPeek,
@@ -14053,7 +14377,20 @@ mod tests {
                 end_time_ms: Some(event_time_ms + 200),
                 confidence: Some(0.98),
                 bbox: Some([0.1, 0.2, 0.3, 0.4]),
+                bbox_attachment_id: Some("thumbnail".to_owned()),
                 zone: Some("Porch".to_owned()),
+                attachments: vec![EventAttachment {
+                    id: "thumbnail".to_owned(),
+                    attachment_type: "thumbnail".to_owned(),
+                    content_type: "image/jpeg".to_owned(),
+                    byte_len: None,
+                    ordinal: 0,
+                    timestamp_ms: Some(event_time_ms),
+                    text: None,
+                }],
+                canonical_attachment_id: Some("thumbnail".to_owned()),
+                icon_key: "person".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: Some("face-1.jpg".to_owned()),
             })
             .unwrap();
@@ -14065,9 +14402,15 @@ mod tests {
                 fragment_sequence: fragments[0].sequence,
             })
             .unwrap();
+        let thumbnail_root = directory.join("event-thumbnails");
+        std::fs::create_dir_all(&thumbnail_root).unwrap();
+        let thumbnail_path = thumbnail_root.join("face-1.jpg");
+        std::fs::write(&thumbnail_path, [9_u8, 8, 7]).unwrap();
+        let event_store = EventStore::new(handle.clone(), &thumbnail_root, 0).unwrap();
 
         let mut state = media_test_state();
         state.catalog = Some(handle);
+        state.events = Some(event_store);
         let handler = test_control_handler(state);
         let wrong_source = handler.handle(proto::Request {
             request_id: 199,
@@ -14384,6 +14727,9 @@ mod tests {
                 recording_id: keyframe.recording_id.clone(),
                 fragment_sequence: keyframe.fragment_sequence,
                 representation: representation as i32,
+                event_id: String::new(),
+                event_revision: 0,
+                attachment_id: String::new(),
             },
         )
         .collect();
@@ -14455,6 +14801,69 @@ mod tests {
                 }
             ))
         ));
+
+        let attachment_object = proto::EventSearchMediaObject {
+            object_id: "canonical".to_owned(),
+            source_id: "127.0.0.1".to_owned(),
+            stream_id: String::new(),
+            recording_id: String::new(),
+            fragment_sequence: 0,
+            representation: proto::StoredMediaObjectRepresentation::EventAttachment as i32,
+            event_id: "face-1".to_owned(),
+            event_revision: 1,
+            attachment_id: "thumbnail".to_owned(),
+        };
+        let attachment_request = proto::FetchEventSearchMedia {
+            transfer_id: "event-attachment".to_owned(),
+            objects: vec![attachment_object],
+            channel: proto::DataChannelKind::ReliableData as i32,
+        };
+        let (_, attachment_messages) =
+            fetch_event_search_media(&handler.state, attachment_request.clone()).unwrap();
+        let attachment_chunk = attachment_messages
+            .iter()
+            .find_map(|message| {
+                let Some(proto::message::Message::EventSearch(search)) = &message.message.message
+                else {
+                    return None;
+                };
+                let Some(proto::event_search_message::Message::MediaChunk(chunk)) = &search.message
+                else {
+                    return None;
+                };
+                Some(chunk)
+            })
+            .unwrap();
+        assert_eq!(attachment_chunk.payload, [9, 8, 7]);
+        assert_eq!(attachment_chunk.event_id, "face-1");
+        assert_eq!(attachment_chunk.event_revision, 1);
+        assert_eq!(attachment_chunk.attachment_id, "thumbnail");
+
+        let mut stale_request = attachment_request.clone();
+        stale_request.transfer_id = "event-attachment-stale".to_owned();
+        stale_request.objects[0].event_revision = 2;
+        let stale = fetch_event_search_media(&handler.state, stale_request).unwrap_err();
+        assert_eq!(stale.code, proto::ErrorCode::Rejected);
+        assert_eq!(stale.message, "event attachment revision is stale");
+
+        std::fs::remove_file(&thumbnail_path).unwrap();
+        let unavailable =
+            fetch_event_search_media(&handler.state, attachment_request.clone()).unwrap_err();
+        assert_eq!(unavailable.code, proto::ErrorCode::Unavailable);
+        assert_eq!(
+            unavailable.message,
+            "canonical event attachment is unavailable"
+        );
+        std::fs::write(&thumbnail_path, [9_u8, 8, 7]).unwrap();
+        let (_, retried) = fetch_event_search_media(&handler.state, attachment_request).unwrap();
+        assert!(retried.iter().any(|message| matches!(
+            message.message.message,
+            Some(proto::message::Message::EventSearch(
+                proto::EventSearchMessage {
+                    message: Some(proto::event_search_message::Message::MediaEnd(_))
+                }
+            ))
+        )));
 
         let cancelled = AtomicBool::new(false);
         let mut cancelled_messages = Vec::new();
@@ -14999,8 +15408,43 @@ mod tests {
                     .saturating_add(i64::try_from(fragment.duration_ms).unwrap())
             })
             .unwrap();
+        let event_store =
+            EventStore::new(handle.clone(), &directory.join("event-thumbnails"), 0).unwrap();
+        event_store
+            .insert(TimelineEvent {
+                id: "export-event".to_owned(),
+                revision: 1,
+                camera_id: "127.0.0.1".to_owned(),
+                stream: Some("main".to_owned()),
+                source: EventSource::KeepPeek,
+                kind: "person".to_owned(),
+                start_time_ms: start_ms,
+                end_time_ms: Some(end_ms),
+                confidence: Some(0.9),
+                bbox: None,
+                bbox_attachment_id: None,
+                zone: None,
+                attachments: vec![EventAttachment {
+                    id: "snapshot-hero".to_owned(),
+                    attachment_type: "snapshot".to_owned(),
+                    content_type: "image/jpeg".to_owned(),
+                    byte_len: None,
+                    ordinal: 0,
+                    timestamp_ms: Some(start_ms),
+                    text: None,
+                }],
+                canonical_attachment_id: Some("snapshot-hero".to_owned()),
+                icon_key: "person".to_owned(),
+                rejected_icon_key: None,
+                thumbnail_filename: None,
+            })
+            .unwrap();
+        let mut export_event = event_store.event_by_id("export-event").unwrap().unwrap();
+        export_event.revision = 2;
+        event_store.insert(export_event).unwrap();
         let mut state = media_test_state();
         state.catalog = Some(handle);
+        state.events = Some(event_store);
         state.storage_config.long_term_path = directory.join("export-root");
         let handler = test_control_handler(state.clone());
 
@@ -15017,6 +15461,22 @@ mod tests {
                             end_time: Some(millis_timestamp(end_ms)),
                             allow_partial: false,
                             burn_in_timestamp: false,
+                            event_seed: Some(proto::EventExportSeed {
+                                event_id: "export-event".to_owned(),
+                                revision: 2,
+                                canonical_attachment: Some(proto::EventAttachmentDescriptor {
+                                    attachment_id: "snapshot-hero".to_owned(),
+                                    attachment_type: "snapshot".to_owned(),
+                                    content_type: "image/jpeg".to_owned(),
+                                    byte_len: None,
+                                    ordinal: 0,
+                                    timestamp: Some(millis_timestamp(start_ms)),
+                                    text: None,
+                                }),
+                                icon_key: Some("person".to_owned()),
+                                image_availability: proto::EventImageAvailability::Unavailable
+                                    as i32,
+                            }),
                         },
                     )),
                 },
@@ -15028,6 +15488,32 @@ mod tests {
         let Some(control_ok::Result::ExportJob(created)) = ok.result else {
             panic!("export creation must return a job");
         };
+        let seed = created.event_seed.as_ref().unwrap();
+        assert_eq!(seed.event_id, "export-event");
+        assert_eq!(seed.revision, 2);
+        assert_eq!(
+            seed.canonical_attachment
+                .as_ref()
+                .map(|attachment| attachment.attachment_id.as_str()),
+            Some("snapshot-hero")
+        );
+        assert_eq!(
+            seed.image_availability,
+            proto::EventImageAvailability::Unavailable as i32
+        );
+        let mut stale_request = state
+            .export_jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get("export-ready")
+            .unwrap()
+            .request
+            .clone();
+        stale_request.job_id = "export-stale-event".to_owned();
+        stale_request.event_seed.as_mut().unwrap().revision = 1;
+        let stale = create_export_job(&state, stale_request).unwrap_err();
+        assert_eq!(stale.code, proto::ErrorCode::Rejected);
+        assert_eq!(stale.message, "export event revision is stale");
         assert_eq!(created.status, proto::ExportJobStatus::Running as i32);
 
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -15116,6 +15602,7 @@ mod tests {
                 end_time: Some(millis_timestamp(end_ms + 2_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                event_seed: None,
             },
         )
         .unwrap();
@@ -15132,6 +15619,7 @@ mod tests {
                 end_time: Some(millis_timestamp(end_ms)),
                 allow_partial: false,
                 burn_in_timestamp: true,
+                event_seed: None,
             },
         )
         .unwrap();
@@ -15177,6 +15665,7 @@ mod tests {
                 end_time: Some(millis_timestamp(120_000)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                event_seed: None,
             },
         )
         .unwrap();
@@ -15192,6 +15681,7 @@ mod tests {
                 end_time: Some(millis_timestamp(120_001)),
                 allow_partial: false,
                 burn_in_timestamp: false,
+                event_seed: None,
             },
         )
         .unwrap_err();

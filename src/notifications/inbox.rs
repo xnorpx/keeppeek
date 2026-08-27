@@ -1,4 +1,5 @@
 use super::{RuleStoreError, Stage, model::Severity, store::Store};
+use crate::storage::metadata::EventAttachment;
 
 const MAX_PAGE_ITEMS: usize = 200;
 
@@ -7,6 +8,7 @@ pub struct NotificationItem {
     pub logical_id: String,
     pub rule_id: String,
     pub source_id: String,
+    pub source_identity: String,
     pub lifecycle: String,
     pub stage: Stage,
     pub revision: u64,
@@ -14,6 +16,9 @@ pub struct NotificationItem {
     pub body: String,
     pub deep_link: String,
     pub attachment_available: bool,
+    pub canonical_attachment: Option<EventAttachment>,
+    pub icon_key: Option<String>,
+    pub image_available: bool,
     pub severity: Severity,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -247,11 +252,13 @@ impl Store {
             .connection
             .query(
                 format!(
-                    "SELECT l.id, l.rule_id, l.source_id, l.lifecycle, l.stage,
+                    "SELECT l.id, l.rule_id, l.source_id, l.source_identity,
+                            l.lifecycle, l.stage,
                             l.highest_revision, l.title, l.body, l.deep_link,
                             l.attachment_path IS NOT NULL, l.severity,
                             l.created_at_ms, l.updated_at_ms,
-                            r.seen_at_ms, r.acknowledged_at_ms
+                            r.seen_at_ms, r.acknowledged_at_ms,
+                            l.canonical_attachment_json, l.icon_key, l.image_available
                      FROM logical_notifications AS l
                      JOIN notification_receipts AS r ON r.logical_id = l.id
                      WHERE l.owner_id = ?1 AND r.principal_id = ?1 {cleared}
@@ -267,18 +274,26 @@ impl Store {
                 logical_id: row.get(0)?,
                 rule_id: row.get(1)?,
                 source_id: row.get(2)?,
-                lifecycle: row.get(3)?,
-                stage: parse_stage(&row.get::<String>(4)?)?,
-                revision: from_i64(row.get(5)?, "notification revision")?,
-                title: row.get(6)?,
-                body: row.get(7)?,
-                deep_link: row.get(8)?,
-                attachment_available: row.get::<i64>(9)? != 0,
-                severity: parse_severity(&row.get::<String>(10)?)?,
-                created_at_ms: row.get(11)?,
-                updated_at_ms: row.get(12)?,
-                seen_at_ms: row.get(13)?,
-                acknowledged_at_ms: row.get(14)?,
+                source_identity: row.get(3)?,
+                lifecycle: row.get(4)?,
+                stage: parse_stage(&row.get::<String>(5)?)?,
+                revision: from_i64(row.get(6)?, "notification revision")?,
+                title: row.get(7)?,
+                body: row.get(8)?,
+                deep_link: row.get(9)?,
+                attachment_available: row.get::<i64>(10)? != 0,
+                severity: parse_severity(&row.get::<String>(11)?)?,
+                created_at_ms: row.get(12)?,
+                updated_at_ms: row.get(13)?,
+                seen_at_ms: row.get(14)?,
+                acknowledged_at_ms: row.get(15)?,
+                canonical_attachment: row
+                    .get::<Option<String>>(16)?
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()?,
+                icon_key: row.get(17)?,
+                image_available: row.get::<i64>(18)? != 0,
             });
         }
         Ok(items)

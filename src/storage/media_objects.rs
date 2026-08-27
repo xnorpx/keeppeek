@@ -124,6 +124,7 @@ mod tests {
         handle
             .insert_event(TimelineEvent {
                 id: "event-1".to_owned(),
+                revision: 1,
                 camera_id: "front-door".to_owned(),
                 stream: Some("main".to_owned()),
                 source: EventSource::Camera,
@@ -132,7 +133,12 @@ mod tests {
                 end_time_ms: Some(1_700),
                 confidence: None,
                 bbox: None,
+                bbox_attachment_id: None,
                 zone: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "motion".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: None,
             })
             .unwrap();

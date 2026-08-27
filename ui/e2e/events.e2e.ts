@@ -92,10 +92,7 @@ test('bounds lazy preview concurrency and cancels media on route exit', async ({
 	const previewQueries = requests.eventSearchQueries.filter(
 		(query) => query.includePreviewKeyframes
 	);
-	expect(previewQueries).toHaveLength(2);
-	expect(previewQueries.every((query) => query.eventIds.length === 1 && query.pageSize === 1)).toBe(
-		true
-	);
+	expect(previewQueries).toHaveLength(0);
 	expect(requests.maxConcurrentEventMedia).toBe(2);
 	releases.shift()?.();
 	await expect.poll(() => requests.eventMediaFetches.length).toBe(3);
@@ -318,7 +315,7 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 	await expect(detail.getByText('porch', { exact: true })).toBeVisible();
 	await expect(detail.getByText('0.300, 0.200, 0.250, 0.500', { exact: true })).toBeVisible();
 	await expect(detail.getByText('Camera event source', { exact: true })).toBeVisible();
-	await expect(detail.getByText('REVISION NOT REPORTED', { exact: true })).toBeVisible();
+	await expect(detail.getByText('REVISION 1', { exact: true })).toBeVisible();
 	await expect(detail.getByText('front-door', { exact: true })).toBeVisible();
 	await expect(detail.getByText('Not reported by REST API', { exact: true })).toHaveCount(1);
 	await expect(
@@ -385,7 +382,7 @@ test('keeps mixed Event cards and detail usable at the authored mobile viewport'
 	await page.locator('[data-event-card="front-door:motion-no-image"]').click();
 	const detail = page.getByRole('complementary', { name: 'Event detail' });
 	await expect(detail).toBeVisible();
-	await expect(detail.getByText('NO IMAGE REPORTED', { exact: true })).toBeVisible();
+	await expect(detail.getByText('NO IMAGE', { exact: true })).toBeVisible();
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);

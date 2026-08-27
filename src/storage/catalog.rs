@@ -1,5 +1,7 @@
 use crate::storage::{
-    metadata::{EventSource, TimelineEvent},
+    metadata::{
+        EventAttachment, EventSource, TimelineEvent, canonical_event_attachment, event_icon,
+    },
     search::{
         EventEmbedding, EventImageFilter, EventMetadataQuery, EventSearchHit, EventSearchPage,
         EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
@@ -23,6 +25,11 @@ use std::{
 const COMMAND_CAPACITY: usize = 256;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_SEARCH_PAGE_TOKEN_BYTES: usize = 4_096;
+const MAX_EVENT_ATTACHMENTS: usize = 32;
+const MAX_ATTACHMENT_ID_BYTES: usize = 64;
+const MAX_ATTACHMENT_TYPE_BYTES: usize = 64;
+const MAX_CONTENT_TYPE_BYTES: usize = 128;
+const MAX_ATTACHMENT_TEXT_CHARS: usize = 4_096;
 #[cfg(not(test))]
 const MAX_SEMANTIC_CANDIDATES: i64 = 10_000;
 #[cfg(test)]
@@ -42,7 +49,8 @@ const RESOLVE_EVENT_KEYFRAME_SQL: &str = "SELECT l.event_id, l.stream_id, e.star
          WHERE l.event_id = ?1 AND l.stream_id = ?2";
 const EVENT_SEARCH_COLUMNS: &str = "e.id, e.camera_id, e.stream, e.source, e.kind,
          e.start_time_ms, e.end_time_ms, e.confidence, e.bbox_json, e.zone,
-         e.thumbnail_filename,
+         e.thumbnail_filename, e.revision, e.bbox_attachment_id, e.attachments_json,
+         e.canonical_attachment_id, e.icon_key, e.rejected_icon_key,
          (SELECT t.display_value
           FROM recording_event_search_terms AS t
           WHERE t.event_id = e.id AND t.field = 'text'
@@ -266,6 +274,7 @@ enum Command {
     AttachEventThumbnail {
         id: String,
         thumbnail_filename: String,
+        byte_len: u64,
         reply: SyncSender<anyhow::Result<()>>,
     },
     DetachEventThumbnail {
@@ -708,12 +717,18 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
-    pub fn attach_event_thumbnail(&self, id: &str, thumbnail_filename: &str) -> anyhow::Result<()> {
+    pub fn attach_event_thumbnail(
+        &self,
+        id: &str,
+        thumbnail_filename: &str,
+        byte_len: u64,
+    ) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .send(Command::AttachEventThumbnail {
                 id: id.to_owned(),
                 thumbnail_filename: thumbnail_filename.to_owned(),
+                byte_len,
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -1132,12 +1147,14 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             Command::AttachEventThumbnail {
                 id,
                 thumbnail_filename,
+                byte_len,
                 reply,
             } => {
                 let _ = reply.send(pollster::block_on(attach_event_thumbnail(
                     &connection,
                     &id,
                     &thumbnail_filename,
+                    byte_len,
                 )));
             }
             Command::DetachEventThumbnail { id, reply } => {
@@ -1817,6 +1834,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
              );
              CREATE TABLE IF NOT EXISTS recording_events (
                  id TEXT PRIMARY KEY,
+                 revision INTEGER NOT NULL DEFAULT 1,
                  camera_id TEXT NOT NULL,
                  stream TEXT,
                  source TEXT NOT NULL,
@@ -1825,7 +1843,12 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  end_time_ms INTEGER,
                  confidence REAL,
                  bbox_json TEXT,
+                 bbox_attachment_id TEXT,
                  zone TEXT,
+                 attachments_json TEXT NOT NULL DEFAULT '[]',
+                 canonical_attachment_id TEXT,
+                 icon_key TEXT NOT NULL DEFAULT 'event',
+                 rejected_icon_key TEXT,
                  thumbnail_filename TEXT,
                  search_revision INTEGER NOT NULL DEFAULT 0
              );
@@ -1893,6 +1916,36 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
         "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
+    ensure_column(
+        connection,
+        "recording_events",
+        "revision",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
+    ensure_column(connection, "recording_events", "bbox_attachment_id", "TEXT").await?;
+    ensure_column(
+        connection,
+        "recording_events",
+        "attachments_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_events",
+        "canonical_attachment_id",
+        "TEXT",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "recording_events",
+        "icon_key",
+        "TEXT NOT NULL DEFAULT 'event'",
+    )
+    .await?;
+    ensure_column(connection, "recording_events", "rejected_icon_key", "TEXT").await?;
     ensure_column(
         connection,
         "recording_events",
@@ -2224,8 +2277,13 @@ async fn availability_ranges_in_range(
 }
 
 async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> anyhow::Result<()> {
+    let mut event = event;
+    normalize_event_presentation(&mut event)?;
     if event.kind.is_empty() {
         anyhow::bail!("event kind must not be empty");
+    }
+    if event.revision == 0 {
+        anyhow::bail!("event revision must be greater than zero");
     }
     if event
         .end_time_ms
@@ -2237,29 +2295,105 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
         .bbox
         .map(|bbox| serde_json::to_string(&bbox))
         .transpose()?;
+    let attachments_json = serde_json::to_string(&event.attachments)?;
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
-        connection
-            .execute(
-                "INSERT INTO recording_events (
+        let existing = event_by_id(connection, &event.id).await?;
+        if let Some(existing) = &existing {
+            if event.revision <= existing.revision {
+                anyhow::bail!(
+                    "event revision {} does not exceed stored revision {}",
+                    event.revision,
+                    existing.revision
+                );
+            }
+            if event.camera_id != existing.camera_id || event.source != existing.source {
+                anyhow::bail!("event revision cannot change source identity");
+            }
+            connection
+                .execute(
+                    "UPDATE recording_events
+                     SET camera_id = ?2, stream = ?3, source = ?4, kind = ?5,
+                         start_time_ms = ?6, end_time_ms = ?7, confidence = ?8,
+                         bbox_json = ?9, zone = ?10, thumbnail_filename = ?11,
+                         revision = ?12, bbox_attachment_id = ?13,
+                         attachments_json = ?14, canonical_attachment_id = ?15,
+                         icon_key = ?16, rejected_icon_key = ?17
+                     WHERE id = ?1",
+                    turso::params![
+                        event.id.clone(),
+                        event.camera_id.clone(),
+                        event.stream.clone(),
+                        event.source.as_str(),
+                        event.kind.clone(),
+                        event.start_time_ms,
+                        event.end_time_ms,
+                        event.confidence,
+                        bbox_json.clone(),
+                        event.zone.clone(),
+                        event.thumbnail_filename.clone(),
+                        to_i64(event.revision, "event revision")?,
+                        event.bbox_attachment_id.clone(),
+                        attachments_json.clone(),
+                        event.canonical_attachment_id.clone(),
+                        event.icon_key.clone(),
+                        event.rejected_icon_key.clone(),
+                    ],
+                )
+                .await?;
+            connection
+                .execute(
+                    "DELETE FROM recording_event_search_terms
+                     WHERE event_id = ?1 AND field = 'event_type'",
+                    turso::params![event.id.clone()],
+                )
+                .await?;
+            connection
+                .execute(
+                    "INSERT INTO recording_event_search_terms (
+                         event_id, field, normalized_value, display_value
+                     ) VALUES (?1, 'event_type', lower(trim(?2)), ?3)",
+                    turso::params![event.id.clone(), event.kind.clone(), event.kind.clone()],
+                )
+                .await?;
+            record_event_search_mutation(connection, &event.id).await?;
+        } else {
+            if event.revision != 1 {
+                anyhow::bail!("new events must start at revision one");
+            }
+            connection
+                .execute(
+                    "INSERT INTO recording_events (
                      id, camera_id, stream, source, kind, start_time_ms,
-                     end_time_ms, confidence, bbox_json, zone, thumbnail_filename
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                turso::params![
-                    event.id.clone(),
-                    event.camera_id.clone(),
-                    event.stream.clone(),
-                    event.source.as_str(),
-                    event.kind,
-                    event.start_time_ms,
-                    event.end_time_ms,
-                    event.confidence,
-                    bbox_json,
-                    event.zone,
-                    event.thumbnail_filename,
-                ],
-            )
-            .await?;
+                     end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
+                     revision, bbox_attachment_id, attachments_json,
+                     canonical_attachment_id, icon_key, rejected_icon_key
+                 ) VALUES (
+                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                     ?12, ?13, ?14, ?15, ?16, ?17
+                 )",
+                    turso::params![
+                        event.id.clone(),
+                        event.camera_id.clone(),
+                        event.stream.clone(),
+                        event.source.as_str(),
+                        event.kind,
+                        event.start_time_ms,
+                        event.end_time_ms,
+                        event.confidence,
+                        bbox_json,
+                        event.zone,
+                        event.thumbnail_filename,
+                        to_i64(event.revision, "event revision")?,
+                        event.bbox_attachment_id,
+                        attachments_json,
+                        event.canonical_attachment_id,
+                        event.icon_key,
+                        event.rejected_icon_key,
+                    ],
+                )
+                .await?;
+        }
         reconcile_keyframes_for_event(
             connection,
             &event.id,
@@ -2400,7 +2534,7 @@ async fn close_event(
         let changed = connection
             .execute(
                 "UPDATE recording_events
-                 SET end_time_ms = ?2
+                 SET end_time_ms = ?2, revision = revision + 1
                  WHERE id = ?1 AND start_time_ms <= ?2",
                 turso::params![id, end_time_ms],
             )
@@ -2424,29 +2558,147 @@ async fn attach_event_thumbnail(
     connection: &turso::Connection,
     id: &str,
     thumbnail_filename: &str,
+    byte_len: u64,
 ) -> anyhow::Result<()> {
     if thumbnail_filename.is_empty() {
         anyhow::bail!("event thumbnail filename must not be empty");
     }
-    let changed = connection
-        .execute(
-            "UPDATE recording_events SET thumbnail_filename = ?2 WHERE id = ?1",
-            turso::params![id, thumbnail_filename],
-        )
-        .await?;
-    if changed == 0 {
-        anyhow::bail!("event was not found");
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let mut event = event_by_id(connection, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("event was not found"))?;
+        let descriptor = EventAttachment {
+            id: "thumbnail".to_owned(),
+            attachment_type: "thumbnail".to_owned(),
+            content_type: "image/jpeg".to_owned(),
+            byte_len: Some(byte_len),
+            ordinal: 0,
+            timestamp_ms: Some(event.start_time_ms),
+            text: None,
+        };
+        if let Some(existing) = event
+            .attachments
+            .iter_mut()
+            .find(|attachment| attachment.id == descriptor.id)
+        {
+            *existing = descriptor;
+        } else {
+            event.attachments.push(descriptor);
+        }
+        normalize_event_presentation(&mut event)?;
+        if event.bbox.is_some() && event.bbox_attachment_id.is_none() {
+            event.bbox_attachment_id = Some("thumbnail".to_owned());
+        }
+        let attachments_json = serde_json::to_string(&event.attachments)?;
+        connection
+            .execute(
+                "UPDATE recording_events
+                 SET thumbnail_filename = ?2,
+                     attachments_json = ?3,
+                     canonical_attachment_id = ?4,
+                     bbox_attachment_id = ?5,
+                     revision = revision + 1
+                 WHERE id = ?1",
+                turso::params![
+                    id,
+                    thumbnail_filename,
+                    attachments_json,
+                    event.canonical_attachment_id,
+                    event.bbox_attachment_id,
+                ],
+            )
+            .await?;
+        record_event_search_mutation(connection, id).await
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> anyhow::Result<()> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let changed = connection
+            .execute(
+                "UPDATE recording_events SET thumbnail_filename = NULL WHERE id = ?1",
+                turso::params![id],
+            )
+            .await?;
+        if changed == 0 {
+            anyhow::bail!("event was not found");
+        }
+        record_event_search_mutation(connection, id).await
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+fn normalize_event_presentation(event: &mut TimelineEvent) -> anyhow::Result<()> {
+    if event.attachments.len() > MAX_EVENT_ATTACHMENTS {
+        anyhow::bail!("event attachment count exceeds {MAX_EVENT_ATTACHMENTS}");
+    }
+    for attachment in &event.attachments {
+        validate_bounded_ascii(
+            &attachment.id,
+            "event attachment ID",
+            MAX_ATTACHMENT_ID_BYTES,
+        )?;
+        validate_bounded_ascii(
+            &attachment.attachment_type,
+            "event attachment type",
+            MAX_ATTACHMENT_TYPE_BYTES,
+        )?;
+        validate_bounded_ascii(
+            &attachment.content_type,
+            "event attachment content type",
+            MAX_CONTENT_TYPE_BYTES,
+        )?;
+        if attachment
+            .text
+            .as_ref()
+            .is_some_and(|text| text.chars().count() > MAX_ATTACHMENT_TEXT_CHARS)
+        {
+            anyhow::bail!("event attachment text is too long");
+        }
+    }
+    let canonical =
+        canonical_event_attachment(&event.attachments, event.canonical_attachment_id.as_deref())?;
+    event.canonical_attachment_id = canonical.map(|attachment| attachment.id.clone());
+    if let Some(bbox_attachment_id) = &event.bbox_attachment_id
+        && !event
+            .attachments
+            .iter()
+            .any(|attachment| attachment.id == *bbox_attachment_id)
+    {
+        anyhow::bail!("bounding-box attachment was not found in the event revision");
+    }
+    let icon = event_icon(Some(&event.icon_key), &event.kind);
+    event.icon_key = icon.key.to_owned();
+    if icon.rejected.is_some() {
+        event.rejected_icon_key = icon.rejected;
     }
     Ok(())
 }
 
-async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> anyhow::Result<()> {
-    connection
-        .execute(
-            "UPDATE recording_events SET thumbnail_filename = NULL WHERE id = ?1",
-            turso::params![id],
-        )
-        .await?;
+fn validate_bounded_ascii(value: &str, name: &str, max_bytes: usize) -> anyhow::Result<()> {
+    if value.is_empty()
+        || value.len() > max_bytes
+        || !value.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        anyhow::bail!("{name} must contain 1 to {max_bytes} visible ASCII characters");
+    }
     Ok(())
 }
 
@@ -2459,7 +2711,9 @@ async fn events_in_range(
     let mut rows = connection
         .query(
             "SELECT id, camera_id, stream, source, kind, start_time_ms,
-                    end_time_ms, confidence, bbox_json, zone, thumbnail_filename
+                    end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
+                    revision, bbox_attachment_id, attachments_json,
+                    canonical_attachment_id, icon_key, rejected_icon_key
              FROM recording_events
              WHERE camera_id = ?1
                AND start_time_ms < ?3
@@ -2482,7 +2736,9 @@ async fn event_by_id(
     let mut rows = connection
         .query(
             "SELECT id, camera_id, stream, source, kind, start_time_ms,
-                    end_time_ms, confidence, bbox_json, zone, thumbnail_filename
+                    end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
+                    revision, bbox_attachment_id, attachments_json,
+                    canonical_attachment_id, icon_key, rejected_icon_key
              FROM recording_events
              WHERE id = ?1",
             turso::params![id],
@@ -2720,8 +2976,8 @@ async fn search_event_metadata(
     }
     match query.image {
         EventImageFilter::Any => {}
-        EventImageFilter::WithImage => sql.push_str(" AND e.thumbnail_filename IS NOT NULL"),
-        EventImageFilter::WithoutImage => sql.push_str(" AND e.thumbnail_filename IS NULL"),
+        EventImageFilter::WithImage => sql.push_str(" AND e.canonical_attachment_id IS NOT NULL"),
+        EventImageFilter::WithoutImage => sql.push_str(" AND e.canonical_attachment_id IS NULL"),
     }
     if let Some(text) = &query.text {
         sql.push_str(
@@ -3010,13 +3266,17 @@ async fn search_event_semantic(
                          scored AS (
                                  SELECT id, camera_id, stream, source, kind, start_time_ms,
                                      end_time_ms, confidence, bbox_json, zone,
-                                     thumbnail_filename, text,
+                                     thumbnail_filename, revision, bbox_attachment_id,
+                                     attachments_json, canonical_attachment_id, icon_key,
+                                     rejected_icon_key, text,
                                      vector_distance_cos(embedding, vector32(?1)) AS distance
                                  FROM candidates
                          )
                             SELECT id, camera_id, stream, source, kind, start_time_ms,
                                 end_time_ms, confidence, bbox_json, zone,
-                                thumbnail_filename, text, distance
+                                thumbnail_filename, revision, bbox_attachment_id,
+                                attachments_json, canonical_attachment_id, icon_key,
+                                rejected_icon_key, text, distance
                          FROM scored
                             WHERE ?11 IS NULL
                                 OR distance > ?12
@@ -3057,7 +3317,7 @@ async fn search_event_semantic(
             has_more = true;
             break;
         }
-        let distance = row.get::<f64>(12)?;
+        let distance = row.get::<f64>(18)?;
         hits.push(event_search_hit(
             &row,
             Some(distance),
@@ -3335,7 +3595,10 @@ fn event_search_hit(
     preview_after_ms: u64,
 ) -> anyhow::Result<EventSearchHit> {
     let event = event_from_row(row)?;
-    let text = row.get(11)?;
+    let text = row.get(17)?;
+    let canonical_attachment = event.canonical_attachment().cloned();
+    let attachments = event.attachments.clone();
+    let image_available = event.canonical_image_available();
     let preview_start_ms = event
         .start_time_ms
         .saturating_sub(i64::try_from(preview_before_ms).unwrap_or(i64::MAX));
@@ -3346,6 +3609,7 @@ fn event_search_hit(
     let preview_end_ms = requested_end_ms.min(preview_start_ms.saturating_add(60_000));
     Ok(EventSearchHit {
         event_id: event.id,
+        revision: event.revision,
         source_id: event.camera_id,
         event_type: event.kind,
         origin: event.source,
@@ -3355,7 +3619,13 @@ fn event_search_hit(
         bbox: event.bbox,
         zone: event.zone,
         text,
-        has_image_attachment: event.thumbnail_filename.is_some(),
+        has_image_attachment: canonical_attachment.is_some(),
+        canonical_attachment,
+        attachments,
+        image_available,
+        icon_key: event.icon_key,
+        rejected_icon_key: event.rejected_icon_key,
+        bbox_attachment_id: event.bbox_attachment_id,
         score: semantic_distance.map(|distance| 1.0 - distance),
         semantic_distance,
         preview_start_ms,
@@ -3604,8 +3874,11 @@ fn event_from_row(row: &turso::Row) -> anyhow::Result<TimelineEvent> {
         .ok_or_else(|| anyhow::anyhow!("unknown event source '{source}'"))?;
     let bbox_json = row.get::<Option<String>>(8)?;
     let bbox = bbox_json.as_deref().map(serde_json::from_str).transpose()?;
+    let attachments_json = row.get::<String>(13)?;
+    let attachments: Vec<EventAttachment> = serde_json::from_str(&attachments_json)?;
     Ok(TimelineEvent {
         id: row.get(0)?,
+        revision: to_u64(row.get(11)?, "event revision")?,
         camera_id: row.get(1)?,
         stream: row.get(2)?,
         source,
@@ -3614,7 +3887,12 @@ fn event_from_row(row: &turso::Row) -> anyhow::Result<TimelineEvent> {
         end_time_ms: row.get(6)?,
         confidence: row.get(7)?,
         bbox,
+        bbox_attachment_id: row.get(12)?,
         zone: row.get(9)?,
+        attachments,
+        canonical_attachment_id: row.get(14)?,
+        icon_key: row.get(15)?,
+        rejected_icon_key: row.get(16)?,
         thumbnail_filename: row.get(10)?,
     })
 }
@@ -3727,6 +4005,7 @@ mod tests {
         handle
             .insert_event(TimelineEvent {
                 id: "event-1".to_owned(),
+                revision: 1,
                 camera_id: "front-door".to_owned(),
                 stream: Some("sub".to_owned()),
                 source: EventSource::Camera,
@@ -3735,18 +4014,29 @@ mod tests {
                 end_time_ms: None,
                 confidence: None,
                 bbox: None,
+                bbox_attachment_id: None,
                 zone: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "motion".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: None,
             })
             .unwrap();
         handle.close_event("event-1", 4_000).unwrap();
         handle
-            .attach_event_thumbnail("event-1", "event-1.jpg")
+            .attach_event_thumbnail("event-1", "event-1.jpg", 12)
             .unwrap();
 
         let events = handle.events_in_range("front-door", 2_500, 3_000).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].end_time_ms, Some(4_000));
+        assert_eq!(events[0].revision, 3);
+        assert_eq!(
+            events[0].canonical_attachment_id.as_deref(),
+            Some("thumbnail")
+        );
+        assert_eq!(events[0].attachments.len(), 1);
         assert_eq!(events[0].thumbnail_filename.as_deref(), Some("event-1.jpg"));
         assert_eq!(
             handle.event_by_id("event-1").unwrap(),
@@ -3773,6 +4063,140 @@ mod tests {
             None
         );
 
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn event_revisions_persist_and_replace_canonical_presentation() {
+        let root = test_dir("turso-event-presentation-revisions");
+        let database_path = root.join("recordings.db");
+        let catalog = RecordingCatalog::open(&database_path).unwrap();
+        let handle = catalog.handle();
+        let mut event = test_event("event-1", 2_000);
+        event.source = EventSource::KeepPeek;
+        event.bbox = Some([0.1, 0.2, 0.3, 0.4]);
+        event.attachments = vec![
+            EventAttachment {
+                id: "snapshot-later".to_owned(),
+                attachment_type: "snapshot".to_owned(),
+                content_type: "image/jpeg".to_owned(),
+                byte_len: Some(20),
+                ordinal: 4,
+                timestamp_ms: Some(2_040),
+                text: None,
+            },
+            EventAttachment {
+                id: "story-explicit".to_owned(),
+                attachment_type: "story-frame".to_owned(),
+                content_type: "image/webp".to_owned(),
+                byte_len: Some(10),
+                ordinal: 0,
+                timestamp_ms: Some(2_010),
+                text: Some("first evidence".to_owned()),
+            },
+        ];
+        event.canonical_attachment_id = Some("story-explicit".to_owned());
+        event.bbox_attachment_id = Some("story-explicit".to_owned());
+        event.icon_key = "<svg onload=alert(1)>".to_owned();
+        handle.insert_event(event).unwrap();
+        drop(handle);
+        catalog.shutdown();
+
+        let catalog = RecordingCatalog::open(&database_path).unwrap();
+        let handle = catalog.handle();
+        let persisted = handle.event_by_id("event-1").unwrap().unwrap();
+        assert_eq!(persisted.revision, 1);
+        assert_eq!(
+            persisted.canonical_attachment_id.as_deref(),
+            Some("story-explicit")
+        );
+        assert_eq!(persisted.icon_key, "motion");
+        assert_eq!(
+            persisted.rejected_icon_key.as_deref(),
+            Some("<svg?onload=alert(1)>")
+        );
+        assert!(persisted.canonical_image_owns_bbox());
+        assert_eq!(
+            persisted
+                .attachments
+                .iter()
+                .map(|attachment| attachment.id.as_str())
+                .collect::<Vec<_>>(),
+            ["snapshot-later", "story-explicit"]
+        );
+
+        let mut revision_two = persisted;
+        revision_two.revision = 2;
+        revision_two.attachments.reverse();
+        revision_two.attachments.push(EventAttachment {
+            id: "snapshot-first".to_owned(),
+            attachment_type: "snapshot".to_owned(),
+            content_type: "image/png".to_owned(),
+            byte_len: Some(15),
+            ordinal: 0,
+            timestamp_ms: Some(2_020),
+            text: None,
+        });
+        revision_two.canonical_attachment_id = None;
+        revision_two.icon_key = "vehicle".to_owned();
+        revision_two.rejected_icon_key = None;
+        handle.insert_event(revision_two).unwrap();
+        let replaced = handle.event_by_id("event-1").unwrap().unwrap();
+        assert_eq!(replaced.revision, 2);
+        assert_eq!(
+            replaced.canonical_attachment_id.as_deref(),
+            Some("snapshot-first")
+        );
+        assert_eq!(replaced.icon_key, "vehicle");
+        assert!(!replaced.canonical_image_owns_bbox());
+        assert_eq!(
+            replaced
+                .attachments
+                .iter()
+                .map(|attachment| attachment.id.as_str())
+                .collect::<Vec<_>>(),
+            ["story-explicit", "snapshot-later", "snapshot-first"]
+        );
+
+        let stale_error = handle.insert_event(replaced.clone()).unwrap_err();
+        assert!(
+            stale_error
+                .to_string()
+                .contains("does not exceed stored revision 2")
+        );
+        let mut invalid = replaced.clone();
+        invalid.revision = 3;
+        invalid.canonical_attachment_id = Some("missing".to_owned());
+        let invalid_error = handle.insert_event(invalid).unwrap_err();
+        assert_eq!(
+            invalid_error.to_string(),
+            "canonical attachment was not found in the event revision"
+        );
+
+        let mut revision_three = replaced;
+        revision_three.revision = 3;
+        revision_three.attachments = vec![EventAttachment {
+            id: "replacement-story".to_owned(),
+            attachment_type: "story-frame".to_owned(),
+            content_type: "image/jpeg".to_owned(),
+            byte_len: None,
+            ordinal: 2,
+            timestamp_ms: None,
+            text: None,
+        }];
+        revision_three.canonical_attachment_id = None;
+        revision_three.bbox_attachment_id = Some("replacement-story".to_owned());
+        handle.insert_event(revision_three).unwrap();
+        let final_event = handle.event_by_id("event-1").unwrap().unwrap();
+        assert_eq!(final_event.revision, 3);
+        assert_eq!(
+            final_event.canonical_attachment_id.as_deref(),
+            Some("replacement-story")
+        );
+        assert!(final_event.canonical_image_owns_bbox());
+
+        drop(handle);
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -4269,6 +4693,7 @@ mod tests {
     fn test_event(id: &str, start_time_ms: i64) -> TimelineEvent {
         TimelineEvent {
             id: id.to_owned(),
+            revision: 1,
             camera_id: "192.0.2.10".to_owned(),
             stream: Some("main".to_owned()),
             source: EventSource::Camera,
@@ -4277,7 +4702,12 @@ mod tests {
             end_time_ms: Some(start_time_ms + 100),
             confidence: None,
             bbox: None,
+            bbox_attachment_id: None,
             zone: None,
+            attachments: Vec::new(),
+            canonical_attachment_id: None,
+            icon_key: "motion".to_owned(),
+            rejected_icon_key: None,
             thumbnail_filename: None,
         }
     }

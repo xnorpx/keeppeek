@@ -317,7 +317,10 @@ async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()>
                  body TEXT NOT NULL,
                  deep_link TEXT NOT NULL,
                  attachment_path TEXT,
-                 severity TEXT NOT NULL
+                 severity TEXT NOT NULL,
+                 canonical_attachment_json TEXT,
+                 icon_key TEXT,
+                 image_available INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS logical_notifications_owner_time
                  ON logical_notifications(owner_id, updated_at_ms DESC, id);
@@ -436,6 +439,21 @@ async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()>
         connection,
         "logical_notifications",
         "enrichment_attempts",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        connection,
+        "logical_notifications",
+        "canonical_attachment_json",
+        "TEXT",
+    )
+    .await?;
+    ensure_column(connection, "logical_notifications", "icon_key", "TEXT").await?;
+    ensure_column(
+        connection,
+        "logical_notifications",
+        "image_available",
         "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
