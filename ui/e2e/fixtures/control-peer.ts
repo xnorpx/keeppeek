@@ -41,6 +41,7 @@ import {
 	EventAttachmentDescriptorSchema,
 	EventAttachmentChunkSchema,
 	EventBoundingBoxSchema,
+	EventExportSeedSchema,
 	EventSearchDeliverySchema,
 	EventSearchHitSchema,
 	EventSearchKeyframeSchema,
@@ -229,10 +230,16 @@ export type ExportJobFixture = {
 	error?: string;
 	retryable?: boolean;
 	burnInTimestamp?: boolean;
+	eventId?: string;
 };
 
 export type ExportControlRequest = {
 	action: 'create' | 'list' | 'get' | 'cancel' | 'retry' | 'download';
+	sourceId?: string;
+	streamId?: string;
+	startMs?: number;
+	endMs?: number;
+	eventId?: string;
 	jobId?: string;
 	allowPartial?: boolean;
 	burnInTimestamp?: boolean;
@@ -1357,6 +1364,13 @@ export async function mockControlPeer(
 				...('jobId' in action.value ? { jobId: action.value.jobId } : {}),
 				...(action.case === 'create'
 					? {
+							sourceId: action.value.sourceId,
+							streamId: action.value.streamId,
+							startMs: action.value.startTime
+								? timestampFromProto(action.value.startTime)
+								: undefined,
+							endMs: action.value.endTime ? timestampFromProto(action.value.endTime) : undefined,
+							eventId: action.value.eventSeed?.eventId,
 							allowPartial: action.value.allowPartial,
 							burnInTimestamp: action.value.burnInTimestamp
 						}
@@ -1380,7 +1394,8 @@ export async function mockControlPeer(
 					error: command.burnInTimestamp
 						? 'Timestamp burn-in requires a configured re-encoding worker'
 						: undefined,
-					burnInTimestamp: command.burnInTimestamp
+					burnInTimestamp: command.burnInTimestamp,
+					eventSeed: command.eventSeed
 				});
 				const fixture = exportCreateResults.shift();
 				const exportJob = fixture ? applyExportFixture(base, fixture, exportFileHash) : base;
@@ -2419,7 +2434,11 @@ function applyExportFixture(base: ExportJob, fixture: ExportJobFixture, sha256: 
 			) ?? base.missingRanges,
 		error: fixture.error ?? base.error,
 		retryable: fixture.retryable ?? base.retryable,
-		burnInTimestamp: fixture.burnInTimestamp ?? base.burnInTimestamp
+		burnInTimestamp: fixture.burnInTimestamp ?? base.burnInTimestamp,
+		eventSeed:
+			fixture.eventId === undefined
+				? base.eventSeed
+				: create(EventExportSeedSchema, { eventId: fixture.eventId, revision: 1n })
 	});
 }
 

@@ -1045,7 +1045,7 @@ export class ControlClient {
 			| 'image_availability'
 		>;
 	}): Promise<MediaExportJob> {
-		const jobId = `export-${this.#nextStoredId++}`;
+		const jobId = `export-${crypto.randomUUID()}`;
 		const command = create(ExportCommandSchema, {
 			action: {
 				case: 'create',

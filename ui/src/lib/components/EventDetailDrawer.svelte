@@ -3,11 +3,13 @@
 	import { capabilityActions } from '$lib/capability-actions';
 	import {
 		eventHasImage,
+		eventKeepSearchParams,
 		type EventBrowserRecord,
 		type EventPreviewState
 	} from '$lib/event-browser';
 	import { orderedEventAttachments } from '$lib/event-presentation';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import CheckCircleIcon from '@lucide/svelte/icons/circle-check';
 	import XIcon from '@lucide/svelte/icons/x';
 	import CapabilityGate from './CapabilityGate.svelte';
 	import EventPreview from './EventPreview.svelte';
@@ -17,6 +19,8 @@
 		record: EventBrowserRecord;
 		previewState?: EventPreviewState;
 		paperFrame?: boolean;
+		returnHref?: string | null;
+		alreadyExported?: boolean;
 		onclose?: () => void;
 		onpreviewretry?: () => void;
 	};
@@ -25,6 +29,8 @@
 		record,
 		previewState = 'idle',
 		paperFrame = false,
+		returnHref = null,
+		alreadyExported = false,
 		onclose,
 		onpreviewretry
 	}: Props = $props();
@@ -47,7 +53,6 @@
 			)
 		].slice(0, 4)
 	);
-
 	function cameraLabel(): string {
 		return record.camera.name ?? record.camera.id;
 	}
@@ -89,14 +94,7 @@
 	}
 
 	function keepHref(mode?: 'export'): string {
-		const date = new Date(record.event.start_time_ms).toISOString().slice(0, 10);
-		const search = new URLSearchParams({
-			camera: record.camera.id,
-			date,
-			at: String(record.event.start_time_ms),
-			event: record.event.id,
-			...(mode ? { mode } : {})
-		});
+		const search = eventKeepSearchParams(record, mode ?? 'timeline', returnHref);
 		return `${resolve('/keep')}?${search}`;
 	}
 </script>
@@ -234,6 +232,14 @@
 			</section>
 		{/if}
 
+		{#if alreadyExported}
+			<p
+				data-event-export-status="ready"
+				class="flex h-5 shrink-0 items-center gap-1.5 font-mono text-[10px] tracking-caps text-healthy"
+			>
+				<CheckCircleIcon class="size-3.5" /> Already exported
+			</p>
+		{/if}
 		<div class="flex h-[50px] shrink-0 items-center gap-2.5 overflow-hidden">
 			<a
 				href={keepHref()}
@@ -249,7 +255,7 @@
 					<ExternalLinkIcon class="size-3.5" /> Export event
 				</a>
 			</CapabilityGate>
-			<CapabilityGate {...capabilityActions.bookmarkMoment} />
+			<CapabilityGate {...capabilityActions.bookmarkMoment} class="min-w-0 flex-1" />
 		</div>
 	</div>
 </aside>

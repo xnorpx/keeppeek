@@ -439,6 +439,9 @@ try {
 		const previewUrl = new URL('local-preview.html', url);
 		previewUrl.searchParams.set('scenario', scenarioId);
 		await page.goto(previewUrl.href);
+		await page.locator('[data-visual-fixture-notice]').evaluate((notice) => {
+			(notice as HTMLElement).style.display = 'none';
+		});
 		frame = page.locator(`[data-paper-scenario="${scenarioId}"]`);
 	}
 	await frame.waitFor({ state: 'visible' });

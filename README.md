@@ -13,6 +13,8 @@ independent viewers, inference services, and integrations consume or publish med
 The [KeepPeek Book](https://xnorpx.github.io/keeppeek/) is the primary documentation.
 The public protocol is
 documented separately in the [`api/` directory](api/README.md).
+The [evidence export lifecycle](docs/evidence-exports.md) documents durable history, duplicate
+handling, deadlines, retention, authorization, and download integrity.
 
 ## License
 

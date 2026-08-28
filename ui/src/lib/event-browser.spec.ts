@@ -7,6 +7,7 @@ import {
 	eventBrowserRecordKey,
 	eventBrowserSearchParams,
 	eventFilterSummary,
+	eventKeepSearchParams,
 	eventNoResultsSuggestion,
 	filterEventBrowserRecords,
 	parseEventBrowserFilters,
@@ -131,6 +132,26 @@ describe('Events browser contract', () => {
 
 		expect(params.toString()).toBe(
 			'date=2026-08-18&from=06%3A15&to=12%3A30&type=person&zone=porch&event=person%2F1&eventCamera=front-door'
+		);
+	});
+
+	it('preserves event export identity and a local return route', () => {
+		const selected = record(
+			'person/1',
+			'person',
+			0.9,
+			'/thumb.jpg',
+			Date.parse('2026-08-18T06:37:23Z')
+		);
+
+		expect(
+			eventKeepSearchParams(
+				selected,
+				'export',
+				'/events?date=2026-08-18&event=person%2F1'
+			).toString()
+		).toBe(
+			'camera=front-door&date=2026-08-18&at=1787035043000&event=person%2F1&stream=main&mode=export&returnTo=%2Fevents%3Fdate%3D2026-08-18%26event%3Dperson%252F1'
 		);
 	});
 

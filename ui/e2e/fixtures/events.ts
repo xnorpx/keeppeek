@@ -3,6 +3,7 @@ import type { RecordingEvent } from '../../src/lib/types';
 import {
 	mockControlPeer,
 	type ControlRequests,
+	type MockControlPeerOptions,
 	type StoredEventFixture,
 	type StoredRangeFixture
 } from './control-peer';
@@ -101,7 +102,8 @@ const drivewayEvents: RecordingEvent[] = [
 
 export async function mockEvents(
 	page: Page,
-	eventMediaGates: readonly Promise<void>[] = []
+	eventMediaGates: readonly Promise<void>[] = [],
+	controlOptions: MockControlPeerOptions = {}
 ): Promise<ControlRequests> {
 	const storedRanges: StoredRangeFixture[] = [
 		{
@@ -123,7 +125,13 @@ export async function mockEvents(
 			thumbnail: event.thumbnail_url === null ? undefined : jpeg
 		}))
 	];
-	return mockControlPeer(page, { cameras, storedRanges, storedEvents, eventMediaGates });
+	return mockControlPeer(page, {
+		...controlOptions,
+		cameras,
+		storedRanges,
+		storedEvents,
+		eventMediaGates
+	});
 }
 
 export async function mockEventsWithUnavailablePreview(page: Page): Promise<void> {
