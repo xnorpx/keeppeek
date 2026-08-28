@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-5697c4f6.js";
+            window.path_to_searchindex_js = "searchindex-457ff45c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-a34402ce.js"></script>
@@ -1676,9 +1676,12 @@ versions live in <code>ui/.bun-version</code> and <code>examples/object_detectio
 scripts resolve Python in this order:</p>
 <ol>
 <li><code>KEEPPEEK_PYTHON</code>, when set;</li>
-<li><code>examples/object_detection_service/.venv</code>;</li>
-<li>a system <code>python3.12</code> or compatible Python command.</li>
+<li><code>python3.12</code>;</li>
+<li><code>python3</code>.</li>
 </ol>
+<p>Do not use a Python virtual environment. <code>fix.sh</code> and <code>fix.bat</code> install the requirements into the
+resolved interpreter, retrying with <code>--break-system-packages</code> when that interpreter is externally
+managed.</p>
 <p>The canonical checks also require Bun, <code>cargo-nextest</code>, and <code>cargo-machete</code>. Install UI dependencies
 with Bun from the public npm registry and do not create or commit an npm, pnpm, or Yarn lockfile.</p>
 <h2 id="validation"><a class="header" href="#validation">Validation</a></h2>
