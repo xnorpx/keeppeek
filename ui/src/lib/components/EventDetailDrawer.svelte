@@ -137,14 +137,20 @@
 			? 'h-[250px]'
 			: 'aspect-video'}"
 	>
-		<EventPreview
-			event={record.event}
-			cameraLabel={cameraLabel()}
-			{previewState}
-			fit="contain"
-			showBoundingBox
-			onretry={onpreviewretry}
-		/>
+		{#if paperFrame && record.event.thumbnail_url}
+			<span class="font-mono text-[10px] tracking-[0.12em] text-text-faint">
+				ONE THUMBNAIL URL
+			</span>
+		{:else}
+			<EventPreview
+				event={record.event}
+				cameraLabel={cameraLabel()}
+				{previewState}
+				fit="contain"
+				showBoundingBox
+				onretry={onpreviewretry}
+			/>
+		{/if}
 		<span class="absolute bottom-3 left-3 font-mono text-[10px] tracking-[0.1em] text-text-faint">
 			{record.event.thumbnail_url
 				? 'ONE THUMBNAIL URL'
@@ -164,7 +170,7 @@
 					? 'border-primary bg-video'
 					: 'border-hairline bg-ground'}"
 			>
-				{#if attachment?.id === record.event.canonical_attachment_id && record.event.thumbnail_url}
+				{#if !paperFrame && attachment?.id === record.event.canonical_attachment_id && record.event.thumbnail_url}
 					<img src={record.event.thumbnail_url} alt="" class="size-full object-cover" />
 				{:else if attachment}
 					<EventIcon

@@ -38,6 +38,7 @@ describe('Board 10 Events stories', () => {
 		]);
 		const cards = [...frame!.querySelectorAll<HTMLElement>('[data-event-paper-frame]')];
 		expect(cards).toHaveLength(15);
+		expect(frame!.querySelector('img')).toBeNull();
 		expect(roundedSize(cards[0])).toEqual([260, 218]);
 		expect(roundedSize(cards[1])).toEqual([258, 218]);
 		expect(cards.map((card) => roundedSize(card.firstElementChild!)[1])).toEqual(
@@ -60,6 +61,7 @@ describe('Board 10 Events stories', () => {
 		]);
 		const drawer = frame!.querySelector<HTMLElement>('[data-event-detail]');
 		expect(drawer).not.toBeNull();
+		expect(drawer!.querySelector('img')).toBeNull();
 		expect([...drawer!.children].map(roundedSize)).toEqual([
 			[558, 47],
 			[558, 250],

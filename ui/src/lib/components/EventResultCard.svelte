@@ -123,7 +123,9 @@
 				? 'max-md:h-[150px] max-md:rounded-b-none md:aspect-video'
 				: 'max-md:h-14 max-md:w-[86px] md:aspect-video'}"
 	>
-		<EventPreview event={record.event} cameraLabel={cameraLabel()} {previewState} />
+		{#if !paperFrame || !record.event.thumbnail_url}
+			<EventPreview event={record.event} cameraLabel={cameraLabel()} {previewState} />
+		{/if}
 		{#if record.event.confidence !== null}
 			<span
 				class="absolute right-1.5 {paperFrame
