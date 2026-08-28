@@ -198,39 +198,49 @@ async function startTestCamera(camera: CameraStart, mediaPath: string): Promise<
 
 	stdout.setEncoding('utf8');
 	const transportLine = 'transport = "tcp"\n';
-	let output = '';
-	for await (const chunk of stdout) {
-		output += chunk;
-		const configEnd = output.indexOf(transportLine);
-		if (configEnd !== -1) {
-			const config = output.slice(0, configEnd + transportLine.length);
-			const parsed = (globalThis as BunRuntime).Bun.TOML.parse(config) as {
-				'test-camera'?: Record<string, CameraConfigEntry>;
-			};
-			const entry = parsed['test-camera']?.[camera.name];
-			if (!entry) {
-				cameraProcess.kill('SIGINT');
-				throw new Error(`Unable to parse ${camera.name} test camera configuration`);
+	const config = await new Promise<string>((resolveConfig, rejectConfig) => {
+		let output = '';
+		let configured = false;
+		stdout.on('data', (chunk: string) => {
+			if (configured) return;
+			output += chunk;
+			const configEnd = output.indexOf(transportLine);
+			if (configEnd === -1) return;
+			configured = true;
+			resolveConfig(output.slice(0, configEnd + transportLine.length));
+		});
+		cameraProcess.once('error', rejectConfig);
+		cameraProcess.once('exit', () => {
+			if (!configured) {
+				rejectConfig(
+					new Error(`${camera.name} test camera exited before printing its configuration`)
+				);
 			}
-			return {
-				process: cameraProcess,
-				config,
-				draft: {
-					...camera,
-					ip: entry.ip,
-					displayName: camera.name,
-					username: entry.username,
-					password: entry.password,
-					mainRtspUrl: entry.main_rtsp_url,
-					subRtspUrl: entry.sub_rtsp_url,
-					backend: entry.backend,
-					transport: entry.transport
-				}
-			};
-		}
+		});
+	});
+	const parsed = (globalThis as BunRuntime).Bun.TOML.parse(config) as {
+		'test-camera'?: Record<string, CameraConfigEntry>;
+	};
+	const entry = parsed['test-camera']?.[camera.name];
+	if (!entry) {
+		cameraProcess.kill('SIGINT');
+		throw new Error(`Unable to parse ${camera.name} test camera configuration`);
 	}
-
-	throw new Error(`${camera.name} test camera exited before printing its configuration`);
+	return {
+		process: cameraProcess,
+		config,
+		draft: {
+			...camera,
+			ip: entry.ip,
+			displayName: camera.name,
+			username: entry.username,
+			password: entry.password,
+			mainRtspUrl: entry.main_rtsp_url,
+			subRtspUrl: entry.sub_rtsp_url,
+			backend: entry.backend,
+			transport: entry.transport
+		}
+	};
 }
 
 function randomCameraStarts(fixture: FixtureManifest): CameraStart[] {
