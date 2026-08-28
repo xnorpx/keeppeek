@@ -18,8 +18,6 @@ cd "$repo_dir"
 
 if [ -n "${KEEPPEEK_PYTHON:-}" ]; then
         python_cmd=$KEEPPEEK_PYTHON
-elif [ -x "$repo_dir/examples/object_detection_service/.venv/bin/python" ]; then
-        python_cmd=$repo_dir/examples/object_detection_service/.venv/bin/python
 elif command -v python3.12 >/dev/null 2>&1; then
         python_cmd=python3.12
 elif command -v python3 >/dev/null 2>&1; then
@@ -29,8 +27,17 @@ else
         exit 1
 fi
 
+requirements=examples/object_detection_service/requirements.txt
+
+# Requirements are intentionally unpinned, so refresh them to the versions CI will resolve.
+echo "Updating Python requirements..."
+if ! "$python_cmd" -m pip install --quiet --upgrade -r "$requirements" >/dev/null 2>&1; then
+        # Externally managed interpreters reject installs without --break-system-packages.
+        "$python_cmd" -m pip install --quiet --upgrade --break-system-packages -r "$requirements" || true
+fi
+
 if ! "$python_cmd" -c 'import black' >/dev/null 2>&1; then
-        printf '%s\n' 'Black is required: python -m pip install -r examples/object_detection_service/requirements.txt' >&2
+        printf '%s\n' "Black is required: $python_cmd -m pip install -r $requirements" >&2
         exit 1
 fi
 

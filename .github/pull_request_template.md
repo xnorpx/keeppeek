@@ -45,6 +45,7 @@ List every command, suite, manual procedure, and artifact used to validate this 
 - [ ] Canonical repository checks pass (`./check.sh` on macOS/Linux or `check.bat` on Windows).
 - [ ] Focused tests for the changed behavior pass.
 - [ ] Failure, boundary, and regression cases are covered where relevant.
+- [ ] The advisory RepoWise change-risk report is reviewed when available; notable risk drivers are addressed or explained.
 
 ## Review evidence
 
