@@ -247,8 +247,6 @@ impl Client {
             debug!("Digest headers added");
         }
 
-        trace!("Request body: {soap_msg}");
-
         let response = request.send(soap_msg).map_err(Self::map_ureq_error)?;
 
         let status = response.status();
