@@ -550,7 +550,7 @@ fn parse_message(xml: &[u8]) -> anyhow::Result<WakeMessage> {
     loop {
         match reader.read_event_into(&mut buffer)? {
             Event::Start(element) => {
-                let name = std::str::from_utf8(element.name().as_ref())?.to_owned();
+                let name = element.name().as_ref().to_owned();
                 if name != "P2P" && operation.is_none() {
                     operation = Some(name);
                 } else {
@@ -560,7 +560,7 @@ fn parse_message(xml: &[u8]) -> anyhow::Result<WakeMessage> {
             Event::Text(text) => {
                 parse_field(
                     field.as_deref(),
-                    std::str::from_utf8(text.as_ref())?,
+                    text.as_ref(),
                     &mut uid,
                     &mut token,
                     &mut needs_reply,
@@ -572,7 +572,7 @@ fn parse_message(xml: &[u8]) -> anyhow::Result<WakeMessage> {
             Event::CData(text) => {
                 parse_field(
                     field.as_deref(),
-                    std::str::from_utf8(text.as_ref())?,
+                    text.as_ref(),
                     &mut uid,
                     &mut token,
                     &mut needs_reply,
