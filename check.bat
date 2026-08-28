@@ -23,8 +23,6 @@ if errorlevel 1 (
 
 if defined KEEPPEEK_PYTHON (
         set "PYTHON_CMD=%KEEPPEEK_PYTHON%"
-) else if exist "%~dp0examples\object_detection_service\.venv\Scripts\python.exe" (
-        set "PYTHON_CMD=%~dp0examples\object_detection_service\.venv\Scripts\python.exe"
 ) else (
         where python >nul 2>&1
         if errorlevel 1 (

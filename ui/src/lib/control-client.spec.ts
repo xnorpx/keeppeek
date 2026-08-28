@@ -70,9 +70,18 @@ import {
 	MediaVariantCapabilitySchema,
 	MessageSchema,
 	NotificationSchema,
+	NotificationClearResultSchema,
+	NotificationDeliveryAttemptSchema,
+	NotificationHistoryEventSchema,
+	NotificationHistoryGroupSchema,
+	NotificationHistorySchema,
+	NotificationInboxSchema,
+	NotificationItemSchema,
+	NotificationMutationResultSchema,
 	NotificationRuleListSchema,
 	NotificationRuleRecordSchema,
 	NotificationRuleResultSchema,
+	NotificationTestResultSchema,
 	OkSchema,
 	PtzPresetSchema,
 	PtzResultSchema,
@@ -106,6 +115,7 @@ import {
 	StoredMediaRangeSchema,
 	StoredMediaStateSchema,
 	StoredMediaStatus,
+	type NotificationRuleResult,
 	type QueryStoredMediaTimeline,
 	type QueryEvents,
 	VideoDataFormatSchema,
@@ -178,6 +188,7 @@ class FakeDataChannel {
 	) {}
 	activeFilter = 'info';
 	notificationConflict = false;
+	notificationActions: string[] = [];
 	ptzActions: string[] = [];
 	storedTimelineQueries: QueryStoredMediaTimeline[] = [];
 	cancelledTimelineQueryIds: string[] = [];
@@ -193,6 +204,8 @@ class FakeDataChannel {
 		if (request.message.case !== 'request') throw new Error('expected request');
 		const command = request.message.value.command;
 		if (command.case === 'notificationRuleCommand') {
+			const action = command.value.action;
+			this.notificationActions.push(action.case ?? 'none');
 			const definition = JSON.stringify({
 				id: 'front-door-person',
 				name: 'Front door person',
@@ -208,8 +221,110 @@ class FakeDataChannel {
 				createdAtMs: 1_777_000_000_000n,
 				updatedAtMs: 1_777_000_010_000n
 			});
+			const notification = create(NotificationItemSchema, {
+				logicalId: 'notification-1',
+				ruleId: 'front-door-person',
+				sourceId: 'front-door',
+				lifecycle: 'active',
+				stage: 'enriched',
+				revision: 5n,
+				title: 'Person detected',
+				body: 'Front door',
+				deepLink: '/keep?event=notification-1',
+				attachmentAvailable: true,
+				severity: 'warning',
+				createdAtMs: 1_777_000_020_000n,
+				updatedAtMs: 1_777_000_030_000n
+			});
+			let notificationResult: NotificationRuleResult['result'];
+			switch (action.case) {
+				case 'listRules':
+					notificationResult = {
+						case: 'rules',
+						value: create(NotificationRuleListSchema, { rules: [rule] })
+					};
+					break;
+				case 'getInbox':
+					notificationResult = {
+						case: 'inbox',
+						value: create(NotificationInboxSchema, {
+							items: [notification],
+							unreadCount: 1n
+						})
+					};
+					break;
+				case 'getHistory':
+					notificationResult = {
+						case: 'history',
+						value: create(NotificationHistorySchema, {
+							groups: [
+								create(NotificationHistoryGroupSchema, {
+									notification,
+									events: [
+										create(NotificationHistoryEventSchema, {
+											sequence: 6n,
+											revision: 5n,
+											stage: 'enriched',
+											outcome: 'delivered',
+											occurredAtMs: 1_777_000_030_000n
+										})
+									],
+									attempts: [
+										create(NotificationDeliveryAttemptSchema, {
+											sequence: 7n,
+											channel: 'browser',
+											stage: 'enriched',
+											attempt: 1,
+											outcome: 'delivered',
+											targetHash: 'browser-target',
+											providerStatus: 200,
+											attemptedAtMs: 1_777_000_030_000n
+										})
+									]
+								})
+							]
+						})
+					};
+					break;
+				case 'delete':
+					notificationResult = {
+						case: 'mutation',
+						value: create(NotificationMutationResultSchema, {
+							logicalId: action.value.ruleId
+						})
+					};
+					break;
+				case 'markSeen':
+				case 'acknowledge':
+				case 'clear':
+					notificationResult = {
+						case: 'mutation',
+						value: create(NotificationMutationResultSchema, {
+							logicalId: action.value.logicalId
+						})
+					};
+					break;
+				case 'clearScope':
+					notificationResult = {
+						case: 'cleared',
+						value: create(NotificationClearResultSchema, { clearedCount: 2n })
+					};
+					break;
+				case 'test':
+					notificationResult = {
+						case: 'test',
+						value: create(NotificationTestResultSchema, {
+							matchedRules: 1,
+							createdNotifications: 1,
+							queuedAttempts: 1
+						})
+					};
+					break;
+				default:
+					notificationResult = { case: 'rule', value: rule };
+			}
 			const result =
-				command.value.action.case === 'saveDraft' && this.notificationConflict
+				action.case === 'saveDraft' && this.notificationConflict
 					? {
 							case: 'error' as const,
 							value: create(ErrorSchema, {
@@ -230,15 +345,7 @@ class FakeDataChannel {
 							value: create(OkSchema, {
 								result: {
 									case: 'notificationRuleResult',
-									value: create(NotificationRuleResultSchema, {
-										result:
-											command.value.action.case === 'listRules'
-												? {
-														case: 'rules',
-														value: create(NotificationRuleListSchema, { rules: [rule] })
-													}
-												: { case: 'rule', value: rule }
-									})
+									value: create(NotificationRuleResultSchema, { result: notificationResult })
 								}
 							})
 						};
@@ -1352,6 +1459,56 @@ describe('ControlClient', () => {
 			activeRevision: 3n,
 			draftRevision: 4n
 		});
+		await expect(
+			client.activateNotificationRule('front-door-person', 3n, 4n)
+		).resolves.toMatchObject({
+			id: 'front-door-person',
+			activeRevision: 3n,
+			draftRevision: 4n
+		});
+		await expect(
+			client.deleteNotificationRule('front-door-person', 3n, 4n)
+		).resolves.toBeUndefined();
+		await expect(client.testNotificationRule('front-door-person')).resolves.toEqual({
+			matchedRules: 1,
+			createdNotifications: 1,
+			queuedAttempts: 1
+		});
+		await expect(client.getNotificationInbox()).resolves.toMatchObject({
+			unreadCount: 1n,
+			items: [
+				{
+					logicalId: 'notification-1',
+					stage: 'enriched',
+					severity: 'warning',
+					revision: 5n,
+					seenAtMs: null,
+					acknowledgedAtMs: null
+				}
+			]
+		});
+		await expect(client.getNotificationHistory()).resolves.toMatchObject([
+			{
+				notification: { logicalId: 'notification-1' },
+				events: [{ sequence: 6n, stage: 'enriched', outcome: 'delivered' }],
+				attempts: [
+					{
+						sequence: 7n,
+						channel: 'browser',
+						providerStatus: 200,
+						outcome: 'delivered'
+					}
+				]
+			}
+		]);
+		await expect(client.markNotificationSeen('notification-1')).resolves.toBeUndefined();
+		await expect(client.acknowledgeNotification('notification-1')).resolves.toBeUndefined();
+		await expect(client.clearNotification('notification-1')).resolves.toBeUndefined();
+		await expect(client.clearNotifications({ kind: 'all' })).resolves.toBe(2n);
+		await expect(
+			client.clearNotifications({ kind: 'rule', ruleId: 'front-door-person' })
+		).resolves.toBe(2n);
+		await expect(client.clearNotifications({ kind: 'before', beforeMs: 1234 })).resolves.toBe(2n);
 
 		const control = FakePeerConnection.latest?.channels.find(
 			(channel) => channel.label === 'control-channel'
@@ -1363,6 +1520,22 @@ describe('ControlClient', () => {
 			activeRevision: 3n,
 			draftRevision: 4n
 		} satisfies Partial<NotificationConflictError>);
+		expect(control!.notificationActions).toEqual([
+			'listRules',
+			'activate',
+			'delete',
+			'test',
+			'getInbox',
+			'getHistory',
+			'markSeen',
+			'acknowledge',
+			'clear',
+			'clearScope',
+			'clearScope',
+			'clearScope',
+			'saveDraft'
+		]);
+		await client.close();
 	});
 
 	it('uses the canonical negotiated channels and correlates binary motion control', async () => {

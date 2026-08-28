@@ -27,6 +27,19 @@ CI uses these same entry points. Individual UI commands may be used while diagno
 - Resolve Rust packages only from public crates.io using the repository `.cargo/config.toml`.
 - Do not replace either public registry with a private mirror or proxy.
 
+## Python Environment
+
+- Never create, activate, or rely on a Python virtual environment. Do not run `python -m venv`, `uv venv`, or `virtualenv`, and do not add `.venv` handling to any script or document.
+- Install `examples/object_detection_service/requirements.txt` directly into the Python 3.12 interpreter that `fix` and `check` resolve, falling back to `--break-system-packages` on externally managed interpreters.
+- Do not pin versions in `examples/object_detection_service/requirements.txt`. The example tracks the newest releases on purpose so upstream breakage surfaces immediately instead of accumulating.
+- `fix` upgrades every requirement on each run, matching what CI resolves. When a new Black, `ruff`, or `mypy` release fails the build, fix the code it broke; do not add a pin to silence it.
+- Point `KEEPPEEK_PYTHON` at an absolute interpreter path when the default resolution is wrong; never point it at a virtual environment.
+
+## Protected API Contract
+
+- Treat `api/` as read-only. Do not modify its schemas, protocol documentation, or generated contract sources.
+- Preserve API and protobuf contracts through implementation changes elsewhere in the repository.
+
 ## Code Style
 
 - Do not write comments that restate what the code already says.

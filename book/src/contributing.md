@@ -122,8 +122,12 @@ Formatting and validation require the Python packages in
 scripts resolve Python in this order:
 
 1. `KEEPPEEK_PYTHON`, when set;
-2. `examples/object_detection_service/.venv`;
-3. a system `python3.12` or compatible Python command.
+2. `python3.12`;
+3. `python3`.
+
+Do not use a Python virtual environment. `fix.sh` and `fix.bat` install the requirements into the
+resolved interpreter, retrying with `--break-system-packages` when that interpreter is externally
+managed.
 
 The canonical checks also require Bun, `cargo-nextest`, and `cargo-machete`. Install UI dependencies
 with Bun from the public npm registry and do not create or commit an npm, pnpm, or Yarn lockfile.
