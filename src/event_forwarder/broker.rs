@@ -403,7 +403,11 @@ mod tests {
     fn authenticated_tls_probe_uses_configured_ca_and_credentials() {
         let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "KeepPeek MQTT Test CA");
         ca_params.key_usages.extend([
+            rcgen::KeyUsagePurpose::DigitalSignature,
             rcgen::KeyUsagePurpose::KeyCertSign,
             rcgen::KeyUsagePurpose::CrlSign,
         ]);
@@ -412,6 +416,14 @@ mod tests {
         let issuer = rcgen::Issuer::new(ca_params, ca_key);
         let mut server_params =
             rcgen::CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+        server_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "localhost");
+        server_params.use_authority_key_identifier_extension = true;
+        server_params.key_usages.extend([
+            rcgen::KeyUsagePurpose::DigitalSignature,
+            rcgen::KeyUsagePurpose::KeyEncipherment,
+        ]);
         server_params
             .extended_key_usages
             .push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
