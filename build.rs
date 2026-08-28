@@ -14,7 +14,6 @@ const CAMERA_DATABASE_ARCHIVE_ENV: &str = "KEEPPEEK_CAMERA_DATABASE_ARCHIVE";
 const CAMERA_DATABASE_ARCHIVE_FILE: &str = "cameras.zip";
 const CAMERA_DATABASE_FILES: &[&str] = &["cameras.json", "cameras.csv", "release-metadata.json"];
 const UI_BUILD_DIR_ENV: &str = "KEEPPEEK_UI_BUILD_DIR";
-const SVELTE_KIT_DIR_ENV: &str = "KEEPPEEK_SVELTE_KIT_DIR";
 
 const UI_INPUTS: &[&str] = &[
     "ui/src",
@@ -58,12 +57,10 @@ fn main() -> io::Result<()> {
         .join(".cargo-ui")
         .join(format!("{:016x}", out_dir_hasher.finish()));
     let ui_build_dir = cargo_ui_dir.join("build");
-    let svelte_kit_dir = cargo_ui_dir.join("svelte-kit");
     let status = Command::new("bun")
         .args(["run", "build"])
         .current_dir(&ui_dir)
         .env(UI_BUILD_DIR_ENV, &ui_build_dir)
-        .env(SVELTE_KIT_DIR_ENV, &svelte_kit_dir)
         .status()
         .map_err(|error| {
             io::Error::new(
