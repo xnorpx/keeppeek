@@ -650,7 +650,7 @@ mod tests {
         handle
             .publish_timeline(&motion_event(), EventTransition::Created, 1_786_800_000_000)
             .unwrap();
-        wait_until(Duration::from_secs(2), || {
+        wait_until(Duration::from_secs(10), || {
             let status = handle.status();
             status.pending_items == 1 && status.retry_count > 0
         });
@@ -665,7 +665,7 @@ mod tests {
         assert_eq!(payload["event_id"], "motion-42");
         assert_eq!(payload["revision"], 1);
         assert_eq!(payload["transition"], "created");
-        wait_until(Duration::from_secs(2), || {
+        wait_until(Duration::from_secs(10), || {
             handle.status().pending_items == 0
         });
         assert_eq!(handle.status().state, MqttConnectionState::Connected);

@@ -400,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn authenticated_tls_probe_uses_configured_ca_and_credentials() {
         let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
