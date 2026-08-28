@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-afbcebed.js";
+            window.path_to_searchindex_js = "searchindex-5697c4f6.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-a34402ce.js"></script>
@@ -268,6 +268,49 @@ asymmetric: a new advancing frame or keyframe counter can recover the state imme
 still returns the actual evidence ages, and clients do not add another timer or rewrite the state.</p>
 <p>These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.</p>
+<h2 id="operational-intervals"><a class="header" href="#operational-intervals">Operational intervals</a></h2>
+<p>KeepPeek projects four durable event kinds from the independent health dimensions:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Event kind</th><th>Scope</th><th>Evidence</th></tr>
+</thead>
+<tbody>
+<tr><td><code>camera_offline</code></td><td>Camera</td><td>No expected transport is connected, or aggregate transport is disconnected</td></tr>
+<tr><td><code>stream_stale</code></td><td>Camera stream</td><td>The stream report is missing or stale, or frames stopped advancing</td></tr>
+<tr><td><code>decode_unavailable</code></td><td>Camera stream</td><td>No recent decodable keyframe exists</td></tr>
+<tr><td><code>recording_interrupted</code></td><td>Camera stream</td><td>Recording was requested but writer progress stopped</td></tr>
+</tbody>
+</table>
+</div>
+<p>These event kinds remain independent. One stream can be stale and undecodable while another stays
+healthy, and recording failure does not rewrite transport evidence. Native event and external
+analysis failures are not camera, stream, or recording outages.</p>
+<p>A candidate interval starts as soon as evidence fails. Monotonic elapsed time controls warning,
+critical, and recovery thresholds; server wall time supplies the displayed start and end
+timestamps. The default policy is:</p>
+<pre><code class="language-toml">[operational_events]
+warning_hold_down_secs = 15
+outage_hold_down_secs = 60
+recovery_debounce_secs = 10
+record_short_flaps = false
+
+[operational_events.cameras.front-door]
+warning_hold_down_secs = 30
+</code></pre>
+<p>Camera overrides may use the stable camera ID or IP address and inherit omitted global values. A
+zero duration requests an immediate transition. Durations cannot exceed 24 hours, and the warning
+hold-down cannot exceed the outage hold-down.</p>
+<p>Recovery before the warning hold-down removes the candidate unless <code>record_short_flaps</code> is true.
+Once visible, an interval keeps one event ID. Cause or severity changes increment its revision;
+stable recovery increments the same event again, records the recovery timestamp, and reports total
+duration from the original evidence-loss instant. Open intervals are restored from the recording
+catalog after restart. Stable revision replay makes notification processing at least once while
+the notification store collapses duplicate revisions.</p>
+<p>The stored timeline renders open and recovered intervals beside recording availability. Event
+payloads include severity, bounded cause and explanation, affected streams, recording consequence,
+evidence source, duration, and recovery state. Health findings link to the corresponding camera and
+timeline instant.</p>
 <h2 id="session-durations"><a class="header" href="#session-durations">Session durations</a></h2>
 <p>Camera health reports current-process session durations separately from historical archive
 coverage:</p>
@@ -323,7 +366,8 @@ counts. Unknown future state or reason strings are presented as <code>unknown</c
 <li><code>keeppeek_camera_info</code> with the canonical state label;</li>
 <li><code>keeppeek_camera_health_dimension</code> and
 <code>keeppeek_camera_health_dimension_known</code>;</li>
-<li>corresponding per-stream dimension and known gauges.</li>
+<li>corresponding per-stream dimension and known gauges;</li>
+<li><code>keeppeek_operational_event_active</code>, labeled by camera, stream, event kind, and severity.</li>
 </ul>
 <p>There is no separate <code>online</code> or <code>degraded</code> gauge. Consumers use the canonical state label and
 explicit dimensions.</p>
@@ -337,9 +381,9 @@ explicit dimensions.</p>
 recovered stream degraded;</li>
 <li>a fresh report can recover stale state, while cached metadata cannot.</li>
 </ul>
-<p>KeepPeek does not yet persist outage intervals or send health notifications. Those features are
-tracked separately and must use this canonical projection rather than reconstructing outages from
-UI labels.</p>
+<p>Operational interval recovery uses this canonical projection. Delivery failure cannot change or
+close an interval because catalog persistence happens before notification publication and provider
+work runs independently from camera media.</p>
 
                     </main>
 
