@@ -6,12 +6,12 @@
 		type EventBrowserRecord,
 		type EventPreviewState
 	} from '$lib/event-browser';
+	import { orderedEventAttachments } from '$lib/event-presentation';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
-	import ImageOffIcon from '@lucide/svelte/icons/image-off';
-	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
-	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import XIcon from '@lucide/svelte/icons/x';
 	import CapabilityGate from './CapabilityGate.svelte';
+	import EventPreview from './EventPreview.svelte';
+	import EventIcon from './EventIcon.svelte';
 
 	type Props = {
 		record: EventBrowserRecord;
@@ -38,6 +38,15 @@
 		timeZone: 'UTC',
 		timeZoneName: 'short'
 	});
+	let attachmentSlots = $derived(
+		[
+			...orderedEventAttachments(record.event).slice(0, 4),
+			...Array.from(
+				{ length: Math.max(0, 4 - (record.event.attachments?.length ?? 0)) },
+				() => null
+			)
+		].slice(0, 4)
+	);
 
 	function cameraLabel(): string {
 		return record.camera.name ?? record.camera.id;
@@ -79,12 +88,14 @@
 		return `${encodeURIComponent(record.camera.id)}:${encodeURIComponent(record.event.id)}`;
 	}
 
-	function keepHref(): string {
+	function keepHref(mode?: 'export'): string {
 		const date = new Date(record.event.start_time_ms).toISOString().slice(0, 10);
 		const search = new URLSearchParams({
 			camera: record.camera.id,
 			date,
-			at: String(record.event.start_time_ms)
+			at: String(record.event.start_time_ms),
+			event: record.event.id,
+			...(mode ? { mode } : {})
 		});
 		return `${resolve('/keep')}?${search}`;
 	}
@@ -126,60 +137,19 @@
 			? 'h-[250px]'
 			: 'aspect-video'}"
 	>
-		{#if record.event.thumbnail_url}
-			{#if paperFrame}
-				<span class="font-mono text-[10px] tracking-[0.12em] text-text-faint">
-					ONE THUMBNAIL URL
-				</span>
-			{:else}
-				<img src={record.event.thumbnail_url} alt="" class="size-full object-contain" />
-			{/if}
-		{:else if eventHasImage(record.event) && previewState === 'unavailable'}
-			<div class="grid justify-items-center gap-2 text-text-faint">
-				<ImageOffIcon class="size-5" />
-				<span class="font-mono text-2xs tracking-caps">PREVIEW UNAVAILABLE</span>
-				{#if onpreviewretry}
-					<button
-						type="button"
-						class="inline-flex h-8 items-center gap-1.5 rounded-sm border border-hairline bg-surface px-2.5 text-xs text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-						onclick={onpreviewretry}
-					>
-						<RefreshCwIcon class="size-3.5" /> Retry preview
-					</button>
-				{/if}
-			</div>
-		{:else if eventHasImage(record.event)}
-			<div class="grid justify-items-center gap-2 text-text-faint">
-				<LoaderCircleIcon class="size-5 animate-spin" />
-				<span class="font-mono text-2xs tracking-caps">
-					{previewState === 'loading' ? 'LOADING PREVIEW' : 'PREVIEW QUEUED'}
-				</span>
-			</div>
+		{#if paperFrame && record.event.thumbnail_url}
+			<span class="font-mono text-[10px] tracking-[0.12em] text-text-faint">
+				ONE THUMBNAIL URL
+			</span>
 		{:else}
-			<div
-				class="grid size-full place-items-center border border-dashed border-hairline-strong font-mono text-2xs tracking-caps text-text-faint"
-			>
-				NO IMAGE REPORTED
-			</div>
-		{/if}
-		{#if record.event.bbox}
-			<span
-				class="pointer-events-none absolute border-2 border-primary"
-				style:left={`${record.event.bbox[0] * 100}%`}
-				style:top={`${record.event.bbox[1] * 100}%`}
-				style:width={`${record.event.bbox[2] * 100}%`}
-				style:height={`${record.event.bbox[3] * 100}%`}
-			></span>
-			{#if record.event.confidence !== null}
-				<span
-					class="pointer-events-none absolute rounded-sm bg-primary px-[7px] py-0.5 font-mono text-[10px] font-semibold text-on-primary"
-					style:left={`${record.event.bbox[0] * 100}%`}
-					style:top={`calc(${record.event.bbox[1] * 100}% - 20px)`}
-				>
-					{record.event.kind}
-					{record.event.confidence.toFixed(2)}
-				</span>
-			{/if}
+			<EventPreview
+				event={record.event}
+				cameraLabel={cameraLabel()}
+				{previewState}
+				fit="contain"
+				showBoundingBox
+				onretry={onpreviewretry}
+			/>
 		{/if}
 		<span class="absolute bottom-3 left-3 font-mono text-[10px] tracking-[0.1em] text-text-faint">
 			{record.event.thumbnail_url
@@ -191,12 +161,25 @@
 	</div>
 
 	<div class="flex h-[65px] shrink-0 gap-1.5 border-b border-hairline px-4 py-2.5">
-		{#each Array.from({ length: 4 }) as _, index (index)}
+		{#each attachmentSlots as attachment, index (`${attachment?.id ?? 'empty'}:${index}`)}
 			<div
-				class="h-11 min-w-0 flex-1 rounded-sm border {index === 0 && record.event.thumbnail_url
+				data-event-attachment={attachment?.id ?? undefined}
+				title={attachment ? `${attachment.type}, position ${attachment.ordinal + 1}` : undefined}
+				class="grid h-11 min-w-0 flex-1 place-items-center overflow-hidden rounded-sm border {attachment?.id ===
+				record.event.canonical_attachment_id
 					? 'border-primary bg-video'
 					: 'border-hairline bg-ground'}"
-			></div>
+			>
+				{#if !paperFrame && attachment?.id === record.event.canonical_attachment_id && record.event.thumbnail_url}
+					<img src={record.event.thumbnail_url} alt="" class="size-full object-cover" />
+				{:else if attachment}
+					<EventIcon
+						iconKey={record.event.icon_key}
+						eventType={record.event.kind}
+						class="size-3.5 text-text-faint"
+					/>
+				{/if}
+			</div>
 		{/each}
 	</div>
 
@@ -258,7 +241,14 @@
 			>
 				<ExternalLinkIcon class="size-3.5" />Open at this moment
 			</a>
-			<CapabilityGate {...capabilityActions.exportMoment} />
+			<CapabilityGate {...capabilityActions.exportMoment}>
+				<a
+					href={keepHref('export')}
+					class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-sm border border-hairline px-3 text-xs font-semibold focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>
+					<ExternalLinkIcon class="size-3.5" /> Export event
+				</a>
+			</CapabilityGate>
 			<CapabilityGate {...capabilityActions.bookmarkMoment} />
 		</div>
 	</div>

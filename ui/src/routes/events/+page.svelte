@@ -398,32 +398,40 @@
 		return hits.flatMap((hit) => {
 			const camera = camerasById.get(hit.sourceId);
 			if (!camera) return [];
-			const previewKeyframe = eventPreviewKeyframe(hit);
-			const hasPreview = hit.hasImageAttachment || previewKeyframe !== undefined;
+			const previewKeyframe = hit.canonicalAttachment ? undefined : eventPreviewKeyframe(hit);
+			const hasLegacyPreview = hit.canonicalAttachment === null && hit.hasImageAttachment;
 			const event: RecordingEvent = {
 				id: hit.eventId,
 				source_id: hit.sourceId,
+				revision: hit.revision,
 				source: hit.origin,
 				kind: hit.eventType,
 				start_time_ms: hit.startMs,
 				end_time_ms: hit.endMs,
 				confidence: hit.confidence,
 				bbox: hit.bbox,
+				bbox_attachment_id: hit.bboxAttachmentId,
 				zone: hit.zone,
 				text: hit.text,
 				thumbnail_url: null,
-				attachments: hasPreview
-					? [
-							{
-								id: 'canonical-preview',
-								type: 'thumbnail',
-								content_type: 'image/jpeg',
-								byte_length: previewKeyframe?.byteLength ?? null,
-								ordinal: 0,
-								timestamp_ms: previewKeyframe?.eventTimeMs ?? hit.startMs
-							}
-						]
-					: []
+				attachments: hit.attachments.length
+					? hit.attachments
+					: hasLegacyPreview
+						? [
+								{
+									id: 'canonical-preview',
+									type: 'thumbnail',
+									content_type: 'image/jpeg',
+									byte_length: previewKeyframe?.byteLength ?? null,
+									ordinal: 0,
+									timestamp_ms: previewKeyframe?.eventTimeMs ?? hit.startMs
+								}
+							]
+						: [],
+				canonical_attachment_id: hit.canonicalAttachment?.id ?? null,
+				icon_key: hit.iconKey,
+				rejected_icon_key: hit.rejectedIconKey,
+				image_availability: hit.imageAvailability
 			};
 			return [{ camera, event, previewKeyframe }];
 		});
@@ -446,12 +454,25 @@
 		for (const record of incoming) {
 			const key = eventBrowserRecordKey(record);
 			const existing = merged.get(key);
+			const sameCanonicalRevision =
+				existing?.event.revision === record.event.revision &&
+				existing?.event.canonical_attachment_id === record.event.canonical_attachment_id;
+			const canReuseCanonicalPreview =
+				sameCanonicalRevision && record.event.image_availability !== 'unavailable';
+			if (existing?.previewObjectUrl && !canReuseCanonicalPreview) {
+				previewControllers.get(key)?.abort();
+				void tick().then(() => releaseEventPreview(existing));
+			}
 			merged.set(
 				key,
-				existing?.previewObjectUrl
+				existing?.previewObjectUrl && canReuseCanonicalPreview
 					? {
 							...record,
-							event: { ...record.event, thumbnail_url: existing.event.thumbnail_url },
+							event: {
+								...record.event,
+								thumbnail_url: existing.event.thumbnail_url,
+								thumbnail_blob: existing.event.thumbnail_blob
+							},
 							previewObjectUrl: true
 						}
 					: record
@@ -463,11 +484,7 @@
 	function requestEventPreview(record: EventBrowserRecord): void {
 		const key = eventBrowserRecordKey(record);
 		if (record.event.thumbnail_url || previewKeys.has(key)) return;
-		if (
-			!record.previewKeyframe &&
-			!record.event.attachments?.some((attachment) => attachment.type === 'thumbnail')
-		)
-			return;
+		if (!record.previewKeyframe && !record.event.canonical_attachment_id) return;
 		previewKeys.add(key);
 		setPreviewState(key, 'queued');
 		previewQueue.push(record);
@@ -492,21 +509,29 @@
 		const controller = new AbortController();
 		previewControllers.set(key, controller);
 		try {
-			const previewKeyframe =
-				record.previewKeyframe ?? (await resolveEventPreviewKeyframe(record, controller.signal));
-			if (!previewKeyframe) {
-				previewKeys.delete(key);
-				setPreviewState(key, 'unavailable');
-				return;
+			let blob: Blob | undefined;
+			let url: string;
+			if (record.event.canonical_attachment_id) {
+				blob = await controlClient.fetchCanonicalEventAttachment(record.event, controller.signal);
+				url = URL.createObjectURL(blob);
+			} else {
+				const previewKeyframe =
+					record.previewKeyframe ?? (await resolveEventPreviewKeyframe(record, controller.signal));
+				if (!previewKeyframe) {
+					previewKeys.delete(key);
+					setPreviewState(key, 'unavailable');
+					return;
+				}
+				const media = await controlClient.fetchEventPreviewKeyframe(
+					previewKeyframe,
+					controller.signal
+				);
+				url = await decodeEventKeyframePreview(media);
 			}
-			const media = await controlClient.fetchEventPreviewKeyframe(
-				previewKeyframe,
-				controller.signal
-			);
-			const url = await decodeEventKeyframePreview(media);
 			const shouldKeep =
-				selectedKey === key ||
-				visibleRecords.some((candidate) => eventBrowserRecordKey(candidate) === key);
+				(selectedKey === key ||
+					visibleRecords.some((candidate) => eventBrowserRecordKey(candidate) === key)) &&
+				currentCanonicalRevisionMatches(record);
 			if (!shouldKeep) {
 				URL.revokeObjectURL(url);
 				previewKeys.delete(key);
@@ -516,7 +541,7 @@
 				eventBrowserRecordKey(candidate) === key
 					? {
 							...candidate,
-							event: { ...candidate.event, thumbnail_url: url },
+							event: { ...candidate.event, thumbnail_url: url, thumbnail_blob: blob },
 							previewObjectUrl: true
 						}
 					: candidate
@@ -524,7 +549,7 @@
 			if (selectedDetachedRecord && eventBrowserRecordKey(selectedDetachedRecord) === key) {
 				selectedDetachedRecord = {
 					...selectedDetachedRecord,
-					event: { ...selectedDetachedRecord.event, thumbnail_url: url },
+					event: { ...selectedDetachedRecord.event, thumbnail_url: url, thumbnail_blob: blob },
 					previewObjectUrl: true
 				};
 			}
@@ -537,6 +562,21 @@
 		} finally {
 			if (previewControllers.get(key) === controller) previewControllers.delete(key);
 		}
+	}
+
+	function currentCanonicalRevisionMatches(record: EventBrowserRecord): boolean {
+		const current =
+			records.find(
+				(candidate) => eventBrowserRecordKey(candidate) === eventBrowserRecordKey(record)
+			) ??
+			(selectedDetachedRecord &&
+			eventBrowserRecordKey(selectedDetachedRecord) === eventBrowserRecordKey(record)
+				? selectedDetachedRecord
+				: null);
+		return (
+			current?.event.revision === record.event.revision &&
+			current?.event.canonical_attachment_id === record.event.canonical_attachment_id
+		);
 	}
 
 	async function resolveEventPreviewKeyframe(

@@ -1,3 +1,4 @@
+use crate::storage::metadata::EventAttachment;
 use serde::Serialize;
 
 use super::{
@@ -31,6 +32,15 @@ struct Payload<'a> {
     body: &'a str,
     deep_link: &'a str,
     occurred_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_revision: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    canonical_attachment: Option<&'a EventAttachment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_key: Option<&'a str>,
+    image_availability: &'static str,
 }
 
 struct EnqueueContext<'a> {
@@ -207,6 +217,9 @@ impl Store {
                     zone: rule.filter.zones.first().cloned(),
                     confidence: rule.filter.minimum_confidence.or(Some(1.0)),
                     attachment_path: None,
+                    canonical_attachment: None,
+                    icon_key: Some("event".to_owned()),
+                    image_available: false,
                     duration_ms: rule.filter.minimum_duration_ms,
                     severity: Severity::Info,
                     reviewed: rule.filter.reviewed,
@@ -340,6 +353,11 @@ impl Store {
         }
 
         let attachment_path = usable_attachment(rule, candidate);
+        let canonical_attachment_json = candidate
+            .canonical_attachment
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let (title, body) = render_logical(rule, candidate);
         self.connection
             .execute(
@@ -347,9 +365,10 @@ impl Store {
                      id, rule_id, owner_id, source_id, source_identity, lifecycle,
                      stage, highest_revision, created_at_ms, updated_at_ms,
                      enrichment_deadline_at_ms, title, body, deep_link,
-                     attachment_path, severity
+                       attachment_path, severity, canonical_attachment_json,
+                       icon_key, image_available
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10,
-                           ?11, ?12, ?13, ?14, ?15)",
+                           ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 turso::params![
                     logical_id.as_str(),
                     rule.id.clone(),
@@ -366,6 +385,9 @@ impl Store {
                     candidate.deep_link.clone(),
                     attachment_path.clone(),
                     candidate.severity.as_str(),
+                    canonical_attachment_json,
+                    candidate.icon_key.clone(),
+                    i64::from(candidate.image_available),
                 ],
             )
             .await?;
@@ -457,16 +479,28 @@ impl Store {
             && candidate.occurred_at_ms > existing.enrichment_deadline_at_ms;
         let attempts_exhausted = candidate.stage == Stage::Enriched
             && existing.enrichment_attempts >= rule.enrichment.maximum_attempts;
+        let attachment_path = usable_attachment(rule, candidate);
         if !replace || attempts_exhausted || (late && !rule.enrichment.wake_after_deadline) {
+            let canonical_attachment_json = candidate
+                .canonical_attachment
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
             self.connection
                 .execute(
                     "UPDATE logical_notifications
-                     SET highest_revision = ?2, updated_at_ms = ?3
+                     SET highest_revision = ?2, updated_at_ms = ?3,
+                         canonical_attachment_json = ?4, icon_key = ?5,
+                         image_available = ?6, attachment_path = ?7
                      WHERE id = ?1",
                     turso::params![
                         logical_id.as_str(),
                         to_i64(candidate.revision, "candidate revision")?,
                         candidate.occurred_at_ms,
+                        canonical_attachment_json,
+                        candidate.icon_key.clone(),
+                        i64::from(candidate.image_available),
+                        attachment_path.clone(),
                     ],
                 )
                 .await?;
@@ -489,7 +523,11 @@ impl Store {
             return Ok(());
         }
 
-        let attachment_path = usable_attachment(rule, candidate);
+        let canonical_attachment_json = candidate
+            .canonical_attachment
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let (title, body) = render_logical(rule, candidate);
         self.connection
             .execute(
@@ -497,7 +535,9 @@ impl Store {
                      SET stage = ?2, highest_revision = ?3,
                      enrichment_attempts = enrichment_attempts + ?4, updated_at_ms = ?5,
                      title = ?6, body = ?7, deep_link = ?8,
-                     attachment_path = COALESCE(?9, attachment_path), severity = ?10
+                     attachment_path = ?9, severity = ?10,
+                     canonical_attachment_json = ?11, icon_key = ?12,
+                     image_available = ?13
                  WHERE id = ?1",
                 turso::params![
                     logical_id.as_str(),
@@ -510,6 +550,9 @@ impl Store {
                     candidate.deep_link.clone(),
                     attachment_path.clone(),
                     candidate.severity.as_str(),
+                    canonical_attachment_json,
+                    candidate.icon_key.clone(),
+                    i64::from(candidate.image_available),
                 ],
             )
             .await?;
@@ -849,6 +892,13 @@ impl Store {
                 body,
                 deep_link: &candidate.deep_link,
                 occurred_at_ms: candidate.occurred_at_ms,
+                event_id: (candidate.lifecycle == Lifecycle::Event)
+                    .then_some(candidate.source_identity.as_str()),
+                event_revision: (candidate.lifecycle == Lifecycle::Event)
+                    .then_some(candidate.revision),
+                canonical_attachment: candidate.canonical_attachment.as_ref(),
+                icon_key: candidate.icon_key.as_deref(),
+                image_availability: candidate_image_availability(candidate),
             })?;
             let priority = if candidate.severity == Severity::Critical {
                 100
@@ -1002,6 +1052,16 @@ impl Store {
             )
             .await?;
         Ok(())
+    }
+}
+
+const fn candidate_image_availability(candidate: &Candidate) -> &'static str {
+    if candidate.canonical_attachment.is_none() {
+        "none"
+    } else if candidate.image_available {
+        "available"
+    } else {
+        "unavailable"
     }
 }
 
@@ -1244,6 +1304,9 @@ mod tests {
             zone: None,
             confidence: Some(0.9),
             attachment_path: None,
+            canonical_attachment: None,
+            icon_key: Some("person".to_owned()),
+            image_available: false,
             duration_ms: None,
             severity: Severity::Info,
             reviewed: Some(false),
@@ -1309,7 +1372,7 @@ mod tests {
         );
         assert_eq!(store.process(preliminary).unwrap().suppressed, 1);
 
-        let enriched = candidate(
+        let mut enriched = candidate(
             Trigger::EventUpdated,
             "front-door",
             "event-1",
@@ -1317,9 +1380,56 @@ mod tests {
             Stage::Enriched,
             5_000,
         );
+        enriched.canonical_attachment = Some(EventAttachment {
+            id: "snapshot-1".to_owned(),
+            attachment_type: "snapshot".to_owned(),
+            content_type: "image/jpeg".to_owned(),
+            byte_len: Some(100),
+            ordinal: 0,
+            timestamp_ms: Some(4_500),
+            text: None,
+        });
+        enriched.icon_key = Some("person".to_owned());
         let enriched_summary = store.process(enriched).unwrap();
         assert_eq!(enriched_summary.replaced, 1);
         assert_eq!(enriched_summary.queued_attempts, 1);
+
+        let mut collapsed = candidate(
+            Trigger::EventUpdated,
+            "front-door",
+            "event-1",
+            3,
+            Stage::Enriched,
+            6_000,
+        );
+        collapsed.canonical_attachment = Some(EventAttachment {
+            id: "snapshot-2".to_owned(),
+            attachment_type: "snapshot".to_owned(),
+            content_type: "image/webp".to_owned(),
+            byte_len: Some(80),
+            ordinal: 0,
+            timestamp_ms: Some(5_500),
+            text: None,
+        });
+        collapsed.icon_key = Some("person".to_owned());
+        assert_eq!(store.process(collapsed).unwrap().suppressed, 1);
+        let inbox = store.inbox("owner-1", 10).unwrap();
+        let notification = inbox
+            .items
+            .iter()
+            .find(|item| item.source_id == "front-door")
+            .unwrap();
+        assert_eq!(notification.source_identity, "event-1");
+        assert_eq!(notification.revision, 3);
+        assert_eq!(
+            notification
+                .canonical_attachment
+                .as_ref()
+                .map(|attachment| attachment.id.as_str()),
+            Some("snapshot-2")
+        );
+        assert_eq!(notification.icon_key.as_deref(), Some("person"));
+        assert!(!notification.image_available);
 
         let unrelated = candidate(
             Trigger::EventCreated,

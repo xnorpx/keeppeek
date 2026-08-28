@@ -86,6 +86,20 @@ export interface RecordingsResponse {
 	segments: RecordingSegment[];
 }
 
+export type EventIconKey =
+	| 'event'
+	| 'person'
+	| 'vehicle'
+	| 'animal'
+	| 'package'
+	| 'motion'
+	| 'doorbell'
+	| 'sound'
+	| 'story'
+	| 'alert';
+
+export type EventImageAvailability = 'none' | 'available' | 'unavailable';
+
 export interface RecordingEvent {
 	id: string;
 	source_id?: string;
@@ -96,11 +110,16 @@ export interface RecordingEvent {
 	end_time_ms: number | null;
 	confidence: number | null;
 	bbox: [number, number, number, number] | null;
+	bbox_attachment_id?: string | null;
 	zone: string | null;
 	text?: string | null;
 	thumbnail_url: string | null;
 	thumbnail_blob?: Blob;
 	attachments?: readonly RecordingEventAttachment[];
+	canonical_attachment_id?: string | null;
+	icon_key?: EventIconKey;
+	rejected_icon_key?: string | null;
+	image_availability?: EventImageAvailability;
 }
 
 export interface RecordingEventAttachment {
@@ -110,6 +129,7 @@ export interface RecordingEventAttachment {
 	byte_length: number | null;
 	ordinal: number;
 	timestamp_ms: number | null;
+	text?: string | null;
 }
 
 export interface RecordingEventsResponse {

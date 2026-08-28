@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use super::{Cooldown, Lifecycle, Stage};
+use crate::storage::metadata::EventAttachment;
 
 const MAX_ID_BYTES: usize = 128;
 const MAX_NAME_CHARS: usize = 128;
@@ -73,6 +74,9 @@ pub struct Candidate {
     pub zone: Option<String>,
     pub confidence: Option<f64>,
     pub attachment_path: Option<String>,
+    pub canonical_attachment: Option<EventAttachment>,
+    pub icon_key: Option<String>,
+    pub image_available: bool,
     pub duration_ms: Option<u64>,
     pub severity: Severity,
     pub reviewed: Option<bool>,
@@ -732,6 +736,9 @@ mod tests {
             zone: None,
             confidence: Some(0.8),
             attachment_path: None,
+            canonical_attachment: None,
+            icon_key: Some("person".to_owned()),
+            image_available: false,
             duration_ms: None,
             severity: Severity::Info,
             reviewed: Some(false),

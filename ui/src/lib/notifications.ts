@@ -204,6 +204,7 @@ export type NotificationItem = {
 	logicalId: string;
 	ruleId: string;
 	sourceId: string;
+	sourceIdentity: string;
 	lifecycle: string;
 	stage: NotificationStage;
 	revision: bigint;
@@ -211,6 +212,9 @@ export type NotificationItem = {
 	body: string;
 	deepLink: string;
 	attachmentAvailable: boolean;
+	canonicalAttachment: import('./types').RecordingEventAttachment | null;
+	iconKey: import('./types').EventIconKey | undefined;
+	imageAvailability: import('./types').EventImageAvailability;
 	severity: NotificationSeverity;
 	createdAtMs: number;
 	updatedAtMs: number;

@@ -43,7 +43,10 @@ import {
 	EventSearchCommandSchema,
 	EventSearchField,
 	EventImageFilter as ProtoEventImageFilter,
+	EventImageAvailability as ProtoEventImageAvailability,
 	EventSearchMediaObjectSchema,
+	EventAttachmentDescriptorSchema,
+	EventExportSeedSchema,
 	EventMetadataSearchSchema,
 	EventTextSearchSchema,
 	EventOrigin,
@@ -120,6 +123,7 @@ import {
 	type ServerHealthSnapshot,
 	type Event as ProtoEvent,
 	type EventSearchHit as ProtoEventSearchHit,
+	type EventSearchMediaObject as ProtoEventSearchMediaObject,
 	type EventSearchMediaChunk,
 	type ExportJob as ProtoExportJob,
 	type HealthProfileSummary,
@@ -139,9 +143,11 @@ import {
 	type NotificationItem as ProtoNotificationItem,
 	type NotificationRuleRecord as ProtoNotificationRuleRecord,
 	type Request,
+	type EventAttachmentDescriptor as ProtoEventAttachmentDescriptor,
 	type QueryEvents,
 	type Response as ControlResponse
 } from './proto/webrtc_pb';
+import { canonicalEventAttachment, eventIconKey } from './event-presentation';
 import {
 	parseNotificationRuleDefinition,
 	type NotificationChannel,
@@ -158,8 +164,10 @@ import {
 	type NotificationTestResult
 } from './notifications';
 import type {
+	EventImageAvailability as EventImageAvailabilityState,
 	MotionDetection,
 	RecordingEvent,
+	RecordingEventAttachment,
 	RecordingEventsResponse,
 	RecordingSegment,
 	RecordingsResponse
@@ -245,6 +253,15 @@ export type MediaExportJob = {
 	error: string | null;
 	retryable: boolean;
 	burnInTimestamp: boolean;
+	eventSeed: MediaExportEventSeed | null;
+};
+
+export type MediaExportEventSeed = {
+	eventId: string;
+	revision: number;
+	canonicalAttachment: RecordingEventAttachment | null;
+	iconKey: RecordingEvent['icon_key'];
+	imageAvailability: EventImageAvailabilityState;
 };
 
 export type MediaExportDownload = {
@@ -264,6 +281,7 @@ export type EventPreviewKeyframe = {
 
 export type EventPreviewHit = {
 	eventId: string;
+	revision: number;
 	sourceId: string;
 	eventType: string;
 	origin: RecordingEvent['source'];
@@ -274,6 +292,12 @@ export type EventPreviewHit = {
 	zone: string | null;
 	text: string | null;
 	hasImageAttachment: boolean;
+	canonicalAttachment: RecordingEventAttachment | null;
+	attachments: RecordingEventAttachment[];
+	imageAvailability: EventImageAvailabilityState;
+	iconKey: RecordingEvent['icon_key'];
+	rejectedIconKey: string | null;
+	bboxAttachmentId: string | null;
 	previewStartMs: number;
 	previewEndMs: number;
 	keyframes: EventPreviewKeyframe[];
@@ -374,6 +398,7 @@ type EventSearchPending = {
 };
 
 type EventMediaAccumulator = {
+	representation: StoredMediaObjectRepresentation;
 	chunkCount: number;
 	chunks: Array<Uint8Array | undefined>;
 	byteLength: number;
@@ -384,12 +409,26 @@ type EventMediaAccumulator = {
 	height: number;
 	decoderConfig: Uint8Array;
 	nalLengthSize: number;
+	eventId: string;
+	eventRevision: bigint;
+	attachmentId: string;
 };
+
+type EventMediaResult =
+	| { kind: 'keyframe'; media: EncodedEventKeyframe }
+	| {
+			kind: 'attachment';
+			eventId: string;
+			eventRevision: number;
+			attachmentId: string;
+			contentType: string;
+			payload: Uint8Array;
+	  };
 
 type EventMediaPending = {
 	objectIds: Set<string>;
 	objects: Map<string, EventMediaAccumulator>;
-	resolve: (objects: Map<string, EncodedEventKeyframe>) => void;
+	resolve: (objects: Map<string, EventMediaResult>) => void;
 	reject: (error: Error) => void;
 	timeout: ReturnType<typeof setTimeout>;
 };
@@ -746,16 +785,74 @@ export class ControlClient {
 		keyframe: EventPreviewKeyframe,
 		signal?: AbortSignal
 	): Promise<EncodedEventKeyframe> {
+		const objectId = `keyframe-${this.#nextStoredId++}`;
+		const result = await this.fetchEventMediaObject(
+			create(EventSearchMediaObjectSchema, {
+				objectId,
+				sourceId: keyframe.sourceId,
+				streamId: keyframe.streamId,
+				recordingId: keyframe.recordingId,
+				fragmentSequence: keyframe.fragmentSequence,
+				representation: StoredMediaObjectRepresentation.ENCODED_KEYFRAME
+			}),
+			signal
+		);
+		if (result.kind !== 'keyframe') {
+			throw new Error('Event keyframe transfer returned an attachment.');
+		}
+		return result.media;
+	}
+
+	async fetchCanonicalEventAttachment(
+		event: Pick<RecordingEvent, 'id' | 'source_id' | 'revision' | 'canonical_attachment_id'>,
+		signal?: AbortSignal
+	): Promise<Blob> {
+		const revision = event.revision;
+		const attachmentId = event.canonical_attachment_id;
+		if (
+			!event.source_id ||
+			typeof revision !== 'number' ||
+			!Number.isSafeInteger(revision) ||
+			revision <= 0 ||
+			!attachmentId
+		) {
+			throw new Error('Canonical event attachment identity is incomplete.');
+		}
+		const result = await this.fetchEventMediaObject(
+			create(EventSearchMediaObjectSchema, {
+				objectId: `attachment-${this.#nextStoredId++}`,
+				sourceId: event.source_id,
+				eventId: event.id,
+				eventRevision: BigInt(revision),
+				attachmentId,
+				representation: StoredMediaObjectRepresentation.EVENT_ATTACHMENT
+			}),
+			signal
+		);
+		if (
+			result.kind !== 'attachment' ||
+			result.eventId !== event.id ||
+			result.eventRevision !== revision ||
+			result.attachmentId !== attachmentId
+		) {
+			throw new Error('Canonical event attachment identity changed during transfer.');
+		}
+		return new Blob([ownedArrayBuffer(result.payload)], { type: result.contentType });
+	}
+
+	private async fetchEventMediaObject(
+		object: ProtoEventSearchMediaObject,
+		signal?: AbortSignal
+	): Promise<EventMediaResult> {
 		if (signal?.aborted) throw timelineAbortError();
 		const transferId = `event-media-${this.#nextStoredId++}`;
-		const objectId = `keyframe-${this.#nextStoredId++}`;
-		const completed = new Promise<Map<string, EncodedEventKeyframe>>((resolve, reject) => {
+		const completed = new Promise<Map<string, EventMediaResult>>((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.#eventMediaPending.delete(transferId);
-				reject(new Error('Event keyframe transfer timed out.'));
+				reject(new Error('Event media transfer timed out.'));
 			}, controlTimeoutMs);
 			this.#eventMediaPending.set(transferId, {
-				objectIds: new Set([objectId]),
+				objectIds: new Set([object.objectId]),
 				objects: new Map(),
 				resolve,
 				reject,
@@ -776,14 +873,6 @@ export class ControlClient {
 		};
 		signal?.addEventListener('abort', abort, { once: true });
 		try {
-			const object = create(EventSearchMediaObjectSchema, {
-				objectId,
-				sourceId: keyframe.sourceId,
-				streamId: keyframe.streamId,
-				recordingId: keyframe.recordingId,
-				fragmentSequence: keyframe.fragmentSequence,
-				representation: StoredMediaObjectRepresentation.ENCODED_KEYFRAME
-			});
 			const command = create(EventSearchCommandSchema, {
 				action: {
 					case: 'fetchMedia',
@@ -794,22 +883,21 @@ export class ControlClient {
 					})
 				}
 			});
-			const result = await this.request({ case: 'eventSearchCommand', value: command });
+			const response = await this.request({ case: 'eventSearchCommand', value: command });
 			if (
-				result.case !== 'eventSearchMediaDelivery' ||
-				result.value.transferId !== transferId ||
-				result.value.channel !== DataChannelKind.RELIABLE_DATA ||
-				result.value.objectCount !== 1
+				response.case !== 'eventSearchMediaDelivery' ||
+				response.value.transferId !== transferId ||
+				response.value.channel !== DataChannelKind.RELIABLE_DATA ||
+				response.value.objectCount !== 1
 			) {
-				throw new Error('Server returned an unexpected event keyframe response.');
+				throw new Error('Server returned an unexpected event media response.');
 			}
 			if (aborted) throw timelineAbortError();
 			awaitingDelivery = true;
 			if (signal?.aborted) abort();
-			const objects = await completed;
-			const media = objects.get(objectId);
-			if (!media) throw new Error('Event keyframe transfer did not contain its requested object.');
-			return media;
+			const result = (await completed).get(object.objectId);
+			if (!result) throw new Error('Event media transfer omitted its requested object.');
+			return result;
 		} catch (error) {
 			const pending = this.#eventMediaPending.get(transferId);
 			if (pending) clearTimeout(pending.timeout);
@@ -1115,6 +1203,15 @@ export class ControlClient {
 		endMs: number;
 		allowPartial?: boolean;
 		burnInTimestamp?: boolean;
+		event?: Pick<
+			RecordingEvent,
+			| 'id'
+			| 'revision'
+			| 'attachments'
+			| 'canonical_attachment_id'
+			| 'icon_key'
+			| 'image_availability'
+		>;
 	}): Promise<MediaExportJob> {
 		const jobId = `export-${this.#nextStoredId++}`;
 		const command = create(ExportCommandSchema, {
@@ -1127,7 +1224,8 @@ export class ControlClient {
 					startTime: timestampFromDate(new Date(options.startMs)),
 					endTime: timestampFromDate(new Date(options.endMs)),
 					allowPartial: options.allowPartial ?? false,
-					burnInTimestamp: options.burnInTimestamp ?? false
+					burnInTimestamp: options.burnInTimestamp ?? false,
+					eventSeed: options.event ? protoExportEventSeed(options.event) : undefined
 				})
 			}
 		});
@@ -2455,20 +2553,25 @@ export class ControlClient {
 		const pending = this.#eventMediaPending.get(chunk.transferId);
 		if (!pending || !pending.objectIds.has(chunk.objectId)) return;
 		const byteLength = numeric(chunk.byteLen);
+		const isKeyframe = chunk.representation === StoredMediaObjectRepresentation.ENCODED_KEYFRAME;
+		const isAttachment = chunk.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT;
 		if (
-			chunk.representation !== StoredMediaObjectRepresentation.ENCODED_KEYFRAME ||
+			(!isKeyframe && !isAttachment) ||
 			chunk.chunkCount === 0 ||
 			chunk.chunkIndex >= chunk.chunkCount ||
 			byteLength <= 0 ||
-			byteLength > maxEventKeyframeBytes
+			byteLength > maxEventKeyframeBytes ||
+			(isAttachment &&
+				(!chunk.eventId ||
+					chunk.eventRevision === 0n ||
+					!chunk.attachmentId ||
+					!['image/jpeg', 'image/png', 'image/webp'].includes(chunk.contentType)))
 		) {
-			this.failEventMediaPending(
-				chunk.transferId,
-				'Event keyframe chunk was invalid or oversized.'
-			);
+			this.failEventMediaPending(chunk.transferId, 'Event media chunk was invalid or oversized.');
 			return;
 		}
 		const accumulator = pending.objects.get(chunk.objectId) ?? {
+			representation: chunk.representation,
 			chunkCount: chunk.chunkCount,
 			chunks: Array.from<Uint8Array | undefined>({ length: chunk.chunkCount }),
 			byteLength,
@@ -2478,9 +2581,13 @@ export class ControlClient {
 			width: chunk.width,
 			height: chunk.height,
 			decoderConfig: chunk.decoderConfig,
-			nalLengthSize: chunk.nalLengthSize
+			nalLengthSize: chunk.nalLengthSize,
+			eventId: chunk.eventId,
+			eventRevision: chunk.eventRevision,
+			attachmentId: chunk.attachmentId
 		};
 		if (
+			accumulator.representation !== chunk.representation ||
 			accumulator.chunkCount !== chunk.chunkCount ||
 			accumulator.byteLength !== byteLength ||
 			accumulator.contentType !== chunk.contentType ||
@@ -2488,11 +2595,14 @@ export class ControlClient {
 			accumulator.width !== chunk.width ||
 			accumulator.height !== chunk.height ||
 			accumulator.nalLengthSize !== chunk.nalLengthSize ||
+			accumulator.eventId !== chunk.eventId ||
+			accumulator.eventRevision !== chunk.eventRevision ||
+			accumulator.attachmentId !== chunk.attachmentId ||
 			!bytesEqual(accumulator.decoderConfig, chunk.decoderConfig) ||
 			accumulator.chunks[chunk.chunkIndex] !== undefined ||
 			accumulator.receivedBytes + chunk.payload.byteLength > accumulator.byteLength
 		) {
-			this.failEventMediaPending(chunk.transferId, 'Event keyframe chunks were inconsistent.');
+			this.failEventMediaPending(chunk.transferId, 'Event media chunks were inconsistent.');
 			return;
 		}
 		accumulator.chunks[chunk.chunkIndex] = chunk.payload;
@@ -2509,10 +2619,10 @@ export class ControlClient {
 			end.objectCount !== pending.objectIds.size ||
 			pending.objects.size !== pending.objectIds.size
 		) {
-			pending.reject(new Error('Event keyframe delivery was incomplete.'));
+			pending.reject(new Error('Event media delivery was incomplete.'));
 			return;
 		}
-		const objects = new Map<string, EncodedEventKeyframe>();
+		const objects = new Map<string, EventMediaResult>();
 		for (const objectId of pending.objectIds) {
 			const object = pending.objects.get(objectId);
 			if (
@@ -2520,18 +2630,33 @@ export class ControlClient {
 				object.receivedBytes !== object.byteLength ||
 				!object.chunks.every((chunk) => chunk !== undefined)
 			) {
-				pending.reject(new Error('Event keyframe delivery was incomplete.'));
+				pending.reject(new Error('Event media delivery was incomplete.'));
 				return;
 			}
-			objects.set(objectId, {
-				contentType: object.contentType,
-				codec: object.codec,
-				width: object.width,
-				height: object.height,
-				decoderConfig: object.decoderConfig,
-				nalLengthSize: object.nalLengthSize,
-				payload: concatenateChunks(object.chunks)
-			});
+			const payload = concatenateChunks(object.chunks);
+			if (object.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT) {
+				objects.set(objectId, {
+					kind: 'attachment',
+					eventId: object.eventId,
+					eventRevision: numeric(object.eventRevision),
+					attachmentId: object.attachmentId,
+					contentType: object.contentType,
+					payload
+				});
+			} else {
+				objects.set(objectId, {
+					kind: 'keyframe',
+					media: {
+						contentType: object.contentType,
+						codec: object.codec,
+						width: object.width,
+						height: object.height,
+						decoderConfig: object.decoderConfig,
+						nalLengthSize: object.nalLengthSize,
+						payload
+					}
+				});
+			}
 		}
 		pending.resolve(objects);
 	}
@@ -2543,7 +2668,7 @@ export class ControlClient {
 		if (error.context.case === 'transferId') {
 			this.failEventMediaPending(
 				error.context.value,
-				error.message || 'Event keyframe transfer failed.'
+				error.message || 'Event media transfer failed.'
 			);
 		}
 	}
@@ -3589,9 +3714,14 @@ function recordingEvent(
 	attachments: Map<string, ChunkAccumulator>,
 	onObjectUrl: (url: string) => void
 ): RecordingEvent {
-	const descriptor = event.attachments.find(
-		(attachment) => attachment.attachmentType === 'thumbnail'
+	const eventAttachments = event.attachments.map(recordingEventAttachment);
+	const canonicalAttachment = canonicalEventAttachment(
+		eventAttachments,
+		event.canonicalAttachmentId
 	);
+	const descriptor = canonicalAttachment
+		? event.attachments.find((attachment) => attachment.attachmentId === canonicalAttachment.id)
+		: undefined;
 	const attachment = descriptor
 		? attachments.get(`${event.eventId}:${descriptor.attachmentId}`)
 		: undefined;
@@ -3619,18 +3749,43 @@ function recordingEvent(
 					event.boundingBox.height
 				]
 			: null,
+		bbox_attachment_id: event.boundingBoxAttachmentId ?? null,
 		zone: event.zone ?? null,
 		thumbnail_url: thumbnailUrl,
 		thumbnail_blob: thumbnailBlob,
-		attachments: event.attachments.map((attachment) => ({
-			id: attachment.attachmentId,
-			type: attachment.attachmentType,
-			content_type: attachment.contentType,
-			byte_length: attachment.byteLen === undefined ? null : numeric(attachment.byteLen),
-			ordinal: attachment.ordinal,
-			timestamp_ms: attachment.timestamp ? timestampDate(attachment.timestamp).getTime() : null
-		}))
+		attachments: eventAttachments,
+		canonical_attachment_id: canonicalAttachment?.id ?? null,
+		icon_key: eventIconKey(event.iconKey, event.eventType),
+		rejected_icon_key: event.rejectedIconKey ?? null,
+		image_availability: eventImageAvailability(
+			event.imageAvailability,
+			canonicalAttachment !== null
+		)
 	};
+}
+
+function recordingEventAttachment(
+	attachment: ProtoEventAttachmentDescriptor
+): RecordingEventAttachment {
+	return {
+		id: attachment.attachmentId,
+		type: attachment.attachmentType,
+		content_type: attachment.contentType,
+		byte_length: attachment.byteLen === undefined ? null : numeric(attachment.byteLen),
+		ordinal: attachment.ordinal,
+		timestamp_ms: attachment.timestamp ? timestampDate(attachment.timestamp).getTime() : null,
+		text: attachment.text ?? null
+	};
+}
+
+function eventImageAvailability(
+	availability: ProtoEventImageAvailability,
+	hasCanonicalImage: boolean
+): EventImageAvailabilityState {
+	if (availability === ProtoEventImageAvailability.AVAILABLE) return 'available';
+	if (availability === ProtoEventImageAvailability.UNAVAILABLE) return 'unavailable';
+	if (availability === ProtoEventImageAvailability.NONE) return 'none';
+	return hasCanonicalImage ? 'available' : 'none';
 }
 
 function eventPreviewHit(hit: ProtoEventSearchHit): EventPreviewHit {
@@ -3644,8 +3799,13 @@ function eventPreviewHit(hit: ProtoEventSearchHit): EventPreviewHit {
 				? 'keeppeek'
 				: null;
 	if (origin === null) throw new Error('Event search result omitted its origin.');
+	const canonicalAttachment = hit.canonicalAttachment
+		? recordingEventAttachment(hit.canonicalAttachment)
+		: null;
+	const attachments = hit.attachments.map(recordingEventAttachment);
 	return {
 		eventId: hit.eventId,
+		revision: numeric(hit.revision),
 		sourceId: hit.sourceId,
 		eventType: hit.eventType,
 		origin,
@@ -3657,7 +3817,16 @@ function eventPreviewHit(hit: ProtoEventSearchHit): EventPreviewHit {
 			: null,
 		zone: hit.zone ?? null,
 		text: hit.text ?? null,
-		hasImageAttachment: hit.hasImageAttachment,
+		hasImageAttachment: canonicalAttachment !== null || hit.hasImageAttachment,
+		canonicalAttachment,
+		attachments,
+		imageAvailability: eventImageAvailability(
+			hit.imageAvailability,
+			canonicalAttachment !== null || hit.hasImageAttachment
+		),
+		iconKey: eventIconKey(hit.iconKey, hit.eventType),
+		rejectedIconKey: hit.rejectedIconKey ?? null,
+		bboxAttachmentId: hit.boundingBoxAttachmentId ?? null,
 		previewStartMs: timestampDate(hit.previewStartTime).getTime(),
 		previewEndMs: timestampDate(hit.previewEndTime).getTime(),
 		keyframes: hit.keyframes.flatMap((keyframe) =>
@@ -3732,10 +3901,14 @@ function notificationInbox(inbox: ProtoNotificationInbox): NotificationInbox {
 }
 
 function notificationItem(item: ProtoNotificationItem): NotificationItem {
+	const canonicalAttachment = item.canonicalAttachment
+		? recordingEventAttachment(item.canonicalAttachment)
+		: null;
 	return {
 		logicalId: item.logicalId,
 		ruleId: item.ruleId,
 		sourceId: item.sourceId,
+		sourceIdentity: item.sourceIdentity,
 		lifecycle: item.lifecycle,
 		stage: notificationStage(item.stage),
 		revision: item.revision,
@@ -3743,6 +3916,9 @@ function notificationItem(item: ProtoNotificationItem): NotificationItem {
 		body: item.body,
 		deepLink: item.deepLink,
 		attachmentAvailable: item.attachmentAvailable,
+		canonicalAttachment,
+		iconKey: item.iconKey ? eventIconKey(item.iconKey, '') : undefined,
+		imageAvailability: eventImageAvailability(item.imageAvailability, canonicalAttachment !== null),
 		severity: notificationSeverity(item.severity),
 		createdAtMs: Number(item.createdAtMs),
 		updatedAtMs: Number(item.updatedAtMs),
@@ -3876,8 +4052,67 @@ function mediaExportJob(job: ProtoExportJob): MediaExportJob {
 		}),
 		error: job.error ?? null,
 		retryable: job.retryable,
-		burnInTimestamp: job.burnInTimestamp
+		burnInTimestamp: job.burnInTimestamp,
+		eventSeed: job.eventSeed
+			? {
+					eventId: job.eventSeed.eventId,
+					revision: numeric(job.eventSeed.revision),
+					canonicalAttachment: job.eventSeed.canonicalAttachment
+						? recordingEventAttachment(job.eventSeed.canonicalAttachment)
+						: null,
+					iconKey: job.eventSeed.iconKey ? eventIconKey(job.eventSeed.iconKey, '') : undefined,
+					imageAvailability: eventImageAvailability(
+						job.eventSeed.imageAvailability,
+						job.eventSeed.canonicalAttachment !== undefined
+					)
+				}
+			: null
 	};
+}
+
+function protoExportEventSeed(
+	event: Pick<
+		RecordingEvent,
+		| 'id'
+		| 'revision'
+		| 'attachments'
+		| 'canonical_attachment_id'
+		| 'icon_key'
+		| 'image_availability'
+	>
+) {
+	if (!Number.isSafeInteger(event.revision) || (event.revision ?? 0) <= 0) {
+		throw new Error('Export event revision is incomplete.');
+	}
+	const canonical = canonicalEventAttachment(
+		event.attachments ?? [],
+		event.canonical_attachment_id
+	);
+	return create(EventExportSeedSchema, {
+		eventId: event.id,
+		revision: BigInt(event.revision!),
+		canonicalAttachment: canonical
+			? create(EventAttachmentDescriptorSchema, {
+					attachmentId: canonical.id,
+					attachmentType: canonical.type,
+					contentType: canonical.content_type,
+					byteLen: canonical.byte_length === null ? undefined : BigInt(canonical.byte_length),
+					ordinal: canonical.ordinal,
+					timestamp:
+						canonical.timestamp_ms === null
+							? undefined
+							: timestampFromDate(new Date(canonical.timestamp_ms)),
+					text: canonical.text ?? undefined
+				})
+			: undefined,
+		iconKey: event.icon_key,
+		imageAvailability:
+			event.image_availability === 'available'
+				? ProtoEventImageAvailability.AVAILABLE
+				: event.image_availability === 'unavailable'
+					? ProtoEventImageAvailability.UNAVAILABLE
+					: ProtoEventImageAvailability.NONE
+	});
 }
 
 function motionDetection(result: MotionDetectionResult): MotionDetection {

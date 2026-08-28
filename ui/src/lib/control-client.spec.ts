@@ -37,6 +37,8 @@ import {
 	EventImageFilter,
 	EventOrigin,
 	EventBoundingBoxSchema,
+	EventAttachmentDescriptorSchema,
+	EventImageAvailability,
 	EventSearchHitSchema,
 	EventSearchKeyframeSchema,
 	EventSearchMediaChunkSchema,
@@ -295,6 +297,7 @@ class FakeDataChannel {
 				});
 				const hit = create(EventSearchHitSchema, {
 					eventId: 'event-42',
+					revision: 4n,
 					sourceId,
 					eventType: 'person',
 					origin: EventOrigin.KEEPPEEK,
@@ -309,6 +312,28 @@ class FakeDataChannel {
 					zone: 'Porch',
 					text: 'Alice at the front door',
 					hasImageAttachment: true,
+					canonicalAttachment: create(EventAttachmentDescriptorSchema, {
+						attachmentId: 'snapshot-hero',
+						attachmentType: 'snapshot',
+						contentType: 'image/jpeg',
+						byteLen: 3n,
+						ordinal: 2,
+						timestamp: timestampFromDate(new Date('2026-08-20T01:00:00Z'))
+					}),
+					attachments: [
+						create(EventAttachmentDescriptorSchema, {
+							attachmentId: 'snapshot-hero',
+							attachmentType: 'snapshot',
+							contentType: 'image/jpeg',
+							byteLen: 3n,
+							ordinal: 2,
+							timestamp: timestampFromDate(new Date('2026-08-20T01:00:00Z'))
+						})
+					],
+					iconKey: 'person',
+					rejectedIconKey: '<svg?onload=alert(1)>',
+					boundingBoxAttachmentId: 'snapshot-hero',
+					imageAvailability: EventImageAvailability.AVAILABLE,
 					previewStartTime: timestampFromDate(new Date('2026-08-20T00:59:55Z')),
 					previewEndTime: timestampFromDate(new Date('2026-08-20T01:00:10Z')),
 					keyframes: [keyframe]
@@ -358,6 +383,8 @@ class FakeDataChannel {
 			}
 			if (action.case === 'fetchMedia') {
 				const object = action.value.objects[0]!;
+				const isAttachment =
+					object.representation === StoredMediaObjectRepresentation.EVENT_ATTACHMENT;
 				const response = create(ControlEnvelopeSchema, {
 					message: {
 						case: 'response',
@@ -391,16 +418,19 @@ class FakeDataChannel {
 								value: create(EventSearchMediaChunkSchema, {
 									transferId: action.value.transferId,
 									objectId: object.objectId,
-									representation: StoredMediaObjectRepresentation.ENCODED_KEYFRAME,
-									contentType: 'video/avc',
+									representation: object.representation,
+									contentType: isAttachment ? 'image/jpeg' : 'video/avc',
 									byteLen: 3n,
 									chunkCount: 1,
 									payload: Uint8Array.from([1, 2, 3]),
-									codec: 'avc1.42C01F',
-									width: 640,
-									height: 360,
-									decoderConfig: Uint8Array.from([4, 5]),
-									nalLengthSize: 4
+									codec: isAttachment ? '' : 'avc1.42C01F',
+									width: isAttachment ? 0 : 640,
+									height: isAttachment ? 0 : 360,
+									decoderConfig: isAttachment ? new Uint8Array() : Uint8Array.from([4, 5]),
+									nalLengthSize: isAttachment ? 0 : 4,
+									eventId: object.eventId,
+									eventRevision: object.eventRevision,
+									attachmentId: object.attachmentId
 								})
 							}
 						})
@@ -560,7 +590,8 @@ class FakeDataChannel {
 									status === ExportJobStatus.READY
 										? timestampFromDate(new Date('2026-08-21T06:30:00Z'))
 										: undefined,
-								retryable: status === ExportJobStatus.FAILED
+								retryable: status === ExportJobStatus.FAILED,
+								eventSeed: action.case === 'create' ? action.value.eventSeed : undefined
 							});
 						if (action.case === 'list') {
 							return {
@@ -1495,13 +1526,37 @@ describe('ControlClient', () => {
 			sourceId: 'front-door',
 			streamId: 'main',
 			startMs: Date.parse('2026-08-20T06:20:00Z'),
-			endMs: Date.parse('2026-08-20T06:30:00Z')
+			endMs: Date.parse('2026-08-20T06:30:00Z'),
+			event: {
+				id: 'event-42',
+				revision: 4,
+				attachments: [
+					{
+						id: 'snapshot-hero',
+						type: 'snapshot',
+						content_type: 'image/jpeg',
+						byte_length: 3,
+						ordinal: 0,
+						timestamp_ms: Date.parse('2026-08-20T06:25:00Z')
+					}
+				],
+				canonical_attachment_id: 'snapshot-hero',
+				icon_key: 'person',
+				image_availability: 'available'
+			}
 		});
 		expect(createdExport).toMatchObject({
 			id: 'export-1',
 			status: 'running',
 			sourceId: 'front-door',
-			estimatedBytes: 3
+			estimatedBytes: 3,
+			eventSeed: {
+				eventId: 'event-42',
+				revision: 4,
+				canonicalAttachment: { id: 'snapshot-hero' },
+				iconKey: 'person',
+				imageAvailability: 'available'
+			}
 		});
 		await expect(client.listExports()).resolves.toMatchObject([
 			{ status: 'running', sourceId: 'front-door' }
@@ -1909,17 +1964,37 @@ describe('ControlClient', () => {
 		expect(page.nextPageToken).toBe('next-page-token');
 		expect(page.hits[0]).toMatchObject({
 			eventId: 'event-42',
+			revision: 4,
 			sourceId: 'front-door',
 			origin: 'keeppeek',
 			confidence: 0.93,
 			zone: 'Porch',
 			text: 'Alice at the front door',
-			hasImageAttachment: true
+			hasImageAttachment: true,
+			canonicalAttachment: {
+				id: 'snapshot-hero',
+				type: 'snapshot',
+				content_type: 'image/jpeg',
+				ordinal: 2
+			},
+			imageAvailability: 'available',
+			iconKey: 'person',
+			rejectedIconKey: '<svg?onload=alert(1)>',
+			bboxAttachmentId: 'snapshot-hero'
 		});
 		expect(page.hits[0]?.bbox).toHaveLength(4);
 		for (const [index, value] of [0.1, 0.2, 0.3, 0.4].entries()) {
 			expect(page.hits[0]?.bbox?.[index]).toBeCloseTo(value);
 		}
+
+		const attachment = await client.fetchCanonicalEventAttachment({
+			id: page.hits[0]!.eventId,
+			source_id: page.hits[0]!.sourceId,
+			revision: page.hits[0]!.revision,
+			canonical_attachment_id: page.hits[0]!.canonicalAttachment!.id
+		});
+		expect(attachment.type).toBe('image/jpeg');
+		expect([...new Uint8Array(await attachment.arrayBuffer())]).toEqual([1, 2, 3]);
 	});
 
 	it('refills at half-buffer and ends only after the terminal generation is appended', async () => {

@@ -17,7 +17,11 @@ export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
 	optimizeDeps: {
 		include: [
+			'@lucide/svelte/icons/activity',
 			'@lucide/svelte/icons/arrow-up',
+			'@lucide/svelte/icons/audio-lines',
+			'@lucide/svelte/icons/bell-ring',
+			'@lucide/svelte/icons/car-front',
 			'@lucide/svelte/icons/check',
 			'@lucide/svelte/icons/check-check',
 			'@lucide/svelte/icons/chevron-up',
@@ -28,13 +32,19 @@ export default defineConfig({
 			'@lucide/svelte/icons/flask-conical',
 			'@lucide/svelte/icons/inbox',
 			'@lucide/svelte/icons/key-round',
+			'@lucide/svelte/icons/images',
 			'@lucide/svelte/icons/loader-circle',
 			'@lucide/svelte/icons/log-out',
+			'@lucide/svelte/icons/package',
+			'@lucide/svelte/icons/paw-print',
 			'@lucide/svelte/icons/plus',
 			'@lucide/svelte/icons/refresh-cw',
 			'@lucide/svelte/icons/rotate-cw',
+			'@lucide/svelte/icons/scan-line',
 			'@lucide/svelte/icons/shield-off',
-			'@lucide/svelte/icons/trash-2'
+			'@lucide/svelte/icons/triangle-alert',
+			'@lucide/svelte/icons/trash-2',
+			'@lucide/svelte/icons/user-round'
 		]
 	},
 	server: {

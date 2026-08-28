@@ -36,7 +36,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::storage::metadata::{EventSource, TimelineEvent};
+use crate::storage::metadata::{EventSource, TimelineEvent, event_icon};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -988,8 +988,10 @@ impl ReolinkLoop {
                                     }
                                     let event_id = random_event_id();
                                     active_motion.insert(kind.clone(), event_id.clone());
+                                    let icon_key = event_icon(None, &kind).key.to_owned();
                                     let event = TimelineEvent {
                                         id: event_id.clone(),
+                                        revision: 1,
                                         camera_id: self.camera_ip.to_string(),
                                         stream: None,
                                         source: EventSource::Camera,
@@ -998,11 +1000,17 @@ impl ReolinkLoop {
                                         end_time_ms: None,
                                         confidence: None,
                                         bbox: None,
+                                        bbox_attachment_id: None,
                                         zone: None,
+                                        attachments: Vec::new(),
+                                        canonical_attachment_id: None,
+                                        icon_key,
+                                        rejected_icon_key: None,
                                         thumbnail_filename: None,
                                     };
-                                    let _ =
-                                        self.tx.send(KeepPeekEvent::TimelineEventStarted { event });
+                                    let _ = self.tx.send(KeepPeekEvent::TimelineEventStarted {
+                                        event: Box::new(event),
+                                    });
                                     started_event_ids.push(event_id);
                                 }
                             }

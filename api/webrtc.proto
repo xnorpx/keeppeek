@@ -385,6 +385,15 @@ message CreateExportJob {
   google.protobuf.Timestamp end_time = 5;
   bool allow_partial = 6;
   bool burn_in_timestamp = 7;
+  optional EventExportSeed event_seed = 8;
+}
+
+message EventExportSeed {
+  string event_id = 1;
+  uint64 revision = 2;
+  optional EventAttachmentDescriptor canonical_attachment = 3;
+  optional string icon_key = 4;
+  EventImageAvailability image_availability = 5;
 }
 
 message ListExportJobs {}
@@ -435,6 +444,7 @@ message ExportJob {
   optional string error = 15;
   bool retryable = 16;
   bool burn_in_timestamp = 17;
+  optional EventExportSeed event_seed = 18;
 }
 
 message ExportMissingRange {
@@ -543,6 +553,9 @@ message EventSearchMediaObject {
   string recording_id = 4;
   uint64 fragment_sequence = 5;
   StoredMediaObjectRepresentation representation = 6;
+  string event_id = 7;
+  uint64 event_revision = 8;
+  string attachment_id = 9;
 }
 
 enum StoredMediaObjectRepresentation {
@@ -550,6 +563,7 @@ enum StoredMediaObjectRepresentation {
   STORED_MEDIA_OBJECT_REPRESENTATION_ENCODED_KEYFRAME = 1;
   STORED_MEDIA_OBJECT_REPRESENTATION_FMP4_INITIALIZATION = 2;
   STORED_MEDIA_OBJECT_REPRESENTATION_FMP4_GOP = 3;
+  STORED_MEDIA_OBJECT_REPRESENTATION_EVENT_ATTACHMENT = 4;
 }
 
 message EventSearchMutationResult {
@@ -1116,6 +1130,15 @@ message Event {
   optional string source_session_id = 15;
   // Live delivery only: the event subscription that selected this event.
   optional string subscription_id = 16;
+  // Producer-selected representative attachment in this event revision.
+  optional string canonical_attachment_id = 17;
+  // Bounded semantic presentation hint; event_type remains authoritative.
+  optional string icon_key = 18;
+  // Bounded producer hint retained only when icon_key was normalized to a fallback.
+  optional string rejected_icon_key = 19;
+  // Attachment whose image coordinate space owns bounding_box.
+  optional string bounding_box_attachment_id = 20;
+  EventImageAvailability image_availability = 21;
 }
 
 message EventAttachmentDescriptor {
@@ -1127,6 +1150,13 @@ message EventAttachmentDescriptor {
   uint32 ordinal = 5;
   optional google.protobuf.Timestamp timestamp = 6;
   optional string text = 7;
+}
+
+enum EventImageAvailability {
+  EVENT_IMAGE_AVAILABILITY_UNSPECIFIED = 0;
+  EVENT_IMAGE_AVAILABILITY_NONE = 1;
+  EVENT_IMAGE_AVAILABILITY_AVAILABLE = 2;
+  EVENT_IMAGE_AVAILABILITY_UNAVAILABLE = 3;
 }
 
 message PublishEvent {
@@ -1305,6 +1335,10 @@ message NotificationItem {
   int64 updated_at_ms = 13;
   optional int64 seen_at_ms = 14;
   optional int64 acknowledged_at_ms = 15;
+  string source_identity = 16;
+  optional EventAttachmentDescriptor canonical_attachment = 17;
+  optional string icon_key = 18;
+  EventImageAvailability image_availability = 19;
 }
 
 message NotificationInbox {
@@ -2507,6 +2541,13 @@ message EventSearchHit {
   optional string zone = 14;
   optional string text = 15;
   bool has_image_attachment = 16;
+  uint64 revision = 17;
+  optional EventAttachmentDescriptor canonical_attachment = 18;
+  optional string icon_key = 19;
+  optional string rejected_icon_key = 20;
+  optional string bounding_box_attachment_id = 21;
+  EventImageAvailability image_availability = 22;
+  repeated EventAttachmentDescriptor attachments = 23;
 }
 
 message EventSearchKeyframe {
@@ -2543,6 +2584,9 @@ message EventSearchMediaChunk {
   uint32 height = 13;
   bytes decoder_config = 14;
   uint32 nal_length_size = 15;
+  string event_id = 16;
+  uint64 event_revision = 17;
+  string attachment_id = 18;
 }
 
 message EventSearchMediaEnd {

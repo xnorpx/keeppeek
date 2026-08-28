@@ -7,7 +7,7 @@
 	import { useControlClient } from '$lib/control-context';
 	import type { MediaExportJob } from '$lib/control-client';
 	import { createExportRange, updateExportRange, type ExportRange } from '$lib/keep-modes';
-	import type { RecordingSegment } from '$lib/types';
+	import type { RecordingEvent, RecordingSegment } from '$lib/types';
 	import CheckCircleIcon from '@lucide/svelte/icons/circle-check';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
@@ -25,6 +25,7 @@
 		paperFrame?: boolean;
 		rangeStartMs?: number | null;
 		rangeEndMs?: number | null;
+		event?: RecordingEvent | null;
 	};
 	type AvailabilitySection = { kind: 'available' | 'missing'; percent: number };
 	type TrimTarget = { startMs: number; endMs: number; label: string };
@@ -37,7 +38,8 @@
 		jobPresentation = false,
 		paperFrame = false,
 		rangeStartMs = null,
-		rangeEndMs = null
+		rangeEndMs = null,
+		event = null
 	}: Props = $props();
 	const controlClient = useControlClient();
 	const capabilities = useCapabilityState();
@@ -90,7 +92,9 @@
 					jobs
 						.filter(
 							(candidate) =>
-								candidate.sourceId === sourceId && candidate.streamId === segment?.stream
+								candidate.sourceId === sourceId &&
+								candidate.streamId === segment?.stream &&
+								(!event || candidate.eventSeed?.eventId === event.id)
 						)
 						.toSorted((left, right) => right.requestedEndMs - left.requestedEndMs)[0] ?? null;
 				job = restoredJob;
@@ -258,7 +262,8 @@
 				startMs: range.startMs,
 				endMs: range.endMs,
 				allowPartial,
-				burnInTimestamp
+				burnInTimestamp,
+				event: event ?? undefined
 			});
 		} catch (cause) {
 			operationError = errorMessage(cause, 'The export could not be created.');

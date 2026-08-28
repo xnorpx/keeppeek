@@ -648,6 +648,11 @@ complete attachment if a chunk is missing, duplicated, out of range, or inconsis
 starts at one and increases once per complete attachment within an event subscription. Every
 chunk's `revision` must equal the corresponding `Event.revision`.
 
+Consumers select and present these descriptors according to the shared
+[event presentation policy](../docs/event-presentation.md). In particular, image availability does
+not change canonical attachment identity, and bounding boxes are drawn only in the coordinate
+space named by `bounding_box_attachment_id`.
+
 Control and binary channels are not mutually ordered. An attachment can arrive before its
 `Event`, so clients buffer it by subscription ID, event ID, and attachment ID until the
 descriptor arrives. Reliable attachment delivery is appropriate for MQTT, webhooks, and durable

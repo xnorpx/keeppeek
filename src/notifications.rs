@@ -50,7 +50,7 @@ enum Command {
         reply: SyncSender<anyhow::Result<Vec<RuleRecord>>>,
     },
     Publish {
-        candidate: model::Candidate,
+        candidate: Box<model::Candidate>,
     },
     Test {
         rule_id: String,
@@ -183,7 +183,9 @@ impl Handle {
     }
 
     pub fn publish(&self, candidate: model::Candidate) {
-        match self.tx.try_send(Command::Publish { candidate }) {
+        match self.tx.try_send(Command::Publish {
+            candidate: Box::new(candidate),
+        }) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
                 tracing::warn!(
@@ -442,7 +444,7 @@ fn run(store: store::Store, rx: Receiver<Command>) {
                 let _ = reply.send(store.rules(&owner_id));
             }
             Command::Publish { candidate } => {
-                if let Err(error) = store.process(candidate) {
+                if let Err(error) = store.process(*candidate) {
                     tracing::warn!(error = %error, "notification candidate evaluation failed");
                 }
             }
@@ -705,6 +707,9 @@ mod performance {
             zone: None,
             confidence: Some(0.9),
             attachment_path: None,
+            canonical_attachment: None,
+            icon_key: Some("person".to_owned()),
+            image_available: false,
             duration_ms: None,
             severity: Severity::Info,
             reviewed: None,

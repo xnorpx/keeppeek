@@ -1,5 +1,6 @@
 import type { CameraListItem, RecordingEvent } from './types';
 import type { EventPreviewKeyframe } from './control-client';
+import { canonicalEventAttachment } from './event-presentation';
 
 export type EventImageFilter = 'all' | 'with' | 'without';
 
@@ -186,7 +187,7 @@ export function filterEventBrowserRecords(
 export function eventHasImage(event: RecordingEvent): boolean {
 	return (
 		event.thumbnail_url !== null ||
-		event.attachments?.some((attachment) => attachment.type === 'thumbnail') === true
+		canonicalEventAttachment(event.attachments ?? [], event.canonical_attachment_id) !== null
 	);
 }
 

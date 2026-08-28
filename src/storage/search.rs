@@ -1,6 +1,8 @@
 //! Indexed event metadata and model-scoped semantic search with lazy encoded previews.
 
-use crate::storage::{EncodedEventKeyframe, EventKeyframeLocation, RecordingCatalogHandle};
+use crate::storage::{
+    EncodedEventKeyframe, EventKeyframeLocation, RecordingCatalogHandle, metadata::EventAttachment,
+};
 use serde::{Deserialize, Serialize};
 
 /// Default context included before an event start.
@@ -193,6 +195,7 @@ impl EventSemanticSearchQuery {
 /// Event metadata and immutable keyframe descriptors for one preview interval.
 pub struct EventSearchHit {
     pub event_id: String,
+    pub revision: u64,
     pub source_id: String,
     pub event_type: String,
     pub origin: crate::storage::metadata::EventSource,
@@ -203,6 +206,12 @@ pub struct EventSearchHit {
     pub zone: Option<String>,
     pub text: Option<String>,
     pub has_image_attachment: bool,
+    pub canonical_attachment: Option<EventAttachment>,
+    pub attachments: Vec<EventAttachment>,
+    pub image_available: bool,
+    pub icon_key: String,
+    pub rejected_icon_key: Option<String>,
+    pub bbox_attachment_id: Option<String>,
     pub score: Option<f64>,
     pub(crate) semantic_distance: Option<f64>,
     pub preview_start_ms: i64,
@@ -567,9 +576,11 @@ mod tests {
             ("event-alice", "face", 15_000),
             ("event-vehicle", "object", 17_000),
         ] {
+            let has_thumbnail = id == "event-alice";
             handle
                 .insert_event(TimelineEvent {
                     id: id.to_owned(),
+                    revision: 1,
                     camera_id: "front-door".to_owned(),
                     stream: Some("main".to_owned()),
                     source: EventSource::KeepPeek,
@@ -578,14 +589,31 @@ mod tests {
                     end_time_ms: Some(start_time_ms + 1_000),
                     confidence: Some(0.9),
                     bbox: None,
+                    bbox_attachment_id: None,
                     zone: (id == "event-alice").then(|| "Porch".to_owned()),
-                    thumbnail_filename: (id == "event-alice").then(|| "event-alice.jpg".to_owned()),
+                    attachments: has_thumbnail
+                        .then(|| EventAttachment {
+                            id: "thumbnail".to_owned(),
+                            attachment_type: "thumbnail".to_owned(),
+                            content_type: "image/jpeg".to_owned(),
+                            byte_len: Some(12),
+                            ordinal: 0,
+                            timestamp_ms: Some(start_time_ms),
+                            text: None,
+                        })
+                        .into_iter()
+                        .collect(),
+                    canonical_attachment_id: has_thumbnail.then(|| "thumbnail".to_owned()),
+                    icon_key: "event".to_owned(),
+                    rejected_icon_key: None,
+                    thumbnail_filename: has_thumbnail.then(|| "event-alice.jpg".to_owned()),
                 })
                 .unwrap();
         }
         handle
             .insert_event(TimelineEvent {
                 id: "event-sub".to_owned(),
+                revision: 1,
                 camera_id: "front-door".to_owned(),
                 stream: Some("sub".to_owned()),
                 source: EventSource::KeepPeek,
@@ -594,7 +622,12 @@ mod tests {
                 end_time_ms: Some(20_000),
                 confidence: Some(0.8),
                 bbox: None,
+                bbox_attachment_id: None,
                 zone: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "person".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: None,
             })
             .unwrap();
@@ -733,6 +766,7 @@ mod tests {
         handle
             .insert_event(TimelineEvent {
                 id: "event-metadata-new".to_owned(),
+                revision: 1,
                 camera_id: "front-door".to_owned(),
                 stream: Some("main".to_owned()),
                 source: EventSource::Camera,
@@ -741,7 +775,12 @@ mod tests {
                 end_time_ms: None,
                 confidence: None,
                 bbox: None,
+                bbox_attachment_id: None,
                 zone: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "motion".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: None,
             })
             .unwrap();
@@ -826,6 +865,7 @@ mod tests {
         handle
             .insert_event(TimelineEvent {
                 id: "event-between-pages".to_owned(),
+                revision: 1,
                 camera_id: "front-door".to_owned(),
                 stream: Some("main".to_owned()),
                 source: EventSource::KeepPeek,
@@ -834,7 +874,12 @@ mod tests {
                 end_time_ms: None,
                 confidence: None,
                 bbox: None,
+                bbox_attachment_id: None,
                 zone: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "event".to_owned(),
+                rejected_icon_key: None,
                 thumbnail_filename: None,
             })
             .unwrap();
@@ -955,6 +1000,7 @@ mod tests {
             handle
                 .insert_event(TimelineEvent {
                     id: event_id.clone(),
+                    revision: 1,
                     camera_id: "front-door".to_owned(),
                     stream: Some("main".to_owned()),
                     source: EventSource::KeepPeek,
@@ -963,7 +1009,12 @@ mod tests {
                     end_time_ms: None,
                     confidence: None,
                     bbox: None,
+                    bbox_attachment_id: None,
                     zone: None,
+                    attachments: Vec::new(),
+                    canonical_attachment_id: None,
+                    icon_key: "event".to_owned(),
+                    rejected_icon_key: None,
                     thumbnail_filename: None,
                 })
                 .unwrap();

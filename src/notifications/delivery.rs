@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{Stage, model::Channel, pushover, store::Store};
+use crate::storage::metadata::EventAttachment;
 
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 const PUSHOVER_MESSAGES_URL: &str = "https://api.pushover.net/1/messages.json";
@@ -172,6 +173,16 @@ struct ProviderPayload {
     deep_link: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     occurred_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canonical_attachment: Option<EventAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_availability: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attachment_content_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1263,7 +1274,11 @@ fn retry_after_ms(headers: &ureq::http::HeaderMap) -> Option<u64> {
 fn webhook_payload(delivery: &Delivery) -> Result<Vec<u8>, &'static str> {
     let mut payload: ProviderPayload =
         serde_json::from_str(&delivery.payload_json).map_err(|_| "payload_invalid")?;
-    if let Some(bytes) = provider_attachment(delivery)? {
+    let attachment = provider_attachment(delivery)?;
+    if payload.canonical_attachment.is_some() && attachment.is_none() {
+        payload.image_availability = Some("unavailable".to_owned());
+    }
+    if let Some(bytes) = attachment {
         payload.attachment_content_type = Some("image/jpeg".to_owned());
         payload.attachment_base64 = Some(STANDARD.encode(bytes));
     }
@@ -1816,8 +1831,25 @@ mod tests {
             stage: Stage::Enriched,
             channel: Channel::Webhook,
             destination_json: r#"{"value":"https://example.invalid"}"#.to_owned(),
-            payload_json: r#"{"title":"Person","body":"Detected","deep_link":"/events"}"#
-                .to_owned(),
+            payload_json: serde_json::json!({
+                "title": "Person",
+                "body": "Detected",
+                "deep_link": "/events",
+                "event_id": "event-1",
+                "event_revision": 3,
+                "canonical_attachment": {
+                    "id": "snapshot-hero",
+                    "attachment_type": "snapshot",
+                    "content_type": "image/jpeg",
+                    "byte_len": 4,
+                    "ordinal": 0,
+                    "timestamp_ms": 1_725_000_123_456_i64,
+                    "text": null
+                },
+                "icon_key": "person",
+                "image_availability": "available"
+            })
+            .to_string(),
             replacement_key: "logical-1".to_owned(),
             attempt: 1,
             max_attempts: 3,
@@ -1831,12 +1863,21 @@ mod tests {
         let payload = String::from_utf8(webhook_payload(&delivery).unwrap()).unwrap();
         assert!(payload.contains("AQIDBA=="));
         assert!(!payload.contains(image_path.to_string_lossy().as_ref()));
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["event_id"], "event-1");
+        assert_eq!(payload["event_revision"], 3);
+        assert_eq!(payload["canonical_attachment"]["id"], "snapshot-hero");
+        assert_eq!(payload["icon_key"], "person");
+        assert_eq!(payload["image_availability"], "available");
 
         std::fs::write(&image_path, [1_u8, 2, 3, 4, 5]).unwrap();
         assert_eq!(webhook_payload(&delivery), Err("attachment_unavailable"));
         delivery.attachment_required = false;
         let fallback = String::from_utf8(webhook_payload(&delivery).unwrap()).unwrap();
         assert!(!fallback.contains("attachment_base64"));
+        let fallback: serde_json::Value = serde_json::from_str(&fallback).unwrap();
+        assert_eq!(fallback["canonical_attachment"]["id"], "snapshot-hero");
+        assert_eq!(fallback["image_availability"], "unavailable");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1923,6 +1964,9 @@ mod tests {
                 zone: None,
                 confidence: Some(0.9),
                 attachment_path: Some(image_path.to_string_lossy().into_owned()),
+                canonical_attachment: None,
+                icon_key: Some("motion".to_owned()),
+                image_available: true,
                 duration_ms: None,
                 severity: Severity::Info,
                 reviewed: Some(false),

@@ -28,7 +28,6 @@ use url::Url;
 const CHANNEL_BUFFER: usize = 256;
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CAMERA_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_TRACKED_EVENT_REVISIONS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CameraRoute {
@@ -120,7 +119,7 @@ pub enum KeepPeekEvent {
         error: String,
     },
     TimelineEventStarted {
-        event: TimelineEvent,
+        event: Box<TimelineEvent>,
     },
     TimelineEventEnded {
         id: String,
@@ -298,7 +297,6 @@ pub struct KeepPeekLoop {
     battery_wake: Option<BatteryWakeHandle>,
     notifications: Option<NotificationHandle>,
     camera_names: HashMap<String, String>,
-    event_revisions: HashMap<String, u64>,
     active_outages: HashMap<String, String>,
 }
 
@@ -323,7 +321,6 @@ impl KeepPeekLoop {
             battery_wake: None,
             notifications: None,
             camera_names: HashMap::new(),
-            event_revisions: HashMap::new(),
             active_outages: HashMap::new(),
         }
     }
@@ -814,6 +811,7 @@ impl KeepPeekLoop {
                 }
             }
             KeepPeekEvent::TimelineEventStarted { event } => {
+                let event = *event;
                 if let Some(storage) = &self.storage {
                     storage.note_camera_event(&event.camera_id);
                 }
@@ -824,11 +822,9 @@ impl KeepPeekLoop {
                     if let Err(error) = events.insert(event.clone()) {
                         tracing::warn!(%event_id, %camera_id, %kind, %error, "unable to store camera event");
                     } else {
-                        self.track_initial_event_revision(&event_id);
                         self.publish_event_revision(
                             &event,
                             Trigger::EventCreated,
-                            1,
                             NotificationStage::Preliminary,
                             None,
                             event.start_time_ms,
@@ -843,13 +839,11 @@ impl KeepPeekLoop {
                     } else {
                         match events.event_by_id(&id) {
                             Ok(Some(event)) => {
-                                let revision = self.next_event_revision(&id);
                                 let attachment_path =
                                     events.thumbnail_path(&event.camera_id, &id).ok().flatten();
                                 self.publish_event_revision(
                                     &event,
                                     Trigger::EventEnded,
-                                    revision,
                                     NotificationStage::Enriched,
                                     attachment_path.as_deref(),
                                     end_time_ms,
@@ -876,13 +870,11 @@ impl KeepPeekLoop {
                     } else {
                         match events.event_by_id(&event_id) {
                             Ok(Some(event)) => {
-                                let revision = self.next_event_revision(&event_id);
                                 let attachment_path =
                                     events.thumbnail_path(&camera_id, &event_id).ok().flatten();
                                 self.publish_event_revision(
                                     &event,
                                     Trigger::EventUpdated,
-                                    revision,
                                     NotificationStage::Enriched,
                                     attachment_path.as_deref(),
                                     unix_time_ms(),
@@ -901,27 +893,10 @@ impl KeepPeekLoop {
         }
     }
 
-    fn track_initial_event_revision(&mut self, event_id: &str) {
-        if self.event_revisions.len() >= MAX_TRACKED_EVENT_REVISIONS
-            && !self.event_revisions.contains_key(event_id)
-            && let Some(oldest) = self.event_revisions.keys().next().cloned()
-        {
-            self.event_revisions.remove(&oldest);
-        }
-        self.event_revisions.insert(event_id.to_owned(), 1);
-    }
-
-    fn next_event_revision(&mut self, event_id: &str) -> u64 {
-        let revision = self.event_revisions.entry(event_id.to_owned()).or_insert(1);
-        *revision = revision.saturating_add(1);
-        *revision
-    }
-
     fn publish_event_revision(
         &self,
         event: &TimelineEvent,
         trigger: Trigger,
-        revision: u64,
         stage: NotificationStage,
         attachment_path: Option<&std::path::Path>,
         occurred_at_ms: i64,
@@ -943,12 +918,15 @@ impl KeepPeekLoop {
             zone: event.zone.clone(),
             confidence: event.confidence,
             attachment_path: attachment_path.map(|path| path.to_string_lossy().into_owned()),
+            canonical_attachment: event.canonical_attachment().cloned(),
+            icon_key: Some(event.icon_key.clone()),
+            image_available: event.canonical_image_available(),
             duration_ms,
             severity: Severity::Info,
             reviewed: None,
             bookmarked: None,
             privacy_active: false,
-            revision,
+            revision: event.revision,
             stage,
             occurred_at_ms,
             deep_link: event_deep_link(&event.camera_id, &event.id),
@@ -978,6 +956,9 @@ impl KeepPeekLoop {
                 zone: None,
                 confidence: None,
                 attachment_path: None,
+                canonical_attachment: None,
+                icon_key: Some("alert".to_owned()),
+                image_available: false,
                 duration_ms: None,
                 severity: Severity::Warning,
                 reviewed: None,
@@ -1004,6 +985,9 @@ impl KeepPeekLoop {
                 zone: None,
                 confidence: None,
                 attachment_path: None,
+                canonical_attachment: None,
+                icon_key: Some("alert".to_owned()),
+                image_available: false,
                 duration_ms: None,
                 severity: Severity::Info,
                 reviewed: None,

@@ -19,7 +19,8 @@
 		missingRanges: [],
 		error: null,
 		retryable: false,
-		burnInTimestamp: false
+		burnInTimestamp: false,
+		eventSeed: null
 	};
 	const checksum = `a41f9c2e${'0'.repeat(48)}7d1304b8`;
 	const jobs: MediaExportJob[] = [

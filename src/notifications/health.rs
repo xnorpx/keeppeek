@@ -180,6 +180,9 @@ fn health_candidate(
         zone: None,
         confidence: None,
         attachment_path: None,
+        canonical_attachment: None,
+        icon_key: Some("alert".to_owned()),
+        image_available: false,
         duration_ms: None,
         severity: if recovery {
             Severity::Info
