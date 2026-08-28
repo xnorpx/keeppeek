@@ -7,7 +7,6 @@
 	const homeAssistant = evidence.integrations.find(
 		(integration) => integration.id === 'home-assistant'
 	)!;
-	const mqtt = evidence.integrations.find((integration) => integration.id === 'mqtt-forwarder')!;
 	const webhooks = evidence.integrations.find((integration) => integration.id === 'webhooks')!;
 	const prometheus = evidence.integrations.find((integration) => integration.id === 'prometheus')!;
 </script>
@@ -103,37 +102,60 @@
 					class="flex h-[234px] w-[400px] shrink-0 flex-col gap-2.5 border-r border-hairline p-5"
 				>
 					<div class="flex h-[22px] shrink-0 items-center gap-2.5">
-						<span class="size-2 rounded-full bg-text-faint"></span>
-						<h3 class="text-lg leading-[22px] font-semibold">MQTT</h3>
+						<span class="size-2 rounded-full bg-healthy"></span>
+						<h3 class="text-lg leading-[22px] font-semibold">MQTT 5</h3>
 					</div>
 					<p class="font-mono text-2xs leading-[14px] tracking-[0.08em] text-text-faint">
-						RUNTIME UNAVAILABLE
+						CONNECTED · MQTT 5 · QOS 1
 					</p>
 					<p class="h-[63px] text-[13px] leading-[21px] text-text-muted">
-						{mqtt.architecture}
-						{mqtt.egress}
+						Committed event revisions and camera health transitions, delivered durably. Retained
+						status lets late subscribers see current forwarder health.
 					</p>
 					<button
 						type="button"
 						class="h-[30px] w-[229px] rounded-sm border border-hairline bg-raised text-[13px] text-text-faint"
-						disabled>Broker configuration unavailable</button
+						>Edit broker · Applies live</button
 					>
 				</div>
 
 				<div class="flex h-[234px] w-[909px] shrink-0 flex-col gap-4 p-5">
 					<div class="flex h-[54px] shrink-0 gap-4">
-						{#each [['BROKER', 'Runtime unavailable', '340'], ['TOPIC PREFIX', 'Unavailable', '260'], ['QOS', 'Unavailable', '253']] as field (field[0])}
-							<div class="flex shrink-0 flex-col gap-1.5" style:width={`${field[2]}px`}>
-								<p class="font-mono text-2xs leading-[14px] tracking-[0.12em] text-text-faint">
-									{field[0]}
-								</p>
-								<div
-									class="flex h-[34px] items-center rounded-sm border border-hairline-strong bg-raised px-2.5 font-mono text-[13px] text-text-faint"
-								>
-									{field[1]}
-								</div>
+						<div class="flex w-[340px] shrink-0 flex-col gap-1.5">
+							<p class="font-mono text-2xs leading-[14px] tracking-[0.12em] text-text-faint">
+								BROKER
+							</p>
+							<div
+								class="flex h-[34px] items-center rounded-sm border border-hairline-strong bg-raised px-2.5 font-mono text-[13px] text-foreground"
+							>
+								mqtts://broker.home:8883
 							</div>
-						{/each}
+						</div>
+						<div class="flex w-[260px] shrink-0 flex-col gap-1.5">
+							<p class="font-mono text-2xs leading-[14px] tracking-[0.12em] text-text-faint">
+								TOPIC PREFIX
+							</p>
+							<div
+								class="flex h-[34px] items-center rounded-sm border border-hairline-strong bg-raised px-2.5 font-mono text-[13px] text-foreground"
+							>
+								keeppeek
+							</div>
+						</div>
+						<div class="flex w-[253px] shrink-0 flex-col gap-1.5">
+							<p class="font-mono text-2xs leading-[14px] tracking-[0.12em] text-text-faint">
+								MQTT 5 QOS
+							</p>
+							<div
+								class="flex h-[34px] overflow-hidden rounded-sm border border-hairline-strong text-[13px]"
+							>
+								<span class="grid w-[84px] place-items-center text-text-muted">0</span>
+								<span
+									class="grid w-[84px] place-items-center bg-primary font-semibold text-on-primary"
+									>1</span
+								>
+								<span class="grid w-[83px] place-items-center text-text-muted">2</span>
+							</div>
+						</div>
 					</div>
 					<div class="flex h-[124px] shrink-0 flex-col gap-1.5">
 						<p class="font-mono text-2xs leading-[14px] tracking-[0.12em] text-text-faint">
@@ -142,10 +164,10 @@
 						<div
 							class="flex h-[104px] flex-col justify-center rounded-sm bg-raised px-3.5 font-mono text-xs leading-5 text-text-faint"
 						>
-							<span>No event subscription runtime</span>
-							<span>No stored-event backfill</span>
-							<span>No forwarder binary</span>
-							<span>No broker health evidence</span>
+							<span>keeppeek/home-nvr/sources/&lt;source&gt;/events/&lt;type&gt;</span>
+							<span>&nbsp;&nbsp;JSON revision · correlation data = stable event ID</span>
+							<span>keeppeek/home-nvr/forwarders/mqtt/status</span>
+							<span>&nbsp;&nbsp;retained health · QoS 1 · MQTT 5 only</span>
 						</div>
 					</div>
 				</div>

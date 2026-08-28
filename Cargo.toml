@@ -105,6 +105,9 @@ network-interface = "2.0.5"
 polling = "3.11.0"
 pollster = "1.0.1"
 rand = { version = "*" }
+rumqttc = { version = "0.25.1", default-features = false, features = [
+  "use-native-tls",
+] }
 toml = { version = "*" }
 onvif = { path = "crates/onvif/onvif" }
 rouille = { path = "crates/rouille" }
@@ -150,6 +153,10 @@ str0m = { version = "0.23.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = [
+  "aws_lc_rs",
+  "pem",
+] }
 test-frame = { path = "crates/test-frame" }
 
 [lints]

@@ -1,5 +1,9 @@
 pub use crate::access::AccessKey;
-use crate::{access, cameras::CameraConfig};
+use crate::{
+    access,
+    cameras::CameraConfig,
+    event_forwarder::config::{EventForwarderConfig, MQTT_PASSWORD_SECRET, MqttForwarderConfig},
+};
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -84,6 +88,9 @@ pub struct Config {
 
     #[serde(default)]
     pub operational_events: OperationalEventsConfig,
+
+    #[serde(default)]
+    pub(crate) event_forwarder: EventForwarderConfig,
 
     #[serde(skip)]
     pub(crate) source: toml::Table,
@@ -821,6 +828,7 @@ impl Default for Config {
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
             operational_events: OperationalEventsConfig::default(),
+            event_forwarder: EventForwarderConfig::default(),
             source: toml::Table::new(),
         }
     }
@@ -1190,6 +1198,7 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     cfg.access.validate()?;
     cfg.direct_card.validate()?;
     cfg.operational_events.validate()?;
+    cfg.event_forwarder.mqtt.validate()?;
 
     let default_recordings = config_directory
         .join("recordings")
@@ -1237,6 +1246,90 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
 
 pub fn update_settings(path: &Path, settings: &Config) -> anyhow::Result<Config> {
     update_settings_with_migration(path, settings, None)
+}
+
+pub(crate) enum MqttPasswordUpdate {
+    Preserve,
+    Set(String),
+    Clear,
+}
+
+pub(crate) fn update_mqtt_forwarder(
+    path: &Path,
+    mut settings: MqttForwarderConfig,
+    password_update: MqttPasswordUpdate,
+) -> anyhow::Result<Config> {
+    let text = std::fs::read_to_string(path)?;
+    let mut root: toml::Table = toml::from_str(&text)?;
+    let mut secrets = load_secrets(path)?;
+    let current = config_from_table(&root, &secrets)?;
+    settings.revision = current
+        .event_forwarder
+        .mqtt
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("MQTT configuration revision is exhausted"))?;
+    let environment_password = environment_secret(MQTT_PASSWORD_SECRET)?;
+    let password = match password_update {
+        MqttPasswordUpdate::Preserve => current.event_forwarder.mqtt.password,
+        MqttPasswordUpdate::Set(password) => {
+            if environment_password.is_some() {
+                anyhow::bail!(
+                    "MQTT password cannot be changed while KEEPPEEK_SECRET_{MQTT_PASSWORD_SECRET} is set"
+                );
+            }
+            if password.is_empty() || password.len() > 4_096 {
+                anyhow::bail!("MQTT password must contain 1 to 4096 bytes");
+            }
+            secrets
+                .0
+                .insert(MQTT_PASSWORD_SECRET.to_owned(), password.clone());
+            Some(password)
+        }
+        MqttPasswordUpdate::Clear => {
+            if environment_password.is_some() && settings.username.is_some() {
+                anyhow::bail!(
+                    "MQTT password cannot be cleared while KEEPPEEK_SECRET_{MQTT_PASSWORD_SECRET} is set"
+                );
+            }
+            secrets.0.remove(MQTT_PASSWORD_SECRET);
+            None
+        }
+    };
+    settings.password = if settings.username.is_some() {
+        password
+    } else {
+        secrets.0.remove(MQTT_PASSWORD_SECRET);
+        None
+    };
+    settings.validate()?;
+
+    let serialized_secrets = toml::to_string_pretty(&secrets)?;
+    let original_secrets = std::fs::read(secrets_path(path)).ok();
+    write_private_file_atomically(&secrets_path(path), serialized_secrets.as_bytes())?;
+
+    let mut persisted = settings;
+    if persisted.password.is_some() {
+        persisted.password = Some(format!("{{secret:{MQTT_PASSWORD_SECRET}}}"));
+    }
+    let event_forwarder = root
+        .entry("event_forwarder".to_owned())
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("event_forwarder is not a configuration table"))?;
+    event_forwarder.insert("mqtt".to_owned(), toml::Value::try_from(&persisted)?);
+
+    let updated = config_from_table(&root, &secrets)?;
+    let serialized = toml::to_string_pretty(&root)?;
+    if let Err(error) = write_private_file_atomically(path, serialized.as_bytes()) {
+        if let Some(original_secrets) = original_secrets {
+            let _ = write_private_file_atomically(&secrets_path(path), &original_secrets);
+        } else {
+            let _ = std::fs::remove_file(secrets_path(path));
+        }
+        return Err(error.into());
+    }
+    Ok(updated)
 }
 
 pub fn update_settings_with_migration(
@@ -1499,6 +1592,7 @@ fn is_reserved_section(namespace: &str) -> bool {
             | "homekit"
             | "logging"
             | "operational_events"
+            | "event_forwarder"
             | "camera_defaults"
             | STORAGE_MIGRATION_SECTION
     )
@@ -3158,6 +3252,56 @@ mod tests {
                 .as_table()
                 .is_some_and(|cameras| !cameras.contains_key("existing"))
         );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn mqtt_update_keeps_password_write_only_and_supports_preserve_and_clear() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-mqtt-config-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+        write_private_file(&path, b"host = \"127.0.0.1\"\n").unwrap();
+        let settings = MqttForwarderConfig {
+            enabled: true,
+            broker_url: "mqtts://broker.example:8883".to_owned(),
+            username: Some("operator".to_owned()),
+            tls_ca_path: Some(PathBuf::from("/etc/keeppeek/mqtt-ca.pem")),
+            ..MqttForwarderConfig::default()
+        };
+
+        let saved = update_mqtt_forwarder(
+            &path,
+            settings.clone(),
+            MqttPasswordUpdate::Set("write-only-secret".to_owned()),
+        )
+        .unwrap();
+        assert_eq!(saved.event_forwarder.mqtt.revision, 2);
+        assert_eq!(
+            saved.event_forwarder.mqtt.password.as_deref(),
+            Some("write-only-secret")
+        );
+        let public = std::fs::read_to_string(&path).unwrap();
+        assert!(public.contains("password = \"{secret:MQTT_PASSWORD}\""));
+        assert!(!public.contains("write-only-secret"));
+        let private = std::fs::read_to_string(secrets_path(&path)).unwrap();
+        assert!(private.contains("MQTT_PASSWORD = \"write-only-secret\""));
+
+        let preserved =
+            update_mqtt_forwarder(&path, settings.clone(), MqttPasswordUpdate::Preserve).unwrap();
+        assert_eq!(preserved.event_forwarder.mqtt.revision, 3);
+        assert_eq!(
+            preserved.event_forwarder.mqtt.password.as_deref(),
+            Some("write-only-secret")
+        );
+
+        let cleared = update_mqtt_forwarder(&path, settings, MqttPasswordUpdate::Clear).unwrap();
+        assert_eq!(cleared.event_forwarder.mqtt.revision, 4);
+        assert!(cleared.event_forwarder.mqtt.password.is_none());
+        let public = std::fs::read_to_string(&path).unwrap();
+        let private = std::fs::read_to_string(secrets_path(&path)).unwrap();
+        assert!(!public.contains("MQTT_PASSWORD"));
+        assert!(!private.contains("MQTT_PASSWORD"));
 
         std::fs::remove_dir_all(directory).unwrap();
     }

@@ -1,5 +1,6 @@
 use crate::{
     config::OperationalEventsConfig,
+    event_forwarder::Handle as EventForwarderHandle,
     health::{CameraHealth, CameraHealthReason, CameraHealthState, StreamHealth},
     notifications::{
         Handle as NotificationHandle, Lifecycle as NotificationLifecycle,
@@ -484,6 +485,7 @@ impl OperationalEventMonitor {
         config: OperationalEventsConfig,
         store: EventStore,
         notifications: NotificationHandle,
+        event_forwarder: EventForwarderHandle,
         shutdown: Shutdown,
         snapshot: F,
     ) -> anyhow::Result<Self>
@@ -501,7 +503,7 @@ impl OperationalEventMonitor {
                 let mut pending =
                     VecDeque::from(engine.restore(restored, started_at.elapsed(), unix_time_ms()));
                 while !shutdown.is_cancelled() && !worker_cancel.load(Ordering::Acquire) {
-                    flush_pending(&mut pending, &store, &notifications);
+                    flush_pending(&mut pending, &store, &notifications, &event_forwarder);
                     match snapshot() {
                         Ok(cameras) => pending.extend(engine.observe(
                             &cameras,
@@ -512,10 +514,10 @@ impl OperationalEventMonitor {
                             tracing::warn!(%error, "unable to project operational camera health");
                         }
                     }
-                    flush_pending(&mut pending, &store, &notifications);
+                    flush_pending(&mut pending, &store, &notifications, &event_forwarder);
                     std::thread::sleep(Duration::from_millis(500));
                 }
-                flush_pending(&mut pending, &store, &notifications);
+                flush_pending(&mut pending, &store, &notifications, &event_forwarder);
             })?;
         Ok(Self {
             cancel,
@@ -547,10 +549,20 @@ fn flush_pending(
     pending: &mut VecDeque<PendingTransition>,
     store: &EventStore,
     notifications: &NotificationHandle,
+    event_forwarder: &EventForwarderHandle,
 ) {
     while let Some(item) = pending.front() {
         if let Err(error) = store.upsert_operational_event(item.transition.event.clone()) {
             tracing::warn!(%error, "unable to persist operational event transition");
+            break;
+        }
+        if let Err(error) = event_forwarder.publish_operational(&item.transition) {
+            tracing::warn!(
+                event_id = %item.transition.event.id,
+                revision = item.transition.event.revision,
+                %error,
+                "unable to enqueue operational event for MQTT forwarding"
+            );
             break;
         }
         for candidate in notification_candidates(&item.transition, item.source_name.clone()) {
