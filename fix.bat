@@ -11,8 +11,6 @@ if errorlevel 1 (
 
 if defined KEEPPEEK_PYTHON (
         set "PYTHON_CMD=%KEEPPEEK_PYTHON%"
-) else if exist "%~dp0examples\object_detection_service\.venv\Scripts\python.exe" (
-        set "PYTHON_CMD=%~dp0examples\object_detection_service\.venv\Scripts\python.exe"
 ) else (
         where python >nul 2>&1
         if errorlevel 1 (
@@ -22,9 +20,19 @@ if defined KEEPPEEK_PYTHON (
         set "PYTHON_CMD=python"
 )
 
+set "REQUIREMENTS=examples\object_detection_service\requirements.txt"
+
+rem Requirements are intentionally unpinned, so refresh them to the versions CI will resolve.
+echo Updating Python requirements...
+"%PYTHON_CMD%" -m pip install --quiet --upgrade -r "%REQUIREMENTS%" >nul 2>&1
+rem Externally managed interpreters reject installs without --break-system-packages.
+if errorlevel 1 (
+        "%PYTHON_CMD%" -m pip install --quiet --upgrade --break-system-packages -r "%REQUIREMENTS%" || exit /b 1
+)
+
 "%PYTHON_CMD%" -c "import black" >nul 2>&1
 if errorlevel 1 (
-        echo Black is required: python -m pip install -r examples\object_detection_service\requirements.txt 1>&2
+        echo Black is required: "%PYTHON_CMD%" -m pip install -r "%REQUIREMENTS%" 1>&2
         exit /b 1
 )
 

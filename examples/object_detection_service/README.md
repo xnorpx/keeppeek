@@ -60,24 +60,24 @@ ffmpeg -version
 
 ## Environment setup
 
-Run these commands from `examples/object_detection_service`.
+Run these commands from `examples/object_detection_service`. This repository does not use Python
+virtual environments; install into the Python 3.12 interpreter directly.
 
 macOS or Linux:
 
 ```sh
-python3.12 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-python generate_protos.py
+python3.12 -m pip install -r requirements.txt
+python3.12 generate_protos.py
 ```
+
+Add `--break-system-packages` to the install command when the interpreter is externally managed,
+which is common for Homebrew and Debian system Python.
 
 Windows PowerShell:
 
 ```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python generate_protos.py
+py -3.12 -m pip install -r requirements.txt
+py -3.12 generate_protos.py
 ```
 
 `generate_protos.py` deterministically compiles the canonical repository schema at
@@ -242,7 +242,7 @@ output, decodes a fixture, and runs real inference:
 cd target
 PYTHONPATH=../examples/object_detection_service \
   KEEPPEEK_RUN_ULTRALYTICS=1 \
-  ../examples/object_detection_service/.venv/bin/python -m pytest -q \
+  python3.12 -m pytest -q \
   ../examples/object_detection_service/tests/test_detection_pipeline.py \
   -k real_ultralytics
 cd ..

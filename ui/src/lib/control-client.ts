@@ -17,189 +17,138 @@ import type {
 	AccessSession,
 	IssuedAccessCredential
 } from './access';
+import { NotificationControlClient } from './control-client-notifications';
+import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import {
-	AcknowledgeNotificationSchema,
-	ActivateNotificationRuleSchema,
 	AccessRole as ProtoAccessRole,
-	CameraControlCommandSchema,
-	CameraConfigurationCommandSchema,
 	CameraBackend as ProtoCameraBackend,
+	CameraConfigurationCommandSchema,
+	CameraControlCommandSchema,
 	CameraRecordingMode as ProtoCameraRecordingMode,
 	CameraTransport as ProtoCameraTransport,
 	CancelCameraDiscoverySchema,
 	CancelEventSearchMediaSchema,
 	CancelEventSearchQuerySchema,
+	CancelExportJobSchema,
 	CancelStoredMediaTimelineQuerySchema,
-	ClearNotificationSchema,
-	ClearNotificationsSchema,
+	CloseStoredMediaSchema,
 	ControlEnvelopeSchema,
 	CreateAccessCredentialSchema,
-	CloseStoredMediaSchema,
+	CreateExportJobSchema,
 	DataChannelKind,
 	DiscoverCamerasSchema,
-	DeleteNotificationRuleSchema,
 	DownloadExportSchema,
-	EventSearchCommandSchema,
-	EventSearchField,
-	EventImageFilter as ProtoEventImageFilter,
-	EventImageAvailability as ProtoEventImageAvailability,
-	EventSearchMediaObjectSchema,
 	EventAttachmentDescriptorSchema,
 	EventExportSeedSchema,
+	EventImageAvailability as ProtoEventImageAvailability,
+	EventImageFilter as ProtoEventImageFilter,
 	EventMetadataSearchSchema,
-	EventTextSearchSchema,
 	EventOrigin,
+	EventSearchCommandSchema,
+	EventSearchField,
+	EventSearchMediaObjectSchema,
+	EventTextSearchSchema,
 	ExportCommandSchema,
 	ExportJobStatus,
-	GetExportJobSchema,
+	FetchEventSearchMediaSchema,
+	GetAccessSessionSchema,
 	GetCameraCatalogSchema,
-	GetCameraOnboardingDefaultsSchema,
 	GetCameraConfigurationsSchema,
 	GetCameraDiscoverySchema,
-	GetAccessKeySchema,
-	GetAccessSessionSchema,
-	GetHealthSchema,
-	GetLoggingSettingsSchema,
+	GetCameraOnboardingDefaultsSchema,
+	GetExportJobSchema,
 	GetMotionDetectionSchema,
-	GetNotificationHistorySchema,
-	GetNotificationInboxSchema,
-	GetRuntimeConfigurationSchema,
-	FetchEventSearchMediaSchema,
-	ListExportJobsSchema,
 	ListAccessAuditSchema,
 	ListAccessCredentialsSchema,
 	ListAccessSessionsSchema,
-	ListNotificationRulesSchema,
-	LoggingCommandSchema,
-	HealthCommandSchema,
+	ListExportJobsSchema,
 	MessageSchema,
-	MarkNotificationSeenSchema,
-	NotificationRuleCommandSchema,
 	OpenStoredMediaSchema,
-	RefillStoredMediaSchema,
-	RetryExportJobSchema,
 	OptionalStringUpdateSchema,
 	OptionalUint32UpdateSchema,
+	ProbeCameraStreamsSchema,
 	PtzCommandSchema,
 	PtzContinuousSchema,
 	PtzPresetGotoSchema,
 	PtzPresetListSchema,
 	PtzStopSchema,
-	ProbeStorageSchema,
-	ProbeCameraStreamsSchema,
+	QueryEventsSchema,
+	QueryStoredMediaTimelineSchema,
+	RefillStoredMediaSchema,
 	RemoveCameraConfigurationSchema,
-	RuntimeConfigurationCommandSchema,
-	RuntimeStorageConfigurationSchema,
 	RequestSchema,
-	RestartServerSchema,
+	RetryExportJobSchema,
 	RevokeAccessCredentialSchema,
 	RevokeAccessSessionSchema,
-	RotateAccessKeySchema,
 	RotateAccessCredentialSchema,
 	SearchCameraCatalogSchema,
-	SaveNotificationRuleDraftSchema,
-	ServerCommandSchema,
 	SeekStoredMediaSchema,
-	SetCameraManufacturerSchema,
-	SetLoggingFilterSchema,
-	SetMotionDetectionSchema,
+	ServerCommandSchema,
 	SetAccessCredentialEnabledSchema,
+	SetCameraManufacturerSchema,
+	SetMotionDetectionSchema,
 	SetStoredMediaPlaybackSchema,
 	StoredMediaCommandSchema,
 	StoredMediaEventQuerySchema,
 	StoredMediaMode,
-	StoredMediaStatus,
-	TestNotificationRuleSchema,
-	CancelExportJobSchema,
-	CreateExportJobSchema,
-	QueryStoredMediaTimelineSchema,
-	QueryEventsSchema,
 	StoredMediaObjectRepresentation,
+	StoredMediaStatus,
 	UpdateCameraConfigurationSchema,
-	UpdateRuntimeConfigurationSchema,
-	type LoggingSettingsResult,
-	type SanitizedRuntimeConfiguration,
-	type ServerHealthSnapshot,
+	type AccessAuditEvent as ProtoAccessAuditEvent,
+	type AccessCredential as ProtoAccessCredential,
+	type AccessSession as ProtoAccessSession,
 	type Event as ProtoEvent,
 	type EventSearchHit as ProtoEventSearchHit,
 	type EventSearchMediaObject as ProtoEventSearchMediaObject,
 	type EventSearchMediaChunk,
 	type ExportJob as ProtoExportJob,
-	type HealthProfileSummary,
+	type MotionDetectionResult,
+	type QueryEvents,
+	type Request,
+	type Response as ControlResponse,
 	type ServerCapabilities,
 	type StoredMediaFragment,
 	type StoredMediaInitialization,
 	type StoredMediaKeyFrame,
 	type StoredMediaState,
-	type MotionDetectionResult,
-	type AccessAuditEvent as ProtoAccessAuditEvent,
-	type AccessCredential as ProtoAccessCredential,
-	type AccessSession as ProtoAccessSession,
-	type NotificationDeliveryAttempt as ProtoNotificationDeliveryAttempt,
-	type NotificationHistoryEvent as ProtoNotificationHistoryEvent,
-	type NotificationHistoryGroup as ProtoNotificationHistoryGroup,
-	type NotificationInbox as ProtoNotificationInbox,
-	type NotificationItem as ProtoNotificationItem,
-	type NotificationRuleRecord as ProtoNotificationRuleRecord,
-	type Request,
-	type EventAttachmentDescriptor as ProtoEventAttachmentDescriptor,
-	type QueryEvents,
-	type Response as ControlResponse
+	type EventAttachmentDescriptor as ProtoEventAttachmentDescriptor
 } from './proto/webrtc_pb';
 import { canonicalEventAttachment, eventIconKey } from './event-presentation';
-import {
-	parseNotificationRuleDefinition,
-	type NotificationChannel,
-	type NotificationClearScope,
-	type NotificationDeliveryAttempt,
-	type NotificationHistoryEvent,
-	type NotificationHistoryGroup,
-	type NotificationInbox,
-	type NotificationItem,
-	type NotificationRuleDefinition,
-	type NotificationRuleRecord,
-	type NotificationSeverity,
-	type NotificationStage,
-	type NotificationTestResult
+import type {
+	NotificationClearScope,
+	NotificationHistoryGroup,
+	NotificationInbox,
+	NotificationRuleDefinition,
+	NotificationRuleRecord,
+	NotificationTestResult
 } from './notifications';
 import type {
+	CameraBackend,
+	CameraCatalogCamera,
+	CameraCatalogInfo,
+	CameraDetailsResponse,
+	CameraListItem,
+	CameraOnboardingDefaults,
+	CameraRecordingMode,
+	CameraSettings,
+	CameraSettingsUpdate,
+	CameraSettingsUpdateResponse,
+	CameraStreamProbeResult,
+	CameraTransport,
+	DiscoveredCameraSettings,
 	EventImageAvailability as EventImageAvailabilityState,
+	LoggingSettings,
 	MotionDetection,
 	RecordingEvent,
 	RecordingEventAttachment,
 	RecordingEventsResponse,
 	RecordingSegment,
-	RecordingsResponse
-} from './types';
-import type { LoggingSettings } from './types';
-import type {
-	CameraCatalogCamera,
-	CameraCatalogInfo,
-	CameraOnboardingDefaults,
-	CameraStreamProbeResult,
-	DiscoveredCameraSettings
-} from './types';
-import type {
-	CameraBackend,
-	CameraRecordingMode,
-	CameraDetailsResponse,
-	CameraListItem,
-	CameraSettings,
-	CameraSettingsUpdate,
-	CameraSettingsUpdateResponse,
-	CameraTransport
-} from './types';
-import type { SanitizedConfig, SettingsConfigUpdate, SettingsConfigUpdateResponse } from './types';
-import type {
-	CameraHealth,
-	CameraHealthDimensions,
-	CameraHealthReason,
-	CameraHealthState,
-	ProfileSummary,
+	RecordingsResponse,
+	SanitizedConfig,
 	ServerHealthResponse,
-	StreamHealth,
-	StreamHealthDimensions
+	SettingsConfigUpdate,
+	SettingsConfigUpdateResponse
 } from './types';
 import type { StorageWriteProbe } from './first-run';
 
@@ -487,6 +436,11 @@ export class ControlClient {
 		generation: 0
 	};
 	#accessStateListeners = new Set<AccessStateListener>();
+	#notifications = new NotificationControlClient((command) => this.request(command));
+	#system = new SystemControlClient(
+		(command) => this.request(command),
+		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
+	);
 
 	onCapabilities(listener: CapabilityListener): () => void {
 		this.#capabilityListeners.add(listener);
@@ -991,43 +945,18 @@ export class ControlClient {
 	}
 
 	async getHealth(signal?: AbortSignal): Promise<ServerHealthResponse> {
-		signal?.throwIfAborted();
-		const command = create(HealthCommandSchema, {
-			action: { case: 'get', value: create(GetHealthSchema) }
-		});
-		const result = await this.request({ case: 'healthCommand', value: command });
-		signal?.throwIfAborted();
-		if (result.case !== 'healthResult') {
-			throw new Error('Server returned an unexpected health response.');
-		}
-		return serverHealth(result.value);
+		return this.#system.getHealth(signal);
 	}
 
 	async listNotificationRules(): Promise<NotificationRuleRecord[]> {
-		const command = create(NotificationRuleCommandSchema, {
-			action: { case: 'listRules', value: create(ListNotificationRulesSchema) }
-		});
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'rules') {
-			throw new Error('Server returned an unexpected notification rule list response.');
-		}
-		return result.value.rules.map(notificationRuleRecord);
+		return this.#notifications.listRules();
 	}
 
 	async saveNotificationRuleDraft(
 		rule: NotificationRuleDefinition,
 		expectedDraftRevision: bigint
 	): Promise<NotificationRuleRecord> {
-		const command = create(NotificationRuleCommandSchema, {
-			action: {
-				case: 'saveDraft',
-				value: create(SaveNotificationRuleDraftSchema, {
-					definitionJson: JSON.stringify(rule),
-					expectedDraftRevision
-				})
-			}
-		});
-		return this.notificationRuleMutation(command);
+		return this.#notifications.saveRuleDraft(rule, expectedDraftRevision);
 	}
 
 	async activateNotificationRule(
@@ -1035,17 +964,7 @@ export class ControlClient {
 		expectedActiveRevision: bigint,
 		expectedDraftRevision: bigint
 	): Promise<NotificationRuleRecord> {
-		const command = create(NotificationRuleCommandSchema, {
-			action: {
-				case: 'activate',
-				value: create(ActivateNotificationRuleSchema, {
-					ruleId,
-					expectedActiveRevision,
-					expectedDraftRevision
-				})
-			}
-		});
-		return this.notificationRuleMutation(command);
+		return this.#notifications.activateRule(ruleId, expectedActiveRevision, expectedDraftRevision);
 	}
 
 	async deleteNotificationRule(
@@ -1053,122 +972,35 @@ export class ControlClient {
 		expectedActiveRevision: bigint,
 		expectedDraftRevision: bigint
 	): Promise<void> {
-		const command = create(NotificationRuleCommandSchema, {
-			action: {
-				case: 'delete',
-				value: create(DeleteNotificationRuleSchema, {
-					ruleId,
-					expectedActiveRevision,
-					expectedDraftRevision
-				})
-			}
-		});
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'mutation' || result.value.logicalId !== ruleId) {
-			throw new Error('Server returned an unexpected notification rule deletion response.');
-		}
+		return this.#notifications.deleteRule(ruleId, expectedActiveRevision, expectedDraftRevision);
 	}
 
 	async testNotificationRule(ruleId: string): Promise<NotificationTestResult> {
-		const command = create(NotificationRuleCommandSchema, {
-			action: {
-				case: 'test',
-				value: create(TestNotificationRuleSchema, { ruleId })
-			}
-		});
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'test') {
-			throw new Error('Server returned an unexpected notification test response.');
-		}
-		return {
-			matchedRules: result.value.matchedRules,
-			createdNotifications: result.value.createdNotifications,
-			queuedAttempts: result.value.queuedAttempts
-		};
+		return this.#notifications.testRule(ruleId);
 	}
 
 	async getNotificationInbox(limit = 100): Promise<NotificationInbox> {
-		const command = create(NotificationRuleCommandSchema, {
-			action: {
-				case: 'getInbox',
-				value: create(GetNotificationInboxSchema, { limit })
-			}
-		});
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'inbox') {
-			throw new Error('Server returned an unexpected notification inbox response.');
-		}
-		return notificationInbox(result.value);
+		return this.#notifications.getInbox(limit);
 	}
 
 	async getNotificationHistory(limit = 100): Promise<NotificationHistoryGroup[]> {
-		const command = create(NotificationRuleCommandSchema, {
-			action: {
-				case: 'getHistory',
-				value: create(GetNotificationHistorySchema, { limit })
-			}
-		});
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'history') {
-			throw new Error('Server returned an unexpected notification history response.');
-		}
-		return result.value.groups.map(notificationHistoryGroup);
+		return this.#notifications.getHistory(limit);
 	}
 
 	async markNotificationSeen(logicalId: string): Promise<void> {
-		await this.notificationReceiptMutation(
-			logicalId,
-			create(NotificationRuleCommandSchema, {
-				action: {
-					case: 'markSeen',
-					value: create(MarkNotificationSeenSchema, { logicalId })
-				}
-			})
-		);
+		return this.#notifications.markSeen(logicalId);
 	}
 
 	async acknowledgeNotification(logicalId: string): Promise<void> {
-		await this.notificationReceiptMutation(
-			logicalId,
-			create(NotificationRuleCommandSchema, {
-				action: {
-					case: 'acknowledge',
-					value: create(AcknowledgeNotificationSchema, { logicalId })
-				}
-			})
-		);
+		return this.#notifications.acknowledge(logicalId);
 	}
 
 	async clearNotification(logicalId: string): Promise<void> {
-		await this.notificationReceiptMutation(
-			logicalId,
-			create(NotificationRuleCommandSchema, {
-				action: {
-					case: 'clear',
-					value: create(ClearNotificationSchema, { logicalId })
-				}
-			})
-		);
+		return this.#notifications.clear(logicalId);
 	}
 
 	async clearNotifications(scope: NotificationClearScope): Promise<bigint> {
-		const wireScope =
-			scope.kind === 'all'
-				? ({ case: 'all', value: true } as const)
-				: scope.kind === 'rule'
-					? ({ case: 'ruleId', value: scope.ruleId } as const)
-					: ({ case: 'beforeMs', value: BigInt(scope.beforeMs) } as const);
-		const command = create(NotificationRuleCommandSchema, {
-			action: {
-				case: 'clearScope',
-				value: create(ClearNotificationsSchema, { scope: wireScope })
-			}
-		});
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'cleared') {
-			throw new Error('Server returned an unexpected notification clear response.');
-		}
-		return result.value.clearedCount;
+		return this.#notifications.clearScope(scope);
 	}
 
 	async getCameraDetails(sourceId: string, signal?: AbortSignal): Promise<CameraDetailsResponse> {
@@ -1438,52 +1270,23 @@ export class ControlClient {
 	}
 
 	async getLoggingSettings(): Promise<LoggingSettings> {
-		const command = create(LoggingCommandSchema, {
-			action: { case: 'getSettings', value: create(GetLoggingSettingsSchema) }
-		});
-		return this.loggingRequest(command);
+		return this.#system.getLoggingSettings();
 	}
 
 	async setLoggingFilter(filter: string): Promise<LoggingSettings> {
-		const command = create(LoggingCommandSchema, {
-			action: {
-				case: 'setFilter',
-				value: create(SetLoggingFilterSchema, { filter })
-			}
-		});
-		return this.loggingRequest(command);
+		return this.#system.setLoggingFilter(filter);
 	}
 
 	async restartServer(): Promise<void> {
-		const command = create(ServerCommandSchema, {
-			action: { case: 'restart', value: create(RestartServerSchema) }
-		});
-		const result = await this.request({ case: 'serverCommand', value: command });
-		if (result.case !== 'restartResult' || !result.value.restarting) {
-			throw new Error('Server did not acknowledge the restart request.');
-		}
+		return this.#system.restartServer();
 	}
 
 	async revealAccessKey(): Promise<string> {
-		const command = create(ServerCommandSchema, {
-			action: { case: 'getAccessKey', value: create(GetAccessKeySchema) }
-		});
-		const result = await this.request({ case: 'serverCommand', value: command });
-		if (result.case !== 'accessKeyResult' || result.value.rotated || !result.value.accessKey) {
-			throw new Error('Server returned an unexpected access key response.');
-		}
-		return result.value.accessKey;
+		return this.#system.revealAccessKey();
 	}
 
 	async rotateAccessKey(): Promise<string> {
-		const command = create(ServerCommandSchema, {
-			action: { case: 'rotateAccessKey', value: create(RotateAccessKeySchema) }
-		});
-		const result = await this.request({ case: 'serverCommand', value: command });
-		if (result.case !== 'accessKeyResult' || !result.value.rotated || !result.value.accessKey) {
-			throw new Error('Server did not return the rotated access key.');
-		}
-		return result.value.accessKey;
+		return this.#system.rotateAccessKey();
 	}
 
 	async getAccessSession(): Promise<AccessSession> {
@@ -1855,65 +1658,15 @@ export class ControlClient {
 	async updateRuntimeConfiguration(
 		update: SettingsConfigUpdate
 	): Promise<SettingsConfigUpdateResponse> {
-		const storage = create(RuntimeStorageConfigurationSchema, {
-			mediumTermPath: update.storage.medium_term_path,
-			longTermPath: update.storage.long_term_path,
-			recordingCatalogPath: update.storage.recording_catalog_path,
-			eventThumbnailPath: update.storage.event_thumbnail_path,
-			eventThumbnailMaxMb: BigInt(update.storage.event_thumbnail_max_mb),
-			shortTermSecs: BigInt(update.storage.short_term_secs),
-			mediumTermSecs: BigInt(update.storage.medium_term_secs),
-			flushIntervalSecs: BigInt(update.storage.flush_interval_secs),
-			writeBufferBytes: BigInt(update.storage.write_buffer_bytes),
-			longTermMaxGb: BigInt(update.storage.long_term_max_gb),
-			minimumFreeGb: BigInt(update.storage.minimum_free_gb ?? 0),
-			maximumUsedPercent: update.storage.maximum_used_percent ?? 0,
-			warningFreeGb: BigInt(update.storage.warning_free_gb ?? 0),
-			criticalFreeGb: BigInt(update.storage.critical_free_gb ?? 0),
-			cleanupHysteresisGb: BigInt(update.storage.cleanup_hysteresis_gb ?? 0)
-		});
-		const command = create(RuntimeConfigurationCommandSchema, {
-			action: {
-				case: 'update',
-				value: create(UpdateRuntimeConfigurationSchema, {
-					host: update.host,
-					port: update.port,
-					storage,
-					moveExistingRecordings: update.move_existing_recordings,
-					expectedConfigurationRevision: update.expected_configuration_revision ?? ''
-				})
-			}
-		});
-		const result = await this.request({ case: 'runtimeConfigurationCommand', value: command });
-		if (result.case !== 'runtimeConfigurationResult' || !result.value.config) {
-			throw new Error('Server returned an unexpected runtime configuration response.');
-		}
-		return {
-			config: runtimeConfiguration(result.value.config),
-			restart_required: result.value.restartRequired
-		};
+		return this.#system.updateRuntimeConfiguration(update);
 	}
 
 	async getRuntimeConfiguration(): Promise<SanitizedConfig> {
-		const command = create(RuntimeConfigurationCommandSchema, {
-			action: { case: 'get', value: create(GetRuntimeConfigurationSchema) }
-		});
-		const result = await this.request({ case: 'runtimeConfigurationCommand', value: command });
-		if (result.case !== 'runtimeConfigurationResult' || !result.value.config) {
-			throw new Error('Server returned an unexpected runtime configuration response.');
-		}
-		return runtimeConfiguration(result.value.config);
+		return this.#system.getRuntimeConfiguration();
 	}
 
 	async probeStorage(path: string): Promise<StorageWriteProbe> {
-		const command = create(RuntimeConfigurationCommandSchema, {
-			action: { case: 'probeStorage', value: create(ProbeStorageSchema, { path }) }
-		});
-		const result = await this.request({ case: 'runtimeConfigurationCommand', value: command });
-		if (result.case !== 'storageWriteProbeResult') {
-			throw new Error('Server returned an unexpected storage write probe response.');
-		}
-		return { writable: result.value.writable, detail: result.value.detail };
+		return this.#system.probeStorage(path);
 	}
 
 	async close(): Promise<void> {
@@ -2216,45 +1969,6 @@ export class ControlClient {
 		}
 		return accessCredential(result.value.credentials[0]!);
 	}
-
-	private async notificationRequest(
-		command: ReturnType<typeof create<typeof NotificationRuleCommandSchema>>
-	) {
-		const result = await this.request({ case: 'notificationRuleCommand', value: command });
-		if (result.case !== 'notificationRuleResult' || !result.value.result.case) {
-			throw new Error('Server returned an unexpected notification response.');
-		}
-		return result.value.result;
-	}
-
-	private async notificationRuleMutation(
-		command: ReturnType<typeof create<typeof NotificationRuleCommandSchema>>
-	): Promise<NotificationRuleRecord> {
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'rule') {
-			throw new Error('Server returned an unexpected notification rule response.');
-		}
-		return notificationRuleRecord(result.value);
-	}
-
-	private async notificationReceiptMutation(
-		logicalId: string,
-		command: ReturnType<typeof create<typeof NotificationRuleCommandSchema>>
-	): Promise<void> {
-		const result = await this.notificationRequest(command);
-		if (result.case !== 'mutation' || result.value.logicalId !== logicalId) {
-			throw new Error('Server returned an unexpected notification receipt response.');
-		}
-	}
-
-	private async loggingRequest(command: ReturnType<typeof create<typeof LoggingCommandSchema>>) {
-		const result = await this.request({ case: 'loggingCommand', value: command });
-		if (result.case !== 'loggingSettingsResult') {
-			throw new Error('Server returned an unexpected logging response.');
-		}
-		return loggingSettings(result.value);
-	}
-
 	private connect(): Promise<void> {
 		if (this.#controlChannel?.readyState === 'open') return Promise.resolve();
 		this.#connecting ??= this.connectNow().finally(() => {
@@ -3831,9 +3545,7 @@ function eventPayloadNumber(event: ProtoEvent, key: string): number | null {
 
 function eventPayloadStrings(event: ProtoEvent, key: string): string[] {
 	const value = event.payload?.[key];
-	return Array.isArray(value)
-		? value.filter((item): item is string => typeof item === 'string')
-		: [];
+	return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : [];
 }
 
 function eventPreviewHit(hit: ProtoEventSearchHit): EventPreviewHit {
@@ -3922,134 +3634,6 @@ function hexDigest(payload: ArrayBuffer): string {
 
 function protoDurationMs(duration: import('@bufbuild/protobuf/wkt').Duration): number {
 	return Number(duration.seconds) * 1_000 + duration.nanos / 1_000_000;
-}
-
-function notificationRuleRecord(record: ProtoNotificationRuleRecord): NotificationRuleRecord {
-	return {
-		id: record.ruleId,
-		ownerId: record.ownerId,
-		active: record.activeDefinitionJson
-			? parseNotificationRuleDefinition(record.activeDefinitionJson)
-			: null,
-		activeRevision: record.activeRevision,
-		draft: parseNotificationRuleDefinition(record.draftDefinitionJson),
-		draftRevision: record.draftRevision,
-		createdAtMs: Number(record.createdAtMs),
-		updatedAtMs: Number(record.updatedAtMs),
-		lastMatchAtMs: record.lastMatchAtMs === undefined ? null : Number(record.lastMatchAtMs),
-		lastDeliveryAtMs: record.lastDeliveryAtMs === undefined ? null : Number(record.lastDeliveryAtMs)
-	};
-}
-
-function notificationInbox(inbox: ProtoNotificationInbox): NotificationInbox {
-	return {
-		items: inbox.items.map(notificationItem),
-		unreadCount: inbox.unreadCount
-	};
-}
-
-function notificationItem(item: ProtoNotificationItem): NotificationItem {
-	const canonicalAttachment = item.canonicalAttachment
-		? recordingEventAttachment(item.canonicalAttachment)
-		: null;
-	return {
-		logicalId: item.logicalId,
-		ruleId: item.ruleId,
-		sourceId: item.sourceId,
-		sourceIdentity: item.sourceIdentity,
-		lifecycle: item.lifecycle,
-		stage: notificationStage(item.stage),
-		revision: item.revision,
-		title: item.title,
-		body: item.body,
-		deepLink: item.deepLink,
-		attachmentAvailable: item.attachmentAvailable,
-		canonicalAttachment,
-		iconKey: item.iconKey ? eventIconKey(item.iconKey, '') : undefined,
-		imageAvailability: eventImageAvailability(item.imageAvailability, canonicalAttachment !== null),
-		severity: notificationSeverity(item.severity),
-		createdAtMs: Number(item.createdAtMs),
-		updatedAtMs: Number(item.updatedAtMs),
-		seenAtMs: item.seenAtMs === undefined ? null : Number(item.seenAtMs),
-		acknowledgedAtMs: item.acknowledgedAtMs === undefined ? null : Number(item.acknowledgedAtMs)
-	};
-}
-
-function notificationHistoryGroup(group: ProtoNotificationHistoryGroup): NotificationHistoryGroup {
-	if (!group.notification) {
-		throw new Error('Server returned notification history without its logical notification.');
-	}
-	return {
-		notification: notificationItem(group.notification),
-		events: group.events.map(notificationHistoryEvent),
-		attempts: group.attempts.map(notificationDeliveryAttempt)
-	};
-}
-
-function notificationHistoryEvent(event: ProtoNotificationHistoryEvent): NotificationHistoryEvent {
-	return {
-		sequence: event.sequence,
-		revision: event.revision,
-		stage: notificationStage(event.stage),
-		outcome: event.outcome,
-		reason: event.reason ?? null,
-		occurredAtMs: Number(event.occurredAtMs),
-		nextEligibleAtMs: event.nextEligibleAtMs === undefined ? null : Number(event.nextEligibleAtMs)
-	};
-}
-
-function notificationDeliveryAttempt(
-	attempt: ProtoNotificationDeliveryAttempt
-): NotificationDeliveryAttempt {
-	return {
-		sequence: attempt.sequence,
-		channel: notificationChannel(attempt.channel),
-		stage: notificationStage(attempt.stage),
-		attempt: attempt.attempt,
-		outcome: attempt.outcome,
-		targetHash: attempt.targetHash,
-		providerStatus: attempt.providerStatus ?? null,
-		providerRequestId: attempt.providerRequestId ?? null,
-		providerAcknowledgedAtMs:
-			attempt.providerAcknowledgedAtMs === undefined
-				? null
-				: Number(attempt.providerAcknowledgedAtMs),
-		providerExpiredAtMs:
-			attempt.providerExpiredAtMs === undefined ? null : Number(attempt.providerExpiredAtMs),
-		providerAcknowledgedByHash: attempt.providerAcknowledgedByHash ?? null,
-		providerAcknowledgementState: providerAcknowledgementState(
-			attempt.providerAcknowledgementState
-		),
-		reason: attempt.reason ?? null,
-		attemptedAtMs: Number(attempt.attemptedAtMs),
-		retryAtMs: attempt.retryAtMs === undefined ? null : Number(attempt.retryAtMs)
-	};
-}
-
-function providerAcknowledgementState(
-	value: string | undefined
-): 'pending' | 'acknowledged' | 'expired' | 'failed' | null {
-	if (value === undefined || value === '') return null;
-	if (value === 'pending' || value === 'acknowledged' || value === 'expired' || value === 'failed')
-		return value;
-	throw new Error(`Server returned unsupported provider acknowledgement state '${value}'.`);
-}
-
-function notificationStage(value: string): NotificationStage {
-	if (value === 'preliminary' || value === 'enriched' || value === 'recovery') return value;
-	throw new Error(`Server returned unsupported notification stage '${value}'.`);
-}
-
-function notificationSeverity(value: string): NotificationSeverity {
-	if (value === 'info' || value === 'warning' || value === 'critical') return value;
-	throw new Error(`Server returned unsupported notification severity '${value}'.`);
-}
-
-function notificationChannel(value: string): NotificationChannel {
-	if (value === 'browser' || value === 'push' || value === 'webhook' || value === 'forwarder') {
-		return value;
-	}
-	throw new Error(`Server returned unsupported notification channel '${value}'.`);
 }
 
 function mediaExportJob(job: ProtoExportJob): MediaExportJob {
@@ -4170,30 +3754,6 @@ function motionDetection(result: MotionDetectionResult): MotionDetection {
 		enabled: result.enabled ?? null,
 		error: result.error ?? null
 	};
-}
-
-function loggingSettings(result: LoggingSettingsResult): LoggingSettings {
-	const buffer = result.buffer;
-	if (!buffer) throw new Error('Server returned logging settings without buffer evidence.');
-	return {
-		active_filter: result.activeFilter,
-		default_filter: result.defaultFilter,
-		filter_error: result.filterError ?? null,
-		version: result.version,
-		buffer: {
-			entry_count: numeric(buffer.entryCount),
-			byte_count: numeric(buffer.byteCount),
-			evicted_entries: numeric(buffer.evictedEntries),
-			max_entries: numeric(buffer.maxEntries),
-			max_bytes: numeric(buffer.maxBytes),
-			active_streams: numeric(buffer.activeStreams),
-			max_streams: numeric(buffer.maxStreams)
-		}
-	};
-}
-
-function numeric(value: bigint): number {
-	return Number(value > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : value);
 }
 
 function stringPatch<T extends CameraSettingsUpdate>(
@@ -4339,534 +3899,6 @@ function cameraCatalogCamera(
 				}
 			: null
 	};
-}
-
-function runtimeConfiguration(config: SanitizedRuntimeConfiguration): SanitizedConfig {
-	if (!config.storage || !config.recordingEstimate) {
-		throw new Error('Server returned incomplete runtime configuration evidence.');
-	}
-	return {
-		host: config.host,
-		port: config.port,
-		configuration_revision: config.configurationRevision,
-		storage: {
-			medium_term_path: config.storage.mediumTermPath,
-			long_term_path: config.storage.longTermPath,
-			recording_catalog_path: config.storage.recordingCatalogPath,
-			event_thumbnail_path: config.storage.eventThumbnailPath,
-			event_thumbnail_max_mb: numeric(config.storage.eventThumbnailMaxMb),
-			short_term_secs: numeric(config.storage.shortTermSecs),
-			medium_term_secs: numeric(config.storage.mediumTermSecs),
-			flush_interval_secs: numeric(config.storage.flushIntervalSecs),
-			write_buffer_bytes: numeric(config.storage.writeBufferBytes),
-			long_term_max_gb: numeric(config.storage.longTermMaxGb),
-			minimum_free_gb:
-				config.storage.minimumFreeGb === undefined ? 0 : numeric(config.storage.minimumFreeGb),
-			maximum_used_percent:
-				config.storage.maximumUsedPercent === undefined || config.storage.maximumUsedPercent === 0
-					? null
-					: config.storage.maximumUsedPercent,
-			warning_free_gb:
-				config.storage.warningFreeGb === undefined ? 0 : numeric(config.storage.warningFreeGb),
-			critical_free_gb:
-				config.storage.criticalFreeGb === undefined ? 0 : numeric(config.storage.criticalFreeGb),
-			cleanup_hysteresis_gb:
-				config.storage.cleanupHysteresisGb === undefined
-					? 0
-					: numeric(config.storage.cleanupHysteresisGb)
-		},
-		camera_count: numeric(config.cameraCount),
-		recording_estimate: {
-			estimated_bitrate_bps: numeric(config.recordingEstimate.estimatedBitrateBps),
-			bytes_per_day: numeric(config.recordingEstimate.bytesPerDay),
-			known_streams: numeric(config.recordingEstimate.knownStreams),
-			unknown_streams: numeric(config.recordingEstimate.unknownStreams),
-			estimated_retention_days: config.recordingEstimate.estimatedRetentionDays ?? null
-		}
-	};
-}
-
-function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
-	if (health.healthContractVersion < 1) {
-		throw new Error(`Server returned unsupported health contract ${health.healthContractVersion}.`);
-	}
-	const { totals, system, storage, webrtc } = health;
-	if (!totals || !system || !storage || !webrtc) {
-		throw new Error('Server returned incomplete health evidence.');
-	}
-	const { process, memory, load } = system;
-	const demand = storage.demand;
-	const safety = storage.safety;
-	if (!process || !memory || !load || !demand) {
-		throw new Error('Server returned incomplete health evidence.');
-	}
-	return {
-		status: health.status === 'healthy' ? 'healthy' : 'degraded',
-		health_contract_version: health.healthContractVersion,
-		generated_at_ms: numeric(health.generatedAtMs),
-		uptime_seconds: numeric(health.uptimeSeconds),
-		version: health.version,
-		totals: {
-			configured_cameras: numeric(totals.configuredCameras),
-			connected_cameras: numeric(totals.connectedCameras),
-			fresh_cameras: numeric(totals.freshCameras),
-			decodable_cameras: numeric(totals.decodableCameras),
-			recording_requested_cameras: numeric(totals.recordingRequestedCameras),
-			recording_cameras: numeric(totals.recordingCameras),
-			unknown_cameras: numeric(totals.unknownCameras),
-			configured_video_streams: numeric(totals.configuredVideoStreams),
-			connected_video_streams: numeric(totals.connectedVideoStreams),
-			fresh_video_streams: numeric(totals.freshVideoStreams),
-			decodable_video_streams: numeric(totals.decodableVideoStreams),
-			recording_requested_video_streams: numeric(totals.recordingRequestedVideoStreams),
-			recording_video_streams: numeric(totals.recordingVideoStreams),
-			ingress_fps: totals.ingressFps,
-			ingress_bitrate_bps: numeric(totals.ingressBitrateBps),
-			frames: numeric(totals.frames),
-			keyframes: numeric(totals.keyframes),
-			drops: numeric(totals.drops),
-			errors: numeric(totals.errors),
-			reconnects: numeric(totals.reconnects)
-		},
-		system: {
-			host_name: system.hostName ?? null,
-			os_name: system.osName ?? null,
-			os_version: system.osVersion ?? null,
-			kernel_version: system.kernelVersion ?? null,
-			architecture: system.architecture,
-			system_uptime_seconds: numeric(system.systemUptimeSeconds),
-			boot_time_seconds: numeric(system.bootTimeSeconds),
-			logical_cores: numeric(system.logicalCores),
-			physical_cores: optionalNumber(system.physicalCores),
-			cpu_brand: system.cpuBrand ?? null,
-			system_cpu_percent: system.systemCpuPercent,
-			process: {
-				pid: process.pid,
-				name: process.name ?? null,
-				executable: process.executable ?? null,
-				working_directory: process.workingDirectory ?? null,
-				cpu_percent: process.cpuPercent ?? null,
-				cpu_capacity_percent: process.cpuCapacityPercent ?? null,
-				cpu_core_equivalents: process.cpuCoreEquivalents ?? null,
-				resident_memory_bytes: optionalNumber(process.residentMemoryBytes),
-				memory_capacity_percent: process.memoryCapacityPercent ?? null,
-				virtual_memory_bytes: optionalNumber(process.virtualMemoryBytes),
-				started_at_seconds: optionalNumber(process.startedAtSeconds),
-				uptime_seconds: optionalNumber(process.uptimeSeconds),
-				tasks: optionalNumber(process.tasks),
-				read_bytes_per_second: optionalNumber(process.readBytesPerSecond),
-				write_bytes_per_second: optionalNumber(process.writeBytesPerSecond),
-				total_read_bytes: optionalNumber(process.totalReadBytes),
-				total_written_bytes: optionalNumber(process.totalWrittenBytes)
-			},
-			memory: {
-				total_bytes: numeric(memory.totalBytes),
-				used_bytes: numeric(memory.usedBytes),
-				available_bytes: numeric(memory.availableBytes),
-				total_swap_bytes: numeric(memory.totalSwapBytes),
-				used_swap_bytes: numeric(memory.usedSwapBytes)
-			},
-			load: {
-				one_minute: load.oneMinute,
-				five_minutes: load.fiveMinutes,
-				fifteen_minutes: load.fifteenMinutes
-			},
-			cpus: system.cpus.map((cpu) => ({
-				name: cpu.name,
-				usage_percent: cpu.usagePercent,
-				frequency_mhz: numeric(cpu.frequencyMhz)
-			})),
-			network_egress_bps: numeric(system.networkEgressBps),
-			networks: system.networks.map((network) => ({
-				name: network.name,
-				received_bytes_per_second: numeric(network.receivedBytesPerSecond),
-				transmitted_bytes_per_second: numeric(network.transmittedBytesPerSecond),
-				received_packets_per_second: numeric(network.receivedPacketsPerSecond),
-				transmitted_packets_per_second: numeric(network.transmittedPacketsPerSecond),
-				receive_errors: numeric(network.receiveErrors),
-				transmit_errors: numeric(network.transmitErrors),
-				total_received_bytes: numeric(network.totalReceivedBytes),
-				total_transmitted_bytes: numeric(network.totalTransmittedBytes)
-			})),
-			disks: system.disks.map((disk) => ({
-				name: disk.name,
-				kind: disk.kind,
-				file_system: disk.fileSystem,
-				mount_point: disk.mountPoint,
-				total_bytes: numeric(disk.totalBytes),
-				available_bytes: numeric(disk.availableBytes),
-				used_bytes: numeric(disk.usedBytes),
-				removable: disk.removable,
-				stores_recordings: disk.storesRecordings
-			})),
-			temperatures: system.temperatures.map((temperature) => ({
-				label: temperature.label,
-				current_celsius: temperature.currentCelsius ?? null,
-				max_celsius: temperature.maxCelsius ?? null,
-				critical_celsius: temperature.criticalCelsius ?? null
-			}))
-		},
-		storage: {
-			medium_term_path: storage.mediumTermPath,
-			long_term_path: storage.longTermPath,
-			paths_are_same: storage.pathsAreSame,
-			short_term_seconds: numeric(storage.shortTermSeconds),
-			medium_term_seconds: numeric(storage.mediumTermSeconds),
-			flush_interval_seconds: numeric(storage.flushIntervalSeconds),
-			write_buffer_bytes: numeric(storage.writeBufferBytes),
-			long_term_max_bytes: numeric(storage.longTermMaxBytes),
-			minimum_free_bytes: numeric(storage.minimumFreeBytes),
-			maximum_used_percent: storage.maximumUsedPercent ?? null,
-			warning_free_bytes: numeric(storage.warningFreeBytes),
-			critical_free_bytes: numeric(storage.criticalFreeBytes),
-			cleanup_hysteresis_bytes: numeric(storage.cleanupHysteresisBytes),
-			catalog_bytes: optionalNumber(storage.catalogBytes),
-			catalog: storage.catalog
-				? {
-						recording_files: numeric(storage.catalog.recordingFiles),
-						finalized_files: numeric(storage.catalog.finalizedFiles),
-						active_files: numeric(storage.catalog.activeFiles),
-						protected_files: numeric(storage.catalog.protectedFiles),
-						recording_bytes: numeric(storage.catalog.recordingBytes),
-						fragments: numeric(storage.catalog.fragments),
-						fragment_bytes: numeric(storage.catalog.fragmentBytes),
-						events: numeric(storage.catalog.events),
-						open_events: numeric(storage.catalog.openEvents),
-						event_thumbnails: numeric(storage.catalog.eventThumbnails),
-						oldest_recording_at_ms: optionalNumber(storage.catalog.oldestRecordingAtMs),
-						newest_recording_at_ms: optionalNumber(storage.catalog.newestRecordingAtMs)
-					}
-				: null,
-			safety: safety
-				? {
-						pressure: safety.pressure as 'normal' | 'warning' | 'critical',
-						recording_state: safety.recordingState as 'active' | 'degraded' | 'paused',
-						total_bytes: optionalNumber(safety.totalBytes),
-						available_bytes: optionalNumber(safety.availableBytes),
-						keeppeek_bytes: optionalNumber(safety.keeppeekBytes),
-						effective_limit_bytes: optionalNumber(safety.effectiveLimitBytes),
-						cleanup_target_bytes: optionalNumber(safety.cleanupTargetBytes),
-						warning_free_bytes: numeric(safety.warningFreeBytes),
-						critical_free_bytes: numeric(safety.criticalFreeBytes),
-						recovery_free_bytes: numeric(safety.recoveryFreeBytes),
-						last_evaluation_at_ms: optionalNumber(safety.lastEvaluationAtMs),
-						last_evaluation_trigger:
-							(safety.lastEvaluationTrigger as
-								'startup' | 'segment_finalized' | 'periodic' | undefined) ?? null,
-						cleanup_running: safety.cleanupRunning,
-						last_cleanup_started_at_ms: optionalNumber(safety.lastCleanupStartedAtMs),
-						last_cleanup_ended_at_ms: optionalNumber(safety.lastCleanupEndedAtMs),
-						last_cleanup_files_removed: numeric(safety.lastCleanupFilesRemoved),
-						last_cleanup_bytes_removed: numeric(safety.lastCleanupBytesRemoved),
-						last_cleanup_reason:
-							(safety.lastCleanupReason as
-								| 'archive_cap'
-								| 'filesystem_headroom'
-								| 'combined'
-								| 'reconciliation'
-								| undefined) ?? null,
-						last_failure_at_ms: optionalNumber(safety.lastFailureAtMs),
-						last_failure: safety.lastFailure ?? null,
-						last_recovered_at_ms: optionalNumber(safety.lastRecoveredAtMs)
-					}
-				: null,
-			demand: {
-				active_streams: numeric(demand.activeStreams),
-				total_viewers: numeric(demand.totalViewers),
-				leased_streams: numeric(demand.leasedStreams),
-				streams: demand.streams.map((stream) => ({
-					stream_id: stream.streamId,
-					viewers: numeric(stream.viewers),
-					lease_remaining_ms: optionalNumber(stream.leaseRemainingMs)
-				}))
-			}
-		},
-		webrtc: {
-			active_sessions: numeric(webrtc.activeSessions),
-			adaptive_sessions: numeric(webrtc.adaptiveSessions),
-			browser_sessions: numeric(webrtc.multiTrackSessions),
-			browser_tracks: numeric(webrtc.multiTracks),
-			fixed_sessions: numeric(webrtc.fixedSessions),
-			active_main: numeric(webrtc.activeMain),
-			active_sub: numeric(webrtc.activeSub),
-			requested_auto: numeric(webrtc.requestedAuto),
-			requested_high: numeric(webrtc.requestedHigh),
-			requested_low: numeric(webrtc.requestedLow),
-			estimated_bitrate_min_bps: optionalNumber(webrtc.estimatedBitrateMinBps),
-			estimated_bitrate_avg_bps: optionalNumber(webrtc.estimatedBitrateAvgBps),
-			estimated_bitrate_max_bps: optionalNumber(webrtc.estimatedBitrateMaxBps),
-			source_bitrate_bps: numeric(webrtc.sourceBitrateBps),
-			published_frames: numeric(webrtc.publishedFrames),
-			published_bytes: numeric(webrtc.publishedBytes),
-			delivered_frames: numeric(webrtc.deliveredFrames),
-			written_frames: numeric(webrtc.writtenFrames),
-			queue_capacity: numeric(webrtc.queueCapacity),
-			queued_frames: numeric(webrtc.queuedFrames),
-			queue_depth_max: numeric(webrtc.queueDepthMax),
-			queue_high_water: numeric(webrtc.queueHighWater),
-			queue_drops: numeric(webrtc.queueDrops),
-			queue_discarded_frames: numeric(webrtc.queueDiscardedFrames),
-			queue_recovery_drops: numeric(webrtc.queueRecoveryDrops),
-			session_queues: webrtc.sessionQueues.map((queue) => ({
-				session_id: numeric(queue.sessionId),
-				track_id: queue.trackId ?? null,
-				camera_ip: queue.cameraIp,
-				stream: healthStream(queue.stream),
-				depth: numeric(queue.depth),
-				high_water: numeric(queue.highWater),
-				written_frames: numeric(queue.writtenFrames),
-				full_drops: numeric(queue.fullDrops),
-				discarded_frames: numeric(queue.discardedFrames),
-				recovery_drops: numeric(queue.recoveryDrops)
-			})),
-			sources: webrtc.sources.map((source) => ({
-				camera_ip: source.cameraIp,
-				stream: healthStream(source.stream),
-				subscribers: numeric(source.subscribers),
-				bitrate_bps: optionalNumber(source.bitrateBps),
-				has_keyframe: source.hasKeyframe,
-				keyframe_age_ms: optionalNumber(source.keyframeAgeMs)
-			}))
-		},
-		cameras: health.cameras.map(cameraHealth),
-		issues: health.issues.map((issue) => ({
-			severity: issue.severity as 'critical' | 'warning' | 'info',
-			scope: issue.scope,
-			message: issue.message,
-			operational_event_id: issue.operationalEventId ?? null,
-			timeline_start_ms: issue.timelineStart ? timestampDate(issue.timelineStart).getTime() : null,
-			timeline_end_ms: issue.timelineEnd ? timestampDate(issue.timelineEnd).getTime() : null
-		})),
-		operational_events: health.operationalEvents.map((event) =>
-			recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
-		)
-	};
-}
-
-function cameraHealth(camera: ServerHealthSnapshot['cameras'][number]): CameraHealth {
-	const state = canonicalCameraHealthState(camera.state);
-	const reason = canonicalCameraHealthReason(camera.reason);
-	return {
-		id: camera.id,
-		ip: camera.ip,
-		name: camera.name,
-		manufacturer: camera.manufacturer ?? null,
-		model: camera.model ?? null,
-		firmware_version: camera.firmwareVersion ?? null,
-		backend: camera.backend,
-		transport: camera.transport,
-		state,
-		reason,
-		reason_codes:
-			camera.reasonCodes.length > 0
-				? camera.reasonCodes.map(canonicalCameraHealthReason)
-				: [reason],
-		detail: camera.detail || camera.lastError || fallbackHealthDetail(state),
-		dimensions: camera.dimensions ? cameraHealthDimensions(camera.dimensions) : null,
-		lifecycle: camera.lifecycle ?? null,
-		last_error: camera.lastError ?? null,
-		configured_profiles: camera.configuredProfiles.map(healthProfile),
-		streams: camera.streams.map(streamHealth)
-	};
-}
-
-function cameraHealthDimensions(
-	dimensions: NonNullable<ServerHealthSnapshot['cameras'][number]['dimensions']>
-): CameraHealthDimensions {
-	return {
-		configured: dimensions.configured,
-		expected: dimensions.expected,
-		configured_video_streams: numeric(dimensions.configuredVideoStreams),
-		connected_video_streams: optionalNumber(dimensions.connectedVideoStreams),
-		reporting_video_streams: numeric(dimensions.reportingVideoStreams),
-		fresh_video_streams: numeric(dimensions.freshVideoStreams),
-		decodable_video_streams: numeric(dimensions.decodableVideoStreams),
-		configured_video_stream_ids: dimensions.configuredVideoStreamIds,
-		connected_video_stream_ids: dimensions.connectedVideoStreamIdsKnown
-			? dimensions.connectedVideoStreamIds
-			: null,
-		reporting_video_stream_ids: dimensions.reportingVideoStreamIds,
-		fresh_video_stream_ids: dimensions.freshVideoStreamIds,
-		decodable_video_stream_ids: dimensions.decodableVideoStreamIds,
-		transport_connected: dimensions.transportConnected ?? null,
-		latest_report_at_ms: optionalNumber(dimensions.latestReportAtMs),
-		report_age_ms: optionalNumber(dimensions.reportAgeMs),
-		frames_fresh: dimensions.framesFresh ?? null,
-		decodable: dimensions.decodable ?? null,
-		recent_reconnects: numeric(dimensions.recentReconnects),
-		recent_drops: numeric(dimensions.recentDrops),
-		recent_errors: numeric(dimensions.recentErrors),
-		recording_requested: dimensions.recordingRequested,
-		recording_video_streams: numeric(dimensions.recordingVideoStreams),
-		recording_streams_progressing: numeric(dimensions.recordingStreamsProgressing),
-		recording_video_stream_ids: dimensions.recordingVideoStreamIds,
-		recording_progressing_stream_ids: dimensions.recordingProgressingStreamIds,
-		recording_progressing: dimensions.recordingProgressing ?? null,
-		recording_progress_age_ms: optionalNumber(dimensions.recordingProgressAgeMs),
-		session_duration_ms: optionalNumber(dimensions.sessionDurationMs),
-		recorded_main_duration_ms: numeric(dimensions.recordedMainDurationMs),
-		recorded_sub_duration_ms: numeric(dimensions.recordedSubDurationMs),
-		recorded_total_duration_ms: numeric(dimensions.recordedTotalDurationMs),
-		battery_configured: dimensions.batteryConfigured,
-		battery_registered: dimensions.batteryRegistered ?? null,
-		battery_last_seen_age_ms: optionalNumber(dimensions.batteryLastSeenAgeMs),
-		battery_wake_pending_age_ms: optionalNumber(dimensions.batteryWakePendingAgeMs),
-		battery_sleeping: dimensions.batterySleeping ?? null
-	};
-}
-
-function healthProfile(profile: HealthProfileSummary): ProfileSummary {
-	return {
-		name: profile.name,
-		stream: healthStream(profile.stream),
-		encoding: profile.encoding ?? null,
-		resolution: profile.resolution ?? null,
-		framerate: profile.framerate ?? null,
-		bitrate_kbps: profile.bitrateKbps ?? null,
-		gop: profile.gop ?? null,
-		h264_profile: profile.h264Profile ?? null,
-		audio: profile.audio
-			? {
-					encoding: profile.audio.encoding,
-					sample_rate: profile.audio.sampleRate ?? null,
-					bitrate_kbps: profile.audio.bitrateKbps ?? null
-				}
-			: null
-	};
-}
-
-function streamHealth(
-	stream: ServerHealthSnapshot['cameras'][number]['streams'][number]
-): StreamHealth {
-	const state = canonicalCameraHealthState(stream.state);
-	const reason = canonicalCameraHealthReason(stream.reason);
-	return {
-		type: stream.type,
-		codec: stream.codec,
-		resolution: stream.resolution,
-		fps: stream.fps,
-		expected_fps: stream.expectedFps,
-		kf_fps: stream.kfFps,
-		kbps: stream.kbps,
-		max_frame_kb: stream.maxFrameKb,
-		gap_min_ms: stream.gapMinMs,
-		gap_avg_ms: stream.gapAvgMs,
-		gap_max_ms: stream.gapMaxMs,
-		jitter_samples: optionalUndefinedNumber(stream.jitterSamples),
-		jitter_p50_ms: stream.jitterP50Ms,
-		jitter_p99_ms: stream.jitterP99Ms,
-		frames: optionalUndefinedNumber(stream.frames),
-		bytes: optionalUndefinedNumber(stream.bytes),
-		keyframes: optionalUndefinedNumber(stream.keyframes),
-		reconnects: optionalUndefinedNumber(stream.reconnects),
-		drops: optionalUndefinedNumber(stream.drops),
-		errors: optionalUndefinedNumber(stream.errors),
-		updated_at_ms: numeric(stream.updatedAtMs),
-		report_age_ms: numeric(stream.reportAgeMs),
-		frame_updated_at_ms: optionalNumber(stream.frameUpdatedAtMs),
-		frame_age_ms: optionalNumber(stream.frameAgeMs),
-		keyframe_updated_at_ms: optionalNumber(stream.keyframeUpdatedAtMs),
-		keyframe_age_ms: optionalNumber(stream.keyframeAgeMs),
-		recent_reconnects: numeric(stream.recentReconnects),
-		recent_drops: numeric(stream.recentDrops),
-		recent_errors: numeric(stream.recentErrors),
-		state,
-		reason,
-		reason_codes:
-			stream.reasonCodes.length > 0
-				? stream.reasonCodes.map(canonicalCameraHealthReason)
-				: [reason],
-		detail: stream.detail || fallbackHealthDetail(state),
-		dimensions: stream.dimensions ? streamHealthDimensions(stream.dimensions) : null
-	};
-}
-
-function streamHealthDimensions(
-	dimensions: NonNullable<ServerHealthSnapshot['cameras'][number]['streams'][number]['dimensions']>
-): StreamHealthDimensions {
-	return {
-		expected: dimensions.expected,
-		transport_connected: dimensions.transportConnected ?? null,
-		report_fresh: dimensions.reportFresh,
-		report_freshness_threshold_ms: numeric(dimensions.reportFreshnessThresholdMs),
-		frames_fresh: dimensions.framesFresh,
-		frame_freshness_threshold_ms: numeric(dimensions.frameFreshnessThresholdMs),
-		decodable: dimensions.decodable,
-		keyframe_freshness_threshold_ms: numeric(dimensions.keyframeFreshnessThresholdMs),
-		recent_reconnects: numeric(dimensions.recentReconnects),
-		recent_drops: numeric(dimensions.recentDrops),
-		recent_errors: numeric(dimensions.recentErrors),
-		recording_requested: dimensions.recordingRequested,
-		recording_progressing: dimensions.recordingProgressing ?? null,
-		recording_progress_age_ms: optionalNumber(dimensions.recordingProgressAgeMs),
-		session_duration_ms: numeric(dimensions.sessionDurationMs),
-		recorded_duration_ms: numeric(dimensions.recordedDurationMs)
-	};
-}
-
-function canonicalCameraHealthState(value: string): CameraHealthState {
-	if (
-		value === 'starting' ||
-		value === 'healthy' ||
-		value === 'degraded' ||
-		value === 'stale' ||
-		value === 'reconnecting' ||
-		value === 'offline' ||
-		value === 'stopped' ||
-		value === 'unknown'
-	) {
-		return value;
-	}
-	return 'unknown';
-}
-
-function canonicalCameraHealthReason(value: string): CameraHealthReason {
-	if (
-		value === 'healthy' ||
-		value === 'starting' ||
-		value === 'not_expected' ||
-		value === 'battery_sleeping' ||
-		value === 'evidence_unavailable' ||
-		value === 'transport_disconnected' ||
-		value === 'transport_reconnecting' ||
-		value === 'transport_partially_connected' ||
-		value === 'no_stream_report' ||
-		value === 'stream_report_stale' ||
-		value === 'frames_not_arriving' ||
-		value === 'frames_below_expected' ||
-		value === 'keyframes_missing' ||
-		value === 'ingress_reconnects' ||
-		value === 'ingress_drops' ||
-		value === 'ingress_errors' ||
-		value === 'recording_not_progressing'
-	) {
-		return value;
-	}
-	return 'unknown';
-}
-
-function fallbackHealthDetail(state: CameraHealthState): string {
-	if (state === 'healthy') return 'Camera evidence is current';
-	if (state === 'starting') return 'Waiting for initial camera evidence';
-	if (state === 'stale') return 'Camera media evidence is stale';
-	if (state === 'reconnecting') return 'Camera transport is reconnecting';
-	if (state === 'offline') return 'Camera transport is offline';
-	if (state === 'stopped') return 'Camera media is not expected';
-	if (state === 'degraded') return 'Camera health is degraded';
-	return 'Camera health evidence is unavailable';
-}
-
-function healthStream(value: string): 'main' | 'sub' {
-	if (value === 'main' || value === 'sub') return value;
-	throw new Error(`Server returned an unexpected health stream '${value}'.`);
-}
-
-function optionalNumber(value: bigint | undefined): number | null {
-	return value === undefined ? null : numeric(value);
-}
-
-function optionalUndefinedNumber(value: bigint | undefined): number | undefined {
-	return value === undefined ? undefined : numeric(value);
 }
 
 function camerasFromCapabilities(capabilities: ServerCapabilities): CameraListItem[] {
