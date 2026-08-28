@@ -3751,6 +3751,8 @@ function recordingEvent(
 			: null,
 		bbox_attachment_id: event.boundingBoxAttachmentId ?? null,
 		zone: event.zone ?? null,
+		text: event.text ?? null,
+		operational: operationalEventEvidence(event),
 		thumbnail_url: thumbnailUrl,
 		thumbnail_blob: thumbnailBlob,
 		attachments: eventAttachments,
@@ -3786,6 +3788,52 @@ function eventImageAvailability(
 	if (availability === ProtoEventImageAvailability.UNAVAILABLE) return 'unavailable';
 	if (availability === ProtoEventImageAvailability.NONE) return 'none';
 	return hasCanonicalImage ? 'available' : 'none';
+}
+
+function operationalEventEvidence(event: ProtoEvent): RecordingEvent['operational'] {
+	if (
+		event.eventType !== 'camera_offline' &&
+		event.eventType !== 'stream_stale' &&
+		event.eventType !== 'decode_unavailable' &&
+		event.eventType !== 'recording_interrupted'
+	) {
+		return null;
+	}
+	const severity = eventPayloadString(event, 'severity');
+	return {
+		kind: event.eventType,
+		severity: severity === 'critical' ? 'critical' : 'warning',
+		cause: eventPayloadString(event, 'cause') ?? 'evidence_unavailable',
+		explanation: event.text ?? '',
+		affected_streams: eventPayloadStrings(event, 'affected_streams'),
+		recording_interrupted: eventPayloadBoolean(event, 'recording_interrupted') ?? false,
+		evidence_source: eventPayloadString(event, 'evidence_source') ?? 'canonical_health',
+		stream_id: eventPayloadString(event, 'stream_id'),
+		duration_ms: eventPayloadNumber(event, 'duration_ms'),
+		recovered: eventPayloadBoolean(event, 'recovered') ?? event.endTime !== undefined
+	};
+}
+
+function eventPayloadString(event: ProtoEvent, key: string): string | null {
+	const value = event.payload?.[key];
+	return typeof value === 'string' ? value : null;
+}
+
+function eventPayloadBoolean(event: ProtoEvent, key: string): boolean | null {
+	const value = event.payload?.[key];
+	return typeof value === 'boolean' ? value : null;
+}
+
+function eventPayloadNumber(event: ProtoEvent, key: string): number | null {
+	const value = event.payload?.[key];
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function eventPayloadStrings(event: ProtoEvent, key: string): string[] {
+	const value = event.payload?.[key];
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === 'string')
+		: [];
 }
 
 function eventPreviewHit(hit: ProtoEventSearchHit): EventPreviewHit {
@@ -4584,8 +4632,14 @@ function serverHealth(health: ServerHealthSnapshot): ServerHealthResponse {
 		issues: health.issues.map((issue) => ({
 			severity: issue.severity as 'critical' | 'warning' | 'info',
 			scope: issue.scope,
-			message: issue.message
-		}))
+			message: issue.message,
+			operational_event_id: issue.operationalEventId ?? null,
+			timeline_start_ms: issue.timelineStart ? timestampDate(issue.timelineStart).getTime() : null,
+			timeline_end_ms: issue.timelineEnd ? timestampDate(issue.timelineEnd).getTime() : null
+		})),
+		operational_events: health.operationalEvents.map((event) =>
+			recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
+		)
 	};
 }
 

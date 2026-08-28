@@ -94,6 +94,52 @@ still returns the actual evidence ages, and clients do not add another timer or 
 These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.
 
+## Operational intervals
+
+KeepPeek projects four durable event kinds from the independent health dimensions:
+
+| Event kind              | Scope         | Evidence                                                                   |
+| ----------------------- | ------------- | -------------------------------------------------------------------------- |
+| `camera_offline`        | Camera        | No expected transport is connected, or aggregate transport is disconnected |
+| `stream_stale`          | Camera stream | The stream report is missing or stale, or frames stopped advancing         |
+| `decode_unavailable`    | Camera stream | No recent decodable keyframe exists                                        |
+| `recording_interrupted` | Camera stream | Recording was requested but writer progress stopped                        |
+
+These event kinds remain independent. One stream can be stale and undecodable while another stays
+healthy, and recording failure does not rewrite transport evidence. Native event and external
+analysis failures are not camera, stream, or recording outages.
+
+A candidate interval starts as soon as evidence fails. Monotonic elapsed time controls warning,
+critical, and recovery thresholds; server wall time supplies the displayed start and end
+timestamps. The default policy is:
+
+```toml
+[operational_events]
+warning_hold_down_secs = 15
+outage_hold_down_secs = 60
+recovery_debounce_secs = 10
+record_short_flaps = false
+
+[operational_events.cameras.front-door]
+warning_hold_down_secs = 30
+```
+
+Camera overrides may use the stable camera ID or IP address and inherit omitted global values. A
+zero duration requests an immediate transition. Durations cannot exceed 24 hours, and the warning
+hold-down cannot exceed the outage hold-down.
+
+Recovery before the warning hold-down removes the candidate unless `record_short_flaps` is true.
+Once visible, an interval keeps one event ID. Cause or severity changes increment its revision;
+stable recovery increments the same event again, records the recovery timestamp, and reports total
+duration from the original evidence-loss instant. Open intervals are restored from the recording
+catalog after restart. Stable revision replay makes notification processing at least once while
+the notification store collapses duplicate revisions.
+
+The stored timeline renders open and recovered intervals beside recording availability. Event
+payloads include severity, bounded cause and explanation, affected streams, recording consequence,
+evidence source, duration, and recovery state. Health findings link to the corresponding camera and
+timeline instant.
+
 ## Session durations
 
 Camera health reports current-process session durations separately from historical archive
@@ -159,7 +205,8 @@ counts. Unknown future state or reason strings are presented as `unknown`.
 - `keeppeek_camera_info` with the canonical state label;
 - `keeppeek_camera_health_dimension` and
   `keeppeek_camera_health_dimension_known`;
-- corresponding per-stream dimension and known gauges.
+- corresponding per-stream dimension and known gauges;
+- `keeppeek_operational_event_active`, labeled by camera, stream, event kind, and severity.
 
 There is no separate `online` or `degraded` gauge. Consumers use the canonical state label and
 explicit dimensions.
@@ -175,6 +222,6 @@ Recovery requires new positive evidence:
   recovered stream degraded;
 - a fresh report can recover stale state, while cached metadata cannot.
 
-KeepPeek does not yet persist outage intervals or send health notifications. Those features are
-tracked separately and must use this canonical projection rather than reconstructing outages from
-UI labels.
+Operational interval recovery uses this canonical projection. Delivery failure cannot change or
+close an interval because catalog persistence happens before notification publication and provider
+work runs independently from camera media.

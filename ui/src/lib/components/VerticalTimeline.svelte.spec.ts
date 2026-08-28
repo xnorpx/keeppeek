@@ -108,6 +108,51 @@ describe('VerticalTimeline', () => {
 		expect(onSeek).toHaveBeenCalledWith(eventStartMs);
 	});
 
+	it('renders an ongoing operational event as an interval', async () => {
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		const { container } = await render(VerticalTimeline, {
+			props: {
+				segments: [],
+				events: [
+					{
+						id: 'outage-1',
+						source: 'keeppeek',
+						kind: 'stream_stale',
+						start_time_ms: dayStartMs,
+						end_time_ms: null,
+						confidence: null,
+						bbox: null,
+						zone: null,
+						thumbnail_url: null,
+						operational: {
+							kind: 'stream_stale',
+							severity: 'warning',
+							cause: 'frames_not_arriving',
+							explanation: 'Sub stream frames are stale',
+							affected_streams: ['sub'],
+							recording_interrupted: true,
+							evidence_source: 'canonical_health',
+							stream_id: 'sub',
+							duration_ms: null,
+							recovered: false
+						}
+					}
+				],
+				selectedUrl: null,
+				playheadMs: null,
+				dayStartMs,
+				nowMs: dayStartMs + 60_000,
+				onSeek: vi.fn()
+			}
+		});
+
+		const interval = container.querySelector<HTMLElement>(
+			'[data-timeline-operational-event="outage-1"]'
+		);
+		expect(interval).not.toBeNull();
+		expect(Number.parseFloat(interval?.style.height ?? '0')).toBeGreaterThan(0);
+	});
+
 	it('seeks once when the playhead is dragged vertically', async () => {
 		const dayStartMs = Date.UTC(2026, 7, 10);
 		const onSeek = vi.fn();

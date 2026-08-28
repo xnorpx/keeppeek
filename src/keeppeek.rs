@@ -297,7 +297,6 @@ pub struct KeepPeekLoop {
     battery_wake: Option<BatteryWakeHandle>,
     notifications: Option<NotificationHandle>,
     camera_names: HashMap<String, String>,
-    active_outages: HashMap<String, String>,
 }
 
 impl KeepPeekLoop {
@@ -321,7 +320,6 @@ impl KeepPeekLoop {
             battery_wake: None,
             notifications: None,
             camera_names: HashMap::new(),
-            active_outages: HashMap::new(),
         }
     }
 
@@ -374,8 +372,7 @@ impl KeepPeekLoop {
         self.publish_status(status);
     }
 
-    fn publish_status(&mut self, status: CameraStatus) {
-        self.publish_health_transition(&status);
+    fn publish_status(&self, status: CameraStatus) {
         let Some(status_tx) = &self.status_tx else {
             return;
         };
@@ -914,6 +911,7 @@ impl KeepPeekLoop {
             source_identity: event.id.clone(),
             lifecycle: NotificationLifecycle::Event,
             event_kind: Some(event.kind.clone()),
+            payload: None,
             group_ids: Vec::new(),
             zone: event.zone.clone(),
             confidence: event.confidence,
@@ -931,74 +929,6 @@ impl KeepPeekLoop {
             occurred_at_ms,
             deep_link: event_deep_link(&event.camera_id, &event.id),
         });
-    }
-
-    fn publish_health_transition(&mut self, status: &CameraStatus) {
-        let Some(notifications) = self.notifications.clone() else {
-            return;
-        };
-        let source_id = status.id.to_string();
-        if status.lifecycle == CameraLifecycle::Reconnecting {
-            if self.active_outages.contains_key(&source_id) {
-                return;
-            }
-            let outage_id = format!("outage-{}", uuid::Uuid::new_v4());
-            self.active_outages
-                .insert(source_id.clone(), outage_id.clone());
-            notifications.publish(NotificationCandidate {
-                trigger: Trigger::OutageStarted,
-                source_id: source_id.clone(),
-                source_name: self.camera_names.get(&source_id).cloned(),
-                source_identity: outage_id,
-                lifecycle: NotificationLifecycle::Outage,
-                event_kind: Some("camera_outage".to_owned()),
-                group_ids: Vec::new(),
-                zone: None,
-                confidence: None,
-                attachment_path: None,
-                canonical_attachment: None,
-                icon_key: Some("alert".to_owned()),
-                image_available: false,
-                duration_ms: None,
-                severity: Severity::Warning,
-                reviewed: None,
-                bookmarked: None,
-                privacy_active: false,
-                revision: 1,
-                stage: NotificationStage::Preliminary,
-                occurred_at_ms: unix_time_ms(),
-                deep_link: health_deep_link(&source_id),
-            });
-        } else if matches!(
-            status.lifecycle,
-            CameraLifecycle::Connected | CameraLifecycle::Degraded
-        ) && let Some(outage_id) = self.active_outages.remove(&source_id)
-        {
-            notifications.publish(NotificationCandidate {
-                trigger: Trigger::Recovery,
-                source_id: source_id.clone(),
-                source_name: self.camera_names.get(&source_id).cloned(),
-                source_identity: outage_id,
-                lifecycle: NotificationLifecycle::Outage,
-                event_kind: Some("camera_outage".to_owned()),
-                group_ids: Vec::new(),
-                zone: None,
-                confidence: None,
-                attachment_path: None,
-                canonical_attachment: None,
-                icon_key: Some("alert".to_owned()),
-                image_available: false,
-                duration_ms: None,
-                severity: Severity::Info,
-                reviewed: None,
-                bookmarked: None,
-                privacy_active: false,
-                revision: 2,
-                stage: NotificationStage::Recovery,
-                occurred_at_ms: unix_time_ms(),
-                deep_link: health_deep_link(&source_id),
-            });
-        }
     }
 
     fn handle_event_while_stopping(&mut self, camera_ip: IpAddr, event: KeepPeekEvent) {
@@ -1040,12 +970,6 @@ fn event_deep_link(camera_id: &str, event_id: &str) -> String {
     query.append_pair("camera", camera_id);
     query.append_pair("event", event_id);
     format!("/events?{}", query.finish())
-}
-
-fn health_deep_link(camera_id: &str) -> String {
-    let mut query = url::form_urlencoded::Serializer::new(String::new());
-    query.append_pair("camera", camera_id);
-    format!("/system-health?{}", query.finish())
 }
 
 fn unix_time_ms() -> i64 {

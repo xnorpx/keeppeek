@@ -184,6 +184,10 @@ struct ProviderPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     image_availability: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     attachment_content_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     attachment_base64: Option<String>,
@@ -1960,6 +1964,7 @@ mod tests {
                 source_identity: "event-1".to_owned(),
                 lifecycle: Lifecycle::Event,
                 event_kind: Some("motion".to_owned()),
+                payload: None,
                 group_ids: Vec::new(),
                 zone: None,
                 confidence: Some(0.9),

@@ -9,6 +9,20 @@
 	};
 
 	let { finding, status, paperFrame = false }: Props = $props();
+
+	function findingHref(): string | null {
+		if (!finding?.camera) return null;
+		if (finding.issue.timeline_start_ms !== null && finding.issue.timeline_start_ms !== undefined) {
+			const date = new Date(finding.issue.timeline_start_ms).toISOString().slice(0, 10);
+			const search = new URLSearchParams({
+				camera: finding.camera.id,
+				date,
+				at: String(finding.issue.timeline_start_ms)
+			});
+			return `${resolve('/keep')}?${search}`;
+		}
+		return `${resolve('/system-health')}/camera/${encodeURIComponent(finding.camera.id)}`;
+	}
 </script>
 
 <section
@@ -34,14 +48,14 @@
 					: 'Every reported server and camera check is healthy.')}
 		</p>
 	</div>
-	{#if finding?.camera}
+	{#if finding?.camera && findingHref()}
 		<a
-			href={`${resolve('/system-health')}/camera/${encodeURIComponent(finding.camera.id)}`}
+			href={findingHref() ?? undefined}
 			class="inline-flex shrink-0 items-center justify-center rounded-sm bg-primary font-semibold text-on-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none {paperFrame
 				? 'h-[34px] px-4 text-[13px]'
 				: 'h-9 px-4 text-xs'}"
 		>
-			Diagnose {finding.camera.name}
+			{finding.issue.operational_event_id ? 'Open outage' : `Diagnose ${finding.camera.name}`}
 		</a>
 	{/if}
 </section>

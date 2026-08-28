@@ -1,6 +1,7 @@
 use crate::storage::safety::{StorageSafetyHealthSnapshot, filesystem_capacity};
 use crate::{
     api::{CameraLifecycle, ProfileSummary},
+    operational_events::OperationalEvent,
     stats::StreamHealthReport,
     storage::{catalog::CatalogStats, demand::RecordingDemandHealth},
     webrtc::WebRtcHealth,
@@ -377,6 +378,7 @@ pub struct ServerHealthResponse {
     pub(crate) webrtc: WebRtcHealth,
     pub cameras: Vec<CameraHealth>,
     pub issues: Vec<HealthIssue>,
+    pub(crate) operational_events: Vec<OperationalEvent>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -429,6 +431,9 @@ pub struct HealthIssue {
     pub severity: String,
     pub scope: String,
     pub message: String,
+    pub operational_event_id: Option<String>,
+    pub timeline_start_ms: Option<i64>,
+    pub timeline_end_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

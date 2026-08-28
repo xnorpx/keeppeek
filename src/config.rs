@@ -6,6 +6,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
+    time::Duration,
 };
 use url::Url;
 
@@ -81,8 +82,133 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
 
+    #[serde(default)]
+    pub operational_events: OperationalEventsConfig,
+
     #[serde(skip)]
     pub(crate) source: toml::Table,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OperationalEventsConfig {
+    #[serde(default = "default_operational_warning_hold_down_secs")]
+    pub warning_hold_down_secs: u64,
+    #[serde(default = "default_operational_outage_hold_down_secs")]
+    pub outage_hold_down_secs: u64,
+    #[serde(default = "default_operational_recovery_debounce_secs")]
+    pub recovery_debounce_secs: u64,
+    #[serde(default)]
+    pub record_short_flaps: bool,
+    #[serde(default)]
+    pub cameras: BTreeMap<String, OperationalEventOverride>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct OperationalEventOverride {
+    pub warning_hold_down_secs: Option<u64>,
+    pub outage_hold_down_secs: Option<u64>,
+    pub recovery_debounce_secs: Option<u64>,
+    pub record_short_flaps: Option<bool>,
+}
+
+impl OperationalEventsConfig {
+    pub(crate) fn policy_for(
+        &self,
+        camera_id: &str,
+        camera_ip: &str,
+    ) -> crate::operational_events::OperationalEventPolicy {
+        let configured = self
+            .cameras
+            .get(camera_id)
+            .or_else(|| self.cameras.get(camera_ip));
+        crate::operational_events::OperationalEventPolicy {
+            warning_hold_down: Duration::from_secs(
+                configured
+                    .and_then(|value| value.warning_hold_down_secs)
+                    .unwrap_or(self.warning_hold_down_secs),
+            ),
+            outage_hold_down: Duration::from_secs(
+                configured
+                    .and_then(|value| value.outage_hold_down_secs)
+                    .unwrap_or(self.outage_hold_down_secs),
+            ),
+            recovery_debounce: Duration::from_secs(
+                configured
+                    .and_then(|value| value.recovery_debounce_secs)
+                    .unwrap_or(self.recovery_debounce_secs),
+            ),
+            record_short_flaps: configured
+                .and_then(|value| value.record_short_flaps)
+                .unwrap_or(self.record_short_flaps),
+        }
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        validate_operational_policy(
+            self.warning_hold_down_secs,
+            self.outage_hold_down_secs,
+            self.recovery_debounce_secs,
+            "global operational event",
+        )?;
+        for (camera, configured) in &self.cameras {
+            if camera.trim().is_empty() || camera.len() > 256 {
+                anyhow::bail!("operational event camera keys must contain 1 to 256 bytes");
+            }
+            validate_operational_policy(
+                configured
+                    .warning_hold_down_secs
+                    .unwrap_or(self.warning_hold_down_secs),
+                configured
+                    .outage_hold_down_secs
+                    .unwrap_or(self.outage_hold_down_secs),
+                configured
+                    .recovery_debounce_secs
+                    .unwrap_or(self.recovery_debounce_secs),
+                &format!("operational event camera '{camera}'"),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Default for OperationalEventsConfig {
+    fn default() -> Self {
+        Self {
+            warning_hold_down_secs: default_operational_warning_hold_down_secs(),
+            outage_hold_down_secs: default_operational_outage_hold_down_secs(),
+            recovery_debounce_secs: default_operational_recovery_debounce_secs(),
+            record_short_flaps: false,
+            cameras: BTreeMap::new(),
+        }
+    }
+}
+
+fn validate_operational_policy(
+    warning_hold_down_secs: u64,
+    outage_hold_down_secs: u64,
+    recovery_debounce_secs: u64,
+    scope: &str,
+) -> anyhow::Result<()> {
+    const MAX_DURATION_SECS: u64 = 24 * 60 * 60;
+    if warning_hold_down_secs > outage_hold_down_secs {
+        anyhow::bail!("{scope} warning hold-down cannot exceed its outage hold-down");
+    }
+    if outage_hold_down_secs > MAX_DURATION_SECS || recovery_debounce_secs > MAX_DURATION_SECS {
+        anyhow::bail!("{scope} debounce durations cannot exceed 86400 seconds");
+    }
+    Ok(())
+}
+
+const fn default_operational_warning_hold_down_secs() -> u64 {
+    15
+}
+
+const fn default_operational_outage_hold_down_secs() -> u64 {
+    60
+}
+
+const fn default_operational_recovery_debounce_secs() -> u64 {
+    10
 }
 
 impl Config {
@@ -694,6 +820,7 @@ impl Default for Config {
             storage: StorageToml::default(),
             battery_wake: BatteryWakeConfig::default(),
             logging: LoggingConfig::default(),
+            operational_events: OperationalEventsConfig::default(),
             source: toml::Table::new(),
         }
     }
@@ -1062,6 +1189,7 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     }
     cfg.access.validate()?;
     cfg.direct_card.validate()?;
+    cfg.operational_events.validate()?;
 
     let default_recordings = config_directory
         .join("recordings")
@@ -1370,6 +1498,7 @@ fn is_reserved_section(namespace: &str) -> bool {
             | "direct_card"
             | "homekit"
             | "logging"
+            | "operational_events"
             | "camera_defaults"
             | STORAGE_MIGRATION_SECTION
     )
@@ -1845,6 +1974,35 @@ mod tests {
     use super::*;
     use crate::storage::{CatalogRecording, RecordingCatalog};
 
+    #[test]
+    fn operational_event_policy_resolves_camera_override_and_validates_order() {
+        let config: Config = toml::from_str(
+            r#"
+                [operational_events]
+                warning_hold_down_secs = 10
+                outage_hold_down_secs = 30
+                recovery_debounce_secs = 5
+
+                [operational_events.cameras.front-door]
+                warning_hold_down_secs = 2
+                record_short_flaps = true
+            "#,
+        )
+        .unwrap();
+        config.operational_events.validate().unwrap();
+        let policy = config
+            .operational_events
+            .policy_for("front-door", "192.0.2.10");
+        assert_eq!(policy.warning_hold_down, Duration::from_secs(2));
+        assert_eq!(policy.outage_hold_down, Duration::from_secs(30));
+        assert_eq!(policy.recovery_debounce, Duration::from_secs(5));
+        assert!(policy.record_short_flaps);
+
+        let invalid: OperationalEventsConfig =
+            toml::from_str("warning_hold_down_secs = 31\noutage_hold_down_secs = 30").unwrap();
+        assert!(invalid.validate().is_err());
+    }
+
     fn create_migration_catalog(catalog_path: &Path, recording_path: &Path) {
         let catalog = RecordingCatalog::open(catalog_path).unwrap();
         let handle = catalog.handle();
@@ -1935,6 +2093,37 @@ mod tests {
 
         let cameras = load_cameras(&path).unwrap();
         assert!(cameras.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn operational_event_config_is_not_treated_as_camera_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-operational-event-config-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [operational_events]
+                warning_hold_down_secs = 15
+                outage_hold_down_secs = 60
+                recovery_debounce_secs = 10
+
+                [operational_events.cameras]
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                username = "operator"
+                password = "secret"
+            "#,
+        )
+        .unwrap();
+
+        let cameras = load_cameras(&path).unwrap();
+        assert_eq!(cameras.len(), 1);
+        assert_eq!(cameras["cameras"].len(), 1);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

@@ -6,6 +6,7 @@
 	import { buildTimelineAvailability } from '$lib/timeline-availability';
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ScanSearchIcon from '@lucide/svelte/icons/scan-search';
+	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import ZoomInIcon from '@lucide/svelte/icons/zoom-in';
 	import ZoomOutIcon from '@lucide/svelte/icons/zoom-out';
 
@@ -169,8 +170,8 @@
 	let visibleEvents = $derived(
 		events.filter(
 			(event) =>
-				event.start_time_ms >= renderStartMs &&
 				event.start_time_ms <= renderEndMs &&
+				eventRangeEnd(event) >= renderStartMs &&
 				eventMatchesFilter(event.kind)
 		)
 	);
@@ -204,6 +205,10 @@
 
 	function rangeHeight(startMs: number, endMs: number): number {
 		return Math.max(1, timestampTop(startMs) - timestampTop(endMs));
+	}
+
+	function eventRangeEnd(event: RecordingEvent): number {
+		return event.end_time_ms ?? (event.operational ? timelineEndMs : event.start_time_ms);
 	}
 
 	function eventCardTop(top: number): number {
@@ -638,18 +643,26 @@
 					></div>
 				{/each}
 				{#each visibleEvents as event (event.id)}
-					{#if event.end_time_ms !== null && event.end_time_ms > event.start_time_ms}
+					{#if eventRangeEnd(event) > event.start_time_ms}
 						<span
 							data-timeline-activity={event.id}
-							class="pointer-events-none absolute inset-x-0 z-20 min-h-0.5 bg-activity"
-							style:top={`${timestampTop(event.end_time_ms)}px`}
-							style:height={`${Math.max(2, rangeHeight(event.start_time_ms, event.end_time_ms))}px`}
+							data-timeline-operational-event={event.operational ? event.id : undefined}
+							class="pointer-events-none absolute inset-x-0 z-20 min-h-0.5 {event.operational
+								?.severity === 'critical'
+								? 'bg-live/75'
+								: 'bg-activity'}"
+							style:top={`${timestampTop(eventRangeEnd(event))}px`}
+							style:height={`${Math.max(2, rangeHeight(event.start_time_ms, eventRangeEnd(event)))}px`}
 						></span>
 					{/if}
 					<span
 						data-timeline-event-marker={event.id}
-						class="pointer-events-none absolute left-1/2 z-30 -translate-x-1/2 rounded-full bg-primary {displayedPlayheadMs !==
-							null &&
+						class="pointer-events-none absolute left-1/2 z-30 -translate-x-1/2 rounded-full {event
+							.operational?.severity === 'critical'
+							? 'bg-live'
+							: event.operational
+								? 'bg-activity'
+								: 'bg-primary'} {displayedPlayheadMs !== null &&
 						displayedPlayheadMs >= event.start_time_ms &&
 						displayedPlayheadMs <= (event.end_time_ms ?? event.start_time_ms)
 							? 'size-3 border-2 border-foreground'
@@ -679,7 +692,13 @@
 					title={`${eventLabel(cluster.event.kind)} · ${formatTime(cluster.event.start_time_ms)}`}
 					onclick={() => selectEvent(cluster.event)}
 				>
-					{#if cluster.event.thumbnail_url}
+					{#if cluster.event.operational}
+						<span
+							class="grid h-[53px] w-[94px] shrink-0 place-items-center rounded-[2px] border border-activity/60 bg-activity/10 text-activity"
+						>
+							<TriangleAlertIcon class="size-5" />
+						</span>
+					{:else if cluster.event.thumbnail_url}
 						{#if paperFrame}
 							<span class="h-[53px] w-[94px] shrink-0 rounded-[2px] bg-video"></span>
 						{:else}
@@ -706,9 +725,9 @@
 							{eventLabel(cluster.event.kind)}
 						</span>
 						<span class="block truncate text-2xs text-text-faint">
-							{cluster.event.source}{cluster.event.confidence === null
-								? ''
-								: ` · ${cluster.event.confidence.toFixed(2)}`}
+							{cluster.event.operational
+								? `${cluster.event.operational.affected_streams.join(', ') || 'camera'} · ${cluster.event.operational.recovered ? 'recovered' : 'ongoing'}`
+								: `${cluster.event.source}${cluster.event.confidence === null ? '' : ` · ${cluster.event.confidence.toFixed(2)}`}`}
 						</span>
 					</span>
 					{#if cluster.count > 1}

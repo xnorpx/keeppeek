@@ -1900,6 +1900,7 @@ message ServerHealthSnapshot {
   repeated CameraHealthSnapshot cameras = 9;
   repeated HealthIssueSnapshot issues = 10;
   uint32 health_contract_version = 11;
+  repeated Event operational_events = 12;
 }
 
 message HealthTotalsSnapshot {
@@ -2065,6 +2066,9 @@ message HealthIssueSnapshot {
   string severity = 1;
   string scope = 2;
   string message = 3;
+  optional string operational_event_id = 4;
+  optional google.protobuf.Timestamp timeline_start = 5;
+  optional google.protobuf.Timestamp timeline_end = 6;
 }
 
 message SystemHealthSnapshot {

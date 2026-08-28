@@ -36,6 +36,7 @@ use crate::{
         AttemptRecord, ClearScope, Handle as NotificationHandle, HistoryEvent, HistoryGroup, Inbox,
         NotificationItem, RuleRecord, RuleStoreError, Stage, model::Rule as NotificationRule,
     },
+    operational_events::OperationalEvent,
     rtsp::{RtspTransport, probe_rtsp_video},
     runtime::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
@@ -65,7 +66,7 @@ use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom, Write},
     net::{IpAddr, Ipv4Addr, TcpListener, ToSocketAddrs},
@@ -6928,7 +6929,36 @@ fn query_stored_events(
                 attachment: stored_attachment,
             });
         }
+        let operational_events = store
+            .operational_events_in_range(&camera.info.id, start_ms, end_ms)
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Internal,
+                    500,
+                    format!("unable to query stored operational events: {error}"),
+                )
+            })?;
+        for event in operational_events {
+            if !event_types.is_empty() && !event_types.contains(event.key.kind.as_str()) {
+                continue;
+            }
+            results.push(StoredTimelineEvent {
+                event: proto_operational_event(event),
+                attachment: None,
+            });
+        }
     }
+    results.sort_unstable_by(|left, right| {
+        let timestamp = |event: &proto::Event| {
+            event
+                .start_time
+                .as_ref()
+                .map_or((i64::MIN, i32::MIN), |value| (value.seconds, value.nanos))
+        };
+        timestamp(&left.event)
+            .cmp(&timestamp(&right.event))
+            .then(left.event.event_id.cmp(&right.event.event_id))
+    });
     Ok(results)
 }
 
@@ -7135,9 +7165,121 @@ fn proto_health_snapshot(health: ServerHealthResponse) -> proto::ServerHealthSna
                 severity: issue.severity,
                 scope: issue.scope,
                 message: issue.message,
+                operational_event_id: issue.operational_event_id,
+                timeline_start: issue.timeline_start_ms.map(millis_timestamp),
+                timeline_end: issue.timeline_end_ms.map(millis_timestamp),
             })
             .collect(),
         health_contract_version: health.health_contract_version,
+        operational_events: health
+            .operational_events
+            .into_iter()
+            .map(proto_operational_event)
+            .collect(),
+    }
+}
+
+fn proto_operational_event(event: OperationalEvent) -> proto::Event {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "severity".to_owned(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::StringValue(
+                event.severity.as_str().to_owned(),
+            )),
+        },
+    );
+    fields.insert(
+        "cause".to_owned(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::StringValue(
+                event.evidence.cause.clone(),
+            )),
+        },
+    );
+    fields.insert(
+        "affected_streams".to_owned(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::ListValue(
+                prost_types::ListValue {
+                    values: event
+                        .evidence
+                        .affected_streams
+                        .iter()
+                        .map(|stream| prost_types::Value {
+                            kind: Some(prost_types::value::Kind::StringValue(stream.clone())),
+                        })
+                        .collect(),
+                },
+            )),
+        },
+    );
+    fields.insert(
+        "recording_interrupted".to_owned(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::BoolValue(
+                event.evidence.recording_interrupted,
+            )),
+        },
+    );
+    fields.insert(
+        "evidence_source".to_owned(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::StringValue(
+                event.evidence.source.clone(),
+            )),
+        },
+    );
+    fields.insert(
+        "recovered".to_owned(),
+        prost_types::Value {
+            kind: Some(prost_types::value::Kind::BoolValue(
+                event.end_time_ms.is_some(),
+            )),
+        },
+    );
+    if let Some(stream_id) = &event.key.stream_id {
+        fields.insert(
+            "stream_id".to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue(stream_id.clone())),
+            },
+        );
+    }
+    if let Some(duration_ms) = event.duration_ms {
+        fields.insert(
+            "duration_ms".to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::NumberValue(duration_ms as f64)),
+            },
+        );
+    }
+    proto::Event {
+        event_id: event.id,
+        revision: event.revision,
+        source_id: event.key.camera_id,
+        media_kind: event
+            .key
+            .stream_id
+            .as_ref()
+            .map(|_| proto::MediaKind::Video as i32),
+        origin: proto::EventOrigin::Keeppeek as i32,
+        event_type: event.key.kind.as_str().to_owned(),
+        start_time: Some(millis_timestamp(event.start_time_ms)),
+        end_time: event.end_time_ms.map(millis_timestamp),
+        confidence: None,
+        bounding_box: None,
+        zone: None,
+        text: Some(event.evidence.explanation),
+        payload: Some(prost_types::Struct { fields }),
+        attachments: Vec::new(),
+        source_session_id: None,
+        subscription_id: None,
+        canonical_attachment_id: None,
+        icon_key: Some("alert".to_owned()),
+        rejected_icon_key: None,
+        bounding_box_attachment_id: None,
+        image_availability: proto::EventImageAvailability::None as i32,
     }
 }
 
@@ -10525,6 +10667,57 @@ fn server_health_status(issues: &[HealthIssue]) -> &'static str {
     }
 }
 
+pub(crate) fn camera_health_snapshots(
+    router_tx: &FacadeSender<RouterMessage>,
+    state: &ServerState,
+) -> anyhow::Result<Vec<CameraHealth>> {
+    let lifecycle = match query_router(router_tx, RouterQuery::ListCameras)
+        .map_err(|_| anyhow::anyhow!("camera lifecycle router is unavailable"))?
+    {
+        RouterResponse::Cameras(statuses) => statuses
+            .into_iter()
+            .map(|status| (status.id.to_string(), status))
+            .collect::<HashMap<_, _>>(),
+        RouterResponse::Camera(_) => anyhow::bail!("router returned an unexpected camera response"),
+    };
+    let mut ingress = state
+        .health
+        .snapshot()
+        .into_iter()
+        .map(|report| (report.ip, report))
+        .collect::<HashMap<_, _>>();
+    let recording_health = state
+        .recording_health
+        .snapshot()
+        .streams
+        .into_iter()
+        .map(|stream| (stream.stream_id.clone(), stream))
+        .collect::<HashMap<_, _>>();
+    let uptime_seconds = state.started_at.elapsed().as_secs();
+    Ok(state
+        .camera_entries()
+        .into_iter()
+        .map(|camera| {
+            let info = state.camera_info(&camera);
+            let streams = camera
+                .info
+                .ip
+                .parse::<IpAddr>()
+                .ok()
+                .and_then(|ip| ingress.remove(&ip))
+                .map_or_else(Vec::new, |report| report.streams);
+            let context = CameraProjectionContext {
+                router_status: lifecycle.get(&camera.recording_label),
+                recording_health: &recording_health,
+                battery_wake: state.battery_wake.as_ref(),
+                storage_config: &state.storage_config,
+                uptime_seconds,
+            };
+            project_camera_snapshot(&camera, info, streams, &context)
+        })
+        .collect())
+}
+
 fn server_health(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
@@ -10536,6 +10729,22 @@ fn server_health(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .snapshot(&state.storage_config.long_term_path);
     let mut issues = Vec::new();
+    let operational_events = state.events.as_ref().map_or_else(Vec::new, |events| {
+        match events.open_operational_events() {
+            Ok(events) => events,
+            Err(error) => {
+                issues.push(HealthIssue {
+                    severity: "warning".to_owned(),
+                    scope: "storage".to_owned(),
+                    message: format!("Operational event history is unavailable: {error}"),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
+                });
+                Vec::new()
+            }
+        }
+    });
     let lifecycle = match query_router(router_tx, RouterQuery::ListCameras) {
         Ok(RouterResponse::Cameras(statuses)) => statuses
             .into_iter()
@@ -10546,6 +10755,9 @@ fn server_health(
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
                 message: "Router returned an unexpected camera response".to_owned(),
+                operational_event_id: None,
+                timeline_start_ms: None,
+                timeline_end_ms: None,
             });
             HashMap::new()
         }
@@ -10554,6 +10766,9 @@ fn server_health(
                 severity: "warning".to_owned(),
                 scope: "runtime".to_owned(),
                 message: "Camera lifecycle router did not answer the health query".to_owned(),
+                operational_event_id: None,
+                timeline_start_ms: None,
+                timeline_end_ms: None,
             });
             HashMap::new()
         }
@@ -10626,6 +10841,9 @@ fn server_health(
                         "{} frame-arrival jitter P99 is {:.1} ms",
                         stream.report.kind, stream.report.jitter_p99_ms
                     ),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
                 });
             }
             if stream.report.gap_max_ms > 2_000.0 {
@@ -10640,6 +10858,9 @@ fn server_health(
                         "{} maximum frame gap is {:.0} ms",
                         stream.report.kind, stream.report.gap_max_ms
                     ),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
                 });
             }
             if stream.recent_drops > 0 || stream.recent_errors > 0 {
@@ -10654,6 +10875,9 @@ fn server_health(
                         "{} recent drops {}, errors {}",
                         stream.report.kind, stream.recent_drops, stream.recent_errors
                     ),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
                 });
             }
         }
@@ -10684,11 +10908,29 @@ fn server_health(
             camera_health.state,
             CameraHealthState::Healthy | CameraHealthState::Starting | CameraHealthState::Stopped
         ) {
-            issues.push(HealthIssue {
-                severity: "warning".to_owned(),
-                scope: camera_health.id.clone(),
-                message: camera_health.detail.clone(),
-            });
+            let related = operational_events
+                .iter()
+                .filter(|event| event.key.camera_id == camera_health.id)
+                .collect::<Vec<_>>();
+            if related.is_empty() {
+                issues.push(HealthIssue {
+                    severity: "warning".to_owned(),
+                    scope: camera_health.id.clone(),
+                    message: camera_health.detail.clone(),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
+                });
+            } else {
+                issues.extend(related.into_iter().map(|event| HealthIssue {
+                    severity: event.severity.as_str().to_owned(),
+                    scope: camera_health.id.clone(),
+                    message: event.evidence.explanation.clone(),
+                    operational_event_id: Some(event.id.clone()),
+                    timeline_start_ms: Some(event.start_time_ms),
+                    timeline_end_ms: event.end_time_ms,
+                }));
+            }
         }
         cameras.push(camera_health);
     }
@@ -10703,6 +10945,9 @@ fn server_health(
                     severity: "warning".to_owned(),
                     scope: "storage".to_owned(),
                     message: format!("Recording catalog statistics are unavailable: {error}"),
+                    operational_event_id: None,
+                    timeline_start_ms: None,
+                    timeline_end_ms: None,
                 });
                 None
             }
@@ -10741,6 +10986,9 @@ fn server_health(
                 },
                 |failure| format!("Recording is paused: {failure}"),
             ),
+            operational_event_id: None,
+            timeline_start_ms: None,
+            timeline_end_ms: None,
         });
     } else if matches!(storage.safety.pressure.as_str(), "warning" | "critical") {
         issues.push(HealthIssue {
@@ -10751,6 +10999,9 @@ fn server_health(
                 storage.safety.available_bytes.unwrap_or(0),
                 storage.safety.recovery_free_bytes,
             ),
+            operational_event_id: None,
+            timeline_start_ms: None,
+            timeline_end_ms: None,
         });
     }
     if system.memory.total_bytes > 0
@@ -10760,6 +11011,9 @@ fn server_health(
             severity: "critical".to_owned(),
             scope: "system".to_owned(),
             message: "System memory has less than 5% available".to_owned(),
+            operational_event_id: None,
+            timeline_start_ms: None,
+            timeline_end_ms: None,
         });
     }
     let webrtc = state.webrtc.health_snapshot();
@@ -10773,6 +11027,9 @@ fn server_health(
                 webrtc.queue_discarded_frames,
                 webrtc.queue_recovery_drops
             ),
+            operational_event_id: None,
+            timeline_start_ms: None,
+            timeline_end_ms: None,
         });
     }
     let status = server_health_status(&issues);
@@ -10789,6 +11046,7 @@ fn server_health(
         webrtc,
         cameras,
         issues,
+        operational_events,
     }
 }
 
@@ -12580,6 +12838,9 @@ mod tests {
             severity: "warning".to_owned(),
             scope: "object-detector".to_owned(),
             message: "External detector is unavailable".to_owned(),
+            operational_event_id: None,
+            timeline_start_ms: None,
+            timeline_end_ms: None,
         }];
 
         assert_eq!(camera.state, CameraHealthState::Healthy);
@@ -12669,7 +12930,7 @@ mod tests {
         let router_worker =
             std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(30))));
 
-        let health = server_health(&router_tx, &state);
+        let mut health = server_health(&router_tx, &state);
         assert_eq!(router_worker.join().unwrap().unwrap(), 1);
         assert_eq!(health.cameras[0].state, CameraHealthState::Starting);
         assert_eq!(health.cameras[0].reason, CameraHealthReason::Starting);
@@ -12696,11 +12957,37 @@ mod tests {
             780_000
         );
 
+        health
+            .operational_events
+            .push(crate::operational_events::OperationalEvent {
+                id: "operational-1".to_owned(),
+                key: crate::operational_events::OperationalEventKey {
+                    camera_id: "front-door".to_owned(),
+                    stream_id: Some("main".to_owned()),
+                    kind: crate::operational_events::OperationalEventKind::RecordingInterrupted,
+                },
+                evidence: crate::operational_events::OperationalEvidence {
+                    cause: "recording_not_progressing".to_owned(),
+                    explanation: "Requested recording writes are not progressing".to_owned(),
+                    affected_streams: vec!["main".to_owned()],
+                    recording_interrupted: true,
+                    source: "recording_writer".to_owned(),
+                },
+                severity: crate::operational_events::OperationalSeverity::Critical,
+                revision: 2,
+                start_time_ms: 1_000,
+                end_time_ms: None,
+                duration_ms: Some(60_000),
+            });
+
         let metrics = crate::metrics::encode_health(&health).unwrap();
         assert!(metrics.contains("state=\"starting\""));
         assert!(!metrics.contains("keeppeek_camera_online"));
         assert!(!metrics.contains("keeppeek_camera_degraded"));
         assert!(metrics.contains("dimension=\"frames_fresh\""));
+        assert!(metrics.contains("keeppeek_operational_event_active"));
+        assert!(metrics.contains("kind=\"recording_interrupted\""));
+        assert!(metrics.contains("severity=\"critical\""));
         let proto = proto_health_snapshot(health);
         assert_eq!(
             proto.health_contract_version,
@@ -12714,6 +13001,24 @@ mod tests {
         assert_eq!(dimensions.recorded_sub_duration_ms, 300_000);
         assert_eq!(dimensions.recorded_total_duration_ms, 780_000);
         assert_eq!(proto.totals.unwrap().fresh_cameras, 0);
+        assert_eq!(proto.operational_events.len(), 1);
+        let operational = &proto.operational_events[0];
+        assert_eq!(operational.event_id, "operational-1");
+        assert_eq!(operational.revision, 2);
+        assert_eq!(operational.event_type, "recording_interrupted");
+        assert_eq!(
+            operational.text.as_deref(),
+            Some("Requested recording writes are not progressing")
+        );
+        assert!(matches!(
+            operational
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.fields.get("cause"))
+                .and_then(|value| value.kind.as_ref()),
+            Some(prost_types::value::Kind::StringValue(cause))
+                if cause == "recording_not_progressing"
+        ));
     }
 
     fn media_request(

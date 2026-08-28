@@ -1,10 +1,16 @@
-use crate::storage::{
-    metadata::{
-        EventAttachment, EventSource, TimelineEvent, canonical_event_attachment, event_icon,
+use crate::{
+    operational_events::{
+        OperationalEvent, OperationalEventKey, OperationalEventKind, OperationalEvidence,
+        OperationalSeverity,
     },
-    search::{
-        EventEmbedding, EventImageFilter, EventMetadataQuery, EventSearchHit, EventSearchPage,
-        EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
+    storage::{
+        metadata::{
+            EventAttachment, EventSource, TimelineEvent, canonical_event_attachment, event_icon,
+        },
+        search::{
+            EventEmbedding, EventImageFilter, EventMetadataQuery, EventSearchHit, EventSearchPage,
+            EventSearchTerm, EventSemanticSearchQuery, EventTextSearchQuery, normalize_search_text,
+        },
     },
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -290,6 +296,19 @@ enum Command {
     EventById {
         id: String,
         reply: SyncSender<anyhow::Result<Option<TimelineEvent>>>,
+    },
+    UpsertOperationalEvent {
+        event: OperationalEvent,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
+    OperationalEventsInRange {
+        camera_id: String,
+        start_ms: i64,
+        end_ms: i64,
+        reply: SyncSender<anyhow::Result<Vec<OperationalEvent>>>,
+    },
+    OpenOperationalEvents {
+        reply: SyncSender<anyhow::Result<Vec<OperationalEvent>>>,
     },
     LinkEventKeyframe {
         link: CatalogEventKeyframeLink,
@@ -786,6 +805,49 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub(crate) fn upsert_operational_event(&self, event: OperationalEvent) -> anyhow::Result<()> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::UpsertOperationalEvent { event, reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn operational_events_in_range(
+        &self,
+        camera_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> anyhow::Result<Vec<OperationalEvent>> {
+        if start_ms >= end_ms {
+            anyhow::bail!("operational event query start must be before end");
+        }
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::OperationalEventsInRange {
+                camera_id: camera_id.to_owned(),
+                start_ms,
+                end_ms,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn open_operational_events(&self) -> anyhow::Result<Vec<OperationalEvent>> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::OpenOperationalEvents { reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
     pub fn link_event_keyframe(&self, link: CatalogEventKeyframeLink) -> anyhow::Result<()> {
         if link.event_id.is_empty() || link.stream_id.is_empty() {
             anyhow::bail!("event and stream identifiers must not be empty");
@@ -1175,6 +1237,28 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             }
             Command::EventById { id, reply } => {
                 let _ = reply.send(pollster::block_on(event_by_id(&connection, &id)));
+            }
+            Command::UpsertOperationalEvent { event, reply } => {
+                let _ = reply.send(pollster::block_on(upsert_operational_event(
+                    &connection,
+                    event,
+                )));
+            }
+            Command::OperationalEventsInRange {
+                camera_id,
+                start_ms,
+                end_ms,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(operational_events_in_range(
+                    &connection,
+                    &camera_id,
+                    start_ms,
+                    end_ms,
+                )));
+            }
+            Command::OpenOperationalEvents { reply } => {
+                let _ = reply.send(pollster::block_on(open_operational_events(&connection)));
             }
             Command::LinkEventKeyframe { link, reply } => {
                 let _ = reply.send(pollster::block_on(link_event_keyframe(&connection, link)));
@@ -1856,6 +1940,26 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  ON recording_events(camera_id, start_time_ms, end_time_ms);
              CREATE INDEX IF NOT EXISTS recording_events_time
                  ON recording_events(start_time_ms, id);
+             CREATE TABLE IF NOT EXISTS operational_events (
+                 id TEXT PRIMARY KEY,
+                 camera_id TEXT NOT NULL,
+                 stream_id TEXT,
+                 kind TEXT NOT NULL,
+                 severity TEXT NOT NULL,
+                 revision INTEGER NOT NULL,
+                 start_time_ms INTEGER NOT NULL,
+                 end_time_ms INTEGER,
+                 duration_ms INTEGER,
+                 cause TEXT NOT NULL,
+                 explanation TEXT NOT NULL,
+                 affected_streams_json TEXT NOT NULL,
+                 recording_interrupted INTEGER NOT NULL,
+                 evidence_source TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS operational_events_camera_time
+                 ON operational_events(camera_id, start_time_ms, end_time_ms);
+             CREATE INDEX IF NOT EXISTS operational_events_open
+                 ON operational_events(end_time_ms, camera_id, kind, stream_id);
              CREATE TABLE IF NOT EXISTS recording_event_keyframes (
                  event_id TEXT NOT NULL REFERENCES recording_events(id) ON DELETE CASCADE,
                  stream_id TEXT NOT NULL,
@@ -2803,6 +2907,115 @@ async fn event_by_id(
         .await?
         .map(|row| event_from_row(&row))
         .transpose()
+}
+
+async fn upsert_operational_event(
+    connection: &turso::Connection,
+    event: OperationalEvent,
+) -> anyhow::Result<()> {
+    if event.id.is_empty() || event.revision == 0 {
+        anyhow::bail!("operational event identity and revision must be present");
+    }
+    if event
+        .end_time_ms
+        .is_some_and(|end_time_ms| end_time_ms < event.start_time_ms)
+    {
+        anyhow::bail!("operational event end must not precede its start");
+    }
+    let affected_streams_json = serde_json::to_string(&event.evidence.affected_streams)?;
+    connection
+        .execute(
+            "INSERT INTO operational_events (
+                 id, camera_id, stream_id, kind, severity, revision, start_time_ms,
+                 end_time_ms, duration_ms, cause, explanation, affected_streams_json,
+                 recording_interrupted, evidence_source
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(id) DO UPDATE SET
+                 stream_id = excluded.stream_id,
+                 kind = excluded.kind,
+                 severity = excluded.severity,
+                 revision = excluded.revision,
+                 end_time_ms = excluded.end_time_ms,
+                 duration_ms = excluded.duration_ms,
+                 cause = excluded.cause,
+                 explanation = excluded.explanation,
+                 affected_streams_json = excluded.affected_streams_json,
+                 recording_interrupted = excluded.recording_interrupted,
+                 evidence_source = excluded.evidence_source
+             WHERE excluded.revision > operational_events.revision",
+            turso::params![
+                event.id,
+                event.key.camera_id,
+                event.key.stream_id,
+                event.key.kind.as_str(),
+                event.severity.as_str(),
+                to_i64(event.revision, "operational event revision")?,
+                event.start_time_ms,
+                event.end_time_ms,
+                event
+                    .duration_ms
+                    .map(|value| to_i64(value, "operational event duration"))
+                    .transpose()?,
+                event.evidence.cause,
+                event.evidence.explanation,
+                affected_streams_json,
+                i64::from(event.evidence.recording_interrupted),
+                event.evidence.source,
+            ],
+        )
+        .await?;
+    Ok(())
+}
+
+const OPERATIONAL_EVENT_COLUMNS: &str = "id, camera_id, stream_id, kind, severity, revision,
+    start_time_ms, end_time_ms, duration_ms, cause, explanation, affected_streams_json,
+    recording_interrupted, evidence_source";
+
+async fn operational_events_in_range(
+    connection: &turso::Connection,
+    camera_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> anyhow::Result<Vec<OperationalEvent>> {
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT {OPERATIONAL_EVENT_COLUMNS}
+                 FROM operational_events
+                 WHERE camera_id = ?1
+                   AND start_time_ms < ?3
+                   AND COALESCE(end_time_ms, ?3) > ?2
+                 ORDER BY start_time_ms, id"
+            ),
+            turso::params![camera_id, start_ms, end_ms],
+        )
+        .await?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next().await? {
+        events.push(operational_event_from_row(&row)?);
+    }
+    Ok(events)
+}
+
+async fn open_operational_events(
+    connection: &turso::Connection,
+) -> anyhow::Result<Vec<OperationalEvent>> {
+    let mut rows = connection
+        .query(
+            format!(
+                "SELECT {OPERATIONAL_EVENT_COLUMNS}
+                 FROM operational_events
+                 WHERE end_time_ms IS NULL
+                 ORDER BY start_time_ms, id"
+            ),
+            (),
+        )
+        .await?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next().await? {
+        events.push(operational_event_from_row(&row)?);
+    }
+    Ok(events)
 }
 
 async fn link_event_keyframe(
@@ -3952,6 +4165,40 @@ fn event_from_row(row: &turso::Row) -> anyhow::Result<TimelineEvent> {
     })
 }
 
+fn operational_event_from_row(row: &turso::Row) -> anyhow::Result<OperationalEvent> {
+    let kind = row.get::<String>(3)?;
+    let kind = OperationalEventKind::parse(&kind)
+        .ok_or_else(|| anyhow::anyhow!("unknown operational event kind '{kind}'"))?;
+    let severity = row.get::<String>(4)?;
+    let severity = OperationalSeverity::parse(&severity)
+        .ok_or_else(|| anyhow::anyhow!("unknown operational event severity '{severity}'"))?;
+    let duration_ms = row
+        .get::<Option<i64>>(8)?
+        .map(|value| to_u64(value, "operational event duration"))
+        .transpose()?;
+    let affected_streams = serde_json::from_str(&row.get::<String>(11)?)?;
+    Ok(OperationalEvent {
+        id: row.get(0)?,
+        key: OperationalEventKey {
+            camera_id: row.get(1)?,
+            stream_id: row.get(2)?,
+            kind,
+        },
+        severity,
+        revision: to_u64(row.get(5)?, "operational event revision")?,
+        start_time_ms: row.get(6)?,
+        end_time_ms: row.get(7)?,
+        duration_ms,
+        evidence: OperationalEvidence {
+            cause: row.get(9)?,
+            explanation: row.get(10)?,
+            affected_streams,
+            recording_interrupted: row.get::<i64>(12)? != 0,
+            source: row.get(13)?,
+        },
+    })
+}
+
 fn to_i64(value: u64, name: &str) -> anyhow::Result<i64> {
     i64::try_from(value).map_err(|_| anyhow::anyhow!("{name} exceeds Turso INTEGER range"))
 }
@@ -4252,6 +4499,80 @@ mod tests {
         assert!(final_event.canonical_image_owns_bbox());
 
         drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn catalog_restores_and_revises_open_operational_events() {
+        let root = test_dir("turso-operational-events");
+        let catalog_path = root.join("recordings.db");
+        let mut event = OperationalEvent {
+            id: "operational-1".to_owned(),
+            key: OperationalEventKey {
+                camera_id: "front-door".to_owned(),
+                stream_id: Some("sub".to_owned()),
+                kind: OperationalEventKind::StreamStale,
+            },
+            evidence: OperationalEvidence {
+                cause: "frames_stale".to_owned(),
+                explanation: "No recent frames".to_owned(),
+                affected_streams: vec!["sub".to_owned()],
+                recording_interrupted: true,
+                source: "canonical_health".to_owned(),
+            },
+            severity: OperationalSeverity::Warning,
+            revision: 1,
+            start_time_ms: 2_000,
+            end_time_ms: None,
+            duration_ms: None,
+        };
+        {
+            let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+            catalog
+                .handle()
+                .upsert_operational_event(event.clone())
+                .unwrap();
+            catalog.shutdown();
+        }
+
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let handle = catalog.handle();
+        assert_eq!(
+            handle.open_operational_events().unwrap(),
+            vec![event.clone()]
+        );
+        event.revision = 2;
+        event.severity = OperationalSeverity::Critical;
+        event.evidence.cause = "keyframes_missing".to_owned();
+        handle.upsert_operational_event(event.clone()).unwrap();
+        let mut stale_revision = event.clone();
+        stale_revision.revision = 1;
+        stale_revision.evidence.cause = "stale_revision".to_owned();
+        handle.upsert_operational_event(stale_revision).unwrap();
+        let queried = handle
+            .operational_events_in_range("front-door", 2_500, 3_000)
+            .unwrap();
+        assert_eq!(queried, vec![event.clone()]);
+
+        event.revision = 3;
+        event.end_time_ms = Some(4_000);
+        event.duration_ms = Some(2_000);
+        handle.upsert_operational_event(event.clone()).unwrap();
+        assert!(handle.open_operational_events().unwrap().is_empty());
+        assert_eq!(
+            handle
+                .operational_events_in_range("front-door", 3_000, 5_000)
+                .unwrap(),
+            vec![event]
+        );
+        assert!(
+            handle
+                .operational_events_in_range("front-door", 4_000, 5_000)
+                .unwrap()
+                .is_empty()
+        );
+
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }

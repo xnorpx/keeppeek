@@ -1,4 +1,7 @@
-use crate::storage::{RecordingCatalogHandle, metadata::TimelineEvent};
+use crate::{
+    operational_events::OperationalEvent,
+    storage::{RecordingCatalogHandle, metadata::TimelineEvent},
+};
 use image::{DynamicImage, ImageFormat, codecs::jpeg::JpegEncoder};
 use reo_proto::MAX_SNAPSHOT_BYTES;
 use std::{
@@ -53,6 +56,24 @@ impl EventStore {
 
     pub fn event_by_id(&self, id: &str) -> anyhow::Result<Option<TimelineEvent>> {
         self.catalog.event_by_id(id)
+    }
+
+    pub(crate) fn upsert_operational_event(&self, event: OperationalEvent) -> anyhow::Result<()> {
+        self.catalog.upsert_operational_event(event)
+    }
+
+    pub(crate) fn operational_events_in_range(
+        &self,
+        camera_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> anyhow::Result<Vec<OperationalEvent>> {
+        self.catalog
+            .operational_events_in_range(camera_id, start_ms, end_ms)
+    }
+
+    pub(crate) fn open_operational_events(&self) -> anyhow::Result<Vec<OperationalEvent>> {
+        self.catalog.open_operational_events()
     }
 
     pub fn save_thumbnail(

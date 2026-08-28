@@ -703,6 +703,7 @@ mod performance {
             source_identity: "event-1".to_owned(),
             lifecycle: Lifecycle::Event,
             event_kind: Some("person".to_owned()),
+            payload: None,
             group_ids: Vec::new(),
             zone: None,
             confidence: Some(0.9),

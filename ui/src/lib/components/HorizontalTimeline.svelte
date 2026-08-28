@@ -109,9 +109,10 @@
 	});
 	let visibleEvents = $derived(
 		events.filter(
-			(event) => event.start_time_ms >= renderStartMs && event.start_time_ms <= renderEndMs
+			(event) => event.start_time_ms <= renderEndMs && eventRangeEnd(event) >= renderStartMs
 		)
 	);
+	let operationalIntervals = $derived(visibleEvents.filter((event) => event.operational));
 	let eventClusters = $derived.by(() => {
 		const clusters: Array<{ event: RecordingEvent; count: number; left: number }> = [];
 		for (const event of visibleEvents.toSorted(
@@ -142,6 +143,10 @@
 
 	function rangeWidth(startMs: number, endMs: number): number {
 		return Math.max(1, timestampLeft(endMs) - timestampLeft(startMs));
+	}
+
+	function eventRangeEnd(event: RecordingEvent): number {
+		return event.end_time_ms ?? (event.operational ? timelineEndMs : event.start_time_ms);
 	}
 
 	function eventCardLeft(leftPx: number): number {
@@ -389,6 +394,24 @@
 						onclick={(event) => {
 							event.stopPropagation();
 							onSeek((range.startMs + range.endMs) / 2);
+						}}
+					></button>
+				{/each}
+				{#each operationalIntervals as event (event.id)}
+					<button
+						type="button"
+						data-timeline-operational-event={event.id}
+						class="absolute inset-y-0 z-20 min-w-px border-x {event.operational?.severity ===
+						'critical'
+							? 'border-live bg-live/70'
+							: 'border-activity bg-activity/70'} focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+						style:left={`${timestampLeft(Math.max(event.start_time_ms, renderStartMs))}px`}
+						style:width={`${rangeWidth(Math.max(event.start_time_ms, renderStartMs), Math.min(eventRangeEnd(event), renderEndMs))}px`}
+						title={`${eventLabel(event.kind)} ${formatTime(event.start_time_ms)}–${event.end_time_ms === null ? 'ongoing' : formatTime(event.end_time_ms)}`}
+						onclick={(pointerEvent) => {
+							pointerEvent.stopPropagation();
+							onEventPreview?.(event);
+							onSeek(event.start_time_ms);
 						}}
 					></button>
 				{/each}
