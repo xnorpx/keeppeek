@@ -40,28 +40,6 @@ Repository formatting and validation require Python 3.12 plus the tools listed i
 scripts use `KEEPPEEK_PYTHON` when set, otherwise `python3.12`, then `python3`. Do not use a Python
 virtual environment; `fix` installs the requirements into the resolved interpreter.
 
-### RepoWise
-
-VS Code recommends the official RepoWise extension and includes a workspace MCP configuration for
-GitHub Copilot. Install the workflow's authoritative CLI version as an isolated user tool, then
-build the local, no-LLM index from the repository root:
-
-```sh
-REPOWISE_VERSION=$(sed -n 's/^  REPOWISE_VERSION: "\(.*\)"/\1/p' .github/workflows/repowise.yml)
-uv tool install --python 3.12 --force "repowise==$REPOWISE_VERSION"
-repowise init --yes --no-prose --no-editor-setup
-```
-
-The generated `.repowise/` index stays local. Refresh it after significant changes with
-`repowise update`. The repository-owned RepoWise workflow analyzes each pull request without an
-LLM or API key. It adds an advisory change-risk summary to the workflow run and uploads the full
-JSON report; risk scores do not fail the check. The workflow can also be run manually against a
-selected base branch.
-
-Durable architecture and tooling decisions plus longitudinal health scores live in the tracked
-[RepoWise ledger](repowise.md). Read it before significant design changes and update it after an
-explicitly approved decision or a fresh comparable health analysis.
-
 ## Docker
 
 The image supports both `linux/amd64` and `linux/arm64` when built with Docker Buildx. It runs

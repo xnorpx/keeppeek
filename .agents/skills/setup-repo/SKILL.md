@@ -1,6 +1,6 @@
 ---
 name: setup-repo
-description: "Install, repair, and verify every KeepPeek developer prerequisite on macOS, Linux, or Windows. Use when: setting up a fresh clone or workstation; onboarding; installing Rust, Cargo, Bun, Node.js, Python 3.12, FFmpeg, Playwright Chromium, RepoWise, cargo-nextest, or cargo-machete; restoring PATH; installing repository dependencies; or fixing check.sh/check.bat failures caused by missing tools."
+description: "Install, repair, and verify every KeepPeek developer prerequisite on macOS, Linux, or Windows. Use when: setting up a fresh clone or workstation; onboarding; installing Rust, Cargo, Bun, Node.js, Python 3.12, FFmpeg, Playwright Chromium, cargo-nextest, or cargo-machete; restoring PATH; installing repository dependencies; or fixing check.sh/check.bat failures caused by missing tools."
 argument-hint: "[full|repair|verify] [macos|linux|windows]"
 ---
 
@@ -16,7 +16,7 @@ operation that needs a password, elevation, a GUI installer, or a shell restart.
   checkout. This is the default for a fresh clone.
 - `repair` starts from a concrete missing command or failed setup check, changes only the affected
   prerequisite chain, and then runs the focused check plus canonical validation.
-- `verify` performs all version, PATH, dependency, RepoWise, and repository checks without changing
+- `verify` performs all version, PATH, dependency, and repository checks without changing
   the machine.
 
 ## Sources of Truth
@@ -32,7 +32,6 @@ but the files remain authoritative:
 | JavaScript packages | `ui/package.json`, `.npmrc`, `ui/bunfig.toml`        | Bun only, public npm registry, no lockfile               |
 | Python              | `examples/object_detection_service/.python-version`  | Python 3.12, no virtual environments                     |
 | Python packages     | `examples/object_detection_service/requirements.txt` | Unpinned, always newest releases                         |
-| RepoWise            | `.github/workflows/repowise.yml`                     | `REPOWISE_VERSION`, currently 0.45.0                     |
 | Final validation    | `check.sh`, `check.bat`                              | Platform-specific canonical check                        |
 
 Node.js is compatibility tooling for editors and scripts outside the canonical Bun workflow. Install
@@ -73,7 +72,7 @@ install this repository's UI dependencies.
    required executable.
 5. On Linux, read `/etc/os-release` and choose only the matching distribution branch below.
 6. Record versions and executable paths for `git`, `rustup`, `rustc`, `cargo`, `rustfmt`, Bun,
-   Node.js, Python, `uv`, FFmpeg, and RepoWise. A command found at an unexpected path is not a
+   Node.js, Python, `uv`, and FFmpeg. A command found at an unexpected path is not a
    failure, but note it before replacing or upgrading anything.
 
 In `verify` mode, skip directly to the verification phases after this inventory.
@@ -246,31 +245,6 @@ first `python3.12` or `python3` on `PATH`. Never point it at a virtual environme
 
 Do not remove source or generated protobuf files while repairing the Python environment.
 
-### RepoWise
-
-Read `REPOWISE_VERSION` from `.github/workflows/repowise.yml`. Install RepoWise as an isolated user
-tool with the repository's Python baseline so its dependencies do not pollute the shared Python
-interpreter:
-
-```sh
-uv tool install --python 3.12 --force "repowise==0.45.0"
-```
-
-Substitute the current workflow pin. If `repowise` is not visible afterward, find the executable
-directory with:
-
-```sh
-uv tool dir --bin
-```
-
-Add that directory to the current process PATH, and offer `uv tool update-shell` only after
-explaining that it edits shell PATH configuration. Restart VS Code after persistent PATH changes
-because `.vscode/mcp.json` launches `repowise` directly.
-
-If another RepoWise installation shadows the pinned tool, report both executable paths. Upgrade or
-remove only the installation that owns the shadowing executable, then require `repowise --version`
-to match the workflow pin.
-
 ## Phase 4: Install Repository Dependencies
 
 1. Initialize checked-out submodules without changing tracked files:
@@ -308,55 +282,7 @@ On Windows, use:
 py -3.12 examples\object_detection_service\generate_protos.py
 ```
 
-## Phase 5: Configure and Use RepoWise
-
-1. Confirm `.vscode/extensions.json` recommends `repowise-dev.repowise` and `.vscode/mcp.json`
-   launches `repowise mcp ${workspaceFolder} --transport stdio`. Do not duplicate those entries.
-2. Run `repowise doctor` and `repowise status` from the repository root.
-3. If no local index exists, ask the user to run this command directly from the repository root:
-
-```sh
-repowise init --yes --no-prose --no-editor-setup
-```
-
-The command is local, requires no API key, and leaves the existing repository-owned editor
-setup unchanged. Do not enable model-written prose or save an API key during repository setup. 4. If the index exists but is stale, refresh deterministic data with:
-
-```sh
-repowise update --index-only
-```
-
-5. Restart the RepoWise MCP server or reload VS Code after installing the CLI or rebuilding the
-   index.
-6. Read `repowise.md` as the committed source of truth for durable decisions and health history.
-   Treat `.repowise/` as a derived local cache.
-7. Compare `repowise decision list --format json` with the ledger. Add missing decisions as
-   `Proposed` and run `repowise decision confirm <id>` only after explicit owner approval. Do not
-   duplicate a matching decision title or silently downgrade an active record.
-8. When setup establishes a new pinned RepoWise version or materially different index scope,
-   refresh the ledger's current snapshot and append a score-history row with the indexed commit and
-   RepoWise version.
-
-Use the RepoWise MCP tools before broad manual exploration:
-
-| Need                                   | RepoWise operation               |
-| -------------------------------------- | -------------------------------- |
-| First view of an unfamiliar area       | `get_overview`                   |
-| Context for files, modules, or symbols | Batch targets with `get_context` |
-| Exact indexed symbol body              | `get_symbol`                     |
-| Concept or implementation search       | `search_codebase`                |
-| Architecture rationale and history     | `get_why`                        |
-| Blast radius before an edit            | `get_risk`                       |
-| Whole-diff risk before completion      | `get_change_risk`                |
-| Maintainability or refactoring signals | `get_health`                     |
-| Candidate unreachable code             | `get_dead_code`                  |
-
-CLI fallbacks include `repowise context <targets>`, `repowise search "<query>"`, `repowise why
-"<query>"`, `repowise health`, `repowise dead-code`, and `repowise risk main..HEAD`. Treat stale
-warnings seriously and verify indexed conclusions against the live working tree and executable
-tests.
-
-## Phase 6: Verify the Workstation
+## Phase 5: Verify the Workstation
 
 Check every command in the same shell environment VS Code will inherit:
 
@@ -373,11 +299,10 @@ bun --version
 node --version
 uv --version
 ffmpeg -version
-repowise --version
 ```
 
-Require exact matches for Bun, both Cargo tools, and RepoWise. Require Python 3.12 from the
-interpreter the entry-point scripts resolve, never from a virtual environment. Node.js must be
+Require exact matches for Bun and both Cargo tools. Require Python 3.12 from the interpreter the
+entry-point scripts resolve, never from a virtual environment. Node.js must be
 actively supported, preferably active LTS, but it is not the package runner for this repository.
 
 Run focused dependency checks before the full suite:
@@ -416,9 +341,7 @@ Report:
 - Detected platform and architecture
 - Installed, upgraded, already-valid, and user-completed prerequisites
 - Resolved executable path and version for every required tool
-- Bun, Python, Cargo-tool, and RepoWise pin comparisons
+- Bun, Python, and Cargo-tool pin comparisons
 - Dependency and Playwright installation results
-- RepoWise index and MCP readiness, including any required VS Code reload
-- `repowise.md` decision-store synchronization and score-baseline status
 - Focused checks and canonical validation result
 - Any remaining manual step, with the exact command and reason it could not be automated

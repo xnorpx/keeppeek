@@ -19,16 +19,6 @@ After any change under `ui/`, run the canonical UI validation script from the re
 
 CI uses these same entry points. Individual UI commands may be used while diagnosing failures, but the full platform script must pass before completion.
 
-## RepoWise Repository Intelligence
-
-- RepoWise is required developer tooling. The version pinned by `REPOWISE_VERSION` in `.github/workflows/repowise.yml` is authoritative, and the `repowise` executable must be available on `PATH` because `.vscode/mcp.json` launches it directly.
-- Load the `setup-repo` skill when RepoWise or another workstation prerequisite is missing, outdated, or being installed. That skill owns cross-platform installation and setup validation.
-- Prefer the available RepoWise MCP tools for architecture, contextual documentation, symbol lookup, design rationale, semantic search, change risk, code health, and dead-code analysis before broad manual exploration.
-- Use `repowise status` to check the local index. If the repository has no index, ask the user to run `repowise init --yes --no-prose --no-editor-setup` from the repository root. Refresh a stale index with `repowise update --index-only` after significant changes.
-- Read `repowise.md` before significant architecture or tooling changes. It is the committed source of truth for durable decisions and score history; `.repowise/` is a derived local cache.
-- Keep `repowise.md` current after an explicitly approved decision or a fresh comparable health analysis. Preserve superseded decisions, append score history, and record the indexed commit and RepoWise version so tool changes are not mistaken for code changes.
-- Treat the working tree and executable tests as the source of truth. Verify RepoWise findings against live files when the index may lag local edits.
-
 ## Package Registries
 
 - Use Bun as the only package manager and script runner under `ui/`; do not create npm, pnpm, or Yarn lockfiles.
