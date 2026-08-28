@@ -145,6 +145,20 @@
 			stream?.dimensions?.recording_progressing ?? camera.dimensions?.recording_progressing
 		);
 	}
+
+	function findingHref(finding: (typeof findings)[number]): string | null {
+		if (!finding.camera) return null;
+		if (finding.issue.timeline_start_ms !== null && finding.issue.timeline_start_ms !== undefined) {
+			const date = new Date(finding.issue.timeline_start_ms).toISOString().slice(0, 10);
+			const search = new URLSearchParams({
+				camera: finding.camera.id,
+				date,
+				at: String(finding.issue.timeline_start_ms)
+			});
+			return `${resolve('/keep')}?${search}`;
+		}
+		return `${resolve('/system-health')}/camera/${encodeURIComponent(finding.camera.id)}`;
+	}
 </script>
 
 {#snippet overview()}
@@ -184,11 +198,14 @@
 				<span class="w-[180px] shrink-0 font-mono text-xs-plus text-text-muted">
 					{finding.camera ? streamState(finding.camera, null) : finding.issue.severity}
 				</span>
-				{#if finding.camera}
+				{#if finding.camera && findingHref(finding)}
 					<a
-						href={`${resolve('/system-health')}/camera/${encodeURIComponent(finding.camera.id)}`}
+						href={findingHref(finding) ?? undefined}
 						class="w-[170px] shrink-0 text-right text-[13px] text-primary-soft"
-						aria-label={`Diagnose ${finding.camera.name} from findings`}>Diagnose</a
+						aria-label={finding.issue.operational_event_id
+							? `Open ${finding.camera.name} outage in timeline`
+							: `Diagnose ${finding.camera.name} from findings`}
+						>{finding.issue.operational_event_id ? 'Open timeline' : 'Diagnose'}</a
 					>
 				{/if}
 			</div>

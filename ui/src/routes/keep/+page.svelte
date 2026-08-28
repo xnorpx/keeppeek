@@ -40,6 +40,7 @@
 	import KeepStories from '$lib/components/KeepStories.svelte';
 	import KeepSwimlanes from '$lib/components/KeepSwimlanes.svelte';
 	import HorizontalTimeline from '$lib/components/HorizontalTimeline.svelte';
+	import OperationalEventDetail from '$lib/components/OperationalEventDetail.svelte';
 	import VerticalTimeline from '$lib/components/VerticalTimeline.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -144,6 +145,7 @@
 	let latestTimelineViewport = $state.raw<TimelineViewport | null>(null);
 	let eventSearchAvailable = $state(false);
 	let stillPreviewUrl = $state<string | null>(null);
+	let selectedOperationalEventId = $state<string | null>(null);
 	let previewVersion = 0;
 	let previewController: AbortController | null = null;
 	const keyframePreviewCache = new Map<string, string>();
@@ -199,8 +201,15 @@
 	let dayStartMs = $derived(selectedDate ? Date.parse(`${selectedDate}T00:00:00Z`) : 0);
 	let events = $derived(
 		timelineRepository.events.filter(
-			(event) => event.start_time_ms >= dayStartMs && event.start_time_ms < dayStartMs + 86_400_000
+			(event) =>
+				event.start_time_ms < dayStartMs + 86_400_000 &&
+				(event.operational
+					? (event.end_time_ms ?? dayStartMs + 86_400_000) > dayStartMs
+					: event.start_time_ms >= dayStartMs)
 		)
+	);
+	let selectedOperationalEvent = $derived(
+		events.find((event) => event.id === selectedOperationalEventId && event.operational) ?? null
 	);
 	let swimlaneAnchorMs = $derived.by(() => {
 		if (playheadMs !== null) return playheadMs;
@@ -941,6 +950,12 @@
 	async function previewEvent(event: RecordingEvent): Promise<void> {
 		const version = ++previewVersion;
 		previewController?.abort();
+		if (event.operational) {
+			selectedOperationalEventId = event.id;
+			stillPreviewUrl = null;
+			return;
+		}
+		selectedOperationalEventId = null;
 		stillPreviewUrl = event.thumbnail_url;
 		if (event.thumbnail_url) {
 			return;
@@ -2102,6 +2117,13 @@
 
 				{#if playerError}
 					<p class="text-sm text-destructive" role="alert">{playerError}</p>
+				{/if}
+
+				{#if selectedOperationalEvent}
+					<OperationalEventDetail
+						event={selectedOperationalEvent}
+						onclose={() => (selectedOperationalEventId = null)}
+					/>
 				{/if}
 
 				<div

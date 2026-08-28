@@ -1,6 +1,9 @@
 import type { CameraHealth, HealthIssue, ServerHealthResponse, StreamHealth } from '$lib/types';
 
-type HealthPresentationSnapshot = Pick<ServerHealthResponse, 'cameras' | 'issues'>;
+type HealthPresentationSnapshot = Pick<
+	ServerHealthResponse,
+	'cameras' | 'issues' | 'operational_events'
+>;
 
 export type RankedHealthFinding = {
 	issue: HealthIssue;
@@ -15,7 +18,7 @@ export type CameraDiagnosisEvidence = {
 	reconnects: number | null;
 	drops: number | null;
 	errors: number | null;
-	recordingGapStartMs: null;
+	recordingGapStartMs: number | null;
 	retryEvidence: null;
 	credentialProbeAvailable: false;
 	canSuggestTcp: boolean;
@@ -54,6 +57,16 @@ export function cameraDiagnosisEvidence(
 	const currentDrops =
 		camera.dimensions?.recent_drops ??
 		camera.streams.reduce((total, stream) => total + (stream.recent_drops ?? 0), 0);
+	const recordingGapStartMs =
+		snapshot.operational_events
+			?.filter(
+				(event) =>
+					event.source_id === camera.id &&
+					event.operational?.recording_interrupted === true &&
+					!event.operational.recovered
+			)
+			.map((event) => event.start_time_ms)
+			.toSorted((left, right) => left - right)[0] ?? null;
 
 	return {
 		camera,
@@ -67,7 +80,7 @@ export function cameraDiagnosisEvidence(
 		reconnects: sumOptional(camera.streams, 'reconnects'),
 		drops: sumOptional(camera.streams, 'drops'),
 		errors: sumOptional(camera.streams, 'errors'),
-		recordingGapStartMs: null,
+		recordingGapStartMs,
 		retryEvidence: null,
 		credentialProbeAvailable: false,
 		canSuggestTcp: camera.transport === 'udp' && camera.state === 'degraded' && currentDrops > 0,

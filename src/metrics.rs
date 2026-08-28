@@ -55,6 +55,14 @@ struct SeverityLabels {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct OperationalEventLabels {
+    camera_id: String,
+    stream: String,
+    kind: String,
+    severity: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct WebRtcSourceLabels {
     camera_ip: String,
     stream: String,
@@ -487,6 +495,27 @@ pub fn encode_health_with_access(
         "health_issues",
         "Current health issue count by severity",
         issue_count,
+    );
+
+    let operational_events = Family::<OperationalEventLabels, Gauge>::default();
+    for event in &health.operational_events {
+        operational_events
+            .get_or_create(&OperationalEventLabels {
+                camera_id: event.key.camera_id.clone(),
+                stream: event
+                    .key
+                    .stream_id
+                    .clone()
+                    .unwrap_or_else(|| "camera".to_owned()),
+                kind: event.key.kind.as_str().to_owned(),
+                severity: event.severity.as_str().to_owned(),
+            })
+            .set(1);
+    }
+    registry.register(
+        "operational_event_active",
+        "Active durable operational intervals by camera, stream, kind, and severity",
+        operational_events,
     );
 
     if let Some(access) = access {

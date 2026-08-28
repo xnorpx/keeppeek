@@ -14,6 +14,47 @@ function pointer(type: string, pointerId: number, clientX: number): PointerEvent
 }
 
 describe('HorizontalTimeline', () => {
+	it('renders an open operational interval that began before the viewport', async () => {
+		const dayStartMs = Date.UTC(2026, 7, 10);
+		await render(HorizontalTimeline, {
+			props: {
+				segments: [],
+				events: [
+					{
+						id: 'outage-1',
+						source: 'keeppeek',
+						kind: 'camera_offline',
+						start_time_ms: dayStartMs,
+						end_time_ms: null,
+						confidence: null,
+						bbox: null,
+						zone: null,
+						thumbnail_url: null,
+						operational: {
+							kind: 'camera_offline',
+							severity: 'critical',
+							cause: 'transport_disconnected',
+							explanation: 'Camera transport is disconnected',
+							affected_streams: ['main', 'sub'],
+							recording_interrupted: true,
+							evidence_source: 'canonical_health',
+							stream_id: null,
+							duration_ms: null,
+							recovered: false
+						}
+					}
+				],
+				selectedUrl: null,
+				playheadMs: dayStartMs + 60_000,
+				dayStartMs,
+				nowMs: dayStartMs + 120_000,
+				onSeek: vi.fn()
+			}
+		});
+
+		expect(document.querySelector('[data-timeline-operational-event="outage-1"]')).not.toBeNull();
+	});
+
 	it('reports a bounded horizontal viewport and keyboard seek', async () => {
 		const onSeek = vi.fn();
 		const onViewportChange = vi.fn();

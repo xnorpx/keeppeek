@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, HashSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -74,58 +73,12 @@ impl Drop for HealthMonitor {
 
 #[derive(Debug, Default)]
 struct HealthState {
-    recording_outages: HashMap<String, String>,
     storage_outage: Option<String>,
 }
 
 impl HealthState {
     fn observe(&mut self, snapshot: &RecordingHealthSnapshot, now_ms: i64) -> Vec<Candidate> {
-        let failed = snapshot
-            .streams
-            .iter()
-            .filter(|stream| stream.last_error.is_some())
-            .map(|stream| stream.stream_id.clone())
-            .collect::<HashSet<_>>();
-        let mut candidates = Vec::with_capacity(failed.len().saturating_add(2));
-        for stream in &snapshot.streams {
-            if stream.last_error.is_none() || self.recording_outages.contains_key(&stream.stream_id)
-            {
-                continue;
-            }
-            let identity = format!("recording-outage-{}", uuid::Uuid::new_v4());
-            self.recording_outages
-                .insert(stream.stream_id.clone(), identity.clone());
-            candidates.push(health_candidate(
-                Trigger::RecordingHealth,
-                &stream.stream_id,
-                identity,
-                Lifecycle::Recording,
-                stream
-                    .last_failure_at_ms
-                    .and_then(|value| i64::try_from(value).ok())
-                    .unwrap_or(now_ms),
-            ));
-        }
-        let recovered = self
-            .recording_outages
-            .keys()
-            .filter(|stream_id| !failed.contains(*stream_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        for stream_id in recovered {
-            let identity = self
-                .recording_outages
-                .remove(&stream_id)
-                .expect("recovered recording outage must exist");
-            candidates.push(health_candidate(
-                Trigger::Recovery,
-                &stream_id,
-                identity,
-                Lifecycle::Recording,
-                now_ms,
-            ));
-        }
-
+        let mut candidates = Vec::with_capacity(1);
         let storage_failed = snapshot.storage.pressure == StoragePressure::Critical
             || snapshot.storage.recording_state == StorageRecordingState::Paused;
         if storage_failed && self.storage_outage.is_none() {
@@ -176,6 +129,7 @@ fn health_candidate(
         source_identity,
         lifecycle,
         event_kind: Some(event_kind.to_owned()),
+        payload: None,
         group_ids: Vec::new(),
         zone: None,
         confidence: None,
@@ -215,29 +169,15 @@ fn unix_time_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::{RecordingStreamHealthSnapshot, safety::StorageSafetyHealthSnapshot};
+    use crate::storage::safety::StorageSafetyHealthSnapshot;
 
     use super::*;
 
-    fn stream(error: Option<&str>, failure_at_ms: Option<u64>) -> RecordingStreamHealthSnapshot {
-        RecordingStreamHealthSnapshot {
-            stream_id: "front-door/sub".to_owned(),
-            last_attempt_at_ms: Some(1_000),
-            attempt_age_ms: Some(500),
-            last_progress_at_ms: Some(500),
-            progress_age_ms: Some(1_000),
-            last_failure_at_ms: failure_at_ms,
-            failure_age_ms: failure_at_ms.map(|_| 500),
-            last_error: error.map(str::to_owned),
-            recorded_duration_ms: 0,
-        }
-    }
-
     #[test]
-    fn recording_failure_and_recovery_emit_one_interval_each() {
+    fn storage_failure_and_recovery_emit_one_interval_each() {
         let mut state = HealthState::default();
         let failed = RecordingHealthSnapshot {
-            streams: vec![stream(Some("disk full"), Some(1_000))],
+            streams: Vec::new(),
             storage: StorageSafetyHealthSnapshot {
                 pressure: StoragePressure::Critical,
                 recording_state: StorageRecordingState::Paused,
@@ -246,36 +186,19 @@ mod tests {
             },
         };
         let started = state.observe(&failed, 1_500);
-        assert_eq!(started.len(), 2);
-        assert!(
-            started
-                .iter()
-                .any(|candidate| candidate.trigger == Trigger::RecordingHealth)
-        );
-        assert!(
-            started
-                .iter()
-                .any(|candidate| candidate.trigger == Trigger::StorageHealth)
-        );
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].trigger, Trigger::StorageHealth);
         assert!(state.observe(&failed, 2_000).is_empty());
 
         let recovered = state.observe(
             &RecordingHealthSnapshot {
-                streams: vec![stream(None, None)],
+                streams: Vec::new(),
                 storage: StorageSafetyHealthSnapshot::default(),
             },
             3_000,
         );
-        assert_eq!(recovered.len(), 2);
-        assert!(
-            recovered
-                .iter()
-                .all(|candidate| candidate.trigger == Trigger::Recovery)
-        );
-        assert!(
-            recovered
-                .iter()
-                .all(|candidate| candidate.stage == Stage::Recovery)
-        );
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].trigger, Trigger::Recovery);
+        assert_eq!(recovered[0].stage, Stage::Recovery);
     }
 }

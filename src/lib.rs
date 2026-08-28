@@ -13,6 +13,7 @@ pub mod logging;
 mod media_time;
 pub(crate) mod metrics;
 mod notifications;
+pub(crate) mod operational_events;
 pub mod reolink;
 pub mod rtsp;
 pub mod runtime;

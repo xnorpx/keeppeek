@@ -26,10 +26,11 @@ current draft unchanged, including a draft that fails validation.
 
 ## Inputs and identity
 
-Rules can match event create, enrichment, and end revisions; camera outage and recovery intervals;
-recording write failure and recovery; global storage write failure and recovery; and explicit test
-sends. Event filters include source, group, event kind, zone, confidence, attachment availability,
-duration, severity, reviewed state, and bookmarked state.
+Rules can match event create, enrichment, and end revisions; durable `camera_offline`,
+`stream_stale`, `decode_unavailable`, and `recording_interrupted` start, update, and recovery
+revisions; global storage write failure and recovery; and explicit test sends. Event filters include
+source, group, event kind, zone, confidence, attachment availability, duration, severity, reviewed
+state, and bookmarked state.
 
 A logical notification ID is the SHA-256 digest of length-delimited rule ID, source ID, source event
 or outage identity, and lifecycle. Text is not part of the identity. Revisions, retries, preliminary
@@ -63,6 +64,14 @@ enrichment attempts, attachment bytes, and deadline behavior are bounded by the 
 Late enrichment is recorded without waking the user unless `wake_after_deadline` is enabled.
 Missing or unreadable imagery does not block a metadata alert unless that action explicitly requires
 an attachment. Privacy-active candidates treat imagery as unavailable.
+
+Operational event revisions are lifecycle evidence, not image enrichment. Meaningful cause or
+severity updates and recovery can replace the original logical notification after the enrichment
+deadline and beyond the image-revision limit. Replaying an already processed event ID and revision
+after restart is collapsed without creating another action. Duration filters use elapsed interval
+time on starts and updates and total interval duration on recovery. Webhook payloads include nested
+source and event records with the stable event ID, revision, kind, lifecycle, stage, duration,
+severity, recovery state, and bounded operational evidence.
 
 Channel behavior is explicit:
 

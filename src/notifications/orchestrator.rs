@@ -41,6 +41,28 @@ struct Payload<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     icon_key: Option<&'a str>,
     image_availability: &'static str,
+    source: PayloadSource<'a>,
+    event: PayloadEvent<'a>,
+}
+
+#[derive(Serialize)]
+struct PayloadSource<'a> {
+    id: &'a str,
+    name: Option<&'a str>,
+    group_ids: &'a [String],
+}
+
+#[derive(Serialize)]
+struct PayloadEvent<'a> {
+    id: &'a str,
+    revision: u64,
+    kind: Option<&'a str>,
+    lifecycle: &'static str,
+    stage: &'static str,
+    duration_ms: Option<u64>,
+    severity: &'static str,
+    recovered: bool,
+    payload: Option<&'a serde_json::Value>,
 }
 
 struct EnqueueContext<'a> {
@@ -77,6 +99,9 @@ impl Store {
         &self,
         candidate: &mut Candidate,
     ) -> anyhow::Result<()> {
+        if is_durable_operational(candidate) {
+            return Ok(());
+        }
         let starts_interval = matches!(
             candidate.trigger,
             Trigger::OutageStarted | Trigger::StorageHealth | Trigger::RecordingHealth
@@ -213,6 +238,7 @@ impl Store {
                         .first()
                         .cloned()
                         .or_else(|| Some("test".to_owned())),
+                    payload: None,
                     group_ids: Vec::new(),
                     zone: rule.filter.zones.first().cloned(),
                     confidence: rule.filter.minimum_confidence.or(Some(1.0)),
@@ -448,7 +474,11 @@ impl Store {
             return Ok(());
         }
 
-        if candidate.revision > u64::from(rule.enrichment.maximum_revisions) {
+        let durable_operational = is_durable_operational(candidate);
+        if !durable_operational
+            && candidate.stage == Stage::Enriched
+            && candidate.revision > u64::from(rule.enrichment.maximum_revisions)
+        {
             self.connection
                 .execute(
                     "UPDATE logical_notifications
@@ -474,10 +504,13 @@ impl Store {
         }
 
         let replace = candidate.stage == Stage::Recovery
-            || (candidate.stage == Stage::Enriched && existing.stage == Stage::Preliminary);
-        let late = candidate.stage == Stage::Enriched
+            || (candidate.stage == Stage::Enriched
+                && (existing.stage == Stage::Preliminary || durable_operational));
+        let late = !durable_operational
+            && candidate.stage == Stage::Enriched
             && candidate.occurred_at_ms > existing.enrichment_deadline_at_ms;
-        let attempts_exhausted = candidate.stage == Stage::Enriched
+        let attempts_exhausted = !durable_operational
+            && candidate.stage == Stage::Enriched
             && existing.enrichment_attempts >= rule.enrichment.maximum_attempts;
         let attachment_path = usable_attachment(rule, candidate);
         if !replace || attempts_exhausted || (late && !rule.enrichment.wake_after_deadline) {
@@ -543,7 +576,7 @@ impl Store {
                     logical_id.as_str(),
                     stage_str(candidate.stage),
                     to_i64(candidate.revision, "candidate revision")?,
-                    i64::from(candidate.stage == Stage::Enriched),
+                    i64::from(candidate.stage == Stage::Enriched && !durable_operational),
                     candidate.occurred_at_ms,
                     title.clone(),
                     body.clone(),
@@ -899,6 +932,22 @@ impl Store {
                 canonical_attachment: candidate.canonical_attachment.as_ref(),
                 icon_key: candidate.icon_key.as_deref(),
                 image_availability: candidate_image_availability(candidate),
+                source: PayloadSource {
+                    id: &candidate.source_id,
+                    name: candidate.source_name.as_deref(),
+                    group_ids: &candidate.group_ids,
+                },
+                event: PayloadEvent {
+                    id: &candidate.source_identity,
+                    revision: candidate.revision,
+                    kind: candidate.event_kind.as_deref(),
+                    lifecycle: candidate.lifecycle.as_str(),
+                    stage: stage_str(candidate.stage),
+                    duration_ms: candidate.duration_ms,
+                    severity: candidate.severity.as_str(),
+                    recovered: candidate.stage == Stage::Recovery,
+                    payload: candidate.payload.as_ref(),
+                },
             })?;
             let priority = if candidate.severity == Severity::Critical {
                 100
@@ -1067,6 +1116,15 @@ const fn candidate_image_availability(candidate: &Candidate) -> &'static str {
 
 fn candidate_logical_id(rule: &Rule, candidate: &Candidate) -> LogicalId {
     logical_id(&policy(rule), &transition(candidate))
+}
+
+fn is_durable_operational(candidate: &Candidate) -> bool {
+    candidate.event_kind.as_deref().is_some_and(|kind| {
+        matches!(
+            kind,
+            "camera_offline" | "stream_stale" | "decode_unavailable" | "recording_interrupted"
+        )
+    })
 }
 
 fn policy(rule: &Rule) -> RulePolicy {
@@ -1300,6 +1358,7 @@ mod tests {
                 Lifecycle::Event
             },
             event_kind: Some("person".to_owned()),
+            payload: None,
             group_ids: Vec::new(),
             zone: None,
             confidence: Some(0.9),
@@ -1608,6 +1667,87 @@ mod tests {
             count(&store, "SELECT COUNT(*) FROM logical_notifications"),
             1
         );
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn durable_operational_revisions_match_duration_and_deduplicate_replays() {
+        let directory = test_dir("notification-operational-revisions");
+        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let mut configured = rule(CooldownScope::Outage);
+        configured.triggers = vec![
+            Trigger::OutageStarted,
+            Trigger::EventUpdated,
+            Trigger::Recovery,
+        ];
+        configured.filter.event_kinds = vec!["stream_stale".to_owned()];
+        configured.filter.minimum_duration_ms = Some(10_000);
+        configured.actions.truncate(1);
+        activate(&store, configured);
+
+        let mut started = candidate(
+            Trigger::OutageStarted,
+            "front-door",
+            "operational-1",
+            1,
+            Stage::Preliminary,
+            1_000,
+        );
+        started.lifecycle = Lifecycle::Outage;
+        started.event_kind = Some("stream_stale".to_owned());
+        started.payload = Some(serde_json::json!({
+            "cause": "frames_not_arriving",
+            "affected_streams": ["main"],
+            "recording_interrupted": true,
+            "evidence_source": "canonical_health",
+        }));
+        started.duration_ms = Some(10_000);
+        started.severity = Severity::Warning;
+        assert_eq!(store.process(started.clone()).unwrap().created, 1);
+        assert_eq!(store.process(started.clone()).unwrap().suppressed, 1);
+
+        let mut updated = started.clone();
+        updated.trigger = Trigger::EventUpdated;
+        updated.revision = 10;
+        updated.stage = Stage::Enriched;
+        updated.occurred_at_ms = 31_000;
+        updated.duration_ms = Some(30_000);
+        updated.severity = Severity::Critical;
+        assert_eq!(store.process(updated.clone()).unwrap().replaced, 1);
+        assert_eq!(store.process(updated).unwrap().suppressed, 1);
+
+        let mut recovered = started;
+        recovered.trigger = Trigger::Recovery;
+        recovered.revision = 11;
+        recovered.stage = Stage::Recovery;
+        recovered.occurred_at_ms = 61_000;
+        recovered.duration_ms = Some(60_000);
+        recovered.severity = Severity::Critical;
+        assert_eq!(store.process(recovered.clone()).unwrap().replaced, 1);
+        assert_eq!(store.process(recovered).unwrap().suppressed, 1);
+
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM logical_notifications"),
+            1
+        );
+        assert_eq!(count(&store, "SELECT COUNT(*) FROM notification_outbox"), 3);
+        let payload: serde_json::Value = serde_json::from_str(&text(
+            &store,
+            "SELECT payload_json FROM notification_outbox WHERE stage = 'recovery'",
+        ))
+        .unwrap();
+        assert_eq!(payload["source"]["id"], "front-door");
+        assert_eq!(payload["event"]["id"], "operational-1");
+        assert_eq!(payload["event"]["revision"], 11);
+        assert_eq!(payload["event"]["kind"], "stream_stale");
+        assert_eq!(payload["event"]["lifecycle"], "outage");
+        assert_eq!(payload["event"]["stage"], "recovery");
+        assert_eq!(payload["event"]["duration_ms"], 60_000);
+        assert_eq!(payload["event"]["severity"], "critical");
+        assert_eq!(payload["event"]["recovered"], true);
+        assert_eq!(payload["event"]["payload"]["cause"], "frames_not_arriving");
+        assert_eq!(payload["event"]["payload"]["affected_streams"][0], "main");
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }

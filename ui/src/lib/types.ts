@@ -113,6 +113,7 @@ export interface RecordingEvent {
 	bbox_attachment_id?: string | null;
 	zone: string | null;
 	text?: string | null;
+	operational?: OperationalEventEvidence | null;
 	thumbnail_url: string | null;
 	thumbnail_blob?: Blob;
 	attachments?: readonly RecordingEventAttachment[];
@@ -120,6 +121,22 @@ export interface RecordingEvent {
 	icon_key?: EventIconKey;
 	rejected_icon_key?: string | null;
 	image_availability?: EventImageAvailability;
+}
+
+export type OperationalEventKind =
+	'camera_offline' | 'stream_stale' | 'decode_unavailable' | 'recording_interrupted';
+
+export interface OperationalEventEvidence {
+	kind: OperationalEventKind;
+	severity: 'warning' | 'critical';
+	cause: string;
+	explanation: string;
+	affected_streams: string[];
+	recording_interrupted: boolean;
+	evidence_source: string;
+	stream_id: string | null;
+	duration_ms: number | null;
+	recovered: boolean;
 }
 
 export interface RecordingEventAttachment {
@@ -346,6 +363,7 @@ export interface ServerHealthResponse {
 	webrtc: WebRtcHealth;
 	cameras: CameraHealth[];
 	issues: HealthIssue[];
+	operational_events?: RecordingEvent[];
 }
 
 export interface HealthTotals {
@@ -520,6 +538,9 @@ export interface HealthIssue {
 	severity: 'critical' | 'warning' | 'info';
 	scope: string;
 	message: string;
+	operational_event_id?: string | null;
+	timeline_start_ms?: number | null;
+	timeline_end_ms?: number | null;
 }
 
 export interface SystemHealth {

@@ -36,6 +36,7 @@ import {
 	EventSearchField,
 	EventImageFilter,
 	EventOrigin,
+	EventSchema,
 	EventBoundingBoxSchema,
 	EventAttachmentDescriptorSchema,
 	EventImageAvailability,
@@ -499,6 +500,32 @@ class FakeDataChannel {
 					);
 					const rangeStart = timestampFromDate(new Date('2026-08-20T01:00:00Z'));
 					const rangeEnd = timestampFromDate(new Date('2026-08-20T01:01:00Z'));
+					const operationalEvents = action.value.events?.eventTypes.includes(
+						'recording_interrupted'
+					)
+						? [
+								create(EventSchema, {
+									eventId: 'operational-1',
+									revision: 3n,
+									sourceId: 'front-door',
+									origin: EventOrigin.KEEPPEEK,
+									eventType: 'recording_interrupted',
+									startTime: timestampFromDate(new Date('2026-08-20T01:00:00Z')),
+									endTime: timestampFromDate(new Date('2026-08-20T01:02:00Z')),
+									text: 'Requested recording writes are not progressing',
+									payload: {
+										severity: 'critical',
+										cause: 'recording_not_progressing',
+										affected_streams: ['main'],
+										recording_interrupted: true,
+										evidence_source: 'recording_writer',
+										stream_id: 'main',
+										duration_ms: 120_000,
+										recovered: true
+									}
+								})
+							]
+						: [];
 					const page = create(MessageSchema, {
 						message: {
 							case: 'storedMediaQuery',
@@ -515,7 +542,8 @@ class FakeDataChannel {
 												startTime: rangeStart,
 												endTime: rangeEnd
 											})
-										)
+										),
+										events: operationalEvents
 									})
 								}
 							})
@@ -1890,6 +1918,48 @@ describe('ControlClient', () => {
 			(channel) => channel.label === 'control-channel'
 		)?.storedTimelineQueries[0];
 		expect(query?.events?.includeAttachments).toBe(false);
+	});
+
+	it('decodes durable operational event evidence from stored timeline pages', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'session-operational-event',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const client = new ControlClient();
+
+		const result = await client.queryStoredTimeline({
+			sourceIds: ['front-door'],
+			startMs: Date.parse('2026-08-20T00:00:00Z'),
+			endMs: Date.parse('2026-08-21T00:00:00Z'),
+			eventTypes: ['recording_interrupted'],
+			includeEvents: true,
+			includeAttachments: false,
+			includeAvailability: false
+		});
+
+		expect(result.events).toHaveLength(1);
+		expect(result.events[0]).toMatchObject({
+			id: 'operational-1',
+			revision: 3,
+			source_id: 'front-door',
+			source: 'keeppeek',
+			kind: 'recording_interrupted',
+			start_time_ms: Date.parse('2026-08-20T01:00:00Z'),
+			end_time_ms: Date.parse('2026-08-20T01:02:00Z'),
+			text: 'Requested recording writes are not progressing',
+			operational: {
+				kind: 'recording_interrupted',
+				severity: 'critical',
+				cause: 'recording_not_progressing',
+				affected_streams: ['main'],
+				recording_interrupted: true,
+				evidence_source: 'recording_writer',
+				stream_id: 'main',
+				duration_ms: 120_000,
+				recovered: true
+			}
+		});
 	});
 
 	it('searches indexed event previews and fetches a decoder-ready keyframe', async () => {

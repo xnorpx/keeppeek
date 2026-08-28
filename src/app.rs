@@ -12,8 +12,9 @@ use crate::{
     keeppeek::KeepPeekLoop,
     logging::LoggingService,
     notifications::{HealthMonitor as NotificationHealthMonitor, Runtime as NotificationRuntime},
+    operational_events::OperationalEventMonitor,
     runtime::{Router, RouterMessage, WorkerEvent},
-    server::{ServerState, run_server},
+    server::{ServerState, camera_health_snapshots, run_server},
     shutdown::{Restart, Shutdown},
     stats::HealthRegistry,
     storage::{EventStore, RecordingCatalog, StorageConfig, StorageEngine},
@@ -139,6 +140,7 @@ pub fn run(
         &storage_config.event_thumbnail_path,
         storage_config.event_thumbnail_max_bytes,
     )?;
+    let operational_event_store = event_store.clone();
     let notification_path = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -199,7 +201,7 @@ pub fn run(
     keeppeek.set_event_store(event_store);
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
-    keeppeek.set_notifications(notification_handle);
+    keeppeek.set_notifications(notification_handle.clone());
     if let Some(battery_wake) = &battery_wake {
         keeppeek.set_battery_wake(battery_wake.handle());
     }
@@ -213,6 +215,16 @@ pub fn run(
         .name("keeppeek".to_string())
         .spawn(move || keeppeek.run())
         .expect("failed to spawn KeepPeek worker");
+
+    let operational_state = server_state.clone();
+    let operational_router = router_tx.clone();
+    let operational_events = OperationalEventMonitor::start(
+        cfg.operational_events,
+        operational_event_store,
+        notification_handle,
+        shutdown.clone(),
+        move || camera_health_snapshots(&operational_router, &operational_state),
+    )?;
 
     router.wait_and_drain(Some(std::time::Duration::ZERO))?;
     tracing::info!("camera workers launched, starting HTTP server");
@@ -249,6 +261,7 @@ pub fn run(
         battery_wake.join();
     }
 
+    operational_events.join();
     notification_health.join();
     notification_runtime.shutdown();
     tracing::info!("flushing and finalizing all recordings...");
