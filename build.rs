@@ -1,6 +1,8 @@
 use std::{
     collections::HashSet,
-    env, fs, io,
+    env, fs,
+    hash::{DefaultHasher, Hash, Hasher},
+    io,
     io::Cursor,
     path::{Path, PathBuf},
     process::Command,
@@ -11,6 +13,8 @@ const CAMERA_DATABASE_ARCHIVE_URL: &str =
 const CAMERA_DATABASE_ARCHIVE_ENV: &str = "KEEPPEEK_CAMERA_DATABASE_ARCHIVE";
 const CAMERA_DATABASE_ARCHIVE_FILE: &str = "cameras.zip";
 const CAMERA_DATABASE_FILES: &[&str] = &["cameras.json", "cameras.csv", "release-metadata.json"];
+const UI_BUILD_DIR_ENV: &str = "KEEPPEEK_UI_BUILD_DIR";
+const SVELTE_KIT_DIR_ENV: &str = "KEEPPEEK_SVELTE_KIT_DIR";
 
 const UI_INPUTS: &[&str] = &[
     "ui/src",
@@ -47,9 +51,19 @@ fn main() -> io::Result<()> {
     }
 
     let ui_dir = manifest_dir.join("ui");
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR"));
+    let mut out_dir_hasher = DefaultHasher::new();
+    out_dir.hash(&mut out_dir_hasher);
+    let cargo_ui_dir = ui_dir
+        .join(".cargo-ui")
+        .join(format!("{:016x}", out_dir_hasher.finish()));
+    let ui_build_dir = cargo_ui_dir.join("build");
+    let svelte_kit_dir = cargo_ui_dir.join("svelte-kit");
     let status = Command::new("bun")
         .args(["run", "build"])
         .current_dir(&ui_dir)
+        .env(UI_BUILD_DIR_ENV, &ui_build_dir)
+        .env(SVELTE_KIT_DIR_ENV, &svelte_kit_dir)
         .status()
         .map_err(|error| {
             io::Error::new(
@@ -66,11 +80,16 @@ fn main() -> io::Result<()> {
         ));
     }
 
-    if !ui_dir.join("build/index.html").is_file() {
-        return Err(io::Error::other(
-            "KeepPeek UI build did not produce ui/build/index.html",
-        ));
+    if !ui_build_dir.join("index.html").is_file() {
+        return Err(io::Error::other(format!(
+            "KeepPeek UI build did not produce {}",
+            ui_build_dir.join("index.html").display()
+        )));
     }
+    println!(
+        "cargo:rustc-env={UI_BUILD_DIR_ENV}={}",
+        ui_build_dir.display()
+    );
 
     Ok(())
 }

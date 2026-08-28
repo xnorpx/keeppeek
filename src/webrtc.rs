@@ -23,7 +23,6 @@ use std::{
         Arc, Condvar, Mutex, OnceLock, RwLock, Weak,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
-    thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use str0m::{
@@ -36,6 +35,10 @@ use str0m::{
     media::{MediaKind, MediaTime, Mid},
     net::{Protocol, Receive},
 };
+
+mod session_registry;
+
+use session_registry::SessionRegistry;
 
 const FRAME_QUEUE_CAPACITY: usize = 1_000;
 const API_DATA_QUEUE_CAPACITY: usize = 64;
@@ -1186,9 +1189,7 @@ impl SourceBitrate {
 struct Inner {
     sources: Mutex<HashMap<Source, SourceState>>,
     camera_preview_keyframes: Mutex<HashMap<IpAddr, CameraPreviewKeyframe>>,
-    api_sessions: Mutex<HashMap<SessionId, Arc<ApiSessionControl>>>,
-    threads: Mutex<Vec<SessionThread>>,
-    session_ids: Mutex<HashSet<SessionId>>,
+    sessions: SessionRegistry,
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
     published_frames: AtomicU64,
     published_bytes: AtomicU64,
@@ -1198,65 +1199,6 @@ struct Inner {
     queue_high_water: Arc<AtomicUsize>,
     queue_discarded_frames: AtomicU64,
     queue_recovery_drops: AtomicU64,
-}
-
-struct SessionThread {
-    session_id: SessionId,
-    handle: JoinHandle<()>,
-}
-
-fn reap_finished_threads(inner: &Inner) {
-    let finished = {
-        let mut threads = inner
-            .threads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut active = Vec::with_capacity(threads.len());
-        let mut finished = Vec::new();
-        for thread in std::mem::take(&mut *threads) {
-            if thread.handle.is_finished() {
-                finished.push(thread);
-            } else {
-                active.push(thread);
-            }
-        }
-        *threads = active;
-        finished
-    };
-    for thread in finished {
-        let session_id = thread.session_id;
-        if thread.handle.join().is_err() {
-            tracing::warn!("WebRTC session thread panicked");
-        }
-        inner
-            .session_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
-    }
-}
-
-fn join_session_thread(inner: &Inner, session_id: SessionId) {
-    let thread = {
-        let mut threads = inner
-            .threads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        threads
-            .iter()
-            .position(|thread| thread.session_id == session_id)
-            .map(|index| threads.swap_remove(index))
-    };
-    if let Some(thread) = thread {
-        if thread.handle.join().is_err() {
-            tracing::warn!(%session_id, "WebRTC session thread panicked");
-        }
-        inner
-            .session_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1968,12 +1910,7 @@ impl WebRtc {
     }
 
     pub(crate) fn has_api_session(&self, session_id: SessionId) -> bool {
-        self.live
-            .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(&session_id)
+        self.live.inner.sessions.contains_api(session_id)
     }
 
     pub(crate) fn enqueue_api_data(
@@ -1985,11 +1922,8 @@ impl WebRtc {
         let control = self
             .live
             .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session_id)
-            .cloned()
+            .sessions
+            .api_control(session_id)
             .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
         control
             .data_tx
@@ -2012,11 +1946,8 @@ impl WebRtc {
         let control = self
             .live
             .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session_id)
-            .cloned()
+            .sessions
+            .api_control(session_id)
             .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
         control
             .data_tx
@@ -2027,7 +1958,7 @@ impl WebRtc {
     }
 
     pub(crate) fn accept_api_offer(&self, offer: SdpOffer) -> anyhow::Result<Session> {
-        reap_finished_threads(&self.live.inner);
+        self.live.inner.sessions.reap_finished();
         let (
             SessionIo {
                 rtc,
@@ -2053,10 +1984,8 @@ impl WebRtc {
         });
         self.live
             .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(session_id, control.clone());
+            .sessions
+            .insert_api(session_id, control.clone());
         let thread_inner = self.live.inner.clone();
         let thread_control = control.clone();
         let thread = match std::thread::Builder::new()
@@ -2082,40 +2011,18 @@ impl WebRtc {
                 {
                     handler.session_closed(session_id);
                 }
-                thread_inner
-                    .api_sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&session_id);
+                thread_inner.sessions.remove_api(session_id);
                 thread_control.finish();
             }) {
             Ok(thread) => thread,
             Err(error) => {
                 control.finish();
-                self.live
-                    .inner
-                    .api_sessions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&session_id);
-                self.live
-                    .inner
-                    .session_ids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&session_id);
+                self.live.inner.sessions.remove_api(session_id);
+                self.live.inner.sessions.release_id(session_id);
                 return Err(error.into());
             }
         };
-        self.live
-            .inner
-            .threads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(SessionThread {
-                session_id,
-                handle: thread,
-            });
+        self.live.inner.sessions.push_thread(session_id, thread);
 
         Ok(Session {
             id: session_id,
@@ -2124,14 +2031,8 @@ impl WebRtc {
     }
 
     pub(crate) fn close_api_session(&self, session_id: SessionId) -> bool {
-        reap_finished_threads(&self.live.inner);
-        let control = self
-            .live
-            .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
+        self.live.inner.sessions.reap_finished();
+        let control = self.live.inner.sessions.remove_api(session_id);
         let Some(control) = control else {
             return false;
         };
@@ -2139,21 +2040,15 @@ impl WebRtc {
         if !control.wait_for_finish() {
             tracing::warn!(%session_id, "API WebRTC session did not finish before close timeout");
         } else {
-            join_session_thread(&self.live.inner, session_id);
+            self.live.inner.sessions.join_thread(session_id);
         }
-        reap_finished_threads(&self.live.inner);
+        self.live.inner.sessions.reap_finished();
         true
     }
 
     pub(crate) fn request_api_session_close(&self, session_id: SessionId) -> bool {
-        reap_finished_threads(&self.live.inner);
-        let control = self
-            .live
-            .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
+        self.live.inner.sessions.reap_finished();
+        let control = self.live.inner.sessions.remove_api(session_id);
         let Some(control) = control else {
             return false;
         };
@@ -2162,15 +2057,8 @@ impl WebRtc {
     }
 
     pub(crate) fn active_api_session_ids(&self) -> HashSet<SessionId> {
-        reap_finished_threads(&self.live.inner);
-        self.live
-            .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .copied()
-            .collect()
+        self.live.inner.sessions.reap_finished();
+        self.live.inner.sessions.active_api_ids()
     }
 
     pub fn live(&self) -> Publisher {
@@ -2224,7 +2112,7 @@ impl WebRtc {
     }
 
     pub(crate) fn health_snapshot(&self) -> WebRtcHealth {
-        reap_finished_threads(&self.live.inner);
+        self.live.inner.sessions.reap_finished();
         let now = Instant::now();
         let (sources, session_ids, active_main, active_sub, source_bitrate_bps, mut session_queues) = {
             let source_states = self
@@ -2368,7 +2256,7 @@ impl WebRtc {
         demand_guard: Option<RecordingDemandGuard>,
         offer: SdpOffer,
     ) -> anyhow::Result<Session> {
-        reap_finished_threads(&self.live.inner);
+        self.live.inner.sessions.reap_finished();
         let SessionIo {
             rtc,
             socket,
@@ -2406,24 +2294,11 @@ impl WebRtc {
             }) {
             Ok(thread) => thread,
             Err(error) => {
-                self.live
-                    .inner
-                    .session_ids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&session_id);
+                self.live.inner.sessions.release_id(session_id);
                 return Err(error.into());
             }
         };
-        self.live
-            .inner
-            .threads
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(SessionThread {
-                session_id,
-                handle: thread,
-            });
+        self.live.inner.sessions.push_thread(session_id, thread);
 
         Ok(Session {
             id: session_id,
@@ -2432,15 +2307,7 @@ impl WebRtc {
     }
 
     pub fn shutdown(&self) {
-        let api_controls = self
-            .live
-            .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let api_controls = self.live.inner.sessions.api_controls();
         for control in api_controls {
             control.close();
         }
@@ -2463,31 +2330,8 @@ impl WebRtc {
             }
         }
 
-        let threads = std::mem::take(
-            &mut *self
-                .live
-                .inner
-                .threads
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for thread in threads {
-            if thread.handle.join().is_err() {
-                tracing::warn!("WebRTC session thread panicked");
-            }
-        }
-        self.live
-            .inner
-            .api_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-        self.live
-            .inner
-            .session_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        self.live.inner.sessions.join_all_threads();
+        self.live.inner.sessions.clear_api();
     }
 }
 
@@ -2549,16 +2393,7 @@ fn accept_api_session(offer: SdpOffer) -> anyhow::Result<(SessionIo, SessionChan
 }
 
 fn next_session_id(inner: &Inner) -> SessionId {
-    let mut session_ids = inner
-        .session_ids
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    loop {
-        let session_id = SessionId(rand::random());
-        if session_id.0 != 0 && session_ids.insert(session_id) {
-            return session_id;
-        }
-    }
+    inner.sessions.reserve_id()
 }
 
 const fn initial_stream(has_sub_stream: bool) -> StreamKind {
@@ -5241,6 +5076,24 @@ mod tests {
 
     #[test]
     fn api_session_accepts_the_documented_data_channel_offer() {
+        struct SessionCloseHandler {
+            closed_tx: Sender<SessionId>,
+        }
+
+        impl ControlRequestHandler for SessionCloseHandler {
+            fn handle(&self, request: crate::api::proto::Request) -> ControlDispatch {
+                failed_control_dispatch(
+                    request.request_id,
+                    ErrorCode::UnsupportedRequest,
+                    "test handler does not process control requests",
+                )
+            }
+
+            fn session_closed(&self, session_id: SessionId) {
+                self.closed_tx.send(session_id).unwrap();
+            }
+        }
+
         let mut offerer = rtc_config().build(Instant::now());
         let mut changes = offerer.sdp_api();
         for config in session_channel_configs() {
@@ -5248,12 +5101,23 @@ mod tests {
         }
         let (offer, _) = changes.apply().unwrap();
         let webrtc = WebRtc::new();
+        let (closed_tx, closed_rx) = bounded(1);
+        let handler: Arc<dyn ControlRequestHandler> = Arc::new(SessionCloseHandler { closed_tx });
+        webrtc.set_control_handler(Arc::downgrade(&handler));
 
         let session = webrtc.accept_api_offer(offer).unwrap();
         let answer = session.answer.to_sdp_string();
         assert!(answer.lines().any(|line| line.starts_with("m=application")));
         assert!(answer.lines().any(|line| line == "a=ice-lite"));
+        assert!(webrtc.active_api_session_ids().contains(&session.id));
         assert!(webrtc.close_api_session(session.id));
+        assert_eq!(
+            closed_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            session.id
+        );
+        assert!(!webrtc.active_api_session_ids().contains(&session.id));
+        assert!(!webrtc.close_api_session(session.id));
+        assert!(webrtc.live.inner.sessions.threads_are_empty());
         webrtc.shutdown();
     }
 

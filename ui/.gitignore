@@ -1,5 +1,6 @@
 /node_modules
 /.svelte-kit
+/.cargo-ui
 /build
 .env
 .env.*

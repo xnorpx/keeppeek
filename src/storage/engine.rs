@@ -8,6 +8,7 @@ use crate::{
         identity::RecordingStreamIdentity,
         long_term::LongTermStore,
         medium_term::MediumTermWriter,
+        recording_policy::{AdmissionDecision, CameraRecordingPolicy},
         safety::{
             FilesystemCapacity, StorageCleanupReason, StorageCleanupTrigger,
             StorageSafetyHealthRegistry, StorageSafetyPolicy, filesystem_capacity,
@@ -140,28 +141,6 @@ struct WriteProgress {
     recorded_duration: Duration,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CameraRecordingPolicy {
-    mode: CameraRecordingMode,
-    event_duration: Duration,
-    main_until: Option<Instant>,
-    event_main_state: EventMainState,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum EventMainState {
-    #[default]
-    Idle,
-    WaitingForKeyframe,
-    Recording,
-}
-
-enum AdmissionDecision {
-    Record,
-    RecordAs(&'static str),
-    Ignore,
-}
-
 #[derive(Clone, Default)]
 struct RecordingAdmission {
     policies: Arc<RwLock<HashMap<String, CameraRecordingPolicy>>>,
@@ -174,12 +153,7 @@ impl RecordingAdmission {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(
                 camera_id.to_owned(),
-                CameraRecordingPolicy {
-                    mode,
-                    event_duration,
-                    main_until: None,
-                    event_main_state: EventMainState::Idle,
-                },
+                CameraRecordingPolicy::new(mode, event_duration),
             );
     }
 
@@ -191,12 +165,7 @@ impl RecordingAdmission {
         let Some(policy) = policies.get_mut(camera_id) else {
             return;
         };
-        if policy.mode == CameraRecordingMode::EventBoost {
-            policy.main_until = now.checked_add(policy.event_duration);
-            if policy.event_main_state == EventMainState::Idle {
-                policy.event_main_state = EventMainState::WaitingForKeyframe;
-            }
-        }
+        policy.note_event(now);
     }
 
     #[cfg(test)]
@@ -212,16 +181,10 @@ impl RecordingAdmission {
             .policies
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let policy =
-            policies
-                .entry(camera_id.to_owned())
-                .or_insert_with(|| CameraRecordingPolicy {
-                    mode: CameraRecordingMode::default(),
-                    event_duration: Duration::from_secs(60),
-                    main_until: None,
-                    event_main_state: EventMainState::Idle,
-                });
-        Self::decide(policy, stream_id, is_video, is_video_keyframe, now)
+        let policy = policies.entry(camera_id.to_owned()).or_insert_with(|| {
+            CameraRecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
+        });
+        policy.decide(stream_id, is_video, is_video_keyframe, now)
     }
 
     fn ingest_at(
@@ -248,14 +211,10 @@ impl RecordingAdmission {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let policy = policies
             .entry(identity.source_id.clone())
-            .or_insert_with(|| CameraRecordingPolicy {
-                mode: CameraRecordingMode::default(),
-                event_duration: Duration::from_secs(60),
-                main_until: None,
-                event_main_state: EventMainState::Idle,
+            .or_insert_with(|| {
+                CameraRecordingPolicy::new(CameraRecordingMode::default(), Duration::from_secs(60))
             });
-        let decision = Self::decide(
-            policy,
+        let decision = policy.decide(
             &identity.stream_id,
             frame.frame.is_video(),
             frame.is_video_keyframe(),
@@ -275,90 +234,14 @@ impl RecordingAdmission {
         }
     }
 
-    fn decide(
-        policy: &mut CameraRecordingPolicy,
-        stream_id: &str,
-        is_video: bool,
-        is_video_keyframe: bool,
-        now: Instant,
-    ) -> AdmissionDecision {
-        match (policy.mode, stream_id) {
-            (CameraRecordingMode::Sub, "sub")
-            | (CameraRecordingMode::Main, "main")
-            | (CameraRecordingMode::Both, "main" | "sub") => AdmissionDecision::Record,
-            (CameraRecordingMode::EventBoost, "main" | "sub") if !is_video => {
-                let preferred = if policy.event_main_state == EventMainState::Recording {
-                    "main"
-                } else {
-                    "sub"
-                };
-                if stream_id == preferred {
-                    AdmissionDecision::RecordAs("sub")
-                } else {
-                    AdmissionDecision::Ignore
-                }
-            }
-            (CameraRecordingMode::EventBoost, "main" | "sub") => {
-                if policy.event_main_state == EventMainState::WaitingForKeyframe
-                    && policy.main_until.is_none_or(|deadline| now >= deadline)
-                {
-                    policy.event_main_state = EventMainState::Idle;
-                    policy.main_until = None;
-                }
-                match policy.event_main_state {
-                    EventMainState::Idle if stream_id == "sub" => {
-                        AdmissionDecision::RecordAs("sub")
-                    }
-                    EventMainState::WaitingForKeyframe if stream_id == "sub" => {
-                        AdmissionDecision::RecordAs("sub")
-                    }
-                    EventMainState::WaitingForKeyframe
-                        if stream_id == "main" && is_video_keyframe =>
-                    {
-                        policy.event_main_state = EventMainState::Recording;
-                        AdmissionDecision::RecordAs("sub")
-                    }
-                    EventMainState::Recording
-                        if policy.main_until.is_some_and(|deadline| now < deadline)
-                            && stream_id == "main" =>
-                    {
-                        AdmissionDecision::RecordAs("sub")
-                    }
-                    EventMainState::Recording
-                        if stream_id == "sub"
-                            && is_video_keyframe
-                            && policy.main_until.is_none_or(|deadline| now >= deadline) =>
-                    {
-                        policy.event_main_state = EventMainState::Idle;
-                        policy.main_until = None;
-                        AdmissionDecision::RecordAs("sub")
-                    }
-                    EventMainState::Recording if stream_id == "main" => {
-                        AdmissionDecision::RecordAs("sub")
-                    }
-                    _ => AdmissionDecision::Ignore,
-                }
-            }
-            _ => AdmissionDecision::Ignore,
-        }
-    }
-
     fn preferred_audio_stream(&self, camera_id: &str) -> &'static str {
         let policies = self
             .policies
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match policies.get(camera_id).map(|policy| policy.mode) {
-            Some(CameraRecordingMode::Main | CameraRecordingMode::Both) => "main",
-            Some(CameraRecordingMode::EventBoost)
-                if policies
-                    .get(camera_id)
-                    .is_some_and(|policy| policy.event_main_state == EventMainState::Recording) =>
-            {
-                "main"
-            }
-            _ => "sub",
-        }
+        policies
+            .get(camera_id)
+            .map_or("sub", CameraRecordingPolicy::preferred_audio_stream)
     }
 }
 

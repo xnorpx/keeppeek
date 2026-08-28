@@ -1,9 +1,8 @@
 use crate::api::proto::{
     self, camera_configuration_command, camera_control_command, event_search_command,
-    health_command, logging_command, notification_rule_command, notification_rule_result,
-    ok as control_ok, optional_string_update, request as control_request,
-    response as control_response, runtime_configuration_command, server_command,
-    stored_media_command,
+    logging_command, notification_rule_command, notification_rule_result, ok as control_ok,
+    optional_string_update, request as control_request, response as control_response,
+    runtime_configuration_command, server_command,
 };
 use crate::{
     access::{
@@ -36,7 +35,6 @@ use crate::{
         AttemptRecord, ClearScope, Handle as NotificationHandle, HistoryEvent, HistoryGroup, Inbox,
         NotificationItem, RuleRecord, RuleStoreError, Stage, model::Rule as NotificationRule,
     },
-    operational_events::OperationalEvent,
     rtsp::{RtspTransport, probe_rtsp_video},
     runtime::{
         FacadeSendError, FacadeSender, RouterError, RouterMessage, RouterQuery, RouterResponse,
@@ -66,7 +64,7 @@ use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom, Write},
     net::{IpAddr, Ipv4Addr, TcpListener, ToSocketAddrs},
@@ -80,6 +78,13 @@ use std::{
 };
 use url::Url;
 use uuid::Uuid;
+
+mod camera_discovery;
+mod event_search;
+mod health_snapshot;
+mod logging;
+mod runtime_configuration;
+mod stored_media;
 
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERVER_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(3);
@@ -106,8 +111,6 @@ const MAX_EVENT_SEARCH_TASKS: usize = 64;
 const EVENT_PAGE_TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 type EventSearchTaskKey = (SessionId, String);
 type EventSearchTasks = Arc<Mutex<HashMap<EventSearchTaskKey, Arc<AtomicBool>>>>;
-type CameraDiscoveryTaskKey = (SessionId, String);
-type CameraDiscoveryTasks = Arc<Mutex<HashMap<CameraDiscoveryTaskKey, CameraDiscoveryTask>>>;
 const PTZ_STOP_SPEED: u32 = 32;
 const EXPORT_JOB_EXPIRY: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_EXPORT_DURATION: Duration = Duration::from_secs(2 * 60);
@@ -115,13 +118,12 @@ const MAX_EXPORT_DOWNLOAD_BYTES: u64 = 512 * 1_024 * 1_024;
 const CAMERA_CATALOG_WEBSITE: &str = "https://www.cctv-database.com/";
 const DEFAULT_CAMERA_CATALOG_SEARCH_LIMIT: usize = 20;
 const CAMERA_STREAM_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(8);
-const MAX_CAMERA_DISCOVERY_TASKS: usize = 16;
 const MAX_CAMERA_METADATA_WORKERS: usize = 4;
 // Limits user-provided search text before it becomes part of in-memory matching work.
 const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
 const MAX_NOTIFICATION_RULE_JSON_BYTES: usize = 64 * 1_024;
 
-static UI_ASSETS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
+static UI_ASSETS: Dir<'static> = include_dir!("$KEEPPEEK_UI_BUILD_DIR");
 
 #[derive(Serialize, Deserialize)]
 struct EventPageToken {
@@ -215,13 +217,6 @@ struct DiscoveredCameraSettings {
 struct DiscoveredCameraCatalog {
     camera: CatalogCamera,
     stream_hints: Option<StreamHints>,
-}
-
-#[derive(Clone)]
-struct CameraDiscoveryTask {
-    cameras: Vec<crate::cameras::DiscoveredCamera>,
-    complete: bool,
-    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -482,7 +477,7 @@ impl ControlRequestHandler for ServerControlHandler {
                         .handle_camera_configuration(session_id, command)
                         .map(Some),
                     Some(control_request::Command::LoggingCommand(command)) => {
-                        self.handle_logging(command).map(Some)
+                        logging::dispatch(&self.state, command).map(Some)
                     }
                     Some(control_request::Command::ServerCommand(command)) => {
                         match self.handle_server(session_id, &principal, command) {
@@ -494,10 +489,10 @@ impl ControlRequestHandler for ServerControlHandler {
                         }
                     }
                     Some(control_request::Command::RuntimeConfigurationCommand(command)) => {
-                        self.handle_runtime_configuration(command).map(Some)
+                        runtime_configuration::dispatch(&self.state, command).map(Some)
                     }
                     Some(control_request::Command::HealthCommand(command)) => {
-                        self.handle_health(command).map(Some)
+                        health_snapshot::dispatch(&self.state, &self.router_tx, command).map(Some)
                     }
                     Some(control_request::Command::ExportCommand(command)) => {
                         match self.handle_export(command) {
@@ -509,7 +504,7 @@ impl ControlRequestHandler for ServerControlHandler {
                         }
                     }
                     Some(control_request::Command::EventSearchCommand(command)) => {
-                        match self.handle_event_search(session_id, command) {
+                        match event_search::dispatch(&self.state, session_id, command) {
                             Ok((result, messages)) => {
                                 data_messages = messages;
                                 Ok(result)
@@ -521,7 +516,7 @@ impl ControlRequestHandler for ServerControlHandler {
                         .handle_notification_rules(session_id, command)
                         .map(Some),
                     Some(control_request::Command::StoredMediaCommand(command)) => {
-                        match self.handle_stored_media(session_id, command) {
+                        match stored_media::dispatch(&self.state, session_id, command) {
                             Ok(dispatch) => {
                                 data_messages = dispatch.messages;
                                 notifications = dispatch.notifications;
@@ -598,40 +593,9 @@ impl ControlRequestHandler for ServerControlHandler {
                 session.classification.reason,
             );
         }
-        let cancelled = self
-            .state
-            .event_search_tasks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .filter(|((owner_session_id, _), _)| *owner_session_id == session_id)
-            .map(|(_, cancelled)| cancelled.clone())
-            .collect::<Vec<_>>();
-        for token in cancelled {
-            token.store(true, Ordering::Release);
-        }
-        let discovery_tasks = {
-            let mut tasks = self
-                .state
-                .camera_discovery_tasks
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let cancelled = tasks
-                .iter()
-                .filter(|((owner_session_id, _), _)| *owner_session_id == session_id)
-                .map(|(_, task)| task.cancelled.clone())
-                .collect::<Vec<_>>();
-            tasks.retain(|(owner_session_id, _), _| *owner_session_id != session_id);
-            cancelled
-        };
-        for token in discovery_tasks {
-            token.store(true, Ordering::Release);
-        }
-        self.state
-            .stored_media_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(owner_session_id, _), _| *owner_session_id != session_id);
+        event_search::close_session(&self.state, session_id);
+        self.state.camera_discovery_tasks.close_session(session_id);
+        stored_media::close_session(&self.state, session_id);
         let source_ids = {
             let mut owners = self
                 .state
@@ -1796,28 +1760,6 @@ impl ServerControlHandler {
         Ok(())
     }
 
-    fn handle_logging(
-        &self,
-        command: proto::LoggingCommand,
-    ) -> Result<control_ok::Result, ControlCommandError> {
-        let settings = match command.action {
-            Some(logging_command::Action::GetSettings(_)) => get_logging_settings(&self.state)?,
-            Some(logging_command::Action::SetFilter(update)) => {
-                set_logging_filter(&self.state, &update.filter)?
-            }
-            None => {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::InvalidRequest,
-                    400,
-                    "logging command has no action",
-                ));
-            }
-        };
-        Ok(control_ok::Result::LoggingSettingsResult(
-            proto_logging_settings(settings),
-        ))
-    }
-
     fn handle_camera_configuration(
         &self,
         session_id: SessionId,
@@ -1836,153 +1778,13 @@ impl ServerControlHandler {
                 }),
             ),
             Some(camera_configuration_command::Action::Discover(request)) => {
-                let discovery_id = request.discovery_id.trim().to_owned();
-                if discovery_id.len() > 128 || discovery_id.chars().any(char::is_control) {
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::InvalidRequest,
-                        400,
-                        "camera discovery ID must be at most 128 printable characters",
-                    ));
-                }
-                let task_key =
-                    (!discovery_id.is_empty()).then(|| (session_id, discovery_id.clone()));
-                if let Some(key) = &task_key {
-                    let mut tasks = self
-                        .state
-                        .camera_discovery_tasks
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if tasks.len() >= MAX_CAMERA_DISCOVERY_TASKS && !tasks.contains_key(key) {
-                        return Err(ControlCommandError::new(
-                            proto::ErrorCode::Rejected,
-                            429,
-                            "too many camera discovery tasks are active",
-                        ));
-                    }
-                    tasks.insert(
-                        key.clone(),
-                        CameraDiscoveryTask {
-                            cameras: Vec::new(),
-                            complete: false,
-                            cancelled: Arc::new(AtomicBool::new(false)),
-                        },
-                    );
-                }
-                let networks = request
-                    .networks
-                    .iter()
-                    .map(|network| {
-                        let network = network.parse::<ipnet::Ipv4Net>().map_err(|_| {
-                            ControlCommandError::new(
-                                proto::ErrorCode::InvalidRequest,
-                                400,
-                                "camera discovery networks must be IPv4 CIDRs",
-                            )
-                        })?;
-                        if network.prefix_len() != 24 || !network.network().is_private() {
-                            return Err(ControlCommandError::new(
-                                proto::ErrorCode::InvalidRequest,
-                                400,
-                                "camera discovery networks must be private IPv4 /24 CIDRs",
-                            ));
-                        }
-                        Ok(network)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let subnets = request
-                    .subnets
-                    .into_iter()
-                    .map(|subnet| {
-                        u8::try_from(subnet).map_err(|_| {
-                            ControlCommandError::new(
-                                proto::ErrorCode::InvalidRequest,
-                                400,
-                                "camera discovery subnet prefixes must be between 0 and 255",
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let cameras = discover_camera_settings(
-                    networks,
-                    subnets,
-                    &self.router_tx,
-                    &self.state,
-                    task_key.as_ref(),
-                )?;
-                let cancelled = task_key
-                    .as_ref()
-                    .and_then(|key| {
-                        self.state
-                            .camera_discovery_tasks
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .get_mut(key)
-                            .map(|task| {
-                                task.complete = true;
-                                task.cancelled.load(Ordering::Acquire)
-                            })
-                    })
-                    .unwrap_or(false);
-                if let Some(key) = &task_key {
-                    self.state
-                        .camera_discovery_tasks
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(key);
-                }
-                Ok(control_ok::Result::CameraDiscoveryResult(
-                    proto_camera_discovery_result(discovery_id, cameras, true, cancelled),
-                ))
+                camera_discovery::discover(&self.state, &self.router_tx, session_id, request)
             }
             Some(camera_configuration_command::Action::GetDiscovery(request)) => {
-                let key = (session_id, request.discovery_id.clone());
-                let task = self
-                    .state
-                    .camera_discovery_tasks
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(&key)
-                    .cloned()
-                    .ok_or_else(|| {
-                        ControlCommandError::new(
-                            proto::ErrorCode::InvalidRequest,
-                            404,
-                            "camera discovery task was not found",
-                        )
-                    })?;
-                let cameras =
-                    present_discovered_cameras(task.cameras, &self.router_tx, &self.state);
-                Ok(control_ok::Result::CameraDiscoveryResult(
-                    proto_camera_discovery_result(
-                        request.discovery_id,
-                        cameras,
-                        task.complete,
-                        task.cancelled.load(Ordering::Acquire),
-                    ),
-                ))
+                camera_discovery::get(&self.state, &self.router_tx, session_id, request)
             }
             Some(camera_configuration_command::Action::CancelDiscovery(request)) => {
-                let key = (session_id, request.discovery_id.clone());
-                let task = self
-                    .state
-                    .camera_discovery_tasks
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(&key)
-                    .cloned()
-                    .ok_or_else(|| {
-                        ControlCommandError::new(
-                            proto::ErrorCode::InvalidRequest,
-                            404,
-                            "camera discovery task was not found",
-                        )
-                    })?;
-                task.cancelled.store(true, Ordering::Release);
-                let cameras =
-                    present_discovered_cameras(task.cameras, &self.router_tx, &self.state);
-                Ok(control_ok::Result::CameraDiscoveryResult(
-                    proto_camera_discovery_result(request.discovery_id, cameras, false, true),
-                ))
+                camera_discovery::cancel(&self.state, &self.router_tx, session_id, request)
             }
             Some(camera_configuration_command::Action::ProbeStreams(request)) => {
                 self.handle_camera_stream_probe(request)
@@ -2012,41 +1814,13 @@ impl ServerControlHandler {
                         tracing::debug!(%error, "camera discovery networks are unavailable");
                         Vec::new()
                     });
-                let configured_networks = self
-                    .state
-                    .camera_entries()
-                    .into_iter()
-                    .filter_map(|camera| camera.info.ip.parse::<Ipv4Addr>().ok())
-                    .filter(Ipv4Addr::is_private)
-                    .filter_map(|ip| {
-                        ipnet::Ipv4Net::new(ip, 24)
-                            .ok()
-                            .map(|network| network.trunc())
-                    })
-                    .collect::<HashSet<_>>();
-                if !configured_networks.is_empty() {
-                    for network in &mut networks {
-                        network.preferred = false;
-                    }
-                    for network in configured_networks {
-                        let cidr = network.to_string();
-                        if let Some(existing) = networks.iter_mut().find(|item| item.cidr == cidr) {
-                            existing.preferred = true;
-                        } else {
-                            networks.push(crate::cameras::CameraDiscoveryNetwork {
-                                cidr,
-                                interface_name: "configured cameras".to_owned(),
-                                preferred: true,
-                            });
-                        }
-                    }
-                    networks.sort_by(|left, right| {
-                        right
-                            .preferred
-                            .cmp(&left.preferred)
-                            .then_with(|| left.cidr.cmp(&right.cidr))
-                    });
-                }
+                networks = camera_discovery::prefer_configured_networks(
+                    networks,
+                    self.state
+                        .camera_entries()
+                        .into_iter()
+                        .filter_map(|camera| camera.info.ip.parse::<Ipv4Addr>().ok()),
+                );
                 let networks = networks
                     .into_iter()
                     .map(|network| proto::CameraDiscoveryNetwork {
@@ -2332,7 +2106,7 @@ impl ServerControlHandler {
                     .iter()
                     .enumerate()
                     .map(|(index, profile)| {
-                        proto_health_profile(ProfileSummary {
+                        health_snapshot::proto_health_profile(ProfileSummary {
                             name: profile.name.clone(),
                             stream: if index == 0 { "main" } else { "sub" }.to_owned(),
                             encoding: profile
@@ -2837,154 +2611,6 @@ impl ServerControlHandler {
         revoked
     }
 
-    fn handle_runtime_configuration(
-        &self,
-        command: proto::RuntimeConfigurationCommand,
-    ) -> Result<control_ok::Result, ControlCommandError> {
-        match command.action {
-            Some(runtime_configuration_command::Action::Get(_)) => {
-                Ok(control_ok::Result::RuntimeConfigurationResult(
-                    proto_runtime_configuration_result(RuntimeSettingsUpdateResponse {
-                        config: current_config(&self.state),
-                        restart_required: false,
-                    }),
-                ))
-            }
-            Some(runtime_configuration_command::Action::Update(update)) => {
-                let port = u16::try_from(update.port).map_err(|_| {
-                    ControlCommandError::new(
-                        proto::ErrorCode::InvalidRequest,
-                        400,
-                        "server port must be between 1 and 65535",
-                    )
-                })?;
-                let Some(storage) = update.storage else {
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::InvalidRequest,
-                        400,
-                        "runtime configuration requires storage settings",
-                    ));
-                };
-                let current_storage = current_config(&self.state).storage;
-                let write_buffer_bytes =
-                    usize::try_from(storage.write_buffer_bytes).map_err(|_| {
-                        ControlCommandError::new(
-                            proto::ErrorCode::InvalidRequest,
-                            400,
-                            "write buffer size is too large",
-                        )
-                    })?;
-                let maximum_used_percent = storage.maximum_used_percent.map_or_else(
-                    || Ok(current_storage.maximum_used_percent),
-                    |percent| {
-                        if percent == 0 {
-                            return Ok(None);
-                        }
-                        u8::try_from(percent)
-                            .map_err(|_| {
-                                ControlCommandError::new(
-                                    proto::ErrorCode::InvalidRequest,
-                                    400,
-                                    "maximum filesystem usage percentage is too large",
-                                )
-                            })
-                            .map(Some)
-                    },
-                )?;
-                let result = save_runtime_settings(
-                    RuntimeSettingsUpdate {
-                        host: update.host,
-                        port,
-                        expected_configuration_revision: update.expected_configuration_revision,
-                        storage: RuntimeStorageSettingsUpdate {
-                            medium_term_path: storage.medium_term_path,
-                            long_term_path: storage.long_term_path,
-                            recording_catalog_path: storage.recording_catalog_path,
-                            event_thumbnail_path: storage.event_thumbnail_path,
-                            event_thumbnail_max_mb: storage.event_thumbnail_max_mb,
-                            short_term_secs: storage.short_term_secs,
-                            medium_term_secs: storage.medium_term_secs,
-                            flush_interval_secs: storage.flush_interval_secs,
-                            write_buffer_bytes,
-                            long_term_max_gb: storage.long_term_max_gb,
-                            minimum_free_gb: storage
-                                .minimum_free_gb
-                                .unwrap_or(current_storage.minimum_free_gb),
-                            maximum_used_percent,
-                            warning_free_gb: storage
-                                .warning_free_gb
-                                .unwrap_or(current_storage.warning_free_gb),
-                            critical_free_gb: storage
-                                .critical_free_gb
-                                .unwrap_or(current_storage.critical_free_gb),
-                            cleanup_hysteresis_gb: storage
-                                .cleanup_hysteresis_gb
-                                .unwrap_or(current_storage.cleanup_hysteresis_gb),
-                        },
-                        move_existing_recordings: update.move_existing_recordings,
-                    },
-                    &self.state,
-                )?;
-                Ok(control_ok::Result::RuntimeConfigurationResult(
-                    proto_runtime_configuration_result(result),
-                ))
-            }
-            Some(runtime_configuration_command::Action::ProbeStorage(request)) => {
-                let path = if let Some(config_path) = &self.state.camera_config_path {
-                    config::resolve_secret_references(config_path, &request.path).map_err(
-                        |error| {
-                            ControlCommandError::new(
-                                proto::ErrorCode::InvalidRequest,
-                                400,
-                                format!("storage path secret reference is invalid: {error}"),
-                            )
-                        },
-                    )?
-                } else {
-                    request.path
-                };
-                let path = normalize_storage_path(&path).ok_or_else(|| {
-                    ControlCommandError::new(
-                        proto::ErrorCode::InvalidRequest,
-                        400,
-                        "storage path must be nonempty and cannot contain NUL",
-                    )
-                })?;
-                let result = storage_write_probe(Path::new(&path));
-                Ok(control_ok::Result::StorageWriteProbeResult(
-                    proto::StorageWriteProbeResult {
-                        writable: result.is_ok(),
-                        detail: match result {
-                            Ok(()) => "Write, flush, rename, and cleanup succeeded.".to_owned(),
-                            Err(error) => format!("Storage write verification failed: {error}"),
-                        },
-                    },
-                ))
-            }
-            None => Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "runtime configuration command has no action",
-            )),
-        }
-    }
-
-    fn handle_health(
-        &self,
-        command: proto::HealthCommand,
-    ) -> Result<control_ok::Result, ControlCommandError> {
-        match command.action {
-            Some(health_command::Action::Get(_)) => Ok(control_ok::Result::HealthResult(
-                proto_health_snapshot(server_health(&self.router_tx, &self.state)),
-            )),
-            None => Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "health command has no action",
-            )),
-        }
-    }
-
     fn handle_export(
         &self,
         command: proto::ExportCommand,
@@ -3032,184 +2658,6 @@ impl ServerControlHandler {
                 proto::ErrorCode::InvalidRequest,
                 400,
                 "export command has no action",
-            )),
-        }
-    }
-
-    fn handle_event_search(
-        &self,
-        session_id: SessionId,
-        command: proto::EventSearchCommand,
-    ) -> Result<(Option<control_ok::Result>, Vec<OutboundDataMessage>), ControlCommandError> {
-        match command.action {
-            Some(event_search_command::Action::ReplaceTerms(request)) => {
-                replace_event_search_terms(&self.state, &request)?;
-                Ok((
-                    Some(control_ok::Result::EventSearchMutation(
-                        proto::EventSearchMutationResult {
-                            event_id: request.event_id,
-                        },
-                    )),
-                    Vec::new(),
-                ))
-            }
-            Some(event_search_command::Action::SetEmbedding(request)) => {
-                set_event_search_embedding(&self.state, &request)?;
-                Ok((
-                    Some(control_ok::Result::EventSearchMutation(
-                        proto::EventSearchMutationResult {
-                            event_id: request.event_id,
-                        },
-                    )),
-                    Vec::new(),
-                ))
-            }
-            Some(event_search_command::Action::Query(request)) => {
-                if self.state.webrtc.has_api_session(session_id) {
-                    let delivery = start_event_search_query(&self.state, session_id, request)?;
-                    return Ok((
-                        Some(control_ok::Result::EventSearchDelivery(delivery)),
-                        Vec::new(),
-                    ));
-                }
-                let (delivery, messages) = query_events(&self.state, request)?;
-                Ok((
-                    Some(control_ok::Result::EventSearchDelivery(delivery)),
-                    messages,
-                ))
-            }
-            Some(event_search_command::Action::FetchMedia(request)) => {
-                if self.state.webrtc.has_api_session(session_id) {
-                    let delivery = start_event_search_media(&self.state, session_id, request)?;
-                    return Ok((
-                        Some(control_ok::Result::EventSearchMediaDelivery(delivery)),
-                        Vec::new(),
-                    ));
-                }
-                let (delivery, messages) = fetch_event_search_media(&self.state, request)?;
-                Ok((
-                    Some(control_ok::Result::EventSearchMediaDelivery(delivery)),
-                    messages,
-                ))
-            }
-            Some(event_search_command::Action::CancelQuery(request)) => {
-                validate_client_id(&request.query_id, "event search query ID")?;
-                cancel_event_search_task(
-                    &self.state,
-                    session_id,
-                    &format!("event-search-query:{}", request.query_id),
-                );
-                Ok((None, Vec::new()))
-            }
-            Some(event_search_command::Action::CancelMedia(request)) => {
-                validate_client_id(&request.transfer_id, "event search transfer ID")?;
-                cancel_event_search_task(
-                    &self.state,
-                    session_id,
-                    &format!("event-search-media:{}", request.transfer_id),
-                );
-                Ok((None, Vec::new()))
-            }
-            None => Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "event search command has no action",
-            )),
-        }
-    }
-
-    fn handle_stored_media(
-        &self,
-        session_id: SessionId,
-        command: proto::StoredMediaCommand,
-    ) -> Result<StoredMediaDispatch, ControlCommandError> {
-        match command.action {
-            Some(stored_media_command::Action::Open(open)) => {
-                let (cursor, state, messages) = open_stored_media(&self.state, open)?;
-                let key = (session_id, state.stored_media_id.clone());
-                let mut cursors = self
-                    .state
-                    .stored_media_cursors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if cursors.contains_key(&key) {
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::Rejected,
-                        409,
-                        "stored media cursor ID is already active on this connection",
-                    ));
-                }
-                cursors.insert(key, cursor);
-                let notifications = terminal_stored_media_notification(&state);
-                Ok(StoredMediaDispatch {
-                    result: Some(control_ok::Result::StoredMediaState(state)),
-                    messages,
-                    notifications,
-                })
-            }
-            Some(stored_media_command::Action::Seek(seek)) => {
-                let (state, messages) = seek_stored_media(&self.state, session_id, seek)?;
-                let notifications = terminal_stored_media_notification(&state);
-                Ok(StoredMediaDispatch {
-                    result: Some(control_ok::Result::StoredMediaState(state)),
-                    messages,
-                    notifications,
-                })
-            }
-            Some(stored_media_command::Action::Refill(refill)) => {
-                let (state, messages) = refill_stored_media(&self.state, session_id, refill)?;
-                let notifications = terminal_stored_media_notification(&state);
-                Ok(StoredMediaDispatch {
-                    result: Some(control_ok::Result::StoredMediaState(state)),
-                    messages,
-                    notifications,
-                })
-            }
-            Some(stored_media_command::Action::SetPlayback(update)) => {
-                let (state, messages) = set_stored_media_playback(&self.state, session_id, update)?;
-                Ok(StoredMediaDispatch {
-                    result: Some(control_ok::Result::StoredMediaState(state)),
-                    messages,
-                    notifications: Vec::new(),
-                })
-            }
-            Some(stored_media_command::Action::Close(close)) => {
-                let removed = self
-                    .state
-                    .stored_media_cursors
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&(session_id, close.stored_media_id));
-                if removed.is_none() {
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::NotFound,
-                        404,
-                        "stored media cursor was not found",
-                    ));
-                }
-                Ok(StoredMediaDispatch {
-                    result: None,
-                    messages: Vec::new(),
-                    notifications: Vec::new(),
-                })
-            }
-            Some(stored_media_command::Action::QueryTimeline(query)) => {
-                let (delivery, messages) = query_stored_media_timeline(&self.state, query)?;
-                Ok(StoredMediaDispatch {
-                    result: Some(control_ok::Result::StoredMediaQueryDelivery(delivery)),
-                    messages,
-                    notifications: Vec::new(),
-                })
-            }
-            Some(stored_media_command::Action::CancelTimelineQuery(_)) => Ok(StoredMediaDispatch {
-                result: None,
-                messages: Vec::new(),
-                notifications: Vec::new(),
-            }),
-            None => Err(ControlCommandError::new(
-                proto::ErrorCode::InvalidRequest,
-                400,
-                "stored media command has no action",
             )),
         }
     }
@@ -6943,7 +6391,7 @@ fn query_stored_events(
                 continue;
             }
             results.push(StoredTimelineEvent {
-                event: proto_operational_event(event),
+                event: health_snapshot::proto_operational_event(event),
                 attachment: None,
             });
         }
@@ -7143,268 +6591,6 @@ fn proto_runtime_configuration_result(
     }
 }
 
-fn proto_health_snapshot(health: ServerHealthResponse) -> proto::ServerHealthSnapshot {
-    proto::ServerHealthSnapshot {
-        status: health.status,
-        generated_at_ms: health.generated_at_ms,
-        uptime_seconds: health.uptime_seconds,
-        version: health.version.to_owned(),
-        totals: Some(proto_health_totals(health.totals)),
-        system: Some(proto_system_health(health.system)),
-        storage: Some(proto_storage_health(health.storage)),
-        webrtc: Some(proto_webrtc_health(health.webrtc)),
-        cameras: health
-            .cameras
-            .into_iter()
-            .map(proto_camera_health)
-            .collect(),
-        issues: health
-            .issues
-            .into_iter()
-            .map(|issue| proto::HealthIssueSnapshot {
-                severity: issue.severity,
-                scope: issue.scope,
-                message: issue.message,
-                operational_event_id: issue.operational_event_id,
-                timeline_start: issue.timeline_start_ms.map(millis_timestamp),
-                timeline_end: issue.timeline_end_ms.map(millis_timestamp),
-            })
-            .collect(),
-        health_contract_version: health.health_contract_version,
-        operational_events: health
-            .operational_events
-            .into_iter()
-            .map(proto_operational_event)
-            .collect(),
-    }
-}
-
-fn proto_operational_event(event: OperationalEvent) -> proto::Event {
-    let mut fields = BTreeMap::new();
-    fields.insert(
-        "severity".to_owned(),
-        prost_types::Value {
-            kind: Some(prost_types::value::Kind::StringValue(
-                event.severity.as_str().to_owned(),
-            )),
-        },
-    );
-    fields.insert(
-        "cause".to_owned(),
-        prost_types::Value {
-            kind: Some(prost_types::value::Kind::StringValue(
-                event.evidence.cause.clone(),
-            )),
-        },
-    );
-    fields.insert(
-        "affected_streams".to_owned(),
-        prost_types::Value {
-            kind: Some(prost_types::value::Kind::ListValue(
-                prost_types::ListValue {
-                    values: event
-                        .evidence
-                        .affected_streams
-                        .iter()
-                        .map(|stream| prost_types::Value {
-                            kind: Some(prost_types::value::Kind::StringValue(stream.clone())),
-                        })
-                        .collect(),
-                },
-            )),
-        },
-    );
-    fields.insert(
-        "recording_interrupted".to_owned(),
-        prost_types::Value {
-            kind: Some(prost_types::value::Kind::BoolValue(
-                event.evidence.recording_interrupted,
-            )),
-        },
-    );
-    fields.insert(
-        "evidence_source".to_owned(),
-        prost_types::Value {
-            kind: Some(prost_types::value::Kind::StringValue(
-                event.evidence.source.clone(),
-            )),
-        },
-    );
-    fields.insert(
-        "recovered".to_owned(),
-        prost_types::Value {
-            kind: Some(prost_types::value::Kind::BoolValue(
-                event.end_time_ms.is_some(),
-            )),
-        },
-    );
-    if let Some(stream_id) = &event.key.stream_id {
-        fields.insert(
-            "stream_id".to_owned(),
-            prost_types::Value {
-                kind: Some(prost_types::value::Kind::StringValue(stream_id.clone())),
-            },
-        );
-    }
-    if let Some(duration_ms) = event.duration_ms {
-        fields.insert(
-            "duration_ms".to_owned(),
-            prost_types::Value {
-                kind: Some(prost_types::value::Kind::NumberValue(duration_ms as f64)),
-            },
-        );
-    }
-    proto::Event {
-        event_id: event.id,
-        revision: event.revision,
-        source_id: event.key.camera_id,
-        media_kind: event
-            .key
-            .stream_id
-            .as_ref()
-            .map(|_| proto::MediaKind::Video as i32),
-        origin: proto::EventOrigin::Keeppeek as i32,
-        event_type: event.key.kind.as_str().to_owned(),
-        start_time: Some(millis_timestamp(event.start_time_ms)),
-        end_time: event.end_time_ms.map(millis_timestamp),
-        confidence: None,
-        bounding_box: None,
-        zone: None,
-        text: Some(event.evidence.explanation),
-        payload: Some(prost_types::Struct { fields }),
-        attachments: Vec::new(),
-        source_session_id: None,
-        subscription_id: None,
-        canonical_attachment_id: None,
-        icon_key: Some("alert".to_owned()),
-        rejected_icon_key: None,
-        bounding_box_attachment_id: None,
-        image_availability: proto::EventImageAvailability::None as i32,
-    }
-}
-
-fn proto_health_totals(totals: HealthTotals) -> proto::HealthTotalsSnapshot {
-    proto::HealthTotalsSnapshot {
-        configured_cameras: usize_u64(totals.configured_cameras),
-        configured_video_streams: usize_u64(totals.configured_video_streams),
-        ingress_fps: totals.ingress_fps,
-        ingress_bitrate_bps: totals.ingress_bitrate_bps,
-        frames: totals.frames,
-        keyframes: totals.keyframes,
-        drops: totals.drops,
-        errors: totals.errors,
-        reconnects: totals.reconnects,
-        connected_cameras: usize_u64(totals.connected_cameras),
-        fresh_cameras: usize_u64(totals.fresh_cameras),
-        decodable_cameras: usize_u64(totals.decodable_cameras),
-        recording_requested_cameras: usize_u64(totals.recording_requested_cameras),
-        recording_cameras: usize_u64(totals.recording_cameras),
-        unknown_cameras: usize_u64(totals.unknown_cameras),
-        connected_video_streams: usize_u64(totals.connected_video_streams),
-        fresh_video_streams: usize_u64(totals.fresh_video_streams),
-        decodable_video_streams: usize_u64(totals.decodable_video_streams),
-        recording_requested_video_streams: usize_u64(totals.recording_requested_video_streams),
-        recording_video_streams: usize_u64(totals.recording_video_streams),
-    }
-}
-
-fn proto_camera_health(camera: CameraHealth) -> proto::CameraHealthSnapshot {
-    proto::CameraHealthSnapshot {
-        id: camera.id,
-        ip: camera.ip,
-        name: camera.name,
-        manufacturer: camera.manufacturer,
-        model: camera.model,
-        firmware_version: camera.firmware_version,
-        backend: camera.backend,
-        transport: camera.transport,
-        state: camera.state.as_str().to_owned(),
-        lifecycle: camera.lifecycle,
-        last_error: camera.last_error,
-        configured_profiles: camera
-            .configured_profiles
-            .into_iter()
-            .map(proto_health_profile)
-            .collect(),
-        streams: camera
-            .streams
-            .into_iter()
-            .map(proto_stream_health)
-            .collect(),
-        reason: camera.reason.as_str().to_owned(),
-        reason_codes: camera
-            .reason_codes
-            .into_iter()
-            .map(|reason| reason.as_str().to_owned())
-            .collect(),
-        detail: camera.detail,
-        dimensions: Some(proto_camera_health_dimensions(camera.dimensions)),
-    }
-}
-
-fn proto_camera_health_dimensions(
-    dimensions: CameraHealthDimensions,
-) -> proto::CameraHealthDimensionsSnapshot {
-    let connected_video_stream_ids_known = dimensions.connected_video_stream_ids.is_some();
-    proto::CameraHealthDimensionsSnapshot {
-        configured: dimensions.configured,
-        expected: dimensions.expected,
-        configured_video_streams: usize_u64(dimensions.configured_video_streams),
-        connected_video_streams: dimensions.connected_video_streams.map(usize_u64),
-        reporting_video_streams: usize_u64(dimensions.reporting_video_streams),
-        fresh_video_streams: usize_u64(dimensions.fresh_video_streams),
-        decodable_video_streams: usize_u64(dimensions.decodable_video_streams),
-        configured_video_stream_ids: dimensions.configured_video_stream_ids,
-        connected_video_stream_ids: dimensions.connected_video_stream_ids.unwrap_or_default(),
-        connected_video_stream_ids_known,
-        reporting_video_stream_ids: dimensions.reporting_video_stream_ids,
-        fresh_video_stream_ids: dimensions.fresh_video_stream_ids,
-        decodable_video_stream_ids: dimensions.decodable_video_stream_ids,
-        transport_connected: dimensions.transport_connected,
-        latest_report_at_ms: dimensions.latest_report_at_ms,
-        report_age_ms: dimensions.report_age_ms,
-        frames_fresh: dimensions.frames_fresh,
-        decodable: dimensions.decodable,
-        recent_reconnects: dimensions.recent_reconnects,
-        recent_drops: dimensions.recent_drops,
-        recent_errors: dimensions.recent_errors,
-        recording_requested: dimensions.recording_requested,
-        recording_video_streams: usize_u64(dimensions.recording_video_streams),
-        recording_streams_progressing: usize_u64(dimensions.recording_streams_progressing),
-        recording_video_stream_ids: dimensions.recording_video_stream_ids,
-        recording_progressing_stream_ids: dimensions.recording_progressing_stream_ids,
-        recording_progressing: dimensions.recording_progressing,
-        recording_progress_age_ms: dimensions.recording_progress_age_ms,
-        session_duration_ms: dimensions.session_duration_ms,
-        recorded_main_duration_ms: dimensions.recorded_main_duration_ms,
-        recorded_sub_duration_ms: dimensions.recorded_sub_duration_ms,
-        recorded_total_duration_ms: dimensions.recorded_total_duration_ms,
-        battery_configured: dimensions.battery_configured,
-        battery_registered: dimensions.battery_registered,
-        battery_last_seen_age_ms: dimensions.battery_last_seen_age_ms,
-        battery_sleeping: dimensions.battery_sleeping,
-        battery_wake_pending_age_ms: dimensions.battery_wake_pending_age_ms,
-    }
-}
-
-fn proto_health_profile(profile: ProfileSummary) -> proto::HealthProfileSummary {
-    proto::HealthProfileSummary {
-        name: profile.name,
-        stream: profile.stream,
-        encoding: profile.encoding,
-        resolution: profile.resolution,
-        framerate: profile.framerate,
-        bitrate_kbps: profile.bitrate_kbps,
-        gop: profile.gop,
-        h264_profile: profile.h264_profile,
-        audio: profile.audio.map(|audio| proto::HealthAudioProfileSummary {
-            encoding: audio.encoding,
-            sample_rate: audio.sample_rate,
-            bitrate_kbps: audio.bitrate_kbps,
-        }),
-    }
-}
-
 fn proto_camera_stream_verification(
     stream: &str,
     rtsp_url: Option<&str>,
@@ -7471,316 +6657,6 @@ fn proto_camera_stream_verification(
             }
         }
     }
-}
-
-fn proto_stream_health(stream: StreamHealth) -> proto::StreamHealthSnapshot {
-    let dimensions = stream.dimensions;
-    let ingress = stream.ingress;
-    let report = ingress.report;
-    proto::StreamHealthSnapshot {
-        r#type: report.kind,
-        codec: report.codec,
-        resolution: report.resolution,
-        fps: nonzero_f64(report.fps),
-        expected_fps: nonzero_f64(report.expected_fps),
-        kf_fps: nonzero_f64(report.kf_fps),
-        kbps: nonzero_f64(report.kbps),
-        max_frame_kb: nonzero_f64(report.max_frame_kb),
-        gap_min_ms: nonzero_f64(report.gap_min_ms),
-        gap_avg_ms: nonzero_f64(report.gap_avg_ms),
-        gap_max_ms: nonzero_f64(report.gap_max_ms),
-        jitter_samples: nonzero_u64(report.jitter_samples),
-        jitter_p50_ms: nonzero_f64(report.jitter_p50_ms),
-        jitter_p99_ms: nonzero_f64(report.jitter_p99_ms),
-        frames: report.frames.and_then(nonzero_u64),
-        bytes: report.bytes.and_then(nonzero_u64),
-        keyframes: report.keyframes.and_then(nonzero_u64),
-        reconnects: report.reconnects.and_then(nonzero_u64),
-        drops: report.drops.and_then(nonzero_u64),
-        errors: report.errors.and_then(nonzero_u64),
-        updated_at_ms: ingress.updated_at_ms,
-        report_age_ms: ingress.report_age_ms,
-        frame_updated_at_ms: ingress.frame_updated_at_ms,
-        frame_age_ms: ingress.frame_age_ms,
-        keyframe_updated_at_ms: ingress.keyframe_updated_at_ms,
-        keyframe_age_ms: ingress.keyframe_age_ms,
-        recent_reconnects: ingress.recent_reconnects,
-        recent_drops: ingress.recent_drops,
-        recent_errors: ingress.recent_errors,
-        state: stream.state.as_str().to_owned(),
-        reason: stream.reason.as_str().to_owned(),
-        reason_codes: stream
-            .reason_codes
-            .into_iter()
-            .map(|reason| reason.as_str().to_owned())
-            .collect(),
-        detail: stream.detail,
-        dimensions: Some(proto::StreamHealthDimensionsSnapshot {
-            expected: dimensions.expected,
-            transport_connected: dimensions.transport_connected,
-            report_fresh: dimensions.report_fresh,
-            report_freshness_threshold_ms: dimensions.report_freshness_threshold_ms,
-            frames_fresh: dimensions.frames_fresh,
-            frame_freshness_threshold_ms: dimensions.frame_freshness_threshold_ms,
-            decodable: dimensions.decodable,
-            keyframe_freshness_threshold_ms: dimensions.keyframe_freshness_threshold_ms,
-            recent_reconnects: dimensions.recent_reconnects,
-            recent_drops: dimensions.recent_drops,
-            recent_errors: dimensions.recent_errors,
-            recording_requested: dimensions.recording_requested,
-            recording_progressing: dimensions.recording_progressing,
-            recording_progress_age_ms: dimensions.recording_progress_age_ms,
-            session_duration_ms: dimensions.session_duration_ms,
-            recorded_duration_ms: dimensions.recorded_duration_ms,
-        }),
-    }
-}
-
-fn proto_system_health(system: crate::health::SystemHealth) -> proto::SystemHealthSnapshot {
-    proto::SystemHealthSnapshot {
-        host_name: system.host_name,
-        os_name: system.os_name,
-        os_version: system.os_version,
-        kernel_version: system.kernel_version,
-        architecture: system.architecture.to_owned(),
-        system_uptime_seconds: system.system_uptime_seconds,
-        boot_time_seconds: system.boot_time_seconds,
-        logical_cores: usize_u64(system.logical_cores),
-        physical_cores: system.physical_cores.map(usize_u64),
-        cpu_brand: system.cpu_brand,
-        system_cpu_percent: system.system_cpu_percent,
-        process: Some(proto_process_health(system.process)),
-        memory: Some(proto::MemoryHealthSnapshot {
-            total_bytes: system.memory.total_bytes,
-            used_bytes: system.memory.used_bytes,
-            available_bytes: system.memory.available_bytes,
-            total_swap_bytes: system.memory.total_swap_bytes,
-            used_swap_bytes: system.memory.used_swap_bytes,
-        }),
-        load: Some(proto::LoadHealthSnapshot {
-            one_minute: system.load.one_minute,
-            five_minutes: system.load.five_minutes,
-            fifteen_minutes: system.load.fifteen_minutes,
-        }),
-        cpus: system
-            .cpus
-            .into_iter()
-            .map(|cpu| proto::CpuHealthSnapshot {
-                name: cpu.name,
-                usage_percent: cpu.usage_percent,
-                frequency_mhz: cpu.frequency_mhz,
-            })
-            .collect(),
-        network_egress_bps: system.network_egress_bps,
-        networks: system
-            .networks
-            .into_iter()
-            .map(|network| proto::NetworkHealthSnapshot {
-                name: network.name,
-                received_bytes_per_second: network.received_bytes_per_second,
-                transmitted_bytes_per_second: network.transmitted_bytes_per_second,
-                received_packets_per_second: network.received_packets_per_second,
-                transmitted_packets_per_second: network.transmitted_packets_per_second,
-                receive_errors: network.receive_errors,
-                transmit_errors: network.transmit_errors,
-                total_received_bytes: network.total_received_bytes,
-                total_transmitted_bytes: network.total_transmitted_bytes,
-            })
-            .collect(),
-        disks: system
-            .disks
-            .into_iter()
-            .map(|disk| proto::DiskHealthSnapshot {
-                name: disk.name,
-                kind: disk.kind,
-                file_system: disk.file_system,
-                mount_point: disk.mount_point,
-                total_bytes: disk.total_bytes,
-                available_bytes: disk.available_bytes,
-                used_bytes: disk.used_bytes,
-                removable: disk.removable,
-                stores_recordings: disk.stores_recordings,
-            })
-            .collect(),
-        temperatures: system
-            .temperatures
-            .into_iter()
-            .map(|temperature| proto::TemperatureHealthSnapshot {
-                label: temperature.label,
-                current_celsius: temperature.current_celsius,
-                max_celsius: temperature.max_celsius,
-                critical_celsius: temperature.critical_celsius,
-            })
-            .collect(),
-    }
-}
-
-fn proto_process_health(process: crate::health::ProcessHealth) -> proto::ProcessHealthSnapshot {
-    proto::ProcessHealthSnapshot {
-        pid: process.pid,
-        name: process.name,
-        executable: process.executable,
-        working_directory: process.working_directory,
-        cpu_percent: process.cpu_percent,
-        cpu_capacity_percent: process.cpu_capacity_percent,
-        cpu_core_equivalents: process.cpu_core_equivalents,
-        resident_memory_bytes: process.resident_memory_bytes,
-        memory_capacity_percent: process.memory_capacity_percent,
-        virtual_memory_bytes: process.virtual_memory_bytes,
-        started_at_seconds: process.started_at_seconds,
-        uptime_seconds: process.uptime_seconds,
-        tasks: process.tasks.map(usize_u64),
-        read_bytes_per_second: process.read_bytes_per_second,
-        write_bytes_per_second: process.write_bytes_per_second,
-        total_read_bytes: process.total_read_bytes,
-        total_written_bytes: process.total_written_bytes,
-    }
-}
-
-fn proto_storage_health(storage: StorageHealth) -> proto::StorageHealthSnapshot {
-    let safety = storage.safety;
-    proto::StorageHealthSnapshot {
-        medium_term_path: storage.medium_term_path,
-        long_term_path: storage.long_term_path,
-        paths_are_same: storage.paths_are_same,
-        short_term_seconds: storage.short_term_seconds,
-        medium_term_seconds: storage.medium_term_seconds,
-        flush_interval_seconds: storage.flush_interval_seconds,
-        write_buffer_bytes: usize_u64(storage.write_buffer_bytes),
-        long_term_max_bytes: storage.long_term_max_bytes,
-        catalog_bytes: storage.catalog_bytes,
-        catalog: storage.catalog.map(|catalog| proto::CatalogHealthSnapshot {
-            recording_files: catalog.recording_files,
-            finalized_files: catalog.finalized_files,
-            active_files: catalog.active_files,
-            fragments: catalog.fragments,
-            fragment_bytes: catalog.fragment_bytes,
-            events: catalog.events,
-            open_events: catalog.open_events,
-            event_thumbnails: catalog.event_thumbnails,
-            oldest_recording_at_ms: catalog.oldest_recording_at_ms,
-            newest_recording_at_ms: catalog.newest_recording_at_ms,
-            protected_files: catalog.protected_files,
-            recording_bytes: catalog.recording_bytes,
-        }),
-        demand: Some(proto::RecordingDemandHealthSnapshot {
-            active_streams: usize_u64(storage.demand.active_streams),
-            total_viewers: usize_u64(storage.demand.total_viewers),
-            leased_streams: usize_u64(storage.demand.leased_streams),
-            streams: storage
-                .demand
-                .streams
-                .into_iter()
-                .map(|stream| proto::RecordingDemandStreamHealthSnapshot {
-                    stream_id: stream.stream_id,
-                    viewers: usize_u64(stream.viewers),
-                    lease_remaining_ms: stream.lease_remaining_ms,
-                })
-                .collect(),
-        }),
-        minimum_free_bytes: storage.minimum_free_bytes,
-        maximum_used_percent: storage.maximum_used_percent.map(u32::from),
-        warning_free_bytes: storage.warning_free_bytes,
-        critical_free_bytes: storage.critical_free_bytes,
-        cleanup_hysteresis_bytes: storage.cleanup_hysteresis_bytes,
-        safety: Some(proto::StorageSafetyHealthSnapshot {
-            pressure: safety.pressure.as_str().to_owned(),
-            recording_state: safety.recording_state.as_str().to_owned(),
-            total_bytes: safety.total_bytes,
-            available_bytes: safety.available_bytes,
-            keeppeek_bytes: safety.keeppeek_bytes,
-            effective_limit_bytes: safety.effective_limit_bytes,
-            cleanup_target_bytes: safety.cleanup_target_bytes,
-            warning_free_bytes: safety.warning_free_bytes,
-            critical_free_bytes: safety.critical_free_bytes,
-            recovery_free_bytes: safety.recovery_free_bytes,
-            last_evaluation_at_ms: safety.last_evaluation_at_ms,
-            last_evaluation_trigger: safety
-                .last_evaluation_trigger
-                .map(|trigger| trigger.as_str().to_owned()),
-            cleanup_running: safety.cleanup_running,
-            last_cleanup_started_at_ms: safety.last_cleanup_started_at_ms,
-            last_cleanup_ended_at_ms: safety.last_cleanup_ended_at_ms,
-            last_cleanup_files_removed: safety.last_cleanup_files_removed,
-            last_cleanup_bytes_removed: safety.last_cleanup_bytes_removed,
-            last_cleanup_reason: safety
-                .last_cleanup_reason
-                .map(|reason| reason.as_str().to_owned()),
-            last_failure_at_ms: safety.last_failure_at_ms,
-            last_failure: safety.last_failure,
-            last_recovered_at_ms: safety.last_recovered_at_ms,
-        }),
-    }
-}
-
-fn proto_webrtc_health(health: crate::webrtc::WebRtcHealth) -> proto::WebRtcHealthSnapshot {
-    proto::WebRtcHealthSnapshot {
-        active_sessions: usize_u64(health.active_sessions),
-        adaptive_sessions: usize_u64(health.adaptive_sessions),
-        multi_track_sessions: usize_u64(health.multi_track_sessions),
-        multi_tracks: usize_u64(health.multi_tracks),
-        fixed_sessions: usize_u64(health.fixed_sessions),
-        active_main: usize_u64(health.active_main),
-        active_sub: usize_u64(health.active_sub),
-        requested_auto: usize_u64(health.requested_auto),
-        requested_high: usize_u64(health.requested_high),
-        requested_low: usize_u64(health.requested_low),
-        estimated_bitrate_min_bps: health.estimated_bitrate_min_bps,
-        estimated_bitrate_avg_bps: health.estimated_bitrate_avg_bps,
-        estimated_bitrate_max_bps: health.estimated_bitrate_max_bps,
-        source_bitrate_bps: health.source_bitrate_bps,
-        published_frames: health.published_frames,
-        published_bytes: health.published_bytes,
-        delivered_frames: health.delivered_frames,
-        written_frames: health.written_frames,
-        queue_capacity: usize_u64(health.queue_capacity),
-        queued_frames: usize_u64(health.queued_frames),
-        queue_depth_max: usize_u64(health.queue_depth_max),
-        queue_high_water: usize_u64(health.queue_high_water),
-        queue_drops: health.queue_drops,
-        queue_discarded_frames: health.queue_discarded_frames,
-        queue_recovery_drops: health.queue_recovery_drops,
-        session_queues: health
-            .session_queues
-            .into_iter()
-            .map(|queue| proto::WebRtcSessionQueueHealthSnapshot {
-                session_id: queue.session_id.as_u64(),
-                track_id: queue.track_id.map(|track_id| track_id.to_string()),
-                camera_ip: queue.camera_ip.to_string(),
-                stream: queue.stream.to_string(),
-                depth: usize_u64(queue.depth),
-                high_water: usize_u64(queue.high_water),
-                written_frames: queue.written_frames,
-                full_drops: queue.full_drops,
-                discarded_frames: queue.discarded_frames,
-                recovery_drops: queue.recovery_drops,
-            })
-            .collect(),
-        sources: health
-            .sources
-            .into_iter()
-            .map(|source| proto::WebRtcSourceHealthSnapshot {
-                camera_ip: source.camera_ip.to_string(),
-                stream: source.stream.to_string(),
-                subscribers: usize_u64(source.subscribers),
-                bitrate_bps: source.bitrate_bps,
-                has_keyframe: source.has_keyframe,
-                keyframe_age_ms: source.keyframe_age_ms,
-            })
-            .collect(),
-    }
-}
-
-fn usize_u64(value: usize) -> u64 {
-    value.try_into().unwrap_or(u64::MAX)
-}
-
-fn nonzero_u64(value: u64) -> Option<u64> {
-    (value != 0).then_some(value)
-}
-
-fn nonzero_f64(value: f64) -> Option<f64> {
-    (value != 0.0).then_some(value)
 }
 
 fn proto_discovered_camera(camera: DiscoveredCameraSettings) -> proto::DiscoveredCamera {
@@ -8465,7 +7341,7 @@ pub struct ServerState {
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     event_search_tasks: EventSearchTasks,
     event_page_token_key: Arc<[u8; 32]>,
-    camera_discovery_tasks: CameraDiscoveryTasks,
+    camera_discovery_tasks: camera_discovery::Registry,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
@@ -8549,7 +7425,7 @@ impl ServerState {
             export_jobs: Arc::new(Mutex::new(HashMap::new())),
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             event_page_token_key: Arc::new(rand::random()),
-            camera_discovery_tasks: Arc::new(Mutex::new(HashMap::new())),
+            camera_discovery_tasks: camera_discovery::Registry::default(),
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
             recording_demand,
@@ -10798,89 +9674,7 @@ fn server_health(
         let ip = camera.info.ip.parse::<IpAddr>().ok();
         let report = ip.and_then(|ip| ingress.remove(&ip));
         let streams = report.map_or_else(Vec::new, |report| report.streams);
-        let video_streams = streams
-            .iter()
-            .filter(|stream| stream.report.kind.starts_with("video_"))
-            .collect::<Vec<_>>();
-        for stream in &video_streams {
-            totals.ingress_fps += stream.report.fps;
-            totals.ingress_bitrate_bps = totals
-                .ingress_bitrate_bps
-                .saturating_add((stream.report.kbps * 1_000.0).max(0.0) as u64);
-            totals.frames = totals
-                .frames
-                .saturating_add(stream.report.frames.unwrap_or(0));
-            totals.keyframes = totals
-                .keyframes
-                .saturating_add(stream.report.keyframes.unwrap_or(0));
-            totals.drops = totals
-                .drops
-                .saturating_add(stream.report.drops.unwrap_or(0));
-            totals.errors = totals
-                .errors
-                .saturating_add(stream.report.errors.unwrap_or(0));
-            totals.reconnects = totals
-                .reconnects
-                .saturating_add(stream.report.reconnects.unwrap_or(0));
-        }
-
-        for stream in &video_streams {
-            let expected_gap_ms =
-                (stream.report.expected_fps > 0.0).then(|| 1_000.0 / stream.report.expected_fps);
-            if stream.report.jitter_samples > 0
-                && expected_gap_ms.is_some_and(|expected| stream.report.jitter_p99_ms > expected)
-            {
-                issues.push(HealthIssue {
-                    severity: "info".to_owned(),
-                    scope: camera
-                        .info
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| camera.info.ip.clone()),
-                    message: format!(
-                        "{} frame-arrival jitter P99 is {:.1} ms",
-                        stream.report.kind, stream.report.jitter_p99_ms
-                    ),
-                    operational_event_id: None,
-                    timeline_start_ms: None,
-                    timeline_end_ms: None,
-                });
-            }
-            if stream.report.gap_max_ms > 2_000.0 {
-                issues.push(HealthIssue {
-                    severity: "warning".to_owned(),
-                    scope: camera
-                        .info
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| camera.info.ip.clone()),
-                    message: format!(
-                        "{} maximum frame gap is {:.0} ms",
-                        stream.report.kind, stream.report.gap_max_ms
-                    ),
-                    operational_event_id: None,
-                    timeline_start_ms: None,
-                    timeline_end_ms: None,
-                });
-            }
-            if stream.recent_drops > 0 || stream.recent_errors > 0 {
-                issues.push(HealthIssue {
-                    severity: "info".to_owned(),
-                    scope: camera
-                        .info
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| camera.info.ip.clone()),
-                    message: format!(
-                        "{} recent drops {}, errors {}",
-                        stream.report.kind, stream.recent_drops, stream.recent_errors
-                    ),
-                    operational_event_id: None,
-                    timeline_start_ms: None,
-                    timeline_end_ms: None,
-                });
-            }
-        }
+        health_snapshot::aggregate_video_streams(camera, &streams, &mut totals, &mut issues);
 
         let router_status = lifecycle.get(&camera.recording_label);
         let projection_context = CameraProjectionContext {
@@ -11232,7 +10026,7 @@ fn discover_camera_settings(
     mut subnets: Vec<u8>,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
-    task_key: Option<&CameraDiscoveryTaskKey>,
+    task: Option<&camera_discovery::TaskHandle>,
 ) -> Result<Vec<DiscoveredCameraSettings>, ControlCommandError> {
     subnets.sort_unstable();
     subnets.dedup();
@@ -11246,31 +10040,16 @@ fn discover_camera_settings(
     let discovered = match if networks.is_empty() {
         crate::cameras::discover(Some(Duration::from_secs(5)), &subnets)
     } else {
-        let cancelled = task_key
-            .and_then(|key| {
-                state
-                    .camera_discovery_tasks
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(key)
-                    .map(|task| task.cancelled.clone())
-            })
+        let cancelled = task
+            .map(camera_discovery::TaskHandle::cancellation_token)
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
         crate::cameras::discover_on_networks_with_progress(
             Some(Duration::from_secs(5)),
             &networks,
             &cancelled,
             |cameras| {
-                let Some(key) = task_key else {
-                    return;
-                };
-                if let Some(task) = state
-                    .camera_discovery_tasks
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get_mut(key)
-                {
-                    task.cameras = cameras.to_vec();
+                if let Some(task) = task {
+                    task.update(cameras);
                 }
             },
         )
@@ -12387,7 +11166,10 @@ fn service_error(status: u16, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::health::CameraHealthReason;
+    use crate::{
+        api::proto::{health_command, stored_media_command},
+        health::CameraHealthReason,
+    };
 
     #[test]
     fn indexed_video_format_reports_coded_dimensions() {
@@ -12849,6 +11631,95 @@ mod tests {
     }
 
     #[test]
+    fn health_aggregates_ingress_counters_and_stream_quality_issues() {
+        let camera = CameraConfig {
+            ip: "192.0.2.41".parse().unwrap(),
+            name: Some("side-door".to_owned()),
+            display_name: Some("Side Door".to_owned()),
+            manufacturer: None,
+            username: String::new(),
+            password: String::new(),
+            onvif_port: None,
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: CameraBackend::Retina,
+            transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Off,
+            event_recording_duration_secs: 60,
+        };
+        let config = Config::default();
+        let storage = StorageConfig::default();
+        let camera_configs = HashMap::from([("cameras".to_owned(), vec![camera])]);
+        let registry = HealthRegistry::new();
+        registry.publish(crate::stats::CameraReport {
+            ip: "192.0.2.41".parse().unwrap(),
+            name: Some("side-door".to_owned()),
+            brand: None,
+            port: 554,
+            streams: vec![crate::stats::StreamReport {
+                kind: "video_main".to_owned(),
+                session_duration_ms: 10_000,
+                codec: Some("h264".to_owned()),
+                resolution: Some("1920x1080".to_owned()),
+                fps: 15.0,
+                expected_fps: 15.0,
+                kf_fps: 1.0,
+                kbps: 512.0,
+                max_frame_kb: 64.0,
+                gap_min_ms: 40.0,
+                gap_avg_ms: 66.0,
+                gap_max_ms: 2_501.0,
+                jitter_samples: 10,
+                jitter_p50_ms: 60.0,
+                jitter_p99_ms: 100.0,
+                frames: Some(100),
+                bytes: Some(1_000),
+                keyframes: Some(5),
+                reconnects: Some(2),
+                drops: Some(3),
+                errors: Some(4),
+            }],
+        });
+        let state = ServerState::new(
+            &config,
+            &camera_configs,
+            &HashMap::new(),
+            &storage,
+            RecordingDemand::new(Duration::ZERO),
+            WebRtc::new(),
+        )
+        .with_health_registry(registry);
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_worker =
+            std::thread::spawn(move || router.wait_and_drain(Some(Duration::from_secs(2))));
+
+        let health = server_health(&router_tx, &state);
+
+        assert_eq!(router_worker.join().unwrap().unwrap(), 1);
+        assert_eq!(health.totals.ingress_fps, 15.0);
+        assert_eq!(health.totals.ingress_bitrate_bps, 512_000);
+        assert_eq!(health.totals.frames, 100);
+        assert_eq!(health.totals.keyframes, 5);
+        assert_eq!(health.totals.reconnects, 2);
+        assert_eq!(health.totals.drops, 3);
+        assert_eq!(health.totals.errors, 4);
+        assert!(health.issues.iter().any(|issue| {
+            issue
+                .message
+                .contains("frame-arrival jitter P99 is 100.0 ms")
+        }));
+        assert!(
+            health
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("maximum frame gap is 2501 ms"))
+        );
+    }
+
+    #[test]
     fn connected_camera_without_frame_progress_is_starting_during_startup_grace() {
         let camera = CameraConfig {
             ip: "192.0.2.40".parse().unwrap(),
@@ -12988,7 +11859,7 @@ mod tests {
         assert!(metrics.contains("keeppeek_operational_event_active"));
         assert!(metrics.contains("kind=\"recording_interrupted\""));
         assert!(metrics.contains("severity=\"critical\""));
-        let proto = proto_health_snapshot(health);
+        let proto = health_snapshot::proto_health_snapshot(health);
         assert_eq!(
             proto.health_contract_version,
             CAMERA_HEALTH_CONTRACT_VERSION
@@ -15291,6 +14162,104 @@ mod tests {
         let reused =
             register_event_search_task(&state, session_id, "event-search-query:0").unwrap();
         finish_event_search_task(&state, session_id, "event-search-query:0", &reused);
+
+        let disconnected =
+            register_event_search_task(&state, session_id, "event-search-media:disconnect")
+                .unwrap();
+        test_control_handler(state.clone()).session_closed(session_id);
+        assert!(disconnected.load(Ordering::Acquire));
+        finish_event_search_task(
+            &state,
+            session_id,
+            "event-search-media:disconnect",
+            &disconnected,
+        );
+    }
+
+    #[test]
+    fn camera_discovery_cancel_is_scoped_to_session() {
+        let state = ServerState::empty();
+        let owner = SessionId::from_u64(92);
+        let other = SessionId::from_u64(93);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(owner, local_test_session());
+        let owner_task = state
+            .camera_discovery_tasks
+            .start(owner, "shared-discovery")
+            .unwrap()
+            .unwrap();
+        let other_task = state
+            .camera_discovery_tasks
+            .start(other, "shared-discovery")
+            .unwrap()
+            .unwrap();
+
+        let response = test_control_handler(state).handle_for_session(
+            owner,
+            proto::Request {
+                request_id: 92,
+                command: Some(control_request::Command::CameraConfigurationCommand(
+                    proto::CameraConfigurationCommand {
+                        action: Some(camera_configuration_command::Action::CancelDiscovery(
+                            proto::CancelCameraDiscovery {
+                                discovery_id: "shared-discovery".to_owned(),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+
+        assert!(matches!(
+            response.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::CameraDiscoveryResult(
+                    proto::CameraDiscoveryResult {
+                        cancelled: true,
+                        ..
+                    }
+                ))
+            }))
+        ));
+        assert!(owner_task.is_cancelled());
+        assert!(!other_task.is_cancelled());
+    }
+
+    #[test]
+    fn camera_discovery_disconnect_cancels_only_owned_tasks() {
+        let state = ServerState::empty();
+        let owner = SessionId::from_u64(94);
+        let other = SessionId::from_u64(95);
+        let owner_task = state
+            .camera_discovery_tasks
+            .start(owner, "shared-discovery")
+            .unwrap()
+            .unwrap();
+        let other_task = state
+            .camera_discovery_tasks
+            .start(other, "shared-discovery")
+            .unwrap()
+            .unwrap();
+
+        test_control_handler(state.clone()).session_closed(owner);
+
+        assert!(owner_task.is_cancelled());
+        assert!(!other_task.is_cancelled());
+        assert!(
+            state
+                .camera_discovery_tasks
+                .snapshot(owner, "shared-discovery")
+                .is_err()
+        );
+        assert!(
+            state
+                .camera_discovery_tasks
+                .snapshot(other, "shared-discovery")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -15374,11 +14343,13 @@ mod tests {
             2
         );
         let session_id = SessionId::from_u64(77);
-        state
-            .api_session_owners
-            .lock()
-            .unwrap()
-            .insert(session_id, local_test_session());
+        let foreign_session_id = SessionId::from_u64(78);
+        let disconnect_session_id = SessionId::from_u64(79);
+        state.api_session_owners.lock().unwrap().extend([
+            (session_id, local_test_session()),
+            (foreign_session_id, local_test_session()),
+            (disconnect_session_id, local_test_session()),
+        ]);
         let handler = test_control_handler(state.clone());
         let cursor_id = "review-1";
 
@@ -15467,6 +14438,60 @@ mod tests {
         assert_eq!(frame.fragment_count, 1);
         assert!(!frame.payload.is_empty());
         assert!(open.notifications.is_empty());
+
+        let duplicate = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 109,
+                command: Some(control_request::Command::StoredMediaCommand(
+                    proto::StoredMediaCommand {
+                        action: Some(stored_media_command::Action::Open(proto::OpenStoredMedia {
+                            stored_media_id: cursor_id.to_owned(),
+                            source_id: "127.0.0.1".to_owned(),
+                            stream_id: "main".to_owned(),
+                            timestamp: Some(millis_timestamp(open_time)),
+                            end_time: Some(millis_timestamp(end_time)),
+                            mode: proto::StoredMediaMode::Scrub as i32,
+                            playing: false,
+                            playback_rate: 1.0,
+                            media_channel: proto::DataChannelKind::ReliableData as i32,
+                            data_payload_routes: Vec::new(),
+                            max_buffer_duration: Some(millis_duration(500)),
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            duplicate.response.result,
+            Some(control_response::Result::Error(proto::Error { code, .. }))
+                if code == proto::ErrorCode::Rejected as i32
+        ));
+        assert!(duplicate.data_messages.is_empty());
+        assert!(duplicate.notifications.is_empty());
+        assert_eq!(state.recording_demand.viewer_count("front-door/sub"), 1);
+
+        let foreign_close = handler.handle_for_session(
+            foreign_session_id,
+            proto::Request {
+                request_id: 110,
+                command: Some(control_request::Command::StoredMediaCommand(
+                    proto::StoredMediaCommand {
+                        action: Some(stored_media_command::Action::Close(
+                            proto::CloseStoredMedia {
+                                stored_media_id: cursor_id.to_owned(),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            foreign_close.response.result,
+            Some(control_response::Result::Error(proto::Error { code, .. }))
+                if code == proto::ErrorCode::NotFound as i32
+        ));
+        assert_eq!(state.recording_demand.viewer_count("front-door/sub"), 1);
 
         let start_playback = handler.handle_for_session(
             session_id,
@@ -15713,6 +14738,64 @@ mod tests {
         };
         assert!(ok.result.is_none());
         assert_eq!(state.recording_demand.viewer_count("front-door/sub"), 0);
+
+        let disconnect_open = handler.handle_for_session(
+            disconnect_session_id,
+            proto::Request {
+                request_id: 111,
+                command: Some(control_request::Command::StoredMediaCommand(
+                    proto::StoredMediaCommand {
+                        action: Some(stored_media_command::Action::Open(proto::OpenStoredMedia {
+                            stored_media_id: "disconnect-review".to_owned(),
+                            source_id: "127.0.0.1".to_owned(),
+                            stream_id: "main".to_owned(),
+                            timestamp: Some(millis_timestamp(open_time)),
+                            end_time: Some(millis_timestamp(end_time)),
+                            mode: proto::StoredMediaMode::Scrub as i32,
+                            playing: false,
+                            playback_rate: 1.0,
+                            media_channel: proto::DataChannelKind::ReliableData as i32,
+                            data_payload_routes: Vec::new(),
+                            max_buffer_duration: Some(millis_duration(500)),
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            disconnect_open.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        assert_eq!(state.recording_demand.viewer_count("front-door/sub"), 1);
+
+        handler.session_closed(disconnect_session_id);
+        assert_eq!(state.recording_demand.viewer_count("front-door/sub"), 0);
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(disconnect_session_id, local_test_session());
+
+        let close_after_disconnect = handler.handle_for_session(
+            disconnect_session_id,
+            proto::Request {
+                request_id: 112,
+                command: Some(control_request::Command::StoredMediaCommand(
+                    proto::StoredMediaCommand {
+                        action: Some(stored_media_command::Action::Close(
+                            proto::CloseStoredMedia {
+                                stored_media_id: "disconnect-review".to_owned(),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            close_after_disconnect.response.result,
+            Some(control_response::Result::Error(proto::Error { code, .. }))
+                if code == proto::ErrorCode::NotFound as i32
+        ));
 
         drop((handler, state));
         catalog.shutdown();
