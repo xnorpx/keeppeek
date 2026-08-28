@@ -26,7 +26,9 @@ rem Requirements are intentionally unpinned, so refresh them to the versions CI 
 echo Updating Python requirements...
 "%PYTHON_CMD%" -m pip install --quiet --upgrade -r "%REQUIREMENTS%" >nul 2>&1
 rem Externally managed interpreters reject installs without --break-system-packages.
-if errorlevel 1 "%PYTHON_CMD%" -m pip install --quiet --upgrade --break-system-packages -r "%REQUIREMENTS%"
+if errorlevel 1 (
+        "%PYTHON_CMD%" -m pip install --quiet --upgrade --break-system-packages -r "%REQUIREMENTS%" || exit /b 1
+)
 
 "%PYTHON_CMD%" -c "import black" >nul 2>&1
 if errorlevel 1 (

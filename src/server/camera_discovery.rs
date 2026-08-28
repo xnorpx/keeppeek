@@ -34,9 +34,6 @@ pub(super) fn discover(
             "camera discovery ID must be at most 128 printable characters",
         ));
     }
-    let task = state
-        .camera_discovery_tasks
-        .start(session_id, &discovery_id)?;
     let networks = request
         .networks
         .iter()
@@ -58,7 +55,7 @@ pub(super) fn discover(
             Ok(network)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let subnets = request
+    let mut subnets = request
         .subnets
         .into_iter()
         .map(|subnet| {
@@ -71,8 +68,21 @@ pub(super) fn discover(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let cameras = discover_camera_settings(networks, subnets, router_tx, state, task.as_ref())?;
+    subnets.sort_unstable();
+    subnets.dedup();
+    if subnets.len() > 32 {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "at most 32 additional subnets may be scanned at once",
+        ));
+    }
+    let task = state
+        .camera_discovery_tasks
+        .start(session_id, &discovery_id)?;
+    let cameras = discover_camera_settings(networks, subnets, router_tx, state, task.as_ref());
     let cancelled = task.as_ref().is_some_and(TaskHandle::finish);
+    let cameras = cameras?;
     Ok(control_ok::Result::CameraDiscoveryResult(
         proto_camera_discovery_result(discovery_id, cameras, true, cancelled),
     ))
@@ -228,7 +238,14 @@ impl Registry {
             .tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if tasks.len() >= MAX_TASKS && !tasks.contains_key(&key) {
+        if tasks.contains_key(&key) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "camera discovery ID is already active on this connection",
+            ));
+        }
+        if tasks.len() >= MAX_TASKS {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::Rejected,
                 429,
@@ -362,5 +379,57 @@ mod tests {
             prefer_configured_networks(networks.clone(), [Ipv4Addr::new(203, 0, 113, 8)]);
 
         assert_eq!(preferred, networks);
+    }
+
+    #[test]
+    fn invalid_request_does_not_register_discovery_task() {
+        let state = ServerState::empty();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let session_id = SessionId::from_u64(1);
+
+        let result = discover(
+            &state,
+            &router_tx,
+            session_id,
+            proto::DiscoverCameras {
+                discovery_id: "invalid-prefix".to_owned(),
+                subnets: vec![256],
+                ..Default::default()
+            },
+        );
+
+        assert!(matches!(result, Err(error) if error.code == proto::ErrorCode::InvalidRequest));
+        assert!(
+            state
+                .camera_discovery_tasks
+                .snapshot(session_id, "invalid-prefix")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn duplicate_discovery_task_is_rejected_until_the_active_task_finishes() {
+        let registry = Registry::default();
+        let session_id = SessionId::from_u64(2);
+        let task = registry
+            .start(session_id, "shared-discovery")
+            .unwrap()
+            .unwrap();
+
+        let Err(error) = registry.start(session_id, "shared-discovery") else {
+            panic!("duplicate discovery task must be rejected");
+        };
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert_eq!(error._http_status, 409);
+
+        registry.cancel(session_id, "shared-discovery").unwrap();
+        assert!(task.is_cancelled());
+        assert!(task.finish());
+        assert!(
+            registry
+                .start(session_id, "shared-discovery")
+                .unwrap()
+                .is_some()
+        );
     }
 }

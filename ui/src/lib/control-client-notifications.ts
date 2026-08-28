@@ -40,6 +40,7 @@ import {
 	type NotificationStage,
 	type NotificationTestResult
 } from './notifications';
+import { numeric } from './control-client-system';
 import type {
 	EventImageAvailability as EventImageAvailabilityState,
 	RecordingEventAttachment
@@ -305,7 +306,7 @@ function recordingEventAttachment(
 		id: attachment.attachmentId,
 		type: attachment.attachmentType,
 		content_type: attachment.contentType,
-		byte_length: attachment.byteLen === undefined ? null : Number(attachment.byteLen),
+		byte_length: attachment.byteLen === undefined ? null : numeric(attachment.byteLen),
 		ordinal: attachment.ordinal,
 		timestamp_ms: attachment.timestamp ? timestampDate(attachment.timestamp).getTime() : null,
 		text: attachment.text ?? null

@@ -2,6 +2,7 @@ import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 import { NotificationControlClient } from './control-client-notifications';
 import {
+	EventAttachmentDescriptorSchema,
 	NotificationClearResultSchema,
 	NotificationHistoryGroupSchema,
 	NotificationHistorySchema,
@@ -46,6 +47,34 @@ describe('NotificationControlClient', () => {
 			{ case: 'ruleId', value: 'front-door' },
 			{ case: 'beforeMs', value: BigInt(Number.MAX_SAFE_INTEGER) }
 		]);
+	});
+
+	it('clamps notification attachment lengths to a safe integer', async () => {
+		const client = new NotificationControlClient(async () => ({
+			case: 'notificationRuleResult',
+			value: create(NotificationRuleResultSchema, {
+				result: {
+					case: 'inbox',
+					value: create(NotificationInboxSchema, {
+						items: [
+							create(NotificationItemSchema, {
+								logicalId: 'notification-1',
+								stage: 'preliminary',
+								severity: 'info',
+								canonicalAttachment: create(EventAttachmentDescriptorSchema, {
+									attachmentId: 'snapshot-1',
+									byteLen: BigInt(Number.MAX_SAFE_INTEGER) + 1n
+								})
+							})
+						]
+					})
+				}
+			})
+		}));
+
+		const inbox = await client.getInbox();
+
+		expect(inbox.items[0]?.canonicalAttachment?.byte_length).toBe(Number.MAX_SAFE_INTEGER);
 	});
 
 	it('fails closed on unsupported notification values and incomplete history', async () => {

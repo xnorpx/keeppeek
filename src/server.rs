@@ -10023,20 +10023,11 @@ fn camera_setting_for_output(
 
 fn discover_camera_settings(
     networks: Vec<ipnet::Ipv4Net>,
-    mut subnets: Vec<u8>,
+    subnets: Vec<u8>,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
     task: Option<&camera_discovery::TaskHandle>,
 ) -> Result<Vec<DiscoveredCameraSettings>, ControlCommandError> {
-    subnets.sort_unstable();
-    subnets.dedup();
-    if subnets.len() > 32 {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::InvalidRequest,
-            400,
-            "at most 32 additional subnets may be scanned at once",
-        ));
-    }
     let discovered = match if networks.is_empty() {
         crate::cameras::discover(Some(Duration::from_secs(5)), &subnets)
     } else {
@@ -17653,15 +17644,30 @@ mod tests {
 
     #[test]
     fn settings_discovery_rejects_excessive_subnets_before_network_probing() {
-        let subnets = (0_u8..33).collect::<Vec<_>>();
+        let subnets = (0_u32..33).collect::<Vec<_>>();
         let state = ServerState::empty();
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let session_id = SessionId::from_u64(96);
 
-        let Err(error) = discover_camera_settings(Vec::new(), subnets, &router_tx, &state, None)
-        else {
+        let Err(error) = camera_discovery::discover(
+            &state,
+            &router_tx,
+            session_id,
+            proto::DiscoverCameras {
+                discovery_id: "excessive-subnets".to_owned(),
+                subnets,
+                ..Default::default()
+            },
+        ) else {
             panic!("excessive discovery subnets must be rejected");
         };
 
         assert_eq!(error.code, proto::ErrorCode::InvalidRequest);
+        assert!(
+            state
+                .camera_discovery_tasks
+                .snapshot(session_id, "excessive-subnets")
+                .is_err()
+        );
     }
 }

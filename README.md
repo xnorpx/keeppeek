@@ -35,7 +35,7 @@ that interoperate with the Media Gateway may be open or closed source.
 KeepPeek is developed with AI assistance through an iterative, human-directed process of
 implementation, validation, review, and refinement.
 
-Repository formatting and validation require Python 3.12 plus the exact tools in
+Repository formatting and validation require Python 3.12 plus the tools listed in
 `examples/object_detection_service/requirements.txt`, including Black. The root `fix` and `check`
 scripts use `KEEPPEEK_PYTHON` when set, otherwise `python3.12`, then `python3`. Do not use a Python
 virtual environment; `fix` installs the requirements into the resolved interpreter.
@@ -43,10 +43,12 @@ virtual environment; `fix` installs the requirements into the resolved interpret
 ### RepoWise
 
 VS Code recommends the official RepoWise extension and includes a workspace MCP configuration for
-GitHub Copilot. Install the CLI and build the local, no-LLM index from the repository root:
+GitHub Copilot. Install the workflow's authoritative CLI version as an isolated user tool, then
+build the local, no-LLM index from the repository root:
 
 ```sh
-pip install repowise
+REPOWISE_VERSION=$(sed -n 's/^  REPOWISE_VERSION: "\(.*\)"/\1/p' .github/workflows/repowise.yml)
+uv tool install --python 3.12 --force "repowise==$REPOWISE_VERSION"
 repowise init --yes --no-prose --no-editor-setup
 ```
 

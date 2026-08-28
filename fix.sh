@@ -33,7 +33,7 @@ requirements=examples/object_detection_service/requirements.txt
 echo "Updating Python requirements..."
 if ! "$python_cmd" -m pip install --quiet --upgrade -r "$requirements" >/dev/null 2>&1; then
         # Externally managed interpreters reject installs without --break-system-packages.
-        "$python_cmd" -m pip install --quiet --upgrade --break-system-packages -r "$requirements" || true
+        "$python_cmd" -m pip install --quiet --upgrade --break-system-packages -r "$requirements"
 fi
 
 if ! "$python_cmd" -c 'import black' >/dev/null 2>&1; then

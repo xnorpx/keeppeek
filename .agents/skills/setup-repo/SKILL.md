@@ -217,7 +217,7 @@ interpreter those scripts will use.
 
 Install Python 3.12 from `examples/object_detection_service/.python-version` when it is missing,
 using the platform package manager, python.org, or `uv python install 3.12`. Then install the
-pinned requirements into that interpreter:
+current requirements into that interpreter:
 
 ```sh
 python3.12 -m pip install -r examples/object_detection_service/requirements.txt
@@ -249,8 +249,8 @@ Do not remove source or generated protobuf files while repairing the Python envi
 ### RepoWise
 
 Read `REPOWISE_VERSION` from `.github/workflows/repowise.yml`. Install RepoWise as an isolated user
-tool with the repository's Python baseline so its dependencies do not pollute the example virtual
-environment:
+tool with the repository's Python baseline so its dependencies do not pollute the shared Python
+interpreter:
 
 ```sh
 uv tool install --python 3.12 --force "repowise==0.45.0"
