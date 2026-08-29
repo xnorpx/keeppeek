@@ -629,12 +629,14 @@ mod tests {
 
     #[test]
     fn broker_outage_replays_normalized_motion_event_after_restart() {
-        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = reservation.local_addr().unwrap();
-        drop(reservation);
-        let config = MqttForwarderConfig {
+        let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
+        let unavailable_address = unavailable.local_addr().unwrap();
+        drop(unavailable);
+        let recovery_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let recovery_address = recovery_listener.local_addr().unwrap();
+        let mut config = MqttForwarderConfig {
             enabled: true,
-            broker_url: format!("mqtt://{address}"),
+            broker_url: format!("mqtt://{unavailable_address}"),
             outbox_max_mb: 1,
             retry_min_ms: 10,
             retry_max_ms: 40,
@@ -645,7 +647,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let shutdown = Shutdown::new();
-        let runtime = Runtime::open(config, &outbox_path, shutdown.clone()).unwrap();
+        let runtime = Runtime::open(config.clone(), &outbox_path, shutdown.clone()).unwrap();
         let handle = runtime.handle();
         handle
             .publish_timeline(&motion_event(), EventTransition::Created, 1_786_800_000_000)
@@ -654,11 +656,16 @@ mod tests {
             let status = handle.status();
             status.pending_items == 1 && status.retry_count > 0
         });
+        shutdown.cancel();
+        runtime.join();
 
-        let listener = TcpListener::bind(address).unwrap();
         let (published, received) = mpsc::channel();
-        let broker = std::thread::spawn(move || serve_broker(listener, &published));
-        let (topic, payload) = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        let broker = std::thread::spawn(move || serve_broker(recovery_listener, &published));
+        config.broker_url = format!("mqtt://{recovery_address}");
+        let recovery_shutdown = Shutdown::new();
+        let recovered = Runtime::open(config, &outbox_path, recovery_shutdown.clone()).unwrap();
+        let recovered_handle = recovered.handle();
+        let (topic, payload) = received.recv_timeout(BROKER_OPERATION_TIMEOUT).unwrap();
         assert_eq!(topic, "keeppeek/home-nvr/sources/front-door/events/motion");
         let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         assert_eq!(payload["schema_version"], 1);
@@ -666,12 +673,15 @@ mod tests {
         assert_eq!(payload["revision"], 1);
         assert_eq!(payload["transition"], "created");
         wait_until(Duration::from_secs(10), || {
-            handle.status().pending_items == 0
+            recovered_handle.status().pending_items == 0
         });
-        assert_eq!(handle.status().state, MqttConnectionState::Connected);
+        assert_eq!(
+            recovered_handle.status().state,
+            MqttConnectionState::Connected
+        );
 
-        shutdown.cancel();
-        runtime.join();
+        recovery_shutdown.cancel();
+        recovered.join();
         broker.join().unwrap();
         let _ = std::fs::remove_file(outbox_path);
     }
