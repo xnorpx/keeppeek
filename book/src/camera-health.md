@@ -81,6 +81,13 @@ Ingress publishes every 10 seconds.
   seconds.
 - Initial startup grace is two ingress report intervals, currently 20 seconds.
 
+Frame-arrival jitter measures the absolute difference between each observed frame gap and the
+configured frame interval. Its P99 is computed over the current 10-second ingress report window; it
+is not WebRTC network jitter. KeepPeek displays it as diagnostic evidence but does not create a
+finding from jitter alone. Stale frames, low sustained frame rate, decode failure, ingress
+drops/errors, recording failure, and a maximum observed frame gap above 2 seconds remain actionable
+health signals.
+
 The first ingress report establishes the baseline for cumulative reconnect, drop, and error
 counters. An initial connection is therefore not reported as a recent reconnect. During startup
 grace, partial-window frame rates and other transient evidence remain `starting`; if they have not
@@ -93,6 +100,12 @@ still returns the actual evidence ages, and clients do not add another timer or 
 
 These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.
+
+Health findings are live snapshot evidence rather than acknowledgements or retained alerts. They
+disappear automatically after a later ingress report no longer meets the condition. The refresh
+button requests a current snapshot immediately, but an active finding cannot be dismissed from the
+Health page. Acknowledging a delivered alert belongs to the notification inbox rather than changing
+server health evidence.
 
 ## Operational intervals
 
@@ -225,3 +238,7 @@ Recovery requires new positive evidence:
 Operational interval recovery uses this canonical projection. Delivery failure cannot change or
 close an interval because catalog persistence happens before notification publication and provider
 work runs independently from camera media.
+
+Use [Recording and evidence](./recording-and-evidence.md) to inspect retained coverage and explain
+gaps. Use [Notifications and integrations](./notifications-and-integrations.md) to deliver these
+operational transitions without coupling providers or brokers to camera ingest.

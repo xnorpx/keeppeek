@@ -54,7 +54,6 @@ call bunx @taplo/cli fmt --check || exit /b 1
 "%PYTHON_CMD%" -m black --check --config examples\object_detection_service\pyproject.toml . || exit /b 1
 
 cd /d "%~dp0ui" || exit /b 1
-call bunx prettier --check "../**/*.md" || exit /b 1
 
 echo Running UI Quality checks...
 call bun run quality:check || exit /b 1

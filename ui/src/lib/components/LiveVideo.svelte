@@ -85,6 +85,7 @@
 		showDiagnostics?: boolean;
 		diagnosticsLabel?: string;
 		diagnosticsStatusClass?: string;
+		diagnosticsPosition?: 'top-right' | 'bottom-right';
 		diagnosticsRecording?: {
 			state: 'recording' | 'not-progressing' | 'pending' | 'off' | 'unknown';
 			detail: string;
@@ -106,6 +107,7 @@
 		showDiagnostics = true,
 		diagnosticsLabel,
 		diagnosticsStatusClass = 'bg-white/65',
+		diagnosticsPosition = 'top-right',
 		diagnosticsRecording,
 		onframeactivitychange,
 		onvisibilitychange,
@@ -155,6 +157,9 @@
 		diagnostics.packetLossPercent === null
 			? compactNumber.format(diagnostics.packetsLost)
 			: `${compactNumber.format(diagnostics.packetsLost)} (${diagnostics.packetLossPercent.toFixed(2)}%)`
+	);
+	let diagnosticsAccessibleLabel = $derived(
+		diagnosticsLabel ? `${diagnosticsLabel} camera information` : 'WebRTC stream diagnostics'
 	);
 
 	onMount(() => {
@@ -518,14 +523,15 @@
 	<Popover.Root bind:open={diagnosticsOpen}>
 		<Popover.Trigger
 			data-peek-camera-label={diagnosticsLabel ?? undefined}
-			class="absolute top-2 right-2 z-30 rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {diagnosticsLabel
+			class="absolute right-2 z-30 rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {diagnosticsPosition ===
+			'bottom-right'
+				? 'bottom-2'
+				: 'top-2'} {diagnosticsLabel
 				? 'inline-flex h-[26px] max-w-[calc(100%-1rem)] items-center gap-2 px-2'
 				: 'grid size-6 place-items-center'} {showDiagnostics ? '' : 'hidden'} {diagnosticsOpen
 				? 'bg-black/90 text-white ring-1 ring-white/35'
 				: ''}"
-			aria-label={diagnosticsLabel
-				? `${diagnosticsLabel} camera information`
-				: 'WebRTC stream diagnostics'}
+			aria-label={diagnosticsAccessibleLabel}
 		>
 			{#if diagnosticsLabel}
 				<span class="size-1.5 shrink-0 rounded-full {diagnosticsStatusClass}"></span>
@@ -541,10 +547,8 @@
 				align="start"
 				sideOffset={6}
 				collisionPadding={8}
-				class="max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-white/15 bg-zinc-950/97 p-3 text-left text-[11px] text-white shadow-2xl backdrop-blur-md"
-				aria-label={diagnosticsLabel
-					? `${diagnosticsLabel} camera information`
-					: 'WebRTC stream diagnostics'}
+				class="z-50 max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-white/15 bg-zinc-950/97 p-3 text-left text-[11px] text-white shadow-2xl backdrop-blur-md"
+				aria-label={diagnosticsAccessibleLabel}
 				trapFocus={false}
 				onEscapeKeydown={handleDiagnosticsEscape}
 			>

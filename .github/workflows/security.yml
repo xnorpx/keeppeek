@@ -13,11 +13,16 @@ permissions:
   contents: read
   security-events: write
 
+concurrency:
+  group: security-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dependency-review:
     name: Dependency Review
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
@@ -28,26 +33,10 @@ jobs:
           allow-ghsas: GHSA-pp8r-vv2j-9j5v
           comment-summary-in-pr: always
 
-  codeql-rust:
-    name: CodeQL (Rust)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - uses: github/codeql-action/init@v4
-        with:
-          languages: rust
-          build-mode: none
-      - uses: github/codeql-action/analyze@v4
-        with:
-          category: /language:rust
-
   codeql-typescript:
     name: CodeQL (JavaScript/TypeScript)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:

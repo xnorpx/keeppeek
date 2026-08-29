@@ -111,6 +111,18 @@ export default defineConfig({
 			{
 				extends: './vite.config.ts',
 				test: {
+					name: 'server-compat',
+					environment: 'node',
+					include: [
+						'src/lib/api.spec.ts',
+						'src/lib/capability-state.spec.ts',
+						'src/lib/control-client.spec.ts'
+					]
+				}
+			},
+			{
+				extends: './vite.config.ts',
+				test: {
 					name: 'server',
 					environment: 'node',
 					include: ['src/**/*.{test,spec}.{js,ts}'],

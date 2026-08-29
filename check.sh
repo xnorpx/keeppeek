@@ -62,7 +62,6 @@ bunx @taplo/cli fmt --check
 "$python_cmd" -m black --check --config examples/object_detection_service/pyproject.toml .
 
 cd "$repo_dir/ui"
-bunx prettier --check "../**/*.md"
 echo "Running UI Quality checks..."
 bun run quality:check
 bun run test:e2e

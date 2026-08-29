@@ -3,7 +3,11 @@
 	import { onMount } from 'svelte';
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import type { CameraHealth, CameraListItem } from '$lib/types';
-	import { presentPeekCamera } from '$lib/peek-camera';
+	import {
+		peekCameraStateColorClass,
+		presentPeekCamera,
+		presentPeekRecordingDiagnostics
+	} from '$lib/peek-camera';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import VideoOffIcon from '@lucide/svelte/icons/video-off';
@@ -100,15 +104,7 @@
 	let mobileCompactBlockHiddenClass = $derived(
 		desktopPaperFrame || layoutMode || mobileFeatured ? '' : 'hidden md:block'
 	);
-	let stateColor = $derived(
-		visualState === 'healthy'
-			? 'bg-healthy'
-			: visualState === 'degraded' || visualState === 'stale' || visualState === 'reconnecting'
-				? 'bg-activity'
-				: visualState === 'offline'
-					? 'bg-live'
-					: 'bg-text-muted'
-	);
+	let stateColor = $derived(peekCameraStateColorClass(visualState));
 	let borderColor = $derived(
 		layoutMode && layoutSelected
 			? 'border-primary ring-1 ring-primary'
@@ -154,67 +150,7 @@
 		presentation.detail?.replace(/^(\d+)% frames dropped$/i, '$1% of frames dropped') ??
 			'Camera health evidence unavailable'
 	);
-	let recordingDiagnostics = $derived.by(() => {
-		const dimensions = health?.dimensions;
-		if (!dimensions) {
-			return {
-				state: 'unknown' as const,
-				detail: 'Not reported',
-				sessionDurationMs: null,
-				mainDurationMs: null,
-				subDurationMs: null,
-				totalDurationMs: null
-			};
-		}
-		const durations = {
-			sessionDurationMs: dimensions.session_duration_ms ?? null,
-			mainDurationMs: dimensions.recorded_main_duration_ms ?? null,
-			subDurationMs: dimensions.recorded_sub_duration_ms ?? null,
-			totalDurationMs: dimensions.recorded_total_duration_ms ?? null
-		};
-		if (!dimensions.recording_requested) {
-			return { state: 'off' as const, detail: 'Off', ...durations };
-		}
-
-		const requestedStreams = recordingStreamIds(
-			dimensions.recording_video_stream_ids,
-			(stream) => stream.dimensions?.recording_requested === true
-		);
-		const progressingStreams = recordingStreamIds(
-			dimensions.recording_progressing_stream_ids,
-			(stream) => stream.dimensions?.recording_progressing === true
-		);
-		if (progressingStreams.length > 0) {
-			const pendingStreams = requestedStreams.filter(
-				(streamId) => !progressingStreams.includes(streamId)
-			);
-			if (pendingStreams.length > 0) {
-				return {
-					state: 'not-progressing' as const,
-					detail: `${formatRecordingStreams(progressingStreams)} recording · ${formatRecordingStreams(pendingStreams)} not progressing`,
-					...durations
-				};
-			}
-			return {
-				state: 'recording' as const,
-				detail: `${formatRecordingStreams(progressingStreams)} · recording`,
-				...durations
-			};
-		}
-
-		const streamLabel = formatRecordingStreams(requestedStreams);
-		if (dimensions.recording_progressing === true) {
-			return { state: 'recording' as const, detail: `${streamLabel} · recording`, ...durations };
-		}
-		if (dimensions.recording_progressing === false) {
-			return {
-				state: 'not-progressing' as const,
-				detail: `${streamLabel} · not progressing`,
-				...durations
-			};
-		}
-		return { state: 'pending' as const, detail: `${streamLabel} · status pending`, ...durations };
-	});
+	let recordingDiagnostics = $derived(presentPeekRecordingDiagnostics(health));
 
 	$effect(() => {
 		if (!waitingForFirstFrame || firstFrameElapsedMsOverride !== undefined) {
@@ -248,27 +184,6 @@
 			hour12: false,
 			timeZone: compactTimeZone
 		}).format(new Date(timestampMs));
-	}
-
-	function formatRecordingStreams(streamIds: readonly string[]): string {
-		const names = [...new Set(streamIds.map((streamId) => streamId.replace(/^video_/, '')))].map(
-			(streamId) =>
-				streamId === 'main'
-					? 'Main'
-					: streamId === 'sub'
-						? 'Sub'
-						: streamId.charAt(0).toUpperCase() + streamId.slice(1)
-		);
-		if (names.length === 0) return 'Stream not reported';
-		return `${names.join(' + ')} stream${names.length === 1 ? '' : 's'}`;
-	}
-
-	function recordingStreamIds(
-		aggregatedIds: readonly string[] | undefined,
-		matches: (stream: CameraHealth['streams'][number]) => boolean
-	): string[] {
-		if (aggregatedIds && aggregatedIds.length > 0) return [...aggregatedIds];
-		return health?.streams.filter(matches).map((stream) => stream.type) ?? [];
 	}
 
 	function handleFrameActivity(active: boolean): void {

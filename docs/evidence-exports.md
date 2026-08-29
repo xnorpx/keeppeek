@@ -58,3 +58,12 @@ actions use the existing access audit stream.
 Before download, KeepPeek recomputes SHA-256 over the exact bytes it is about to send. A mismatch
 makes the job failed and retryable, removes the artifact, and returns no media bytes. Download names
 are deterministic server-generated basenames and no host path is returned to the client.
+
+The Linux media-integration gate writes the downloaded bytes from the export lifecycle fixture,
+inspects the container with `ffprobe`, and decodes its video stream with `ffmpeg -v error`. Run the
+same independent check locally with:
+
+```sh
+KEEPPEEK_VALIDATE_EXPORT_MEDIA=1 \
+  cargo test server::tests::export_job_runs_reports_gaps_and_downloads_verified_file --lib
+```

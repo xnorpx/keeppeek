@@ -665,6 +665,27 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
 });
 
+test('styles informational findings without critical warning treatment', async ({ page }) => {
+	const informational = {
+		...healthSnapshot,
+		issues: [
+			{
+				severity: 'info' as const,
+				scope: 'Kitchen Deck',
+				message: 'video_main recent drops 1, errors 0'
+			}
+		]
+	};
+	await mockControlPeer(page, { health: informational });
+
+	await page.goto('/system-health');
+
+	const priority = page.getByRole('region', { name: 'Highest priority health issue' });
+	await expect(priority).toHaveAttribute('data-health-priority-severity', 'info');
+	await expect(priority).toHaveClass(/border-sky-500/);
+	await expect(priority).not.toHaveClass(/border-red-500/);
+});
+
 test('uses one canonical stale fixture across every health surface', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await mockControlPeer(page, {

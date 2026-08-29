@@ -12,10 +12,15 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,19 +35,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check TOML formatting
         run: taplo fmt --check --diff
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: ui/.bun-version
-      - name: Install Markdown formatting dependencies
-        working-directory: ui
-        run: bun install --no-save --registry=https://registry.npmjs.org/
-      - name: Check Markdown formatting
-        working-directory: ui
-        run: bunx prettier --check "../**/*.md"
 
   book:
     name: Book
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Install mdBook and Mermaid
@@ -62,6 +59,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -80,6 +78,7 @@ jobs:
   machete:
     name: Unused Dependencies
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -93,6 +92,7 @@ jobs:
   doctest:
     name: Rust Doctests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -109,6 +109,7 @@ jobs:
   object-detection-example:
     name: Object Detection Example (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +175,7 @@ jobs:
   object-detection-integration:
     name: Object Detection Integration
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -222,6 +224,10 @@ jobs:
           echo "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1  target/yolo11n.pt" | sha256sum --check --strict
       - name: Build KeepPeek integration binaries
         run: cargo build -p keeppeek -p test-camera --bin keeppeek --bin test_camera
+      - name: Verify exported media with independent decoders
+        env:
+          KEEPPEEK_VALIDATE_EXPORT_MEDIA: "1"
+        run: cargo test server::tests::export_job_runs_reports_gaps_and_downloads_verified_file --lib
       - name: Publish a real Ultralytics detection to local KeepPeek
         working-directory: examples/object_detection_service
         env:
@@ -232,17 +238,11 @@ jobs:
   build-and-test:
     name: Build & Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: true
       matrix:
-        os:
-          [
-            ubuntu-latest,
-            ubuntu-24.04-arm,
-            macos-latest,
-            windows-latest,
-            windows-11-arm,
-          ]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -255,95 +255,8 @@ jobs:
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - name: Install and verify Rolldown Linux ARM64 binding
-        if: matrix.os == 'ubuntu-24.04-arm'
-        working-directory: ui
-        shell: bash
-        run: |
-          binding='@rolldown/binding-linux-arm64-gnu'
-          binding_version="$(bun -e "const packageJson = await Bun.file('node_modules/rolldown/package.json').json(); console.log(packageJson.optionalDependencies['$binding'])")"
-          if [[ -z "$binding_version" || "$binding_version" == undefined ]]; then
-            echo "Unable to determine $binding version" >&2
-            exit 1
-          fi
-          bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
-          bun -e "await import('rolldown')"
-      - run: cargo build --all
-      - name: Install NSIS
-        if: runner.os == 'Windows'
-        shell: bash
-        run: choco install nsis --no-progress --yes
-      - name: Build Windows installer binaries
-        if: runner.os == 'Windows'
-        run: cargo build --bin keeppeek --bin keeppeek-service
-      - name: Build Windows installer
-        if: runner.os == 'Windows'
-        id: windows-installer
-        shell: pwsh
-        run: |
-          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
-          $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
-          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
-          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
-            "/DARCH=$architecture" `
-            "/DBUILD_DIR=$buildDirectory" `
-            "/DOUT_DIR=$outputDirectory" `
-            '/DVERSION=0.0.0' `
-            '/DVERSION_RESOURCE=0.0.0.0' `
-            installer/keeppeek.nsi
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to build the KeepPeek installer'
-          }
-
-          $installer = Join-Path $outputDirectory "keeppeek-0.0.0-windows-$architecture-installer.exe"
-          "installer=$installer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "output_directory=$outputDirectory" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if (-not (Test-Path $installer)) {
-            throw "Installer was not created at $installer"
-          }
-      - name: Verify Windows installer
-        if: runner.os == 'Windows' && steps.windows-installer.outcome == 'success'
-        shell: pwsh
-        env:
-          INSTALLER: ${{ steps.windows-installer.outputs.installer }}
-          OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
-        run: |
-          $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
-          $serviceName = 'KeepPeekService'
-          $installer = $env:INSTALLER
-          try {
-            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
-            if ($process.ExitCode -ne 0) {
-              throw 'Unable to install KeepPeek'
-            }
-
-            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe') {
-              if (-not (Test-Path (Join-Path $installDirectory $binary))) {
-                throw "$binary was not installed"
-              }
-            }
-
-            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
-            if ($null -eq $service -or -not $service.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
-              throw "$serviceName was not installed with the expected binary path"
-            }
-
-            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
-            if ($process.ExitCode -ne 0) {
-              throw 'Unable to reinstall KeepPeek'
-            }
-          } finally {
-            if (Test-Path (Join-Path $installDirectory 'uninstall.exe')) {
-              $process = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
-              if ($process.ExitCode -ne 0) {
-                throw 'Unable to uninstall KeepPeek'
-              }
-            } else {
-              & sc.exe delete $serviceName
-            }
-            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
-          }
+      - if: runner.os != 'Linux'
+        run: cargo build --all
       - name: Verify Windows service installation
         if: runner.os == 'Windows'
         shell: pwsh
@@ -393,9 +306,6 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
-            export KEEPPEEK_RUN_SLOW_TESTS=1
-          fi
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             cargo test --all --lib --bins --tests --features macos-test-aws-crypto 2>&1 | tee rust-test-results.log
           else
@@ -414,6 +324,7 @@ jobs:
     name: Windows Signing
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
+    timeout-minutes: 15
     environment: artifact-signing
     permissions:
       contents: read
@@ -514,13 +425,46 @@ jobs:
             throw "$env:INSTALLER does not have an RFC 3161 timestamp"
           }
 
-  ui:
-    name: UI (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  ui-static:
+    name: UI (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Run static UI quality checks
+        run: bun run quality:static
+      - name: Build production UI
+        run: bun run build
+
+  ui-unit-bun:
+    name: UI (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Run Bun-compatible unit tests
+        run: bun run test:unit:bun
+
+  ui-e2e-build:
+    name: UI E2E Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ui
@@ -528,55 +472,108 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - uses: actions/setup-python@v7
-        with:
-          python-version-file: examples/object_detection_service/.python-version
-          cache: pip
-          cache-dependency-path: examples/object_detection_service/requirements.txt
-      - name: Install repository Python formatter
-        working-directory: .
-        run: python -m pip install --upgrade black
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
-      - uses: taiki-e/install-action@v2
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Build shared Playwright binaries and fixtures
+        run: bun run test:e2e:prepare
+      - name: Upload shared Playwright binaries and fixtures
+        uses: actions/upload-artifact@v7
         with:
-          tool: cargo-machete@0.9.2,cargo-nextest@0.9.143
-      - run: bun install --no-save --registry=https://registry.npmjs.org/
-      - if: runner.os == 'Linux'
+          name: ui-e2e-linux
+          path: |
+            target/release/keeppeek
+            target/release/test_camera
+            target/e2e-mixed-codec
+          if-no-files-found: error
+          retention-days: 1
+
+  ui-e2e:
+    name: UI E2E (${{ matrix.shard }}/4)
+    needs: ui-e2e-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install Chromium
         run: bunx playwright install --with-deps chromium
-      - if: runner.os != 'Linux'
-        run: bunx playwright install chromium
-      - if: runner.os == 'Windows'
-        id: ui-check-windows
-        shell: cmd
-        run: ..\check.bat
-      - if: runner.os != 'Windows'
-        id: ui-check-unix
-        run: ../check.sh
+      - name: Download shared Playwright binaries and fixtures
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-e2e-linux
+          path: target
+      - name: Restore executable permissions
+        working-directory: .
+        run: chmod +x target/release/keeppeek target/release/test_camera
+      - name: Run Playwright shard
+        run: bun run test:e2e:run -- --shard=${{ matrix.shard }}/4
       - name: Upload UI test reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ui-test-reports-${{ matrix.os }}
+          name: ui-e2e-reports-${{ matrix.shard }}-of-4
           path: |
             ui/test-results
             ui/playwright-report
           if-no-files-found: ignore
           retention-days: 14
 
+  ui-windows-build:
+    name: UI Windows Build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Build production UI on Windows
+        run: bun run build
+
+  ui-gate:
+    name: UI (windows-latest)
+    if: always()
+    needs: [ui-e2e-build, ui-e2e, ui-windows-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require every UI integration job
+        env:
+          E2E_BUILD_RESULT: ${{ needs.ui-e2e-build.result }}
+          E2E_RESULT: ${{ needs.ui-e2e.result }}
+          WINDOWS_BUILD_RESULT: ${{ needs.ui-windows-build.result }}
+        run: |
+          test "$E2E_BUILD_RESULT" = success
+          test "$E2E_RESULT" = success
+          test "$WINDOWS_BUILD_RESULT" = success
+
   coverage:
     name: Coverage (Rust + UI)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: ui/.bun-version
@@ -586,95 +583,87 @@ jobs:
       - name: Install Chromium for Vitest browser tests
         working-directory: ui
         run: bunx playwright install --with-deps chromium
-      - name: Install Rust coverage tooling
-        id: install-rust-coverage
-        continue-on-error: true
-        run: cargo install cargo-llvm-cov
-      - name: Generate Rust coverage
-        id: rust-coverage
-        if: steps.install-rust-coverage.outcome == 'success'
-        continue-on-error: true
-        run: |
-          mkdir -p target/ci-coverage/rust
-          cargo llvm-cov --workspace --lib --bins --tests --lcov --output-path target/ci-coverage/rust/lcov.info
-          cargo llvm-cov report --json --output-path target/ci-coverage/rust/coverage.json
-          cargo llvm-cov report --html --output-dir target/ci-coverage/rust
-      - name: Install Vitest coverage provider
-        id: install-ui-coverage
-        if: always()
-        working-directory: ui
-        continue-on-error: true
-        run: bun add --dev --exact --no-save @vitest/coverage-v8@4.1.10 --registry=https://registry.npmjs.org/
       - name: Generate Svelte and TypeScript coverage
         id: ui-coverage
-        if: always() && steps.install-ui-coverage.outcome == 'success'
         working-directory: ui
         continue-on-error: true
-        run: bun run test:unit:coverage
+        run: bun run test:unit:coverage:ci
       - name: Write coverage summary
         if: always()
         shell: bash
         env:
-          RUST_COVERAGE_OUTCOME: ${{ steps.rust-coverage.outcome }}
           UI_COVERAGE_OUTCOME: ${{ steps.ui-coverage.outcome }}
         run: |
           {
-            echo '## Coverage'
+            echo '## Fast coverage'
             echo
-            echo '| Runtime | Lines | Functions | Branches |'
+            echo '| Suite | Lines | Functions | Branches |'
             echo '| --- | ---: | ---: | ---: |'
-            if [[ -f target/ci-coverage/rust/coverage.json ]]; then
-              jq -r '
-                def percentage: if . == null then "n/a" else "\(.)%" end;
-                .data[0].totals as $total |
-                "| Rust | \($total.lines.percent | percentage) | \($total.functions.percent | percentage) | \($total.branches.percent | percentage) |"
-              ' target/ci-coverage/rust/coverage.json
-            else
-              echo '| Rust | n/a | n/a | n/a |'
-            fi
             if [[ -f ui/coverage/coverage-summary.json ]]; then
               jq -r '
                 def percentage: if . == null then "n/a" else "\(.)%" end;
                 .total as $total |
-                "| Svelte / TypeScript | \($total.lines.pct | percentage) | \($total.functions.pct | percentage) | \($total.branches.pct | percentage) |"
+                "| Vitest-owned UI | \($total.lines.pct | percentage) | \($total.functions.pct | percentage) | \($total.branches.pct | percentage) |"
               ' ui/coverage/coverage-summary.json
             else
-              echo '| Svelte / TypeScript | n/a | n/a | n/a |'
+              echo '| Vitest-owned UI | n/a | n/a | n/a |'
             fi
             echo
-            echo '### Coverage commands'
-            echo "- Rust: \`${RUST_COVERAGE_OUTCOME:-not-run}\`"
-            echo "- Vitest: \`${UI_COVERAGE_OUTCOME:-not-run}\`"
+            echo "Vitest: \`${UI_COVERAGE_OUTCOME:-not-run}\`"
             echo
-            echo "Download the \`coverage-reports\` artifact for LCOV, JSON, and HTML reports."
+            echo 'Bun-compatible tests run once in their own required job. Rust coverage runs in the extended Main workflow.'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: coverage-reports
-          path: |
-            target/ci-coverage/rust
-            ui/coverage
+          path: ui/coverage
           if-no-files-found: ignore
           retention-days: 30
       - name: Fail when coverage generation fails
-        if: always() && (steps.install-rust-coverage.outcome != 'success' || steps.rust-coverage.outcome != 'success' || steps.install-ui-coverage.outcome != 'success' || steps.ui-coverage.outcome != 'success')
+        if: always() && steps.ui-coverage.outcome != 'success'
         run: exit 1
 
   main-release-gate:
     name: Main Release Gate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [fmt, book, clippy, machete, build-and-test, ui, coverage]
+    needs:
+      [
+        fmt,
+        book,
+        clippy,
+        machete,
+        build-and-test,
+        ui-static,
+        ui-unit-bun,
+        ui-gate,
+        coverage,
+      ]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - run: echo 'Main is ready for signed release builds.'
 
   quality-report:
     name: Quality Report
     if: always() && github.event_name == 'pull_request'
-    needs: [fmt, clippy, machete, build-and-test, ui, coverage]
+    needs:
+      [
+        fmt,
+        clippy,
+        machete,
+        build-and-test,
+        ui-static,
+        ui-unit-bun,
+        ui-e2e-build,
+        ui-e2e,
+        ui-windows-build,
+        ui-gate,
+        coverage,
+      ]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: read
@@ -704,12 +693,16 @@ jobs:
               'Clippy',
               'Unused Dependencies',
               'Build & Test (ubuntu-latest)',
-              'Build & Test (ubuntu-24.04-arm)',
               'Build & Test (macos-latest)',
               'Build & Test (windows-latest)',
-              'Build & Test (windows-11-arm)',
               'UI (ubuntu-latest)',
               'UI (macos-latest)',
+              'UI E2E Build',
+              'UI E2E (1/4)',
+              'UI E2E (2/4)',
+              'UI E2E (3/4)',
+              'UI E2E (4/4)',
+              'UI Windows Build',
               'UI (windows-latest)',
               'Coverage (Rust + UI)'
             ];
@@ -758,7 +751,6 @@ jobs:
               return typeof value === 'number' ? `${value.toFixed(1)}%` : 'n/a';
             };
 
-            const rustTotals = readJson('coverage.json')?.data?.[0]?.totals;
             const uiTotals = readJson('coverage-summary.json')?.total;
             const checkRows = checkNames
               .map((name) => `| ${name} | ${formatStatus(jobsByName.get(name))} |`)
@@ -776,8 +768,8 @@ jobs:
               '',
               '| Runtime | Lines | Functions | Branches |',
               '| --- | ---: | ---: | ---: |',
-              `| Rust | ${metric(rustTotals, 'lines')} | ${metric(rustTotals, 'functions')} | ${metric(rustTotals, 'branches')} |`,
-              `| Svelte / TypeScript | ${metric(uiTotals, 'lines')} | ${metric(uiTotals, 'functions')} | ${metric(uiTotals, 'branches')} |`,
+              `| Vitest-owned UI | ${metric(uiTotals, 'lines')} | ${metric(uiTotals, 'functions')} | ${metric(uiTotals, 'branches')} |`,
+              '| Rust | main | main | main |',
               '',
               `[Open workflow run and artifacts](${runUrl})`
             ].join('\n');

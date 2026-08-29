@@ -24,6 +24,8 @@ use std::{
 const MAX_AFFECTED_STREAMS: usize = 8;
 const MAX_CAUSE_BYTES: usize = 64;
 const MAX_EXPLANATION_BYTES: usize = 256;
+// Covers several transitions for a 127-camera fleet while keeping retries to a few MiB.
+const MAX_PENDING_TRANSITIONS: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -339,6 +341,19 @@ impl OperationalEventTracker {
 struct PendingTransition {
     transition: OperationalTransition,
     source_name: Option<String>,
+    persisted: bool,
+    notifications_published: bool,
+}
+
+impl PendingTransition {
+    const fn new(transition: OperationalTransition, source_name: Option<String>) -> Self {
+        Self {
+            transition,
+            source_name,
+            persisted: false,
+            notifications_published: false,
+        }
+    }
 }
 
 struct OperationalEventEngine {
@@ -368,8 +383,8 @@ impl OperationalEventEngine {
                 .entry(camera_id)
                 .or_insert_with(|| OperationalEventTracker::new(policy))
                 .restore(event.clone(), monotonic_now, unix_now_ms);
-            pending.push(PendingTransition {
-                transition: OperationalTransition {
+            pending.push(PendingTransition::new(
+                OperationalTransition {
                     kind: if event.revision == 1 {
                         OperationalTransitionKind::Started
                     } else {
@@ -378,8 +393,8 @@ impl OperationalEventEngine {
                     occurred_at_ms: unix_now_ms,
                     event,
                 },
-                source_name: None,
-            });
+                None,
+            ));
         }
         pending
     }
@@ -419,10 +434,10 @@ impl OperationalEventEngine {
                 if let Some(transition) =
                     tracker.observe_failure(key, evidence, monotonic_now, unix_now_ms)
                 {
-                    pending.push(PendingTransition {
+                    pending.push(PendingTransition::new(
                         transition,
-                        source_name: Some(camera.name.clone()),
-                    });
+                        Some(camera.name.clone()),
+                    ));
                 }
             }
             let mut recovered = tracker
@@ -434,10 +449,10 @@ impl OperationalEventEngine {
             for key in recovered {
                 if let Some(transition) = tracker.observe_recovery(&key, monotonic_now, unix_now_ms)
                 {
-                    pending.push(PendingTransition {
+                    pending.push(PendingTransition::new(
                         transition,
-                        source_name: Some(camera.name.clone()),
-                    });
+                        Some(camera.name.clone()),
+                    ));
                 }
             }
         }
@@ -459,10 +474,7 @@ impl OperationalEventEngine {
                     if let Some(transition) =
                         tracker.observe_recovery(&key, monotonic_now, unix_now_ms)
                     {
-                        pending.push(PendingTransition {
-                            transition,
-                            source_name: None,
-                        });
+                        pending.push(PendingTransition::new(transition, None));
                     }
                 }
                 tracker.tracked_keys().is_empty()
@@ -500,16 +512,18 @@ impl OperationalEventMonitor {
             .spawn(move || {
                 let started_at = Instant::now();
                 let mut engine = OperationalEventEngine::new(config);
-                let mut pending =
-                    VecDeque::from(engine.restore(restored, started_at.elapsed(), unix_time_ms()));
+                let mut pending = VecDeque::new();
+                extend_pending(
+                    &mut pending,
+                    engine.restore(restored, started_at.elapsed(), unix_time_ms()),
+                );
                 while !shutdown.is_cancelled() && !worker_cancel.load(Ordering::Acquire) {
                     flush_pending(&mut pending, &store, &notifications, &event_forwarder);
                     match snapshot() {
-                        Ok(cameras) => pending.extend(engine.observe(
-                            &cameras,
-                            started_at.elapsed(),
-                            unix_time_ms(),
-                        )),
+                        Ok(cameras) => extend_pending(
+                            &mut pending,
+                            engine.observe(&cameras, started_at.elapsed(), unix_time_ms()),
+                        ),
                         Err(error) => {
                             tracing::warn!(%error, "unable to project operational camera health");
                         }
@@ -551,12 +565,62 @@ fn flush_pending(
     notifications: &NotificationHandle,
     event_forwarder: &EventForwarderHandle,
 ) {
-    while let Some(item) = pending.front() {
-        if let Err(error) = store.upsert_operational_event(item.transition.event.clone()) {
+    flush_pending_with(
+        pending,
+        |event| store.upsert_operational_event(event.clone()),
+        |candidate| notifications.publish(candidate),
+        |transition| event_forwarder.publish_operational(transition),
+    );
+}
+
+fn extend_pending(
+    pending: &mut VecDeque<PendingTransition>,
+    transitions: impl IntoIterator<Item = PendingTransition>,
+) {
+    for transition in transitions {
+        if pending.len() == MAX_PENDING_TRANSITIONS {
+            tracing::error!(
+                event_id = %transition.transition.event.id,
+                revision = transition.transition.event.revision,
+                "operational event transition dropped because the retry queue is full"
+            );
+            continue;
+        }
+        pending.push_back(transition);
+    }
+}
+
+fn flush_pending_with(
+    pending: &mut VecDeque<PendingTransition>,
+    mut persist: impl FnMut(&OperationalEvent) -> anyhow::Result<()>,
+    mut publish_notification: impl FnMut(NotificationCandidate),
+    mut forward: impl FnMut(&OperationalTransition) -> anyhow::Result<()>,
+) {
+    for item in pending.iter_mut() {
+        if item.persisted {
+            continue;
+        }
+        if let Err(error) = persist(&item.transition.event) {
             tracing::warn!(%error, "unable to persist operational event transition");
             break;
         }
-        if let Err(error) = event_forwarder.publish_operational(&item.transition) {
+        item.persisted = true;
+    }
+
+    for item in pending.iter_mut().take_while(|item| item.persisted) {
+        if !item.notifications_published {
+            for candidate in notification_candidates(&item.transition, item.source_name.clone()) {
+                publish_notification(candidate);
+            }
+            item.notifications_published = true;
+        }
+    }
+
+    while pending.front().is_some_and(|item| item.persisted) {
+        let item = pending
+            .front()
+            .expect("persisted operational transition must remain queued");
+        if let Err(error) = forward(&item.transition) {
             tracing::warn!(
                 event_id = %item.transition.event.id,
                 revision = item.transition.event.revision,
@@ -564,9 +628,6 @@ fn flush_pending(
                 "unable to enqueue operational event for MQTT forwarding"
             );
             break;
-        }
-        for candidate in notification_candidates(&item.transition, item.source_name.clone()) {
-            notifications.publish(candidate);
         }
         pending.pop_front();
     }
@@ -834,6 +895,119 @@ mod tests {
             recording_interrupted: true,
             source: "canonical_health".to_owned(),
         }
+    }
+
+    fn pending_transition(event_id: &str, revision: u64) -> PendingTransition {
+        PendingTransition::new(
+            OperationalTransition {
+                kind: OperationalTransitionKind::Updated,
+                event: OperationalEvent {
+                    id: event_id.to_owned(),
+                    key: key(Some("sub")),
+                    evidence: evidence("frames_stale"),
+                    severity: OperationalSeverity::Warning,
+                    revision,
+                    start_time_ms: 1_000,
+                    end_time_ms: None,
+                    duration_ms: Some(1_000),
+                },
+                occurred_at_ms: 2_000,
+            },
+            Some("Front Door".to_owned()),
+        )
+    }
+
+    #[test]
+    fn mqtt_failure_does_not_block_persistence_or_notifications() {
+        let mut pending = VecDeque::from([
+            pending_transition("event-a", 1),
+            pending_transition("event-b", 1),
+        ]);
+        let mut persisted = Vec::new();
+        let mut notified = Vec::new();
+        let mut forwarded = Vec::new();
+
+        flush_pending_with(
+            &mut pending,
+            |event| {
+                persisted.push(event.id.clone());
+                Ok(())
+            },
+            |candidate| notified.push(candidate.source_identity),
+            |transition| {
+                forwarded.push(transition.event.id.clone());
+                anyhow::bail!("MQTT ingest unavailable")
+            },
+        );
+
+        assert_eq!(persisted, ["event-a", "event-b"]);
+        assert_eq!(notified, ["event-a", "event-b"]);
+        assert_eq!(forwarded, ["event-a"]);
+        assert_eq!(pending.len(), 2);
+
+        flush_pending_with(
+            &mut pending,
+            |event| {
+                persisted.push(event.id.clone());
+                Ok(())
+            },
+            |candidate| notified.push(candidate.source_identity),
+            |transition| {
+                forwarded.push(transition.event.id.clone());
+                Ok(())
+            },
+        );
+
+        assert_eq!(persisted, ["event-a", "event-b"]);
+        assert_eq!(notified, ["event-a", "event-b"]);
+        assert_eq!(forwarded, ["event-a", "event-a", "event-b"]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn persistence_failure_preserves_transition_order() {
+        let mut pending = VecDeque::from([
+            pending_transition("event-a", 1),
+            pending_transition("event-b", 2),
+        ]);
+        let mut persisted = Vec::new();
+        let mut notified = Vec::new();
+        let mut forwarded = Vec::new();
+
+        flush_pending_with(
+            &mut pending,
+            |event| {
+                persisted.push(event.id.clone());
+                anyhow::bail!("catalog unavailable")
+            },
+            |candidate| notified.push(candidate.source_identity),
+            |transition| {
+                forwarded.push(transition.event.id.clone());
+                Ok(())
+            },
+        );
+
+        assert_eq!(persisted, ["event-a"]);
+        assert!(notified.is_empty());
+        assert!(forwarded.is_empty());
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn pending_transition_queue_is_bounded() {
+        let mut pending = VecDeque::new();
+        extend_pending(
+            &mut pending,
+            (0..=MAX_PENDING_TRANSITIONS)
+                .map(|index| pending_transition(&format!("event-{index}"), 1)),
+        );
+
+        assert_eq!(pending.len(), MAX_PENDING_TRANSITIONS);
+        assert_eq!(pending.front().unwrap().transition.event.id, "event-0");
+        assert_eq!(
+            pending.back().unwrap().transition.event.id,
+            format!("event-{}", MAX_PENDING_TRANSITIONS - 1)
+        );
     }
 
     fn tracker() -> OperationalEventTracker {

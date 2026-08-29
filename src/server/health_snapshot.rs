@@ -636,27 +636,6 @@ pub(super) fn aggregate_video_streams(
     }
 
     for stream in video_streams {
-        let expected_gap_ms =
-            (stream.report.expected_fps > 0.0).then(|| 1_000.0 / stream.report.expected_fps);
-        if stream.report.jitter_samples > 0
-            && expected_gap_ms.is_some_and(|expected| stream.report.jitter_p99_ms > expected)
-        {
-            issues.push(HealthIssue {
-                severity: "info".to_owned(),
-                scope: camera
-                    .info
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| camera.info.ip.clone()),
-                message: format!(
-                    "{} frame-arrival jitter P99 is {:.1} ms",
-                    stream.report.kind, stream.report.jitter_p99_ms
-                ),
-                operational_event_id: None,
-                timeline_start_ms: None,
-                timeline_end_ms: None,
-            });
-        }
         if stream.report.gap_max_ms > 2_000.0 {
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),

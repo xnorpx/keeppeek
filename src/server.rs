@@ -12434,6 +12434,48 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    fn assert_independent_player_accepts(path: &Path) {
+        if std::env::var_os("KEEPPEEK_VALIDATE_EXPORT_MEDIA").is_none() {
+            return;
+        }
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,width,height",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .expect("ffprobe must be installed for media validation");
+        assert!(
+            probe.status.success(),
+            "ffprobe rejected export: {}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let video = &probe["streams"][0];
+        assert_eq!(video["codec_name"], "h264");
+        assert!(video["width"].as_u64().is_some_and(|value| value > 0));
+        assert!(video["height"].as_u64().is_some_and(|value| value > 0));
+
+        let decode = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args(["-map", "0:v:0", "-f", "null", "-"])
+            .output()
+            .expect("ffmpeg must be installed for media validation");
+        assert!(
+            decode.status.success() && decode.stderr.is_empty(),
+            "ffmpeg rejected export: {}",
+            String::from_utf8_lossy(&decode.stderr)
+        );
+    }
+
     fn test_control_handler(state: ServerState) -> ServerControlHandler {
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
         ServerControlHandler::new(state, router_tx)
@@ -12609,7 +12651,7 @@ mod tests {
                 gap_max_ms: 2_501.0,
                 jitter_samples: 10,
                 jitter_p50_ms: 60.0,
-                jitter_p99_ms: 100.0,
+                jitter_p99_ms: 600.0,
                 frames: Some(100),
                 bytes: Some(1_000),
                 keyframes: Some(5),
@@ -12641,11 +12683,12 @@ mod tests {
         assert_eq!(health.totals.reconnects, 2);
         assert_eq!(health.totals.drops, 3);
         assert_eq!(health.totals.errors, 4);
-        assert!(health.issues.iter().any(|issue| {
-            issue
-                .message
-                .contains("frame-arrival jitter P99 is 100.0 ms")
-        }));
+        assert!(
+            health
+                .issues
+                .iter()
+                .all(|issue| !issue.message.contains("frame-arrival jitter"))
+        );
         assert!(
             health
                 .issues
@@ -15779,25 +15822,68 @@ mod tests {
             handle.clone(),
         )
         .unwrap();
-        let frame_payload = bytes::Bytes::from_static(&[
-            0, 0, 0, 8, 0x67, 0x42, 0x00, 0x1f, 0xe5, 0x88, 0x68, 0x40, 0, 0, 0, 4, 0x68, 0xce,
-            0x3c, 0x80, 0, 0, 0, 1, 0x65,
-        ]);
-        for offset_ms in [0, 1_000] {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/test-camera/testdata/cc-4k-640x360-h264.mp4");
+        let mut source = mp4::read_mp4(File::open(fixture).unwrap()).unwrap();
+        let (track_id, timescale, width, height, sps, pps, sample_count) = {
+            let (&track_id, track) = source
+                .tracks()
+                .iter()
+                .find(|(_, track)| track.media_type().ok() == Some(mp4::MediaType::H264))
+                .unwrap();
+            (
+                track_id,
+                track.timescale(),
+                u32::from(track.width()),
+                u32::from(track.height()),
+                track.sequence_parameter_set().unwrap().to_vec(),
+                track.picture_parameter_set().unwrap().to_vec(),
+                track.sample_count(),
+            )
+        };
+        let mut elapsed = Duration::ZERO;
+        let mut found_keyframe = false;
+        for sample_id in 1..=sample_count {
+            let sample = source.read_sample(track_id, sample_id).unwrap().unwrap();
+            if !found_keyframe {
+                if !sample.is_sync {
+                    continue;
+                }
+                found_keyframe = true;
+            }
+            let mut payload = Vec::with_capacity(sample.bytes.len() + sps.len() + pps.len() + 8);
+            if sample.is_sync {
+                for parameter_set in [&sps, &pps] {
+                    payload.extend_from_slice(
+                        &u32::try_from(parameter_set.len()).unwrap().to_be_bytes(),
+                    );
+                    payload.extend_from_slice(parameter_set);
+                }
+            }
+            payload.extend_from_slice(&sample.bytes);
             writer
                 .append_one(crate::storage::RecordingFrame {
-                    received_at: started_at + Duration::from_millis(offset_ms),
-                    timestamp: Some(Duration::from_millis(offset_ms)),
+                    received_at: started_at + elapsed,
+                    timestamp: Some(elapsed),
                     frame: crate::storage::MediaFrame::Video(crate::storage::VideoFrame {
                         codec: crate::storage::VideoCodec::H264,
-                        is_keyframe: true,
-                        width: 640,
-                        height: 360,
-                        data: frame_payload.clone(),
+                        is_keyframe: sample.is_sync,
+                        width,
+                        height,
+                        data: payload.into(),
                     }),
                 })
                 .unwrap();
+            let sample_nanos =
+                u128::from(sample.duration).saturating_mul(1_000_000_000) / u128::from(timescale);
+            elapsed = elapsed.saturating_add(Duration::from_nanos(
+                u64::try_from(sample_nanos).unwrap_or(u64::MAX).max(1),
+            ));
+            if elapsed >= Duration::from_secs(2) {
+                break;
+            }
         }
+        assert!(found_keyframe && elapsed >= Duration::from_millis(900));
         writer.finalize().unwrap();
         let fragments = handle
             .media_fragments_in_range("front-door/sub", 0, i64::MAX)
@@ -15993,7 +16079,8 @@ mod tests {
         );
         let downloaded = directory.join("downloaded-export.mp4");
         std::fs::write(&downloaded, bytes).unwrap();
-        assert!(mp4::read_mp4(File::open(downloaded).unwrap()).is_ok());
+        assert!(mp4::read_mp4(File::open(&downloaded).unwrap()).is_ok());
+        assert_independent_player_accepts(&downloaded);
 
         let artifact_path = state
             .export_jobs

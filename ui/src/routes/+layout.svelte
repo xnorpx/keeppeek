@@ -363,7 +363,7 @@
 						</a>
 						<span class="hidden text-sm font-semibold md:inline">{currentRoute.label}</span>
 						<span class="ml-auto flex items-center gap-2 font-mono text-xs text-muted-foreground">
-							<span class="size-1.5 rounded-full bg-availability"></span>
+							<span class="size-1.5 rounded-full bg-healthy"></span>
 							{accessState.session?.local ? 'Local' : 'Remote'} · {accessState.session?.role ===
 							'administrator'
 								? 'Administrator'
@@ -414,7 +414,7 @@
 						class="hidden h-8 shrink-0 items-center border-t border-border bg-surface px-4 font-mono text-xs text-muted-foreground md:flex"
 					>
 						<span class="flex items-center gap-2">
-							<span class="size-1.5 rounded-full bg-availability"></span>
+							<span class="size-1.5 rounded-full bg-healthy"></span>
 							{accessState.session?.local ? 'Local' : 'Remote'} recorder
 						</span>
 						<span class="ml-auto">{accessState.session?.displayName}</span>

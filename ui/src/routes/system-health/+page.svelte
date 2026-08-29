@@ -920,14 +920,7 @@
 														<p class="text-[9px] text-muted-foreground">
 															max {numberFormatter.format(stream.gap_max_ms ?? 0)} ms
 														</p>
-														<p
-															class="text-[9px] {(stream.jitter_p99_ms ?? 0) >
-															(stream.expected_fps && stream.expected_fps > 0
-																? 1_000 / stream.expected_fps
-																: Number.POSITIVE_INFINITY)
-																? 'text-amber-600 dark:text-amber-300'
-																: 'text-muted-foreground'}"
-														>
+														<p class="text-[9px] text-muted-foreground">
 															jitter p50 {numberFormatter.format(stream.jitter_p50_ms ?? 0)} ms · p99
 															{numberFormatter.format(stream.jitter_p99_ms ?? 0)} ms · {compactFormatter.format(
 																stream.jitter_samples ?? 0

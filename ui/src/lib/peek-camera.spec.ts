@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CameraHealth, CameraHealthDimensions, CameraListItem, StreamHealth } from './types';
-import { presentPeekCamera } from './peek-camera';
+import { peekCameraStateColorClass, presentPeekCamera } from './peek-camera';
 
 const camera: CameraListItem = {
 	id: 'front-door',
@@ -49,6 +49,32 @@ function health(state: CameraHealth['state'], overrides: Partial<CameraHealth> =
 }
 
 describe('Peek camera presentation', () => {
+	it('maps canonical camera states to shared status colors', () => {
+		expect(
+			(
+				[
+					'healthy',
+					'degraded',
+					'stale',
+					'reconnecting',
+					'offline',
+					'starting',
+					'stopped',
+					'unknown'
+				] satisfies CameraHealth['state'][]
+			).map(peekCameraStateColorClass)
+		).toEqual([
+			'bg-healthy',
+			'bg-activity',
+			'bg-activity',
+			'bg-activity',
+			'bg-live',
+			'bg-text-muted',
+			'bg-text-muted',
+			'bg-text-muted'
+		]);
+	});
+
 	it('shows healthy state without inventing recording progress', () => {
 		expect(presentPeekCamera(camera, health('healthy'))).toEqual({
 			state: 'healthy',

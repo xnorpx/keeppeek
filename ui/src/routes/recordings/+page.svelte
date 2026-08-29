@@ -180,11 +180,15 @@
 
 	{#if snapshot}
 		<section
-			class="grid grid-cols-2 border-b border-hairline md:grid-cols-4 xl:grid-cols-8"
+			class="grid grid-cols-2 border-b border-hairline md:grid-cols-4 {snapshot.totals
+				.not_configured > 0
+				? 'xl:grid-cols-8'
+				: 'xl:grid-cols-7'}"
 			aria-label="Fleet recording summary"
 		>
-			{#each [['HEALTHY', snapshot.totals.healthy, 'text-healthy', ''], ['DEGRADED', snapshot.totals.degraded, 'text-live-text', ''], ['POLICY PAUSED', snapshot.totals.paused_by_policy, 'text-activity', ''], ['NOT CONFIGURED', snapshot.totals.not_configured, 'text-text-muted', ''], ['UNKNOWN', snapshot.totals.unknown, 'text-text-muted', ''], ['STORED', formatBytes(snapshot.storage.recording_bytes), 'text-foreground', 'hidden md:block'], ['GROWTH / DAY', formatBytes(snapshot.storage.estimated_bytes_per_day), 'text-foreground', 'hidden md:block'], ['PROJECTED', snapshot.storage.projected_retention_days === null ? 'No estimate' : `${snapshot.storage.projected_retention_days.toFixed(1)}d`, 'text-foreground', 'hidden md:block']] as item (item[0])}
+			{#each [['HEALTHY', snapshot.totals.healthy, 'text-healthy', ''], ['DEGRADED', snapshot.totals.degraded, 'text-live-text', ''], ['POLICY PAUSED', snapshot.totals.paused_by_policy, 'text-activity', ''], ...(snapshot.totals.not_configured > 0 ? [['NOT CONFIGURED', snapshot.totals.not_configured, 'text-text-muted', '']] : []), ['UNKNOWN', snapshot.totals.unknown, 'text-text-muted', ''], ['STORED', formatBytes(snapshot.storage.recording_bytes), 'text-foreground', 'hidden md:block'], ['GROWTH / DAY', formatBytes(snapshot.storage.estimated_bytes_per_day), 'text-foreground', 'hidden md:block'], ['PROJECTED', snapshot.storage.projected_retention_days === null ? 'No estimate' : `${snapshot.storage.projected_retention_days.toFixed(1)}d`, 'text-foreground', 'hidden md:block']] as item (item[0])}
 				<div
+					data-recording-summary-metric
 					class="min-w-0 border-r border-b border-hairline px-3 py-3 last:border-r-0 md:px-4 {item[3]}"
 				>
 					<p class="font-mono text-[10px] tracking-caps text-text-faint">{item[0]}</p>
@@ -192,12 +196,6 @@
 				</div>
 			{/each}
 		</section>
-		<div
-			class="border-b border-hairline bg-surface px-4 py-2 font-mono text-[10px] leading-4 text-text-faint"
-		>
-			HEADROOM {formatBytes(snapshot.storage.available_bytes)} · {snapshot.storage
-				.projection_assumption}
-		</div>
 	{/if}
 
 	<section
