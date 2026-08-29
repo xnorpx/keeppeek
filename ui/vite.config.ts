@@ -56,6 +56,7 @@ export default defineConfig({
 			'/delete': apiTarget,
 			'/logs': apiTarget,
 			'/metrics': apiTarget,
+			'/recording-coverage': apiTarget,
 			'/api': apiTarget
 		}
 	},

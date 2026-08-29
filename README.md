@@ -15,6 +15,8 @@ The public protocol is
 documented separately in the [`api/` directory](api/README.md).
 The [evidence export lifecycle](docs/evidence-exports.md) documents durable history, duplicate
 handling, deadlines, retention, authorization, and download integrity.
+The [recording integrity guide](docs/recording-integrity.md) documents coverage, retention,
+gap evidence, pagination, metrics, and alert inputs.
 
 ## License
 

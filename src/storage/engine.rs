@@ -536,7 +536,10 @@ impl WriterWorker {
             if !candidate.path.exists() {
                 self.safety
                     .cleanup_started(StorageCleanupReason::Reconciliation);
-                catalog.complete_cleanup(&candidate.recording_id)?;
+                catalog.complete_cleanup(
+                    &candidate.recording_id,
+                    crate::storage::catalog::CatalogDeletionReason::Reconciliation,
+                )?;
                 capacity.keeppeek_bytes =
                     capacity.keeppeek_bytes.saturating_sub(candidate.file_bytes);
                 self.safety.cleanup_finished(1, candidate.file_bytes);
@@ -565,7 +568,7 @@ impl WriterWorker {
             let candidate = catalog.claim_cleanup_candidate()?.ok_or_else(|| {
                 anyhow::anyhow!("no eligible finalized recording remains to restore headroom")
             })?;
-            let removed = self.remove_cleanup_candidate(&catalog, &candidate)?;
+            let removed = self.remove_cleanup_candidate(&catalog, &candidate, reason)?;
             files_removed = files_removed.saturating_add(u64::from(removed > 0));
             bytes_removed = bytes_removed.saturating_add(removed);
             capacity.keeppeek_bytes = capacity
@@ -603,10 +606,22 @@ impl WriterWorker {
         &self,
         catalog: &RecordingCatalogHandle,
         candidate: &crate::storage::catalog::CatalogCleanupCandidate,
+        reason: StorageCleanupReason,
     ) -> anyhow::Result<u64> {
         let bytes_removed = self.long_term.remove_catalog_recording(&candidate.path)?;
         self.safety.cleanup_progress(bytes_removed);
-        catalog.complete_cleanup(&candidate.recording_id)?;
+        let deletion_reason = match reason {
+            StorageCleanupReason::ArchiveCap => {
+                crate::storage::catalog::CatalogDeletionReason::ArchiveLimit
+            }
+            StorageCleanupReason::FilesystemHeadroom | StorageCleanupReason::Combined => {
+                crate::storage::catalog::CatalogDeletionReason::DiskPressure
+            }
+            StorageCleanupReason::Reconciliation => {
+                crate::storage::catalog::CatalogDeletionReason::Reconciliation
+            }
+        };
+        catalog.complete_cleanup(&candidate.recording_id, deletion_reason)?;
         Ok(bytes_removed)
     }
 

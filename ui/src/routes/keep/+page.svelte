@@ -1897,6 +1897,12 @@
 				<h1 class="text-xl font-semibold">Keep</h1>
 			</div>
 			<div class="flex rounded-sm border border-hairline bg-raised p-0.5" aria-label="Keep modes">
+				<a
+					href={resolve('/recordings')}
+					class="inline-flex h-11 items-center rounded-xs px-2.5 text-2xs font-semibold text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-7"
+				>
+					Coverage
+				</a>
 				{#each ['timeline', 'stories', 'swimlanes', 'export'] as nextMode (nextMode)}
 					<button
 						type="button"

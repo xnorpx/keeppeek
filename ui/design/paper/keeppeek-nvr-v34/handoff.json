@@ -132,7 +132,7 @@
 	"constraints": [
 		"KeepPeek ingests detections and does not provide detector training, enrollment, zone, mask, or tripwire editors.",
 		"The primary Keep timeline remains vertical at every breakpoint.",
-		"Application controls use canonical WebRTC commands; HTTP remains limited to create, delete, logs, and metrics.",
+		"Application controls use canonical WebRTC commands; public HTTP remains limited to create, delete, logs, and metrics, with recording coverage reserved for the first-party UI.",
 		"Recording stays visually quiet and red is reserved for failure.",
 		"One camera page owns its stacked configuration sections."
 	]

@@ -78,6 +78,11 @@ name = "storage_safety"
 harness = false
 test = false
 
+[[bench]]
+name = "recording_coverage"
+harness = false
+test = false
+
 [dependencies]
 anyhow = { version = "*" }
 base64 = { version = "*" }
