@@ -1747,7 +1747,7 @@ describe('ControlClient', () => {
 			}
 		});
 		expect(createdExport).toMatchObject({
-			id: 'export-1',
+			id: expect.stringMatching(/^export-[0-9a-f-]{36}$/),
 			status: 'running',
 			sourceId: 'front-door',
 			estimatedBytes: 3,

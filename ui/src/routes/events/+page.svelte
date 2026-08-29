@@ -2,8 +2,10 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { onMount, tick } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
+	import { capabilityActions } from '$lib/capability-actions';
+	import { useCapabilityState } from '$lib/capability-context';
 	import { decodeEventKeyframePreview } from '$lib/event-keyframe-preview';
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventNoResultsState from '$lib/components/EventNoResultsState.svelte';
@@ -14,6 +16,7 @@
 		eventBrowserRecordKey,
 		eventBrowserSearchParams,
 		eventFilterSummary,
+		eventKeepSearchParams,
 		parseEventBrowserFilters,
 		type EventBrowserFilters,
 		type EventBrowserRecord,
@@ -42,6 +45,7 @@
 		{ value: 'without', label: 'No image' }
 	];
 	const controlClient = useControlClient();
+	const capabilities = useCapabilityState();
 
 	let cameras = $state.raw<CameraListItem[]>([]);
 	let records = $state.raw<EventBrowserRecord[]>([]);
@@ -75,6 +79,16 @@
 	let selectedDetachedRecord = $state.raw<EventBrowserRecord | null>(null);
 	let selectionError = $state<string | null>(null);
 	let recoveryNotice = $state<string | null>(null);
+	let exportedEventIds = $state.raw<ReadonlySet<string>>(new Set());
+	let eventContextActions = $state.raw<{
+		record: EventBrowserRecord;
+		x: number;
+		y: number;
+	} | null>(null);
+	let eventLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+	let eventLongPressOrigin: { x: number; y: number } | null = null;
+	let eventLongPressRecord: EventBrowserRecord | null = null;
+	let suppressEventCardClick = false;
 	type EventPageState = {
 		eventPageToken?: string;
 		eventPageTokens?: string[];
@@ -82,6 +96,7 @@
 		eventPageIndex?: number;
 		eventScrollY?: number;
 	};
+
 	let noResultsSuggestion = $state<{
 		label: string;
 		update: Partial<EventBrowserFilters>;
@@ -100,6 +115,38 @@
 						? selectedDetachedRecord
 						: null))
 	);
+
+	$effect(() => {
+		const selectedEventId = selectedRecord?.event.id ?? null;
+		if (
+			selectedEventId === null ||
+			!capabilities.supports(capabilityActions.exportMoment.capability)
+		) {
+			return;
+		}
+		let active = true;
+		void controlClient.listExports().then(
+			(jobs) => {
+				if (!active) return;
+				exportedEventIds = new Set(
+					jobs
+						.filter(
+							(job) =>
+								job.status === 'ready' &&
+								job.eventSeed !== null &&
+								(job.expiresAtMs === null || job.expiresAtMs > Date.now())
+						)
+						.map((job) => job.eventSeed!.eventId)
+				);
+			},
+			() => {
+				if (active) exportedEventIds = new Set();
+			}
+		);
+		return () => {
+			active = false;
+		};
+	});
 	let availableTypes = $derived(
 		[...new Set(records.map((record) => record.event.kind.toLocaleLowerCase()))].toSorted()
 	);
@@ -668,11 +715,20 @@
 	}
 
 	function selectRecord(record: EventBrowserRecord): void {
+		eventContextActions = null;
 		selectedKey = eventBrowserRecordKey(record);
 		selectedIdentity = { eventId: record.event.id, cameraId: record.camera.id };
 		selectionError = null;
 		requestEventPreview(record);
 		syncUrl('push');
+	}
+
+	function selectEventCard(record: EventBrowserRecord): void {
+		if (suppressEventCardClick) {
+			suppressEventCardClick = false;
+			return;
+		}
+		selectRecord(record);
 	}
 
 	function closeDetail(): void {
@@ -686,8 +742,81 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
-		if (event.key === 'Escape' && selectedRecord !== null) closeDetail();
+		if (event.key !== 'Escape') return;
+		if (eventContextActions !== null) eventContextActions = null;
+		else if (selectedRecord !== null) closeDetail();
 	}
+
+	function showEventContextActions(
+		record: EventBrowserRecord,
+		position: { x: number; y: number }
+	): void {
+		eventContextActions = {
+			record,
+			x: Math.max(8, Math.min(position.x, window.innerWidth - 192)),
+			y: Math.max(8, Math.min(position.y, window.innerHeight - 112))
+		};
+	}
+
+	function eventExportHref(record: EventBrowserRecord): string {
+		const returnHref = `${page.url.pathname}${page.url.search}`;
+		return `${resolve('/keep')}?${eventKeepSearchParams(record, 'export', returnHref)}`;
+	}
+
+	function eventRecordForTarget(target: EventTarget | null): EventBrowserRecord | null {
+		const card =
+			target instanceof Element ? target.closest<HTMLElement>('[data-event-card]') : null;
+		if (!card) return null;
+		return (
+			visibleRecords.find((record) => eventBrowserRecordKey(record) === card.dataset.eventCard) ??
+			null
+		);
+	}
+
+	function clearEventLongPress(): void {
+		if (eventLongPressTimer !== null) clearTimeout(eventLongPressTimer);
+		eventLongPressTimer = null;
+		eventLongPressOrigin = null;
+		eventLongPressRecord = null;
+	}
+
+	function handleEventContextMenu(event: MouseEvent): void {
+		const record = eventRecordForTarget(event.target);
+		if (!record) return;
+		event.preventDefault();
+		clearEventLongPress();
+		showEventContextActions(record, { x: event.clientX, y: event.clientY });
+	}
+
+	function handleEventPointerDown(event: PointerEvent): void {
+		if (event.pointerType !== 'touch') return;
+		const record = eventRecordForTarget(event.target);
+		if (!record) return;
+		clearEventLongPress();
+		eventLongPressOrigin = { x: event.clientX, y: event.clientY };
+		eventLongPressRecord = record;
+		eventLongPressTimer = setTimeout(() => {
+			if (!eventLongPressRecord) return;
+			suppressEventCardClick = true;
+			showEventContextActions(eventLongPressRecord, {
+				x: event.clientX,
+				y: event.clientY
+			});
+			clearEventLongPress();
+		}, 500);
+	}
+
+	function handleEventPointerMove(event: PointerEvent): void {
+		if (
+			eventLongPressOrigin &&
+			(Math.abs(event.clientX - eventLongPressOrigin.x) > 10 ||
+				Math.abs(event.clientY - eventLongPressOrigin.y) > 10)
+		) {
+			clearEventLongPress();
+		}
+	}
+
+	onDestroy(clearEventLongPress);
 
 	async function moveEventFocus(event: KeyboardEvent, record: EventBrowserRecord): Promise<void> {
 		if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -1052,7 +1181,13 @@
 	{:else}
 		<div
 			class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,14rem),1fr))] gap-3"
+			role="group"
 			aria-label="Event results"
+			oncontextmenu={handleEventContextMenu}
+			onpointerdown={handleEventPointerDown}
+			onpointermove={handleEventPointerMove}
+			onpointerup={clearEventLongPress}
+			onpointercancel={clearEventLongPress}
 		>
 			{#each visibleRecords as record, index (eventBrowserRecordKey(record))}
 				<EventResultCard
@@ -1066,7 +1201,7 @@
 						: -1}
 					onfocus={() => (focusedKey = eventBrowserRecordKey(record))}
 					onkeydown={(event) => void moveEventFocus(event, record)}
-					onclick={() => selectRecord(record)}
+					onclick={() => selectEventCard(record)}
 					onpreviewrequest={() => requestEventPreview(record)}
 				/>
 			{/each}
@@ -1097,6 +1232,41 @@
 	{/if}
 </div>
 
+{#if eventContextActions}
+	<button
+		type="button"
+		class="fixed inset-0 z-[70] cursor-default bg-transparent"
+		aria-label="Close event actions"
+		onclick={() => (eventContextActions = null)}
+	></button>
+	<div
+		data-event-context-actions
+		class="fixed z-[75] w-44 overflow-hidden rounded-md border border-hairline-strong bg-surface p-1 shadow-xl"
+		style:left={`${eventContextActions.x}px`}
+		style:top={`${eventContextActions.y}px`}
+		role="menu"
+		aria-label="Event actions"
+	>
+		<button
+			type="button"
+			class="flex h-9 w-full items-center rounded-sm px-3 text-left text-xs hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
+			role="menuitem"
+			onclick={() => selectRecord(eventContextActions!.record)}
+		>
+			Open details
+		</button>
+		{#if capabilities.supports(capabilityActions.exportMoment.capability)}
+			<a
+				href={eventExportHref(eventContextActions.record)}
+				class="flex h-9 items-center rounded-sm px-3 text-xs font-semibold hover:bg-raised focus-visible:bg-raised focus-visible:outline-none"
+				role="menuitem"
+			>
+				Export event
+			</a>
+		{/if}
+	</div>
+{/if}
+
 {#if selectedRecord}
 	<button
 		type="button"
@@ -1107,6 +1277,8 @@
 	<EventDetailDrawer
 		record={selectedRecord}
 		previewState={previewStates[eventBrowserRecordKey(selectedRecord)] ?? 'idle'}
+		returnHref={`${page.url.pathname}${page.url.search}`}
+		alreadyExported={exportedEventIds.has(selectedRecord.event.id)}
 		onclose={closeDetail}
 		onpreviewretry={() => requestEventPreview(selectedRecord)}
 	/>

@@ -356,6 +356,93 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 	await expect(page).toHaveURL(/event=person-high&eventCamera=front-door/);
 });
 
+test('exports an event with bounded context and preserves its return route', async ({
+	page
+}, testInfo) => {
+	const eventTimestampMs = Date.parse('2026-08-18T06:37:23Z');
+	const rangeStartMs = eventTimestampMs - 15_000;
+	const rangeEndMs = eventTimestampMs + 20_000;
+	const requests = await mockEvents(page, [], {
+		capabilityIds: ['keeppeek.media-export.v1'],
+		exportJobs: [
+			{
+				jobId: 'event-export',
+				status: 'ready',
+				sourceId: 'front-door',
+				streamId: 'main',
+				requestedStartMs: rangeStartMs,
+				requestedEndMs: rangeEndMs,
+				eventId: 'person-high'
+			}
+		]
+	});
+	await page.goto(`/events?date=${eventDate}&event=person-high&eventCamera=front-door`);
+
+	const detail = page.getByRole('complementary', { name: 'Event detail' });
+	await expect(detail.locator('[data-event-export-status="ready"]')).toHaveText(/Already exported/);
+	expect(await detail.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+	await expect(detail.locator('[data-capability="keeppeek.bookmarks.v1"]')).toBeInViewport();
+	await testInfo.attach('event-export-marker.png', {
+		body: await detail.screenshot(),
+		contentType: 'image/png'
+	});
+	await detail.getByRole('link', { name: 'Export event' }).click();
+	await expect(page).toHaveURL(/\/keep\?/);
+	const panel = page.locator('[data-keep-export]');
+	await expect(panel).toHaveAttribute('data-export-start-ms', String(rangeStartMs));
+	await expect(panel).toHaveAttribute('data-export-end-ms', String(rangeEndMs));
+	await expect(page.getByRole('link', { name: 'Back to event' })).toHaveAttribute(
+		'href',
+		new RegExp(`/events\\?date=${eventDate}.*event=person-high.*eventCamera=front-door`)
+	);
+	await expect(page.getByText('A matching export is already ready')).toBeVisible();
+	await testInfo.attach('event-export-draft.png', {
+		body: await panel.screenshot(),
+		contentType: 'image/png'
+	});
+	await page.getByRole('button', { name: 'Create fresh export' }).click();
+	const create = requests.exportJobs.find((request) => request.action === 'create');
+	expect(create).toMatchObject({
+		sourceId: 'front-door',
+		streamId: 'main',
+		startMs: rangeStartMs,
+		endMs: rangeEndMs,
+		eventId: 'person-high'
+	});
+});
+
+test('opens event export actions from context click and touch hold', async ({ page }, testInfo) => {
+	await mockEvents(page, [], { capabilityIds: ['keeppeek.media-export.v1'] });
+	await page.goto(`/events?date=${eventDate}`);
+	const card = page.locator('[data-event-card="front-door:person-high"]');
+	const menu = page.getByRole('menu', { name: 'Event actions' });
+
+	await card.click({ button: 'right', position: { x: 80, y: 80 } });
+	await expect(menu).toBeVisible();
+	await testInfo.attach('event-context-actions.png', {
+		body: await menu.screenshot(),
+		contentType: 'image/png'
+	});
+	await expect(menu.getByRole('menuitem', { name: 'Export event' })).toHaveAttribute(
+		'href',
+		/\/keep\?camera=front-door&date=2026-08-18&at=\d+&event=person-high&stream=main&mode=export/
+	);
+	await page.getByRole('button', { name: 'Close event actions' }).click();
+
+	await card.dispatchEvent('pointerdown', {
+		pointerType: 'touch',
+		clientX: 80,
+		clientY: 80
+	});
+	await expect(menu).toBeVisible();
+	await card.dispatchEvent('pointerup', { pointerType: 'touch', clientX: 80, clientY: 80 });
+	await menu.getByRole('menuitem', { name: 'Export event' }).click();
+	await expect(page.locator('[data-keep-export]')).toHaveAttribute(
+		'data-export-start-ms',
+		String(Date.parse('2026-08-18T06:37:08Z'))
+	);
+});
+
 test('keeps mixed Event cards and detail usable at the authored mobile viewport', async ({
 	page
 }) => {

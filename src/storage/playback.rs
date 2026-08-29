@@ -40,6 +40,12 @@ struct ExportSample {
 struct ExportProgress {
     pending_video: bool,
     last_sample_start: HashMap<u32, u64>,
+    bytes_written: u64,
+}
+
+struct ExportCallbacks<'a> {
+    cancelled: &'a dyn Fn() -> bool,
+    report_progress: &'a dyn Fn(u64),
 }
 
 pub fn export_fragment_ranges(
@@ -47,6 +53,22 @@ pub fn export_fragment_ranges(
     requested_end_ms: i64,
     destination: &Path,
     cancelled: impl Fn() -> bool,
+) -> anyhow::Result<ExportArtifact> {
+    export_fragment_ranges_with_progress(
+        fragments,
+        requested_end_ms,
+        destination,
+        cancelled,
+        |_| {},
+    )
+}
+
+pub fn export_fragment_ranges_with_progress(
+    fragments: &[CatalogMediaFragment],
+    requested_end_ms: i64,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+    progress: impl Fn(u64),
 ) -> anyhow::Result<ExportArtifact> {
     let aligned_start_ms = fragments
         .first()
@@ -85,18 +107,24 @@ pub fn export_fragment_ranges(
     if let Some(parent) = temporary.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let result = write_export_recordings(&recordings, aligned_start_ms, &temporary, &cancelled)
-        .and_then(|()| {
-            if cancelled() {
-                bail!("export was cancelled");
-            }
-            std::fs::rename(&temporary, destination)?;
-            Ok(ExportArtifact {
-                aligned_start_ms,
-                delivered_end_ms,
-                bytes: destination.metadata()?.len(),
-            })
-        });
+    let result = write_export_recordings(
+        &recordings,
+        aligned_start_ms,
+        &temporary,
+        &cancelled,
+        &progress,
+    )
+    .and_then(|()| {
+        if cancelled() {
+            bail!("export was cancelled");
+        }
+        std::fs::rename(&temporary, destination)?;
+        Ok(ExportArtifact {
+            aligned_start_ms,
+            delivered_end_ms,
+            bytes: destination.metadata()?.len(),
+        })
+    });
     if result.is_err() {
         let _ = std::fs::remove_file(temporary);
     }
@@ -108,6 +136,7 @@ fn write_export_recordings(
     aligned_start_ms: i64,
     destination: &Path,
     cancelled: &impl Fn() -> bool,
+    report_progress: &impl Fn(u64),
 ) -> anyhow::Result<()> {
     let first = recordings
         .first()
@@ -149,6 +178,10 @@ fn write_export_recordings(
     let mut writer =
         mp4::FragmentedMp4Writer::write_start_with_sample_descriptions(output, &config, &configs)?;
     let mut progress = ExportProgress::default();
+    let callbacks = ExportCallbacks {
+        cancelled,
+        report_progress,
+    };
 
     write_export_recording(
         &mut first_reader,
@@ -157,7 +190,7 @@ fn write_export_recordings(
         aligned_start_ms,
         &mut writer,
         &mut progress,
-        cancelled,
+        &callbacks,
     )?;
     for recording in recordings.iter().skip(1) {
         let mut reader = mp4::read_mp4(File::open(&recording.path)?)?;
@@ -174,7 +207,7 @@ fn write_export_recordings(
             aligned_start_ms,
             &mut writer,
             &mut progress,
-            cancelled,
+            &callbacks,
         )?;
     }
     writer.write_end()?;
@@ -306,13 +339,13 @@ fn write_export_recording<R: Read + Seek>(
     aligned_start_ms: i64,
     writer: &mut mp4::FragmentedMp4Writer<BufWriter<File>>,
     progress: &mut ExportProgress,
-    cancelled: &impl Fn() -> bool,
+    callbacks: &ExportCallbacks<'_>,
 ) -> anyhow::Result<()> {
     let mut samples = Vec::new();
     for (index, track) in tracks.iter().enumerate() {
         let sample_count = reader.sample_count(track.source_id)?;
         for sample_id in 1..=sample_count {
-            if cancelled() {
+            if (callbacks.cancelled)() {
                 bail!("export was cancelled");
             }
             let mut sample = reader
@@ -378,7 +411,7 @@ fn write_export_recording<R: Read + Seek>(
         })
     });
     for sample in samples {
-        if cancelled() {
+        if (callbacks.cancelled)() {
             bail!("export was cancelled");
         }
         if progress
@@ -399,7 +432,10 @@ fn write_export_recording<R: Read + Seek>(
         progress
             .last_sample_start
             .insert(sample.track_id, sample.sample.start_time);
+        let sample_bytes = u64::try_from(sample.sample.bytes.len()).unwrap_or(u64::MAX);
         writer.write_sample_with_description(sample.track_id, description_index, sample.sample)?;
+        progress.bytes_written = progress.bytes_written.saturating_add(sample_bytes);
+        (callbacks.report_progress)(progress.bytes_written);
     }
     Ok(())
 }

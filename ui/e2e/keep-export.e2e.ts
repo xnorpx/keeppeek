@@ -257,21 +257,77 @@ test('reports timestamp burn-in as an explicit no-reencode failure', async ({ pa
 	expect(noncanonicalRequests).toEqual([]);
 });
 
-test('restores a ready server job without horizontal drift at the Paper mobile width', async ({
+test('offers an existing exact export or an explicit fresh artifact', async ({
 	page
-}) => {
+}, testInfo) => {
+	const { controls, noncanonicalRequests, panel } = await openSupportedExport(page, {
+		exportJobs: [
+			{
+				jobId: 'matching-ready',
+				status: 'ready',
+				requestedStartMs: selectedStartMs,
+				requestedEndMs: selectedEndMs
+			}
+		],
+		exportCreateResults: [{ status: 'running', progress: 0.1 }]
+	});
+	await selectTwoMinuteRange(page);
+
+	await expect(page.getByText('A matching export is already ready')).toBeVisible();
+	await testInfo.attach('duplicate-ready-desktop.png', {
+		body: await panel.screenshot(),
+		contentType: 'image/png'
+	});
+	expect(controls.exportJobs.filter((request) => request.action === 'create')).toHaveLength(0);
+	await page.getByRole('button', { name: 'Create fresh export' }).click();
+	await expect(panel).toHaveAttribute('data-export-status', 'running');
+	expect(controls.exportJobs.filter((request) => request.action === 'create')).toHaveLength(1);
+	expect(noncanonicalRequests).toEqual([]);
+});
+
+test('shows an identical active export instead of starting duplicate work', async ({ page }) => {
+	const initialStartMs = keepModeDayStartMs + 6 * 60 * 60_000 + 15 * 60_000;
+	const { controls, noncanonicalRequests, panel } = await openSupportedExport(page, {
+		exportJobs: [
+			{
+				jobId: 'matching-active',
+				status: 'running',
+				progress: 0.35,
+				requestedStartMs: initialStartMs,
+				requestedEndMs: initialStartMs + 2 * 60_000
+			}
+		]
+	});
+
+	await expect(panel).toHaveAttribute('data-export-status', 'running');
+	await expect(page.locator('[data-export-job="matching-active"]')).toBeVisible();
+	expect(controls.exportJobs.filter((request) => request.action === 'create')).toHaveLength(0);
+	expect(noncanonicalRequests).toEqual([]);
+});
+
+test('reuses a matching ready server job without horizontal drift at the Paper mobile width', async ({
+	page
+}, testInfo) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	const { noncanonicalRequests, panel } = await openSupportedExport(page, {
 		exportJobs: [
 			{
 				jobId: 'restored-export',
 				status: 'ready',
+				requestedStartMs: keepModeDayStartMs + 6 * 60 * 60_000 + 15 * 60_000,
+				requestedEndMs: keepModeDayStartMs + 6 * 60 * 60_000 + 17 * 60_000,
 				bytesWritten: 118_000_000,
 				estimatedBytes: 118_000_000,
 				fileName: 'Front-Door_2026-08-18T06-11-48-000Z_to_2026-08-18T06-13-48-000Z.mp4'
 			}
 		]
 	});
+	await expect(page.getByText('A matching export is already ready')).toBeVisible();
+	await testInfo.attach('duplicate-ready-mobile.png', {
+		body: await panel.screenshot(),
+		contentType: 'image/png'
+	});
+	await page.getByRole('button', { name: 'Use existing export' }).click();
 	await expect(panel).toHaveAttribute('data-export-status', 'ready');
 	await expect(page.getByText('Your file is ready')).toBeVisible();
 	const bounds = await panel.boundingBox();

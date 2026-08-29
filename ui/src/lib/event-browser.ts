@@ -44,6 +44,23 @@ export type EventBrowserTimeWindow = {
 	nextDurationMs: number;
 };
 
+export function eventKeepSearchParams(
+	record: EventBrowserRecord,
+	mode: 'timeline' | 'export',
+	returnHref: string | null
+): URLSearchParams {
+	const search = new URLSearchParams({
+		camera: record.camera.id,
+		date: new Date(record.event.start_time_ms).toISOString().slice(0, 10),
+		at: String(record.event.start_time_ms),
+		event: record.event.id,
+		stream: 'main'
+	});
+	if (mode === 'export') search.set('mode', 'export');
+	if (returnHref) search.set('returnTo', returnHref);
+	return search;
+}
+
 export function eventBrowserDayBounds(
 	date: string,
 	nowMs = Date.now()

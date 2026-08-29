@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { RecordingEvent, RecordingSegment } from './types';
 import {
+	classifyExportCandidates,
+	createEventExportRange,
 	createExportRange,
 	createSwimlaneWindow,
 	parseKeepMode,
@@ -92,6 +94,77 @@ describe('Keep modes', () => {
 			durationMs: 120_000,
 			estimatedBytes: null
 		});
+	});
+
+	it('seeds a bounded fifteen-second context around an event', () => {
+		expect(createEventExportRange({ start_time_ms: 60_000, end_time_ms: 75_000 }, 8_000)).toEqual({
+			startMs: 45_000,
+			endMs: 90_000,
+			durationMs: 45_000,
+			estimatedBytes: 45_000_000
+		});
+		expect(createEventExportRange({ start_time_ms: 60_000, end_time_ms: 300_000 }, null)).toEqual({
+			startMs: 45_000,
+			endMs: 165_000,
+			durationMs: 120_000,
+			estimatedBytes: null
+		});
+	});
+
+	it('classifies only reusable exact jobs and keeps overlaps advisory', () => {
+		const base = {
+			sourceId: 'front-door',
+			streamId: 'main' as const,
+			requestedStartMs: 1_000,
+			requestedEndMs: 2_000,
+			expiresAtMs: 10_000,
+			fileName: 'export.mp4',
+			sha256: 'checksum',
+			missingRanges: [],
+			burnInTimestamp: false
+		};
+		const result = classifyExportCandidates(
+			[
+				{ ...base, id: 'active', status: 'running' as const },
+				{ ...base, id: 'ready', status: 'ready' as const },
+				{
+					...base,
+					id: 'different-options',
+					status: 'ready' as const,
+					burnInTimestamp: true
+				},
+				{
+					...base,
+					id: 'overlap',
+					status: 'ready' as const,
+					requestedStartMs: 1_500,
+					requestedEndMs: 2_500
+				},
+				{ ...base, id: 'expired', status: 'expired' as const },
+				{
+					...base,
+					id: 'elapsed',
+					status: 'ready' as const,
+					expiresAtMs: 500
+				}
+			],
+			{
+				sourceId: 'front-door',
+				streamId: 'main',
+				startMs: 1_000,
+				endMs: 2_000,
+				allowPartial: false,
+				burnInTimestamp: false
+			},
+			1_000
+		);
+
+		expect(result.exactActive?.id).toBe('active');
+		expect(result.exactReady?.id).toBe('ready');
+		expect(result.related.map((candidate) => candidate.id)).toEqual([
+			'overlap',
+			'different-options'
+		]);
 	});
 
 	it('builds at most eight lanes on one quarter-hour aligned clock', () => {

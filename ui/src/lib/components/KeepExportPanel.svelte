@@ -6,12 +6,19 @@
 	import CapabilityGate from '$lib/components/CapabilityGate.svelte';
 	import { useControlClient } from '$lib/control-context';
 	import type { MediaExportJob } from '$lib/control-client';
-	import { createExportRange, updateExportRange, type ExportRange } from '$lib/keep-modes';
+	import {
+		classifyExportCandidates,
+		createExportRange,
+		updateExportRange,
+		type ExportCandidateMatch,
+		type ExportRange
+	} from '$lib/keep-modes';
 	import type { RecordingEvent, RecordingSegment } from '$lib/types';
 	import CheckCircleIcon from '@lucide/svelte/icons/circle-check';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 	import InfoIcon from '@lucide/svelte/icons/info';
+	import LayersIcon from '@lucide/svelte/icons/layers';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import XIcon from '@lucide/svelte/icons/x';
@@ -46,13 +53,17 @@
 	const initialRange = untrack(() => createExportRange(segment, bitrateKbps));
 	let range = $state.raw<ExportRange | null>(initialRange);
 	let burnInTimestamp = $state(false);
-	let job = $state.raw<MediaExportJob | null>(null);
+	let allowPartialDraft = $state(false);
+	let selectedJob = $state.raw<MediaExportJob | null>(null);
+	let exportHistory = $state.raw<MediaExportJob[]>([]);
 	let submitting = $state(false);
 	let downloading = $state(false);
 	let operationError = $state<string | null>(null);
 	let loadedExportKey: string | null = null;
 	let appliedRangeOverride = '';
 	let exportSupported = $derived(capabilities.supports(capabilityActions.createExport.capability));
+	let candidateMatch = $derived(exportCandidates(allowPartialDraft));
+	let job = $derived(selectedJob ?? candidateMatch.exactActive);
 	let partialSections = $derived(
 		job?.status === 'partial'
 			? jobPresentation
@@ -87,26 +98,9 @@
 		let active = true;
 		void controlClient.listExports().then(
 			(jobs) => {
-				if (!active || job !== null) return;
-				const restoredJob =
-					jobs
-						.filter(
-							(candidate) =>
-								candidate.sourceId === sourceId &&
-								candidate.streamId === segment?.stream &&
-								(!event || candidate.eventSeed?.eventId === event.id)
-						)
-						.toSorted((left, right) => right.requestedEndMs - left.requestedEndMs)[0] ?? null;
-				job = restoredJob;
-				if (range && restoredJob) {
-					range = updateExportRange(
-						range,
-						restoredJob.requestedStartMs,
-						restoredJob.requestedEndMs,
-						bitrateKbps
-					);
-					burnInTimestamp = restoredJob.burnInTimestamp;
-				}
+				if (!active) return;
+				exportHistory = jobs;
+				if (jobPresentation) selectedJob = jobs[0] ?? null;
 			},
 			(cause: unknown) => {
 				if (active) operationError = errorMessage(cause, 'Export jobs could not be loaded.');
@@ -123,7 +117,7 @@
 		const timeout = setTimeout(() => {
 			void controlClient.getExport(jobId).then(
 				(nextJob) => {
-					if (job?.id === jobId) job = nextJob;
+					if (job?.id === jobId) rememberJob(nextJob);
 				},
 				(cause: unknown) => {
 					if (job?.id === jobId) operationError = errorMessage(cause, 'Export status was lost.');
@@ -251,20 +245,49 @@
 		return cause instanceof Error ? cause.message : fallback;
 	}
 
-	async function createJob(allowPartial = false): Promise<void> {
+	function exportCandidates(allowPartial: boolean): ExportCandidateMatch<MediaExportJob> {
+		if (!range || !segment) return { exactActive: null, exactReady: null, related: [] };
+		return classifyExportCandidates(exportHistory, {
+			sourceId,
+			streamId: segment.stream,
+			startMs: range.startMs,
+			endMs: range.endMs,
+			allowPartial,
+			burnInTimestamp
+		});
+	}
+
+	function rememberJob(nextJob: MediaExportJob): void {
+		selectedJob = nextJob;
+		exportHistory = [nextJob, ...exportHistory.filter((candidate) => candidate.id !== nextJob.id)];
+	}
+
+	async function createJob(allowPartial = allowPartialDraft, createFresh = false): Promise<void> {
 		if (!range || !segment || !exportSupported || submitting) return;
+		allowPartialDraft = allowPartial;
+		const matches = exportCandidates(allowPartial);
+		if (matches.exactActive) {
+			rememberJob(matches.exactActive);
+			return;
+		}
+		if (!createFresh && (matches.exactReady || matches.related.length > 0)) {
+			selectedJob = null;
+			return;
+		}
 		submitting = true;
 		operationError = null;
 		try {
-			job = await controlClient.createExport({
-				sourceId,
-				streamId: segment.stream,
-				startMs: range.startMs,
-				endMs: range.endMs,
-				allowPartial,
-				burnInTimestamp,
-				event: event ?? undefined
-			});
+			rememberJob(
+				await controlClient.createExport({
+					sourceId,
+					streamId: segment.stream,
+					startMs: range.startMs,
+					endMs: range.endMs,
+					allowPartial,
+					burnInTimestamp,
+					event: event ?? undefined
+				})
+			);
 		} catch (cause) {
 			operationError = errorMessage(cause, 'The export could not be created.');
 		} finally {
@@ -277,7 +300,7 @@
 		submitting = true;
 		operationError = null;
 		try {
-			job = await controlClient.cancelExport(job.id);
+			rememberJob(await controlClient.cancelExport(job.id));
 		} catch (cause) {
 			operationError = errorMessage(cause, 'The export could not be cancelled.');
 		} finally {
@@ -290,7 +313,7 @@
 		submitting = true;
 		operationError = null;
 		try {
-			job = await controlClient.retryExport(job.id);
+			rememberJob(await controlClient.retryExport(job.id));
 		} catch (cause) {
 			operationError = errorMessage(cause, 'The export could not be retried.');
 		} finally {
@@ -322,12 +345,14 @@
 	function trimRange(target: TrimTarget): void {
 		if (!range) return;
 		range = updateExportRange(range, target.startMs, target.endMs, bitrateKbps);
-		job = null;
+		selectedJob = null;
+		allowPartialDraft = false;
 		operationError = null;
 	}
 
 	function returnToRange(): void {
-		job = null;
+		selectedJob = null;
+		allowPartialDraft = false;
 		operationError = null;
 	}
 
@@ -822,17 +847,73 @@
 					Burn in timestamp (forces re-encode)
 				</label>
 
-				<CapabilityGate {...capabilityActions.createExport} class="w-full justify-center py-2">
-					<button
-						type="button"
-						class="inline-flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-primary px-4 text-sm font-semibold text-on-primary disabled:opacity-45"
-						disabled={submitting}
-						onclick={() => void createJob()}
+				{#if candidateMatch.exactReady || candidateMatch.related.length > 0}
+					<div
+						data-export-duplicate
+						class="space-y-3 rounded-sm border border-activity/45 bg-activity/5 px-3.5 py-3"
 					>
-						<DownloadIcon class="size-4" />
-						{submitting ? 'Creating export' : 'Create export'}
-					</button>
-				</CapabilityGate>
+						<div class="flex items-start gap-2.5">
+							<LayersIcon class="mt-0.5 size-4 shrink-0 text-activity" />
+							<div class="min-w-0 space-y-1">
+								<p class="text-sm font-semibold">
+									{candidateMatch.exactReady
+										? 'A matching export is already ready'
+										: 'Previous exports overlap this range'}
+								</p>
+								<p class="text-xs leading-5 text-text-muted">
+									{candidateMatch.exactReady
+										? 'Reuse the verified artifact or deliberately create a fresh copy.'
+										: 'Review the related evidence before starting another export.'}
+								</p>
+							</div>
+						</div>
+						{#if candidateMatch.related.length > 0}
+							<ul class="divide-y divide-hairline border-y border-hairline font-mono text-xs">
+								{#each candidateMatch.related.slice(0, 3) as candidate (candidate.id)}
+									<li class="flex items-center justify-between gap-3 py-2">
+										<span class="min-w-0 truncate">
+											{formatRange(candidate.requestedStartMs, candidate.requestedEndMs)}
+										</span>
+										<span class="shrink-0 text-text-faint uppercase">{candidate.status}</span>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+						<div class="flex flex-wrap gap-2">
+							{#if candidateMatch.exactReady}
+								<button
+									type="button"
+									class="inline-flex h-9 items-center gap-2 rounded-sm bg-primary px-3.5 text-xs font-semibold text-on-primary"
+									onclick={() => rememberJob(candidateMatch.exactReady!)}
+								>
+									<DownloadIcon class="size-3.5" /> Use existing export
+								</button>
+							{/if}
+							<CapabilityGate {...capabilityActions.createExport}>
+								<button
+									type="button"
+									class="inline-flex h-9 items-center rounded-sm border border-hairline-strong bg-raised px-3.5 text-xs font-semibold disabled:opacity-45"
+									disabled={submitting}
+									onclick={() => void createJob(allowPartialDraft, true)}
+								>
+									{submitting ? 'Creating export' : 'Create fresh export'}
+								</button>
+							</CapabilityGate>
+						</div>
+					</div>
+				{:else}
+					<CapabilityGate {...capabilityActions.createExport} class="w-full justify-center py-2">
+						<button
+							type="button"
+							class="inline-flex h-9 w-full items-center justify-center gap-2 rounded-sm bg-primary px-4 text-sm font-semibold text-on-primary disabled:opacity-45"
+							disabled={submitting}
+							onclick={() => void createJob()}
+						>
+							<DownloadIcon class="size-4" />
+							{submitting ? 'Creating export' : 'Create export'}
+						</button>
+					</CapabilityGate>
+				{/if}
 				{#if operationError}
 					<div
 						class="flex items-start gap-2 rounded-sm border border-live/40 bg-live/5 px-3 py-2.5 text-xs text-live-text"

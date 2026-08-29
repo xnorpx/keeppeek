@@ -16,7 +16,7 @@
 		type TimelineInterval,
 		type TimelineViewport
 	} from '$lib/timeline-repository.svelte';
-	import { parseKeepMode, type KeepMode } from '$lib/keep-modes';
+	import { createEventExportRange, parseKeepMode, type KeepMode } from '$lib/keep-modes';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import {
 		browserSupportsRecordedEncoding,
@@ -134,6 +134,7 @@
 	let exportRangeStartMs: number | null = $state(null);
 	let exportRangeEndMs: number | null = $state(null);
 	let exportSeedEvent = $state.raw<RecordingEvent | null>(null);
+	let exportReturnHref = $state<string | null>(null);
 	let configuredFrameRates = $state.raw<ReadonlyMap<string, number>>(new Map());
 	let coldSeekTimestampMs: number | null = $state(null);
 	let coldSeekElapsedMs = $state(0);
@@ -346,6 +347,7 @@
 			mode = parseKeepMode(params.get('mode'));
 			const requestedTimestampMs = parseTimestamp(params.get('at'));
 			const requestedEventId = params.get('event')?.trim() ?? '';
+			exportReturnHref = localReturnHref(params.get('returnTo'));
 			const requestedCamera = params.get('camera')?.trim() ?? '';
 			const requestedStream = params.get('stream');
 			const hasRequestedStream = requestedStream === 'main' || requestedStream === 'sub';
@@ -430,6 +432,11 @@
 					cameraId,
 					requestedTimestampMs
 				);
+				if (exportSeedEvent && mode === 'export') {
+					const seededRange = createEventExportRange(exportSeedEvent, selectedBitrateKbps);
+					exportRangeStartMs = seededRange.startMs;
+					exportRangeEndMs = seededRange.endMs;
+				}
 				if (!exportSeedEvent && mode === 'export') {
 					error = 'The selected event revision is no longer available for export.';
 				}
@@ -1842,11 +1849,23 @@
 						event: exportSeedEvent.id,
 						at: String(exportSeedEvent.start_time_ms)
 					}
-				: {})
+				: {}),
+			...(mode === 'export' && exportReturnHref ? { returnTo: exportReturnHref } : {})
 		});
 		// The base path is resolved before the query string is appended.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		replaceState(`${resolve('/keep')}?${search}`, {});
+	}
+
+	function localReturnHref(value: string | null): string | null {
+		if (!value?.startsWith('/') || value.startsWith('//')) return null;
+		try {
+			const origin = 'https://keeppeek.invalid';
+			const parsed = new URL(value, origin);
+			return parsed.origin === origin ? `${parsed.pathname}${parsed.search}${parsed.hash}` : null;
+		} catch {
+			return null;
+		}
 	}
 
 	function formatDate(date: string): string {
@@ -2002,17 +2021,28 @@
 			onselect={selectSwimlane}
 		/>
 	{:else if mode === 'export'}
-		{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
-			<KeepExportPanel
-				sourceId={cameraId}
-				sourceName={selectedCamera?.name ?? cameraId}
-				segment={selected}
-				bitrateKbps={selectedBitrateKbps}
-				rangeStartMs={exportRangeStartMs}
-				rangeEndMs={exportRangeEndMs}
-				event={exportSeedEvent}
-			/>
-		{/key}
+		<div class="space-y-3">
+			{#if exportReturnHref}
+				<a
+					data-export-return
+					href={exportReturnHref}
+					class="inline-flex h-8 items-center gap-1.5 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
+				>
+					<ChevronLeftIcon class="size-3.5" /> Back to event
+				</a>
+			{/if}
+			{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
+				<KeepExportPanel
+					sourceId={cameraId}
+					sourceName={selectedCamera?.name ?? cameraId}
+					segment={selected}
+					bitrateKbps={selectedBitrateKbps}
+					rangeStartMs={exportRangeStartMs}
+					rangeEndMs={exportRangeEndMs}
+					event={exportSeedEvent}
+				/>
+			{/key}
+		</div>
 	{:else}
 		<div class="grid min-h-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24.75rem]">
 			<section

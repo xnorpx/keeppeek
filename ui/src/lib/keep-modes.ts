@@ -11,6 +11,35 @@ export type ExportRange = {
 	estimatedBytes: number | null;
 };
 
+export type ExportCandidate = {
+	id: string;
+	sourceId: string;
+	streamId: 'main' | 'sub';
+	requestedStartMs: number;
+	requestedEndMs: number;
+	status: 'running' | 'partial' | 'ready' | 'failed' | 'cancelled' | 'expired';
+	expiresAtMs: number | null;
+	fileName: string | null;
+	sha256: string | null;
+	missingRanges: readonly { startMs: number; endMs: number }[];
+	burnInTimestamp: boolean;
+};
+
+export type ExportDraftIdentity = {
+	sourceId: string;
+	streamId: 'main' | 'sub';
+	startMs: number;
+	endMs: number;
+	allowPartial: boolean;
+	burnInTimestamp: boolean;
+};
+
+export type ExportCandidateMatch<T extends ExportCandidate> = {
+	exactActive: T | null;
+	exactReady: T | null;
+	related: T[];
+};
+
 export type SwimlaneInput = {
 	cameraId: string;
 	segments: readonly RecordingSegment[];
@@ -26,6 +55,7 @@ export type SwimlaneWindow = {
 };
 
 export const MAX_EXPORT_DURATION_MS = 2 * 60_000;
+export const EVENT_EXPORT_CONTEXT_MS = 15_000;
 const SWIMLANE_WINDOW_MS = 60 * 60_000;
 
 export function parseKeepMode(value: string | null): KeepMode {
@@ -53,6 +83,65 @@ export function createExportRange(
 			bitrateKbps === null || bitrateKbps <= 0
 				? null
 				: Math.round((bitrateKbps * 1_000 * (durationMs / 1_000)) / 8)
+	};
+}
+
+export function createEventExportRange(
+	event: Pick<RecordingEvent, 'start_time_ms' | 'end_time_ms'>,
+	bitrateKbps: number | null
+): ExportRange {
+	const eventEndMs = Math.max(
+		event.start_time_ms + 1,
+		event.end_time_ms ?? event.start_time_ms + 1
+	);
+	const startMs = event.start_time_ms - EVENT_EXPORT_CONTEXT_MS;
+	const requestedEndMs = eventEndMs + EVENT_EXPORT_CONTEXT_MS;
+	const endMs = Math.min(requestedEndMs, startMs + MAX_EXPORT_DURATION_MS);
+	const durationMs = endMs - startMs;
+	return {
+		startMs,
+		endMs,
+		durationMs,
+		estimatedBytes:
+			bitrateKbps === null || bitrateKbps <= 0
+				? null
+				: Math.round((bitrateKbps * 1_000 * (durationMs / 1_000)) / 8)
+	};
+}
+
+export function classifyExportCandidates<T extends ExportCandidate>(
+	jobs: readonly T[],
+	draft: ExportDraftIdentity,
+	nowMs = Date.now()
+): ExportCandidateMatch<T> {
+	const candidates = jobs
+		.filter(
+			(candidate) =>
+				candidate.sourceId === draft.sourceId &&
+				candidate.streamId === draft.streamId &&
+				(candidate.status === 'running' ||
+					(candidate.status === 'ready' &&
+						(candidate.expiresAtMs === null || candidate.expiresAtMs > nowMs) &&
+						candidate.fileName !== null &&
+						candidate.sha256 !== null)) &&
+				candidate.requestedStartMs < draft.endMs &&
+				candidate.requestedEndMs > draft.startMs
+		)
+		.toSorted((left, right) => right.requestedEndMs - left.requestedEndMs);
+	const exact = candidates.filter(
+		(candidate) =>
+			candidate.requestedStartMs === draft.startMs &&
+			candidate.requestedEndMs === draft.endMs &&
+			candidate.burnInTimestamp === draft.burnInTimestamp &&
+			(candidate.missingRanges.length > 0 && candidate.status !== 'partial') === draft.allowPartial
+	);
+	const exactActive = exact.find((candidate) => candidate.status === 'running') ?? null;
+	const exactReady = exact.find((candidate) => candidate.status === 'ready') ?? null;
+	const exactIds = new Set([exactActive?.id, exactReady?.id]);
+	return {
+		exactActive,
+		exactReady,
+		related: candidates.filter((candidate) => !exactIds.has(candidate.id))
 	};
 }
 
