@@ -1,6 +1,52 @@
 import { expect, test } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
 import { mixedCameras, mixedHealth, mockMixedHealth } from './fixtures/peek';
+
+async function expectFrontDoorCameraInformation(page: Page, scope: Locator) {
+	const trigger = scope.getByRole('button', { name: 'Front Door camera information' });
+	await expect(trigger).toHaveAttribute('data-peek-camera-label', 'Front Door');
+	await expect(trigger).toContainText('Front Door');
+	await expect(scope.getByText('Front Door', { exact: true })).toHaveCount(1);
+	await expect(trigger.locator('span').first()).toHaveClass(/bg-healthy/);
+	const [scopeBounds, triggerBounds] = await Promise.all([
+		scope.boundingBox(),
+		trigger.boundingBox()
+	]);
+	expect(scopeBounds).not.toBeNull();
+	expect(triggerBounds).not.toBeNull();
+	if (!scopeBounds || !triggerBounds) throw new Error('Camera information geometry is unavailable');
+	expect(triggerBounds.width).toBeGreaterThan(triggerBounds.height);
+	expect(
+		Math.abs(scopeBounds.x + scopeBounds.width - triggerBounds.x - triggerBounds.width)
+	).toBeLessThanOrEqual(12);
+	await trigger.click();
+	const dialog = page.getByRole('dialog', { name: 'Front Door camera information' });
+	await expect(dialog).toBeVisible();
+	expect(
+		await dialog.evaluate((element) => {
+			const bounds = element.getBoundingClientRect();
+			const hit = document.elementFromPoint(
+				bounds.left + bounds.width / 2,
+				bounds.top + bounds.height / 2
+			);
+			return hit !== null && element.contains(hit);
+		})
+	).toBe(true);
+	await expect(page.locator('[data-web-rtc-recording="front-door"]')).toHaveText(
+		'Sub stream · recording'
+	);
+	await expect(page.locator('[data-web-rtc-recording="front-door"]')).toHaveAttribute(
+		'data-recording-state',
+		'recording'
+	);
+	await expect(page.locator('[data-camera-session-duration="front-door"]')).toHaveText('10m 00s');
+	await expect(page.locator('[data-main-recorded-duration="front-door"]')).toHaveText('8m 00s');
+	await expect(page.locator('[data-sub-recorded-duration="front-door"]')).toHaveText('5m 00s');
+	await expect(page.locator('[data-total-recorded-duration="front-door"]')).toHaveText('13m 00s');
+	await page.keyboard.press('Escape');
+	await expect(dialog).toHaveCount(0);
+}
 
 test('renders the KeepPeek dashboard without configured cameras', async ({ page }) => {
 	await mockControlPeer(page, { health: { status: 'healthy', cameras: [] } });
@@ -112,6 +158,60 @@ test('Board 6 renders healthy, degraded, stale, and offline Paper tile states', 
 	await page.locator('[data-peek-camera="back-yard"]').hover();
 	await expect(page.getByRole('button', { name: 'Rewind Back Yard' })).toHaveCount(0);
 	expect(browserErrors).toEqual([]);
+});
+
+test('opens camera information from a dashboard tile', async ({ page }) => {
+	await mockMixedHealth(page);
+	await page.goto('/');
+
+	await expectFrontDoorCameraInformation(page, page.locator('[data-peek-camera="front-door"]'));
+});
+
+test('opens camera information from a focused dashboard tile', async ({ page }) => {
+	await mockMixedHealth(page);
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
+	const focus = page.getByRole('region', { name: 'Front Door focus' });
+	await expectFrontDoorCameraInformation(page, focus.locator('[data-peek-focus-history]'));
+});
+
+test('combines filmstrip camera status, name, and information in a lower-right control', async ({
+	page
+}) => {
+	await mockMixedHealth(page);
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Focus Porch live view' }).click();
+	const focus = page.getByRole('region', { name: 'Porch focus' });
+	const filmstrip = focus.getByLabel('Other cameras');
+	const cameraSurface = filmstrip.getByRole('button', { name: 'Focus Front Door' });
+	const cameraInformation = filmstrip.getByRole('button', {
+		name: 'Front Door camera information'
+	});
+	await expect(cameraInformation).toContainText('Front Door');
+	await expect(cameraInformation.locator('span').first()).toHaveClass(/bg-healthy/);
+	await expect(filmstrip.getByText('Front Door', { exact: true })).toHaveCount(1);
+	const [surfaceBounds, informationBounds] = await Promise.all([
+		cameraSurface.boundingBox(),
+		cameraInformation.boundingBox()
+	]);
+	if (!surfaceBounds || !informationBounds) {
+		throw new Error('Filmstrip camera information geometry is unavailable');
+	}
+	expect(
+		surfaceBounds.x + surfaceBounds.width - informationBounds.x - informationBounds.width
+	).toBe(8);
+	expect(
+		surfaceBounds.y + surfaceBounds.height - informationBounds.y - informationBounds.height
+	).toBe(8);
+	expect(informationBounds.width).toBeLessThan(surfaceBounds.width - 24);
+
+	await cameraInformation.click();
+	await expect(page.getByRole('dialog', { name: 'Front Door camera information' })).toBeVisible();
+	await expect(page.locator('[data-web-rtc-recording="front-door"]')).toHaveText(
+		'Sub stream · recording'
+	);
 });
 
 test('refreshes startup health evidence in place without reopening Peek', async ({ page }) => {

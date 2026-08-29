@@ -17,7 +17,11 @@
 	import LiveVideo from '$lib/components/LiveVideo.svelte';
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import PeekLayoutEditor from '$lib/components/PeekLayoutEditor.svelte';
-	import { presentPeekCamera } from '$lib/peek-camera';
+	import {
+		peekCameraStateColorClass,
+		presentPeekCamera,
+		presentPeekRecordingDiagnostics
+	} from '$lib/peek-camera';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import { browserSupportsLiveEncoding, selectRecordedStream } from '$lib/recorded-playback-policy';
 	import {
@@ -110,6 +114,18 @@
 	);
 	let cameraHealthById = $derived(
 		new Map((serverHealth?.cameras ?? []).map((camera) => [camera.id, camera]))
+	);
+	let focusedRecordingDiagnostics = $derived(
+		presentPeekRecordingDiagnostics(
+			focusedCamera === null ? null : (cameraHealthById.get(focusedCamera.id) ?? null)
+		)
+	);
+	let focusedDiagnosticsStatusClass = $derived(
+		peekCameraStateColorClass(
+			focusedCamera === null
+				? 'unknown'
+				: (cameraHealthById.get(focusedCamera.id)?.state ?? 'unknown')
+		)
 	);
 	let fleetStatus = $derived.by(() => {
 		if (serverHealth === null) {
@@ -744,15 +760,13 @@
 									stream="main"
 									quality={effectiveFocusQuality}
 									matchVideoAspectRatio
+									diagnosticsLabel={cameraLabel(focusedCamera)}
+									diagnosticsStatusClass={focusedDiagnosticsStatusClass}
+									diagnosticsRecording={focusedRecordingDiagnostics}
 									onvisibilitychange={handleTileVisibility}
 									class="aspect-video overflow-hidden rounded-md ring-1 ring-white/10"
 								/>
 							{/key}
-							<span
-								class="pointer-events-none absolute top-3 left-3 z-20 max-w-[calc(100%-4rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
-							>
-								{cameraLabel(focusedCamera)}
-							</span>
 						</div>
 
 						<aside class="flex min-w-0 gap-2 overflow-x-auto pb-1" aria-label="Other cameras">
@@ -761,6 +775,12 @@
 									<LiveVideo
 										cameraId={camera.id}
 										stream="sub"
+										diagnosticsLabel={cameraLabel(camera)}
+										diagnosticsStatusClass={peekCameraStateColorClass(
+											cameraHealth(camera.id)?.state ?? 'unknown'
+										)}
+										diagnosticsPosition="bottom-right"
+										diagnosticsRecording={presentPeekRecordingDiagnostics(cameraHealth(camera.id))}
 										onvisibilitychange={handleTileVisibility}
 										class="size-full overflow-hidden ring-1 ring-white/10"
 									/>
@@ -770,11 +790,6 @@
 										aria-label={`Focus ${cameraLabel(camera)}`}
 										onclick={() => openFocus(camera.id)}
 									></button>
-									<span
-										class="pointer-events-none absolute right-1.5 bottom-1.5 left-1.5 z-20 truncate rounded-sm bg-black/72 px-1.5 py-1 text-[10px] font-semibold text-white shadow-sm backdrop-blur-sm"
-									>
-										{cameraLabel(camera)}
-									</span>
 								</article>
 							{/each}
 						</aside>

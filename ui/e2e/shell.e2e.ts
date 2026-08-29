@@ -20,6 +20,12 @@ test('uses the fixed Paper desktop shell geometry', async ({ page }) => {
 	await expect(contextBar).toHaveCSS('height', '52px');
 	await expect(statusBar).toBeVisible();
 	await expect(statusBar).toHaveCSS('height', '32px');
+	await expect(contextBar.getByText('Local · Administrator').locator('span').first()).toHaveClass(
+		/bg-healthy/
+	);
+	await expect(statusBar.getByText('Local recorder').locator('span').first()).toHaveClass(
+		/bg-healthy/
+	);
 	await expect(page.locator('[data-shell-mobile-nav]')).toBeHidden();
 	await expect(primaryNavigation.getByRole('link')).toHaveCount(6);
 	expect(
