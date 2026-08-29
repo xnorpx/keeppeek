@@ -14,8 +14,6 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-const FRAME_ARRIVAL_JITTER_INFO_THRESHOLD_MS: f64 = 500.0;
-
 pub(super) fn dispatch(
     state: &ServerState,
     router_tx: &FacadeSender<RouterMessage>,
@@ -638,24 +636,6 @@ pub(super) fn aggregate_video_streams(
     }
 
     for stream in video_streams {
-        if excessive_frame_arrival_jitter(stream.report.jitter_samples, stream.report.jitter_p99_ms)
-        {
-            issues.push(HealthIssue {
-                severity: "info".to_owned(),
-                scope: camera
-                    .info
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| camera.info.ip.clone()),
-                message: format!(
-                    "{} frame-arrival jitter P99 is {:.1} ms",
-                    stream.report.kind, stream.report.jitter_p99_ms
-                ),
-                operational_event_id: None,
-                timeline_start_ms: None,
-                timeline_end_ms: None,
-            });
-        }
         if stream.report.gap_max_ms > 2_000.0 {
             issues.push(HealthIssue {
                 severity: "warning".to_owned(),
@@ -690,21 +670,5 @@ pub(super) fn aggregate_video_streams(
                 timeline_end_ms: None,
             });
         }
-    }
-}
-
-fn excessive_frame_arrival_jitter(samples: u64, p99_ms: f64) -> bool {
-    samples > 0 && p99_ms >= FRAME_ARRIVAL_JITTER_INFO_THRESHOLD_MS
-}
-
-#[cfg(test)]
-mod tests {
-    use super::excessive_frame_arrival_jitter;
-
-    #[test]
-    fn frame_arrival_jitter_requires_a_500_ms_p99() {
-        assert!(!excessive_frame_arrival_jitter(0, 750.0));
-        assert!(!excessive_frame_arrival_jitter(100, 499.9));
-        assert!(excessive_frame_arrival_jitter(100, 500.0));
     }
 }

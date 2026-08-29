@@ -611,18 +611,7 @@
 						<section aria-labelledby="issues-heading">
 							<div class="mb-2 flex items-center justify-between gap-3">
 								<h2 id="issues-heading" class="text-sm font-semibold">Current findings</h2>
-								<div class="flex items-center gap-2">
-									<span class="text-xs text-muted-foreground">{rankedFindings.length}</span>
-									<button
-										type="button"
-										class="inline-flex h-8 items-center gap-1.5 rounded-sm border px-2.5 text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-40"
-										title="Refresh health and remove findings that are no longer active"
-										disabled={refreshing}
-										onclick={() => void loadHealth()}
-									>
-										<RefreshCwIcon class="size-3 {refreshing ? 'animate-spin' : ''}" /> Clear resolved
-									</button>
-								</div>
+								<span class="text-xs text-muted-foreground">{rankedFindings.length}</span>
 							</div>
 							<div class="divide-y border-y">
 								{#each rankedFindings as finding, index (`${finding.issue.scope}-${finding.issue.message}-${index}`)}

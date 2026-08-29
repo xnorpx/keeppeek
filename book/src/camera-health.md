@@ -83,9 +83,10 @@ Ingress publishes every 10 seconds.
 
 Frame-arrival jitter measures the absolute difference between each observed frame gap and the
 configured frame interval. Its P99 is computed over the current 10-second ingress report window; it
-is not WebRTC network jitter. KeepPeek creates an informational finding only at 500 ms P99 or above.
-A maximum observed frame gap above 2 seconds remains a warning because it represents a distinct
-playback or recording stall.
+is not WebRTC network jitter. KeepPeek displays it as diagnostic evidence but does not create a
+finding from jitter alone. Stale frames, low sustained frame rate, decode failure, ingress
+drops/errors, recording failure, and a maximum observed frame gap above 2 seconds remain actionable
+health signals.
 
 The first ingress report establishes the baseline for cumulative reconnect, drop, and error
 counters. An initial connection is therefore not reported as a recent reconnect. During startup
@@ -101,9 +102,10 @@ These ages use monotonic clocks inside the server. Wall-clock timestamps are inc
 but wall-clock changes do not make stale evidence fresh.
 
 Health findings are live snapshot evidence rather than acknowledgements or retained alerts. They
-disappear automatically after a later ingress report no longer meets the condition. **Clear
-resolved** requests a fresh server snapshot immediately; it removes resolved findings but cannot
-hide an active condition. The page also refreshes while it remains visible.
+disappear automatically after a later ingress report no longer meets the condition. The refresh
+button requests a current snapshot immediately, but an active finding cannot be dismissed from the
+Health page. Acknowledging a delivered alert belongs to the notification inbox rather than changing
+server health evidence.
 
 ## Operational intervals
 

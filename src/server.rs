@@ -12683,11 +12683,12 @@ mod tests {
         assert_eq!(health.totals.reconnects, 2);
         assert_eq!(health.totals.drops, 3);
         assert_eq!(health.totals.errors, 4);
-        assert!(health.issues.iter().any(|issue| {
-            issue
-                .message
-                .contains("frame-arrival jitter P99 is 600.0 ms")
-        }));
+        assert!(
+            health
+                .issues
+                .iter()
+                .all(|issue| !issue.message.contains("frame-arrival jitter"))
+        );
         assert!(
             health
                 .issues
