@@ -8,6 +8,8 @@ import {
 	fetchLogStream as fetchAuthenticatedLogStream,
 	fetchMetricsSnapshot as fetchAuthenticatedMetricsSnapshot
 } from './api';
+import type { MqttSettingsUpdate } from './integrations';
+import { MqttControlClient } from './control-client-mqtt';
 import type {
 	AccessAuditEvent,
 	AccessConnectionState,
@@ -437,6 +439,7 @@ export class ControlClient {
 	};
 	#accessStateListeners = new Set<AccessStateListener>();
 	#notifications = new NotificationControlClient((command) => this.request(command));
+	#mqtt = new MqttControlClient((command) => this.request(command));
 	#system = new SystemControlClient(
 		(command) => this.request(command),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
@@ -510,6 +513,18 @@ export class ControlClient {
 
 	async getMetricsSnapshot(): Promise<string> {
 		return this.authenticatedHttp(() => fetchAuthenticatedMetricsSnapshot(this.#accessKey));
+	}
+
+	async getMqttIntegration() {
+		return this.#mqtt.get();
+	}
+
+	async updateMqttIntegration(update: MqttSettingsUpdate) {
+		return this.#mqtt.update(update);
+	}
+
+	async testMqttIntegration(update: MqttSettingsUpdate) {
+		return this.#mqtt.test(update);
 	}
 
 	async openLogStream(url: string, signal: AbortSignal): Promise<Response> {

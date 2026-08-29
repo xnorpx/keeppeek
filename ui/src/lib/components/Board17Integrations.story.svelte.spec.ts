@@ -43,7 +43,7 @@ describe('Board 17 Integrations story', () => {
 		]);
 	});
 
-	it('shows real operational endpoints without inventing configured integrations', async () => {
+	it('shows the configured MQTT 5 runtime and real operational endpoints', async () => {
 		await page.viewport(1440, 1000);
 		const { container } = await render(Board17IntegrationsStory);
 		const frame = container.querySelector<HTMLElement>('[data-paper-scenario]');
@@ -59,9 +59,10 @@ describe('Board 17 Integrations story', () => {
 		await expect
 			.element(page.getByRole('link', { name: 'Logs' }))
 			.toHaveAttribute('href', '/settings/logs');
+		await expect.element(page.getByText('MQTT 5', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('mqtts://broker.home:8883', { exact: true })).toBeVisible();
+		expect(frame!.textContent).toContain('retained health · QoS 1 · MQTT 5 only');
 		for (const absent of [
-			'https://home.lan:8123',
-			'mqtt://home.lan:1883',
 			'https://automation.lan/hooks/kp',
 			'https://ops.example.com/kp',
 			'1,402 MESSAGES TODAY',

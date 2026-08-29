@@ -23,6 +23,7 @@ use crate::{
         reolink::{PtzOp, ReolinkClient},
     },
     config::{self, Config, StorageMigration, StorageMigrationPaths, StorageToml},
+    event_forwarder::Handle as EventForwarderHandle,
     health::{
         CAMERA_HEALTH_CONTRACT_VERSION, CameraHealth, CameraHealthDimensions, CameraHealthEvidence,
         CameraHealthState, HealthIssue, HealthTotals, STREAM_REPORT_FRESHNESS_THRESHOLD_MS,
@@ -84,6 +85,7 @@ mod camera_discovery;
 mod event_search;
 mod health_snapshot;
 mod logging;
+mod mqtt_integration;
 mod runtime_configuration;
 mod stored_media;
 
@@ -293,7 +295,7 @@ impl ControlCommandError {
     }
 }
 
-const fn required_access_role(command: Option<&control_request::Command>) -> AccessRole {
+fn required_access_role(command: Option<&control_request::Command>) -> AccessRole {
     match command {
         Some(control_request::Command::CameraControlCommand(command)) => match command.action {
             Some(camera_control_command::Action::Ptz(_))
@@ -320,6 +322,20 @@ const fn required_access_role(command: Option<&control_request::Command>) -> Acc
             Some(server_command::Action::GetAccessSession(_)) => AccessRole::User,
             _ => AccessRole::Administrator,
         },
+        Some(control_request::Command::StateStoreCommand(command)) => {
+            let namespace = match &command.action {
+                Some(proto::state_store_command::Action::Get(request)) => &request.namespace,
+                Some(proto::state_store_command::Action::Put(request)) => &request.namespace,
+                Some(proto::state_store_command::Action::Delete(request)) => &request.namespace,
+                Some(proto::state_store_command::Action::Watch(request)) => &request.namespace,
+                Some(proto::state_store_command::Action::Unwatch(_)) | None => "",
+            };
+            if namespace == "keeppeek.integrations.mqtt" {
+                AccessRole::Administrator
+            } else {
+                AccessRole::User
+            }
+        }
         Some(
             control_request::Command::SubscribeMedia(_)
             | control_request::Command::SubscribeEvents(_)
@@ -327,7 +343,6 @@ const fn required_access_role(command: Option<&control_request::Command>) -> Acc
             | control_request::Command::Unsubscribe(_)
             | control_request::Command::StoredMediaCommand(_)
             | control_request::Command::GroupCommand(_)
-            | control_request::Command::StateStoreCommand(_)
             | control_request::Command::PublicationCommand(_)
             | control_request::Command::EventPublicationCommand(_)
             | control_request::Command::PublicationReport(_),
@@ -406,6 +421,10 @@ const fn sensitive_administrator_operation(
                 _ => None,
             }
         }
+        Some(control_request::Command::StateStoreCommand(command)) => match command.action {
+            Some(proto::state_store_command::Action::Put(_)) => Some("mqtt_configuration_update"),
+            _ => None,
+        },
         Some(control_request::Command::LoggingCommand(command)) => match command.action {
             Some(logging_command::Action::SetFilter(_)) => Some("logging_filter_update"),
             _ => None,
@@ -499,6 +518,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     }
                     Some(control_request::Command::RuntimeConfigurationCommand(command)) => {
                         runtime_configuration::dispatch(&self.state, command).map(Some)
+                    }
+                    Some(control_request::Command::StateStoreCommand(command)) => {
+                        mqtt_integration::dispatch(&self.state, command).map(Some)
                     }
                     Some(control_request::Command::HealthCommand(command)) => {
                         health_snapshot::dispatch(&self.state, &self.router_tx, command).map(Some)
@@ -669,6 +691,9 @@ impl ControlRequestHandler for ServerControlHandler {
         ];
         if self.state.notifications.is_some() {
             capability_ids.push("keeppeek.rules.v1".to_owned());
+        }
+        if self.state.event_forwarder.is_some() {
+            capability_ids.push("keeppeek.mqtt-forwarder.v1".to_owned());
         }
         capability_ids.push("keeppeek.identity.v1".to_owned());
         let access_session = if session_id.as_u64() == 0 {
@@ -1278,7 +1303,7 @@ impl ServerControlHandler {
             )
         })? {
             return if existing == stored_event {
-                Ok(())
+                self.forward_published_event(&existing, start_time_ms)
             } else {
                 Err(ControlCommandError::new(
                     proto::ErrorCode::Rejected,
@@ -1287,13 +1312,37 @@ impl ServerControlHandler {
                 ))
             };
         }
-        events.insert(stored_event).map_err(|error| {
+        events.insert(stored_event.clone()).map_err(|error| {
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
                 503,
                 format!("unable to store published event: {error}"),
             )
-        })
+        })?;
+        self.forward_published_event(&stored_event, start_time_ms)
+    }
+
+    fn forward_published_event(
+        &self,
+        event: &TimelineEvent,
+        occurred_at_ms: i64,
+    ) -> Result<(), ControlCommandError> {
+        let Some(forwarder) = &self.state.event_forwarder else {
+            return Ok(());
+        };
+        forwarder
+            .publish_timeline(
+                event,
+                crate::event_forwarder::model::EventTransition::Created,
+                occurred_at_ms,
+            )
+            .map_err(|error| {
+                ControlCommandError::new(
+                    proto::ErrorCode::Unavailable,
+                    503,
+                    format!("event was stored but MQTT forwarding is unavailable: {error}"),
+                )
+            })
     }
 
     fn camera_database(&self) -> Result<&CameraDatabase, ControlCommandError> {
@@ -8189,6 +8238,7 @@ pub struct ServerState {
     catalog: Option<RecordingCatalogHandle>,
     logging: Option<LoggingService>,
     notifications: Option<NotificationHandle>,
+    event_forwarder: Option<EventForwarderHandle>,
     started_at: Instant,
 }
 
@@ -8282,6 +8332,7 @@ impl ServerState {
             catalog: None,
             logging: None,
             notifications: None,
+            event_forwarder: None,
             started_at: Instant::now(),
         }
     }
@@ -8505,6 +8556,11 @@ impl ServerState {
 
     pub(crate) fn with_notifications(mut self, notifications: NotificationHandle) -> Self {
         self.notifications = Some(notifications);
+        self
+    }
+
+    pub(crate) fn with_event_forwarder(mut self, event_forwarder: EventForwarderHandle) -> Self {
+        self.event_forwarder = Some(event_forwarder);
         self
     }
 }
@@ -10691,9 +10747,14 @@ fn server_health(
 }
 
 fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerState) -> Response {
-    match crate::metrics::encode_health_with_access(
+    let mqtt = state
+        .event_forwarder
+        .as_ref()
+        .map(EventForwarderHandle::status);
+    match crate::metrics::encode_health_with_access_and_mqtt(
         &server_health(router_tx, state),
         Some(access_metrics_snapshot(state)),
+        mqtt.as_ref(),
     ) {
         Ok(metrics) => Response::from_data(
             "text/plain; version=0.0.4; charset=utf-8",
@@ -12688,7 +12749,22 @@ mod tests {
                 duration_ms: Some(60_000),
             });
 
-        let metrics = crate::metrics::encode_health(&health).unwrap();
+        let mqtt = crate::event_forwarder::MqttStatus {
+            enabled: true,
+            state: crate::event_forwarder::MqttConnectionState::Connected,
+            detail: "MQTT 5 broker is connected.".to_owned(),
+            connected_at_ms: Some(1_786_800_000_000),
+            last_received_at_ms: Some(1_786_800_001_000),
+            last_delivered_at_ms: Some(1_786_800_002_000),
+            pending_items: 2,
+            pending_bytes: 2_048,
+            oldest_unacknowledged_timestamp_ms: Some(1_786_800_001_000),
+            retry_count: 3,
+            duplicate_count: 4,
+            outbox_limit_bytes: 67_108_864,
+        };
+        let metrics =
+            crate::metrics::encode_health_with_access_and_mqtt(&health, None, Some(&mqtt)).unwrap();
         assert!(metrics.contains("state=\"starting\""));
         assert!(!metrics.contains("keeppeek_camera_online"));
         assert!(!metrics.contains("keeppeek_camera_degraded"));
@@ -12696,6 +12772,11 @@ mod tests {
         assert!(metrics.contains("keeppeek_operational_event_active"));
         assert!(metrics.contains("kind=\"recording_interrupted\""));
         assert!(metrics.contains("severity=\"critical\""));
+        assert!(metrics.contains("keeppeek_mqtt_forwarder_connected 1"));
+        assert!(metrics.contains("keeppeek_mqtt_forwarder_outbox_items 2"));
+        assert!(metrics.contains("keeppeek_mqtt_forwarder_outbox_bytes 2048"));
+        assert!(metrics.contains("keeppeek_mqtt_forwarder_retries_total 3"));
+        assert!(metrics.contains("keeppeek_mqtt_forwarder_duplicates_total 4"));
         let proto = health_snapshot::proto_health_snapshot(health);
         assert_eq!(
             proto.health_contract_version,
@@ -13076,6 +13157,12 @@ mod tests {
             control_request::Command::RuntimeConfigurationCommand(
                 proto::RuntimeConfigurationCommand::default(),
             ),
+            control_request::Command::StateStoreCommand(proto::StateStoreCommand {
+                action: Some(proto::state_store_command::Action::Get(proto::GetState {
+                    namespace: "keeppeek.integrations.mqtt".to_owned(),
+                    key: "configuration".to_owned(),
+                })),
+            }),
             control_request::Command::LoggingCommand(proto::LoggingCommand::default()),
             control_request::Command::ServerCommand(proto::ServerCommand::default()),
             control_request::Command::HealthCommand(proto::HealthCommand::default()),

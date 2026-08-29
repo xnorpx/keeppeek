@@ -702,8 +702,8 @@
 			"worldX": -690,
 			"worldY": 5200,
 			"source": "boards/17-settings-integrations.jsx.txt",
-			"bytes": 36566,
-			"sha256": "56ad6e6d5f7d4c623f7645ac3d5ee47ee867d188f7844e7743674ae30ada23a5",
+			"bytes": 36448,
+			"sha256": "34e1d04b3d5b8ab5f59ae3b4cdf7a330421c9bf8ace3d64bf1f934aa3cd0f5a0",
 			"references": [
 				{
 					"nodeId": "2UL-0",
@@ -714,20 +714,20 @@
 					"height": 869,
 					"theme": "dark",
 					"fixture": "settings.integrations",
-					"bytes": 207526,
-					"sha256": "bdd8ccd79fcebc11497e7b71a9259c2ba6a7e8f45f7940c90e29bcfc868af8f1",
+					"bytes": 202843,
+					"sha256": "a78ebb32d7b258797f121e129c24ef084314979a9ddd7e4eab66969c74e6a508",
 					"paperOverlay": {
 						"status": "candidate",
-						"reviewedAt": "2026-08-20",
+						"reviewedAt": "2026-08-28",
 						"comparisonThreshold": 16,
-						"mismatchPixels": 77517,
+						"mismatchPixels": 84524,
 						"totalPixels": 1251360,
 						"highContrastThreshold": 64,
-						"highContrastMismatchPixels": 42463,
+						"highContrastMismatchPixels": 46634,
 						"blockers": [
-							"HealthCommand, /logs, /metrics, exact-origin CORS, and Bearer access exist, but no external integration configuration or health state can be inferred from them.",
 							"The Home Assistant card package, per-key token scope registry, origin editor, and token rotation command are unavailable.",
-							"MQTT forwarding, webhook endpoint/signing/retry runtime, Prometheus scrape configuration, and external collector health evidence are unavailable."
+							"Webhook endpoint/signing/retry runtime, Prometheus scrape configuration, and external collector health evidence remain unavailable.",
+							"The visual harness includes its deterministic-fixture banner while the Paper shell starts at the Settings context bar."
 						]
 					}
 				}

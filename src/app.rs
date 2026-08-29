@@ -9,6 +9,7 @@ use crate::{
     camera_database::CameraDatabase,
     cameras,
     config::{self, Config},
+    event_forwarder::Runtime as EventForwarderRuntime,
     keeppeek::KeepPeekLoop,
     logging::LoggingService,
     notifications::{HealthMonitor as NotificationHealthMonitor, Runtime as NotificationRuntime},
@@ -141,6 +142,16 @@ pub fn run(
         storage_config.event_thumbnail_max_bytes,
     )?;
     let operational_event_store = event_store.clone();
+    let event_forwarder_path = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("mqtt-forwarder.db");
+    let event_forwarder = EventForwarderRuntime::open(
+        cfg.event_forwarder.mqtt.clone(),
+        &event_forwarder_path,
+        shutdown.clone(),
+    )?;
+    let event_forwarder_handle = event_forwarder.handle();
     let notification_path = config_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -174,7 +185,9 @@ pub fn run(
     .with_recording_catalog(recording_catalog.handle())
     .with_recording_health(recording_health)
     .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
-    let server_state = server_state.with_notifications(notification_handle.clone());
+    let server_state = server_state
+        .with_notifications(notification_handle.clone())
+        .with_event_forwarder(event_forwarder_handle.clone());
 
     let (mut router, router_tx) = Router::new()?;
     for camera in cameras.values() {
@@ -202,6 +215,7 @@ pub fn run(
     keeppeek.set_health_registry(health_registry);
     keeppeek.set_status_sender(router_tx.clone());
     keeppeek.set_notifications(notification_handle.clone());
+    keeppeek.set_event_forwarder(event_forwarder_handle.clone());
     if let Some(battery_wake) = &battery_wake {
         keeppeek.set_battery_wake(battery_wake.handle());
     }
@@ -222,6 +236,7 @@ pub fn run(
         cfg.operational_events,
         operational_event_store,
         notification_handle,
+        event_forwarder_handle,
         shutdown.clone(),
         move || camera_health_snapshots(&operational_router, &operational_state),
     )?;
@@ -262,6 +277,7 @@ pub fn run(
     }
 
     operational_events.join();
+    event_forwarder.join();
     notification_health.join();
     notification_runtime.shutdown();
     tracing::info!("flushing and finalizing all recordings...");

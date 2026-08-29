@@ -7,6 +7,7 @@ pub(crate) mod camera_database;
 pub mod cameras;
 pub mod client;
 pub mod config;
+mod event_forwarder;
 pub mod health;
 pub mod keeppeek;
 pub mod logging;

@@ -2,20 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { integrationsEvidence } from '$lib/integrations';
 
 describe('integration evidence', () => {
-	it('keeps every authored integration disconnected without runtime evidence', () => {
+	it('exposes only the implemented MQTT configuration and health runtime', () => {
 		const evidence = integrationsEvidence();
 
 		expect(evidence.connectedCount).toBeNull();
 		expect(evidence.configuredCount).toBeNull();
 		expect(evidence.integrations).toHaveLength(4);
 		expect(
+			evidence.integrations.find((integration) => integration.id === 'mqtt-forwarder')
+		).toMatchObject({
+			configurationRuntime: 'available',
+			healthRuntime: 'available',
+			implementedEndpoint: '/integrations/mqtt'
+		});
+		expect(
 			evidence.integrations
-				.filter((integration) => integration.id !== 'prometheus')
+				.filter((integration) => !['mqtt-forwarder', 'prometheus'].includes(integration.id))
 				.every(
 					(integration) =>
 						integration.configurationRuntime === 'unavailable' &&
-						integration.healthRuntime === 'unavailable' &&
-						integration.implementedEndpoint === null
+						integration.healthRuntime === 'unavailable'
 				)
 		).toBe(true);
 	});

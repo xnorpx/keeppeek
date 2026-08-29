@@ -50,6 +50,16 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Test failures never enable a rule; retry count and last response remain visible'
 	},
+	'keeppeek.mqtt-forwarder.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'MQTT 5 configuration, write-only credentials, broker tests, bounded durable delivery, retries, and health',
+		unlocks: 'MQTT 5 event forwarding configuration and delivery status',
+		whenMissing:
+			'The integration remains read-only and no broker connection state is inferred from generated types',
+		failureGuarantee:
+			'Camera ingest remains independent; failed delivery stays visible and bounded in the durable outbox'
+	},
 	'keeppeek.group-admin.v1': {
 		delivery: 'target',
 		serverOwns:

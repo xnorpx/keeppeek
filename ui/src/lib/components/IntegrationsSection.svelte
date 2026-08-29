@@ -8,6 +8,7 @@
 	import RadioTowerIcon from '@lucide/svelte/icons/radio-tower';
 	import WebhookIcon from '@lucide/svelte/icons/webhook';
 	import IntegrationsPaperFrame from './IntegrationsPaperFrame.svelte';
+	import MqttIntegrationPanel from './MqttIntegrationPanel.svelte';
 
 	type Props = {
 		paperFrame?: boolean;
@@ -42,9 +43,8 @@
 					Everything has an explicit egress boundary
 				</h2>
 				<p class="mt-1 text-sm leading-6 text-text-muted">
-					Four integration architectures are designed, but none has a configuration or health
-					runtime in this server build. No connection state is inferred from documentation or
-					generated types.
+					MQTT forwarding has a durable runtime and explicit broker health. Other integration states
+					remain unavailable until their own contracts are implemented.
 				</p>
 			</div>
 			<span
@@ -56,61 +56,69 @@
 
 		<div class="divide-y divide-hairline">
 			{#each evidence.integrations as integration (integration.id)}
-				{@const Icon = icons[integration.id]}
-				<article class="grid gap-4 p-5 lg:grid-cols-[17rem_minmax(0,1fr)_17rem] lg:items-start">
-					<div>
-						<div class="flex items-center gap-2">
-							<span
-								class="grid size-8 place-items-center rounded-sm border border-hairline bg-raised text-primary-soft"
+				{#if integration.id === 'mqtt-forwarder'}
+					<MqttIntegrationPanel />
+				{:else}
+					{@const Icon = icons[integration.id]}
+					<article class="grid gap-4 p-5 lg:grid-cols-[17rem_minmax(0,1fr)_17rem] lg:items-start">
+						<div>
+							<div class="flex items-center gap-2">
+								<span
+									class="grid size-8 place-items-center rounded-sm border border-hairline bg-raised text-primary-soft"
+								>
+									<Icon class="size-4" />
+								</span>
+								<div>
+									<h3 class="text-base font-semibold">{integration.label}</h3>
+									<p class="font-mono text-2xs tracking-caps text-text-faint">
+										RUNTIME UNAVAILABLE
+									</p>
+								</div>
+							</div>
+							<button
+								type="button"
+								class="mt-3 h-8 rounded-sm border border-hairline bg-raised px-3 text-xs text-text-muted disabled:cursor-not-allowed"
+								disabled
 							>
-								<Icon class="size-4" />
-							</span>
-							<div>
-								<h3 class="text-base font-semibold">{integration.label}</h3>
-								<p class="font-mono text-2xs tracking-caps text-text-faint">RUNTIME UNAVAILABLE</p>
-							</div>
+								Configuration unavailable
+							</button>
 						</div>
-						<button
-							type="button"
-							class="mt-3 h-8 rounded-sm border border-hairline bg-raised px-3 text-xs text-text-muted disabled:cursor-not-allowed"
-							disabled
-						>
-							Configuration unavailable
-						</button>
-					</div>
 
-					<div class="space-y-3">
-						<div>
-							<p class="font-mono text-2xs tracking-caps text-text-faint">ARCHITECTURE</p>
-							<p class="mt-1 text-sm text-foreground">{integration.architecture}</p>
-						</div>
-						<div>
-							<p class="font-mono text-2xs tracking-caps text-text-faint">WHAT WOULD LEAVE</p>
-							<p class="mt-1 text-xs leading-5 text-text-muted">{integration.egress}</p>
-						</div>
-						{#if integration.implementedEndpoint}
+						<div class="space-y-3">
 							<div>
-								<p class="font-mono text-2xs tracking-caps text-text-faint">IMPLEMENTED ENDPOINT</p>
-								<p class="mt-1 font-mono text-xs text-foreground">
-									{integration.implementedEndpoint}
-								</p>
+								<p class="font-mono text-2xs tracking-caps text-text-faint">ARCHITECTURE</p>
+								<p class="mt-1 text-sm text-foreground">{integration.architecture}</p>
 							</div>
-						{/if}
-					</div>
-
-					<div class="rounded-sm border border-activity/45 bg-activity/5 px-3 py-3">
-						<div class="flex items-center gap-2 font-mono text-2xs tracking-caps text-activity">
-							<CircleAlertIcon class="size-3.5" /> MISSING CONTRACTS
+							<div>
+								<p class="font-mono text-2xs tracking-caps text-text-faint">WHAT WOULD LEAVE</p>
+								<p class="mt-1 text-xs leading-5 text-text-muted">{integration.egress}</p>
+							</div>
+							{#if integration.implementedEndpoint}
+								<div>
+									<p class="font-mono text-2xs tracking-caps text-text-faint">
+										IMPLEMENTED ENDPOINT
+									</p>
+									<p class="mt-1 font-mono text-xs text-foreground">
+										{integration.implementedEndpoint}
+									</p>
+								</div>
+							{/if}
 						</div>
-						<ul class="mt-2 space-y-1 text-xs text-text-muted">
-							{#each integration.prerequisites as prerequisite (prerequisite)}
-								<li class="flex gap-2">
-									<span aria-hidden="true">·</span><span>{prerequisite}</span>
-								</li>
-							{/each}
-						</ul>
-					</div>
-				</article>
+
+						<div class="rounded-sm border border-activity/45 bg-activity/5 px-3 py-3">
+							<div class="flex items-center gap-2 font-mono text-2xs tracking-caps text-activity">
+								<CircleAlertIcon class="size-3.5" /> MISSING CONTRACTS
+							</div>
+							<ul class="mt-2 space-y-1 text-xs text-text-muted">
+								{#each integration.prerequisites as prerequisite (prerequisite)}
+									<li class="flex gap-2">
+										<span aria-hidden="true">·</span><span>{prerequisite}</span>
+									</li>
+								{/each}
+							</ul>
+						</div>
+					</article>
+				{/if}
 			{/each}
 		</div>
 
