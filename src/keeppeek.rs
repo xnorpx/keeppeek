@@ -2,6 +2,7 @@ use crate::{
     api::{CameraId, CameraLifecycle, CameraStatus},
     battery_wake::BatteryWakeHandle,
     cameras::{AudioEncoding, Camera, CameraBackend, CameraTransport, VideoEncoding},
+    event_forwarder::{Handle as EventForwarderHandle, model::EventTransition},
     notifications::{
         Handle as NotificationHandle, Lifecycle as NotificationLifecycle,
         Stage as NotificationStage,
@@ -296,6 +297,7 @@ pub struct KeepPeekLoop {
     battery_uids: HashMap<IpAddr, String>,
     battery_wake: Option<BatteryWakeHandle>,
     notifications: Option<NotificationHandle>,
+    event_forwarder: Option<EventForwarderHandle>,
     camera_names: HashMap<String, String>,
 }
 
@@ -319,6 +321,7 @@ impl KeepPeekLoop {
             battery_uids: HashMap::new(),
             battery_wake: None,
             notifications: None,
+            event_forwarder: None,
             camera_names: HashMap::new(),
         }
     }
@@ -351,6 +354,10 @@ impl KeepPeekLoop {
 
     pub(crate) fn set_notifications(&mut self, notifications: NotificationHandle) {
         self.notifications = Some(notifications);
+    }
+
+    pub(crate) fn set_event_forwarder(&mut self, event_forwarder: EventForwarderHandle) {
+        self.event_forwarder = Some(event_forwarder);
     }
 
     fn expect_stream(&mut self, camera_ip: IpAddr, camera_name: Option<&str>, stream: StreamKind) {
@@ -898,6 +905,23 @@ impl KeepPeekLoop {
         attachment_path: Option<&std::path::Path>,
         occurred_at_ms: i64,
     ) {
+        if let Some(event_forwarder) = &self.event_forwarder {
+            let transition = match trigger {
+                Trigger::EventCreated => EventTransition::Created,
+                Trigger::EventUpdated => EventTransition::Updated,
+                Trigger::EventEnded => EventTransition::Ended,
+                _ => EventTransition::Updated,
+            };
+            if let Err(error) = event_forwarder.publish_timeline(event, transition, occurred_at_ms)
+            {
+                tracing::warn!(
+                    event_id = %event.id,
+                    revision = event.revision,
+                    %error,
+                    "unable to enqueue event revision for MQTT forwarding"
+                );
+            }
+        }
         let Some(notifications) = &self.notifications else {
             return;
         };

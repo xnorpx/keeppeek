@@ -3,8 +3,8 @@ export type IntegrationEvidence = {
 	label: string;
 	architecture: string;
 	egress: string;
-	configurationRuntime: 'unavailable';
-	healthRuntime: 'unavailable';
+	configurationRuntime: 'available' | 'unavailable';
+	healthRuntime: 'available' | 'unavailable';
 	implementedEndpoint: string | null;
 	prerequisites: readonly string[];
 };
@@ -22,13 +22,13 @@ const integrations = Object.freeze<IntegrationEvidence[]>([
 	},
 	{
 		id: 'mqtt-forwarder',
-		label: 'MQTT event forwarder',
-		architecture: 'Separate durable service subscribes to events and publishes to a broker.',
-		egress: 'Events and selected attachments would leave through the forwarder.',
-		configurationRuntime: 'unavailable',
-		healthRuntime: 'unavailable',
-		implementedEndpoint: null,
-		prerequisites: ['event subscription runtime', 'stored-event backfill', 'forwarder binary']
+		label: 'MQTT 5 event forwarder',
+		architecture: 'A supervised durable runtime publishes committed events to an MQTT 5 broker.',
+		egress: 'Normalized event revisions and selected health changes leave through the forwarder.',
+		configurationRuntime: 'available',
+		healthRuntime: 'available',
+		implementedEndpoint: '/integrations/mqtt',
+		prerequisites: []
 	},
 	{
 		id: 'webhooks',
@@ -69,3 +69,57 @@ export function integrationsEvidence(): IntegrationsEvidence {
 		thirdPartyMediaRelay: false
 	};
 }
+
+export type MqttConnectionState =
+	'disabled' | 'connecting' | 'connected' | 'degraded' | 'outbox_full';
+
+export type MqttConfiguration = {
+	enabled: boolean;
+	broker_url: string;
+	client_id: string;
+	instance_id: string;
+	forwarder_id: string;
+	topic_prefix: string;
+	username: string | null;
+	password_configured: boolean;
+	tls_ca_path: string | null;
+	qos: number;
+	retain_events: boolean;
+	retain_health: boolean;
+	outbox_max_mb: number;
+	retry_min_ms: number;
+	retry_max_ms: number;
+};
+
+export type MqttStatus = {
+	enabled: boolean;
+	state: MqttConnectionState;
+	detail: string;
+	connected_at_ms: number | null;
+	last_received_at_ms: number | null;
+	last_delivered_at_ms: number | null;
+	pending_items: number;
+	pending_bytes: number;
+	oldest_unacknowledged_timestamp_ms: number | null;
+	retry_count: number;
+	duplicate_count: number;
+	outbox_limit_bytes: number;
+};
+
+export type MqttIntegration = {
+	configuration: MqttConfiguration;
+	status: MqttStatus;
+	configuration_revision: string;
+};
+
+export type MqttSettingsUpdate = Omit<MqttConfiguration, 'password_configured'> & {
+	password?: string;
+	clear_password?: boolean;
+	expected_configuration_revision?: string;
+};
+
+export type MqttTestResult = {
+	ok: boolean;
+	kind: 'authentication' | 'tls' | 'network' | 'protocol' | 'timeout' | null;
+	detail: string;
+};

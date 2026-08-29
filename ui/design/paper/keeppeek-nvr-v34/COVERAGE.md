@@ -193,9 +193,9 @@ Scenario capability IDs: `keeppeek.identity.v1`<br>`keeppeek.media-export.v1`
 Scenario capability IDs: None
 
 - `settings.desktop.integrations`
-  - HealthCommand, /logs, /metrics, exact-origin CORS, and Bearer access exist, but no external integration configuration or health state can be inferred from them.
   - The Home Assistant card package, per-key token scope registry, origin editor, and token rotation command are unavailable.
-  - MQTT forwarding, webhook endpoint/signing/retry runtime, Prometheus scrape configuration, and external collector health evidence are unavailable.
+  - Webhook endpoint/signing/retry runtime, Prometheus scrape configuration, and external collector health evidence remain unavailable.
+  - The visual harness includes its deterministic-fixture banner while the Paper shell starts at the Settings context bar.
 
 ### 18 Settings: notifications
 

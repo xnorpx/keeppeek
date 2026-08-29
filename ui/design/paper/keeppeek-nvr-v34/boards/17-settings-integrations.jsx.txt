@@ -158,19 +158,19 @@
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px' }}>
                   <div style={{ backgroundColor: 'var(--color-healthy)', borderRadius: 'var(--radius-full)', boxSizing: 'border-box', flexShrink: '0', height: '8px', width: '8px' }} />
                   <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '18px', fontWeight: 600, lineHeight: '22px' }}>
-                    MQTT
+                    MQTT 5
                   </div>
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.08em', lineHeight: '14px' }}>
-                  CONNECTED · 1,402 MESSAGES TODAY
+                  CONNECTED · MQTT 5 · QOS 1
                 </div>
                 <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '155%' }}>
-                  Every event and every camera state change, published as it happens. Retained topics carry current state so a subscriber that starts late is not blind.
+                  Committed event revisions and camera health transitions, delivered durably. Retained status lets late subscribers see current forwarder health.
                 </div>
                 <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '10px', paddingTop: '4px' }}>
                   <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '30px', paddingInline: '12px', width: 'fit-content' }}>
                     <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                      Edit broker · Server update required
+                      Edit broker · Applies live
                     </div>
                   </div>
                 </div>
@@ -183,7 +183,7 @@
                     </div>
                     <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', paddingInline: '10px' }}>
                       <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '13px', lineHeight: '16px' }}>
-                        mqtt://home.lan:1883
+                        mqtts://broker.home:8883
                       </div>
                     </div>
                   </div>
@@ -199,7 +199,7 @@
                   </div>
                   <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '6px', width: '253px' }}>
                     <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '11px', letterSpacing: '0.12em', lineHeight: '14px' }}>
-                      QOS
+                      MQTT 5 QOS
                     </div>
                     <div style={{ borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', overflow: 'clip' }}>
                       <div style={{ alignContent: 'center', boxSizing: 'border-box', color: 'var(--color-text-muted)', display: 'flex', flexShrink: '0', flexWrap: 'wrap', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', justifyContent: 'center', lineHeight: '16px', textAlign: 'center', width: '84px' }}>
@@ -220,7 +220,7 @@
                   </div>
                   <div style={{ backgroundColor: 'var(--color-raised)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', paddingBlock: '12px', paddingInline: '14px' }}>
                     <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '12px', lineHeight: '20px', whiteSpace: 'pre', width: 'max-content' }}>
-                      keeppeek/<camera>/event{'          '}person_detected, vehicle, motion …<br />keeppeek/<camera>/state{'          '}connected | degraded | reconnecting | stopped<br />keeppeek/<camera>/snapshot{'       '}raw JPEG, when the event carried one<br />keeppeek/server/health{'           '}retained, mirrors the issues list
+                      keeppeek/home-nvr/sources/<source>/events/<type><br />{'  '}JSON revision · correlation data = stable event ID<br />keeppeek/home-nvr/forwarders/mqtt/status<br />{'  '}retained health · QoS 1 · MQTT 5 only
                     </div>
                   </div>
                 </div>

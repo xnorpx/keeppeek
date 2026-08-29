@@ -1,3 +1,4 @@
+use crate::event_forwarder::{MqttConnectionState, MqttStatus};
 use crate::health::ServerHealthResponse;
 use prometheus_client::{
     encoding::{EncodeLabelSet, text::encode_registry},
@@ -79,14 +80,10 @@ pub struct AccessMetricsSnapshot {
     pub(crate) active_credentials: u64,
 }
 
-#[cfg(test)]
-pub fn encode_health(health: &ServerHealthResponse) -> Result<String, std::fmt::Error> {
-    encode_health_with_access(health, None)
-}
-
-pub fn encode_health_with_access(
+pub fn encode_health_with_access_and_mqtt(
     health: &ServerHealthResponse,
     access: Option<AccessMetricsSnapshot>,
+    mqtt: Option<&MqttStatus>,
 ) -> Result<String, std::fmt::Error> {
     let mut registry = Registry::with_prefix("keeppeek");
 
@@ -563,9 +560,83 @@ pub fn encode_health_with_access(
         );
     }
 
+    if let Some(mqtt) = mqtt {
+        register_gauge(
+            &mut registry,
+            "mqtt_forwarder_enabled",
+            "Whether MQTT 5 event forwarding is enabled",
+            u64::from(mqtt.enabled),
+        );
+        register_gauge(
+            &mut registry,
+            "mqtt_forwarder_connected",
+            "Whether the MQTT 5 broker connection is healthy",
+            u64::from(mqtt.state == MqttConnectionState::Connected),
+        );
+        register_gauge(
+            &mut registry,
+            "mqtt_forwarder_outbox_items",
+            "Durable MQTT publications awaiting broker acknowledgement",
+            mqtt.pending_items,
+        );
+        register_gauge(
+            &mut registry,
+            "mqtt_forwarder_outbox_bytes",
+            "Bytes held by durable MQTT publications awaiting acknowledgement",
+            mqtt.pending_bytes,
+        );
+        register_gauge(
+            &mut registry,
+            "mqtt_forwarder_outbox_limit_bytes",
+            "Configured MQTT durable outbox byte limit",
+            mqtt.outbox_limit_bytes,
+        );
+        register_counter(
+            &mut registry,
+            "mqtt_forwarder_retries",
+            "MQTT connection and publication retries",
+            mqtt.retry_count,
+        );
+        register_counter(
+            &mut registry,
+            "mqtt_forwarder_duplicates",
+            "Event revisions already known to the MQTT outbox or receipt ledger",
+            mqtt.duplicate_count,
+        );
+        register_optional_timestamp(
+            &mut registry,
+            "mqtt_forwarder_last_received_timestamp_seconds",
+            "Unix timestamp of the last event revision accepted by the MQTT outbox",
+            mqtt.last_received_at_ms,
+        );
+        register_optional_timestamp(
+            &mut registry,
+            "mqtt_forwarder_last_delivered_timestamp_seconds",
+            "Unix timestamp of the last broker-acknowledged MQTT publication",
+            mqtt.last_delivered_at_ms,
+        );
+        register_optional_timestamp(
+            &mut registry,
+            "mqtt_forwarder_oldest_unacknowledged_timestamp_seconds",
+            "Unix event timestamp of the oldest unacknowledged MQTT publication",
+            mqtt.oldest_unacknowledged_timestamp_ms,
+        );
+    }
+
     let mut output = String::new();
     encode_registry(&mut output, &registry)?;
     Ok(output)
+}
+
+fn register_optional_timestamp(
+    registry: &mut Registry,
+    name: &'static str,
+    help: &'static str,
+    timestamp_ms: Option<i64>,
+) {
+    let gauge = FloatGauge::default();
+    gauge.set(timestamp_ms.map_or(0.0, |value| value as f64 / 1_000.0));
+    registry.register(name, help, gauge);
 }
 
 fn register_camera_metrics(registry: &mut Registry, health: &ServerHealthResponse) {

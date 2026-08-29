@@ -124,6 +124,8 @@ import {
 	StorageHealthSnapshotSchema,
 	StorageSafetyHealthSnapshotSchema,
 	StorageWriteProbeResultSchema,
+	StateEntrySchema,
+	StateStoreResultSchema,
 	StreamHealthSnapshotSchema,
 	StreamHealthDimensionsSnapshotSchema,
 	SystemHealthSnapshotSchema,
@@ -161,6 +163,11 @@ import type {
 	NotificationRuleDefinition,
 	NotificationRuleRecord
 } from '../../src/lib/notifications';
+import type {
+	MqttIntegration,
+	MqttSettingsUpdate,
+	MqttTestResult
+} from '../../src/lib/integrations';
 
 type DeepPartial<T> = T extends readonly (infer Item)[]
 	? DeepPartial<Item>[]
@@ -303,6 +310,8 @@ export type ControlRequests = {
 	exportJobs: ExportControlRequest[];
 	streamProbes: Array<{ ip: string; onvifPort: number | null }>;
 	notificationActions: string[];
+	mqttUpdates: MqttSettingsUpdate[];
+	mqttTests: MqttSettingsUpdate[];
 };
 
 export type MockControlPeerOptions = {
@@ -333,6 +342,9 @@ export type MockControlPeerOptions = {
 	runtimeUpdateResult?: SettingsConfigUpdateResponse;
 	runtimeUpdateError?: string;
 	runtimeUpdateGate?: Promise<void>;
+	mqttIntegration?: MqttIntegration;
+	mqttUpdateResult?: MqttIntegration;
+	mqttTestResult?: MqttTestResult;
 	storageWriteProbe?: { writable: boolean; detail: string };
 	cameras?: readonly CameraListItem[];
 	healthGate?: Promise<void>;
@@ -384,6 +396,54 @@ function encodedError(requestId: bigint, message: string): number[] {
 		}
 	});
 	return Array.from(toBinary(ControlEnvelopeSchema, response));
+}
+
+function encodedMqttState(
+	requestId: bigint,
+	integration: MqttIntegration,
+	key: string,
+	schema: string
+): number[] {
+	const { configuration_revision: revision, ...value } = integration;
+	return encodedOk(requestId, {
+		case: 'stateStoreResult',
+		value: create(StateStoreResultSchema, {
+			result: {
+				case: 'entry',
+				value: create(StateEntrySchema, {
+					namespace: 'keeppeek.integrations.mqtt',
+					key,
+					schema,
+					value,
+					revision: BigInt(revision),
+					ownerId: 'server'
+				})
+			}
+		})
+	});
+}
+
+function encodedMqttTest(
+	requestId: bigint,
+	integration: MqttIntegration | undefined,
+	result: MqttTestResult
+): number[] {
+	return encodedOk(requestId, {
+		case: 'stateStoreResult',
+		value: create(StateStoreResultSchema, {
+			result: {
+				case: 'entry',
+				value: create(StateEntrySchema, {
+					namespace: 'keeppeek.integrations.mqtt',
+					key: 'test',
+					schema: 'keeppeek.mqtt-test-result.v1',
+					value: result,
+					revision: BigInt(integration?.configuration_revision ?? '1'),
+					ownerId: 'server'
+				})
+			}
+		})
+	});
 }
 
 function encodedNotificationConflict(
@@ -538,7 +598,9 @@ export async function mockControlPeer(
 		cancelledEventMedia: [],
 		maxConcurrentEventMedia: 0,
 		exportJobs: [],
-		notificationActions: []
+		notificationActions: [],
+		mqttUpdates: [],
+		mqttTests: []
 	};
 	let activeFilter = 'info,keeppeek=debug';
 	let activeDiscoveryId = '';
@@ -568,6 +630,9 @@ export async function mockControlPeer(
 	let notificationInbox: NotificationInbox = structuredClone(
 		options.notificationInbox ?? { items: [], unreadCount: 0n }
 	);
+	let mqttIntegration = options.mqttIntegration
+		? structuredClone(options.mqttIntegration)
+		: undefined;
 	const notificationHistory = structuredClone(options.notificationHistory ?? []);
 	const accessRole =
 		options.accessRole === 'user' ? ProtoAccessRole.USER : ProtoAccessRole.ADMINISTRATOR;
@@ -636,6 +701,44 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'unsubscribe') {
 			return encodedOk(request.requestId, undefined);
+		}
+		if (request.command.case === 'stateStoreCommand') {
+			const action = request.command.value.action;
+			if (action.case === 'get' && action.value.namespace === 'keeppeek.integrations.mqtt') {
+				if (!mqttIntegration)
+					return encodedError(request.requestId, 'MQTT state is not configured');
+				return encodedMqttState(
+					request.requestId,
+					mqttIntegration,
+					'configuration',
+					'keeppeek.mqtt-configuration.v1'
+				);
+			}
+			if (action.case === 'put' && action.value.namespace === 'keeppeek.integrations.mqtt') {
+				const update = action.value.value as unknown as MqttSettingsUpdate;
+				if (action.value.key === 'configuration') {
+					requests.mqttUpdates.push(update);
+					mqttIntegration = options.mqttUpdateResult ?? mqttIntegration;
+					if (!mqttIntegration)
+						return encodedError(request.requestId, 'MQTT update is not configured');
+					return encodedMqttState(
+						request.requestId,
+						mqttIntegration,
+						'configuration',
+						'keeppeek.mqtt-configuration.v1'
+					);
+				}
+				if (action.value.key === 'test') {
+					requests.mqttTests.push(update);
+					const result = options.mqttTestResult ?? {
+						ok: true,
+						kind: null,
+						detail: 'Connected and published a test status to the MQTT 5 broker.'
+					};
+					return encodedMqttTest(request.requestId, mqttIntegration, result);
+				}
+			}
+			return encodedError(request.requestId, 'unsupported state store request');
 		}
 		if (request.command.case === 'notificationRuleCommand') {
 			const action = request.command.value.action;

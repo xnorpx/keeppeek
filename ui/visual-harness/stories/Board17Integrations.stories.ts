@@ -9,7 +9,7 @@ const meta = {
 		docs: {
 			description: {
 				component:
-					'Board 17 integration architectures rendered from the production evidence owner, separating implemented operational endpoints from unavailable third-party configuration and health.'
+					'Board 17 integration architectures rendered from the production evidence owner, including MQTT 5 configuration and broker health.'
 			}
 		},
 		paper: {
@@ -19,11 +19,11 @@ const meta = {
 			frameId: '2UL-0',
 			scenarioId: 'settings.desktop.integrations',
 			reference: 'references/17-integrations.png',
-			referenceSha256: 'bdd8ccd79fcebc11497e7b71a9259c2ba6a7e8f45f7940c90e29bcfc868af8f1',
+			referenceSha256: 'a78ebb32d7b258797f121e129c24ef084314979a9ddd7e4eab66969c74e6a508',
 			exceptions: [
 				'HealthCommand, /logs, /metrics, exact-origin CORS, and Bearer access exist, but they do not prove an external integration is configured.',
 				'The Home Assistant card package, per-key token scope registry, origin editor, and token rotation command are unavailable.',
-				'MQTT forwarder, webhook registry/retry runtime, Prometheus scrape configuration, and external health evidence are unavailable.'
+				'Webhook registry/retry runtime, Prometheus scrape configuration, and external collector health evidence remain unavailable.'
 			]
 		}
 	}
