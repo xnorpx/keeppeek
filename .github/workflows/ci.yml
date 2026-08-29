@@ -222,6 +222,10 @@ jobs:
           echo "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1  target/yolo11n.pt" | sha256sum --check --strict
       - name: Build KeepPeek integration binaries
         run: cargo build -p keeppeek -p test-camera --bin keeppeek --bin test_camera
+      - name: Verify exported media with independent decoders
+        env:
+          KEEPPEEK_VALIDATE_EXPORT_MEDIA: "1"
+        run: cargo test server::tests::export_job_runs_reports_gaps_and_downloads_verified_file --lib
       - name: Publish a real Ultralytics detection to local KeepPeek
         working-directory: examples/object_detection_service
         env:

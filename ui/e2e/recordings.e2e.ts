@@ -22,8 +22,9 @@ test('shows fleet recording state, camera evidence, filters, and gap playback li
 	await expect(page.getByText('Recording degraded', { exact: true })).toBeVisible();
 	await expect(page.getByText('Paused by policy', { exact: true })).toBeVisible();
 	await expect(page.locator('[data-recording-camera-detail]')).toContainText('Front Door');
-	await expect(page.getByLabel('Fleet recording summary')).toContainText('NOT CONFIGURED');
-	await expect(page.getByText(/HEADROOM 800 GB · Selected finalized playable/)).toBeVisible();
+	await expect(page.locator('[data-recording-summary-metric]')).toHaveCount(7);
+	await expect(page.getByLabel('Fleet recording summary')).not.toContainText('NOT CONFIGURED');
+	await expect(page.getByText(/HEADROOM 800 GB · Selected finalized playable/)).toHaveCount(0);
 	await expect(page.locator('[data-recording-camera-detail]')).toContainText('340 MB / DAY');
 	await expect(page.locator('[data-recording-coverage-strip]')).toHaveAttribute(
 		'aria-label',
@@ -74,6 +75,8 @@ test('pages a 127-camera fleet without growing the recording dashboard DOM', asy
 
 	await page.goto('/recordings');
 
+	await expect(page.locator('[data-recording-summary-metric]')).toHaveCount(8);
+	await expect(page.getByLabel('Fleet recording summary')).toContainText('NOT CONFIGURED');
 	await expect(page.locator('[data-recording-camera]')).toHaveCount(25);
 	await expect(page.getByText('PAGE 1 · 127 CAMERAS')).toBeVisible();
 	await page.getByRole('button', { name: 'Next camera page' }).click();

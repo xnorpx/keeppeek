@@ -225,3 +225,7 @@ Recovery requires new positive evidence:
 Operational interval recovery uses this canonical projection. Delivery failure cannot change or
 close an interval because catalog persistence happens before notification publication and provider
 work runs independently from camera media.
+
+Use [Recording and evidence](./recording-and-evidence.md) to inspect retained coverage and explain
+gaps. Use [Notifications and integrations](./notifications-and-integrations.md) to deliver these
+operational transitions without coupling providers or brokers to camera ingest.

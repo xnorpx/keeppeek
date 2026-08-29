@@ -90,8 +90,14 @@ function coverageCamera(
 	const name =
 		cameraName ?? (index === 0 ? 'Front Door' : `Camera ${String(index + 1).padStart(3, '0')}`);
 	const state: RecordingCoverageState =
-		index === 0 ? 'degraded' : index === 2 ? 'paused_by_policy' : 'healthy';
-	const requested = state !== 'paused_by_policy';
+		index === 0
+			? 'degraded'
+			: index === 2
+				? 'paused_by_policy'
+				: index === 3
+					? 'not_configured'
+					: 'healthy';
+	const requested = state !== 'paused_by_policy' && state !== 'not_configured';
 	const gapMs = state === 'degraded' ? 10 * 60_000 : 0;
 	const rangeEnd = query.endMs - gapMs;
 	const duration = query.endMs - query.startMs;

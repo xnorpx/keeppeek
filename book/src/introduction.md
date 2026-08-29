@@ -1,6 +1,7 @@
 # KeepPeek
 
-> **Status:** KeepPeek is a proof of concept and is not yet production-ready.
+> **Status:** KeepPeek has completed its proof-of-concept gate and is undergoing MVP
+> qualification. It is not yet production-ready.
 
 KeepPeek is a local-first network video recorder and WebRTC media gateway for IP cameras. It runs
 on Linux, macOS, and Windows and keeps camera media on hardware controlled by the user without
@@ -13,7 +14,9 @@ The core service has a deliberately focused job:
 - store recordings as standard MP4 files;
 - provide live and recorded media through WebRTC;
 - keep camera, stream, recording, and server health observable;
-- accept and store events from supported cameras or independent services.
+- accept and store events from supported cameras or independent services;
+- locate, review, and export bounded evidence clips;
+- deliver rule-driven notifications and forward normalized events to MQTT.
 
 KeepPeek does not require object detection or another AI service to record and review video.
 Camera-native analytics can publish events directly, while optional inference, transcoding, home
@@ -44,6 +47,12 @@ with people.
   camera.
 - [Camera and stream health](./camera-health.md) defines the authoritative health model and evidence
   used across the server, API, metrics, and interface.
+- [Recording and evidence](./recording-and-evidence.md) explains recording policies, coverage,
+  event presentation, and durable evidence exports.
+- [Notifications and integrations](./notifications-and-integrations.md) covers server-owned rules,
+  Pushover delivery, MQTT 5 forwarding, retries, and failure isolation.
+- [Release readiness and known limitations](./release-readiness.md) separates automated checks from
+  the physical mixed-fleet and soak evidence required for MVP promotion.
 - [Demo videos](./demo-videos.md) shows complete workflows against the real application.
 - [Open source and licensing](./open-source-and-licensing.md) credits the projects KeepPeek builds
   on and explains the AGPL server and MIT API split.
