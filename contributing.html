@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-457ff45c.js";
+            window.path_to_searchindex_js = "searchindex-03358779.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a34402ce.js"></script>
+        <script src="toc-77b41682.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -284,6 +284,15 @@ with Bun from the public npm registry and do not create or commit an npm, pnpm, 
 <li>macOS or Linux: <code>./check.sh</code></li>
 <li>Windows: <code>.\check.bat</code></li>
 </ul>
+<p>Run the same gate with opt-in slow Rust test bodies before submitting a pull request:</p>
+<ul>
+<li>macOS or Linux: <code>KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh</code></li>
+<li>Windows PowerShell: <code>$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat</code></li>
+</ul>
+<p>Pull-request CI keeps feedback fast by splitting static UI checks, unit tests, coverage, and Linux
+Playwright tests into non-overlapping jobs. The extended <code>Main</code> workflow runs after every merge and
+once per hour on <code>main</code>; it owns the opt-in slow Rust tests, ARM builds and tests, Windows installer
+lifecycles, Rust coverage and CodeQL, and full Playwright suites on macOS and Windows.</p>
 <p>During development, run the narrowest relevant test first. The final check covers repository
 formatting, Rust tests and lints, frontend checks, and the supported test suites. Document any test
 that cannot run in the pull request and explain why.</p>

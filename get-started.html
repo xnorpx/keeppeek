@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-457ff45c.js";
+            window.path_to_searchindex_js = "searchindex-03358779.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a34402ce.js"></script>
+        <script src="toc-77b41682.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -176,7 +176,8 @@
                     <main>
                         <h1 id="get-started"><a class="header" href="#get-started">Get started</a></h1>
 <blockquote>
-<p><strong>Status:</strong> KeepPeek is a proof of concept and is not yet production-ready.</p>
+<p><strong>Status:</strong> KeepPeek has completed its proof-of-concept gate and is undergoing MVP
+qualification. It is not yet production-ready.</p>
 </blockquote>
 <p>Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
 use native packages and service integration.</p>
@@ -228,6 +229,19 @@ arguments. Enter camera credentials and other private values directly on the mac
 KeepPeek. See the
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md">secrets guide</a> for references,
 precedence, and migration behavior.</p>
+<h2 id="back-up-before-relying-on-recordings"><a class="header" href="#back-up-before-relying-on-recordings">Back up before relying on recordings</a></h2>
+<p>KeepPeek does not yet provide a validated online backup or restore workflow. Before treating an
+installation as evidence storage, configure a host-level backup that includes the complete KeepPeek
+configuration directory and every configured recording, catalog, thumbnail, and export path.</p>
+<p>Stop the KeepPeek service before taking a file-level copy so the catalog, its write-ahead log, and
+recording files represent one point in time. Preserve file ownership and permissions, keep backup
+media encrypted, and test restoration on an isolated host before depending on it. A live copy can
+capture mismatched database and media state; an untested copy may not be recoverable when evidence
+is needed.</p>
+<p>Validated online backup, restore, migration checks, and guided recovery are owned by
+<a href="https://github.com/xnorpx/keeppeek/issues/128">issue #128</a> for the Alpha milestone. Until that work
+is complete, the supported workaround is a stopped-service copy managed and verified by the host
+administrator.</p>
 <h2 id="add-the-first-camera"><a class="header" href="#add-the-first-camera">Add the first camera</a></h2>
 <p>Open <strong>Cameras</strong> and use <strong>Add camera</strong>. KeepPeek discovers common cameras where possible and keeps
 manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or
@@ -236,6 +250,10 @@ sub streams, keyframes, finalized MP4 recordings, and playback all need to valid
 configuration. Camera-specific credentials and stream choices belong with the camera.</p>
 <p>The <a href="./users-and-design-choices.html#cameras-brands-and-protocols">Users and design choices</a> chapter
 describes supported vendor paths and the pragmatic camera compatibility policy.</p>
+<p>After the first stream is verified, continue with <a href="./camera-health.html">Camera and stream health</a> and
+<a href="./recording-and-evidence.html">Recording and evidence</a>. Review
+<a href="./release-readiness.html">Release readiness and known limitations</a> before relying on the installation
+for evidence.</p>
 
                     </main>
 

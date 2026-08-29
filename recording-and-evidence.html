@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Open source and licensing - The KeepPeek Book</title>
+        <title>Recording and evidence - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -174,114 +174,112 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="open-source-and-licensing"><a class="header" href="#open-source-and-licensing">Open source and licensing</a></h1>
-<p>KeepPeek is built in an ecosystem shaped by other open-source camera projects and protocol
-libraries. This chapter gives those projects credit, explains where KeepPeek made different product
-choices, and documents the license boundary between the server and its public API.</p>
-<h2 id="different-products-different-strengths"><a class="header" href="#different-products-different-strengths">Different products, different strengths</a></h2>
-<p><a href="https://www.scrypted.app/">Scrypted</a> and <a href="https://frigate.video/">Frigate</a> are great products with
-strong, distinct designs. KeepPeek is not an argument that those designs are wrong. Their choices
-may fit another user, home, or business better.</p>
+                        <h1 id="recording-and-evidence"><a class="header" href="#recording-and-evidence">Recording and evidence</a></h1>
+<p>KeepPeek treats a recording as evidence only when the media is finalized, indexed, and playable.
+A connected camera or an MP4 filename alone does not prove that the requested interval can be
+reviewed later. The underlying live evidence dimensions are defined in
+<a href="./camera-health.html">Camera and stream health</a>.</p>
+<h2 id="choose-what-each-camera-records"><a class="header" href="#choose-what-each-camera-records">Choose what each camera records</a></h2>
+<p>Each camera has one recording policy:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Project</th><th>Distinct design center</th><th>A strong fit when</th></tr>
+<tr><th>Policy</th><th>Recorded media</th></tr>
 </thead>
 <tbody>
-<tr><td><strong><a href="https://www.scrypted.app/">Scrypted</a></strong></td><td>A high-performance video integration platform and NVR with a rich plugin model, smart detections, and low-latency connections to HomeKit, Google Home, and Alexa</td><td>Broad camera and smart-home integration, an extensible plugin ecosystem, and first-class consumer-platform bridges should live in one system</td></tr>
-<tr><td><strong><a href="https://frigate.video/">Frigate</a></strong></td><td>A local NVR built around real-time AI object detection, accelerator-aware processing, zones, focused event review, Home Assistant, and MQTT</td><td>Detection is a central NVR responsibility and the user wants an integrated, highly configurable local AI and home-automation experience</td></tr>
-<tr><td><strong>KeepPeek</strong></td><td>A focused recorder and WebRTC media gateway that accepts camera events and keeps optional inference, transcoding, and ecosystem bridges outside the core</td><td>Recording should remain independent from analytics, and viewers or services should compose through an open media and event boundary</td></tr>
+<tr><td><code>off</code></td><td>Records neither video stream. This is intentional and is not reported as a gap.</td></tr>
+<tr><td><code>sub</code></td><td>Records the substream continuously.</td></tr>
+<tr><td><code>main</code></td><td>Records the main stream continuously.</td></tr>
+<tr><td><code>both</code></td><td>Records main and sub independently.</td></tr>
+<tr><td><code>event-boost</code></td><td>Records the substream normally, switches to main at a keyframe after an event, then returns to substream.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Thank you to the Scrypted and Frigate maintainers and communities. Their work has advanced local
-camera software, demonstrated what polished self-hosted systems can do, and made the trade-offs in
-this space much easier to understand.</p>
-<h2 id="code-foundations"><a class="header" href="#code-foundations">Code foundations</a></h2>
-<p>KeepPeek depends on substantial protocol work from other Rust projects. The local forks retain
-their upstream authorship and licenses; carrying a fork is a maintenance decision, not a claim that
-KeepPeek created the original work.</p>
+<p><code>event-boost</code> is the default. It writes one logical recording rather than recording main and sub
+at the same time. Transitions happen only at keyframes, so the stored file remains seekable. A new
+event extends the configured main-stream interval.</p>
+<p>Choose a browser-compatible H.264 substream even when the main evidence stream is H.265. KeepPeek
+stores the camera’s encoded media without re-encoding it, so browser support still determines which
+recordings can play directly.</p>
+<h2 id="prove-recording-integrity"><a class="header" href="#prove-recording-integrity">Prove recording integrity</a></h2>
+<p>Open <strong>Recording integrity</strong> to inspect the fleet before footage is needed. The workspace reports:</p>
 <ul>
-<li><strong><a href="https://github.com/scottlamb/retina">Retina</a></strong> by Scott Lamb and its contributors provides the
-high-level RTSP client, RTP depacketization, codec framing, and much of the interoperability
-groundwork used by KeepPeek. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/master/crates/retina">local Retina fork</a> for its camera,
-recording, and compatibility needs.</li>
-<li><strong><a href="https://github.com/lumeohq/onvif-rs">ONVIF-rs</a></strong> by Chris Bruce, Lumeo, and its contributors did
-the difficult work of making ONVIF discovery, schemas, authentication, and camera operations
-usable from Rust. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/master/crates/onvif">local ONVIF-rs fork</a> and continues
-that work for its supported camera surface.</li>
-<li><strong><a href="https://github.com/algesten/str0m">str0m</a></strong> by Martin Algesten and its contributors is the
-upstream WebRTC implementation used by KeepPeek. It is the best Rust WebRTC implementation: its
-Sans I/O design, explicit time and network inputs, RTP and frame APIs, data channels, and lack of
-a hidden async runtime fit a focused media service especially well.</li>
+<li>whether recording is requested by policy;</li>
+<li>current writer state and the last frame, write, finalization, and catalog commit;</li>
+<li>oldest and newest retained media;</li>
+<li>effective retained duration, attributed bytes, and estimated daily growth;</li>
+<li>playable coverage for the selected 24-hour, 7-day, or 30-day interval;</li>
+<li>exact recent gaps and the evidence that explains each one.</li>
 </ul>
-<p>KeepPeek would be significantly harder to build without these projects. Thank you to every upstream
-author, maintainer, reviewer, and contributor whose work remains in the code.</p>
-<h2 id="licensing-model"><a class="header" href="#licensing-model">Licensing model</a></h2>
-<p>KeepPeek uses two licenses at a deliberate protocol boundary:</p>
+<p>Fleet states have narrow meanings:</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Area</th><th>License</th><th>Purpose</th></tr>
+<tr><th>State</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td>Server, first-party viewer, and most repository code</td><td><code>AGPL-3.0-only</code></td><td>Keep the shared NVR and media-gateway core open, including modified versions operated over a network</td></tr>
-<tr><td>Public definitions and documentation under <code>api/</code>, plus bindings generated solely from them</td><td>MIT</td><td>Let independent clients and services implement the protocol without adopting the server’s license</td></tr>
+<tr><td>Recording healthy</td><td>Every requested stream has current writer progress.</td></tr>
+<tr><td>Recording degraded</td><td>A requested writer is stalled or failed.</td></tr>
+<tr><td>Paused by policy</td><td>The effective policy intentionally requests no recording.</td></tr>
+<tr><td>Not configured</td><td>No usable recording stream is configured.</td></tr>
+<tr><td>Unknown</td><td>KeepPeek lacks enough current evidence to make a truthful determination.</td></tr>
 </tbody>
 </table>
 </div>
-<p>The repository root <a href="https://github.com/xnorpx/keeppeek/blob/master/LICENSE">license</a> contains the
-complete KeepPeek licensing notice and AGPL terms. The <code>api/</code> directory has its own
-<a href="https://github.com/xnorpx/keeppeek/blob/master/api/LICENSE">MIT license</a>.</p>
-<h3 id="why-the-server-uses-agpl"><a class="header" href="#why-the-server-uses-agpl">Why the server uses AGPL</a></h3>
-<p>The server is a network service, so the AGPL is the appropriate copyleft boundary for the shared
-core. The intent is that users can inspect, modify, self-host, and retain access to the source of
-the KeepPeek server they use, including modified versions offered over a network.</p>
-<p>KeepPeek’s NVR and first-party viewer remain open source and free to use without a camera-count
-limit. The license protects that common foundation from becoming a private server fork whose users
-cannot inspect the code serving them.</p>
-<h3 id="why-the-api-uses-mit"><a class="header" href="#why-the-api-uses-mit">Why the API uses MIT</a></h3>
-<p>An open server is most useful when other software can talk to it without inheriting the server’s
-implementation choices. The public HTTP, WebRTC, protobuf, and SDP contracts under <code>api/</code> therefore
-use MIT. Bindings generated solely from those definitions remain covered by that directory’s MIT
-license.</p>
-<p>Implementing or using the public protocol does not, by itself, impose KeepPeek’s repository-wide
-AGPL license on an independent client or service. A service can choose the language, WebRTC
-implementation, deployment model, and license appropriate to its users.</p>
-<h3 id="free-and-paid-protocol-services"><a class="header" href="#free-and-paid-protocol-services">Free and paid protocol services</a></h3>
-<p>This split creates a protocol-plugin model rather than an in-process plugin ABI. A free, community,
-or paid service can run as a separate process and subscribe or publish through the documented API.
-That service may be open or closed source without receiving a private extension point inside the
-KeepPeek server.</p>
-<p>The boundary allows commercial integrations to fund specialized inference, transcoding, business
-workflows, viewers, or support while the recorder and media gateway remain shared open-source
-infrastructure. Camera credentials, recording paths, and internal databases remain owned by
-KeepPeek rather than exposed to an in-process plugin.</p>
-<h3 id="what-the-split-means-for-users"><a class="header" href="#what-the-split-means-for-users">What the split means for users</a></h3>
+<p>The <strong>Not configured</strong> summary appears only when its count is nonzero. Policy-disabled streams and
+unconfigured cameras remain distinct from unexpected recording loss.</p>
+<p>Coverage comes from keyframe-indexed fragments, not from file presence. Current gaps remain open
+and never claim an end time. Causes include source silence, transport outage, stale frames, decode
+failure, writer failure, disk pressure, retention deletion, storage migration, catalog mismatch,
+and an explicit unknown state. Gap actions open nearby footage, camera health, or relevant logs.</p>
+<p>Long histories remain bounded: fleet pages contain 25 cameras by default, recent exact detail keeps
+at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
+exact totals.</p>
+<h2 id="review-events-consistently"><a class="header" href="#review-events-consistently">Review events consistently</a></h2>
+<p>Events, Keep, notifications, MQTT, and export entry points use the same event revision and canonical
+preview. An authorized producer may name the canonical attachment. Otherwise KeepPeek chooses a
+supported snapshot, then a story frame, then a retained thumbnail using stable ordinal, capture
+time, and attachment ID ordering.</p>
+<p>If canonical image bytes are unavailable, KeepPeek shows that state instead of silently choosing a
+different image. Bounding boxes appear only when their coordinate-space attachment matches the
+canonical image. Event type remains authoritative for filtering and automation; semantic icons are
+presentation-only and come from a fixed allowlist.</p>
+<p><a href="./notifications-and-integrations.html">Notifications and integrations</a> explains how those same
+event and operational identities remain stable across delivery, retry, and broker recovery.</p>
+<h2 id="export-evidence"><a class="header" href="#export-evidence">Export evidence</a></h2>
+<p>An Administrator can select up to two minutes in Keep and create a standalone MP4. Event export
+opens the same editor with 15 seconds of context before and after the event while preserving the
+camera, stream, timestamp, event revision, filters, and return route.</p>
+<p>Export jobs can be running, ready, partial, failed, cancelled, or expired. KeepPeek:</p>
 <ul>
-<li><strong>Software consumers</strong> retain a free recorder and first-party viewer, with optional services only
-when they add value.</li>
-<li><strong>Small businesses</strong> can buy tailored services at the API boundary without depending on a private
-recorder fork.</li>
-<li><strong>Open-source enthusiasts</strong> can audit the server, share core improvements, and build permissively
-licensed clients.</li>
-<li><strong>Home automation enthusiasts</strong> can choose community or commercial bridges.</li>
-<li><strong>Self-hosters</strong> retain control of the server running on their hardware.</li>
-<li><strong>Service authors</strong> can build sustainable offerings without closing the shared core.</li>
+<li>returns an identical running job instead of starting hidden duplicate work;</li>
+<li>offers an existing ready artifact before creating a fresh one;</li>
+<li>names every missing interval before a partial export proceeds;</li>
+<li>stops jobs after 30 seconds without progress or five minutes total runtime;</li>
+<li>removes partial output after failure or cancellation;</li>
+<li>marks interrupted jobs failed and retryable after restart;</li>
+<li>verifies SHA-256 again immediately before download.</li>
 </ul>
-<p>See <a href="./contributing.html">Contributing</a> for how licenses apply to submitted changes.</p>
+<p>Ready files remain available for 24 hours. Bounded job history remains for 30 days, up to 500 jobs,
+so an expired or missing artifact can still explain what happened and support an explicit retry.
+History and files remain scoped to the Administrator identity that created them.</p>
+<p>Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
+normal export path preserves source frames and timestamps without re-encoding.</p>
+<p>For the detailed coverage model and export lifecycle, see the
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/recording-integrity.md">recording integrity</a>,
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-presentation.md">event presentation</a>,
+and <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/evidence-exports.md">evidence export</a>
+references.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="demo-videos.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="camera-health.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="contributing.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="notifications-and-integrations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -291,11 +289,11 @@ licensed clients.</li>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="demo-videos.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="camera-health.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="contributing.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="notifications-and-integrations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

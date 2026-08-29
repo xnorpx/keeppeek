@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-457ff45c.js";
+            window.path_to_searchindex_js = "searchindex-03358779.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a34402ce.js"></script>
+        <script src="toc-77b41682.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -177,7 +177,8 @@
                     <main>
                         <h1 id="keeppeek"><a class="header" href="#keeppeek">KeepPeek</a></h1>
 <blockquote>
-<p><strong>Status:</strong> KeepPeek is a proof of concept and is not yet production-ready.</p>
+<p><strong>Status:</strong> KeepPeek has completed its proof-of-concept gate and is undergoing MVP
+qualification. It is not yet production-ready.</p>
 </blockquote>
 <p>KeepPeek is a local-first network video recorder and WebRTC media gateway for IP cameras. It runs
 on Linux, macOS, and Windows and keeps camera media on hardware controlled by the user without
@@ -189,7 +190,9 @@ requiring a vendor cloud relay.</p>
 <li>store recordings as standard MP4 files;</li>
 <li>provide live and recorded media through WebRTC;</li>
 <li>keep camera, stream, recording, and server health observable;</li>
-<li>accept and store events from supported cameras or independent services.</li>
+<li>accept and store events from supported cameras or independent services;</li>
+<li>locate, review, and export bounded evidence clips;</li>
+<li>deliver rule-driven notifications and forward normalized events to MQTT.</li>
 </ul>
 <p>KeepPeek does not require object detection or another AI service to record and review video.
 Camera-native analytics can publish events directly, while optional inference, transcoding, home
@@ -218,6 +221,12 @@ take setup questions or feature proposals.</li>
 camera.</li>
 <li><a href="#camera-and-stream-health">Camera and stream health</a> defines the authoritative health model and evidence
 used across the server, API, metrics, and interface.</li>
+<li><a href="#recording-and-evidence">Recording and evidence</a> explains recording policies, coverage,
+event presentation, and durable evidence exports.</li>
+<li><a href="#notifications-and-integrations">Notifications and integrations</a> covers server-owned rules,
+Pushover delivery, MQTT 5 forwarding, retries, and failure isolation.</li>
+<li><a href="#release-readiness-and-known-limitations">Release readiness and known limitations</a> separates automated checks from
+the physical mixed-fleet and soak evidence required for MVP promotion.</li>
 <li><a href="#demo-videos">Demo videos</a> shows complete workflows against the real application.</li>
 <li><a href="#open-source-and-licensing">Open source and licensing</a> credits the projects KeepPeek builds
 on and explains the AGPL server and MIT API split.</li>
@@ -987,7 +996,8 @@ fix will be verified.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="get-started"><a class="header" href="#get-started">Get started</a></h1>
 <blockquote>
-<p><strong>Status:</strong> KeepPeek is a proof of concept and is not yet production-ready.</p>
+<p><strong>Status:</strong> KeepPeek has completed its proof-of-concept gate and is undergoing MVP
+qualification. It is not yet production-ready.</p>
 </blockquote>
 <p>Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
 use native packages and service integration.</p>
@@ -1039,6 +1049,19 @@ arguments. Enter camera credentials and other private values directly on the mac
 KeepPeek. See the
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md">secrets guide</a> for references,
 precedence, and migration behavior.</p>
+<h2 id="back-up-before-relying-on-recordings"><a class="header" href="#back-up-before-relying-on-recordings">Back up before relying on recordings</a></h2>
+<p>KeepPeek does not yet provide a validated online backup or restore workflow. Before treating an
+installation as evidence storage, configure a host-level backup that includes the complete KeepPeek
+configuration directory and every configured recording, catalog, thumbnail, and export path.</p>
+<p>Stop the KeepPeek service before taking a file-level copy so the catalog, its write-ahead log, and
+recording files represent one point in time. Preserve file ownership and permissions, keep backup
+media encrypted, and test restoration on an isolated host before depending on it. A live copy can
+capture mismatched database and media state; an untested copy may not be recoverable when evidence
+is needed.</p>
+<p>Validated online backup, restore, migration checks, and guided recovery are owned by
+<a href="https://github.com/xnorpx/keeppeek/issues/128">issue #128</a> for the Alpha milestone. Until that work
+is complete, the supported workaround is a stopped-service copy managed and verified by the host
+administrator.</p>
 <h2 id="add-the-first-camera"><a class="header" href="#add-the-first-camera">Add the first camera</a></h2>
 <p>Open <strong>Cameras</strong> and use <strong>Add camera</strong>. KeepPeek discovers common cameras where possible and keeps
 manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or
@@ -1047,6 +1070,10 @@ sub streams, keyframes, finalized MP4 recordings, and playback all need to valid
 configuration. Camera-specific credentials and stream choices belong with the camera.</p>
 <p>The <a href="#cameras-brands-and-protocols">Users and design choices</a> chapter
 describes supported vendor paths and the pragmatic camera compatibility policy.</p>
+<p>After the first stream is verified, continue with <a href="#camera-and-stream-health">Camera and stream health</a> and
+<a href="#recording-and-evidence">Recording and evidence</a>. Review
+<a href="#release-readiness-and-known-limitations">Release readiness and known limitations</a> before relying on the installation
+for evidence.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="authentication-and-access-control"><a class="header" href="#authentication-and-access-control">Authentication and access control</a></h1>
 <p>KeepPeek is local-first: cameras and recordings stay on the recorder, and KeepPeek does not expose
@@ -1313,6 +1340,12 @@ configuration is unavailable. It is clamped to 30 through 120 seconds.</li>
 seconds.</li>
 <li>Initial startup grace is two ingress report intervals, currently 20 seconds.</li>
 </ul>
+<p>Frame-arrival jitter measures the absolute difference between each observed frame gap and the
+configured frame interval. Its P99 is computed over the current 10-second ingress report window; it
+is not WebRTC network jitter. KeepPeek displays it as diagnostic evidence but does not create a
+finding from jitter alone. Stale frames, low sustained frame rate, decode failure, ingress
+drops/errors, recording failure, and a maximum observed frame gap above 2 seconds remain actionable
+health signals.</p>
 <p>The first ingress report establishes the baseline for cumulative reconnect, drop, and error
 counters. An initial connection is therefore not reported as a recent reconnect. During startup
 grace, partial-window frame rates and other transient evidence remain <code>starting</code>; if they have not
@@ -1323,6 +1356,11 @@ asymmetric: a new advancing frame or keyframe counter can recover the state imme
 still returns the actual evidence ages, and clients do not add another timer or rewrite the state.</p>
 <p>These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.</p>
+<p>Health findings are live snapshot evidence rather than acknowledgements or retained alerts. They
+disappear automatically after a later ingress report no longer meets the condition. The refresh
+button requests a current snapshot immediately, but an active finding cannot be dismissed from the
+Health page. Acknowledging a delivered alert belongs to the notification inbox rather than changing
+server health evidence.</p>
 <h2 id="operational-intervals"><a class="header" href="#operational-intervals">Operational intervals</a></h2>
 <p>KeepPeek projects four durable event kinds from the independent health dimensions:</p>
 <div class="table-wrapper">
@@ -1439,6 +1477,263 @@ recovered stream degraded;</li>
 <p>Operational interval recovery uses this canonical projection. Delivery failure cannot change or
 close an interval because catalog persistence happens before notification publication and provider
 work runs independently from camera media.</p>
+<p>Use <a href="#recording-and-evidence">Recording and evidence</a> to inspect retained coverage and explain
+gaps. Use <a href="#notifications-and-integrations">Notifications and integrations</a> to deliver these
+operational transitions without coupling providers or brokers to camera ingest.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="recording-and-evidence"><a class="header" href="#recording-and-evidence">Recording and evidence</a></h1>
+<p>KeepPeek treats a recording as evidence only when the media is finalized, indexed, and playable.
+A connected camera or an MP4 filename alone does not prove that the requested interval can be
+reviewed later. The underlying live evidence dimensions are defined in
+<a href="#camera-and-stream-health">Camera and stream health</a>.</p>
+<h2 id="choose-what-each-camera-records"><a class="header" href="#choose-what-each-camera-records">Choose what each camera records</a></h2>
+<p>Each camera has one recording policy:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Policy</th><th>Recorded media</th></tr>
+</thead>
+<tbody>
+<tr><td><code>off</code></td><td>Records neither video stream. This is intentional and is not reported as a gap.</td></tr>
+<tr><td><code>sub</code></td><td>Records the substream continuously.</td></tr>
+<tr><td><code>main</code></td><td>Records the main stream continuously.</td></tr>
+<tr><td><code>both</code></td><td>Records main and sub independently.</td></tr>
+<tr><td><code>event-boost</code></td><td>Records the substream normally, switches to main at a keyframe after an event, then returns to substream.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>event-boost</code> is the default. It writes one logical recording rather than recording main and sub
+at the same time. Transitions happen only at keyframes, so the stored file remains seekable. A new
+event extends the configured main-stream interval.</p>
+<p>Choose a browser-compatible H.264 substream even when the main evidence stream is H.265. KeepPeek
+stores the camera’s encoded media without re-encoding it, so browser support still determines which
+recordings can play directly.</p>
+<h2 id="prove-recording-integrity"><a class="header" href="#prove-recording-integrity">Prove recording integrity</a></h2>
+<p>Open <strong>Recording integrity</strong> to inspect the fleet before footage is needed. The workspace reports:</p>
+<ul>
+<li>whether recording is requested by policy;</li>
+<li>current writer state and the last frame, write, finalization, and catalog commit;</li>
+<li>oldest and newest retained media;</li>
+<li>effective retained duration, attributed bytes, and estimated daily growth;</li>
+<li>playable coverage for the selected 24-hour, 7-day, or 30-day interval;</li>
+<li>exact recent gaps and the evidence that explains each one.</li>
+</ul>
+<p>Fleet states have narrow meanings:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>Recording healthy</td><td>Every requested stream has current writer progress.</td></tr>
+<tr><td>Recording degraded</td><td>A requested writer is stalled or failed.</td></tr>
+<tr><td>Paused by policy</td><td>The effective policy intentionally requests no recording.</td></tr>
+<tr><td>Not configured</td><td>No usable recording stream is configured.</td></tr>
+<tr><td>Unknown</td><td>KeepPeek lacks enough current evidence to make a truthful determination.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The <strong>Not configured</strong> summary appears only when its count is nonzero. Policy-disabled streams and
+unconfigured cameras remain distinct from unexpected recording loss.</p>
+<p>Coverage comes from keyframe-indexed fragments, not from file presence. Current gaps remain open
+and never claim an end time. Causes include source silence, transport outage, stale frames, decode
+failure, writer failure, disk pressure, retention deletion, storage migration, catalog mismatch,
+and an explicit unknown state. Gap actions open nearby footage, camera health, or relevant logs.</p>
+<p>Long histories remain bounded: fleet pages contain 25 cameras by default, recent exact detail keeps
+at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
+exact totals.</p>
+<h2 id="review-events-consistently"><a class="header" href="#review-events-consistently">Review events consistently</a></h2>
+<p>Events, Keep, notifications, MQTT, and export entry points use the same event revision and canonical
+preview. An authorized producer may name the canonical attachment. Otherwise KeepPeek chooses a
+supported snapshot, then a story frame, then a retained thumbnail using stable ordinal, capture
+time, and attachment ID ordering.</p>
+<p>If canonical image bytes are unavailable, KeepPeek shows that state instead of silently choosing a
+different image. Bounding boxes appear only when their coordinate-space attachment matches the
+canonical image. Event type remains authoritative for filtering and automation; semantic icons are
+presentation-only and come from a fixed allowlist.</p>
+<p><a href="#notifications-and-integrations">Notifications and integrations</a> explains how those same
+event and operational identities remain stable across delivery, retry, and broker recovery.</p>
+<h2 id="export-evidence"><a class="header" href="#export-evidence">Export evidence</a></h2>
+<p>An Administrator can select up to two minutes in Keep and create a standalone MP4. Event export
+opens the same editor with 15 seconds of context before and after the event while preserving the
+camera, stream, timestamp, event revision, filters, and return route.</p>
+<p>Export jobs can be running, ready, partial, failed, cancelled, or expired. KeepPeek:</p>
+<ul>
+<li>returns an identical running job instead of starting hidden duplicate work;</li>
+<li>offers an existing ready artifact before creating a fresh one;</li>
+<li>names every missing interval before a partial export proceeds;</li>
+<li>stops jobs after 30 seconds without progress or five minutes total runtime;</li>
+<li>removes partial output after failure or cancellation;</li>
+<li>marks interrupted jobs failed and retryable after restart;</li>
+<li>verifies SHA-256 again immediately before download.</li>
+</ul>
+<p>Ready files remain available for 24 hours. Bounded job history remains for 30 days, up to 500 jobs,
+so an expired or missing artifact can still explain what happened and support an explicit retry.
+History and files remain scoped to the Administrator identity that created them.</p>
+<p>Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
+normal export path preserves source frames and timestamps without re-encoding.</p>
+<p>For the detailed coverage model and export lifecycle, see the
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/recording-integrity.md">recording integrity</a>,
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-presentation.md">event presentation</a>,
+and <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/evidence-exports.md">evidence export</a>
+references.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="notifications-and-integrations"><a class="header" href="#notifications-and-integrations">Notifications and integrations</a></h1>
+<p>KeepPeek evaluates notification policy on the server after an event or operational transition has
+been persisted. Camera workers never call a notification provider or MQTT broker directly. A slow
+or unavailable integration therefore cannot stop camera ingest, recording, event storage, health
+projection, or another delivery channel. See <a href="#camera-and-stream-health">Camera and stream health</a> for the
+evidence that creates operational transitions.</p>
+<p>Notification controls are available only when the server advertises <code>keeppeek.rules.v1</code>.</p>
+<h2 id="build-and-activate-a-rule"><a class="header" href="#build-and-activate-a-rule">Build and activate a rule</a></h2>
+<p>Open <strong>Settings &gt; Notifications</strong> to create a rule. A rule can match:</p>
+<ul>
+<li>event creation, enrichment, and completion;</li>
+<li>camera offline, stale stream, unavailable decode, and interrupted recording transitions;</li>
+<li>storage or recording health changes;</li>
+<li>an explicit test send.</li>
+</ul>
+<p>Filters can narrow a rule by camera or source, group, event kind, zone, confidence, image
+availability, duration, severity, review state, and bookmark state. Schedules use an IANA timezone
+and support active windows and quiet hours, including daylight-saving transitions.</p>
+<p>Editing creates a draft. <strong>Activate</strong> validates and atomically promotes the complete draft; a
+conflict or invalid draft leaves the previous active revision unchanged. Use the test action before
+depending on a new destination. Test sends have separate rate accounting but still use the saved
+credentials and provider configuration.</p>
+<h2 id="avoid-duplicate-and-noisy-alerts"><a class="header" href="#avoid-duplicate-and-noisy-alerts">Avoid duplicate and noisy alerts</a></h2>
+<p>KeepPeek gives one logical notification a stable identity derived from its rule, source, event or
+outage, and lifecycle. Event revisions, retries, enrichment, process restart, and recovery retain
+that identity. Equal message text never collapses unrelated cameras or events.</p>
+<p>Rules can apply cooldowns per event family, camera and event kind, group, whole rule, or outage
+interval. The cooldown starts when the logical notification is created and survives restart. Rate
+limits can apply to the rule, channel, principal, or whole server. Critical bypass is explicit,
+bounded, and audited.</p>
+<p>A preliminary alert may be replaced by an enriched revision when a canonical image or final
+duration becomes available within the configured deadline. Missing imagery does not suppress a
+metadata alert unless the action explicitly requires an attachment. Late enrichment stays in
+history without waking the user unless the rule permits it.</p>
+<p>The inbox keeps unread, seen, acknowledged, and cleared state per authenticated principal. Provider
+delivery and acknowledgement remain separate from KeepPeek review state. Delivery history explains
+whether work was created, replaced, suppressed, collapsed, rate-limited, retried, expired,
+delivered, or failed.</p>
+<h2 id="deliver-through-pushover"><a class="header" href="#deliver-through-pushover">Deliver through Pushover</a></h2>
+<p>Pushover is the supported push channel. To configure it:</p>
+<ol>
+<li>Register an application at <a href="https://pushover.net/apps/build">https://pushover.net/apps/build</a>.</li>
+<li>Obtain the application token and a user or delivery-group key.</li>
+<li>Add a <strong>Push</strong> action to a notification rule.</li>
+<li>Enter the token and key directly in <strong>Settings &gt; Notifications</strong>.</li>
+<li>Save, activate, and run the rule’s test action.</li>
+</ol>
+<p>The two credentials are write-only. KeepPeek stores them in server-owned notification state and
+never returns them to the browser, health snapshots, logs, or delivery reasons. Editing non-secret
+settings preserves the configured values; replacing credentials requires entering both again.</p>
+<p>Push actions support optional device names, sound, priorities <code>-2</code> through <code>2</code>, a public base URL
+for deep links, and one bounded JPEG attachment. Emergency priority <code>2</code> also requires retry and
+expiry values and records provider acknowledgement separately from KeepPeek acknowledgement.</p>
+<p>Timeouts, connection failures, HTTP 408, 425, 429, and 5xx responses use the rule’s bounded durable
+retry policy. Invalid credentials and other permanent provider failures do not retry indefinitely.
+Disabling a rule or Push action stops new work and expires its pending attempts without deleting
+delivery history.</p>
+<h2 id="forward-events-through-mqtt"><a class="header" href="#forward-events-through-mqtt">Forward events through MQTT</a></h2>
+<p>Open <strong>Settings &gt; Integrations</strong> to configure, test, observe, or disable the MQTT event forwarder.
+It requires an MQTT 5 broker; MQTT 3.1 and 3.1.1 are not fallback protocols.</p>
+<p>Configure a stable client ID, KeepPeek instance ID, topic prefix, optional username and write-only
+password, QoS, retention policy, and optional CA certificate for <code>mqtts://</code>. Use TLS outside an
+explicitly trusted local development network. Credentials embedded in the broker URL are rejected.</p>
+<p>The default topics are:</p>
+<pre><code class="language-text">keeppeek/{instance_id}/sources/{source_id}/events/{event_type}
+keeppeek/{instance_id}/forwarders/{forwarder_id}/status
+</code></pre>
+<p>Every event publication is a complete JSON snapshot with <code>schema_version = 1</code>. Consumers should
+deduplicate with <code>(instance_id, event_id, revision)</code>. Camera outage and recovery records use the
+same envelope and carry bounded cause, affected streams, recording consequence, duration, and
+recovery evidence. This profile publishes attachment metadata, not image bytes.</p>
+<p>QoS 1 is the default and provides at-least-once delivery. A crash around broker acknowledgement can
+redeliver the same stable identity, so consumers must still deduplicate. QoS 0 has no broker
+acknowledgement; QoS 2 does not remove the need for application-level identity.</p>
+<p>The durable MQTT outbox defaults to 64 MiB and reconnect delay grows from 250 ms to a 30-second
+ceiling. Broker outage, restart, or configuration replacement does not reconnect camera streams.
+When the outbox is full, forwarding fails visibly while event persistence and recording continue.</p>
+<p>Settings and Prometheus expose connection state, bounded error detail, pending items and bytes,
+retry and duplicate counts, last received and delivered times, and oldest unacknowledged work.</p>
+<p>See the detailed <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/notifications.md">notification rule</a>,
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/pushover.md">Pushover</a>, and
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-forwarder.md">MQTT 5 forwarder</a>
+references for every field, payload, metric, and failure state.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="release-readiness-and-known-limitations"><a class="header" href="#release-readiness-and-known-limitations">Release readiness and known limitations</a></h1>
+<p>KeepPeek has completed its proof-of-concept gate and is undergoing MVP qualification. Passing
+automated tests is necessary, but it is not enough to call a camera recorder production-ready. The
+MVP decision belongs to the tested release build and representative deployment recorded in
+<a href="https://github.com/xnorpx/keeppeek/issues/144">issue #144</a>.</p>
+<h2 id="what-automated-validation-proves"><a class="header" href="#what-automated-validation-proves">What automated validation proves</a></h2>
+<p>The repository gate builds the Rust workspace and browser application, runs Rust, TypeScript,
+Svelte, browser, real-media, and Playwright tests, checks formatting and dependencies, and validates
+the versioned Paper scenario and visual-harness manifests. Focused benchmarks enforce latency and
+memory budgets for recording coverage, operational events, notifications, MQTT enqueue, storage,
+and event lookup.</p>
+<p>Those checks prove deterministic contracts and regression fixtures. They do not prove that a
+particular camera firmware, network, disk, browser, reverse proxy, notification account, or broker
+will behave correctly under sustained load.</p>
+<h2 id="representative-deployment-matrix"><a class="header" href="#representative-deployment-matrix">Representative deployment matrix</a></h2>
+<p>Before promotion, record exact evidence for the deployment that will rely on KeepPeek:</p>
+<ul>
+<li>at least one direct RTSP or ONVIF camera and the established native camera path;</li>
+<li>main and sub streams, including browser-compatible and incompatible codec profiles;</li>
+<li>desktop and mobile browser workflows;</li>
+<li>local access and remote access through the intended VPN or reverse proxy;</li>
+<li>healthy, stale, reconnecting, recording-failed, storage-pressure, and recovered states;</li>
+<li>events with and without images, revised events, and a dense event day;</li>
+<li>Pushover success, failure, and retry plus MQTT success, outage, and recovery;</li>
+<li>normal, partial, failed, cancelled, retried, and independently decoded exports.</li>
+</ul>
+<p>This matrix documents tested configurations. It is not a universal camera, browser, broker, or
+provider support claim.</p>
+<h2 id="continuous-recording-soak"><a class="header" href="#continuous-recording-soak">Continuous recording soak</a></h2>
+<p>Run the final release build long enough to cross normal segment finalization, catalog maintenance,
+camera reconnect, provider retry, and storage cleanup cycles. During the soak:</p>
+<ul>
+<li>account for every unexpected recording gap with camera, writer, storage, or catalog evidence;</li>
+<li>verify primary recorded playback remains at source rate while timelines refresh and exports run;</li>
+<li>monitor memory, database, thumbnails, export jobs, notification outbox, MQTT outbox, logs,
+threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;</li>
+<li>restart and verify open operational events, cooldowns, outboxes, export jobs, coverage summaries,
+and sessions recover according to their documented contracts;</li>
+<li>rerun the complete workflow without manual database or recording-file edits.</li>
+</ul>
+<p>Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
+indefinitely running job, or open release-blocking defect.</p>
+<h2 id="current-limitations"><a class="header" href="#current-limitations">Current limitations</a></h2>
+<h3 id="camera-support-is-evidence-based"><a class="header" href="#camera-support-is-evidence-based">Camera support is evidence-based</a></h3>
+<p>Discovery does not prove authentication, stable media, keyframes, or valid recordings. Validate
+each requested stream through a finalized MP4 and independent decode before relying on it. Prefer
+<code>reo-proto</code> over TCP for a Reolink camera only after that path passes; use RTSP over TCP for a
+generic ONVIF camera unless measured evidence supports another transport.</p>
+<h3 id="browser-codec-support-varies"><a class="header" href="#browser-codec-support-varies">Browser codec support varies</a></h3>
+<p>KeepPeek stores camera media without re-encoding it. A browser may therefore record or index a main
+stream that it cannot decode. Keep a broadly compatible H.264 substream for live view and review,
+and treat a truthful incompatibility message as different from missing footage. Automatic
+transcoding remains separate work.</p>
+<h3 id="backup-and-restore-are-not-automated"><a class="header" href="#backup-and-restore-are-not-automated">Backup and restore are not automated</a></h3>
+<p>Validated online backup and guided restore are owned by
+<a href="https://github.com/xnorpx/keeppeek/issues/128">issue #128</a> for Alpha. Until then, stop the service,
+copy the complete configuration and storage roots, preserve permissions, encrypt the backup, and
+test restoration on an isolated host. A live file copy can capture mismatched catalog and media
+state.</p>
+<h3 id="access-roles-are-intentionally-fixed"><a class="header" href="#access-roles-are-intentionally-fixed">Access roles are intentionally fixed</a></h3>
+<p>Remote access supports Administrator and User. Custom roles and per-camera permissions are not
+available. Use network separation or separate servers when a person must not see every configured
+camera; hiding a control in the browser is not an authorization boundary.</p>
+<h3 id="detection-remains-external"><a class="header" href="#detection-remains-external">Detection remains external</a></h3>
+<p>KeepPeek records and presents camera-native or externally published events. It does not own object,
+face, or license-plate detection, model management, zones, masks, or training. Recording and health
+must remain useful when an external analysis service is absent.</p>
+<h2 id="promotion-record"><a class="header" href="#promotion-record">Promotion record</a></h2>
+<p>The owner records the exact release commit, platform and browser versions, camera and codec matrix,
+network topology, storage configuration, test commands, soak duration, observed limits, known
+workarounds, and a promote or reject decision. Unverified items stay explicit; a green build never
+silently checks a deployment-specific criterion.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="demo-videos"><a class="header" href="#demo-videos">Demo videos</a></h1>
 <p>These audio-paced H.264/AAC recordings exercise KeepPeek’s production controls and are regenerated
@@ -1690,6 +1985,15 @@ with Bun from the public npm registry and do not create or commit an npm, pnpm, 
 <li>macOS or Linux: <code>./check.sh</code></li>
 <li>Windows: <code>.\check.bat</code></li>
 </ul>
+<p>Run the same gate with opt-in slow Rust test bodies before submitting a pull request:</p>
+<ul>
+<li>macOS or Linux: <code>KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh</code></li>
+<li>Windows PowerShell: <code>$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat</code></li>
+</ul>
+<p>Pull-request CI keeps feedback fast by splitting static UI checks, unit tests, coverage, and Linux
+Playwright tests into non-overlapping jobs. The extended <code>Main</code> workflow runs after every merge and
+once per hour on <code>main</code>; it owns the opt-in slow Rust tests, ARM builds and tests, Windows installer
+lifecycles, Rust coverage and CodeQL, and full Playwright suites on macOS and Windows.</p>
 <p>During development, run the narrowest relevant test first. The final check covers repository
 formatting, Rust tests and lints, frontend checks, and the supported test suites. Document any test
 that cannot run in the pull request and explain why.</p>

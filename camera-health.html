@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-457ff45c.js";
+            window.path_to_searchindex_js = "searchindex-03358779.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a34402ce.js"></script>
+        <script src="toc-77b41682.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -258,6 +258,12 @@ configuration is unavailable. It is clamped to 30 through 120 seconds.</li>
 seconds.</li>
 <li>Initial startup grace is two ingress report intervals, currently 20 seconds.</li>
 </ul>
+<p>Frame-arrival jitter measures the absolute difference between each observed frame gap and the
+configured frame interval. Its P99 is computed over the current 10-second ingress report window; it
+is not WebRTC network jitter. KeepPeek displays it as diagnostic evidence but does not create a
+finding from jitter alone. Stale frames, low sustained frame rate, decode failure, ingress
+drops/errors, recording failure, and a maximum observed frame gap above 2 seconds remain actionable
+health signals.</p>
 <p>The first ingress report establishes the baseline for cumulative reconnect, drop, and error
 counters. An initial connection is therefore not reported as a recent reconnect. During startup
 grace, partial-window frame rates and other transient evidence remain <code>starting</code>; if they have not
@@ -268,6 +274,11 @@ asymmetric: a new advancing frame or keyframe counter can recover the state imme
 still returns the actual evidence ages, and clients do not add another timer or rewrite the state.</p>
 <p>These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.</p>
+<p>Health findings are live snapshot evidence rather than acknowledgements or retained alerts. They
+disappear automatically after a later ingress report no longer meets the condition. The refresh
+button requests a current snapshot immediately, but an active finding cannot be dismissed from the
+Health page. Acknowledging a delivered alert belongs to the notification inbox rather than changing
+server health evidence.</p>
 <h2 id="operational-intervals"><a class="header" href="#operational-intervals">Operational intervals</a></h2>
 <p>KeepPeek projects four durable event kinds from the independent health dimensions:</p>
 <div class="table-wrapper">
@@ -384,6 +395,9 @@ recovered stream degraded;</li>
 <p>Operational interval recovery uses this canonical projection. Delivery failure cannot change or
 close an interval because catalog persistence happens before notification publication and provider
 work runs independently from camera media.</p>
+<p>Use <a href="./recording-and-evidence.html">Recording and evidence</a> to inspect retained coverage and explain
+gaps. Use <a href="./notifications-and-integrations.html">Notifications and integrations</a> to deliver these
+operational transitions without coupling providers or brokers to camera ingest.</p>
 
                     </main>
 
@@ -393,7 +407,7 @@ work runs independently from camera media.</p>
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="demo-videos.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="recording-and-evidence.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -407,7 +421,7 @@ work runs independently from camera media.</p>
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="demo-videos.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="recording-and-evidence.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
