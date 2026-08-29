@@ -1,0 +1,46 @@
+name: Container Cleanup
+
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: container-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Clean up container images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check stable master tag
+        id: stable-master
+        shell: bash
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:master
+        run: |
+          if docker buildx imagetools inspect "$IMAGE" >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Skipping master cleanup until $IMAGE has been published."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Delete master build tags older than seven days
+        if: steps.stable-master.outputs.present == 'true'
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          delete-tags: master-*
+          exclude-tags: master
+          older-than: 7 days
+          validate: true
+      - name: Delete untagged images older than one day
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          delete-untagged: true
+          older-than: 1 day
+          validate: true
