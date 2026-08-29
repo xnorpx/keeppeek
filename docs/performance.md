@@ -1,5 +1,49 @@
 # Performance benchmarks
 
+## Recording coverage snapshot
+
+The `recording_coverage` benchmark compares the bounded catalog snapshot used by the recording
+integrity dashboard with the previous per-stream materialization pattern. The default deterministic
+corpus contains 127 cameras, `main` and `sub` streams, 30 days, 128 keyframed fragments per
+camera/day/stream, and 975,360 finalized playable fragments.
+
+```sh
+cargo bench --bench recording_coverage
+```
+
+The benchmark seeds production catalog tables and maintained per-recording coverage summaries,
+warms both paths, and reports five-sample median and nearest-rank p95 wall time. The baseline issues
+one materializing fragment query per stream. The result uses the same finalized, indexed fragments
+through the maintained summary tables, merges exact stream intervals, and emits deterministic
+6-hour buckets for the 30-day range. It fails above a 500 ms p95 budget or if retained exact detail
+exceeds 256 ranges per stream.
+
+Environment variables override the camera count, day count, sample count, and p95 budget:
+
+```sh
+KEEPPEEK_COVERAGE_BENCH_CAMERAS=127 \
+KEEPPEEK_COVERAGE_BENCH_DAYS=30 \
+KEEPPEEK_COVERAGE_BENCH_SAMPLES=5 \
+KEEPPEEK_COVERAGE_BENCH_P95_BUDGET_MS=500 \
+cargo bench --bench recording_coverage
+```
+
+### Reference measurement
+
+Captured on 2026-08-28 with macOS 26.6.2 arm64 on an Apple M5 Max developer workstation with
+18 logical CPUs and 64 GiB RAM, Rust/Cargo 1.97.1. Baseline and result use the same optimized
+benchmark process, 975,360 queried fragments, five samples, and nearest-rank percentiles.
+
+| Path                                      | Median ms |    p95 ms | Median delta | Budget ms |
+| ----------------------------------------- | --------: | --------: | -----------: | --------: |
+| Per-stream fragment materialization       | 1,301.497 | 1,588.955 |     baseline |       N/A |
+| Maintained coverage snapshot with buckets |   124.157 |   174.117 |      -90.46% |       500 |
+
+The final response retained 254 exact merged ranges for 254 streams, below the 65,024-range bound,
+and owned 888,151 bytes against an 8 MiB snapshot budget. Browser DOM bounds are verified by
+`ui/e2e/recordings.e2e.ts`, which holds a 127-camera result to 25 rendered camera rows and fewer
+than 1,500 dashboard descendants per page.
+
 ## Event keyframe lookup
 
 The `event_keyframe_lookup` benchmark measures the storage API path from an event ID and logical

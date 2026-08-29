@@ -86,6 +86,148 @@ export interface RecordingsResponse {
 	segments: RecordingSegment[];
 }
 
+export type RecordingCoverageState =
+	'healthy' | 'degraded' | 'paused_by_policy' | 'not_configured' | 'unknown';
+
+export type RecordingWriterState =
+	'progressing' | 'stalled' | 'failed' | 'pending' | 'policy_disabled' | 'unknown';
+
+export type RecordingGapCause =
+	| 'source_silence'
+	| 'transport_outage'
+	| 'stale_frames'
+	| 'decode_failure'
+	| 'writer_failure'
+	| 'disk_pressure'
+	| 'retention_deletion'
+	| 'migration'
+	| 'catalog_mismatch'
+	| 'unknown';
+
+export interface RecordingCoverageQuery {
+	startMs?: number;
+	endMs?: number;
+	minimumGapMs?: number;
+	minimumCameraGapMs?: number;
+	pageSize?: number;
+	search?: string;
+	state?: RecordingCoverageState;
+	stream?: 'main' | 'sub';
+	group?: string;
+	pageToken?: string;
+}
+
+export interface RecordingCoverageRange {
+	start_ms: number;
+	end_ms: number;
+}
+
+export interface RecordingCoverageBucket extends RecordingCoverageRange {
+	coverage_ms: number;
+}
+
+export interface RecordingGap {
+	start_ms: number;
+	end_ms: number | null;
+	observed_end_ms: number;
+	duration_ms: number;
+	cause: RecordingGapCause;
+	explanation: string;
+	evidence_source: string;
+	operational_event_id: string | null;
+	before_href: string | null;
+	after_href: string | null;
+	health_href: string;
+	logs_href: string;
+}
+
+export interface StreamRecordingCoverage {
+	stream_id: string;
+	recording_stream_id: string;
+	recording_requested: boolean;
+	writer_state: RecordingWriterState;
+	last_frame_at_ms: number | null;
+	last_write_at_ms: number | null;
+	last_finalize_at_ms: number | null;
+	last_catalog_commit_at_ms: number | null;
+	oldest_retained_at_ms: number | null;
+	newest_retained_at_ms: number | null;
+	effective_retention_ms: number | null;
+	recording_bytes: number;
+	estimated_bytes_per_day: number;
+	selected_coverage_ms: number;
+	coverage_percent: number;
+	gap_count: number;
+	largest_gap_ms: number;
+	playable_fragments: number;
+	ranges: RecordingCoverageRange[];
+	range_count: number;
+	bucket_ms: number;
+	buckets: RecordingCoverageBucket[];
+	detail_truncated: boolean;
+	gaps: RecordingGap[];
+}
+
+export interface CameraRecordingCoverage {
+	camera_id: string;
+	camera_name: string;
+	groups: string[];
+	state: RecordingCoverageState;
+	recording_requested: boolean;
+	policy: string;
+	streams: StreamRecordingCoverage[];
+	health_href: string;
+}
+
+export interface RecordingFinding {
+	severity: string;
+	camera_id: string;
+	camera_name: string;
+	stream_id: string | null;
+	kind: string;
+	message: string;
+	started_at_ms: number | null;
+	health_href: string;
+	playback_href: string | null;
+	logs_href: string;
+}
+
+export interface RecordingCoverageResponse {
+	generated_at_ms: number;
+	catalog_available: boolean;
+	catalog_revision: number;
+	catalog_updated_at_ms: number | null;
+	window: {
+		start_ms: number;
+		end_ms: number;
+		minimum_gap_ms: number;
+	};
+	totals: {
+		cameras: number;
+		healthy: number;
+		degraded: number;
+		paused_by_policy: number;
+		not_configured: number;
+		unknown: number;
+		recording_bytes: number;
+		estimated_bytes_per_day: number;
+	};
+	storage: {
+		pressure: string;
+		recording_state: string;
+		available_bytes: number | null;
+		effective_limit_bytes: number | null;
+		recording_bytes: number;
+		estimated_bytes_per_day: number;
+		projected_retention_days: number | null;
+		projection_assumption: string;
+	};
+	groups: string[];
+	cameras: CameraRecordingCoverage[];
+	findings: RecordingFinding[];
+	next_page_token: string | null;
+}
+
 export type EventIconKey =
 	| 'event'
 	| 'person'

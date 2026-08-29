@@ -1,4 +1,6 @@
-use crate::storage::catalog::initialize_schema;
+use crate::storage::catalog::{
+    backfill_recording_coverage, catalog_coverage, initialize_schema, media_fragments_in_range,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use turso::transaction::TransactionBehavior;
@@ -40,6 +42,231 @@ pub struct EventKeyframeCorpusSummary {
     pub keyframe_count: u64,
     pub event_count: u64,
     pub event_keyframe_link_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingCoverageCorpusConfig {
+    pub catalog_path: PathBuf,
+    pub camera_count: u32,
+    pub day_count: u32,
+    pub start_time_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecordingCoverageBenchmarkReport {
+    pub camera_count: u32,
+    pub stream_count: usize,
+    pub day_count: u32,
+    pub fragment_count: u64,
+    pub samples: usize,
+    pub baseline_median_ms: f64,
+    pub baseline_p95_ms: f64,
+    pub snapshot_median_ms: f64,
+    pub snapshot_p95_ms: f64,
+    pub median_delta_percent: f64,
+    pub retained_ranges: usize,
+    pub retained_range_limit: usize,
+    pub snapshot_owned_bytes: usize,
+}
+
+pub fn build_recording_coverage_corpus(
+    config: &RecordingCoverageCorpusConfig,
+) -> anyhow::Result<u64> {
+    if config.camera_count == 0 || config.day_count == 0 {
+        anyhow::bail!("recording coverage corpus requires at least one camera and day");
+    }
+    let mut recordings = Vec::with_capacity(
+        usize::try_from(config.camera_count)?
+            .saturating_mul(usize::try_from(config.day_count)?)
+            .saturating_mul(STREAMS.len()),
+    );
+    for camera_index in 0..config.camera_count {
+        for day_index in 0..config.day_count {
+            for stream_id in STREAMS {
+                let recording_id = benchmark_recording_id(camera_index, day_index, stream_id);
+                recordings.push(BenchmarkRecordingSeed {
+                    path: config
+                        .catalog_path
+                        .with_file_name(format!("{recording_id}.mp4")),
+                    recording_id,
+                    stream_key: format!("{}/{stream_id}", benchmark_camera_id(camera_index)),
+                    source_id: benchmark_camera_id(camera_index),
+                    stream_id: stream_id.to_owned(),
+                    started_at_ms: config
+                        .start_time_ms
+                        .saturating_add(i64::from(day_index).saturating_mul(DAY_MS)),
+                    file_len: 16 * 1_048_576,
+                    keyframe_offset: 1_024,
+                    keyframe_len: 32 * 1_024,
+                });
+            }
+        }
+    }
+    if let Some(parent) = config.catalog_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if config.catalog_path.exists() {
+        anyhow::bail!(
+            "benchmark catalog already exists at {}",
+            config.catalog_path.display()
+        );
+    }
+    pollster::block_on(async {
+        let path = path_text(&config.catalog_path)?;
+        let database = turso::Builder::new_local(&path).build().await?;
+        let mut connection = database.connect()?;
+        initialize_schema(&connection).await?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")
+            .await?;
+        insert_recordings(&mut connection, &recordings).await?;
+        backfill_recording_coverage(&connection).await
+    })?;
+    Ok(u64::try_from(recordings.len())?
+        .saturating_mul(u64::from(BENCHMARK_FRAGMENTS_PER_RECORDING)))
+}
+
+pub fn measure_recording_coverage(
+    config: &RecordingCoverageCorpusConfig,
+    samples: usize,
+) -> anyhow::Result<RecordingCoverageBenchmarkReport> {
+    if samples == 0 {
+        anyhow::bail!("recording coverage benchmark requires at least one sample");
+    }
+    let end_ms = config
+        .start_time_ms
+        .saturating_add(i64::from(config.day_count).saturating_mul(DAY_MS));
+    let window = config.start_time_ms..end_ms;
+    pollster::block_on(async {
+        let path = path_text(&config.catalog_path)?;
+        let database = turso::Builder::new_local(&path).build().await?;
+        let connection = database.connect()?;
+        let _ = catalog_coverage(&connection, window.clone()).await?;
+        let _ = materialized_coverage(&connection, config.camera_count, window.clone()).await?;
+        let mut snapshot_samples = Vec::with_capacity(samples);
+        let mut baseline_samples = Vec::with_capacity(samples);
+        let mut retained_ranges = 0;
+        let mut stream_count = 0;
+        let mut fragment_count = 0;
+        let mut snapshot_owned_bytes = 0;
+        for _ in 0..samples {
+            let started = std::time::Instant::now();
+            let snapshot = catalog_coverage(&connection, window.clone()).await?;
+            snapshot_samples.push(started.elapsed().as_nanos());
+            retained_ranges = snapshot
+                .streams
+                .iter()
+                .map(|stream| stream.ranges.len())
+                .sum();
+            stream_count = snapshot.streams.len();
+            snapshot_owned_bytes = coverage_snapshot_owned_bytes(&snapshot);
+
+            let started = std::time::Instant::now();
+            fragment_count =
+                materialized_coverage(&connection, config.camera_count, window.clone()).await?;
+            baseline_samples.push(started.elapsed().as_nanos());
+        }
+        snapshot_samples.sort_unstable();
+        baseline_samples.sort_unstable();
+        let snapshot_median = percentile(&snapshot_samples, 50);
+        let baseline_median = percentile(&baseline_samples, 50);
+        Ok(RecordingCoverageBenchmarkReport {
+            camera_count: config.camera_count,
+            stream_count,
+            day_count: config.day_count,
+            fragment_count,
+            samples,
+            baseline_median_ms: nanos_ms(baseline_median),
+            baseline_p95_ms: nanos_ms(percentile(&baseline_samples, 95)),
+            snapshot_median_ms: nanos_ms(snapshot_median),
+            snapshot_p95_ms: nanos_ms(percentile(&snapshot_samples, 95)),
+            median_delta_percent: if baseline_median == 0 {
+                0.0
+            } else {
+                (snapshot_median as f64 - baseline_median as f64) * 100.0 / baseline_median as f64
+            },
+            retained_ranges,
+            retained_range_limit: usize::try_from(config.camera_count)?
+                .saturating_mul(STREAMS.len())
+                .saturating_mul(256),
+            snapshot_owned_bytes,
+        })
+    })
+}
+
+fn coverage_snapshot_owned_bytes(
+    snapshot: &crate::storage::catalog::CatalogCoverageSnapshot,
+) -> usize {
+    std::mem::size_of_val(snapshot)
+        .saturating_add(
+            snapshot
+                .streams
+                .capacity()
+                .saturating_mul(std::mem::size_of::<
+                    crate::storage::catalog::CatalogStreamCoverage,
+                >()),
+        )
+        .saturating_add(snapshot.streams.iter().fold(0usize, |total, stream| {
+            total
+                .saturating_add(stream.stream_id.capacity())
+                .saturating_add(stream.source_id.as_ref().map_or(0, String::capacity))
+                .saturating_add(
+                    stream
+                        .logical_stream_id
+                        .as_ref()
+                        .map_or(0, String::capacity),
+                )
+                .saturating_add(
+                    stream
+                        .ranges
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<(i64, i64)>()),
+                )
+                .saturating_add(
+                    stream
+                        .buckets
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<
+                            crate::storage::catalog::CatalogCoverageBucket,
+                        >()),
+                )
+                .saturating_add(
+                    stream
+                        .deletions
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<
+                            crate::storage::catalog::CatalogDeletionRange,
+                        >()),
+                )
+        }))
+}
+
+async fn materialized_coverage(
+    connection: &turso::Connection,
+    camera_count: u32,
+    window: std::ops::Range<i64>,
+) -> anyhow::Result<u64> {
+    let mut fragments = 0u64;
+    for camera_index in 0..camera_count {
+        for stream_id in STREAMS {
+            let stream_key = format!("{}/{stream_id}", benchmark_camera_id(camera_index));
+            fragments = fragments.saturating_add(u64::try_from(
+                media_fragments_in_range(connection, &stream_key, window.start, window.end)
+                    .await?
+                    .len(),
+            )?);
+        }
+    }
+    Ok(fragments)
+}
+
+const fn percentile(sorted: &[u128], percentile: usize) -> u128 {
+    let rank = sorted.len().saturating_mul(percentile).div_ceil(100);
+    sorted[rank.saturating_sub(1)]
+}
+
+fn nanos_ms(value: u128) -> f64 {
+    value as f64 / 1_000_000.0
 }
 
 pub fn build_event_keyframe_corpus(
@@ -138,8 +365,8 @@ async fn insert_recordings(
             "INSERT INTO recording_files (
                  id, stream_id, source_id, logical_stream_id,
                  started_at_ms, ended_at_ms, path,
-                 init_offset, init_len, finalized
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 1)",
+                 init_offset, init_len, finalized, finalized_at_ms, file_bytes
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 1, ?6, ?8)",
         )
         .await?;
     let mut fragment_statement = transaction
@@ -168,6 +395,7 @@ async fn insert_recordings(
                 recording.started_at_ms,
                 end_ms,
                 path_text(&recording.path)?,
+                to_i64(recording.file_len, "benchmark recording length")?,
             ])
             .await?;
         for sequence in 1..=BENCHMARK_FRAGMENTS_PER_RECORDING {

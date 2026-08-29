@@ -86,6 +86,7 @@ mod event_search;
 mod health_snapshot;
 mod logging;
 mod mqtt_integration;
+pub(crate) mod recording_coverage;
 mod runtime_configuration;
 mod stored_media;
 
@@ -247,6 +248,7 @@ struct CameraEntry {
     info: CameraInfo,
     reported_manufacturer: Option<String>,
     configuration: CameraConfig,
+    groups: Vec<String>,
     battery_uid: Option<String>,
     recording_label: String,
     control: Option<CameraControl>,
@@ -7812,6 +7814,7 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
         },
         reported_manufacturer,
         configuration: camera_config.clone(),
+        groups: Vec::new(),
         battery_uid,
         recording_label: camera_config
             .name
@@ -8251,6 +8254,19 @@ impl ServerState {
         recording_demand: RecordingDemand,
         webrtc: WebRtc,
     ) -> Self {
+        let mut groups_by_ip = HashMap::<IpAddr, Vec<String>>::new();
+        for (group, group_cameras) in camera_configs {
+            for camera in group_cameras {
+                groups_by_ip
+                    .entry(camera.ip)
+                    .or_default()
+                    .push(group.clone());
+            }
+        }
+        for groups in groups_by_ip.values_mut() {
+            groups.sort_unstable();
+            groups.dedup();
+        }
         let mut configured = camera_configs.values().flatten().collect::<Vec<_>>();
         configured.sort_unstable_by_key(|camera| camera.ip);
         configured.dedup_by_key(|camera| camera.ip);
@@ -8263,7 +8279,14 @@ impl ServerState {
         }
         let mut entries = configured
             .into_iter()
-            .map(|camera_config| camera_entry(camera_config, cameras.get(&camera_config.ip)))
+            .map(|camera_config| {
+                let mut entry = camera_entry(camera_config, cameras.get(&camera_config.ip));
+                entry.groups = groups_by_ip
+                    .get(&camera_config.ip)
+                    .cloned()
+                    .unwrap_or_default();
+                entry
+            })
             .collect::<Vec<_>>();
         entries.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
         let camera_count = entries.len();
@@ -8380,7 +8403,7 @@ impl ServerState {
             .cloned()
     }
 
-    fn upsert_camera(&self, entry: CameraEntry) {
+    fn upsert_camera(&self, mut entry: CameraEntry) {
         let mut cameras = self
             .cameras
             .write()
@@ -8389,6 +8412,9 @@ impl ServerState {
             .iter_mut()
             .find(|camera| camera.info.id == entry.info.id)
         {
+            if entry.groups.is_empty() {
+                entry.groups.clone_from(&existing.groups);
+            }
             *existing = entry;
         } else {
             cameras.push(entry);
@@ -9272,6 +9298,11 @@ fn handle_request(
         (GET) (/metrics) => {
             authenticated_api_request(request, state, false, AccessRole::Administrator, |_| {
                 prometheus_metrics(router_tx, state)
+            })
+        },
+        (GET) (/recording-coverage) => {
+            authenticated_api_request(request, state, false, AccessRole::User, |_| {
+                recording_coverage::get(request, router_tx, state)
             })
         },
         _ => serve_ui(request)
@@ -10747,13 +10778,19 @@ fn server_health(
 }
 
 fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerState) -> Response {
+    let health = server_health(router_tx, state);
+    let recording =
+        recording_coverage::metric_snapshot(state, &health, unix_time_ms()).map_err(|error| {
+            tracing::warn!(%error, "recording coverage metrics are unavailable");
+        });
     let mqtt = state
         .event_forwarder
         .as_ref()
         .map(EventForwarderHandle::status);
     match crate::metrics::encode_health_with_access_and_mqtt(
-        &server_health(router_tx, state),
+        &health,
         Some(access_metrics_snapshot(state)),
+        recording.as_ref().ok(),
         mqtt.as_ref(),
     ) {
         Ok(metrics) => Response::from_data(
@@ -12764,7 +12801,8 @@ mod tests {
             outbox_limit_bytes: 67_108_864,
         };
         let metrics =
-            crate::metrics::encode_health_with_access_and_mqtt(&health, None, Some(&mqtt)).unwrap();
+            crate::metrics::encode_health_with_access_and_mqtt(&health, None, None, Some(&mqtt))
+                .unwrap();
         assert!(metrics.contains("state=\"starting\""));
         assert!(!metrics.contains("keeppeek_camera_online"));
         assert!(!metrics.contains("keeppeek_camera_degraded"));
@@ -17931,6 +17969,147 @@ mod tests {
     }
 
     #[test]
+    fn recording_coverage_route_pages_one_catalog_revision() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-recording-coverage-route-{}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let catalog =
+            crate::storage::RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let catalog_handle = catalog.handle();
+        let camera = |ip: &str, name: &str| CameraConfig {
+            ip: ip.parse().unwrap(),
+            name: Some(name.to_owned()),
+            display_name: Some(name.replace('-', " ")),
+            manufacturer: None,
+            username: String::new(),
+            password: String::new(),
+            onvif_port: None,
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: CameraBackend::Retina,
+            transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Main,
+            event_recording_duration_secs: 60,
+        };
+        let camera_configs = HashMap::from([
+            (
+                "Exterior".to_owned(),
+                vec![camera("192.0.2.10", "front-door")],
+            ),
+            (
+                "Interior".to_owned(),
+                vec![camera("192.0.2.11", "workshop")],
+            ),
+        ]);
+        let state = ServerState::new(
+            &Config::default(),
+            &camera_configs,
+            &HashMap::new(),
+            &StorageConfig::default(),
+            RecordingDemand::new(TEST_RECORDING_DEMAND_GRACE),
+            WebRtc::new(),
+        )
+        .with_recording_catalog(catalog_handle.clone());
+        let end_ms = unix_time_ms();
+        let start_ms = end_ms.saturating_sub(60_000);
+        let request = Request::fake_http(
+            "GET",
+            format!("/recording-coverage?start_ms={start_ms}&end_ms={end_ms}&page_size=1"),
+            Vec::new(),
+            Vec::new(),
+        );
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let response = handle_request(&request, &router_tx, &state);
+        assert_eq!(response.status_code, 200);
+        assert_eq!(router_thread.join().unwrap(), 1);
+        let first: serde_json::Value = serde_json::from_slice(&response_data(response)).unwrap();
+        assert_eq!(first["cameras"].as_array().unwrap().len(), 1);
+        assert_eq!(first["groups"], serde_json::json!(["Exterior", "Interior"]));
+        let first_camera_id = first["cameras"][0]["camera_id"].as_str().unwrap();
+        assert_eq!(first["cameras"][0]["streams"][0]["coverage_percent"], 0.0);
+        let token = first["next_page_token"].as_str().unwrap();
+
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let metrics = handle_request(
+            &Request::fake_http("GET", "/metrics", Vec::new(), Vec::new()),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(metrics.status_code, 200);
+        assert_eq!(router_thread.join().unwrap(), 1);
+        let metrics = String::from_utf8(response_data(metrics)).unwrap();
+        assert!(metrics.contains("keeppeek_recording_coverage_snapshot_available 1"));
+        assert!(metrics.contains(&format!(
+            "keeppeek_recording_coverage_ratio{{camera_id=\"{first_camera_id}\""
+        )));
+        assert!(metrics.contains("stream=\"main\"} 0"));
+
+        let request = Request::fake_http(
+            "GET",
+            format!("/recording-coverage?page_token={token}"),
+            Vec::new(),
+            Vec::new(),
+        );
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let response = handle_request(&request, &router_tx, &state);
+        assert_eq!(response.status_code, 200);
+        assert_eq!(router_thread.join().unwrap(), 1);
+        let second: serde_json::Value = serde_json::from_slice(&response_data(response)).unwrap();
+        assert_eq!(second["cameras"].as_array().unwrap().len(), 1);
+        assert!(second["next_page_token"].is_null());
+
+        catalog_handle
+            .upsert_recording(crate::storage::CatalogRecording {
+                id: "revision-change".to_owned(),
+                stream_id: "front-door/main".to_owned(),
+                source_id: Some("192.0.2.10".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                started_at_ms: i64::try_from(start_ms).unwrap_or(i64::MAX),
+                ended_at_ms: None,
+                path: directory
+                    .join("revision-change.mp4.active")
+                    .to_string_lossy()
+                    .into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: false,
+            })
+            .unwrap();
+        let request = Request::fake_http(
+            "GET",
+            format!("/recording-coverage?page_token={token}"),
+            Vec::new(),
+            Vec::new(),
+        );
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let response = handle_request(&request, &router_tx, &state);
+        assert_eq!(response.status_code, 409);
+        assert_eq!(router_thread.join().unwrap(), 1);
+
+        drop(state);
+        drop(catalog_handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn health_command_reports_bytes_for_a_custom_recording_catalog_path() {
         let directory = std::env::temp_dir().join(format!(
             "keeppeek-custom-catalog-health-{}",
@@ -18395,6 +18574,7 @@ mod tests {
                 recording_mode: Default::default(),
                 event_recording_duration_secs: 60,
             },
+            groups: vec!["cameras".to_owned()],
             battery_uid: None,
             recording_label: "back-yard".to_owned(),
             control: None,
@@ -18420,6 +18600,45 @@ mod tests {
         );
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_entries_preserve_configuration_groups() {
+        let front = CameraConfig {
+            ip: "192.0.2.10".parse().unwrap(),
+            name: Some("front".to_owned()),
+            display_name: Some("Front Door".to_owned()),
+            manufacturer: None,
+            username: String::new(),
+            password: String::new(),
+            onvif_port: None,
+            http_port: None,
+            main_rtsp_url: None,
+            sub_rtsp_url: None,
+            uid: None,
+            backend: CameraBackend::Retina,
+            transport: CameraTransport::Tcp,
+            record_generic_motion_events: false,
+            recording_mode: CameraRecordingMode::Main,
+            event_recording_duration_secs: 60,
+        };
+        let camera_configs = HashMap::from([
+            ("Exterior".to_owned(), vec![front.clone()]),
+            ("Entrances".to_owned(), vec![front]),
+        ]);
+        let state = ServerState::new(
+            &Config::default(),
+            &camera_configs,
+            &HashMap::new(),
+            &StorageConfig::default(),
+            RecordingDemand::new(TEST_RECORDING_DEMAND_GRACE),
+            WebRtc::new(),
+        );
+
+        assert_eq!(
+            state.camera_entries()[0].groups,
+            vec!["Entrances".to_owned(), "Exterior".to_owned()]
+        );
     }
 
     #[test]

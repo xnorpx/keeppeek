@@ -6,7 +6,8 @@ import {
 	deleteSession,
 	fetchLogSnapshot as fetchAuthenticatedLogSnapshot,
 	fetchLogStream as fetchAuthenticatedLogStream,
-	fetchMetricsSnapshot as fetchAuthenticatedMetricsSnapshot
+	fetchMetricsSnapshot as fetchAuthenticatedMetricsSnapshot,
+	fetchRecordingCoverage as fetchAuthenticatedRecordingCoverage
 } from './api';
 import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
@@ -145,6 +146,8 @@ import type {
 	RecordingEvent,
 	RecordingEventAttachment,
 	RecordingEventsResponse,
+	RecordingCoverageQuery,
+	RecordingCoverageResponse,
 	RecordingSegment,
 	RecordingsResponse,
 	SanitizedConfig,
@@ -525,6 +528,16 @@ export class ControlClient {
 
 	async testMqttIntegration(update: MqttSettingsUpdate) {
 		return this.#mqtt.test(update);
+	}
+
+	async getRecordingCoverage(
+		query: RecordingCoverageQuery = {},
+		signal?: AbortSignal
+	): Promise<RecordingCoverageResponse> {
+		return this.authenticatedHttp(
+			() => fetchAuthenticatedRecordingCoverage(query, this.#accessKey, signal),
+			[400, 409]
+		);
 	}
 
 	async openLogStream(url: string, signal: AbortSignal): Promise<Response> {
@@ -2567,11 +2580,17 @@ export class ControlClient {
 		this.publishAccessState({ status: 'error', session: null, message });
 	}
 
-	private async authenticatedHttp<T>(request: () => Promise<T>): Promise<T> {
+	private async authenticatedHttp<T>(
+		request: () => Promise<T>,
+		localStatuses: readonly number[] = []
+	): Promise<T> {
 		try {
 			return await request();
 		} catch (error) {
-			if (!(error instanceof DOMException && error.name === 'AbortError')) {
+			if (
+				!(error instanceof DOMException && error.name === 'AbortError') &&
+				!(error instanceof ApiRequestError && localStatuses.includes(error.status))
+			) {
 				this.publishConnectionError(error);
 			}
 			throw error;

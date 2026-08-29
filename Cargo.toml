@@ -78,6 +78,11 @@ name = "storage_safety"
 harness = false
 test = false
 
+[[bench]]
+name = "recording_coverage"
+harness = false
+test = false
+
 [dependencies]
 anyhow = { version = "*" }
 base64 = { version = "*" }
@@ -140,7 +145,11 @@ str0m = { version = "0.23.0", default-features = false, features = [
   "wincrypto-dimpl",
 ] }
 tracing-layer-win-eventlog = { version = "1.0.1", default-features = false }
-windows = { version = "0.62.2", features = ["Win32_Media"] }
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Media",
+  "Win32_Storage_FileSystem",
+] }
 windows-service = { version = "0.8.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -57,6 +57,7 @@
 		]
 	},
 	"httpPaths": ["/create", "/delete", "/logs", "/logs/snapshot", "/metrics"],
+	"internalHttpPaths": ["/recording-coverage"],
 	"principles": [
 		{
 			"index": 1,

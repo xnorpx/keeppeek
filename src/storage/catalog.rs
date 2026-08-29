@@ -17,6 +17,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{BTreeMap, VecDeque},
     fs::File,
     path::{Path, PathBuf},
     sync::{
@@ -36,6 +37,13 @@ const MAX_ATTACHMENT_ID_BYTES: usize = 64;
 const MAX_ATTACHMENT_TYPE_BYTES: usize = 64;
 const MAX_CONTENT_TYPE_BYTES: usize = 128;
 const MAX_ATTACHMENT_TEXT_CHARS: usize = 4_096;
+/// Bounds exact recent coverage detail while retaining per-stream totals.
+const MAX_COVERAGE_RANGES_PER_STREAM: usize = 256;
+/// Keeps exact coverage scans bounded while long-term totals remain aggregated.
+const MAX_COVERAGE_WINDOW_MS: i64 = 31 * 86_400_000;
+/// Bounds retained deletion evidence independently from the recording lifetime.
+const MAX_DELETION_LEDGER_ROWS: i64 = 10_000;
+const MAX_DELETIONS_PER_STREAM: usize = 256;
 #[cfg(not(test))]
 const MAX_SEMANTIC_CANDIDATES: i64 = 10_000;
 #[cfg(test)]
@@ -214,6 +222,87 @@ pub struct CatalogStats {
     pub newest_recording_at_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CatalogCoverageSnapshot {
+    pub revision: u64,
+    pub updated_at_ms: i64,
+    pub streams: Vec<CatalogStreamCoverage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CatalogDeletionReason {
+    ArchiveLimit,
+    DiskPressure,
+    Reconciliation,
+    Migration,
+    Unknown,
+}
+
+impl CatalogDeletionReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ArchiveLimit => "archive_limit",
+            Self::DiskPressure => "disk_pressure",
+            Self::Reconciliation => "reconciliation",
+            Self::Migration => "migration",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "archive_limit" => Some(Self::ArchiveLimit),
+            "disk_pressure" => Some(Self::DiskPressure),
+            "reconciliation" => Some(Self::Reconciliation),
+            "migration" => Some(Self::Migration),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CatalogDeletionRange {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub deleted_at_ms: i64,
+    pub reason: CatalogDeletionReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CatalogCoverageBucket {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub coverage_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CatalogStreamCoverage {
+    pub stream_id: String,
+    pub source_id: Option<String>,
+    pub logical_stream_id: Option<String>,
+    pub finalized_files: u64,
+    pub active_files: u64,
+    pub recording_bytes: u64,
+    pub playable_fragments: u64,
+    pub fragment_bytes: u64,
+    pub oldest_recording_at_ms: Option<i64>,
+    pub newest_recording_at_ms: Option<i64>,
+    pub retained_coverage_ms: u64,
+    pub selected_coverage_ms: u64,
+    pub selected_fragment_bytes: u64,
+    pub selected_first_start_ms: Option<i64>,
+    pub selected_last_end_ms: Option<i64>,
+    pub largest_gap_ms: u64,
+    pub last_finalized_at_ms: Option<i64>,
+    pub last_catalog_commit_at_ms: Option<i64>,
+    pub ranges: Vec<(i64, i64)>,
+    pub range_count: u64,
+    pub bucket_ms: u64,
+    pub buckets: Vec<CatalogCoverageBucket>,
+    pub deletions: Vec<CatalogDeletionRange>,
+}
+
 #[derive(Clone)]
 pub struct RecordingCatalogHandle {
     tx: SyncSender<Command>,
@@ -354,6 +443,7 @@ enum Command {
     },
     CompleteCleanup {
         recording_id: String,
+        reason: CatalogDeletionReason,
         reply: SyncSender<anyhow::Result<()>>,
     },
     CancelCleanup {
@@ -400,6 +490,11 @@ enum SearchCommand {
         end_ms: i64,
         bucket_ms: u64,
         reply: SyncSender<anyhow::Result<Vec<(i64, i64)>>>,
+    },
+    Coverage {
+        start_ms: i64,
+        end_ms: i64,
+        reply: SyncSender<anyhow::Result<CatalogCoverageSnapshot>>,
     },
     Shutdown,
 }
@@ -543,19 +638,24 @@ pub(crate) fn rewrite_recording_paths(
                 let destination = destination
                     .to_str()
                     .ok_or_else(|| anyhow::anyhow!("migrated recording path is not valid UTF-8"))?;
-                let file_bytes = if finalized {
-                    std::fs::metadata(destination).map_or(0, |metadata| metadata.len())
+                let metadata = if finalized {
+                    std::fs::metadata(destination).ok()
                 } else {
-                    0
+                    None
                 };
+                let file_bytes = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+                let file_identity = metadata
+                    .as_ref()
+                    .and_then(|metadata| recording_file_identity(Path::new(destination), metadata));
                 connection
                     .execute(
                         "UPDATE recording_files
-                         SET path = ?1, file_bytes = ?2
-                         WHERE id = ?3",
+                         SET path = ?1, file_bytes = ?2, file_identity = ?3
+                         WHERE id = ?4",
                         turso::params![
                             destination,
                             to_i64(file_bytes, "migrated recording file bytes")?,
+                            file_identity,
                             recording_id
                         ],
                     )
@@ -704,6 +804,29 @@ impl RecordingCatalogHandle {
                 start_ms,
                 end_ms,
                 bucket_ms,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn coverage(
+        &self,
+        window: std::ops::Range<i64>,
+    ) -> anyhow::Result<CatalogCoverageSnapshot> {
+        if window.start >= window.end {
+            anyhow::bail!("coverage query start must be before end");
+        }
+        if window.end.saturating_sub(window.start) > MAX_COVERAGE_WINDOW_MS {
+            anyhow::bail!("coverage query cannot exceed 31 days");
+        }
+        let (reply, response) = mpsc::sync_channel(1);
+        self.search_tx
+            .send(SearchCommand::Coverage {
+                start_ms: window.start,
+                end_ms: window.end,
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -1002,11 +1125,16 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
-    pub(crate) fn complete_cleanup(&self, recording_id: &str) -> anyhow::Result<()> {
+    pub(crate) fn complete_cleanup(
+        &self,
+        recording_id: &str,
+        reason: CatalogDeletionReason,
+    ) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .send(Command::CompleteCleanup {
                 recording_id: recording_id.to_owned(),
+                reason,
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -1338,11 +1466,13 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             }
             Command::CompleteCleanup {
                 recording_id,
+                reason,
                 reply,
             } => {
                 let _ = reply.send(pollster::block_on(complete_cleanup(
                     &connection,
                     &recording_id,
+                    reason,
                 )));
             }
             Command::CancelCleanup {
@@ -1426,6 +1556,16 @@ fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>
                     start_ms,
                     end_ms,
                     bucket_ms,
+                )));
+            }
+            SearchCommand::Coverage {
+                start_ms,
+                end_ms,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(catalog_coverage(
+                    &connection,
+                    start_ms..end_ms,
                 )));
             }
             SearchCommand::Shutdown => break,
@@ -1549,11 +1689,16 @@ async fn backfill_recording_file_sizes(
             if !metadata.is_file() {
                 continue;
             }
+            let identity = recording_file_identity(&recording.path, &metadata);
             connection
                 .execute(
-                    "UPDATE recording_files SET file_bytes = ?1 WHERE id = ?2",
+                    "UPDATE recording_files
+                     SET file_bytes = ?1, file_identity = ?2
+                     WHERE id = ?3
+                       AND (file_bytes != ?1 OR file_identity IS NOT ?2)",
                     turso::params![
                         to_i64(metadata.len(), "recording file bytes")?,
+                        identity,
                         recording.id.clone()
                     ],
                 )
@@ -1610,11 +1755,12 @@ async fn insert_backfilled_keyframes(
 ) -> anyhow::Result<()> {
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
+        let mut inserted = false;
         for keyframe in keyframes {
             if keyframe.recording_id != recording_id {
                 anyhow::bail!("backfilled keyframe belongs to a different recording");
             }
-            connection
+            inserted |= connection
                 .execute(
                     "INSERT OR IGNORE INTO recording_keyframes (
                          recording_id, fragment_sequence, byte_offset, byte_len
@@ -1626,9 +1772,14 @@ async fn insert_backfilled_keyframes(
                         to_i64(keyframe.byte_len, "keyframe byte length")?,
                     ],
                 )
-                .await?;
+                .await?
+                > 0;
             reconcile_events_for_fragment(connection, recording_id, keyframe.fragment_sequence)
                 .await?;
+        }
+        if inserted {
+            rebuild_recording_coverage(connection, recording_id).await?;
+            bump_catalog_revision(connection).await?;
         }
         anyhow::Ok(())
     }
@@ -1640,6 +1791,19 @@ async fn insert_backfilled_keyframes(
             Err(error)
         }
     }
+}
+
+async fn bump_catalog_revision(connection: &turso::Connection) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "UPDATE recording_catalog_state
+             SET revision = revision + 1,
+                 updated_at_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+             WHERE id = 1",
+            (),
+        )
+        .await?;
+    Ok(())
 }
 
 async fn backfill_recording_identity(
@@ -1707,13 +1871,30 @@ async fn delete_recording(
     connection: &turso::Connection,
     recording_id: &str,
 ) -> anyhow::Result<()> {
-    connection
-        .execute(
-            "DELETE FROM recording_files WHERE id = ?1",
-            turso::params![recording_id],
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        record_deletion(
+            connection,
+            recording_id,
+            CatalogDeletionReason::Reconciliation,
         )
         .await?;
-    Ok(())
+        connection
+            .execute(
+                "DELETE FROM recording_files WHERE id = ?1",
+                turso::params![recording_id],
+            )
+            .await?;
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
 }
 
 async fn delete_recordings_by_path(
@@ -1726,6 +1907,26 @@ async fn delete_recordings_by_path(
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
         for path in paths {
+            let mut rows = connection
+                .query(
+                    "SELECT id FROM recording_files WHERE path = ?1",
+                    turso::params![path.clone()],
+                )
+                .await?;
+            let recording_id = rows
+                .next()
+                .await?
+                .map(|row| row.get::<String>(0))
+                .transpose()?;
+            drop(rows);
+            if let Some(recording_id) = recording_id {
+                record_deletion(
+                    connection,
+                    &recording_id,
+                    CatalogDeletionReason::Reconciliation,
+                )
+                .await?;
+            }
             connection
                 .execute(
                     "DELETE FROM recording_files WHERE path = ?1",
@@ -1827,11 +2028,68 @@ async fn pending_cleanup_candidate(
 async fn complete_cleanup(
     connection: &turso::Connection,
     recording_id: &str,
+    reason: CatalogDeletionReason,
+) -> anyhow::Result<()> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let mut rows = connection
+            .query(
+                "SELECT 1 FROM recording_files WHERE id = ?1 AND cleanup_pending = 1",
+                turso::params![recording_id],
+            )
+            .await?;
+        let pending = rows.next().await?.is_some();
+        drop(rows);
+        if pending {
+            record_deletion(connection, recording_id, reason).await?;
+            connection
+                .execute(
+                    "DELETE FROM recording_files WHERE id = ?1 AND cleanup_pending = 1",
+                    turso::params![recording_id],
+                )
+                .await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn record_deletion(
+    connection: &turso::Connection,
+    recording_id: &str,
+    reason: CatalogDeletionReason,
 ) -> anyhow::Result<()> {
     connection
         .execute(
-            "DELETE FROM recording_files WHERE id = ?1 AND cleanup_pending = 1",
-            turso::params![recording_id],
+            "INSERT INTO recording_deletions (
+                 stream_id, source_id, logical_stream_id, start_ms, end_ms,
+                 deleted_at_ms, reason
+             )
+                         SELECT s.stream_id, s.source_id, s.logical_stream_id,
+                                        c.start_ms, c.end_ms,
+                    CAST(unixepoch('subsec') * 1000 AS INTEGER), ?2
+                         FROM recording_coverage_files AS s
+                         JOIN recording_coverage_ranges AS c ON c.recording_id = s.recording_id
+                         WHERE s.recording_id = ?1",
+            turso::params![recording_id, reason.as_str()],
+        )
+        .await?;
+    connection
+        .execute(
+            "DELETE FROM recording_deletions
+             WHERE id NOT IN (
+                 SELECT id FROM recording_deletions
+                 ORDER BY deleted_at_ms DESC, id DESC
+                 LIMIT ?1
+             )",
+            turso::params![MAX_DELETION_LEDGER_ROWS],
         )
         .await?;
     Ok(())
@@ -1876,6 +2134,13 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  revision INTEGER NOT NULL
              );
              INSERT OR IGNORE INTO recording_event_search_state (id, revision) VALUES (1, 0);
+             CREATE TABLE IF NOT EXISTS recording_catalog_state (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 revision INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL
+             );
+             INSERT OR IGNORE INTO recording_catalog_state (id, revision, updated_at_ms)
+                 VALUES (1, 0, CAST(unixepoch('subsec') * 1000 AS INTEGER));
              CREATE TABLE IF NOT EXISTS recording_files (
                  id TEXT PRIMARY KEY,
                  stream_id TEXT NOT NULL,
@@ -1887,6 +2152,8 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  init_offset INTEGER NOT NULL,
                  init_len INTEGER NOT NULL,
                  finalized INTEGER NOT NULL,
+                 finalized_at_ms INTEGER,
+                 file_identity TEXT,
                  file_bytes INTEGER NOT NULL DEFAULT 0,
                  protected INTEGER NOT NULL DEFAULT 0,
                  cleanup_pending INTEGER NOT NULL DEFAULT 0
@@ -1907,6 +2174,31 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  ON recording_fragments(start_ms);
              CREATE INDEX IF NOT EXISTS recording_fragments_recording_time
                  ON recording_fragments(recording_id, start_ms);
+             CREATE TRIGGER IF NOT EXISTS recording_catalog_files_insert
+             AFTER INSERT ON recording_files
+             BEGIN
+                 UPDATE recording_catalog_state
+                 SET revision = revision + 1,
+                     updated_at_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+                 WHERE id = 1;
+             END;
+             CREATE TRIGGER IF NOT EXISTS recording_catalog_files_update
+             AFTER UPDATE ON recording_files
+             BEGIN
+                 UPDATE recording_catalog_state
+                 SET revision = revision + 1,
+                     updated_at_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+                 WHERE id = 1;
+             END;
+             CREATE TRIGGER IF NOT EXISTS recording_catalog_files_delete
+             AFTER DELETE ON recording_files
+             BEGIN
+                 UPDATE recording_catalog_state
+                 SET revision = revision + 1,
+                     updated_at_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+                 WHERE id = 1;
+             END;
+             DROP TRIGGER IF EXISTS recording_catalog_fragments_insert;
              CREATE TABLE IF NOT EXISTS recording_keyframes (
                  recording_id TEXT NOT NULL,
                  fragment_sequence INTEGER NOT NULL,
@@ -1916,6 +2208,57 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  FOREIGN KEY(recording_id, fragment_sequence)
                      REFERENCES recording_fragments(recording_id, sequence) ON DELETE CASCADE
              );
+             DROP TRIGGER IF EXISTS recording_catalog_keyframes_insert;
+             CREATE TABLE IF NOT EXISTS recording_deletions (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 stream_id TEXT NOT NULL,
+                 source_id TEXT,
+                 logical_stream_id TEXT,
+                 start_ms INTEGER NOT NULL,
+                 end_ms INTEGER NOT NULL,
+                 deleted_at_ms INTEGER NOT NULL,
+                 reason TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS recording_deletions_stream_time
+                 ON recording_deletions(stream_id, start_ms, end_ms);
+             CREATE TRIGGER IF NOT EXISTS recording_catalog_deletions_insert
+             AFTER INSERT ON recording_deletions
+             BEGIN
+                 UPDATE recording_catalog_state
+                 SET revision = revision + 1,
+                     updated_at_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+                 WHERE id = 1;
+             END;
+             CREATE TRIGGER IF NOT EXISTS recording_catalog_deletions_delete
+             AFTER DELETE ON recording_deletions
+             BEGIN
+                 UPDATE recording_catalog_state
+                 SET revision = revision + 1,
+                     updated_at_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)
+                 WHERE id = 1;
+             END;
+             CREATE TABLE IF NOT EXISTS recording_coverage_files (
+                 recording_id TEXT PRIMARY KEY
+                     REFERENCES recording_files(id) ON DELETE CASCADE,
+                 stream_id TEXT NOT NULL,
+                 source_id TEXT,
+                 logical_stream_id TEXT,
+                 fragment_count INTEGER NOT NULL,
+                 fragment_bytes INTEGER NOT NULL,
+                 coverage_ms INTEGER NOT NULL,
+                 committed_at_ms INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS recording_coverage_files_stream
+                 ON recording_coverage_files(stream_id);
+             CREATE TABLE IF NOT EXISTS recording_coverage_ranges (
+                 recording_id TEXT NOT NULL
+                     REFERENCES recording_files(id) ON DELETE CASCADE,
+                 start_ms INTEGER NOT NULL,
+                 end_ms INTEGER NOT NULL,
+                 PRIMARY KEY(recording_id, start_ms, end_ms)
+             );
+             CREATE INDEX IF NOT EXISTS recording_coverage_ranges_time
+                 ON recording_coverage_ranges(start_ms, end_ms);
              CREATE TABLE IF NOT EXISTS recording_events (
                  id TEXT PRIMARY KEY,
                  revision INTEGER NOT NULL DEFAULT 1,
@@ -1999,6 +2342,15 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
         .await?;
     ensure_column(connection, "recording_files", "source_id", "TEXT").await?;
     ensure_column(connection, "recording_files", "logical_stream_id", "TEXT").await?;
+    ensure_column(connection, "recording_files", "finalized_at_ms", "INTEGER").await?;
+    ensure_column(connection, "recording_files", "file_identity", "TEXT").await?;
+    ensure_column(
+        connection,
+        "recording_coverage_files",
+        "committed_at_ms",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
     ensure_column(
         connection,
         "recording_files",
@@ -2067,6 +2419,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
         .await?;
     backfill_event_presentation(connection, icon_key_added).await?;
     apply_event_search_backfill(connection).await?;
+    backfill_recording_coverage(connection).await?;
     Ok(())
 }
 
@@ -2189,6 +2542,131 @@ async fn apply_event_search_backfill(connection: &turso::Connection) -> anyhow::
     }
 }
 
+pub(super) async fn backfill_recording_coverage(
+    connection: &turso::Connection,
+) -> anyhow::Result<()> {
+    let mut rows = connection
+        .query(
+            "SELECT id FROM recording_files AS r
+             WHERE r.finalized = 1
+               AND NOT EXISTS (
+                   SELECT 1 FROM recording_coverage_files AS c
+                   WHERE c.recording_id = r.id
+               )
+             ORDER BY r.started_at_ms, r.id",
+            (),
+        )
+        .await?;
+    let mut recording_ids = Vec::new();
+    while let Some(row) = rows.next().await? {
+        recording_ids.push(row.get::<String>(0)?);
+    }
+    drop(rows);
+    if recording_ids.is_empty() {
+        return Ok(());
+    }
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        for recording_id in recording_ids {
+            rebuild_recording_coverage(connection, &recording_id).await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn rebuild_recording_coverage(
+    connection: &turso::Connection,
+    recording_id: &str,
+) -> anyhow::Result<()> {
+    let committed_at_ms = current_unix_time_ms();
+    connection
+        .execute(
+            "DELETE FROM recording_coverage_ranges WHERE recording_id = ?1",
+            turso::params![recording_id],
+        )
+        .await?;
+    connection
+        .execute(
+            "DELETE FROM recording_coverage_files WHERE recording_id = ?1",
+            turso::params![recording_id],
+        )
+        .await?;
+    let mut recording_rows = connection
+        .query(
+            "SELECT stream_id, source_id, logical_stream_id
+             FROM recording_files
+             WHERE id = ?1 AND finalized = 1",
+            turso::params![recording_id],
+        )
+        .await?;
+    let Some(recording) = recording_rows.next().await? else {
+        return Ok(());
+    };
+    let stream_id = recording.get::<String>(0)?;
+    let source_id = recording.get::<Option<String>>(1)?;
+    let logical_stream_id = recording.get::<Option<String>>(2)?;
+    drop(recording_rows);
+
+    let mut fragment_rows = connection
+        .query(
+            "SELECT f.start_ms, f.start_ms + f.duration_ms, f.byte_len
+             FROM recording_fragments AS f
+             JOIN recording_keyframes AS k
+               ON k.recording_id = f.recording_id AND k.fragment_sequence = f.sequence
+             WHERE f.recording_id = ?1 AND f.random_access = 1 AND f.duration_ms > 0
+             ORDER BY f.start_ms, f.sequence",
+            turso::params![recording_id],
+        )
+        .await?;
+    let mut accumulator = CoverageAccumulator::unbounded();
+    let mut fragment_count = 0u64;
+    let mut fragment_bytes = 0u64;
+    while let Some(row) = fragment_rows.next().await? {
+        accumulator.push((row.get(0)?, row.get(1)?));
+        fragment_count = fragment_count.saturating_add(1);
+        fragment_bytes =
+            fragment_bytes.saturating_add(to_u64(row.get(2)?, "coverage fragment bytes")?);
+    }
+    drop(fragment_rows);
+    let summary = accumulator.finish();
+    connection
+        .execute(
+            "INSERT INTO recording_coverage_files (
+                 recording_id, stream_id, source_id, logical_stream_id,
+                 fragment_count, fragment_bytes, coverage_ms, committed_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            turso::params![
+                recording_id,
+                stream_id,
+                source_id,
+                logical_stream_id,
+                to_i64(fragment_count, "coverage fragment count")?,
+                to_i64(fragment_bytes, "coverage fragment bytes")?,
+                to_i64(summary.duration_ms, "recording coverage duration")?,
+                committed_at_ms,
+            ],
+        )
+        .await?;
+    for (start_ms, end_ms) in summary.ranges {
+        connection
+            .execute(
+                "INSERT INTO recording_coverage_ranges (recording_id, start_ms, end_ms)
+                 VALUES (?1, ?2, ?3)",
+                turso::params![recording_id, start_ms, end_ms],
+            )
+            .await?;
+    }
+    Ok(())
+}
+
 async fn upsert_recording(
     connection: &turso::Connection,
     recording: CatalogRecording,
@@ -2277,6 +2755,23 @@ async fn insert_fragment_with_keyframe(
             keyframe.fragment_sequence,
         )
         .await?;
+        let mut rows = connection
+            .query(
+                "SELECT finalized FROM recording_files WHERE id = ?1",
+                turso::params![keyframe.recording_id.clone()],
+            )
+            .await?;
+        let finalized = rows
+            .next()
+            .await?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?
+            .is_some_and(|value| value != 0);
+        drop(rows);
+        if finalized {
+            rebuild_recording_coverage(connection, &keyframe.recording_id).await?;
+            bump_catalog_revision(connection).await?;
+        }
         anyhow::Ok(())
     }
     .await;
@@ -2295,25 +2790,83 @@ async fn update_recording_path(
     path: &str,
     finalized: bool,
 ) -> anyhow::Result<()> {
-    let file_bytes = if finalized {
-        std::fs::metadata(path).map_or(0, |metadata| metadata.len())
+    let metadata = if finalized {
+        std::fs::metadata(path).ok()
     } else {
-        0
+        None
     };
-    connection
-        .execute(
+    let file_bytes = metadata.as_ref().map_or(0, std::fs::Metadata::len);
+    let file_identity = metadata
+        .as_ref()
+        .and_then(|metadata| recording_file_identity(Path::new(path), metadata));
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let changed = connection
+            .execute(
             "UPDATE recording_files
-             SET path = ?1, finalized = ?2, file_bytes = ?3
-             WHERE id = ?4",
-            (
+             SET path = ?1,
+                 finalized = ?2,
+                 finalized_at_ms = CASE
+                     WHEN ?2 = 1 THEN COALESCE(
+                         finalized_at_ms,
+                         CAST(unixepoch('subsec') * 1000 AS INTEGER)
+                     )
+                     ELSE NULL
+                 END,
+                 ended_at_ms = CASE
+                     WHEN ?2 = 1 THEN COALESCE(
+                         (SELECT MAX(start_ms + duration_ms)
+                          FROM recording_fragments
+                          WHERE recording_id = ?5),
+                         ended_at_ms
+                     )
+                     ELSE ended_at_ms
+                 END,
+                 file_bytes = ?3,
+                 file_identity = ?4
+                         WHERE id = ?5
+                             AND (
+                                     path != ?1 OR finalized != ?2 OR file_bytes != ?3
+                                     OR file_identity IS NOT ?4
+                                     OR (?2 = 1 AND (finalized_at_ms IS NULL OR ended_at_ms IS NULL))
+                             )",
+            turso::params![
                 path,
                 i64::from(finalized),
                 to_i64(file_bytes, "recording file bytes")?,
+                file_identity,
                 recording_id,
-            ),
+            ],
         )
         .await?;
-    Ok(())
+        if finalized {
+            if changed > 0 {
+                rebuild_recording_coverage(connection, recording_id).await?;
+            }
+        } else {
+            connection
+                .execute(
+                    "DELETE FROM recording_coverage_ranges WHERE recording_id = ?1",
+                    turso::params![recording_id],
+                )
+                .await?;
+            connection
+                .execute(
+                    "DELETE FROM recording_coverage_files WHERE recording_id = ?1",
+                    turso::params![recording_id],
+                )
+                .await?;
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
 }
 
 async fn fragments_in_range(
@@ -2350,7 +2903,7 @@ async fn fragments_in_range(
     Ok(fragments)
 }
 
-async fn media_fragments_in_range(
+pub(super) async fn media_fragments_in_range(
     connection: &turso::Connection,
     stream_id: &str,
     start_ms: i64,
@@ -2433,6 +2986,824 @@ async fn availability_ranges_in_range(
         ranges.push((row.get(0)?, row.get(1)?));
     }
     Ok(ranges)
+}
+
+pub(super) async fn catalog_coverage(
+    connection: &turso::Connection,
+    window: std::ops::Range<i64>,
+) -> anyhow::Result<CatalogCoverageSnapshot> {
+    connection.execute_batch("BEGIN").await?;
+    let result = catalog_coverage_in_transaction(connection, window).await;
+    match result {
+        Ok(snapshot) => {
+            connection.execute_batch("COMMIT").await?;
+            Ok(snapshot)
+        }
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn catalog_coverage_in_transaction(
+    connection: &turso::Connection,
+    window: std::ops::Range<i64>,
+) -> anyhow::Result<CatalogCoverageSnapshot> {
+    let mut state_rows = connection
+        .query(
+            "SELECT revision, updated_at_ms FROM recording_catalog_state WHERE id = 1",
+            (),
+        )
+        .await?;
+    let state = state_rows
+        .next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("recording catalog state is unavailable"))?;
+    let revision = to_u64(state.get(0)?, "recording catalog revision")?;
+    let updated_at_ms = state.get(1)?;
+    drop(state_rows);
+
+    let mut streams = BTreeMap::<String, CatalogStreamCoverage>::new();
+    let mut file_rows = connection
+        .query(
+            "WITH finalized AS (
+                 SELECT id, COALESCE(file_identity, 'path:' || path) AS attribution_key,
+                        file_bytes
+                 FROM recording_files
+                 WHERE finalized = 1
+             ), ownership AS (
+                 SELECT attribution_key, MAX(file_bytes) AS physical_bytes,
+                        COUNT(*) AS owners, MIN(id) AS remainder_owner
+                 FROM finalized
+                 GROUP BY attribution_key
+             ), allocated AS (
+                 SELECT f.id,
+                        o.physical_bytes / o.owners
+                        + CASE WHEN f.id = o.remainder_owner
+                            THEN o.physical_bytes % o.owners ELSE 0 END AS attributed_bytes
+                 FROM finalized AS f
+                 JOIN ownership AS o ON o.attribution_key = f.attribution_key
+             )
+             SELECT r.stream_id, MAX(r.source_id), MAX(r.logical_stream_id),
+                    SUM(CASE WHEN r.finalized = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN r.finalized = 0 THEN 1 ELSE 0 END),
+                    COALESCE(SUM(a.attributed_bytes), 0),
+                    MAX(CASE WHEN r.finalized = 1
+                        THEN COALESCE(r.finalized_at_ms, r.ended_at_ms, r.started_at_ms) END)
+             FROM recording_files AS r
+             LEFT JOIN allocated AS a ON a.id = r.id
+             GROUP BY r.stream_id
+             ORDER BY r.stream_id",
+            (),
+        )
+        .await?;
+    while let Some(row) = file_rows.next().await? {
+        let stream_id = row.get::<String>(0)?;
+        streams.insert(
+            stream_id.clone(),
+            CatalogStreamCoverage {
+                stream_id,
+                source_id: row.get(1)?,
+                logical_stream_id: row.get(2)?,
+                finalized_files: to_u64(row.get(3)?, "finalized recording count")?,
+                active_files: to_u64(row.get(4)?, "active recording count")?,
+                recording_bytes: to_u64(row.get(5)?, "recording bytes")?,
+                playable_fragments: 0,
+                fragment_bytes: 0,
+                oldest_recording_at_ms: None,
+                newest_recording_at_ms: None,
+                retained_coverage_ms: 0,
+                selected_coverage_ms: 0,
+                selected_fragment_bytes: 0,
+                selected_first_start_ms: None,
+                selected_last_end_ms: None,
+                largest_gap_ms: 0,
+                last_finalized_at_ms: row.get(6)?,
+                last_catalog_commit_at_ms: None,
+                ranges: Vec::new(),
+                range_count: 0,
+                bucket_ms: coverage_bucket_ms(&window),
+                buckets: Vec::new(),
+                deletions: Vec::new(),
+            },
+        );
+    }
+    drop(file_rows);
+
+    let mut playable_rows = connection
+        .query(
+            "SELECT stream_id, COALESCE(SUM(fragment_count), 0),
+                    COALESCE(SUM(fragment_bytes), 0), MAX(committed_at_ms)
+                         FROM recording_coverage_files
+                         GROUP BY stream_id",
+            (),
+        )
+        .await?;
+    while let Some(row) = playable_rows.next().await? {
+        let stream_id = row.get::<String>(0)?;
+        if let Some(stream) = streams.get_mut(&stream_id) {
+            stream.playable_fragments = to_u64(row.get(1)?, "playable fragment count")?;
+            stream.fragment_bytes = to_u64(row.get(2)?, "playable fragment bytes")?;
+            stream.last_catalog_commit_at_ms = row.get(3)?;
+        }
+    }
+    drop(playable_rows);
+    let mut bound_rows = connection
+        .query(
+            "SELECT s.stream_id, c.start_ms, c.end_ms
+             FROM recording_coverage_ranges AS c
+             JOIN recording_coverage_files AS s ON s.recording_id = c.recording_id
+             ORDER BY s.stream_id, c.start_ms, c.end_ms",
+            (),
+        )
+        .await?;
+    let mut retained_accumulators = BTreeMap::<String, CoverageAccumulator>::new();
+    while let Some(row) = bound_rows.next().await? {
+        let stream_id = row.get::<String>(0)?;
+        retained_accumulators
+            .entry(stream_id)
+            .or_default()
+            .push((row.get(1)?, row.get(2)?));
+    }
+    drop(bound_rows);
+    for (stream_id, accumulator) in retained_accumulators {
+        if let Some(stream) = streams.get_mut(&stream_id) {
+            let summary = accumulator.finish();
+            stream.oldest_recording_at_ms = summary.first_start_ms;
+            stream.newest_recording_at_ms = summary.last_end_ms;
+            stream.retained_coverage_ms = summary.duration_ms;
+        }
+    }
+
+    let selected_sql = "WITH finalized AS (
+              SELECT id, COALESCE(file_identity, 'path:' || path) AS attribution_key,
+                  file_bytes
+              FROM recording_files
+              WHERE finalized = 1
+          ), ownership AS (
+              SELECT attribution_key, MAX(file_bytes) AS physical_bytes,
+                  COUNT(*) AS owners, MIN(id) AS remainder_owner
+              FROM finalized
+              GROUP BY attribution_key
+          ), allocated AS (
+              SELECT f.id,
+                  o.physical_bytes / o.owners
+                  + CASE WHEN f.id = o.remainder_owner
+                   THEN o.physical_bytes % o.owners ELSE 0 END AS attributed_bytes
+              FROM finalized AS f
+              JOIN ownership AS o ON o.attribution_key = f.attribution_key
+          )
+          SELECT s.recording_id, s.stream_id, MAX(?1, c.start_ms), MIN(?2, c.end_ms),
+              s.coverage_ms, a.attributed_bytes
+         FROM recording_coverage_ranges AS c
+         JOIN recording_coverage_files AS s ON s.recording_id = c.recording_id
+          JOIN allocated AS a ON a.id = s.recording_id
+         WHERE c.start_ms < ?2 AND c.end_ms > ?1
+         ORDER BY s.stream_id, c.start_ms, c.end_ms";
+    let mut selected_rows = connection
+        .query(selected_sql, (window.start, window.end))
+        .await?;
+    let mut accumulators = BTreeMap::<String, CoverageAccumulator>::new();
+    let mut selected_recordings = BTreeMap::<String, SelectedRecordingBytes>::new();
+    let bucket_ms = i64::try_from(coverage_bucket_ms(&window)).unwrap_or(i64::MAX);
+    let mut bucket_accumulators = BTreeMap::<(String, i64), CoverageAccumulator>::new();
+    while let Some(row) = selected_rows.next().await? {
+        let recording_id = row.get::<String>(0)?;
+        let stream_id = row.get::<String>(1)?;
+        if streams.contains_key(&stream_id) {
+            let start_ms = row.get::<i64>(2)?;
+            let end_ms = row.get::<i64>(3)?;
+            let selected_ms = u64::try_from(end_ms.saturating_sub(start_ms)).unwrap_or(0);
+            let coverage_ms = to_u64(row.get(4)?, "recording coverage duration")?;
+            let file_bytes = to_u64(row.get(5)?, "recording file bytes")?;
+            let selected =
+                selected_recordings
+                    .entry(recording_id)
+                    .or_insert_with(|| SelectedRecordingBytes {
+                        stream_id: stream_id.clone(),
+                        coverage_ms,
+                        file_bytes,
+                        selected_ms: 0,
+                    });
+            selected.selected_ms = selected.selected_ms.saturating_add(selected_ms);
+            accumulators
+                .entry(stream_id.clone())
+                .or_default()
+                .push((start_ms, end_ms));
+            add_bucket_coverage(
+                &mut bucket_accumulators,
+                &stream_id,
+                start_ms,
+                end_ms,
+                bucket_ms,
+            );
+        }
+    }
+    drop(selected_rows);
+    for selected in selected_recordings.into_values() {
+        if let Some(stream) = streams.get_mut(&selected.stream_id) {
+            let selected_bytes = u128::from(selected.file_bytes)
+                .saturating_mul(u128::from(selected.selected_ms))
+                .checked_div(u128::from(selected.coverage_ms))
+                .unwrap_or(0)
+                .try_into()
+                .unwrap_or(u64::MAX);
+            stream.selected_fragment_bytes = stream
+                .selected_fragment_bytes
+                .saturating_add(selected_bytes);
+        }
+    }
+    for (stream_id, accumulator) in accumulators {
+        if let Some(stream) = streams.get_mut(&stream_id) {
+            let summary = accumulator.finish();
+            stream.selected_coverage_ms = summary.duration_ms;
+            stream.selected_first_start_ms = summary.first_start_ms;
+            stream.selected_last_end_ms = summary.last_end_ms;
+            stream.largest_gap_ms = summary.largest_gap_ms;
+            stream.ranges = summary.ranges;
+            stream.range_count = summary.range_count;
+        }
+    }
+    for ((stream_id, bucket_start_ms), accumulator) in bucket_accumulators {
+        if let Some(stream) = streams.get_mut(&stream_id) {
+            let summary = accumulator.finish();
+            stream.buckets.push(CatalogCoverageBucket {
+                start_ms: bucket_start_ms.max(window.start),
+                end_ms: bucket_start_ms.saturating_add(bucket_ms).min(window.end),
+                coverage_ms: summary.duration_ms,
+            });
+        }
+    }
+    let mut deletion_rows = connection
+        .query(
+            "SELECT stream_id, source_id, logical_stream_id,
+                    start_ms, end_ms, deleted_at_ms, reason
+             FROM recording_deletions
+             WHERE start_ms < ?2 AND end_ms > ?1
+             ORDER BY stream_id, deleted_at_ms, id",
+            (window.start, window.end),
+        )
+        .await?;
+    while let Some(row) = deletion_rows.next().await? {
+        let stream_id = row.get::<String>(0)?;
+        let stream = streams
+            .entry(stream_id.clone())
+            .or_insert_with(|| CatalogStreamCoverage {
+                stream_id,
+                source_id: row.get(1).ok().flatten(),
+                logical_stream_id: row.get(2).ok().flatten(),
+                finalized_files: 0,
+                active_files: 0,
+                recording_bytes: 0,
+                playable_fragments: 0,
+                fragment_bytes: 0,
+                oldest_recording_at_ms: None,
+                newest_recording_at_ms: None,
+                retained_coverage_ms: 0,
+                selected_coverage_ms: 0,
+                selected_fragment_bytes: 0,
+                selected_first_start_ms: None,
+                selected_last_end_ms: None,
+                largest_gap_ms: 0,
+                last_finalized_at_ms: None,
+                last_catalog_commit_at_ms: None,
+                ranges: Vec::new(),
+                range_count: 0,
+                bucket_ms: coverage_bucket_ms(&window),
+                buckets: Vec::new(),
+                deletions: Vec::new(),
+            });
+        let reason = row.get::<String>(6)?;
+        let reason = CatalogDeletionReason::parse(&reason)
+            .ok_or_else(|| anyhow::anyhow!("unknown recording deletion reason '{reason}'"))?;
+        stream.deletions.push(CatalogDeletionRange {
+            start_ms: row.get(3)?,
+            end_ms: row.get(4)?,
+            deleted_at_ms: row.get(5)?,
+            reason,
+        });
+        if stream.deletions.len() > MAX_DELETIONS_PER_STREAM {
+            stream.deletions.remove(0);
+        }
+    }
+
+    Ok(CatalogCoverageSnapshot {
+        revision,
+        updated_at_ms,
+        streams: streams.into_values().collect(),
+    })
+}
+
+/// Covers integer timestamp rounding without concealing a real recording gap.
+const COVERAGE_CONTINUITY_TOLERANCE_MS: i64 = 1;
+const FIFTEEN_MINUTES_MS: i64 = 15 * 60 * 1_000;
+const HOUR_MS: i64 = 60 * 60 * 1_000;
+const SIX_HOURS_MS: i64 = 6 * HOUR_MS;
+const DAY_MS: i64 = 24 * HOUR_MS;
+
+fn coverage_bucket_ms(window: &std::ops::Range<i64>) -> u64 {
+    let duration_ms = window.end.saturating_sub(window.start);
+    u64::try_from(if duration_ms <= DAY_MS {
+        FIFTEEN_MINUTES_MS
+    } else if duration_ms <= 7 * DAY_MS {
+        HOUR_MS
+    } else {
+        SIX_HOURS_MS
+    })
+    .unwrap_or(u64::MAX)
+}
+
+fn add_bucket_coverage(
+    buckets: &mut BTreeMap<(String, i64), CoverageAccumulator>,
+    stream_id: &str,
+    start_ms: i64,
+    end_ms: i64,
+    bucket_ms: i64,
+) {
+    let mut cursor_ms = start_ms;
+    while cursor_ms < end_ms {
+        let bucket_start_ms = cursor_ms.div_euclid(bucket_ms).saturating_mul(bucket_ms);
+        let chunk_end_ms = end_ms.min(bucket_start_ms.saturating_add(bucket_ms));
+        buckets
+            .entry((stream_id.to_owned(), bucket_start_ms))
+            .or_default()
+            .push((cursor_ms, chunk_end_ms));
+        cursor_ms = chunk_end_ms;
+    }
+}
+
+struct CoverageAccumulator {
+    current: Option<(i64, i64)>,
+    recent: VecDeque<(i64, i64)>,
+    range_limit: usize,
+    range_count: u64,
+    duration_ms: u64,
+    first_start_ms: Option<i64>,
+    last_end_ms: Option<i64>,
+    largest_gap_ms: u64,
+}
+
+impl Default for CoverageAccumulator {
+    fn default() -> Self {
+        Self::with_limit(MAX_COVERAGE_RANGES_PER_STREAM)
+    }
+}
+
+struct CoverageRangeSummary {
+    ranges: Vec<(i64, i64)>,
+    range_count: u64,
+    duration_ms: u64,
+    first_start_ms: Option<i64>,
+    last_end_ms: Option<i64>,
+    largest_gap_ms: u64,
+}
+
+struct SelectedRecordingBytes {
+    stream_id: String,
+    coverage_ms: u64,
+    file_bytes: u64,
+    selected_ms: u64,
+}
+
+impl CoverageAccumulator {
+    const fn with_limit(range_limit: usize) -> Self {
+        Self {
+            current: None,
+            recent: VecDeque::new(),
+            range_limit,
+            range_count: 0,
+            duration_ms: 0,
+            first_start_ms: None,
+            last_end_ms: None,
+            largest_gap_ms: 0,
+        }
+    }
+
+    const fn unbounded() -> Self {
+        Self::with_limit(usize::MAX)
+    }
+
+    fn push(&mut self, (start_ms, end_ms): (i64, i64)) {
+        if start_ms >= end_ms {
+            return;
+        }
+        if let Some((_, current_end_ms)) = &mut self.current
+            && start_ms <= current_end_ms.saturating_add(COVERAGE_CONTINUITY_TOLERANCE_MS)
+        {
+            *current_end_ms = (*current_end_ms).max(end_ms);
+            return;
+        }
+        self.flush();
+        self.current = Some((start_ms, end_ms));
+    }
+
+    fn flush(&mut self) {
+        let Some(range) = self.current.take() else {
+            return;
+        };
+        self.range_count = self.range_count.saturating_add(1);
+        self.duration_ms = self
+            .duration_ms
+            .saturating_add(u64::try_from(range.1.saturating_sub(range.0)).unwrap_or(u64::MAX));
+        self.first_start_ms.get_or_insert(range.0);
+        if let Some(last_end_ms) = self.last_end_ms {
+            self.largest_gap_ms = self
+                .largest_gap_ms
+                .max(u64::try_from(range.0.saturating_sub(last_end_ms)).unwrap_or(u64::MAX));
+        }
+        self.last_end_ms = Some(range.1);
+        self.recent.push_back(range);
+        if self.recent.len() > self.range_limit {
+            self.recent.pop_front();
+        }
+    }
+
+    fn finish(mut self) -> CoverageRangeSummary {
+        self.flush();
+        CoverageRangeSummary {
+            ranges: self.recent.into(),
+            range_count: self.range_count,
+            duration_ms: self.duration_ms,
+            first_start_ms: self.first_start_ms,
+            last_end_ms: self.last_end_ms,
+            largest_gap_ms: self.largest_gap_ms,
+        }
+    }
+}
+
+#[cfg(test)]
+fn merge_coverage_ranges(
+    mut ranges: Vec<(i64, i64)>,
+    window: std::ops::Range<i64>,
+) -> Vec<(i64, i64)> {
+    ranges.sort_unstable();
+    let mut accumulator = CoverageAccumulator::default();
+    for (start_ms, end_ms) in ranges {
+        let start_ms = start_ms.max(window.start);
+        let end_ms = end_ms.min(window.end);
+        accumulator.push((start_ms, end_ms));
+    }
+    accumulator.finish().ranges
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn coverage_dir(name: &str) -> PathBuf {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-output")
+            .join(name);
+        if path.exists() {
+            std::fs::remove_dir_all(&path).unwrap();
+        }
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn coverage_merge_preserves_real_gaps() {
+        let ranges = vec![(900, 1_100), (1_101, 1_200), (1_202, 1_300), (1_250, 1_400)];
+
+        assert_eq!(
+            merge_coverage_ranges(ranges, 1_000..1_350),
+            vec![(1_000, 1_200), (1_202, 1_350)]
+        );
+    }
+
+    #[test]
+    fn coverage_merge_discards_invalid_and_outside_ranges() {
+        let ranges = vec![(500, 600), (1_000, 1_000), (1_100, 1_050), (1_200, 1_300)];
+
+        assert_eq!(
+            merge_coverage_ranges(ranges, 1_000..1_250),
+            vec![(1_200, 1_250)]
+        );
+    }
+
+    #[test]
+    fn coverage_buckets_are_deterministic_for_day_week_and_month_ranges() {
+        assert_eq!(coverage_bucket_ms(&(0..DAY_MS)), 15 * 60_000);
+        assert_eq!(coverage_bucket_ms(&(0..7 * DAY_MS)), 60 * 60_000);
+        assert_eq!(coverage_bucket_ms(&(0..30 * DAY_MS)), 6 * 60 * 60_000);
+    }
+
+    #[test]
+    fn coverage_snapshot_is_playable_and_restart_stable() {
+        let root = coverage_dir("turso-recording-coverage");
+        let catalog_path = root.join("recordings.db");
+        let final_path = root.join("final.mp4");
+        std::fs::write(&final_path, vec![0; 128]).unwrap();
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let handle = catalog.handle();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "final".to_owned(),
+                stream_id: "front/main".to_owned(),
+                source_id: Some("front".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                started_at_ms: 1_000,
+                ended_at_ms: Some(1_300),
+                path: final_path.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: false,
+            })
+            .unwrap();
+        for (sequence, start_ms, duration_ms, byte_len, random_access) in [
+            (1, 1_000, 100, 10, true),
+            (2, 1_101, 99, 11, true),
+            (3, 1_200, 100, 12, false),
+        ] {
+            handle
+                .insert_fragment_with_keyframe(
+                    CatalogFragment {
+                        recording_id: "final".to_owned(),
+                        sequence,
+                        start_ms,
+                        duration_ms,
+                        byte_offset: 8,
+                        byte_len,
+                        random_access,
+                    },
+                    CatalogKeyframe {
+                        recording_id: "final".to_owned(),
+                        fragment_sequence: sequence,
+                        byte_offset: 8,
+                        byte_len: 4,
+                    },
+                )
+                .unwrap();
+        }
+        let before_finalize_ms = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        handle
+            .update_recording_path("final", &final_path, true)
+            .unwrap();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "active".to_owned(),
+                stream_id: "front/main".to_owned(),
+                source_id: Some("front".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                started_at_ms: 1_200,
+                ended_at_ms: None,
+                path: root.join("active.mp4").to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: false,
+            })
+            .unwrap();
+        handle
+            .insert_fragment_with_keyframe(
+                CatalogFragment {
+                    recording_id: "active".to_owned(),
+                    sequence: 1,
+                    start_ms: 1_200,
+                    duration_ms: 100,
+                    byte_offset: 8,
+                    byte_len: 13,
+                    random_access: true,
+                },
+                CatalogKeyframe {
+                    recording_id: "active".to_owned(),
+                    fragment_sequence: 1,
+                    byte_offset: 8,
+                    byte_len: 4,
+                },
+            )
+            .unwrap();
+
+        let snapshot = handle.coverage(1_050..1_250).unwrap();
+        let after_finalize_ms = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        assert!(snapshot.revision > 0);
+        let finalized_at_ms = snapshot.streams[0].last_finalized_at_ms.unwrap();
+        let catalog_commit_at_ms = snapshot.streams[0].last_catalog_commit_at_ms.unwrap();
+        assert!((before_finalize_ms..=after_finalize_ms).contains(&finalized_at_ms));
+        assert!((before_finalize_ms..=after_finalize_ms).contains(&catalog_commit_at_ms));
+        assert_eq!(
+            snapshot.streams,
+            vec![CatalogStreamCoverage {
+                stream_id: "front/main".to_owned(),
+                source_id: Some("front".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                finalized_files: 1,
+                active_files: 1,
+                recording_bytes: 128,
+                playable_fragments: 2,
+                fragment_bytes: 21,
+                oldest_recording_at_ms: Some(1_000),
+                newest_recording_at_ms: Some(1_200),
+                retained_coverage_ms: 200,
+                selected_coverage_ms: 150,
+                selected_fragment_bytes: 96,
+                selected_first_start_ms: Some(1_050),
+                selected_last_end_ms: Some(1_200),
+                largest_gap_ms: 0,
+                last_finalized_at_ms: Some(finalized_at_ms),
+                last_catalog_commit_at_ms: Some(catalog_commit_at_ms),
+                ranges: vec![(1_050, 1_200)],
+                range_count: 1,
+                bucket_ms: 900_000,
+                buckets: vec![CatalogCoverageBucket {
+                    start_ms: 1_050,
+                    end_ms: 1_250,
+                    coverage_ms: 150,
+                }],
+                deletions: Vec::new(),
+            }]
+        );
+        handle
+            .insert_fragment_with_keyframe(
+                CatalogFragment {
+                    recording_id: "active".to_owned(),
+                    sequence: 2,
+                    start_ms: 1_300,
+                    duration_ms: 100,
+                    byte_offset: 21,
+                    byte_len: 13,
+                    random_access: true,
+                },
+                CatalogKeyframe {
+                    recording_id: "active".to_owned(),
+                    fragment_sequence: 2,
+                    byte_offset: 21,
+                    byte_len: 4,
+                },
+            )
+            .unwrap();
+        assert_eq!(handle.coverage(1_050..1_250).unwrap(), snapshot);
+        drop(handle);
+        catalog.shutdown();
+
+        let reopened = RecordingCatalog::open(&catalog_path).unwrap();
+        assert_eq!(reopened.handle().coverage(1_050..1_250).unwrap(), snapshot);
+        reopened.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn coverage_snapshot_retains_cleanup_evidence_after_restart() {
+        let root = coverage_dir("turso-recording-deletion-coverage");
+        let catalog_path = root.join("recordings.db");
+        let recording_path = root.join("expired.mp4");
+        std::fs::write(&recording_path, vec![0; 64]).unwrap();
+        let catalog = RecordingCatalog::open(&catalog_path).unwrap();
+        let handle = catalog.handle();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "expired".to_owned(),
+                stream_id: "front/main".to_owned(),
+                source_id: Some("front".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                started_at_ms: 1_000,
+                ended_at_ms: Some(2_000),
+                path: recording_path.to_string_lossy().into_owned(),
+                init_offset: 0,
+                init_len: 8,
+                finalized: false,
+            })
+            .unwrap();
+        handle
+            .insert_fragment_with_keyframe(
+                CatalogFragment {
+                    recording_id: "expired".to_owned(),
+                    sequence: 1,
+                    start_ms: 1_000,
+                    duration_ms: 1_000,
+                    byte_offset: 8,
+                    byte_len: 40,
+                    random_access: true,
+                },
+                CatalogKeyframe {
+                    recording_id: "expired".to_owned(),
+                    fragment_sequence: 1,
+                    byte_offset: 8,
+                    byte_len: 4,
+                },
+            )
+            .unwrap();
+        handle
+            .update_recording_path("expired", &recording_path, true)
+            .unwrap();
+        assert_eq!(
+            handle.coverage(500..2_500).unwrap().streams[0].range_count,
+            1
+        );
+
+        let candidate = handle.claim_cleanup_candidate().unwrap().unwrap();
+        assert_eq!(candidate.recording_id, "expired");
+        handle
+            .complete_cleanup("expired", CatalogDeletionReason::ArchiveLimit)
+            .unwrap();
+        handle
+            .complete_cleanup("expired", CatalogDeletionReason::ArchiveLimit)
+            .unwrap();
+        let deleted = handle.coverage(500..2_500).unwrap();
+        assert_eq!(deleted.streams.len(), 1);
+        assert_eq!(deleted.streams[0].range_count, 0);
+        assert_eq!(deleted.streams[0].source_id.as_deref(), Some("front"));
+        assert_eq!(
+            deleted.streams[0].logical_stream_id.as_deref(),
+            Some("main")
+        );
+        assert_eq!(deleted.streams[0].deletions.len(), 1);
+        assert_eq!(
+            (
+                deleted.streams[0].deletions[0].start_ms,
+                deleted.streams[0].deletions[0].end_ms,
+                deleted.streams[0].deletions[0].reason,
+            ),
+            (1_000, 2_000, CatalogDeletionReason::ArchiveLimit)
+        );
+        assert!(deleted.streams[0].deletions[0].deleted_at_ms > 0);
+        drop(handle);
+        catalog.shutdown();
+
+        let reopened = RecordingCatalog::open(&catalog_path).unwrap();
+        assert_eq!(reopened.handle().coverage(500..2_500).unwrap(), deleted);
+        reopened.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn coverage_does_not_double_count_hard_linked_recordings() {
+        let root = coverage_dir("turso-recording-hard-links");
+        let first_path = root.join("main.mp4");
+        let second_path = root.join("sub.mp4");
+        std::fs::write(&first_path, vec![0; 65]).unwrap();
+        std::fs::hard_link(&first_path, &second_path).unwrap();
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        for (recording_id, stream_id, path) in [
+            ("main", "front/main", &first_path),
+            ("sub", "front/sub", &second_path),
+        ] {
+            handle
+                .upsert_recording(CatalogRecording {
+                    id: recording_id.to_owned(),
+                    stream_id: stream_id.to_owned(),
+                    source_id: Some("front".to_owned()),
+                    logical_stream_id: stream_id.rsplit('/').next().map(str::to_owned),
+                    started_at_ms: 1_000,
+                    ended_at_ms: Some(2_000),
+                    path: path.to_string_lossy().into_owned(),
+                    init_offset: 0,
+                    init_len: 8,
+                    finalized: false,
+                })
+                .unwrap();
+            handle
+                .insert_fragment_with_keyframe(
+                    CatalogFragment {
+                        recording_id: recording_id.to_owned(),
+                        sequence: 1,
+                        start_ms: 1_000,
+                        duration_ms: 1_000,
+                        byte_offset: 8,
+                        byte_len: 40,
+                        random_access: true,
+                    },
+                    CatalogKeyframe {
+                        recording_id: recording_id.to_owned(),
+                        fragment_sequence: 1,
+                        byte_offset: 8,
+                        byte_len: 4,
+                    },
+                )
+                .unwrap();
+            handle
+                .update_recording_path(recording_id, path, true)
+                .unwrap();
+        }
+
+        let coverage = handle.coverage(1_000..2_000).unwrap();
+        let attributed = coverage
+            .streams
+            .iter()
+            .map(|stream| stream.recording_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(attributed, vec![33, 32]);
+        assert_eq!(attributed.into_iter().sum::<u64>(), 65);
+        assert_eq!(handle.stats().unwrap().recording_bytes, 65);
+
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> anyhow::Result<()> {
@@ -4105,7 +5476,13 @@ async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<Catalog
                  (SELECT COUNT(*) FROM recording_files WHERE finalized = 1),
                  (SELECT COUNT(*) FROM recording_files WHERE finalized = 0),
                  (SELECT COUNT(*) FROM recording_files WHERE protected = 1),
-                 (SELECT COALESCE(SUM(file_bytes), 0) FROM recording_files WHERE finalized = 1),
+                 (SELECT COALESCE(SUM(file_bytes), 0)
+                  FROM (
+                      SELECT MAX(file_bytes) AS file_bytes
+                      FROM recording_files
+                      WHERE finalized = 1
+                      GROUP BY COALESCE(file_identity, 'path:' || path)
+                  )),
                  (SELECT COUNT(*) FROM recording_fragments),
                  (SELECT COALESCE(SUM(byte_len), 0) FROM recording_fragments),
                  (SELECT COUNT(*) FROM recording_events),
@@ -4201,6 +5578,45 @@ fn operational_event_from_row(row: &turso::Row) -> anyhow::Result<OperationalEve
 
 fn to_i64(value: u64, name: &str) -> anyhow::Result<i64> {
     i64::try_from(value).map_err(|_| anyhow::anyhow!("{name} exceeds Turso INTEGER range"))
+}
+
+fn current_unix_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+#[cfg(unix)]
+fn recording_file_identity(_path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+
+    Some(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns a valid handle for this call and `information` is writable storage.
+    unsafe {
+        GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut information).ok()?;
+    }
+    let file_index =
+        u64::from(information.nFileIndexHigh) << 32 | u64::from(information.nFileIndexLow);
+    Some(format!("{}:{file_index}", information.dwVolumeSerialNumber))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn recording_file_identity(_path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+    None
 }
 
 fn to_u64(value: i64, name: &str) -> anyhow::Result<u64> {
@@ -5001,8 +6417,12 @@ mod tests {
         let recovered = handle.claim_cleanup_candidate().unwrap().unwrap();
         assert_eq!(recovered.recording_id, "old");
         assert!(recovered.pending);
-        handle.complete_cleanup("old").unwrap();
-        handle.complete_cleanup("old").unwrap();
+        handle
+            .complete_cleanup("old", CatalogDeletionReason::ArchiveLimit)
+            .unwrap();
+        handle
+            .complete_cleanup("old", CatalogDeletionReason::ArchiveLimit)
+            .unwrap();
         assert!(handle.claim_cleanup_candidate().unwrap().is_none());
 
         drop(handle);

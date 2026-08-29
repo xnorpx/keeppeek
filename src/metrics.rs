@@ -1,5 +1,8 @@
-use crate::event_forwarder::{MqttConnectionState, MqttStatus};
-use crate::health::ServerHealthResponse;
+use crate::{
+    event_forwarder::{MqttConnectionState, MqttStatus},
+    health::ServerHealthResponse,
+    server::recording_coverage::RecordingCoverageMetricSnapshot,
+};
 use prometheus_client::{
     encoding::{EncodeLabelSet, text::encode_registry},
     metrics::{counter::Counter, family::Family, gauge::Gauge},
@@ -27,6 +30,14 @@ struct CameraStreamLabels {
     camera_id: String,
     camera_name: String,
     stream: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct RecordingWriterLabels {
+    camera_id: String,
+    camera_name: String,
+    stream: String,
+    state: String,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -83,6 +94,7 @@ pub struct AccessMetricsSnapshot {
 pub fn encode_health_with_access_and_mqtt(
     health: &ServerHealthResponse,
     access: Option<AccessMetricsSnapshot>,
+    recording: Option<&RecordingCoverageMetricSnapshot>,
     mqtt: Option<&MqttStatus>,
 ) -> Result<String, std::fmt::Error> {
     let mut registry = Registry::with_prefix("keeppeek");
@@ -473,6 +485,7 @@ pub fn encode_health_with_access_and_mqtt(
     );
 
     register_camera_metrics(&mut registry, health);
+    register_recording_metrics(&mut registry, recording);
     register_webrtc_metrics(&mut registry, health);
 
     let issue_count = Family::<SeverityLabels, Gauge>::default();
@@ -637,6 +650,222 @@ fn register_optional_timestamp(
     let gauge = FloatGauge::default();
     gauge.set(timestamp_ms.map_or(0.0, |value| value as f64 / 1_000.0));
     registry.register(name, help, gauge);
+}
+
+fn register_recording_metrics(
+    registry: &mut Registry,
+    snapshot: Option<&RecordingCoverageMetricSnapshot>,
+) {
+    register_gauge(
+        registry,
+        "recording_coverage_snapshot_available",
+        "Whether the canonical recording coverage snapshot was available",
+        u64::from(snapshot.is_some_and(|snapshot| snapshot.catalog_available)),
+    );
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    register_gauge(
+        registry,
+        "recording_catalog_revision",
+        "Catalog revision used by recording coverage metrics",
+        snapshot.catalog_revision,
+    );
+    register_gauge(
+        registry,
+        "recording_coverage_window_start_seconds",
+        "Unix timestamp at the start of the selected recording coverage window",
+        snapshot.window.start_ms.div_euclid(1_000),
+    );
+    register_gauge(
+        registry,
+        "recording_coverage_window_end_seconds",
+        "Unix timestamp at the end of the selected recording coverage window",
+        snapshot.window.end_ms.div_euclid(1_000),
+    );
+
+    let requested = Family::<CameraStreamLabels, Gauge>::default();
+    let writer = Family::<RecordingWriterLabels, Gauge>::default();
+    let last_frame = Family::<CameraStreamLabels, Gauge>::default();
+    let last_write = Family::<CameraStreamLabels, Gauge>::default();
+    let last_finalize = Family::<CameraStreamLabels, Gauge>::default();
+    let last_catalog_commit = Family::<CameraStreamLabels, Gauge>::default();
+    let oldest_retained = Family::<CameraStreamLabels, Gauge>::default();
+    let newest_retained = Family::<CameraStreamLabels, Gauge>::default();
+    let effective_retention = Family::<CameraStreamLabels, Gauge>::default();
+    let recording_bytes = Family::<CameraStreamLabels, Gauge>::default();
+    let estimated_bytes_per_day = Family::<CameraStreamLabels, Gauge>::default();
+    let selected_coverage = Family::<CameraStreamLabels, Gauge>::default();
+    let coverage_ratio = Family::<CameraStreamLabels, FloatGauge>::default();
+    let gap_count = Family::<CameraStreamLabels, Gauge>::default();
+    let largest_gap = Family::<CameraStreamLabels, Gauge>::default();
+    let current_gap = Family::<CameraStreamLabels, Gauge>::default();
+
+    for camera in &snapshot.cameras {
+        for stream in &camera.streams {
+            let labels = CameraStreamLabels {
+                camera_id: camera.camera_id.clone(),
+                camera_name: camera.camera_name.clone(),
+                stream: stream.stream_id.clone(),
+            };
+            requested
+                .get_or_create(&labels)
+                .set(i64::from(stream.recording_requested));
+            writer
+                .get_or_create(&RecordingWriterLabels {
+                    camera_id: camera.camera_id.clone(),
+                    camera_name: camera.camera_name.clone(),
+                    stream: stream.stream_id.clone(),
+                    state: stream.writer_state.as_str().to_owned(),
+                })
+                .set(1);
+            if let Some(value) = stream.last_frame_at_ms {
+                last_frame
+                    .get_or_create(&labels)
+                    .set(saturating_i64(value / 1_000));
+            }
+            if let Some(value) = stream.last_write_at_ms {
+                last_write
+                    .get_or_create(&labels)
+                    .set(saturating_i64(value / 1_000));
+            }
+            if let Some(value) = stream.last_finalize_at_ms {
+                last_finalize
+                    .get_or_create(&labels)
+                    .set(value.div_euclid(1_000));
+            }
+            if let Some(value) = stream.last_catalog_commit_at_ms {
+                last_catalog_commit
+                    .get_or_create(&labels)
+                    .set(value.div_euclid(1_000));
+            }
+            if let Some(value) = stream.oldest_retained_at_ms {
+                oldest_retained
+                    .get_or_create(&labels)
+                    .set(value.div_euclid(1_000));
+            }
+            if let Some(value) = stream.newest_retained_at_ms {
+                newest_retained
+                    .get_or_create(&labels)
+                    .set(value.div_euclid(1_000));
+            }
+            effective_retention
+                .get_or_create(&labels)
+                .set(saturating_i64(
+                    stream.effective_retention_ms.unwrap_or(0) / 1_000,
+                ));
+            recording_bytes
+                .get_or_create(&labels)
+                .set(saturating_i64(stream.recording_bytes));
+            estimated_bytes_per_day
+                .get_or_create(&labels)
+                .set(saturating_i64(stream.estimated_bytes_per_day));
+            selected_coverage
+                .get_or_create(&labels)
+                .set(saturating_i64(stream.selected_coverage_ms / 1_000));
+            coverage_ratio
+                .get_or_create(&labels)
+                .set(stream.coverage_percent / 100.0);
+            gap_count
+                .get_or_create(&labels)
+                .set(saturating_i64(stream.gap_count));
+            largest_gap
+                .get_or_create(&labels)
+                .set(saturating_i64(stream.largest_gap_ms / 1_000));
+            current_gap.get_or_create(&labels).set(saturating_i64(
+                stream
+                    .gaps
+                    .iter()
+                    .find(|gap| gap.end_ms.is_none())
+                    .map_or(0, |gap| gap.duration_ms / 1_000),
+            ));
+        }
+    }
+
+    for (name, help, family) in [
+        (
+            "recording_policy_requested",
+            "Whether the effective camera policy requests this recording stream",
+            requested,
+        ),
+        (
+            "recording_last_frame_timestamp_seconds",
+            "Unix timestamp of the most recent frame observed for this stream",
+            last_frame,
+        ),
+        (
+            "recording_last_write_timestamp_seconds",
+            "Unix timestamp of the most recent successful writer progress",
+            last_write,
+        ),
+        (
+            "recording_last_finalize_timestamp_seconds",
+            "Unix timestamp of the most recent finalized recording file",
+            last_finalize,
+        ),
+        (
+            "recording_last_catalog_commit_timestamp_seconds",
+            "Unix timestamp of the catalog revision used by this snapshot",
+            last_catalog_commit,
+        ),
+        (
+            "recording_oldest_retained_timestamp_seconds",
+            "Unix timestamp of the oldest retained playable fragment",
+            oldest_retained,
+        ),
+        (
+            "recording_newest_retained_timestamp_seconds",
+            "Unix timestamp at the end of the newest retained playable fragment",
+            newest_retained,
+        ),
+        (
+            "recording_effective_retention_seconds",
+            "Elapsed span between oldest and newest retained playable media",
+            effective_retention,
+        ),
+        (
+            "recording_storage_bytes",
+            "Finalized recording file bytes attributed to this stream",
+            recording_bytes,
+        ),
+        (
+            "recording_estimated_bytes_per_day",
+            "Selected playable fragment bytes scaled to one day",
+            estimated_bytes_per_day,
+        ),
+        (
+            "recording_selected_coverage_seconds",
+            "Merged playable duration in the selected coverage window",
+            selected_coverage,
+        ),
+        (
+            "recording_gap_count",
+            "Gap count in the selected coverage window",
+            gap_count,
+        ),
+        (
+            "recording_largest_gap_seconds",
+            "Largest gap duration in the selected coverage window",
+            largest_gap,
+        ),
+        (
+            "recording_current_gap_seconds",
+            "Observed duration of the current open recording gap",
+            current_gap,
+        ),
+    ] {
+        registry.register(name, help, family);
+    }
+    registry.register(
+        "recording_writer_state",
+        "Current writer state by camera and stream",
+        writer,
+    );
+    registry.register(
+        "recording_coverage_ratio",
+        "Playable fraction of the selected recording coverage window",
+        coverage_ratio,
+    );
 }
 
 fn register_camera_metrics(registry: &mut Registry, health: &ServerHealthResponse) {

@@ -138,7 +138,8 @@ const api = vi.hoisted(() => {
 		deleteSession: vi.fn(),
 		fetchLogSnapshot: vi.fn(),
 		fetchLogStream: vi.fn(),
-		fetchMetricsSnapshot: vi.fn()
+		fetchMetricsSnapshot: vi.fn(),
+		fetchRecordingCoverage: vi.fn()
 	};
 });
 
@@ -1398,6 +1399,21 @@ afterEach(() => {
 });
 
 describe('ControlClient', () => {
+	it('keeps stale recording pagination local to the dashboard', async () => {
+		api.fetchRecordingCoverage.mockRejectedValue(
+			new api.ApiRequestError(409, 'Recording coverage changed')
+		);
+		const client = new ControlClient();
+		const states: string[] = [];
+		client.onAccessState((state) => states.push(state.status));
+
+		await expect(client.getRecordingCoverage({ pageToken: 'stale' })).rejects.toMatchObject({
+			status: 409
+		});
+
+		expect(states).toEqual(['checking']);
+	});
+
 	it('keeps the remote bearer private while publishing resolved session metadata', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({
