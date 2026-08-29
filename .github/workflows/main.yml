@@ -18,6 +18,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  codeql-rust:
+    name: CodeQL (Rust)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: rust
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:rust
+
   slow-rust:
     name: Slow Rust Tests
     if: github.ref == 'refs/heads/main'
@@ -237,17 +257,20 @@ jobs:
   main-gate:
     name: Main Extended Gate
     if: always() && github.ref == 'refs/heads/main'
-    needs: [slow-rust, rust-coverage, platform-rust, platform-ui-e2e]
+    needs:
+      [codeql-rust, slow-rust, rust-coverage, platform-rust, platform-ui-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Require every extended main suite
         env:
+          CODEQL_RUST_RESULT: ${{ needs.codeql-rust.result }}
           SLOW_RUST_RESULT: ${{ needs.slow-rust.result }}
           RUST_COVERAGE_RESULT: ${{ needs.rust-coverage.result }}
           PLATFORM_RUST_RESULT: ${{ needs.platform-rust.result }}
           PLATFORM_UI_RESULT: ${{ needs.platform-ui-e2e.result }}
         run: |
+          test "$CODEQL_RUST_RESULT" = success
           test "$SLOW_RUST_RESULT" = success
           test "$RUST_COVERAGE_RESULT" = success
           test "$PLATFORM_RUST_RESULT" = success
