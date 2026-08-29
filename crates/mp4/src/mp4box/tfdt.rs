@@ -46,19 +46,24 @@ impl Mp4Box for TfdtBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for TfdtBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
+        let minimum_size = match version {
+            0 => HEADER_SIZE + HEADER_EXT_SIZE + 4,
+            1 => HEADER_SIZE + HEADER_EXT_SIZE + 8,
+            _ => return Err(Error::InvalidData("version must be 0 or 1")),
+        };
+        ensure_box_size(size, minimum_size)?;
+
         let base_media_decode_time = if version == 1 {
             reader.read_u64::<BigEndian>()?
-        } else if version == 0 {
-            reader.read_u32::<BigEndian>()? as u64
         } else {
-            return Err(Error::InvalidData("version must be 0 or 1"));
+            reader.read_u32::<BigEndian>()? as u64
         };
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

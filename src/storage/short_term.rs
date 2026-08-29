@@ -29,7 +29,9 @@ impl ShortTermBuffer {
         let Some(newest) = self.chunks.back() else {
             return;
         };
-        let cutoff = newest.received_at - self.max_duration;
+        let Some(cutoff) = newest.received_at.checked_sub(self.max_duration) else {
+            return;
+        };
         while let Some(oldest) = self.chunks.front() {
             if oldest.received_at < cutoff {
                 self.total_bytes -= oldest.byte_len();
@@ -155,6 +157,15 @@ mod tests {
         buf.push(video_frame(false, now));
 
         assert_eq!(buf.len(), 2);
+    }
+
+    #[test]
+    fn extreme_duration_keeps_frames_without_underflowing_instant() {
+        let mut buf = ShortTermBuffer::new(Duration::MAX);
+
+        buf.push(video_frame(true, Instant::now()));
+
+        assert_eq!(buf.len(), 1);
     }
 
     #[test]

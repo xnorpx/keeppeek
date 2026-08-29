@@ -20,13 +20,20 @@ use crate::{
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock, mpsc},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
 const DEMAND_INACTIVITY_GRACE: Duration = Duration::from_secs(30);
 const MEBIBYTE_BYTES: u64 = 1_048_576;
 const GIBIBYTE_BYTES: u64 = 1_073_741_824;
+// This capacity absorbs short disk stalls and limits encoded camera data.
+const COMMAND_CAPACITY: usize = 4_096;
+const QUEUED_MEDIA_BYTES_CAPACITY: usize = 64 * 1_048_576;
 
 #[derive(Clone)]
 pub struct StorageConfig {
@@ -123,11 +130,121 @@ enum Command {
     Ingest {
         identity: RecordingStreamIdentity,
         frame: RecordingFrame,
+        discontinuity: bool,
     },
     FlushAll,
     Shutdown,
 }
 
+#[derive(Clone)]
+struct StorageCommandSender {
+    tx: mpsc::SyncSender<Command>,
+    queued_media_bytes: Arc<AtomicUsize>,
+    media_bytes_capacity: usize,
+}
+
+struct StorageCommandReceiver {
+    rx: mpsc::Receiver<Command>,
+    queued_media_bytes: Arc<AtomicUsize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageEnqueueError {
+    Full,
+    Disconnected,
+}
+
+fn storage_command_channel(
+    command_capacity: usize,
+    media_bytes_capacity: usize,
+) -> (StorageCommandSender, StorageCommandReceiver) {
+    let (tx, rx) = mpsc::sync_channel(command_capacity);
+    let queued_media_bytes = Arc::new(AtomicUsize::new(0));
+    (
+        StorageCommandSender {
+            tx,
+            queued_media_bytes: queued_media_bytes.clone(),
+            media_bytes_capacity,
+        },
+        StorageCommandReceiver {
+            rx,
+            queued_media_bytes,
+        },
+    )
+}
+
+impl StorageCommandSender {
+    fn try_ingest(
+        &self,
+        identity: RecordingStreamIdentity,
+        frame: RecordingFrame,
+        discontinuity: bool,
+    ) -> Result<(), StorageEnqueueError> {
+        let media_bytes = frame.byte_len();
+        if self
+            .queued_media_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |queued| {
+                queued
+                    .checked_add(media_bytes)
+                    .filter(|total| *total <= self.media_bytes_capacity)
+            })
+            .is_err()
+        {
+            return Err(StorageEnqueueError::Full);
+        }
+
+        match self.tx.try_send(Command::Ingest {
+            identity,
+            frame,
+            discontinuity,
+        }) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.queued_media_bytes
+                    .fetch_sub(media_bytes, Ordering::Relaxed);
+                Err(StorageEnqueueError::Full)
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.queued_media_bytes
+                    .fetch_sub(media_bytes, Ordering::Relaxed);
+                Err(StorageEnqueueError::Disconnected)
+            }
+        }
+    }
+
+    fn send_control(&self, command: Command) {
+        debug_assert!(!matches!(&command, Command::Ingest { .. }));
+        let _ = self.tx.send(command);
+    }
+}
+
+impl StorageCommandReceiver {
+    fn recv(&self) -> Result<Command, mpsc::RecvError> {
+        let command = self.rx.recv()?;
+        self.release_media_bytes(&command);
+        Ok(command)
+    }
+
+    fn recv_timeout(&self, timeout: Duration) -> Result<Command, mpsc::RecvTimeoutError> {
+        let command = self.rx.recv_timeout(timeout)?;
+        self.release_media_bytes(&command);
+        Ok(command)
+    }
+
+    #[cfg(test)]
+    fn try_recv(&self) -> Result<Command, mpsc::TryRecvError> {
+        let command = self.rx.try_recv()?;
+        self.release_media_bytes(&command);
+        Ok(command)
+    }
+
+    fn release_media_bytes(&self, command: &Command) {
+        if let Command::Ingest { frame, .. } = command {
+            self.queued_media_bytes
+                .fetch_sub(frame.byte_len(), Ordering::Relaxed);
+        }
+    }
+}
 struct CameraPipeline {
     identity: RecordingStreamIdentity,
     short_term: ShortTermBuffer,
@@ -144,9 +261,18 @@ struct WriteProgress {
 #[derive(Clone, Default)]
 struct RecordingAdmission {
     policies: Arc<RwLock<HashMap<String, CameraRecordingPolicy>>>,
+    discontinuous_streams: Arc<Mutex<HashMap<String, (String, String)>>>,
+    health: RecordingHealthRegistry,
 }
 
 impl RecordingAdmission {
+    fn new(health: RecordingHealthRegistry) -> Self {
+        Self {
+            health,
+            ..Self::default()
+        }
+    }
+
     fn configure(&self, camera_id: &str, mode: CameraRecordingMode, event_duration: Duration) {
         self.policies
             .write()
@@ -189,7 +315,7 @@ impl RecordingAdmission {
 
     fn ingest_at(
         &self,
-        tx: &mpsc::Sender<Command>,
+        tx: &StorageCommandSender,
         identity: RecordingStreamIdentity,
         frame: RecordingFrame,
         now: Instant,
@@ -199,7 +325,7 @@ impl RecordingAdmission {
 
     fn ingest_with_hook_at(
         &self,
-        tx: &mpsc::Sender<Command>,
+        tx: &StorageCommandSender,
         mut identity: RecordingStreamIdentity,
         mut frame: RecordingFrame,
         now: Instant,
@@ -223,14 +349,56 @@ impl RecordingAdmission {
         before_send();
         match decision {
             AdmissionDecision::Record => {
-                let _ = tx.send(Command::Ingest { identity, frame });
+                self.enqueue(tx, identity, frame);
             }
             AdmissionDecision::RecordAs(stream_id) => {
                 frame.timestamp = None;
                 identity = identity.with_recording_stream(stream_id);
-                let _ = tx.send(Command::Ingest { identity, frame });
+                self.enqueue(tx, identity, frame);
             }
             AdmissionDecision::Ignore => {}
+        }
+    }
+
+    fn enqueue(
+        &self,
+        tx: &StorageCommandSender,
+        identity: RecordingStreamIdentity,
+        frame: RecordingFrame,
+    ) {
+        let storage_key = identity.storage_key.clone();
+        let stream_identity = (identity.source_id.clone(), identity.stream_id.clone());
+        let is_keyframe = frame.is_video_keyframe();
+        let mut discontinuous = self
+            .discontinuous_streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        discontinuous.retain(|marked_key, marked_identity| {
+            marked_key == &storage_key || marked_identity != &stream_identity
+        });
+        let resumes_after_discontinuity = discontinuous.contains_key(&storage_key);
+        if resumes_after_discontinuity && !is_keyframe {
+            return;
+        }
+
+        match tx.try_ingest(identity, frame, resumes_after_discontinuity) {
+            Ok(()) => {
+                if is_keyframe {
+                    discontinuous.remove(&storage_key);
+                }
+            }
+            Err(StorageEnqueueError::Full) => {
+                discontinuous.insert(storage_key.clone(), stream_identity);
+                self.health.note_failure(
+                    &storage_key,
+                    "recording writer queue is full; dropping frames until the next keyframe",
+                );
+            }
+            Err(StorageEnqueueError::Disconnected) => {
+                discontinuous.insert(storage_key.clone(), stream_identity);
+                self.health
+                    .note_failure(&storage_key, "recording writer queue is disconnected");
+            }
         }
     }
 
@@ -247,7 +415,7 @@ impl RecordingAdmission {
 
 #[derive(Clone)]
 pub struct StorageHandle {
-    tx: mpsc::Sender<Command>,
+    tx: StorageCommandSender,
     admission: RecordingAdmission,
 }
 
@@ -280,7 +448,7 @@ impl StorageHandle {
 }
 
 pub struct StorageEngine {
-    tx: mpsc::Sender<Command>,
+    tx: StorageCommandSender,
     demand: RecordingDemand,
     admission: RecordingAdmission,
     health: RecordingHealthRegistry,
@@ -327,12 +495,12 @@ impl StorageEngine {
             "storage engine initialized",
         );
 
-        let demand = RecordingDemand::new(DEMAND_INACTIVITY_GRACE);
-        let admission = RecordingAdmission::default();
         let health = RecordingHealthRegistry::default();
+        let demand = RecordingDemand::new(DEMAND_INACTIVITY_GRACE);
+        let admission = RecordingAdmission::new(health.clone());
         let worker_demand = demand.clone();
         let worker_health = health.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = storage_command_channel(COMMAND_CAPACITY, QUEUED_MEDIA_BYTES_CAPACITY);
         let thread = std::thread::Builder::new()
             .name("storage-writer".into())
             .spawn(move || {
@@ -371,11 +539,11 @@ impl StorageEngine {
     }
 
     pub fn ingest_stream(&self, identity: RecordingStreamIdentity, frame: RecordingFrame) {
-        let _ = self.tx.send(Command::Ingest { identity, frame });
+        self.admission.enqueue(&self.tx, identity, frame);
     }
 
     pub fn flush_all(&self) {
-        let _ = self.tx.send(Command::FlushAll);
+        self.tx.send_control(Command::FlushAll);
     }
 
     pub fn shutdown(mut self) {
@@ -384,7 +552,7 @@ impl StorageEngine {
 
     fn shutdown_inner(&mut self) {
         tracing::debug!("sending shutdown command to storage writer thread");
-        let _ = self.tx.send(Command::Shutdown);
+        self.tx.send_control(Command::Shutdown);
         if let Some(handle) = self.thread.take() {
             tracing::debug!("waiting for storage writer thread to finish");
             if let Err(panic) = handle.join() {
@@ -440,7 +608,7 @@ impl WriterWorker {
         }
     }
 
-    fn run(&mut self, rx: mpsc::Receiver<Command>) {
+    fn run(&mut self, rx: StorageCommandReceiver) {
         let reap_interval = Duration::from_secs(300);
         let mut last_reap = Instant::now();
         let safety_enabled = self.catalog.is_some() && self.config.has_safety_limits();
@@ -469,7 +637,14 @@ impl WriterWorker {
 
             if let Some(cmd) = cmd {
                 match cmd {
-                    Command::Ingest { identity, frame } => {
+                    Command::Ingest {
+                        identity,
+                        frame,
+                        discontinuity,
+                    } => {
+                        if discontinuity {
+                            self.finish_stream_before_gap(&identity.storage_key);
+                        }
                         self.ingest(identity, frame);
                     }
                     Command::FlushAll => {
@@ -497,6 +672,45 @@ impl WriterWorker {
         if let Err(error) = self.try_enforce_storage_limit(trigger, None) {
             self.safety.cleanup_failed(&error.to_string());
             tracing::error!(%error, ?trigger, "storage cleanup could not restore safe headroom; recording paused");
+        }
+    }
+
+    fn finish_stream_before_gap(&mut self, storage_key: &str) {
+        if !self.pipelines.contains_key(storage_key) {
+            return;
+        }
+        if !self.config.is_direct_write() {
+            self.health.note_attempt(storage_key);
+            match self.flush_camera(storage_key, true) {
+                Ok(progress) if progress.wrote => self
+                    .health
+                    .note_progress(storage_key, progress.recorded_duration),
+                Ok(_) => {}
+                Err(error) => {
+                    self.health.note_failure(storage_key, &error.to_string());
+                    tracing::error!(camera = storage_key, %error, "unable to flush recording before queue gap");
+                }
+            }
+        }
+
+        let Some(mut pipeline) = self.pipelines.remove(storage_key) else {
+            return;
+        };
+        let Some(writer) = pipeline.medium_term.take() else {
+            return;
+        };
+        let recording_id = writer.recording_id().to_owned();
+        match writer.finalize() {
+            Ok(path) => {
+                if let Err(error) = self.move_to_long_term(storage_key, &path, &recording_id) {
+                    self.health.note_failure(storage_key, &error.to_string());
+                    tracing::error!(camera = storage_key, %error, "unable to finalize recording before queue gap");
+                }
+            }
+            Err(error) => {
+                self.health.note_failure(storage_key, &error.to_string());
+                tracing::error!(camera = storage_key, %error, "unable to finalize recording before queue gap");
+            }
         }
     }
 
@@ -729,8 +943,11 @@ impl WriterWorker {
         let mut frames = if publish_all {
             pipeline.short_term.drain_all()
         } else {
-            let cutoff = Instant::now() - self.config.short_term_duration;
-            pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
+            Instant::now()
+                .checked_sub(self.config.short_term_duration)
+                .map_or_else(Vec::new, |cutoff| {
+                    pipeline.short_term.drain_up_to_last_keyframe_before(cutoff)
+                })
         };
         if frames.is_empty() {
             return Ok(progress);
@@ -936,7 +1153,10 @@ impl WriterWorker {
     }
 
     fn pipeline_for(&mut self, identity: RecordingStreamIdentity) -> &mut CameraPipeline {
-        let buffer_window = self.config.short_term_duration + self.config.flush_interval;
+        let buffer_window = self
+            .config
+            .short_term_duration
+            .saturating_add(self.config.flush_interval);
         self.pipelines
             .entry(identity.storage_key.clone())
             .or_insert_with(|| CameraPipeline {
@@ -990,11 +1210,16 @@ fn cleanup_stale_active_files(root: &Path) -> Vec<PathBuf> {
     fn walk(dir: std::fs::ReadDir, removed: &mut Vec<PathBuf>) {
         for entry in dir.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
                 if let Ok(sub) = std::fs::read_dir(&path) {
                     walk(sub, removed);
                 }
-            } else if path.extension().and_then(|e| e.to_str()) == Some("active") {
+            } else if file_type.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("active")
+            {
                 tracing::warn!(path = %path.display(), "removing stale active segment from previous run");
                 if std::fs::remove_file(&path).is_ok() {
                     removed.push(path);
@@ -1088,6 +1313,24 @@ mod tests {
         assert_eq!(storage.warning_free_bytes, 20 * GIBIBYTE_BYTES);
         assert_eq!(storage.critical_free_bytes, 10 * GIBIBYTE_BYTES);
         assert_eq!(storage.cleanup_hysteresis_bytes, 5 * GIBIBYTE_BYTES);
+    }
+
+    #[test]
+    fn extreme_buffer_durations_do_not_overflow_pipeline_timing() {
+        let mut config = storage_config("extreme-buffer-duration");
+        config.short_term_duration = Duration::MAX;
+        config.flush_interval = Duration::from_secs(1);
+        let mut worker =
+            WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+        let identity = RecordingStreamIdentity::legacy("camera");
+        worker
+            .pipeline_for(identity.clone())
+            .short_term
+            .push(key_frame(Instant::now()));
+
+        let progress = worker.flush_camera(&identity.storage_key, false).unwrap();
+
+        assert!(!progress.wrote);
     }
 
     #[test]
@@ -1391,7 +1634,7 @@ mod tests {
         );
         admission.note_event_at("camera", now);
 
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, command_rx) = storage_command_channel(2, usize::MAX);
         let (sub_paused_tx, sub_paused_rx) = mpsc::sync_channel(0);
         let (release_sub_tx, release_sub_rx) = mpsc::sync_channel(0);
         let sub_admission = admission.clone();
@@ -1440,6 +1683,7 @@ mod tests {
         let Command::Ingest {
             identity: first_identity,
             frame: first_frame,
+            ..
         } = command_rx.recv().unwrap()
         else {
             panic!("first command must ingest the admitted sub frame");
@@ -1447,6 +1691,7 @@ mod tests {
         let Command::Ingest {
             identity: second_identity,
             frame: second_frame,
+            ..
         } = command_rx.recv().unwrap()
         else {
             panic!("second command must ingest the switching main keyframe");
@@ -1455,6 +1700,163 @@ mod tests {
         assert!(!first_frame.is_video_keyframe());
         assert_eq!(second_identity.storage_key, "camera/sub");
         assert!(second_frame.is_video_keyframe());
+    }
+
+    #[test]
+    fn full_writer_queue_drops_until_a_keyframe_can_be_enqueued() {
+        let health = RecordingHealthRegistry::default();
+        let admission = RecordingAdmission::new(health.clone());
+        admission.configure("camera", CameraRecordingMode::Both, Duration::from_secs(60));
+        let (command_tx, command_rx) = storage_command_channel(1, usize::MAX);
+        let identity = RecordingStreamIdentity::new("camera", "sub", "camera");
+        let now = Instant::now();
+
+        admission.ingest_at(&command_tx, identity.clone(), key_frame(now), now);
+        admission.ingest_at(
+            &command_tx,
+            identity.clone(),
+            inter_frame(),
+            now + Duration::from_millis(1),
+        );
+
+        let snapshot = health.snapshot();
+        assert_eq!(snapshot.streams.len(), 1);
+        assert!(
+            snapshot.streams[0]
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("queue is full"))
+        );
+
+        let Command::Ingest {
+            frame,
+            discontinuity,
+            ..
+        } = command_rx.recv().unwrap()
+        else {
+            panic!("first command must be the queued keyframe");
+        };
+        assert!(frame.is_video_keyframe());
+        assert!(!discontinuity);
+
+        admission.ingest_at(
+            &command_tx,
+            identity.clone(),
+            inter_frame(),
+            now + Duration::from_millis(2),
+        );
+        assert!(matches!(
+            command_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        admission.ingest_at(
+            &command_tx,
+            identity,
+            key_frame(now + Duration::from_millis(3)),
+            now + Duration::from_millis(3),
+        );
+        let Command::Ingest {
+            frame,
+            discontinuity,
+            ..
+        } = command_rx.recv().unwrap()
+        else {
+            panic!("second command must be the recovery keyframe");
+        };
+        assert!(frame.is_video_keyframe());
+        assert!(discontinuity);
+    }
+
+    #[test]
+    fn storage_label_change_retires_obsolete_discontinuity_marker() {
+        let admission = RecordingAdmission::default();
+        admission.configure("camera", CameraRecordingMode::Both, Duration::from_secs(60));
+        let (command_tx, command_rx) = storage_command_channel(1, usize::MAX);
+        let old_identity = RecordingStreamIdentity::new("camera", "sub", "old-label");
+        let new_identity = RecordingStreamIdentity::new("camera", "sub", "new-label");
+        let now = Instant::now();
+
+        admission.ingest_at(&command_tx, old_identity.clone(), key_frame(now), now);
+        admission.ingest_at(
+            &command_tx,
+            old_identity,
+            inter_frame(),
+            now + Duration::from_millis(1),
+        );
+        command_rx.recv().unwrap();
+        admission.ingest_at(
+            &command_tx,
+            new_identity,
+            key_frame(now + Duration::from_millis(2)),
+            now + Duration::from_millis(2),
+        );
+
+        assert!(admission.discontinuous_streams.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn writer_queue_enforces_media_byte_capacity() {
+        let frame = key_frame(Instant::now());
+        let (command_tx, command_rx) = storage_command_channel(1, frame.byte_len() - 1);
+
+        let result = command_tx.try_ingest(
+            RecordingStreamIdentity::new("camera", "sub", "camera"),
+            frame,
+            false,
+        );
+
+        assert_eq!(result, Err(StorageEnqueueError::Full));
+        assert!(matches!(
+            command_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn writer_discontinuity_rotates_before_recovery_keyframe() {
+        let mut config = storage_config("writer-queue-discontinuity");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        config.short_term_duration = Duration::ZERO;
+        config.flush_interval = Duration::ZERO;
+        let mut worker =
+            WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+        let identity = RecordingStreamIdentity::legacy("camera");
+        let now = Instant::now();
+        let first = now - Duration::from_secs(10);
+        worker.ingest(identity.clone(), key_frame(first));
+        worker.ingest(
+            identity.clone(),
+            key_frame(first + Duration::from_millis(40)),
+        );
+
+        worker.finish_stream_before_gap(&identity.storage_key);
+
+        let recovered = now - Duration::from_secs(5);
+        worker.ingest(identity.clone(), key_frame(recovered));
+        worker.ingest(identity, key_frame(recovered + Duration::from_millis(40)));
+        worker.finalize_all();
+
+        let recordings = LongTermStore::new(root.clone())
+            .finalized_segments("camera")
+            .unwrap();
+        assert_eq!(recordings.len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writer_discontinuity_before_first_queued_frame_is_safe() {
+        let config = storage_config("writer-queue-first-frame-gap");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        let mut worker =
+            WriterWorker::new(config, RecordingDemand::new(DEMAND_INACTIVITY_GRACE), None);
+
+        worker.finish_stream_before_gap("camera/sub");
+
+        assert!(worker.pipelines.is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn inter_frame() -> RecordingFrame {
@@ -1827,5 +2229,30 @@ mod tests {
         drop(catalog_handle);
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_active_cleanup_does_not_follow_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-output/stale-active-symlink-root");
+        let outside = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/test-output/stale-active-symlink-outside");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let victim = outside.join("unrelated.mp4.active");
+        std::fs::write(&victim, b"outside").unwrap();
+        symlink(&outside, root.join("linked-outside")).unwrap();
+
+        let removed = cleanup_stale_active_files(&root);
+
+        assert!(removed.is_empty());
+        assert!(victim.exists());
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
     }
 }

@@ -32,14 +32,14 @@ jobs:
           fi
       - name: Delete master build tags older than seven days
         if: steps.stable-master.outputs.present == 'true'
-        uses: dataaxiom/ghcr-cleanup-action@v1
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
         with:
           delete-tags: master-*
           exclude-tags: master
           older-than: 7 days
           validate: true
       - name: Delete untagged images older than one day
-        uses: dataaxiom/ghcr-cleanup-action@v1
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1
         with:
           delete-untagged: true
           older-than: 1 day

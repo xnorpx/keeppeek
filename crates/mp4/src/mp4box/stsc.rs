@@ -51,7 +51,7 @@ impl Mp4Box for StscBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for StscBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 4)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
@@ -71,9 +71,16 @@ impl<R: Read + Seek> ReadBox<&mut R> for StscBox {
         }
         let mut entries = Vec::with_capacity(entry_count as usize);
         for _ in 0..entry_count {
+            let first_chunk = reader.read_u32::<BigEndian>()?;
+            let samples_per_chunk = reader.read_u32::<BigEndian>()?;
+            if samples_per_chunk == 0 {
+                return Err(Error::InvalidData(
+                    "stsc samples_per_chunk must be non-zero",
+                ));
+            }
             let entry = StscEntry {
-                first_chunk: reader.read_u32::<BigEndian>()?,
-                samples_per_chunk: reader.read_u32::<BigEndian>()?,
+                first_chunk,
+                samples_per_chunk,
                 sample_description_index: reader.read_u32::<BigEndian>()?,
                 first_sample: 0,
             };
@@ -100,7 +107,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for StscBox {
             }
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,
@@ -164,5 +171,24 @@ mod tests {
 
         let dst_box = StscBox::read_box(&mut reader, header.size).unwrap();
         assert_eq!(src_box, dst_box);
+    }
+
+    #[test]
+    fn rejects_zero_samples_per_chunk() {
+        let mut bytes = Vec::new();
+        BoxHeader::new(BoxType::StscBox, 28)
+            .write(&mut bytes)
+            .unwrap();
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&1u32.to_be_bytes());
+        let mut reader = Cursor::new(bytes);
+        let header = BoxHeader::read(&mut reader).unwrap();
+
+        let result = StscBox::read_box(&mut reader, header.size);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
     }
 }

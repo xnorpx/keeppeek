@@ -10,6 +10,9 @@ bun.lockb
 ../target/
 ../data/sample-videos/
 
+# Vendored agent skill assets retain upstream formatting
+../.agents/
+
 # Generated component primitives
 /src/lib/components/ui/
 /src/lib/hooks/

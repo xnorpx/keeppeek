@@ -260,6 +260,9 @@ impl BoxHeader {
                 },
             })
         } else {
+            if size != 0 && u64::from(size) < HEADER_SIZE {
+                return Err(Error::InvalidData("box size is smaller than its header"));
+            }
             Ok(Self {
                 name: BoxType::from(typ),
                 size: size as u64,
@@ -268,10 +271,17 @@ impl BoxHeader {
     }
 
     pub fn write<W: Write>(&self, writer: &mut W) -> Result<u64> {
+        if self.size != 0 && self.size < HEADER_SIZE {
+            return Err(Error::InvalidData("box size is smaller than its header"));
+        }
         if self.size > u32::MAX as u64 {
+            let largesize = self
+                .size
+                .checked_add(8)
+                .ok_or(Error::InvalidData("64-bit box size overflow"))?;
             writer.write_u32::<BigEndian>(1)?;
             writer.write_u32::<BigEndian>(self.name.into())?;
-            writer.write_u64::<BigEndian>(self.size)?;
+            writer.write_u64::<BigEndian>(largesize)?;
             Ok(16)
         } else {
             writer.write_u32::<BigEndian>(self.size as u32)?;
@@ -294,11 +304,62 @@ pub fn write_box_header_ext<W: Write>(w: &mut W, v: u8, f: u32) -> Result<u64> {
 }
 
 pub fn box_start<R: Seek>(seeker: &mut R) -> Result<u64> {
-    Ok(seeker.stream_position()? - HEADER_SIZE)
+    seeker
+        .stream_position()?
+        .checked_sub(HEADER_SIZE)
+        .ok_or(Error::InvalidData(
+            "reader is positioned before the box header",
+        ))
+}
+
+fn checked_box_end<S: Seek>(seeker: &mut S, size: u64) -> Result<u64> {
+    if size < HEADER_SIZE {
+        return Err(Error::InvalidData("box size is smaller than its header"));
+    }
+    box_start(seeker)?
+        .checked_add(size)
+        .ok_or(Error::InvalidData("box size overflow"))
+}
+
+fn checked_box_end_with_min<S: Seek>(seeker: &mut S, size: u64, minimum_size: u64) -> Result<u64> {
+    ensure_box_size(size, minimum_size)?;
+    checked_box_end(seeker, size)
+}
+
+const fn ensure_box_size(size: u64, minimum_size: u64) -> Result<()> {
+    if size < minimum_size {
+        return Err(Error::InvalidData(
+            "box is too small for its required fields",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_box_bytes_remaining<S: Seek>(seeker: &mut S, end: u64, needed: u64) -> Result<()> {
+    let remaining = end
+        .checked_sub(seeker.stream_position()?)
+        .ok_or(Error::InvalidData("box contents exceed its declared size"))?;
+    if remaining < needed {
+        return Err(Error::InvalidData("box is truncated"));
+    }
+    Ok(())
+}
+
+fn read_box_header<R: Read + Seek>(reader: &mut R, end: u64) -> Result<BoxHeader> {
+    ensure_box_bytes_remaining(reader, end, HEADER_SIZE)?;
+    let start = reader.stream_position()?;
+    let encoded_size = reader.read_u32::<BigEndian>()?;
+    reader.seek(SeekFrom::Start(start))?;
+    if encoded_size == 1 {
+        ensure_box_bytes_remaining(reader, end, HEADER_SIZE + 8)?;
+    }
+    BoxHeader::read(reader)
 }
 
 pub fn skip_bytes<S: Seek>(seeker: &mut S, size: u64) -> Result<()> {
-    seeker.seek(SeekFrom::Current(size as i64))?;
+    let distance =
+        i64::try_from(size).map_err(|_| Error::InvalidData("box skip distance exceeds i64"))?;
+    seeker.seek(SeekFrom::Current(distance))?;
     Ok(())
 }
 
@@ -308,8 +369,8 @@ pub fn skip_bytes_to<S: Seek>(seeker: &mut S, pos: u64) -> Result<()> {
 }
 
 pub fn skip_box<S: Seek>(seeker: &mut S, size: u64) -> Result<()> {
-    let start = box_start(seeker)?;
-    skip_bytes_to(seeker, start + size)?;
+    let end = checked_box_end(seeker, size)?;
+    skip_bytes_to(seeker, end)?;
     Ok(())
 }
 
@@ -362,6 +423,7 @@ mod value_u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_fourcc() {
@@ -370,6 +432,31 @@ mod tests {
         assert_eq!(&ftyp_value.value[..], b"ftyp");
         let ftyp_fcc2: u32 = ftyp_value.into();
         assert_eq!(ftyp_fcc, ftyp_fcc2);
+    }
+
+    #[test]
+    fn test_box_size_smaller_than_header() {
+        let error = BoxHeader::read(&mut &[0, 0, 0, 7, b'f', b'r', b'e', b'e'][..]);
+        assert!(matches!(error, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn test_box_write_rejects_size_smaller_than_header() {
+        let mut bytes = Vec::new();
+
+        let result = BoxHeader::new(BoxType::FreeBox, HEADER_SIZE - 1).write(&mut bytes);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn test_nested_zero_size_is_rejected() {
+        let mut reader = Cursor::new([0, 0, 0, 0, b'f', b'r', b'e', b'e']);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let error = checked_box_end(&mut reader, header.size);
+
+        assert!(matches!(error, Err(Error::InvalidData(_))));
     }
 
     #[test]
@@ -394,5 +481,48 @@ mod tests {
     fn test_valid_largesize() {
         let header = BoxHeader::read(&mut &[0, 0, 0, 1, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 16][..]);
         assert!(matches!(header, Ok(BoxHeader { size: 8, .. })));
+    }
+
+    #[test]
+    fn test_largesize_write_round_trip() {
+        let expected = BoxHeader::new(BoxType::FreeBox, u64::from(u32::MAX) + 1);
+        let mut bytes = Vec::new();
+
+        assert_eq!(expected.write(&mut bytes).unwrap(), 16);
+        let actual = BoxHeader::read(&mut bytes.as_slice()).unwrap();
+
+        assert_eq!(actual.name, expected.name);
+        assert_eq!(actual.size, expected.size);
+    }
+
+    #[test]
+    fn test_skip_bytes_rejects_unrepresentable_distance() {
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+
+        let result = skip_bytes(&mut reader, u64::MAX);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert_eq!(reader.position(), 0);
+    }
+
+    #[test]
+    fn test_skip_box_rejects_overflowing_end() {
+        let mut reader = std::io::Cursor::new(vec![0; 16]);
+        reader.set_position(16);
+
+        let result = skip_box(&mut reader, u64::MAX);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert_eq!(reader.position(), 16);
+    }
+
+    #[test]
+    fn test_box_start_before_header_is_rejected() {
+        let mut reader = std::io::Cursor::new(Vec::<u8>::new());
+
+        let result = box_start(&mut reader);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert_eq!(reader.position(), 0);
     }
 }

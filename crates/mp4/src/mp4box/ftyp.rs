@@ -49,9 +49,9 @@ impl Mp4Box for FtypBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for FtypBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, 16)?;
 
-        if size < 16 || !size.is_multiple_of(4) {
+        if !size.is_multiple_of(4) {
             return Err(Error::InvalidData("ftyp size too small or not aligned"));
         }
         let brand_count = (size - 16) / 4; // header + major + minor
@@ -64,7 +64,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for FtypBox {
             brands.push(From::from(b));
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             major_brand: From::from(major),

@@ -81,7 +81,7 @@ impl Mp4Box for Tx3gBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for Tx3gBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + 6 + 32)?;
 
         reader.read_u32::<BigEndian>()?; // reserved
         reader.read_u16::<BigEndian>()?; // reserved
@@ -117,7 +117,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for Tx3gBox {
             reader.read_u8()?,
         ];
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             data_reference_index,

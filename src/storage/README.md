@@ -168,6 +168,11 @@ Central orchestrator that owns one pipeline per camera. All timing
 decisions live here so that limits are configurable and testable with
 short durations (1–5 s for unit tests, minutes/hours for production).
 
+Camera producers publish without blocking into a queue bounded to 4,096 commands and 64 MiB of
+encoded media. If either limit is reached, recording health reports the saturation and that logical
+stream drops media until a video keyframe can be queued. The writer finalizes pre-gap media before
+starting the recovery keyframe in a new recording, so stored coverage does not conceal the loss.
+
 ```
 StorageConfig {
   medium_term_path:          PathBuf,

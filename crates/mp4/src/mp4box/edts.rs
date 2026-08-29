@@ -46,13 +46,17 @@ impl Mp4Box for EdtsBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for EdtsBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end(reader, size)?;
 
         let mut edts = Self::new();
 
-        let header = BoxHeader::read(reader)?;
+        if reader.stream_position()? == end {
+            return Ok(edts);
+        }
+
+        let header = read_box_header(reader, end)?;
         let BoxHeader { name, size: s } = header;
-        if s > size {
+        if checked_box_end(reader, s)? > end {
             return Err(Error::InvalidData(
                 "edts box contains a box with a larger size than it",
             ));
@@ -63,7 +67,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for EdtsBox {
             edts.elst = Some(elst);
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(edts)
     }
@@ -79,5 +83,24 @@ impl<W: Write> WriteBox<&mut W> for EdtsBox {
         }
 
         Ok(size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn empty_edts_round_trips() {
+        let expected = EdtsBox::default();
+        let mut bytes = Vec::new();
+        expected.write_box(&mut bytes).unwrap();
+        let mut reader = Cursor::new(bytes);
+        let header = BoxHeader::read(&mut reader).unwrap();
+
+        let actual = EdtsBox::read_box(&mut reader, header.size).unwrap();
+
+        assert_eq!(actual, expected);
     }
 }

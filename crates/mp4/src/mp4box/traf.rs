@@ -48,19 +48,18 @@ impl Mp4Box for TrafBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for TrafBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end(reader, size)?;
 
         let mut tfhd = None;
         let mut tfdt = None;
         let mut trun = None;
 
         let mut current = reader.stream_position()?;
-        let end = start + size;
         while current < end {
             // Get box header.
-            let header = BoxHeader::read(reader)?;
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
+            if checked_box_end(reader, s)? > end {
                 return Err(Error::InvalidData(
                     "traf box contains a box with a larger size than it",
                 ));
@@ -89,7 +88,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrafBox {
             return Err(Error::BoxNotFound(BoxType::TfhdBox));
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             tfhd: tfhd.unwrap(),

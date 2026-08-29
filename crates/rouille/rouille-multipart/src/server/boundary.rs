@@ -42,8 +42,10 @@ where
 {
     /// Internal API
     pub fn from_reader<B: Into<Vec<u8>>>(reader: R, boundary: B) -> Self {
-        let mut boundary = boundary.into();
-        safemem::prepend(b"--", &mut boundary);
+        let suffix = boundary.into();
+        let mut boundary = Vec::with_capacity(2 + suffix.len());
+        boundary.extend_from_slice(b"--");
+        boundary.extend_from_slice(&suffix);
         let source = BufReader::new(reader).set_policy(MinBuffered(MIN_BUF_SIZE));
 
         Self {
@@ -219,7 +221,7 @@ where
 
 /// Find the boundary occurrence or the highest length to safely yield
 fn find_boundary(buf: &[u8], boundary: &[u8]) -> Result<usize, usize> {
-    if let Some(idx) = twoway::find_bytes(buf, boundary) {
+    if let Some(idx) = memchr::memmem::find(buf, boundary) {
         return Ok(idx);
     }
 

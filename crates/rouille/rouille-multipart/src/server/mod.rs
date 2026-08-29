@@ -13,7 +13,6 @@
 
 pub extern crate buffer_redux;
 extern crate httparse;
-extern crate twoway;
 
 use std::borrow::Borrow;
 use std::io;

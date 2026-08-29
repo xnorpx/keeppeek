@@ -84,7 +84,11 @@ impl Mp4Box for Vp09Box {
 
 impl<R: Read + Seek> ReadBox<&mut R> for Vp09Box {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(
+            reader,
+            size,
+            HEADER_SIZE + HEADER_EXT_SIZE + 74 + HEADER_SIZE,
+        )?;
         let (version, flags) = read_box_header_ext(reader)?;
 
         let start_code: u16 = reader.read_u16::<BigEndian>()?;
@@ -119,8 +123,8 @@ impl<R: Read + Seek> ReadBox<&mut R> for Vp09Box {
         let end_code: u16 = reader.read_u16::<BigEndian>()?;
 
         let vpcc = {
-            let header = BoxHeader::read(reader)?;
-            if header.size > size {
+            let header = read_box_header(reader, end)?;
+            if checked_box_end(reader, header.size)? > end {
                 return Err(Error::InvalidData(
                     "vp09 box contains a box with a larger size than it",
                 ));
@@ -128,7 +132,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for Vp09Box {
             VpccBox::read_box(reader, header.size)?
         };
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

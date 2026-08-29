@@ -68,9 +68,26 @@ impl Mp4Box for TfhdBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for TfhdBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
+        let mut minimum_size = HEADER_SIZE + HEADER_EXT_SIZE + 4;
+        if Self::FLAG_BASE_DATA_OFFSET & flags > 0 {
+            minimum_size += 8;
+        }
+        if Self::FLAG_SAMPLE_DESCRIPTION_INDEX & flags > 0 {
+            minimum_size += 4;
+        }
+        if Self::FLAG_DEFAULT_SAMPLE_DURATION & flags > 0 {
+            minimum_size += 4;
+        }
+        if Self::FLAG_DEFAULT_SAMPLE_SIZE & flags > 0 {
+            minimum_size += 4;
+        }
+        if Self::FLAG_DEFAULT_SAMPLE_FLAGS & flags > 0 {
+            minimum_size += 4;
+        }
+        ensure_box_size(size, minimum_size)?;
         let track_id = reader.read_u32::<BigEndian>()?;
         let base_data_offset = if Self::FLAG_BASE_DATA_OFFSET & flags > 0 {
             Some(reader.read_u64::<BigEndian>()?)
@@ -98,7 +115,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for TfhdBox {
             None
         };
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

@@ -2,8 +2,10 @@
 """Bounded decode, inference, and publication pipeline for the demonstration service."""
 
 import asyncio
+import contextlib
 import io
 import logging
+import math
 import shutil
 import subprocess
 import uuid
@@ -28,6 +30,9 @@ FFMPEG_INSTALL_HELP = (
     "Windows `winget install Gyan.FFmpeg` or `choco install ffmpeg`; "
     "Linux `apt install ffmpeg`, `dnf install ffmpeg`, or `pacman -S ffmpeg`."
 )
+MAX_DECODED_FRAME_BYTES = 24 * 1024 * 1024
+MAX_PPM_HEADER_BYTES = 1024
+MAX_FFMPEG_STDERR_BYTES = 300
 
 
 class ServiceError(RuntimeError):
@@ -163,11 +168,14 @@ def normalize_bounding_box(
 ) -> tuple[float, float, float, float]:
     if len(xyxy) != 4 or width < 1 or height < 1:
         raise ValueError("detection bounding box or image dimensions are invalid")
-    x1, y1, x2, y2 = xyxy
-    left = min(max(float(x1) / width, 0.0), 1.0)
-    top = min(max(float(y1) / height, 0.0), 1.0)
-    right = min(max(float(x2) / width, left), 1.0)
-    bottom = min(max(float(y2) / height, top), 1.0)
+    coordinates = tuple(float(value) for value in xyxy)
+    if not all(math.isfinite(value) for value in coordinates):
+        raise ValueError("detection bounding box coordinates must be finite")
+    x1, y1, x2, y2 = coordinates
+    left = min(max(x1 / width, 0.0), 1.0)
+    top = min(max(y1 / height, 0.0), 1.0)
+    right = min(max(x2 / width, left), 1.0)
+    bottom = min(max(y2 / height, top), 1.0)
     return left, top, right - left, bottom - top
 
 
@@ -207,10 +215,11 @@ class FrameAssembler:
         ):
             self._discard()
             return None
-        timestamp = datetime.fromtimestamp(
-            frame.timestamp.seconds + frame.timestamp.nanos / 1_000_000_000,
-            tz=UTC,
-        )
+        try:
+            timestamp = frame.timestamp.ToDatetime(tzinfo=UTC)
+        except (OSError, OverflowError, ValueError):
+            self._discard()
+            return None
         if (
             self._current is None
             or self._current.frame_id != frame.frame_id
@@ -301,6 +310,64 @@ def verify_ffmpeg(executable: str | None = None) -> Path:
     return path
 
 
+async def read_stream_limited(
+    stream: asyncio.StreamReader, max_bytes: int, description: str
+) -> bytes:
+    output = bytearray()
+    while True:
+        chunk = await stream.read(min(64 * 1024, max_bytes + 1 - len(output)))
+        if not chunk:
+            return bytes(output)
+        output.extend(chunk)
+        if len(output) > max_bytes:
+            raise DecodeError(f"ffmpeg {description} exceeded {max_bytes} bytes")
+
+
+async def _read_stream_prefix(stream: asyncio.StreamReader, max_bytes: int) -> bytes:
+    output = bytearray()
+    while chunk := await stream.read(64 * 1024):
+        remaining = max_bytes - len(output)
+        if remaining > 0:
+            output.extend(chunk[:remaining])
+    return bytes(output)
+
+
+async def _communicate_limited(
+    process: asyncio.subprocess.Process, payload: bytes
+) -> tuple[bytes, bytes]:
+    stdin = process.stdin
+    stdout = process.stdout
+    stderr = process.stderr
+    if stdin is None or stdout is None or stderr is None:
+        raise DecodeError("ffmpeg subprocess pipes are unavailable")
+    stdout_task = asyncio.create_task(
+        read_stream_limited(
+            stdout,
+            MAX_DECODED_FRAME_BYTES + MAX_PPM_HEADER_BYTES,
+            "decoded frame",
+        )
+    )
+    stderr_task = asyncio.create_task(_read_stream_prefix(stderr, MAX_FFMPEG_STDERR_BYTES))
+    try:
+        try:
+            stdin.write(payload)
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            stdin.close()
+        output, error_output = await asyncio.gather(stdout_task, stderr_task)
+        await process.wait()
+        return output, error_output
+    except BaseException:
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+        await process.wait()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        raise
+
+
 async def decode_access_unit(ffmpeg: Path, frame: EncodedFrame) -> DecodedFrame:
     annex_b = avcc_to_annex_b(frame.payload)
     input_format = "h264" if frame.codec == "h264" else "hevc"
@@ -325,10 +392,8 @@ async def decode_access_unit(ffmpeg: Path, frame: EncodedFrame) -> DecodedFrame:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(annex_b), timeout=10)
+        stdout, stderr = await asyncio.wait_for(_communicate_limited(process, annex_b), timeout=10)
     except TimeoutError as error:
-        process.kill()
-        await process.wait()
         raise DecodeError("ffmpeg timed out while decoding a camera keyframe") from error
     if process.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace")[:300].strip()
@@ -371,6 +436,8 @@ def parse_ppm(payload: bytes) -> Image:
     if width < 1 or height < 1 or maximum != 255:
         raise DecodeError("ffmpeg returned an unsupported PPM frame")
     expected_bytes = width * height * 3
+    if expected_bytes > MAX_DECODED_FRAME_BYTES:
+        raise DecodeError("ffmpeg returned an oversized PPM frame")
     pixels = stream.read()
     if len(pixels) != expected_bytes:
         raise DecodeError("ffmpeg returned a malformed PPM pixel payload")
@@ -386,7 +453,7 @@ def select_detections(
 ) -> list[Detection]:
     highest: dict[str, Detection] = {}
     for detection in detections:
-        if detection.confidence < confidence_threshold:
+        if not math.isfinite(detection.confidence) or detection.confidence < confidence_threshold:
             continue
         previous = highest.get(detection.object_class)
         if previous is None or detection.confidence > previous.confidence:
@@ -408,7 +475,7 @@ Publish = Callable[[pb.Event, int], Awaitable[None]]
 ENCODED_QUEUE_ITEMS = 4
 ENCODED_QUEUE_BYTES = 8 * 1024 * 1024
 INFERENCE_QUEUE_ITEMS = 1
-INFERENCE_QUEUE_BYTES = 24 * 1024 * 1024
+INFERENCE_QUEUE_BYTES = MAX_DECODED_FRAME_BYTES
 PUBLICATION_QUEUE_ITEMS = 16
 PUBLICATION_QUEUE_BYTES = 16 * 1024
 
@@ -524,7 +591,11 @@ class DetectionPipeline:
             frame = await self.inference_queue.get()
             if frame.generation != self._generation:
                 continue
-            detections = await asyncio.to_thread(self._detect, frame.image)
+            try:
+                detections = await asyncio.to_thread(self._detect, frame.image)
+            except Exception as error:
+                LOGGER.warning("detector inference failed: %s", error)
+                continue
             if frame.generation != self._generation:
                 continue
             selected = select_detections(

@@ -41,7 +41,7 @@ impl Mp4Box for HdlrBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for HdlrBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 20 + 1)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
@@ -66,7 +66,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for HdlrBox {
             _ => String::from("null"),
         };
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

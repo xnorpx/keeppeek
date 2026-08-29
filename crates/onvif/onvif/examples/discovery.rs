@@ -2,7 +2,7 @@ extern crate onvif;
 use onvif::discovery;
 
 fn main() {
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
     let devices = discovery::DiscoveryBuilder::default().discover().unwrap();

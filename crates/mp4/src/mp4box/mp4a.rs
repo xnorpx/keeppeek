@@ -75,7 +75,7 @@ impl Mp4Box for Mp4aBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for Mp4aBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + 28)?;
 
         reader.read_u32::<BigEndian>()?; // reserved
         reader.read_u16::<BigEndian>()?; // reserved
@@ -89,10 +89,10 @@ impl<R: Read + Seek> ReadBox<&mut R> for Mp4aBox {
 
         let mut esds = None;
         let current = reader.stream_position()?;
-        if current < start + size {
-            let header = BoxHeader::read(reader)?;
+        if current < end {
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
+            if checked_box_end(reader, s)? > end {
                 return Err(Error::InvalidData(
                     "mp4a box contains a box with a larger size than it",
                 ));
@@ -101,7 +101,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for Mp4aBox {
             if name == BoxType::EsdsBox {
                 esds = Some(EsdsBox::read_box(reader, s)?);
             }
-            skip_bytes_to(reader, start + size)?;
+            skip_bytes_to(reader, end)?;
         }
 
         Ok(Self {
@@ -180,21 +180,20 @@ impl Mp4Box for EsdsBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for EsdsBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
         let mut es_desc = None;
 
         let mut current = reader.stream_position()?;
-        let end = start + size;
         while current < end {
-            let (desc_tag, desc_size) = read_desc(reader)?;
+            let (desc_tag, desc_size, desc_end) = read_desc(reader, end)?;
             match desc_tag {
                 0x03 => {
                     es_desc = Some(ESDescriptor::read_desc(reader, desc_size)?);
                 }
-                _ => break,
+                _ => skip_bytes_to(reader, desc_end)?,
             }
             current = reader.stream_position()?;
         }
@@ -203,7 +202,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for EsdsBox {
             return Err(Error::InvalidData("ESDescriptor not found"));
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,
@@ -239,19 +238,53 @@ trait WriteDesc<T>: Sized {
     fn write_desc(&self, _: T) -> Result<u32>;
 }
 
-fn read_desc<R: Read>(reader: &mut R) -> Result<(u8, u32)> {
+fn read_desc<R: Read + Seek>(reader: &mut R, parent_end: u64) -> Result<(u8, u32, u64)> {
+    ensure_descriptor_bytes(reader, parent_end, 1)?;
     let tag = reader.read_u8()?;
 
     let mut size: u32 = 0;
+    let mut terminated = false;
     for _ in 0..4 {
+        ensure_descriptor_bytes(reader, parent_end, 1)?;
         let b = reader.read_u8()?;
         size = (size << 7) | (b & 0x7F) as u32;
         if b & 0x80 == 0 {
+            terminated = true;
             break;
         }
     }
+    if !terminated {
+        return Err(Error::InvalidData("unterminated descriptor length"));
+    }
 
-    Ok((tag, size))
+    let end = checked_descriptor_end(reader, size, 0)?;
+    if end > parent_end {
+        return Err(Error::InvalidData("descriptor extends past its parent"));
+    }
+
+    Ok((tag, size, end))
+}
+
+fn checked_descriptor_end<R: Seek>(reader: &mut R, size: u32, minimum_size: u32) -> Result<u64> {
+    if size < minimum_size {
+        return Err(Error::InvalidData(
+            "descriptor is too small for its required fields",
+        ));
+    }
+    reader
+        .stream_position()?
+        .checked_add(u64::from(size))
+        .ok_or(Error::InvalidData("descriptor size overflow"))
+}
+
+fn ensure_descriptor_bytes<R: Seek>(reader: &mut R, end: u64, needed: u64) -> Result<()> {
+    let remaining = end
+        .checked_sub(reader.stream_position()?)
+        .ok_or(Error::InvalidData("descriptor contents exceed its size"))?;
+    if remaining < needed {
+        return Err(Error::InvalidData("descriptor is truncated"));
+    }
+    Ok(())
 }
 
 const fn size_of_length(size: u32) -> u32 {
@@ -319,7 +352,7 @@ impl Descriptor for ESDescriptor {
 
 impl<R: Read + Seek> ReadDesc<&mut R> for ESDescriptor {
     fn read_desc(reader: &mut R, size: u32) -> Result<Self> {
-        let start = reader.stream_position()?;
+        let end = checked_descriptor_end(reader, size, 3)?;
 
         let es_id = reader.read_u16::<BigEndian>()?;
         reader.read_u8()?; // XXX flags must be 0
@@ -328,22 +361,29 @@ impl<R: Read + Seek> ReadDesc<&mut R> for ESDescriptor {
         let mut sl_config = None;
 
         let mut current = reader.stream_position()?;
-        let end = start + size as u64;
         while current < end {
-            let (desc_tag, desc_size) = read_desc(reader)?;
+            let (desc_tag, desc_size, desc_end) = read_desc(reader, end)?;
             match desc_tag {
                 0x04 => {
                     dec_config = Some(DecoderConfigDescriptor::read_desc(reader, desc_size)?);
                 }
                 0x06 => {
-                    sl_config = Some(SLConfigDescriptor::read_desc(reader, desc_size)?);
+                    let sl_size = if desc_size == 0 {
+                        ensure_descriptor_bytes(reader, end, 1)?;
+                        1
+                    } else {
+                        desc_size
+                    };
+                    sl_config = Some(SLConfigDescriptor::read_desc(reader, sl_size)?);
                 }
                 _ => {
-                    skip_bytes(reader, desc_size as u64)?;
+                    skip_bytes_to(reader, desc_end)?;
                 }
             }
             current = reader.stream_position()?;
         }
+
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             es_id,
@@ -409,7 +449,7 @@ impl Descriptor for DecoderConfigDescriptor {
 
 impl<R: Read + Seek> ReadDesc<&mut R> for DecoderConfigDescriptor {
     fn read_desc(reader: &mut R, size: u32) -> Result<Self> {
-        let start = reader.stream_position()?;
+        let end = checked_descriptor_end(reader, size, 13)?;
 
         let object_type_indication = reader.read_u8()?;
         let byte_a = reader.read_u8()?;
@@ -422,19 +462,20 @@ impl<R: Read + Seek> ReadDesc<&mut R> for DecoderConfigDescriptor {
         let mut dec_specific = None;
 
         let mut current = reader.stream_position()?;
-        let end = start + size as u64;
         while current < end {
-            let (desc_tag, desc_size) = read_desc(reader)?;
+            let (desc_tag, desc_size, desc_end) = read_desc(reader, end)?;
             match desc_tag {
                 0x05 => {
                     dec_specific = Some(DecoderSpecificDescriptor::read_desc(reader, desc_size)?);
                 }
                 _ => {
-                    skip_bytes(reader, desc_size as u64)?;
+                    skip_bytes_to(reader, desc_end)?;
                 }
             }
             current = reader.stream_position()?;
         }
+
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             object_type_indication,
@@ -507,12 +548,14 @@ fn get_chan_conf<R: Read + Seek>(
     byte_b: u8,
     freq_index: u8,
     extended_profile: bool,
+    end: u64,
 ) -> Result<u8> {
     let chan_conf = if freq_index == 15 {
-        // Skip the 24 bit sample rate
+        ensure_descriptor_bytes(reader, end, 3)?;
         let sample_rate = reader.read_u24::<BigEndian>()?;
         ((sample_rate >> 4) & 0x0F) as u8
     } else if extended_profile {
+        ensure_descriptor_bytes(reader, end, 1)?;
         let byte_c = reader.read_u8()?;
         (byte_b & 1) | (byte_c & 0xE0)
     } else {
@@ -523,20 +566,26 @@ fn get_chan_conf<R: Read + Seek>(
 }
 
 impl<R: Read + Seek> ReadDesc<&mut R> for DecoderSpecificDescriptor {
-    fn read_desc(reader: &mut R, _size: u32) -> Result<Self> {
+    fn read_desc(reader: &mut R, size: u32) -> Result<Self> {
+        let end = checked_descriptor_end(reader, size, 2)?;
         let byte_a = reader.read_u8()?;
         let byte_b = reader.read_u8()?;
         let profile = get_audio_object_type(byte_a, byte_b);
         let (freq_index, chan_conf) = if profile > 31 {
             let freq_index = (byte_b >> 1) & 0x0F;
-            (freq_index, get_chan_conf(reader, byte_b, freq_index, true)?)
+            (
+                freq_index,
+                get_chan_conf(reader, byte_b, freq_index, true, end)?,
+            )
         } else {
             let freq_index = ((byte_a & 0x07) << 1) + (byte_b >> 7);
             (
                 freq_index,
-                get_chan_conf(reader, byte_b, freq_index, false)?,
+                get_chan_conf(reader, byte_b, freq_index, false, end)?,
             )
         };
+
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             profile,
@@ -579,8 +628,10 @@ impl Descriptor for SLConfigDescriptor {
 }
 
 impl<R: Read + Seek> ReadDesc<&mut R> for SLConfigDescriptor {
-    fn read_desc(reader: &mut R, _size: u32) -> Result<Self> {
+    fn read_desc(reader: &mut R, size: u32) -> Result<Self> {
+        let end = checked_descriptor_end(reader, size, 1)?;
         reader.read_u8()?; // pre-defined
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {})
     }
@@ -589,7 +640,7 @@ impl<R: Read + Seek> ReadDesc<&mut R> for SLConfigDescriptor {
 impl<W: Write> WriteDesc<&mut W> for SLConfigDescriptor {
     fn write_desc(&self, writer: &mut W) -> Result<u32> {
         let size = Self::desc_size();
-        write_desc(writer, Self::desc_tag(), size - 1)?;
+        write_desc(writer, Self::desc_tag(), size)?;
 
         writer.write_u8(0)?; // pre-defined
         Ok(size)
@@ -663,5 +714,73 @@ mod tests {
 
         let dst_box = Mp4aBox::read_box(&mut reader, header.size).unwrap();
         assert_eq!(src_box, dst_box);
+    }
+
+    #[test]
+    fn descriptor_rejects_unterminated_length() {
+        let mut reader = Cursor::new([0x03, 0x80, 0x80, 0x80, 0x80]);
+
+        let result = read_desc(&mut reader, 5);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn descriptor_rejects_body_smaller_than_fixed_fields() {
+        let mut reader = Cursor::new([0, 1, 0]);
+
+        let result = ESDescriptor::read_desc(&mut reader, 2);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn descriptor_rejects_child_that_extends_past_parent() {
+        let mut bytes = vec![0, 1, 0, DecoderConfigDescriptor::desc_tag(), 13];
+        bytes.extend_from_slice(&[0; 13]);
+        let mut reader = Cursor::new(bytes);
+
+        let result = ESDescriptor::read_desc(&mut reader, 5);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn descriptor_specific_config_rejects_undersized_body() {
+        let mut reader = Cursor::new([0, 0]);
+
+        let result = DecoderSpecificDescriptor::read_desc(&mut reader, 1);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn descriptor_sl_config_writes_its_payload_length() {
+        let mut bytes = Vec::new();
+
+        SLConfigDescriptor::new().write_desc(&mut bytes).unwrap();
+
+        assert_eq!(bytes, [SLConfigDescriptor::desc_tag(), 1, 0]);
+    }
+
+    #[test]
+    fn descriptor_reads_legacy_zero_length_sl_payload() {
+        let expected = ESDescriptor::default();
+        let mut bytes = Vec::new();
+        expected.write_desc(&mut bytes).unwrap();
+        let sl_offset = bytes
+            .windows(3)
+            .position(|window| window == [SLConfigDescriptor::desc_tag(), 1, 0])
+            .unwrap();
+        bytes[sl_offset + 1] = 0;
+
+        let parent_end = bytes.len() as u64;
+        let mut reader = Cursor::new(bytes);
+        let (tag, size, end) = read_desc(&mut reader, parent_end).unwrap();
+        assert_eq!(tag, ESDescriptor::desc_tag());
+        assert_eq!(end, parent_end);
+
+        let actual = ESDescriptor::read_desc(&mut reader, size).unwrap();
+        assert_eq!(actual, expected);
     }
 }

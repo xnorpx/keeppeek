@@ -84,12 +84,13 @@ impl Default for MetaBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for MetaBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + 4)?;
 
         let extended_header = reader.read_u32::<BigEndian>()?;
         if extended_header != 0 {
             // ISO mp4 requires this header (version & flags) to be 0. Some
             // files skip the extended header and directly start the hdlr box.
+            ensure_box_bytes_remaining(reader, end, 4)?;
             let possible_hdlr = BoxType::from(reader.read_u32::<BigEndian>()?);
             if possible_hdlr == BoxType::HdlrBox {
                 // This file skipped the extended header! Go back to start.
@@ -102,7 +103,6 @@ impl<R: Read + Seek> ReadBox<&mut R> for MetaBox {
         }
 
         let mut current = reader.stream_position()?;
-        let end = start + size;
 
         let content_start = current;
 
@@ -110,8 +110,13 @@ impl<R: Read + Seek> ReadBox<&mut R> for MetaBox {
         let mut hdlr = None;
         while current < end {
             // Get box header.
-            let header = BoxHeader::read(reader)?;
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
+            if checked_box_end(reader, s)? > end {
+                return Err(Error::InvalidData(
+                    "meta box contains a box with a larger size than it",
+                ));
+            }
 
             match name {
                 BoxType::HdlrBox => {
@@ -140,8 +145,13 @@ impl<R: Read + Seek> ReadBox<&mut R> for MetaBox {
             MDIR => {
                 while current < end {
                     // Get box header.
-                    let header = BoxHeader::read(reader)?;
+                    let header = read_box_header(reader, end)?;
                     let BoxHeader { name, size: s } = header;
+                    if checked_box_end(reader, s)? > end {
+                        return Err(Error::InvalidData(
+                            "meta box contains a box with a larger size than it",
+                        ));
+                    }
 
                     match name {
                         BoxType::IlstBox => {
@@ -163,15 +173,22 @@ impl<R: Read + Seek> ReadBox<&mut R> for MetaBox {
 
                 while current < end {
                     // Get box header.
-                    let header = BoxHeader::read(reader)?;
+                    let header = read_box_header(reader, end)?;
                     let BoxHeader { name, size: s } = header;
+                    if checked_box_end(reader, s)? > end {
+                        return Err(Error::InvalidData(
+                            "meta box contains a box with a larger size than it",
+                        ));
+                    }
 
                     match name {
                         BoxType::HdlrBox => {
                             skip_box(reader, s)?;
                         }
                         _ => {
-                            let mut box_data = vec![0; (s - HEADER_SIZE) as usize];
+                            let data_len = usize::try_from(s - HEADER_SIZE)
+                                .map_err(|_| Error::InvalidData("metadata box is too large"))?;
+                            let mut box_data = vec![0; data_len];
                             reader.read_exact(&mut box_data)?;
 
                             data.push((name, box_data));
@@ -259,6 +276,24 @@ mod tests {
 
         let dst_box = MetaBox::read_box(&mut reader, header.size).unwrap();
         assert_eq!(dst_box, src_box);
+    }
+
+    #[test]
+    fn test_meta_rejects_child_that_extends_past_parent() {
+        let mut buf = Vec::new();
+        MetaBox::Mdir { ilst: None }.write_box(&mut buf).unwrap();
+        let parent_size = u32::try_from(buf.len() + HEADER_SIZE as usize)
+            .expect("test meta size must fit in a 32-bit box header");
+        buf[..4].copy_from_slice(&parent_size.to_be_bytes());
+        BoxHeader::new(BoxType::FreeBox, u64::from(parent_size))
+            .write(&mut buf)
+            .unwrap();
+
+        let mut reader = Cursor::new(&buf);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let error = MetaBox::read_box(&mut reader, header.size);
+
+        assert!(matches!(error, Err(Error::InvalidData(_))));
     }
 
     #[test]

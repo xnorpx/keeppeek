@@ -98,8 +98,8 @@ use std::io::Error as IoError;
 use std::io::Result as IoResult;
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -136,6 +136,9 @@ pub struct Server {
     // queue for messages received by child threads
     messages: Arc<MessagesQueue<Message>>,
 
+    // This value counts accepted client sockets that have active connection tasks.
+    connections: Arc<AtomicUsize>,
+
     // result of TcpListener::local_addr()
     listening_addr: ListenAddr,
 }
@@ -143,6 +146,21 @@ pub struct Server {
 enum Message {
     Error(IoError),
     NewRequest(Request),
+}
+
+struct ConnectionCountGuard(Arc<AtomicUsize>);
+
+impl ConnectionCountGuard {
+    fn new(connections: Arc<AtomicUsize>) -> Self {
+        connections.fetch_add(1, Relaxed);
+        Self(connections)
+    }
+}
+
+impl Drop for ConnectionCountGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Relaxed);
+    }
 }
 
 impl From<IoError> for Message {
@@ -260,9 +278,11 @@ impl Server {
         // creating a task where server.accept() is continuously called
         // and ClientConnection objects are pushed in the messages queue
         let messages = MessagesQueue::with_capacity(8);
+        let connections = Arc::new(AtomicUsize::new(0));
 
         let inside_close_trigger = close_trigger.clone();
         let inside_messages = messages.clone();
+        let inside_connections = connections.clone();
         thread::spawn(move || {
             // a tasks pool is used to dispatch the connections into threads
             let tasks_pool = util::TaskPool::new();
@@ -294,8 +314,11 @@ impl Server {
                 match new_client {
                     Ok(client) => {
                         let messages = inside_messages.clone();
+                        let connection_guard =
+                            ConnectionCountGuard::new(inside_connections.clone());
                         let mut client = Some(client);
                         tasks_pool.spawn(Box::new(move || {
+                            let _connection_guard = &connection_guard;
                             if let Some(client) = client.take() {
                                 // Synchronization is needed for HTTPS requests to avoid a deadlock
                                 if client.secure() {
@@ -326,6 +349,7 @@ impl Server {
         // result
         Ok(Self {
             messages,
+            connections,
             close: close_trigger,
             listening_addr: local_addr,
         })
@@ -347,8 +371,7 @@ impl Server {
 
     /// Returns the number of clients currently connected to the server.
     pub fn num_connections(&self) -> usize {
-        unimplemented!()
-        //self.requests_receiver.lock().len()
+        self.connections.load(Relaxed)
     }
 
     /// Blocks until an HTTP request has been submitted and returns it.
@@ -416,5 +439,32 @@ impl Drop for Server {
                 let _ = std::fs::remove_file(path);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn wait_for_connection_count(server: &Server, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while server.num_connections() != expected && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert_eq!(server.num_connections(), expected);
+    }
+
+    #[test]
+    fn num_connections_tracks_open_client_sockets() {
+        let server = Server::http("127.0.0.1:0").unwrap();
+        assert_eq!(server.num_connections(), 0);
+        let address = server.server_addr().to_ip().unwrap();
+
+        let connection = TcpStream::connect(address).unwrap();
+        wait_for_connection_count(&server, 1);
+
+        drop(connection);
+        wait_for_connection_count(&server, 0);
     }
 }

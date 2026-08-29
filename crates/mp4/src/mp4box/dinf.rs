@@ -38,17 +38,16 @@ impl Mp4Box for DinfBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for DinfBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end(reader, size)?;
 
         let mut dref = None;
 
         let mut current = reader.stream_position()?;
-        let end = start + size;
         while current < end {
             // Get box header.
-            let header = BoxHeader::read(reader)?;
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
+            if checked_box_end(reader, s)? > end {
                 return Err(Error::InvalidData(
                     "dinf box contains a box with a larger size than it",
                 ));
@@ -71,7 +70,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for DinfBox {
             return Err(Error::BoxNotFound(BoxType::DrefBox));
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             dref: dref.unwrap(),
@@ -144,25 +143,24 @@ impl Mp4Box for DrefBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for DrefBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
-
-        let mut current = reader.stream_position()?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 4)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
-        let end = start + size;
 
         let mut url = None;
 
         let entry_count = reader.read_u32::<BigEndian>()?;
+        let remaining = end
+            .checked_sub(reader.stream_position()?)
+            .ok_or(Error::InvalidData("dref contents exceed its declared size"))?;
+        if u64::from(entry_count) > remaining / HEADER_SIZE {
+            return Err(Error::InvalidData("dref entry count exceeds box size"));
+        }
         for _i in 0..entry_count {
-            if current >= end {
-                break;
-            }
-
             // Get box header.
-            let header = BoxHeader::read(reader)?;
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
+            if checked_box_end(reader, s)? > end {
                 return Err(Error::InvalidData(
                     "dinf box contains a box with a larger size than it",
                 ));
@@ -176,11 +174,9 @@ impl<R: Read + Seek> ReadBox<&mut R> for DrefBox {
                     skip_box(reader, s)?;
                 }
             }
-
-            current = reader.stream_position()?;
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,
@@ -197,7 +193,7 @@ impl<W: Write> WriteBox<&mut W> for DrefBox {
 
         write_box_header_ext(writer, self.version, self.flags)?;
 
-        writer.write_u32::<BigEndian>(1)?;
+        writer.write_u32::<BigEndian>(u32::from(self.url.is_some()))?;
 
         if let Some(ref url) = self.url {
             url.write_box(writer)?;
@@ -263,17 +259,19 @@ impl Mp4Box for UrlBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for UrlBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
         let location = if size.saturating_sub(HEADER_SIZE + HEADER_EXT_SIZE) > 0 {
             let buf_size = size - HEADER_SIZE - HEADER_EXT_SIZE - 1;
-            let mut buf = vec![0u8; buf_size as usize];
+            let buf_size = usize::try_from(buf_size)
+                .map_err(|_| Error::InvalidData("url location is too large"))?;
+            let mut buf = vec![0u8; buf_size];
             reader.read_exact(&mut buf)?;
             match String::from_utf8(buf) {
                 Ok(t) => {
-                    if t.len() != buf_size as usize {
+                    if t.len() != buf_size {
                         return Err(Error::InvalidData("string too small"));
                     }
                     t
@@ -284,7 +282,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for UrlBox {
             String::default()
         };
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,
@@ -307,5 +305,28 @@ impl<W: Write> WriteBox<&mut W> for UrlBox {
         }
 
         Ok(size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn empty_dref_round_trips() {
+        let expected = DrefBox {
+            version: 0,
+            flags: 0,
+            url: None,
+        };
+        let mut bytes = Vec::new();
+        expected.write_box(&mut bytes).unwrap();
+        let mut reader = Cursor::new(bytes);
+        let header = BoxHeader::read(&mut reader).unwrap();
+
+        let actual = DrefBox::read_box(&mut reader, header.size).unwrap();
+
+        assert_eq!(actual, expected);
     }
 }
