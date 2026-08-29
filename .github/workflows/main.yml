@@ -1,12 +1,14 @@
-name: Nightly
+name: Main
 
 on:
+  push:
+    branches: [main]
   schedule:
-    - cron: "17 2 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 concurrency:
-  group: nightly-main
+  group: main-extended
   cancel-in-progress: true
 
 permissions:
@@ -45,7 +47,7 @@ jobs:
         run: cargo test --test storage_pipeline
 
   rust-coverage:
-    name: Nightly Rust Coverage
+    name: Rust Coverage
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -68,21 +70,21 @@ jobs:
           tool: cargo-llvm-cov
       - name: Generate Rust coverage
         run: |
-          mkdir -p target/nightly-coverage/rust
-          cargo llvm-cov --workspace --lib --bins --tests --lcov --output-path target/nightly-coverage/rust/lcov.info
-          cargo llvm-cov report --json --output-path target/nightly-coverage/rust/coverage.json
-          cargo llvm-cov report --html --output-dir target/nightly-coverage/rust/html
+          mkdir -p target/main-coverage/rust
+          cargo llvm-cov --workspace --lib --bins --tests --lcov --output-path target/main-coverage/rust/lcov.info
+          cargo llvm-cov report --json --output-path target/main-coverage/rust/coverage.json
+          cargo llvm-cov report --html --output-dir target/main-coverage/rust/html
       - name: Upload Rust coverage
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: nightly-rust-coverage
-          path: target/nightly-coverage/rust
+          name: main-rust-coverage
+          path: target/main-coverage/rust
           if-no-files-found: ignore
           retention-days: 30
 
   platform-rust:
-    name: Nightly Platform (${{ matrix.os }})
+    name: Main Platform (${{ matrix.os }})
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -195,7 +197,7 @@ jobs:
         run: cargo test --all --lib --bins --tests
 
   platform-ui-e2e:
-    name: Nightly UI E2E (${{ matrix.os }})
+    name: Main UI E2E (${{ matrix.os }})
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -225,20 +227,21 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: nightly-ui-reports-${{ matrix.os }}
+          name: main-ui-reports-${{ matrix.os }}
           path: |
             ui/test-results
             ui/playwright-report
           if-no-files-found: ignore
           retention-days: 14
 
-  nightly-gate:
-    name: Nightly Gate
+  main-gate:
+    name: Main Extended Gate
     if: always() && github.ref == 'refs/heads/main'
     needs: [slow-rust, rust-coverage, platform-rust, platform-ui-e2e]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Require every nightly suite
+      - name: Require every extended main suite
         env:
           SLOW_RUST_RESULT: ${{ needs.slow-rust.result }}
           RUST_COVERAGE_RESULT: ${{ needs.rust-coverage.result }}

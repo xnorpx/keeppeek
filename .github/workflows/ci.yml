@@ -611,7 +611,7 @@ jobs:
             echo
             echo "Vitest: \`${UI_COVERAGE_OUTCOME:-not-run}\`"
             echo
-            echo 'Bun-compatible tests run once in their own required job. Rust coverage runs in Nightly.'
+            echo 'Bun-compatible tests run once in their own required job. Rust coverage runs in the extended Main workflow.'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
         if: always()
@@ -769,7 +769,7 @@ jobs:
               '| Runtime | Lines | Functions | Branches |',
               '| --- | ---: | ---: | ---: |',
               `| Vitest-owned UI | ${metric(uiTotals, 'lines')} | ${metric(uiTotals, 'functions')} | ${metric(uiTotals, 'branches')} |`,
-              '| Rust | nightly | nightly | nightly |',
+              '| Rust | main | main | main |',
               '',
               `[Open workflow run and artifacts](${runUrl})`
             ].join('\n');
