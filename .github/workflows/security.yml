@@ -13,11 +13,16 @@ permissions:
   contents: read
   security-events: write
 
+concurrency:
+  group: security-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dependency-review:
     name: Dependency Review
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: write
@@ -31,7 +36,7 @@ jobs:
   codeql-rust:
     name: CodeQL (Rust)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:

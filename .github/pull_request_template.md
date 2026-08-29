@@ -43,6 +43,7 @@ For a PR that cannot affect performance, replace the table with `Performance: N/
 List every command, suite, manual procedure, and artifact used to validate this PR.
 
 - [ ] Canonical repository checks pass (`./check.sh` on macOS/Linux or `check.bat` on Windows).
+- [ ] Nightly-only slow Rust tests pass locally (`KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh` on macOS/Linux or `$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat` in PowerShell).
 - [ ] Focused tests for the changed behavior pass.
 - [ ] Failure, boundary, and regression cases are covered where relevant.
 

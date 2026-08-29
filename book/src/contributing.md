@@ -139,6 +139,16 @@ Run the canonical repository check from the repository root before requesting re
 - macOS or Linux: `./check.sh`
 - Windows: `.\check.bat`
 
+Run the same gate with opt-in slow Rust test bodies before submitting a pull request:
+
+- macOS or Linux: `KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh`
+- Windows PowerShell: `$env:KEEPPEEK_RUN_SLOW_TESTS = '1'; .\check.bat`
+
+Pull-request CI keeps feedback fast by splitting static UI checks, unit tests, coverage, and Linux
+Playwright tests into non-overlapping jobs. The scheduled `Nightly` workflow on `main` runs the
+opt-in slow Rust tests, ARM builds and tests, Windows installer lifecycles, and full Playwright
+suites on macOS and Windows.
+
 During development, run the narrowest relevant test first. The final check covers repository
 formatting, Rust tests and lints, frontend checks, and the supported test suites. Document any test
 that cannot run in the pull request and explain why.

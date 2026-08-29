@@ -1,0 +1,251 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  slow-rust:
+    name: Slow Rust Tests
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Run opt-in slow test-camera regressions
+        env:
+          KEEPPEEK_RUN_SLOW_TESTS: "1"
+        run: |
+          cargo test -p test-camera checked_in_mp4_fixtures_stream_through_both_backends --lib
+          cargo test -p test-camera rtsp_camera_streams_main_and_sub_profiles --lib
+      - name: Run opt-in storage pipeline regressions
+        env:
+          KEEPPEEK_RUN_SLOW_TESTS: "1"
+        run: cargo test --test storage_pipeline
+
+  rust-coverage:
+    name: Nightly Rust Coverage
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate Rust coverage
+        run: |
+          mkdir -p target/nightly-coverage/rust
+          cargo llvm-cov --workspace --lib --bins --tests --lcov --output-path target/nightly-coverage/rust/lcov.info
+          cargo llvm-cov report --json --output-path target/nightly-coverage/rust/coverage.json
+          cargo llvm-cov report --html --output-dir target/nightly-coverage/rust/html
+      - name: Upload Rust coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-rust-coverage
+          path: target/nightly-coverage/rust
+          if-no-files-found: ignore
+          retention-days: 30
+
+  platform-rust:
+    name: Nightly Platform (${{ matrix.os }})
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, windows-latest, windows-11-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install and verify Rolldown Linux ARM64 binding
+        if: matrix.os == 'ubuntu-24.04-arm'
+        working-directory: ui
+        shell: bash
+        run: |
+          binding='@rolldown/binding-linux-arm64-gnu'
+          binding_version="$(bun -e "const packageJson = await Bun.file('node_modules/rolldown/package.json').json(); console.log(packageJson.optionalDependencies['$binding'])")"
+          if [[ -z "$binding_version" || "$binding_version" == undefined ]]; then
+            echo "Unable to determine $binding version" >&2
+            exit 1
+          fi
+          bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
+          bun -e "await import('rolldown')"
+      - name: Build workspace
+        run: cargo build --all
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install nsis --no-progress --yes
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        id: windows-installer
+        shell: pwsh
+        run: |
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
+          $buildDirectory = Join-Path $env:GITHUB_WORKSPACE 'target\debug'
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-installer'
+          New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' `
+            "/DARCH=$architecture" `
+            "/DBUILD_DIR=$buildDirectory" `
+            "/DOUT_DIR=$outputDirectory" `
+            '/DVERSION=0.0.0' `
+            '/DVERSION_RESOURCE=0.0.0.0' `
+            installer/keeppeek.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to build the KeepPeek installer'
+          }
+
+          $installer = Join-Path $outputDirectory "keeppeek-0.0.0-windows-$architecture-installer.exe"
+          "installer=$installer" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "output_directory=$outputDirectory" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if (-not (Test-Path $installer)) {
+            throw "Installer was not created at $installer"
+          }
+      - name: Verify Windows installer lifecycle
+        if: runner.os == 'Windows' && steps.windows-installer.outcome == 'success'
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.windows-installer.outputs.installer }}
+          OUTPUT_DIRECTORY: ${{ steps.windows-installer.outputs.output_directory }}
+        run: |
+          $installDirectory = Join-Path $env:RUNNER_TEMP 'keeppeek-install'
+          $serviceName = 'KeepPeekService'
+          $installer = $env:INSTALLER
+          try {
+            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
+              throw 'Unable to install KeepPeek'
+            }
+
+            foreach ($binary in 'keeppeek.exe', 'keeppeek-service.exe') {
+              if (-not (Test-Path (Join-Path $installDirectory $binary))) {
+                throw "$binary was not installed"
+              }
+            }
+
+            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            if ($null -eq $service -or -not $service.PathName.Contains("$installDirectory\keeppeek-service.exe")) {
+              throw "$serviceName was not installed with the expected binary path"
+            }
+
+            $process = Start-Process -FilePath $installer -ArgumentList @('/S', '/SERVICE', "/D=$installDirectory") -PassThru -Wait
+            if ($process.ExitCode -ne 0) {
+              throw 'Unable to reinstall KeepPeek'
+            }
+          } finally {
+            if (Test-Path (Join-Path $installDirectory 'uninstall.exe')) {
+              $process = Start-Process -FilePath (Join-Path $installDirectory 'uninstall.exe') -ArgumentList '/S' -PassThru -Wait
+              if ($process.ExitCode -ne 0) {
+                throw 'Unable to uninstall KeepPeek'
+              }
+            } else {
+              & sc.exe delete $serviceName
+            }
+            Remove-Item -Force -Recurse -ErrorAction SilentlyContinue $installDirectory, $env:OUTPUT_DIRECTORY
+          }
+      - name: Run platform Rust tests
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: cargo test --all --lib --bins --tests
+
+  platform-ui-e2e:
+    name: Nightly UI E2E (${{ matrix.os }})
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install Chromium
+        run: bunx playwright install chromium
+      - name: Run full platform Playwright suite
+        run: bun run test:e2e
+      - name: Upload UI test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-ui-reports-${{ matrix.os }}
+          path: |
+            ui/test-results
+            ui/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+  nightly-gate:
+    name: Nightly Gate
+    if: always() && github.ref == 'refs/heads/main'
+    needs: [slow-rust, rust-coverage, platform-rust, platform-ui-e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every nightly suite
+        env:
+          SLOW_RUST_RESULT: ${{ needs.slow-rust.result }}
+          RUST_COVERAGE_RESULT: ${{ needs.rust-coverage.result }}
+          PLATFORM_RUST_RESULT: ${{ needs.platform-rust.result }}
+          PLATFORM_UI_RESULT: ${{ needs.platform-ui-e2e.result }}
+        run: |
+          test "$SLOW_RUST_RESULT" = success
+          test "$RUST_COVERAGE_RESULT" = success
+          test "$PLATFORM_RUST_RESULT" = success
+          test "$PLATFORM_UI_RESULT" = success

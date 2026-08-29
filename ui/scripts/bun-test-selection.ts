@@ -8,7 +8,11 @@ export function normalizeTestPath(testFile: string): string {
 	return testFile.replaceAll('\\', '/');
 }
 
+export function isVitestCompatTest(testFile: string): boolean {
+	return vitestOnlyTests.has(normalizeTestPath(testFile));
+}
+
 export function isBunCompatibleTest(testFile: string): boolean {
 	const normalized = normalizeTestPath(testFile);
-	return !normalized.includes('.svelte.') && !vitestOnlyTests.has(normalized);
+	return !normalized.includes('.svelte.') && !isVitestCompatTest(normalized);
 }

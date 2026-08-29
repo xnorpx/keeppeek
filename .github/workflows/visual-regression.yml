@@ -9,9 +9,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: visual-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   storybook:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ui/visual-harness
