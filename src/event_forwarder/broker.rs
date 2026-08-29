@@ -686,6 +686,7 @@ mod tests {
         value
     }
 
+    #[cfg(not(windows))]
     fn publish_packet_id(header: u8, body: &[u8]) -> Option<u16> {
         if (header >> 1) & 0x03 == 0 {
             return None;
