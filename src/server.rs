@@ -12651,7 +12651,7 @@ mod tests {
                 gap_max_ms: 2_501.0,
                 jitter_samples: 10,
                 jitter_p50_ms: 60.0,
-                jitter_p99_ms: 100.0,
+                jitter_p99_ms: 600.0,
                 frames: Some(100),
                 bytes: Some(1_000),
                 keyframes: Some(5),
@@ -12686,7 +12686,7 @@ mod tests {
         assert!(health.issues.iter().any(|issue| {
             issue
                 .message
-                .contains("frame-arrival jitter P99 is 100.0 ms")
+                .contains("frame-arrival jitter P99 is 600.0 ms")
         }));
         assert!(
             health

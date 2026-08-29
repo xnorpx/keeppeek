@@ -81,6 +81,12 @@ Ingress publishes every 10 seconds.
   seconds.
 - Initial startup grace is two ingress report intervals, currently 20 seconds.
 
+Frame-arrival jitter measures the absolute difference between each observed frame gap and the
+configured frame interval. Its P99 is computed over the current 10-second ingress report window; it
+is not WebRTC network jitter. KeepPeek creates an informational finding only at 500 ms P99 or above.
+A maximum observed frame gap above 2 seconds remains a warning because it represents a distinct
+playback or recording stall.
+
 The first ingress report establishes the baseline for cumulative reconnect, drop, and error
 counters. An initial connection is therefore not reported as a recent reconnect. During startup
 grace, partial-window frame rates and other transient evidence remain `starting`; if they have not
@@ -93,6 +99,11 @@ still returns the actual evidence ages, and clients do not add another timer or 
 
 These ages use monotonic clocks inside the server. Wall-clock timestamps are included for display,
 but wall-clock changes do not make stale evidence fresh.
+
+Health findings are live snapshot evidence rather than acknowledgements or retained alerts. They
+disappear automatically after a later ingress report no longer meets the condition. **Clear
+resolved** requests a fresh server snapshot immediately; it removes resolved findings but cannot
+hide an active condition. The page also refreshes while it remains visible.
 
 ## Operational intervals
 

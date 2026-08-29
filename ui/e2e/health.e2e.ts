@@ -665,6 +665,34 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 	expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
 });
 
+test('styles informational findings neutrally and clears resolved findings on refresh', async ({
+	page
+}) => {
+	const informational = {
+		...healthSnapshot,
+		issues: [
+			{
+				severity: 'info' as const,
+				scope: 'Kitchen Deck',
+				message: 'video_main frame-arrival jitter P99 is 600.0 ms'
+			}
+		]
+	};
+	await mockControlPeer(page, {
+		healthSequence: [informational, { ...informational, issues: [] }]
+	});
+
+	await page.goto('/system-health');
+
+	const priority = page.getByRole('region', { name: 'Highest priority health issue' });
+	await expect(priority).toHaveAttribute('data-health-priority-severity', 'info');
+	await expect(priority).toHaveClass(/border-sky-500/);
+	await expect(priority).not.toHaveClass(/border-red-500/);
+	await page.getByRole('button', { name: 'Clear resolved' }).click();
+	await expect(page.getByRole('heading', { name: 'Current findings' })).toHaveCount(0);
+	await expect(priority).toHaveCount(0);
+});
+
 test('uses one canonical stale fixture across every health surface', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await mockControlPeer(page, {

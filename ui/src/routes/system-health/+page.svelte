@@ -611,7 +611,18 @@
 						<section aria-labelledby="issues-heading">
 							<div class="mb-2 flex items-center justify-between gap-3">
 								<h2 id="issues-heading" class="text-sm font-semibold">Current findings</h2>
-								<span class="text-xs text-muted-foreground">{rankedFindings.length}</span>
+								<div class="flex items-center gap-2">
+									<span class="text-xs text-muted-foreground">{rankedFindings.length}</span>
+									<button
+										type="button"
+										class="inline-flex h-8 items-center gap-1.5 rounded-sm border px-2.5 text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-40"
+										title="Refresh health and remove findings that are no longer active"
+										disabled={refreshing}
+										onclick={() => void loadHealth()}
+									>
+										<RefreshCwIcon class="size-3 {refreshing ? 'animate-spin' : ''}" /> Clear resolved
+									</button>
+								</div>
 							</div>
 							<div class="divide-y border-y">
 								{#each rankedFindings as finding, index (`${finding.issue.scope}-${finding.issue.message}-${index}`)}
@@ -920,14 +931,7 @@
 														<p class="text-[9px] text-muted-foreground">
 															max {numberFormatter.format(stream.gap_max_ms ?? 0)} ms
 														</p>
-														<p
-															class="text-[9px] {(stream.jitter_p99_ms ?? 0) >
-															(stream.expected_fps && stream.expected_fps > 0
-																? 1_000 / stream.expected_fps
-																: Number.POSITIVE_INFINITY)
-																? 'text-amber-600 dark:text-amber-300'
-																: 'text-muted-foreground'}"
-														>
+														<p class="text-[9px] text-muted-foreground">
 															jitter p50 {numberFormatter.format(stream.jitter_p50_ms ?? 0)} ms · p99
 															{numberFormatter.format(stream.jitter_p99_ms ?? 0)} ms · {compactFormatter.format(
 																stream.jitter_samples ?? 0
