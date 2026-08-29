@@ -12801,7 +12801,8 @@ mod tests {
             outbox_limit_bytes: 67_108_864,
         };
         let metrics =
-            crate::metrics::encode_health_with_access_and_mqtt(&health, None, Some(&mqtt)).unwrap();
+            crate::metrics::encode_health_with_access_and_mqtt(&health, None, None, Some(&mqtt))
+                .unwrap();
         assert!(metrics.contains("state=\"starting\""));
         assert!(!metrics.contains("keeppeek_camera_online"));
         assert!(!metrics.contains("keeppeek_camera_degraded"));

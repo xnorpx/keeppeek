@@ -260,7 +260,7 @@ async fn materialized_coverage(
     Ok(fragments)
 }
 
-fn percentile(sorted: &[u128], percentile: usize) -> u128 {
+const fn percentile(sorted: &[u128], percentile: usize) -> u128 {
     let rank = sorted.len().saturating_mul(percentile).div_ceil(100);
     sorted[rank.saturating_sub(1)]
 }

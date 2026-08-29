@@ -644,7 +644,9 @@ pub(crate) fn rewrite_recording_paths(
                     None
                 };
                 let file_bytes = metadata.as_ref().map_or(0, std::fs::Metadata::len);
-                let file_identity = metadata.as_ref().and_then(recording_file_identity);
+                let file_identity = metadata
+                    .as_ref()
+                    .and_then(|metadata| recording_file_identity(Path::new(destination), metadata));
                 connection
                     .execute(
                         "UPDATE recording_files
@@ -1687,7 +1689,7 @@ async fn backfill_recording_file_sizes(
             if !metadata.is_file() {
                 continue;
             }
-            let identity = recording_file_identity(&metadata);
+            let identity = recording_file_identity(&recording.path, &metadata);
             connection
                 .execute(
                     "UPDATE recording_files
@@ -2794,7 +2796,9 @@ async fn update_recording_path(
         None
     };
     let file_bytes = metadata.as_ref().map_or(0, std::fs::Metadata::len);
-    let file_identity = metadata.as_ref().and_then(recording_file_identity);
+    let file_identity = metadata
+        .as_ref()
+        .and_then(|metadata| recording_file_identity(Path::new(path), metadata));
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
         let changed = connection
@@ -5585,24 +5589,33 @@ fn current_unix_time_ms() -> i64 {
 }
 
 #[cfg(unix)]
-fn recording_file_identity(metadata: &std::fs::Metadata) -> Option<String> {
+fn recording_file_identity(_path: &Path, metadata: &std::fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
 
     Some(format!("{}:{}", metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn recording_file_identity(metadata: &std::fs::Metadata) -> Option<String> {
-    use std::os::windows::fs::MetadataExt;
+fn recording_file_identity(path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
 
-    metadata
-        .volume_serial_number()
-        .zip(metadata.file_index())
-        .map(|(volume, index)| format!("{volume}:{index}"))
+    let file = std::fs::File::open(path).ok()?;
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: `file` owns a valid handle for this call and `information` is writable storage.
+    unsafe {
+        GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut information).ok()?;
+    }
+    let file_index =
+        u64::from(information.nFileIndexHigh) << 32 | u64::from(information.nFileIndexLow);
+    Some(format!("{}:{file_index}", information.dwVolumeSerialNumber))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn recording_file_identity(_metadata: &std::fs::Metadata) -> Option<String> {
+fn recording_file_identity(_path: &Path, _metadata: &std::fs::Metadata) -> Option<String> {
     None
 }
 

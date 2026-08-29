@@ -847,7 +847,7 @@ fn selected_largest_gap(coverage: Option<&CatalogStreamCoverage>, window: Covera
     };
     let leading = coverage
         .selected_first_start_ms
-        .map_or(window.end_ms, |start_ms| start_ms)
+        .unwrap_or(window.end_ms)
         .saturating_sub(window.start_ms);
     let trailing = window
         .end_ms
