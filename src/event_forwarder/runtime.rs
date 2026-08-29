@@ -631,7 +631,13 @@ mod tests {
     fn broker_outage_replays_normalized_motion_event_after_restart() {
         let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
         let unavailable_address = unavailable.local_addr().unwrap();
-        drop(unavailable);
+        let (attempted, attempt) = mpsc::channel();
+        let unavailable_broker = std::thread::spawn(move || {
+            let (mut stream, _) = unavailable.accept().unwrap();
+            let (_, connect) = read_frame(&mut stream).unwrap().unwrap();
+            assert_eq!(connect[6], 5);
+            attempted.send(()).unwrap();
+        });
         let recovery_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let recovery_address = recovery_listener.local_addr().unwrap();
         let mut config = MqttForwarderConfig {
@@ -652,12 +658,12 @@ mod tests {
         handle
             .publish_timeline(&motion_event(), EventTransition::Created, 1_786_800_000_000)
             .unwrap();
-        wait_until(Duration::from_secs(10), || {
-            let status = handle.status();
-            status.pending_items == 1 && status.retry_count > 0
-        });
+        attempt.recv_timeout(BROKER_OPERATION_TIMEOUT).unwrap();
+        unavailable_broker.join().unwrap();
+        assert_eq!(handle.status().pending_items, 1);
         shutdown.cancel();
         runtime.join();
+        assert!(handle.status().retry_count > 0);
 
         let (published, received) = mpsc::channel();
         let broker = std::thread::spawn(move || serve_broker(recovery_listener, &published));
