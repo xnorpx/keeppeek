@@ -15,13 +15,15 @@ WORKDIR /app
 COPY . .
 
 RUN bun install --no-save --cwd ui --registry=https://registry.npmjs.org/ \
-    && cargo build --locked --release --bin keeppeek
+    && cargo build --locked --release --bin keeppeek \
+    && mkdir --parents /container-config/keeppeek
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:adcd20c7b4c988b73cbfbddb26d2eee574571e6d7c9ffea29b3821e0690efb77
 
 ENV XDG_CONFIG_HOME=/config
 
 COPY --from=builder /app/target/release/keeppeek /keeppeek
+COPY --from=builder --chown=65532:65532 /container-config/keeppeek /config/keeppeek
 
 VOLUME ["/config"]
 
