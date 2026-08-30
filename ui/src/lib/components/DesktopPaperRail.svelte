@@ -2,29 +2,33 @@
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import BellIcon from '@lucide/svelte/icons/bell';
 	import CameraIcon from '@lucide/svelte/icons/camera';
+	import EyeIcon from '@lucide/svelte/icons/eye';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import SlidersIcon from '@lucide/svelte/icons/sliders-horizontal';
-	import VideoIcon from '@lucide/svelte/icons/video';
 
 	type Props = {
-		active?: 'peek' | 'events' | 'cameras' | 'health' | 'settings';
+		active?: 'dashboard' | 'viewer' | 'keep' | 'events' | 'cameras' | 'health' | 'settings';
 		paperCompact?: boolean;
 		paperFull?: boolean;
 	};
 
 	let { active = 'settings', paperCompact = false, paperFull = false }: Props = $props();
-	const icons = [VideoIcon, HistoryIcon, BellIcon, CameraIcon, ActivityIcon, SlidersIcon];
+	const icons = [EyeIcon, HistoryIcon, BellIcon, CameraIcon, ActivityIcon, SlidersIcon];
 	let visibleIcons = $derived(paperCompact ? icons.slice(0, 4) : icons);
 	let activeIndex = $derived(
-		active === 'peek'
-			? 0
-			: active === 'events'
-				? 2
-				: active === 'cameras'
-					? 3
-					: active === 'health'
-						? 4
-						: 5
+		active === 'dashboard'
+			? -1
+			: active === 'viewer'
+				? 0
+				: active === 'keep'
+					? 1
+					: active === 'events'
+						? 2
+						: active === 'cameras'
+							? 3
+							: active === 'health'
+								? 4
+								: 5
 	);
 </script>
 
@@ -38,8 +42,8 @@
 	aria-label="Desktop navigation preview"
 >
 	<span
-		class="grid size-[30px] shrink-0 place-items-center rounded-sm bg-primary text-sm font-bold text-on-primary"
-		>K</span
+		class="grid h-[30px] w-[34px] shrink-0 place-items-center rounded-sm bg-primary font-mono text-[10px] font-semibold text-on-primary"
+		>KP</span
 	>
 	{#if paperFull}
 		<span class="h-7 w-full shrink-0"></span>

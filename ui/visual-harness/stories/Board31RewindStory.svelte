@@ -11,6 +11,7 @@
 
 	let { state, onhistory = () => {} }: Props = $props();
 	const cameraId = 'front-door';
+	const filmstripCameras = ['Front Door', 'Driveway', 'Porch'] as const;
 
 	onMount(() => {
 		const root = document.documentElement;
@@ -40,10 +41,10 @@
 		>
 			<div class="flex items-center justify-between">
 				<div
-					class="flex h-[22px] w-16 shrink-0 items-center gap-1.5 rounded-[var(--radius-xs)] bg-[#0C0D0FB8] px-2"
+					class="flex h-[22px] shrink-0 items-center rounded-[var(--radius-xs)] bg-[#0C0D0FB8] px-2"
 				>
-					<span class="size-[5px] shrink-0 rounded-full bg-white/85"></span>
-					<span class="font-mono text-2xs tracking-[0.08em] text-foreground">FOCUS</span>
+					<span class="font-mono text-2xs tracking-[0.08em] text-foreground">PEEK / FRONT DOOR</span
+					>
 				</div>
 				<span class="font-mono text-2xs text-[#FFFFFFD1]">06:37:23</span>
 			</div>
@@ -59,7 +60,20 @@
 				</button>
 				<p class="text-xs leading-4 text-text-muted">Open Keep for this camera</p>
 			</div>
-			<span class="text-md leading-[18px] font-semibold text-foreground">Front Door</span>
+			<aside
+				data-focus-filmstrip
+				class="flex h-10 shrink-0 gap-1 rounded-sm bg-[#0C0D0FB8] p-1"
+				aria-label="Camera filmstrip"
+			>
+				{#each filmstripCameras as camera (camera)}
+					<span
+						class="flex min-w-0 flex-1 items-end rounded-xs border px-1.5 pb-1 text-2xs font-medium {camera ===
+						'Front Door'
+							? 'border-primary text-white'
+							: 'border-white/10 text-white/55'}">{camera}</span
+					>
+				{/each}
+			</aside>
 		</section>
 	{:else}
 		<section
@@ -71,7 +85,7 @@
 				class="flex h-[38px] shrink-0 items-center gap-2 border-b border-hairline bg-[#B7410E24] px-3"
 			>
 				<Undo2Icon class="size-[13px] shrink-0 text-primary-soft" />
-				<span class="text-[13px] leading-4 text-foreground">From Focus · Front Door</span>
+				<span class="text-[13px] leading-4 text-foreground">From Viewer · Front Door</span>
 			</header>
 			<div class="flex min-h-0 flex-1">
 				<div class="flex min-w-0 flex-1 flex-col justify-end bg-video p-3">

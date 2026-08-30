@@ -940,8 +940,8 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="flex min-h-0 flex-col gap-3 px-4 py-3 md:p-4">
-	<header class="flex min-h-10 flex-wrap items-center gap-3">
+<div class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto px-4 py-3 md:overflow-hidden md:p-4">
+	<header class="flex min-h-10 shrink-0 flex-wrap items-center gap-3">
 		<div>
 			<h1 class="text-xl font-semibold">Events</h1>
 			<p class="text-xs text-text-muted">Review detections across every camera.</p>
@@ -971,7 +971,7 @@
 	</header>
 
 	<section
-		class="space-y-2 rounded-md border border-hairline bg-surface p-3"
+		class="shrink-0 space-y-2 rounded-md border border-hairline bg-surface p-3"
 		aria-label="Event filters"
 	>
 		<div class="grid grid-cols-[minmax(0,1fr)_9.5rem] gap-2">
@@ -1131,7 +1131,11 @@
 		</div>
 	</section>
 
-	<div class="flex items-center gap-2 text-xs text-text-muted" role="status" aria-live="polite">
+	<div
+		class="flex shrink-0 items-center gap-2 text-xs text-text-muted"
+		role="status"
+		aria-live="polite"
+	>
 		<span
 			>{loading && records.length === 0
 				? loadingEarlier
@@ -1143,93 +1147,100 @@
 		<span>{eventFilterSummary(filters)}</span>
 	</div>
 	{#if recoveryNotice}
-		<div class="border-y border-primary/30 bg-primary/10 px-4 py-2 text-xs" role="status">
+		<div class="shrink-0 border-y border-primary/30 bg-primary/10 px-4 py-2 text-xs" role="status">
 			{recoveryNotice}
 		</div>
 	{/if}
 	{#if selectionError}
-		<div class="border-y border-hairline bg-raised px-4 py-2 text-xs text-text-muted" role="status">
+		<div
+			class="shrink-0 border-y border-hairline bg-raised px-4 py-2 text-xs text-text-muted"
+			role="status"
+		>
 			{selectionError}
 		</div>
 	{/if}
 
-	{#if error}
-		<div
-			class="border-y border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-			role="alert"
-		>
-			{error}
-		</div>
-	{:else if loading && records.length === 0}
-		<div class="grid min-h-64 place-items-center border-y border-hairline text-sm text-text-muted">
-			{loadingEarlier ? 'Loading earlier events…' : 'Loading events…'}
-		</div>
-	{:else if records.length === 0}
-		<div class="space-y-3">
-			<EventNoResultsState
-				clauses={noResultsClauses}
-				title="No events found."
-				description={`No events found for ${eventFilterSummary(filters)}.`}
-				suggestionLabel={noResultsSuggestion?.label}
-				onloosen={noResultsSuggestion
-					? () => updateFilters(noResultsSuggestion!.update)
-					: undefined}
-				onclear={clearFilters}
-				class="min-h-64 rounded-md border border-dashed border-hairline-strong"
-			/>
-		</div>
-	{:else}
-		<div
-			class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,14rem),1fr))] gap-3"
-			role="group"
-			aria-label="Event results"
-			oncontextmenu={handleEventContextMenu}
-			onpointerdown={handleEventPointerDown}
-			onpointermove={handleEventPointerMove}
-			onpointerup={clearEventLongPress}
-			onpointercancel={clearEventLongPress}
-		>
-			{#each visibleRecords as record, index (eventBrowserRecordKey(record))}
-				<EventResultCard
-					{record}
-					previewState={previewStates[eventBrowserRecordKey(record)] ?? 'idle'}
-					selected={selectedKey === eventBrowserRecordKey(record)}
-					mobileVariant={index === 0 ? 'hero' : 'row'}
-					tabindex={focusedKey === eventBrowserRecordKey(record) ||
-					(focusedKey === null && index === 0)
-						? 0
-						: -1}
-					onfocus={() => (focusedKey = eventBrowserRecordKey(record))}
-					onkeydown={(event) => void moveEventFocus(event, record)}
-					onclick={() => selectEventCard(record)}
-					onpreviewrequest={() => requestEventPreview(record)}
+	<div data-event-results-scroll class="min-h-0 flex-1 overflow-y-auto">
+		{#if error}
+			<div
+				class="border-y border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+				role="alert"
+			>
+				{error}
+			</div>
+		{:else if loading && records.length === 0}
+			<div
+				class="grid min-h-64 place-items-center border-y border-hairline text-sm text-text-muted"
+			>
+				{loadingEarlier ? 'Loading earlier events…' : 'Loading events…'}
+			</div>
+		{:else if records.length === 0}
+			<div class="space-y-3">
+				<EventNoResultsState
+					clauses={noResultsClauses}
+					title="No events found."
+					description={`No events found for ${eventFilterSummary(filters)}.`}
+					suggestionLabel={noResultsSuggestion?.label}
+					onloosen={noResultsSuggestion
+						? () => updateFilters(noResultsSuggestion!.update)
+						: undefined}
+					onclear={clearFilters}
+					class="min-h-64 rounded-md border border-dashed border-hairline-strong"
 				/>
-			{/each}
-		</div>
-		{#if pageIndex > pageTokenBase || nextPageToken}
-			<nav class="flex items-center justify-center gap-3 py-2" aria-label="Event result pages">
-				<button
-					type="button"
-					class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
-					disabled={pageIndex <= pageTokenBase || loading}
-					onclick={showNewerEvents}
-				>
-					Newer events
-				</button>
-				<span class="font-mono text-2xs text-text-faint">
-					{visibleResultStart}-{visibleResultEnd}{nextPageToken ? '+' : ''}
-				</span>
-				<button
-					type="button"
-					class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
-					disabled={loadingEarlier || loading || !nextPageToken}
-					onclick={() => void showEarlierEvents()}
-				>
-					{loadingEarlier ? 'Loading earlier...' : 'Earlier events'}
-				</button>
-			</nav>
+			</div>
+		{:else}
+			<div
+				class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,14rem),1fr))] gap-3"
+				role="group"
+				aria-label="Event results"
+				oncontextmenu={handleEventContextMenu}
+				onpointerdown={handleEventPointerDown}
+				onpointermove={handleEventPointerMove}
+				onpointerup={clearEventLongPress}
+				onpointercancel={clearEventLongPress}
+			>
+				{#each visibleRecords as record, index (eventBrowserRecordKey(record))}
+					<EventResultCard
+						{record}
+						previewState={previewStates[eventBrowserRecordKey(record)] ?? 'idle'}
+						selected={selectedKey === eventBrowserRecordKey(record)}
+						mobileVariant={index === 0 ? 'hero' : 'row'}
+						tabindex={focusedKey === eventBrowserRecordKey(record) ||
+						(focusedKey === null && index === 0)
+							? 0
+							: -1}
+						onfocus={() => (focusedKey = eventBrowserRecordKey(record))}
+						onkeydown={(event) => void moveEventFocus(event, record)}
+						onclick={() => selectEventCard(record)}
+						onpreviewrequest={() => requestEventPreview(record)}
+					/>
+				{/each}
+			</div>
+			{#if pageIndex > pageTokenBase || nextPageToken}
+				<nav class="flex items-center justify-center gap-3 py-2" aria-label="Event result pages">
+					<button
+						type="button"
+						class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
+						disabled={pageIndex <= pageTokenBase || loading}
+						onclick={showNewerEvents}
+					>
+						Newer events
+					</button>
+					<span class="font-mono text-2xs text-text-faint">
+						{visibleResultStart}-{visibleResultEnd}{nextPageToken ? '+' : ''}
+					</span>
+					<button
+						type="button"
+						class="h-9 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
+						disabled={loadingEarlier || loading || !nextPageToken}
+						onclick={() => void showEarlierEvents()}
+					>
+						{loadingEarlier ? 'Loading earlier...' : 'Earlier events'}
+					</button>
+				</nav>
+			{/if}
 		{/if}
-	{/if}
+	</div>
 </div>
 
 {#if eventContextActions}

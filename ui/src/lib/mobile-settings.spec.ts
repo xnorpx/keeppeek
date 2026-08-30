@@ -6,8 +6,9 @@ import {
 } from '$lib/mobile-settings';
 
 describe('mobile settings navigation', () => {
-	it('lists the nine server-wide administration sections', () => {
+	it('lists the ten server-wide administration sections', () => {
 		expect(mobileSettingsSections.map((section) => section.label)).toEqual([
+			'Dashboards',
 			'Storage & retention',
 			'Event sources',
 			'Groups',
@@ -27,7 +28,7 @@ describe('mobile settings navigation', () => {
 		expect(filterMobileSettingsSections('recordings').map((section) => section.id)).toEqual([
 			'storage'
 		]);
-		expect(filterMobileSettingsSections('  ')).toHaveLength(9);
+		expect(filterMobileSettingsSections('  ')).toHaveLength(10);
 	});
 
 	it('maps system to the shared appearance renderer and keeps logs on its route', () => {

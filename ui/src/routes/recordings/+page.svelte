@@ -149,8 +149,13 @@
 	<title>Recording integrity - KeepPeek</title>
 </svelte:head>
 
-<div data-recording-dashboard class="flex min-h-0 flex-col bg-ground">
-	<header class="flex min-h-14 flex-wrap items-center gap-3 border-b border-hairline px-4 py-2.5">
+<div
+	data-recording-dashboard
+	class="flex h-full min-h-0 flex-col overflow-y-auto bg-ground md:overflow-hidden"
+>
+	<header
+		class="flex min-h-14 shrink-0 flex-wrap items-center gap-3 border-b border-hairline px-4 py-2.5"
+	>
 		<div class="min-w-0">
 			<h1 class="text-lg font-semibold">Recording integrity</h1>
 			<p class="font-mono text-2xs text-text-faint">
@@ -180,7 +185,7 @@
 
 	{#if snapshot}
 		<section
-			class="grid grid-cols-2 border-b border-hairline md:grid-cols-4 {snapshot.totals
+			class="grid shrink-0 grid-cols-2 border-b border-hairline md:grid-cols-4 {snapshot.totals
 				.not_configured > 0
 				? 'xl:grid-cols-8'
 				: 'xl:grid-cols-7'}"
@@ -199,7 +204,7 @@
 	{/if}
 
 	<section
-		class="flex flex-wrap items-center gap-2 border-b border-hairline bg-surface px-4 py-2.5"
+		class="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface px-4 py-2.5"
 		aria-label="Recording filters"
 	>
 		<label class="relative min-w-48 flex-1 md:max-w-72">
@@ -287,7 +292,7 @@
 
 	{#if error}
 		<div
-			class="flex items-center gap-3 border-b border-live/40 bg-live/10 px-4 py-3 text-sm text-live-text"
+			class="flex shrink-0 items-center gap-3 border-b border-live/40 bg-live/10 px-4 py-3 text-sm text-live-text"
 			role="alert"
 		>
 			<ActivityIcon class="size-4 shrink-0" />
@@ -301,7 +306,10 @@
 	{/if}
 
 	{#if snapshot?.findings.length}
-		<section class="border-b border-hairline bg-raised" aria-label="Priority recording findings">
+		<section
+			class="shrink-0 border-b border-hairline bg-raised"
+			aria-label="Priority recording findings"
+		>
 			{#each snapshot.findings.slice(0, 3) as finding (`${finding.camera_id}-${finding.stream_id}-${finding.kind}`)}
 				<a
 					href={finding.playback_href ?? finding.health_href}
@@ -321,8 +329,14 @@
 		</section>
 	{/if}
 
-	<div class="grid min-h-0 flex-1 xl:grid-cols-[minmax(620px,1.35fr)_minmax(420px,1fr)]">
-		<section class="min-w-0" aria-labelledby="recording-fleet-heading">
+	<div
+		data-recording-workspace
+		class="grid min-h-0 flex-1 overflow-y-auto xl:grid-cols-[minmax(620px,1.35fr)_minmax(420px,1fr)] xl:overflow-hidden"
+	>
+		<section
+			class="min-w-0 xl:min-h-0 xl:overflow-y-auto"
+			aria-labelledby="recording-fleet-heading"
+		>
 			<header
 				class="grid h-[34px] grid-cols-[minmax(150px,1.3fr)_110px_90px_100px_90px] items-center gap-3 border-b border-hairline bg-surface px-4 font-mono text-[10px] tracking-caps text-text-faint max-md:hidden"
 			>
@@ -432,7 +446,7 @@
 			/>
 		{:else}
 			<section
-				class="hidden border-l border-hairline bg-surface xl:block"
+				class="hidden border-l border-hairline bg-surface xl:block xl:h-full"
 				aria-label="Camera recording detail"
 			></section>
 		{/if}

@@ -53,9 +53,10 @@ test('renders the KeepPeek dashboard without configured cameras', async ({ page 
 
 	await page.goto('/');
 
-	await expect(page).toHaveTitle('Peek - KeepPeek');
-	await expect(page.getByRole('heading', { name: 'Peek', exact: true })).toBeVisible();
-	await expect(page.getByText('0 configured cameras', { exact: true })).toBeVisible();
+	await expect(page).toHaveTitle('Dashboard - KeepPeek');
+	await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toHaveCount(1);
+	await expect(page.getByRole('heading', { name: 'Peek', exact: true })).toHaveCount(0);
+	await expect(page.locator('[data-shell-status-indicator="cameras"]')).toHaveText('0/0');
 	await expect(page.getByText('No cameras configured.')).toBeVisible();
 });
 
@@ -70,16 +71,17 @@ test('Board 6 renders healthy, degraded, stale, and offline Paper tile states', 
 	await mockMixedHealth(page);
 	await page.goto('/');
 
-	const fleetStatus = page.locator('[data-peek-fleet-status]');
-	await expect(fleetStatus).toContainText(
-		'4 configured · 3 connected · 2 fresh · 2 decodable · 1/4 recording'
-	);
-	await expect(fleetStatus.locator('span').first()).toHaveClass(/bg-amber-500/);
-	const runtimeTelemetry = page.locator('[data-peek-runtime-telemetry]');
-	await expect(runtimeTelemetry).toBeVisible();
-	await expect(runtimeTelemetry).toContainText(
-		'HOST CPU 25% RAM 6.1/32 GB KEEPPEEK CPU 3.7% RAM 286 MB'
-	);
+	const fleetStatus = page.locator('[data-shell-status-indicators]');
+	await expect(fleetStatus.locator('[data-shell-status-indicator="server"]')).toHaveText('1/1');
+	await expect(fleetStatus.locator('[data-shell-status-indicator="cameras"]')).toHaveText('3/4');
+	await expect(fleetStatus.locator('[data-shell-status-indicator="recording"]')).toHaveText('1/4');
+	await expect(fleetStatus.locator('[data-shell-status-indicator="clients"]')).toHaveText('0/0');
+	await expect(
+		fleetStatus.locator('[data-shell-status-indicator="server"] span').first()
+	).toHaveClass(/bg-activity/);
+	await fleetStatus.locator('[data-shell-status-indicator="cameras"]').hover();
+	await expect(page.getByText('Cameras connected: 3 of 4', { exact: true })).toBeVisible();
+	await expect(page.locator('[data-peek-runtime-telemetry]')).toHaveCount(0);
 
 	await expect(page.locator('[data-peek-camera="front-door"]')).toHaveAttribute(
 		'data-peek-camera-state',
@@ -176,6 +178,79 @@ test('opens camera information from a focused dashboard tile', async ({ page }) 
 	await expectFrontDoorCameraInformation(page, focus.locator('[data-peek-focus-history]'));
 });
 
+test('opens a full-shell focus view with consolidated camera controls and complete filmstrip', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 1188, height: 624 });
+	await mockMixedHealth(page);
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
+	const focus = page.getByRole('region', { name: 'Front Door focus' });
+	const cameraControls = focus.locator('[data-live-video-camera-controls]');
+	const filmstrip = focus.getByLabel('Camera filmstrip');
+	await expect(focus.locator('[data-peek-focus-floatie]')).toHaveCount(0);
+	await expect(cameraControls.getByText('Front Door', { exact: true })).toBeVisible();
+	await expect(
+		cameraControls.getByRole('link', { name: 'Open Front Door camera' })
+	).toHaveAttribute('href', '/camera?camera=front-door');
+	await expect(
+		cameraControls.getByRole('button', { name: 'Front Door camera information' })
+	).toBeVisible();
+	await expect(filmstrip.locator('[data-focus-camera-option]')).toHaveCount(mixedCameras.length);
+	await expect(filmstrip.getByRole('button', { name: 'Focus Front Door' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+
+	const [mainBounds, stageBounds] = await Promise.all([
+		page.locator('[data-shell-main]').boundingBox(),
+		focus.locator('[data-peek-focus-stage]').boundingBox()
+	]);
+	expect(stageBounds).toEqual(mainBounds);
+
+	await page.setViewportSize({ width: 390, height: 844 });
+	const [mobileMain, mobileStage, mobileCameraControls, mobileFocusControls, mobileFilmstrip] =
+		await Promise.all([
+			page.locator('[data-shell-main]').boundingBox(),
+			focus.locator('[data-peek-focus-stage]').boundingBox(),
+			cameraControls.boundingBox(),
+			focus.locator('.focus-controls').boundingBox(),
+			filmstrip.boundingBox()
+		]);
+	expect(mobileStage).toEqual(mobileMain);
+	if (!mobileMain || !mobileCameraControls || !mobileFocusControls || !mobileFilmstrip) {
+		throw new Error('Mobile Viewer control geometry is unavailable');
+	}
+	expect(mobileCameraControls.x + mobileCameraControls.width).toBeLessThanOrEqual(
+		mobileMain.x + mobileMain.width
+	);
+	expect(mobileFocusControls.y).toBeGreaterThanOrEqual(
+		mobileCameraControls.y + mobileCameraControls.height
+	);
+	expect(mobileFilmstrip.y).toBeGreaterThan(mobileFocusControls.y + mobileFocusControls.height);
+	expect(mobileFilmstrip.y + mobileFilmstrip.height).toBeLessThanOrEqual(
+		mobileMain.y + mobileMain.height
+	);
+});
+
+test('separates Dashboard and Viewer while remembering the last camera', async ({ page }) => {
+	await mockMixedHealth(page);
+
+	await page.goto('/viewer');
+	await expect(page).toHaveURL(/\/viewer\?camera=front-door$/);
+	await expect(page.getByRole('region', { name: 'Front Door focus' })).toBeVisible();
+	await page.getByLabel('Camera filmstrip').getByRole('button', { name: 'Focus Porch' }).click();
+	await expect(page).toHaveURL(/\/viewer\?camera=porch$/);
+
+	await page.getByRole('link', { name: 'Dashboard' }).click();
+	await expect(page).toHaveURL(/\/$/);
+	await expect(page.locator('[data-peek-wall]')).toBeVisible();
+	await page.getByRole('link', { name: 'Viewer' }).click();
+	await expect(page).toHaveURL(/\/viewer\?camera=porch$/);
+	await expect(page.getByRole('region', { name: 'Porch focus' })).toBeVisible();
+});
+
 test('combines filmstrip camera status, name, and information in a lower-right control', async ({
 	page
 }) => {
@@ -184,7 +259,7 @@ test('combines filmstrip camera status, name, and information in a lower-right c
 
 	await page.getByRole('button', { name: 'Focus Porch live view' }).click();
 	const focus = page.getByRole('region', { name: 'Porch focus' });
-	const filmstrip = focus.getByLabel('Other cameras');
+	const filmstrip = focus.getByLabel('Camera filmstrip');
 	const cameraSurface = filmstrip.getByRole('button', { name: 'Focus Front Door' });
 	const cameraInformation = filmstrip.getByRole('button', {
 		name: 'Front Door camera information'
@@ -276,7 +351,7 @@ test('keeps mixed Peek states usable at the authored mobile viewport', async ({ 
 				return [Math.round(bounds.width), Math.round(bounds.height)];
 			})
 		)
-		.toEqual([358, 201]);
+		.toEqual([390, 219]);
 	await expect
 		.poll(() =>
 			page.locator('[data-peek-camera="porch"]').evaluate((element) => {
@@ -284,7 +359,7 @@ test('keeps mixed Peek states usable at the authored mobile viewport', async ({ 
 				return [Math.round(bounds.width), Math.round(bounds.height)];
 			})
 		)
-		.toEqual([174, 110]);
+		.toEqual([190, 120]);
 	for (const tile of await page.locator('[data-peek-camera]').all()) {
 		const overlaps = await tile.evaluate((element) => {
 			const regions = Array.from(
@@ -314,7 +389,7 @@ test('keeps mixed Peek states usable at the authored mobile viewport', async ({ 
 		.toBe(true);
 });
 
-test('keeps focus visible until the complete Peek wall has a frame', async ({ page }) => {
+test('returns from Viewer to the coordinated Dashboard wall', async ({ page }) => {
 	const cameraHealth = mixedHealth.cameras?.[0];
 	if (!cameraHealth) throw new Error('mixed health fixture must include Front Door');
 	const camera = {
@@ -342,17 +417,12 @@ test('keeps focus visible until the complete Peek wall has a frame', async ({ pa
 
 	await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
 	const focus = page.getByRole('region', { name: 'Front Door focus' });
-	await focus.getByRole('button', { name: 'Return to camera grid' }).click();
+	await page.getByRole('link', { name: 'Dashboard' }).click();
 
-	await expect(focus).toHaveAttribute('data-peek-focus-return', 'waiting');
-	await expect(focus).toBeVisible();
-	await expect(wall).toHaveAttribute('data-peek-wall-state', 'staging');
-	await expect(wall).toHaveCSS('opacity', '0');
-
+	await expect(page).toHaveURL(/\/$/);
+	await expect(focus).toHaveCount(0);
 	await wall.locator('video').dispatchEvent('playing');
 	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'frames');
-	await expect(focus).toHaveCount(0);
-	await expect(page.locator('[data-peek-focus="front-door"]')).toBeFocused();
 });
 
 test('keeps focused-live preferences device-local per camera and separate from the wall', async ({
@@ -397,20 +467,20 @@ test('keeps focused-live preferences device-local per camera and separate from t
 			}))
 		}
 	});
-	await page.goto('/?camera=front-door');
+	await page.goto('/viewer?camera=front-door');
 	let focus = page.getByRole('region', { name: 'Front Door focus' });
 	await focus.getByRole('button', { name: 'Sub', exact: true }).click();
 	await expect(focus).toHaveAttribute('data-focused-live-preference', 'sub');
 	await expect(focus).toHaveAttribute('data-focused-live-selected-variant', 'sub');
 
-	await page.goto('/?camera=porch');
+	await page.goto('/viewer?camera=porch');
 	focus = page.getByRole('region', { name: 'Porch focus' });
 	await expect(focus).toHaveAttribute('data-focused-live-preference', 'auto');
 	await focus.getByRole('button', { name: 'High', exact: true }).click();
 	await expect(focus).toHaveAttribute('data-focused-live-preference', 'high');
 	await expect(focus).toHaveAttribute('data-focused-live-selected-variant', 'main');
 
-	await page.goto('/?camera=front-door');
+	await page.goto('/viewer?camera=front-door');
 	focus = page.getByRole('region', { name: 'Front Door focus' });
 	await expect(focus).toHaveAttribute('data-focused-live-preference', 'sub');
 
@@ -438,6 +508,76 @@ test('keeps focused-live preferences device-local per camera and separate from t
 		'data-requested-quality',
 		'low'
 	);
+});
+
+test('overlays focus controls without clipping wide or narrow stream stages', async ({ page }) => {
+	await page.setViewportSize({ width: 1188, height: 624 });
+	const cameras = [
+		{ id: 'wide', name: 'Wide Camera', resolution: '1920x1080' },
+		{ id: 'narrow', name: 'Narrow Camera', resolution: '1024x1536' }
+	].map((camera) => ({
+		id: camera.id,
+		name: camera.name,
+		ip: `192.0.2.${camera.id.length}`,
+		manufacturer: 'ONVIF',
+		model: null,
+		firmware_version: null,
+		is_reolink: false,
+		profiles: [
+			{
+				name: 'Main',
+				stream: 'main' as const,
+				encoding: 'h264',
+				resolution: camera.resolution,
+				framerate: 15
+			}
+		]
+	}));
+	await mockControlPeer(page, {
+		cameras,
+		health: {
+			status: 'healthy',
+			cameras: cameras.map((camera) => ({
+				id: camera.id,
+				state: 'healthy',
+				lifecycle: 'Connected',
+				last_error: null,
+				streams: []
+			}))
+		}
+	});
+
+	const geometry = () =>
+		page.evaluate(() => {
+			const main = document.querySelector<HTMLElement>('[data-shell-main]');
+			const options = document.querySelector<HTMLElement>('[data-peek-focus-options]');
+			const stage = document.querySelector<HTMLElement>('[data-peek-focus-stage]');
+			if (!main || !options || !stage) throw new Error('Focus geometry is unavailable');
+			return {
+				mainClientHeight: main.clientHeight,
+				mainScrollHeight: main.scrollHeight,
+				main: main.getBoundingClientRect().toJSON(),
+				options: options.getBoundingClientRect().toJSON(),
+				stage: stage.getBoundingClientRect().toJSON()
+			};
+		});
+
+	await page.goto('/viewer?camera=wide');
+	let focus = page.getByRole('region', { name: 'Wide Camera focus' });
+	await expect(focus).toBeVisible();
+	let bounds = await geometry();
+	expect(bounds.mainScrollHeight).toBeLessThanOrEqual(bounds.mainClientHeight + 1);
+	expect(bounds.options).toEqual(bounds.stage);
+	expect(bounds.stage).toEqual(bounds.main);
+
+	await page.goto('/viewer?camera=narrow');
+	focus = page.getByRole('region', { name: 'Narrow Camera focus' });
+	await expect(focus).toBeVisible();
+	bounds = await geometry();
+	expect(bounds.mainScrollHeight).toBeLessThanOrEqual(bounds.mainClientHeight + 1);
+	expect(bounds.options).toEqual(bounds.stage);
+	expect(bounds.stage).toEqual(bounds.main);
+	await expect(focus.getByLabel('Camera filmstrip')).toBeVisible();
 });
 
 test('names the negotiated first-keyframe wait without rewriting server health', async ({

@@ -25,7 +25,8 @@ export type ShortcutKey = {
 };
 
 export const keyboardDestinations = [
-	{ key: 'p', label: 'Peek', href: '/' },
+	{ key: 'd', label: 'Dashboard', href: '/' },
+	{ key: 'v', label: 'Viewer', href: '/viewer' },
 	{ key: 'k', label: 'Keep', href: '/keep' },
 	{ key: 'e', label: 'Events', href: '/events' },
 	{ key: 'c', label: 'Cameras', href: '/cameras' },

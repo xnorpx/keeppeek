@@ -68,6 +68,41 @@ Stored-media sources remain discoverable while their cameras are offline. Their 
 the fragmented MP4 streams and timed event or metadata payloads available for timeline queries and
 playback.
 
+## Persist and switch dashboards
+
+When `ServerCapabilities.capability_ids` includes `keeppeek.peek-layouts.v1`, the viewer reads and
+replaces the `registry` entry in the `keeppeek.peek-layouts` StateStore namespace. The entry uses
+the `keeppeek.peek-layout-registry.v1` schema. It contains the active layout ID and an ordered list
+of dashboards. Each dashboard contains stable identity, name, audience, Activity Focus preference,
+and ordered camera tiles with 12 by 12 positions, spans, and pin state.
+
+KeepPeek stores server-owned dashboards once and stores the active selection per authenticated
+principal. `All cameras` is an immutable dashboard that tracks the configured camera inventory.
+Administrators create, rename, duplicate, update, import, export, and delete custom dashboards in
+Settings. Each custom dashboard grants viewing to everyone or to selected named User credentials;
+Administrators always retain access. A User receives only authorized dashboards and can replace
+only their active selection. The server stores the registry in `peek-layouts.json` beside
+`config.toml` and restores it after restart.
+
+Every replacement includes the current StateStore revision. A stale replacement returns a typed
+`StateStoreError` with the current revision and leaves the stored registry unchanged. The viewer
+keeps the unsaved editor draft after a conflict, failed request, or capability loss. A configured
+camera that is offline keeps its normal tile. A removed camera keeps a labelled placeholder until
+the user removes or remaps it.
+
+An Administrator can export one dashboard or the visible registry as versioned JSON. Export
+includes only dashboard fields and credential IDs in explicit audiences; it never includes access
+keys or unrelated user state. Import parses the complete document before mutation, reports
+conflicting IDs and unsupported fields, and requires an explicit mapping or omission for every
+missing camera ID. Imported dashboards start with Administrator-only access until an Administrator
+assigns viewers. A validated import uses the same authorization and revisioned replacement as an
+editor save.
+
+The web application separates the two live surfaces. Dashboard at `/` shows camera grids and a
+floating dashboard selector. Viewer at `/viewer` shows one full-shell camera, a `PEEK / camera`
+overlay, and a filmstrip containing every available camera. The Viewer route remembers the last
+selected camera on the device and falls back to the first available camera.
+
 ## Search, scrub, and play stored media
 
 ### Recording timeline view

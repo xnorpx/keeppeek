@@ -172,8 +172,8 @@
 	<title>Cameras - KeepPeek</title>
 </svelte:head>
 
-<div class="flex min-h-0 flex-col gap-3 px-4 py-3 md:p-4">
-	<header class="flex min-h-10 flex-wrap items-center gap-3">
+<div class="flex h-full min-h-0 flex-col gap-3 overflow-y-auto px-4 py-3 md:overflow-hidden md:p-4">
+	<header class="flex min-h-10 shrink-0 flex-wrap items-center gap-3">
 		<div class="flex items-baseline gap-3">
 			<h1 class="text-xl font-semibold">Cameras</h1>
 			<span class="font-mono text-2xs tracking-caps text-text-muted">
@@ -233,11 +233,11 @@
 	{:else}
 		<div
 			data-fleet-table-scroll
-			class="min-w-0 overflow-x-hidden border-y border-hairline md:overflow-x-auto"
+			class="min-w-0 overflow-x-hidden overflow-y-hidden border-y border-hairline md:min-h-0 md:flex-1 md:overflow-x-auto"
 		>
-			<div class="md:min-w-[1314px]">
+			<div class="md:flex md:h-full md:min-h-0 md:min-w-[1314px] md:flex-col">
 				<div
-					class="grid h-[44px] grid-cols-[44px_12px_minmax(0,1fr)_44px] items-center border-b border-hairline-strong font-mono text-2xs tracking-caps text-text-faint md:hidden"
+					class="grid h-[44px] shrink-0 grid-cols-[44px_12px_minmax(0,1fr)_44px] items-center border-b border-hairline-strong font-mono text-2xs tracking-caps text-text-faint md:hidden"
 				>
 					<label class="relative grid size-11 cursor-pointer place-items-center">
 						<input
@@ -261,7 +261,7 @@
 					<span></span>
 				</div>
 				<div
-					class="hidden h-[34px] grid-cols-[32px_20px_270px_140px_230px_150px_140px_120px_152px_60px] items-center border-b border-hairline-strong font-mono text-2xs tracking-caps text-text-faint md:grid"
+					class="hidden h-[34px] shrink-0 grid-cols-[32px_20px_270px_140px_230px_150px_140px_120px_152px_60px] items-center border-b border-hairline-strong font-mono text-2xs tracking-caps text-text-faint md:grid"
 				>
 					<div>
 						<input
@@ -292,7 +292,7 @@
 						bind:this={viewportElement}
 						data-fleet-viewport
 						data-fleet-total={filteredRows.length}
-						class="h-[560px] max-h-[calc(100svh-12rem)] min-h-56 overflow-y-auto"
+						class="h-[560px] max-h-[calc(100svh-12rem)] min-h-56 overflow-y-auto md:h-auto md:max-h-none md:min-h-0 md:flex-1"
 						onscroll={handleScroll}
 					>
 						<div class="relative" style:height={`${rowWindow.totalHeight}px`}>
@@ -321,7 +321,7 @@
 			</div>
 		</div>
 
-		<div class="flex min-h-11 flex-wrap items-center gap-3">
+		<div class="flex min-h-11 shrink-0 flex-wrap items-center gap-3">
 			{#if selectedIds.size > 0}
 				<div
 					class="flex items-center gap-3 rounded-md border border-hairline-strong bg-raised px-3 py-1.5"

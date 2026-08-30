@@ -5,7 +5,8 @@ fn test_buffer_constants_are_reasonable() {
     const { assert!(reo_proto::TCP_RECV_BUF_SIZE >= 64 * 1024) };
     const { assert!(reo_proto::TCP_SEND_BUF_SIZE >= 8 * 1024) };
     const { assert!(reo_proto::MAX_XML_BODY >= 4 * 1024) };
-    const { assert!(reo_proto::MAX_MEDIA_FRAME >= 128 * 1024) };
+    const { assert!(reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE >= 128 * 1024) };
+    const { assert!(reo_proto::MAX_MEDIA_FRAME >= 2_292_974) };
 }
 
 #[test]

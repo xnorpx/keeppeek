@@ -17,6 +17,8 @@
 
 	function status(section: MobileSettingsSection): string {
 		switch (section.id) {
+			case 'dashboards':
+				return '—';
 			case 'storage':
 				return config.recording_estimate.estimated_retention_days === null
 					? '—'
@@ -36,6 +38,8 @@
 
 	function indicatorClass(section: MobileSettingsSection): string {
 		switch (section.id) {
+			case 'dashboards':
+				return 'rounded-sm bg-activity';
 			case 'storage':
 				return 'rounded-sm bg-primary-deep';
 			case 'event-sources':

@@ -60,6 +60,15 @@ export const serverCapabilityCatalog = {
 		failureGuarantee:
 			'Camera ingest remains independent; failed delivery stays visible and bounded in the durable outbox'
 	},
+	'keeppeek.peek-layouts.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Principal-scoped layout registry, shared-layout authorization, validation, revisions, and atomic persistence',
+		unlocks: 'Saved Peek layouts, layout switching, and layout import and export',
+		whenMissing: 'The editable draft remains available but cannot be saved or presented as durable',
+		failureGuarantee:
+			'Failed or stale saves preserve the current draft and leave the persisted registry unchanged'
+	},
 	'keeppeek.group-admin.v1': {
 		delivery: 'target',
 		serverOwns:

@@ -4,7 +4,7 @@ import { render } from 'vitest-browser-svelte';
 import '../../app.css';
 import LightThemePeekStory from '../../../visual-harness/stories/LightThemePeekStory.svelte';
 
-describe('Board 34 light-theme Peek story', () => {
+describe('Board 34 light-theme Dashboard story', () => {
 	it('renders the exact Paper frame with production tile states and fonts', async () => {
 		await page.viewport(1440, 900);
 		const { container } = await render(LightThemePeekStory);
@@ -33,10 +33,20 @@ describe('Board 34 light-theme Peek story', () => {
 				];
 			})
 		).toEqual([
-			[81, 69, 435, 236],
-			[532, 69, 437, 236],
-			[986, 69, 437, 236]
+			[73, 9, 446, 344],
+			[527, 9, 448, 344],
+			[983, 9, 448, 344]
 		]);
+		const selector = container.querySelector<HTMLElement>('[data-peek-dashboard-switcher]');
+		expect(selector).not.toBeNull();
+		expect(selector!.textContent?.replace(/\s+/g, ' ').trim()).toBe('PEEK All cameras');
+		await expect
+			.element(page.getByRole('link', { name: 'Dashboard' }))
+			.toHaveAttribute('aria-current', 'page');
+		await expect
+			.element(page.getByRole('link', { name: 'Viewer' }))
+			.not.toHaveAttribute('aria-current');
+		expect(container.querySelector('footer')).toBeNull();
 
 		await expect.element(page.getByText('DEGRADED', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('14% of frames dropped', { exact: true })).toBeVisible();

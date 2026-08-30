@@ -311,7 +311,7 @@ test('aborts and closes a stored open when the route changes', async ({ page }) 
 	await expect.poll(() => requests.storedOpens.length).toBe(1);
 	const storedMediaId = requests.storedOpens[0]!.storedMediaId;
 
-	await page.getByRole('link', { name: 'Peek', exact: true }).click();
+	await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
 	releaseOpen();
 	await expect.poll(() => requests.storedCloses).toContain(storedMediaId);
 	await expect(page).toHaveURL(/\/$/);
@@ -469,6 +469,11 @@ test('Board 4 renders the newest-at-top timeline with explicit gaps and live fol
 	const timeline = page.getByRole('region', { name: 'Recording timeline', exact: true });
 	await expect(timeline).toHaveAttribute('data-timeline-zoom', '6h');
 	await expect(timeline).toHaveAttribute('data-timeline-following', 'true');
+	const shellGeometry = await page.locator('[data-shell-main]').evaluate((element) => ({
+		clientHeight: element.clientHeight,
+		scrollHeight: element.scrollHeight
+	}));
+	expect(shellGeometry.scrollHeight).toBeLessThanOrEqual(shellGeometry.clientHeight + 1);
 	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
 	await expect(timeline.getByText('LIVE', { exact: true })).toBeVisible();
 	await expect(timeline.locator('[data-timeline-availability]')).toHaveCount(2);
@@ -527,6 +532,70 @@ test('Board 4 renders the newest-at-top timeline with explicit gaps and live fol
 	await timeline.getByRole('button', { name: 'Back to live' }).click();
 	await expect(timeline).toHaveAttribute('data-timeline-following', 'true');
 	await expect(page.locator('video')).toHaveAttribute('data-play-requested', 'true');
+});
+
+test('keeps one compact command row and a narrow timeline without shell scrolling', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 1188, height: 624 });
+	await mockKeepTimeline(page);
+	await page.goto(`/keep?camera=front-door&stream=main&date=${date}`);
+	await expect(page.locator('[data-keep-command-bar]')).toBeVisible();
+	await expect(page.getByRole('region', { name: 'Recording timeline', exact: true })).toBeVisible();
+
+	const geometry = () =>
+		page.evaluate(() => {
+			const main = document.querySelector<HTMLElement>('[data-shell-main]');
+			const commandBar = document.querySelector<HTMLElement>('[data-keep-command-bar]');
+			const content = document.querySelector<HTMLElement>('[data-keep-view-content]');
+			const timeline = document.querySelector<HTMLElement>(
+				'section[aria-label="Recording timeline"]'
+			);
+			const player = document.querySelector<HTMLElement>(
+				'section[aria-label="Recorded video player"]'
+			);
+			const playbackControls = document.querySelector<HTMLElement>(
+				'[aria-label="Playback controls"]'
+			);
+			if (!main || !commandBar || !content || !player || !playbackControls) {
+				throw new Error('Keep view geometry is unavailable');
+			}
+			return {
+				mainClientHeight: main.clientHeight,
+				mainScrollHeight: main.scrollHeight,
+				command: commandBar.getBoundingClientRect().toJSON(),
+				commandClientWidth: commandBar.clientWidth,
+				commandScrollWidth: commandBar.scrollWidth,
+				commandDirection: getComputedStyle(commandBar).flexDirection,
+				content: content.getBoundingClientRect().toJSON(),
+				player: player.getBoundingClientRect().toJSON(),
+				playbackControls: playbackControls.getBoundingClientRect().toJSON(),
+				timeline: timeline?.getBoundingClientRect().toJSON() ?? null
+			};
+		});
+
+	for (const [index, viewport] of [
+		{ width: 1188, height: 624 },
+		{ width: 1024, height: 768 }
+	].entries()) {
+		await page.setViewportSize(viewport);
+		await expect(
+			page.getByRole('region', { name: 'Recording timeline', exact: true })
+		).toBeVisible();
+		const bounds = await geometry();
+		expect(bounds.mainScrollHeight).toBeLessThanOrEqual(bounds.mainClientHeight + 1);
+		expect(bounds.command.height).toBeLessThanOrEqual(40);
+		expect(bounds.command.bottom).toBeLessThanOrEqual(bounds.content.top + 1);
+		expect(bounds.command.left).toBeCloseTo(bounds.content.left, 0);
+		expect(bounds.commandScrollWidth).toBeLessThanOrEqual(bounds.commandClientWidth);
+		expect(bounds.commandDirection).toBe('row');
+		expect(bounds.player.bottom).toBeLessThanOrEqual(bounds.content.bottom + 1);
+		expect(bounds.playbackControls.bottom).toBeLessThanOrEqual(bounds.content.bottom + 1);
+		if (index === 0) {
+			expect(bounds.timeline?.width).toBeLessThanOrEqual(288);
+		}
+	}
+	await expect(page.getByRole('region', { name: 'Recording timeline', exact: true })).toBeVisible();
 });
 
 test('contains the Paper timeline lanes at the authored mobile viewport', async ({ page }) => {

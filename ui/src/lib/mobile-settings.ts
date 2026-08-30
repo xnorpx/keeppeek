@@ -1,6 +1,7 @@
 export type MobileSettingsRenderTarget =
 	| 'access'
 	| 'appearance'
+	| 'dashboards'
 	| 'event-sources'
 	| 'groups'
 	| 'integrations'
@@ -17,6 +18,14 @@ export type MobileSettingsSection = {
 };
 
 export const mobileSettingsSections = Object.freeze<MobileSettingsSection[]>([
+	{
+		id: 'dashboards',
+		label: 'Dashboards',
+		group: 'administration',
+		href: '#dashboards',
+		renderTarget: 'dashboards',
+		keywords: ['dashboards', 'peek', 'layouts', 'grids', 'live views', 'access']
+	},
 	{
 		id: 'storage',
 		label: 'Storage & retention',

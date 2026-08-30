@@ -15,7 +15,10 @@ use crate::{
     notifications::{HealthMonitor as NotificationHealthMonitor, Runtime as NotificationRuntime},
     operational_events::OperationalEventMonitor,
     runtime::{Router, RouterMessage, WorkerEvent},
-    server::{ServerState, camera_health_snapshots, run_server},
+    server::{
+        ServerState, bind_server_listener, camera_health_snapshots,
+        serve_with_state_on_listener_ready,
+    },
     shutdown::{Restart, Shutdown},
     stats::HealthRegistry,
     storage::{EventStore, RecordingCatalog, StorageConfig, StorageEngine},
@@ -220,15 +223,7 @@ pub fn run(
         keeppeek.set_battery_wake(battery_wake.handle());
     }
 
-    keeppeek.add_cameras(&cameras)?;
     let server_state = server_state.with_camera_runtime(keeppeek.control());
-    server_state
-        .enrich_camera_metadata_in_background(camera_configs.values().flatten().cloned().collect());
-
-    let keeppeek_handle = std::thread::Builder::new()
-        .name("keeppeek".to_string())
-        .spawn(move || keeppeek.run())
-        .expect("failed to spawn KeepPeek worker");
 
     let operational_state = server_state.clone();
     let operational_router = router_tx.clone();
@@ -242,13 +237,22 @@ pub fn run(
     )?;
 
     router.wait_and_drain(Some(std::time::Duration::ZERO))?;
-    tracing::info!("camera workers launched, starting HTTP server");
+    let listener = bind_server_listener(&cfg.host, cfg.port)?;
 
+    let server_state_for_metadata = server_state.clone();
     let server_shutdown = shutdown.clone();
+    let (server_ready_tx, server_ready_rx) = std::sync::mpsc::sync_channel(1);
     let server_handle = std::thread::Builder::new()
         .name("http-server".to_owned())
         .spawn(move || {
-            let result = run_server(server_state, server_shutdown.clone(), router_tx);
+            let result = serve_with_state_on_listener_ready(
+                listener,
+                server_shutdown.clone(),
+                router_tx,
+                server_state,
+                server_ready_tx,
+            )
+            .map(|_| ());
             if result.is_err() {
                 server_shutdown.cancel();
             }
@@ -256,7 +260,63 @@ pub fn run(
         })
         .expect("failed to spawn HTTP server");
 
+    let mut startup_error = server_ready_rx
+        .recv()
+        .err()
+        .map(|_| anyhow::anyhow!("HTTP server stopped before reporting readiness"));
+    if startup_error.is_some() {
+        shutdown.cancel();
+    }
+
+    let (keeppeek_handle, mut camera_start_rx) = if startup_error.is_none() {
+        server_state_for_metadata.enrich_camera_metadata_in_background(
+            camera_configs.values().flatten().cloned().collect(),
+        );
+        let (camera_start_tx, camera_start_rx) = std::sync::mpsc::sync_channel(1);
+        let camera_shutdown = shutdown.clone();
+        let keeppeek_handle = std::thread::Builder::new()
+            .name("keeppeek".to_string())
+            .spawn(move || {
+                let result = keeppeek.add_cameras(&cameras);
+                if let Err(error) = &result {
+                    tracing::error!(%error, "camera workers could not start");
+                    camera_shutdown.cancel();
+                } else {
+                    tracing::info!("camera workers launched");
+                }
+                if camera_start_tx.send(result).is_err() {
+                    camera_shutdown.cancel();
+                }
+                keeppeek.run();
+            })
+            .expect("failed to spawn KeepPeek worker");
+        (Some(keeppeek_handle), Some(camera_start_rx))
+    } else {
+        (None, None)
+    };
+
     while !shutdown.is_cancelled() && !router.is_shutting_down() {
+        if let Some(result) = camera_start_rx
+            .as_ref()
+            .map(std::sync::mpsc::Receiver::try_recv)
+        {
+            match result {
+                Ok(Ok(())) => camera_start_rx = None,
+                Ok(Err(error)) => {
+                    startup_error = Some(error);
+                    camera_start_rx = None;
+                    shutdown.cancel();
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    startup_error = Some(anyhow::anyhow!(
+                        "camera worker startup ended before reporting status"
+                    ));
+                    camera_start_rx = None;
+                    shutdown.cancel();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         router.wait_and_drain(Some(std::time::Duration::from_millis(100)))?;
     }
     shutdown.cancel();
@@ -264,12 +324,30 @@ pub fn run(
 
     match server_handle.join() {
         Ok(Ok(())) => {}
+        Ok(Err(error)) if startup_error.is_some() => startup_error = Some(error),
         Ok(Err(error)) => tracing::warn!(%error, "server stopped with error"),
+        Err(_) if startup_error.is_some() => {
+            startup_error = Some(anyhow::anyhow!("HTTP server panicked during startup"));
+        }
         Err(_) => tracing::warn!("HTTP server panicked"),
     }
 
-    if keeppeek_handle.join().is_err() {
+    if let Some(keeppeek_handle) = keeppeek_handle
+        && keeppeek_handle.join().is_err()
+    {
         tracing::warn!("KeepPeek worker panicked");
+    }
+    if let Some(camera_start_rx) = camera_start_rx {
+        match camera_start_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => startup_error = Some(error),
+            Err(_) if startup_error.is_none() => {
+                startup_error = Some(anyhow::anyhow!(
+                    "camera worker startup ended before reporting status"
+                ));
+            }
+            Err(_) => {}
+        }
     }
 
     if let Some(battery_wake) = battery_wake {
@@ -285,5 +363,5 @@ pub fn run(
     recording_catalog.shutdown();
     tracing::info!("all recordings saved");
 
-    Ok(restart.is_requested())
+    startup_error.map_or_else(|| Ok(restart.is_requested()), Err)
 }

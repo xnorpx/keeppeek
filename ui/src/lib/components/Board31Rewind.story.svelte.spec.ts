@@ -35,7 +35,7 @@ describe('Board 31 Focus to Keep history stories', () => {
 		const { container } = await renderState('keep');
 		const keep = container.querySelector<HTMLElement>('[data-history-keep]');
 		expect(keep).not.toBeNull();
-		await expect.element(page.getByText('From Focus · Front Door', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('From Viewer · Front Door', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('LIVE', { exact: true })).toBeVisible();
 		expect(container.querySelector('[data-peek-rewind]')).toBeNull();
 	});

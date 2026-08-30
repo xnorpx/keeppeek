@@ -32,9 +32,9 @@ describe('Board 27 mobile administration story', () => {
 		const settingsLinks = [
 			...frame!.querySelectorAll<HTMLElement>('[aria-label="Settings sections"] a')
 		];
-		expect(settingsLinks).toHaveLength(9);
+		expect(settingsLinks).toHaveLength(10);
 		expect(settingsLinks.map((link) => Math.round(link.getBoundingClientRect().height))).toEqual([
-			52, 52, 52, 52, 52, 46, 46, 46, 46
+			52, 52, 52, 52, 52, 52, 46, 46, 46, 46
 		]);
 	});
 

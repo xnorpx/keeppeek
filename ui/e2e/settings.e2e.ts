@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { mockControlPeer } from './fixtures/control-peer';
+import { mixedCameras, mixedHealth } from './fixtures/peek';
 
 const storage = {
 	medium_term_path: '/recordings/medium',
@@ -37,7 +38,7 @@ test('redirects the retired Camera defaults bookmark to the Cameras fleet', asyn
 	await expect(page.getByText('No cameras configured.')).toBeVisible();
 });
 
-test('uses a searchable nine-section mobile administration index with focused owners', async ({
+test('uses a searchable ten-section mobile administration index with focused owners', async ({
 	page
 }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
@@ -72,8 +73,9 @@ test('uses a searchable nine-section mobile administration index with focused ow
 	await expect(
 		page.locator('[data-mobile-settings-header]').getByRole('heading', { name: 'More' })
 	).toBeVisible();
-	await expect(navigation.getByRole('link')).toHaveCount(9);
+	await expect(navigation.getByRole('link')).toHaveCount(10);
 	for (const label of [
+		'Dashboards',
 		'Storage & retention',
 		'Event sources',
 		'Groups',
@@ -87,7 +89,7 @@ test('uses a searchable nine-section mobile administration index with focused ow
 		await expect(navigation.getByRole('link', { name: new RegExp(label) })).toBeVisible();
 	}
 	await expect(index).toContainText('25 days');
-	await expect(index.getByText('—')).toHaveCount(4);
+	await expect(index.getByText('—')).toHaveCount(5);
 	await expect(page.getByRole('region', { name: 'Storage & retention' })).toBeHidden();
 
 	await page.getByLabel('Search settings').fill('MQTT');
@@ -167,6 +169,88 @@ test('retrieves the initial key once and rotates it through credential managemen
 	).toBeVisible();
 	expect(controls.accessCredentialRotations).toBe(1);
 	await expect(access).toContainText('Security audit');
+});
+
+test('manages dashboard grids and named viewer access only from Settings', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	const controls = await mockControlPeer(page, {
+		capabilityIds: ['keeppeek.identity.v1', 'keeppeek.peek-layouts.v1'],
+		cameras: mixedCameras,
+		health: mixedHealth,
+		runtimeConfiguration: {
+			host: '0.0.0.0',
+			port: 3000,
+			camera_count: mixedCameras.length,
+			storage,
+			recording_estimate: recordingEstimate
+		},
+		peekLayoutRegistry: {
+			schema_version: 1,
+			active_layout_id: 'default',
+			layouts: [
+				{
+					id: 'default',
+					name: 'All cameras',
+					scope: 'shared',
+					owner_id: 'server',
+					audience: { everyone: true, credential_ids: [] },
+					activity_focus: true,
+					tiles: mixedCameras.map((camera, index) => ({
+						camera_id: camera.id,
+						column: (index % 2) * 6 + 1,
+						row: Math.floor(index / 2) * 6 + 1,
+						column_span: 6,
+						row_span: 6,
+						pinned: index === 0
+					}))
+				},
+				{
+					id: 'front-entry',
+					name: 'Front entry',
+					scope: 'shared',
+					owner_id: 'server',
+					audience: { everyone: false, credential_ids: [] },
+					activity_focus: false,
+					tiles: []
+				}
+			]
+		}
+	});
+
+	await page.goto('/settings#access');
+	const access = page.locator('#access');
+	await access.getByRole('button', { name: 'New credential' }).click();
+	await access.getByRole('textbox', { name: 'Name' }).fill('Front desk');
+	await access.getByRole('button', { name: 'Create', exact: true }).click();
+
+	await page.goto('/settings#dashboards');
+	const dashboards = page.getByRole('region', { name: 'Dashboards' });
+	await expect(dashboards).toBeVisible();
+	await expect(dashboards.getByLabel('Dashboard to manage')).toHaveValue('default');
+	await expect(dashboards.getByRole('button', { name: 'Edit grid' })).toBeDisabled();
+
+	await dashboards.getByLabel('Dashboard to manage').selectOption('front-entry');
+	await dashboards.getByRole('button', { name: 'Manage access' }).click();
+	const accessDialog = page.getByRole('dialog', { name: 'Dashboard access' });
+	await expect(accessDialog).toContainText('Administrators always have access.');
+	await accessDialog.getByRole('checkbox', { name: /Front desk/ }).check();
+	await accessDialog.getByRole('button', { name: 'Save access' }).click();
+	await expect.poll(() => controls.peekLayoutUpdates.length).toBe(2);
+	const accessUpdate = controls.peekLayoutUpdates.at(-1)!;
+	const restricted = (accessUpdate.layouts as Array<Record<string, unknown>>).find(
+		(layout) => layout.id === 'front-entry'
+	);
+	expect(restricted?.audience).toEqual({
+		everyone: false,
+		credential_ids: ['550e8400-e29b-41d4-a716-446655440002']
+	});
+
+	await dashboards.getByRole('button', { name: 'Edit grid' }).click();
+	await expect(page.locator('[data-peek-layout-editor]')).toBeVisible();
+	await page.getByRole('button', { name: '2x2', exact: true }).click();
+	await page.getByRole('button', { name: 'Done', exact: true }).click();
+	await expect(page.locator('[data-peek-layout-editor]')).toHaveCount(0);
+	await expect.poll(() => controls.peekLayoutUpdates.length).toBe(3);
 });
 
 test('Board 20 uses real theme, runtime, restart, and log evidence without inventing system controls', async ({

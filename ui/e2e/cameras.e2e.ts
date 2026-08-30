@@ -65,6 +65,32 @@ test('Board 11 virtualizes the 127-source Camera fleet into fixed 56px rows', as
 	expect(browserErrors).toEqual([]);
 });
 
+test('keeps the populated fleet inside a short desktop shell', async ({ page }) => {
+	await page.setViewportSize({ width: 1188, height: 624 });
+	await mockCameraFleet(page);
+	await page.goto('/cameras');
+
+	const viewport = page.locator('[data-fleet-viewport]');
+	await expect(viewport).toBeVisible();
+	const geometry = await page.evaluate(() => {
+		const main = document.querySelector<HTMLElement>('[data-shell-main]');
+		const fleet = document.querySelector<HTMLElement>('[data-fleet-viewport]');
+		if (!main || !fleet) throw new Error('Fleet viewport is unavailable');
+		return {
+			mainClientHeight: main.clientHeight,
+			mainScrollHeight: main.scrollHeight,
+			mainBottom: main.getBoundingClientRect().bottom,
+			fleetBottom: fleet.getBoundingClientRect().bottom,
+			fleetClientHeight: fleet.clientHeight,
+			fleetScrollHeight: fleet.scrollHeight
+		};
+	});
+
+	expect(geometry.mainScrollHeight).toBeLessThanOrEqual(geometry.mainClientHeight + 1);
+	expect(geometry.fleetBottom).toBeLessThanOrEqual(geometry.mainBottom + 1);
+	expect(geometry.fleetScrollHeight).toBeGreaterThan(geometry.fleetClientHeight);
+});
+
 test('contains the virtualized fleet inside the authored mobile viewport', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await mockCameraFleet(page);

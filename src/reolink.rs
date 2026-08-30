@@ -607,7 +607,7 @@ impl ReolinkLoop {
             EncryptionMode::BcEncrypt,
         ))))?;
 
-        let mut out_buf = vec![0u8; reo_proto::MAX_MEDIA_FRAME];
+        let mut out_buf = vec![0u8; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
         let mut deadline = drain_outputs_simple(&mut session, wire.as_mut(), &mut out_buf)?;
 
         let mut tcp_buf = vec![0u8; 64 * 1024];

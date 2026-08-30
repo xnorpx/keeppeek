@@ -86,6 +86,7 @@ mod event_search;
 mod health_snapshot;
 mod logging;
 mod mqtt_integration;
+mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod runtime_configuration;
 mod stored_media;
@@ -386,7 +387,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
     }
 }
 
-const fn sensitive_administrator_operation(
+fn sensitive_administrator_operation(
     command: Option<&control_request::Command>,
 ) -> Option<&'static str> {
     match command {
@@ -430,8 +431,14 @@ const fn sensitive_administrator_operation(
                 _ => None,
             }
         }
-        Some(control_request::Command::StateStoreCommand(command)) => match command.action {
-            Some(proto::state_store_command::Action::Put(_)) => Some("mqtt_configuration_update"),
+        Some(control_request::Command::StateStoreCommand(command)) => match &command.action {
+            Some(proto::state_store_command::Action::Put(request)) => {
+                match request.namespace.as_str() {
+                    "keeppeek.integrations.mqtt" => Some("mqtt_configuration_update"),
+                    peek_layouts::NAMESPACE => Some("peek_layout_registry_update"),
+                    _ => None,
+                }
+            }
             _ => None,
         },
         Some(control_request::Command::LoggingCommand(command)) => match command.action {
@@ -529,7 +536,11 @@ impl ControlRequestHandler for ServerControlHandler {
                         runtime_configuration::dispatch(&self.state, command).map(Some)
                     }
                     Some(control_request::Command::StateStoreCommand(command)) => {
-                        mqtt_integration::dispatch(&self.state, command).map(Some)
+                        if peek_layouts::handles(&command) {
+                            peek_layouts::dispatch(&self.state, &principal, command).map(Some)
+                        } else {
+                            mqtt_integration::dispatch(&self.state, command).map(Some)
+                        }
                     }
                     Some(control_request::Command::HealthCommand(command)) => {
                         health_snapshot::dispatch(&self.state, &self.router_tx, command).map(Some)
@@ -703,6 +714,9 @@ impl ControlRequestHandler for ServerControlHandler {
         }
         if self.state.event_forwarder.is_some() {
             capability_ids.push("keeppeek.mqtt-forwarder.v1".to_owned());
+        }
+        if self.state.camera_config_path.is_some() {
+            capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
         }
         capability_ids.push("keeppeek.identity.v1".to_owned());
         let access_session = if session_id.as_u64() == 0 {
@@ -9141,11 +9155,35 @@ pub fn serve_on_listener(
     serve_with_state_on_listener(listener, shutdown, router_tx, ServerState::empty())
 }
 
+pub(crate) fn bind_server_listener(host: &str, port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind(server_bind_address(host, port))
+}
+
 pub fn serve_with_state_on_listener(
     listener: TcpListener,
     shutdown: Shutdown,
     router_tx: FacadeSender<RouterMessage>,
     state: ServerState,
+) -> anyhow::Result<std::net::SocketAddr> {
+    serve_with_state_on_listener_inner(listener, shutdown, router_tx, state, None)
+}
+
+pub(crate) fn serve_with_state_on_listener_ready(
+    listener: TcpListener,
+    shutdown: Shutdown,
+    router_tx: FacadeSender<RouterMessage>,
+    state: ServerState,
+    ready: std::sync::mpsc::SyncSender<std::net::SocketAddr>,
+) -> anyhow::Result<std::net::SocketAddr> {
+    serve_with_state_on_listener_inner(listener, shutdown, router_tx, state, Some(ready))
+}
+
+fn serve_with_state_on_listener_inner(
+    listener: TcpListener,
+    shutdown: Shutdown,
+    router_tx: FacadeSender<RouterMessage>,
+    state: ServerState,
+    ready: Option<std::sync::mpsc::SyncSender<std::net::SocketAddr>>,
 ) -> anyhow::Result<std::net::SocketAddr> {
     let logging = state.logging.clone();
     let session_reaper_state = state.clone();
@@ -9161,6 +9199,9 @@ pub fn serve_with_state_on_listener(
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let addr = server.server_addr();
     tracing::info!(%addr, port = addr.port(), "KeepPeek is up and listening on http://{addr}");
+    if let Some(ready) = ready {
+        let _ = ready.send(addr);
+    }
 
     while !shutdown.is_cancelled() {
         expire_api_sessions(&session_reaper_state);
@@ -9267,7 +9308,7 @@ pub fn run_server(
     shutdown: Shutdown,
     router_tx: FacadeSender<RouterMessage>,
 ) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(server_bind_address(&state.host, state.port))?;
+    let listener = bind_server_listener(&state.host, state.port)?;
     let _ = serve_with_state_on_listener(listener, shutdown, router_tx, state)?;
     Ok(())
 }
@@ -9532,6 +9573,33 @@ fn request_has_credential_query(request: &Request) -> bool {
     })
 }
 
+fn filter_unusable_ipv4_ice_candidates(sdp: &str) -> (String, usize) {
+    let mut filtered = String::with_capacity(sdp.len());
+    let mut removed = 0usize;
+    for line in sdp.split_inclusive('\n') {
+        let content = line.trim_end_matches(&['\r', '\n'][..]);
+        let unusable = content
+            .strip_prefix("a=candidate:")
+            .and_then(|candidate| candidate.split_ascii_whitespace().nth(4))
+            .and_then(|address| address.parse::<IpAddr>().ok())
+            .is_some_and(|address| match address {
+                IpAddr::V4(address) => {
+                    address.is_link_local()
+                        || address.is_broadcast()
+                        || address.is_multicast()
+                        || address.is_unspecified()
+                }
+                IpAddr::V6(_) => false,
+            });
+        if unusable {
+            removed = removed.saturating_add(1);
+        } else {
+            filtered.push_str(line);
+        }
+    }
+    (filtered, removed)
+}
+
 fn create_api_session(
     request: &Request,
     state: &ServerState,
@@ -9560,7 +9628,14 @@ fn create_api_session(
     if create.offer.sdp_type != "offer" || create.offer.sdp.is_empty() {
         return api_status(400, "create request must contain a nonempty SDP offer");
     }
-    let offer = match str0m::change::SdpOffer::from_sdp_string(&create.offer.sdp) {
+    let (sdp, ignored_ice_candidates) = filter_unusable_ipv4_ice_candidates(&create.offer.sdp);
+    if ignored_ice_candidates > 0 {
+        tracing::debug!(
+            ignored_ice_candidates,
+            "ignored unusable IPv4 ICE candidates in SDP offer"
+        );
+    }
+    let offer = match str0m::change::SdpOffer::from_sdp_string(&sdp) {
         Ok(offer) => offer,
         Err(error) => return api_status(400, &format!("invalid SDP offer: {error}")),
     };
@@ -12700,6 +12775,8 @@ mod tests {
                 end_time_ms: None,
                 duration_ms: Some(60_000),
             });
+        health.webrtc.multi_track_sessions = 1;
+        health.webrtc.multi_tracks = 3;
 
         let mqtt = crate::event_forwarder::MqttStatus {
             enabled: true,
@@ -12730,6 +12807,8 @@ mod tests {
         assert!(metrics.contains("keeppeek_mqtt_forwarder_outbox_bytes 2048"));
         assert!(metrics.contains("keeppeek_mqtt_forwarder_retries_total 3"));
         assert!(metrics.contains("keeppeek_mqtt_forwarder_duplicates_total 4"));
+        assert!(metrics.contains("keeppeek_webrtc_multi_track_sessions 1"));
+        assert!(metrics.contains("keeppeek_webrtc_multi_tracks 3"));
         let proto = health_snapshot::proto_health_snapshot(health);
         assert_eq!(
             proto.health_contract_version,
@@ -12841,6 +12920,42 @@ mod tests {
             &state,
         );
         assert_eq!(repeated.status_code, 204);
+        state.webrtc.shutdown();
+    }
+
+    #[test]
+    fn create_ignores_an_unusable_ipv4_link_local_ice_candidate() {
+        let state = ServerState::empty();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let mut offer = crate::webrtc::test_api_offer().to_sdp_string();
+        offer.push_str("\r\na=candidate:1234 1 udp 2122260223 169.254.116.209 54321 typ host\r\n");
+        let (filtered, removed) = filter_unusable_ipv4_ice_candidates(&offer);
+        assert_eq!(removed, 1);
+        assert!(!filtered.contains("169.254.116.209"));
+        let create = handle_request(
+            &Request::fake_http(
+                "POST",
+                "/create",
+                vec![
+                    ("Content-Type".to_owned(), "application/json".to_owned()),
+                    ("Content-Encoding".to_owned(), "gzip".to_owned()),
+                ],
+                gzip_json(&CreateRequest {
+                    offer: crate::api::SdpOffer {
+                        sdp_type: "offer".to_owned(),
+                        sdp: offer,
+                    },
+                }),
+            ),
+            &router_tx,
+            &state,
+        );
+
+        let status_code = create.status_code;
+        if status_code != 201 {
+            let body = String::from_utf8(response_data(create)).unwrap();
+            panic!("create returned {status_code}: {body}");
+        }
         state.webrtc.shutdown();
     }
 
@@ -13629,6 +13744,23 @@ mod tests {
             capabilities.access_session.unwrap().role,
             proto::AccessRole::Administrator as i32
         );
+
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-layout-capability-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let persisted = test_control_handler(
+            ServerState::empty().with_camera_config_path(directory.join("config.toml")),
+        )
+        .initial_capabilities(SessionId::from_u64(0))
+        .expect("server handler must provide initial capabilities");
+        assert!(
+            persisted
+                .capability_ids
+                .iter()
+                .any(|capability| capability == peek_layouts::CAPABILITY_ID)
+        );
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -18880,6 +19012,14 @@ mod tests {
         assert_eq!(server_bind_address("::", 3000), "[::]:3000");
         assert_eq!(server_bind_address("::1", 3200), "[::1]:3200");
         assert_eq!(server_bind_address("[::1]", 3200), "[::1]:3200");
+    }
+
+    #[test]
+    fn server_listener_can_bind_before_serving_starts() {
+        let listener = bind_server_listener("127.0.0.1", 0).unwrap();
+
+        assert_eq!(listener.local_addr().unwrap().ip(), Ipv4Addr::LOCALHOST);
+        assert_ne!(listener.local_addr().unwrap().port(), 0);
     }
 
     #[test]

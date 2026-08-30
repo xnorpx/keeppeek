@@ -22,6 +22,7 @@
 	import IntegrationsSection from '$lib/components/IntegrationsSection.svelte';
 	import MobileSettingsIndex from '$lib/components/MobileSettingsIndex.svelte';
 	import NotificationsSection from '$lib/components/NotificationsSection.svelte';
+	import PeekDashboardSettings from '$lib/components/PeekDashboardSettings.svelte';
 	import StorageRetentionSection from '$lib/components/StorageRetentionSection.svelte';
 	import StorageSettingsEditor from '$lib/components/StorageSettingsEditor.svelte';
 	import SettingsApplyingState from '$lib/components/SettingsApplyingState.svelte';
@@ -157,6 +158,7 @@
 		const targetId = window.location.hash.slice(1);
 		if (
 			![
+				'dashboards',
 				'storage',
 				'event-sources',
 				'groups',
@@ -445,6 +447,10 @@
 					{/if}
 				</div>
 			{/if}
+
+			<div class={mobileSectionClass('dashboards')}>
+				<PeekDashboardSettings controller={controlClient} health={serverHealth} />
+			</div>
 
 			<Card.Root class="hidden md:grid">
 				<Card.Header>

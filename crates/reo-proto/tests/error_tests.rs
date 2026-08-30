@@ -34,6 +34,10 @@ fn test_error_display_all_variants() {
             size: 1_000_000,
             max: 512_000,
         },
+        BcError::MediaFrameTooLarge {
+            size: 5_000_000,
+            max: 4_194_304,
+        },
     ];
 
     for e in &errors {

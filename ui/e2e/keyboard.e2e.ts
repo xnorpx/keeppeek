@@ -19,10 +19,10 @@ test('uses one roving rail tab stop with the Board 32 focus outline', async ({ p
 	await waitForKeyboard(page);
 
 	const railLinks = page.locator('[data-shell-rail-link]');
-	await expect(railLinks).toHaveCount(6);
+	await expect(railLinks).toHaveCount(7);
 	expect(
 		await railLinks.evaluateAll((links) => links.map((link) => link.getAttribute('tabindex')))
-	).toEqual(['0', '-1', '-1', '-1', '-1', '-1']);
+	).toEqual(['0', '-1', '-1', '-1', '-1', '-1', '-1']);
 	await railLinks.nth(0).focus();
 	await page.keyboard.press('ArrowDown');
 	await expect(railLinks.nth(1)).toBeFocused();
@@ -71,14 +71,14 @@ test('uses fixed G chords and lets typing beat single-letter navigation', async 
 	await page.keyboard.press('/');
 	const search = page.getByRole('searchbox');
 	await expect(search).toBeFocused();
-	await page.keyboard.type('gp');
-	await expect(search).toHaveValue('gp');
+	await page.keyboard.type('gd');
+	await expect(search).toHaveValue('gd');
 	await expect(page).toHaveURL(/\/cameras$/);
 
 	await search.evaluate((input: HTMLInputElement) => input.blur());
 	await page.keyboard.press('g');
 	await expect(page.locator('[data-keyboard-navigation-chord]')).toBeVisible();
-	await page.keyboard.press('p');
+	await page.keyboard.press('d');
 	await expect(page).toHaveURL('/');
 	await expect(page.locator('[data-keyboard-navigation-chord]')).toHaveCount(0);
 });
@@ -102,7 +102,7 @@ test('finds a real camera through the Board 32 command palette', async ({ page }
 	await expect(dialog).toBeHidden();
 });
 
-test('moves Peek focus spatially and keeps Enter distinct from fullscreen', async ({ page }) => {
+test('moves Dashboard focus spatially and opens Viewer from Enter or F', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await mockMixedHealth(page);
 	await page.goto('/');
@@ -114,7 +114,7 @@ test('moves Peek focus spatially and keeps Enter distinct from fullscreen', asyn
 	await page.keyboard.press('ArrowRight');
 	await expect(porch).toBeFocused();
 	await page.keyboard.press('Enter');
-	await expect(page).toHaveURL('/camera?camera=porch');
+	await expect(page).toHaveURL('/viewer?camera=porch');
 
 	await page.goto('/');
 	await waitForKeyboard(page);
@@ -123,7 +123,7 @@ test('moves Peek focus spatially and keeps Enter distinct from fullscreen', asyn
 	const focus = page.getByRole('region', { name: 'Front Door focus' });
 	await expect(focus).toBeVisible();
 	const primaryView = focus.locator('[data-peek-focus-history]');
-	const filmstrip = focus.getByLabel('Other cameras');
+	const filmstrip = focus.getByLabel('Camera filmstrip');
 	await expect(filmstrip).toBeVisible();
 	const firstFilmstripItem = filmstrip.locator('article').first();
 	const [primaryBox, filmstripBox, firstFilmstripItemBox] = await Promise.all([
@@ -134,11 +134,15 @@ test('moves Peek focus spatially and keeps Enter distinct from fullscreen', asyn
 	expect(primaryBox).not.toBeNull();
 	expect(filmstripBox).not.toBeNull();
 	expect(firstFilmstripItemBox).not.toBeNull();
-	expect(filmstripBox!.y).toBeGreaterThan(primaryBox!.y + primaryBox!.height - 1);
+	expect(filmstripBox!.y).toBeGreaterThan(primaryBox!.y + primaryBox!.height / 2);
+	expect(filmstripBox!.y + filmstripBox!.height).toBeLessThanOrEqual(
+		primaryBox!.y + primaryBox!.height
+	);
 	expect(firstFilmstripItemBox!.width).toBeLessThan(primaryBox!.width / 2);
 	expect(firstFilmstripItemBox!.height).toBeLessThan(primaryBox!.height / 2);
 	await page.keyboard.press('f');
-	await expect(page.locator('[data-peek-focus="front-door"]')).toBeFocused();
+	await expect(page).toHaveURL('/');
+	await expect(page.locator('[data-peek-wall]')).toBeVisible();
 });
 
 test('controls Keep transport, exact frames, live follow, and export range from the keyboard', async ({

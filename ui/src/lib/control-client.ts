@@ -11,6 +11,8 @@ import {
 } from './api';
 import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
+import { PeekLayoutControlClient } from './control-client-peek-layouts';
+import type { PeekLayoutRegistry } from './peek-layout';
 import type {
 	AccessAuditEvent,
 	AccessConnectionState,
@@ -23,6 +25,7 @@ import type {
 import { NotificationControlClient } from './control-client-notifications';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
+import { decodeStateStoreRequestError } from './state-store-error';
 import {
 	AccessRole as ProtoAccessRole,
 	CameraBackend as ProtoCameraBackend,
@@ -443,6 +446,7 @@ export class ControlClient {
 	#accessStateListeners = new Set<AccessStateListener>();
 	#notifications = new NotificationControlClient((command) => this.request(command));
 	#mqtt = new MqttControlClient((command) => this.request(command));
+	#peekLayouts = new PeekLayoutControlClient((command) => this.request(command));
 	#system = new SystemControlClient(
 		(command) => this.request(command),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
@@ -528,6 +532,14 @@ export class ControlClient {
 
 	async testMqttIntegration(update: MqttSettingsUpdate) {
 		return this.#mqtt.test(update);
+	}
+
+	async getPeekLayoutRegistry(): Promise<PeekLayoutRegistry> {
+		return this.#peekLayouts.get();
+	}
+
+	async savePeekLayoutRegistry(registry: PeekLayoutRegistry): Promise<PeekLayoutRegistry> {
+		return this.#peekLayouts.save(registry);
 	}
 
 	async getRecordingCoverage(
@@ -1936,6 +1948,8 @@ export class ControlClient {
 			channel.send(toBinary(ControlEnvelopeSchema, envelope));
 			const reply = await response;
 			if (reply.result.case === 'error') {
+				const stateStoreError = decodeStateStoreRequestError(reply.result.value);
+				if (stateStoreError) throw stateStoreError;
 				const conflict = reply.result.value.details.find(
 					(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
 				);

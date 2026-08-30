@@ -1889,14 +1889,18 @@
 	<title>Keep - KeepPeek</title>
 </svelte:head>
 
-<div class="mx-auto max-w-[120rem] space-y-4">
-	<header class="flex flex-col gap-3 border-b pb-3 lg:flex-row lg:items-end lg:justify-between">
-		<div class="flex min-h-9 flex-wrap items-center gap-3">
-			<div class="flex items-center gap-2">
+<div data-keep-view class="keep-view mx-auto h-full min-h-0 w-full max-w-[120rem] overflow-hidden">
+	<header data-keep-command-bar class="keep-command-bar">
+		<div class="keep-command-primary">
+			<div class="flex shrink-0 items-center gap-2">
 				<ArchiveIcon class="size-5 text-primary" />
 				<h1 class="text-xl font-semibold">Keep</h1>
 			</div>
-			<div class="flex rounded-sm border border-hairline bg-raised p-0.5" aria-label="Keep modes">
+			<div
+				data-keep-mode-switcher
+				class="flex rounded-sm border border-hairline bg-raised p-0.5"
+				aria-label="Keep modes"
+			>
 				<a
 					href={resolve('/recordings')}
 					class="inline-flex h-11 items-center rounded-xs px-2.5 text-2xs font-semibold text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-7"
@@ -1918,7 +1922,7 @@
 			</div>
 		</div>
 
-		<div class="flex flex-wrap items-end gap-2">
+		<div class="keep-command-secondary">
 			<KeepCameraSwitcher
 				{cameras}
 				selectedCameraId={cameraId}
@@ -1926,7 +1930,7 @@
 				onselect={selectCamera}
 			/>
 
-			<div class="grid gap-1">
+			<div data-keep-date-control class="grid min-w-0 gap-1">
 				<span class="text-xs font-medium text-muted-foreground">Date</span>
 				<div class="flex items-center rounded-md border bg-background">
 					<Button
@@ -1939,12 +1943,12 @@
 					>
 						<ChevronLeftIcon />
 					</Button>
-					<label class="relative flex h-11 items-center gap-2 border-x px-2 md:h-9">
+					<label class="relative flex h-11 min-w-0 flex-1 items-center gap-2 border-x px-2 md:h-9">
 						<CalendarDaysIcon class="size-4 text-muted-foreground" />
 						<select
 							value={selectedDate}
 							disabled={dates.length === 0}
-							class="appearance-none bg-transparent pr-4 text-sm outline-none"
+							class="min-w-0 flex-1 appearance-none bg-transparent pr-4 text-sm outline-none"
 							onchange={(event) => changeDate(event.currentTarget.value)}
 						>
 							{#each dates as date (date)}
@@ -1966,7 +1970,7 @@
 			</div>
 
 			{#if availableStreams.size > 0}
-				<div class="grid gap-1">
+				<div data-keep-quality-control class="grid min-w-0 gap-1">
 					<label for="recorded-quality" class="text-xs font-medium text-muted-foreground">
 						Quality
 					</label>
@@ -1984,6 +1988,7 @@
 			{/if}
 
 			<Button
+				data-keep-refresh
 				variant="outline"
 				size="icon"
 				class="size-11 md:size-9"
@@ -1996,239 +2001,333 @@
 		</div>
 	</header>
 
-	{#if error}
-		<div
-			class="rounded-md border border-destructive/60 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-		>
-			{error}
-		</div>
-	{/if}
-
-	{#if loading && segments.length === 0 && selected === null}
-		<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_24.75rem]">
-			<Skeleton class="aspect-video w-full rounded-md" />
-			<Skeleton class="h-[34rem] w-full rounded-md" />
-		</div>
-	{:else if mode === 'stories'}
-		<KeepStories
-			events={storyModeEvents}
-			{dates}
-			{selectedDate}
-			ondate={changeDate}
-			onseek={openTimestamp}
-		/>
-	{:else if mode === 'swimlanes'}
-		<KeepSwimlanes
-			{cameras}
-			selectedCameraId={cameraId}
-			date={selectedDate}
-			anchorMs={swimlaneAnchorMs}
-			{playheadMs}
-			onselect={selectSwimlane}
-		/>
-	{:else if mode === 'export'}
-		<div class="space-y-3">
-			{#if exportReturnHref}
-				<a
-					data-export-return
-					href={exportReturnHref}
-					class="inline-flex h-8 items-center gap-1.5 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
-				>
-					<ChevronLeftIcon class="size-3.5" /> Back to event
-				</a>
-			{/if}
-			{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
-				<KeepExportPanel
-					sourceId={cameraId}
-					sourceName={selectedCamera?.name ?? cameraId}
-					segment={selected}
-					bitrateKbps={selectedBitrateKbps}
-					rangeStartMs={exportRangeStartMs}
-					rangeEndMs={exportRangeEndMs}
-					event={exportSeedEvent}
-				/>
-			{/key}
-		</div>
-	{:else}
-		<div class="grid min-h-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24.75rem]">
-			<section
-				data-keep-player
-				data-recording-requested-variant={requestedPlaybackVariant}
-				data-recording-selected-variant={selectedPlaybackVariant ?? undefined}
-				data-recording-fallback-variant={selectedFallbackStream ?? undefined}
-				data-recording-selection-reason={selectedPlaybackReason}
-				data-recording-startup-phase={playbackStartupPhase}
-				data-recording-content-type={playbackContentType ?? undefined}
-				data-recording-rejected-variants={rejectedStreams
-					.map((candidate) => `${candidate.stream}:${candidate.encoding}`)
-					.join(',') || undefined}
-				data-keyboard-shuttle-direction={shuttleDirection}
-				data-keyboard-shuttle-speed={shuttleSpeed}
-				data-keyboard-playing={playing}
-				data-recording-playhead-ms={playheadMs}
-				data-camera-transition={cameraSwitchPending
-					? 'loading'
-					: cameraSwitchAnimating
-						? 'entering'
-						: 'idle'}
-				data-camera-transition-direction={cameraSwitchDirection === 1 ? 'next' : 'previous'}
-				class="min-w-0 space-y-3"
-				aria-label="Recorded video player"
+	<div data-keep-view-content class="keep-view-content min-h-0 overflow-y-auto">
+		{#if error}
+			<div
+				class="mb-4 rounded-md border border-destructive/60 bg-destructive/10 px-4 py-3 text-sm text-destructive"
 			>
-				<div class="relative overflow-hidden rounded-md bg-black ring-1 ring-black/10">
-					{#if selected && playbackUrl}
-						{#key selected.url}
-							<!-- svelte-ignore a11y_media_has_caption (security camera recordings do not include caption tracks) -->
-							<video
-								bind:this={video}
-								controls
-								playsinline
-								muted={scrubbing || playbackMuted}
-								preload="metadata"
-								src={playbackUrl}
-								class="aspect-video w-full object-contain {cameraSwitchAnimating
-									? cameraSwitchDirection === 1
-										? 'camera-switch-enter-next'
-										: 'camera-switch-enter-previous'
-									: ''}"
-								onloadedmetadata={applyPendingSeek}
-								ondurationchange={applyPendingSeek}
-								onloadeddata={handlePlayerLoadedData}
-								onseeked={clearStillPreview}
-								ontimeupdate={updatePlayhead}
-								onended={handleEnded}
-								onplay={handlePlay}
-								onpause={handlePause}
-								onratechange={updatePlaybackRate}
-								onvolumechange={updateMutedPreference}
-								onerror={handlePlayerError}
-							></video>
-						{/key}
-						{#if stillPreviewUrl}
-							<img
-								src={stillPreviewUrl}
-								alt=""
-								class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+				{error}
+			</div>
+		{/if}
+		{#if loading && segments.length === 0 && selected === null}
+			<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+				<Skeleton class="aspect-video w-full rounded-md" />
+				<Skeleton class="h-[34rem] w-full rounded-md" />
+			</div>
+		{:else if mode === 'stories'}
+			<KeepStories
+				events={storyModeEvents}
+				{dates}
+				{selectedDate}
+				ondate={changeDate}
+				onseek={openTimestamp}
+			/>
+		{:else if mode === 'swimlanes'}
+			<KeepSwimlanes
+				{cameras}
+				selectedCameraId={cameraId}
+				date={selectedDate}
+				anchorMs={swimlaneAnchorMs}
+				{playheadMs}
+				onselect={selectSwimlane}
+			/>
+		{:else if mode === 'export'}
+			<div class="space-y-3">
+				{#if exportReturnHref}
+					<a
+						data-export-return
+						href={exportReturnHref}
+						class="inline-flex h-8 items-center gap-1.5 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
+					>
+						<ChevronLeftIcon class="size-3.5" /> Back to event
+					</a>
+				{/if}
+				{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
+					<KeepExportPanel
+						sourceId={cameraId}
+						sourceName={selectedCamera?.name ?? cameraId}
+						segment={selected}
+						bitrateKbps={selectedBitrateKbps}
+						rangeStartMs={exportRangeStartMs}
+						rangeEndMs={exportRangeEndMs}
+						event={exportSeedEvent}
+					/>
+				{/key}
+			</div>
+		{:else}
+			<div
+				class="grid h-full min-h-0 items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_18rem]"
+			>
+				<section
+					data-keep-player
+					data-recording-requested-variant={requestedPlaybackVariant}
+					data-recording-selected-variant={selectedPlaybackVariant ?? undefined}
+					data-recording-fallback-variant={selectedFallbackStream ?? undefined}
+					data-recording-selection-reason={selectedPlaybackReason}
+					data-recording-startup-phase={playbackStartupPhase}
+					data-recording-content-type={playbackContentType ?? undefined}
+					data-recording-rejected-variants={rejectedStreams
+						.map((candidate) => `${candidate.stream}:${candidate.encoding}`)
+						.join(',') || undefined}
+					data-keyboard-shuttle-direction={shuttleDirection}
+					data-keyboard-shuttle-speed={shuttleSpeed}
+					data-keyboard-playing={playing}
+					data-recording-playhead-ms={playheadMs}
+					data-camera-transition={cameraSwitchPending
+						? 'loading'
+						: cameraSwitchAnimating
+							? 'entering'
+							: 'idle'}
+					data-camera-transition-direction={cameraSwitchDirection === 1 ? 'next' : 'previous'}
+					class="min-w-0 space-y-3"
+					aria-label="Recorded video player"
+				>
+					<div class="relative overflow-hidden rounded-md bg-black ring-1 ring-black/10">
+						{#if selected && playbackUrl}
+							{#key selected.url}
+								<!-- svelte-ignore a11y_media_has_caption (security camera recordings do not include caption tracks) -->
+								<video
+									bind:this={video}
+									controls
+									playsinline
+									muted={scrubbing || playbackMuted}
+									preload="metadata"
+									src={playbackUrl}
+									class="aspect-video w-full object-contain {cameraSwitchAnimating
+										? cameraSwitchDirection === 1
+											? 'camera-switch-enter-next'
+											: 'camera-switch-enter-previous'
+										: ''}"
+									onloadedmetadata={applyPendingSeek}
+									ondurationchange={applyPendingSeek}
+									onloadeddata={handlePlayerLoadedData}
+									onseeked={clearStillPreview}
+									ontimeupdate={updatePlayhead}
+									onended={handleEnded}
+									onplay={handlePlay}
+									onpause={handlePause}
+									onratechange={updatePlaybackRate}
+									onvolumechange={updateMutedPreference}
+									onerror={handlePlayerError}
+								></video>
+							{/key}
+							{#if stillPreviewUrl}
+								<img
+									src={stillPreviewUrl}
+									alt=""
+									class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+								/>
+							{/if}
+							{#if cameraSwitchFrameUrl}
+								<img
+									src={cameraSwitchFrameUrl}
+									alt=""
+									data-camera-switch-frame
+									class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+								/>
+							{/if}
+							<span
+								data-camera-name
+								class="pointer-events-none absolute top-3 right-3 z-20 max-w-[calc(100%-1.5rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
+							>
+								{selectedCamera?.name ?? selectedCamera?.id ?? cameraId}
+							</span>
+						{:else if selected}
+							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
+								Loading recording…
+							</div>
+						{:else}
+							<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
+								No recordings for this date and stream.
+							</div>
+						{/if}
+						{#if coldSeekTimestampMs !== null && coldSeekElapsedMs >= 400}
+							<ColdSeekState
+								timestampLabel={formatTime(coldSeekTimestampMs)}
+								elapsedMs={coldSeekElapsedMs}
+								detail="The current frame stays until the requested recording arrives"
+								overlay
+								class="absolute inset-0 z-30"
 							/>
 						{/if}
-						{#if cameraSwitchFrameUrl}
-							<img
-								src={cameraSwitchFrameUrl}
-								alt=""
-								data-camera-switch-frame
-								class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
-							/>
-						{/if}
-						<span
-							data-camera-name
-							class="pointer-events-none absolute top-3 right-3 z-20 max-w-[calc(100%-1.5rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
-						>
-							{selectedCamera?.name ?? selectedCamera?.id ?? cameraId}
-						</span>
-					{:else if selected}
-						<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
-							Loading recording…
-						</div>
-					{:else}
-						<div class="flex aspect-video items-center justify-center text-sm text-zinc-400">
-							No recordings for this date and stream.
-						</div>
+					</div>
+
+					{#if playbackNotice}
+						<p class="text-sm text-amber-700 dark:text-amber-300" role="status">
+							{playbackNotice}
+						</p>
 					{/if}
-					{#if coldSeekTimestampMs !== null && coldSeekElapsedMs >= 400}
-						<ColdSeekState
-							timestampLabel={formatTime(coldSeekTimestampMs)}
-							elapsedMs={coldSeekElapsedMs}
-							detail="The current frame stays until the requested recording arrives"
-							overlay
-							class="absolute inset-0 z-30"
+
+					{#if playerError}
+						<p class="text-sm text-destructive" role="alert">{playerError}</p>
+					{/if}
+
+					{#if selectedOperationalEvent}
+						<OperationalEventDetail
+							event={selectedOperationalEvent}
+							onclose={() => (selectedOperationalEventId = null)}
 						/>
 					{/if}
-				</div>
 
-				{#if playbackNotice}
-					<p class="text-sm text-amber-700 dark:text-amber-300" role="status">
-						{playbackNotice}
-					</p>
-				{/if}
+					<div
+						class="flex min-h-10 items-center justify-end gap-1 border-b pb-3"
+						aria-label="Playback controls"
+					>
+						<Button
+							variant="outline"
+							size="icon-sm"
+							class="size-11 md:size-8"
+							title="Back 10 seconds"
+							disabled={!selected}
+							onclick={() => skip(-10)}
+						>
+							<RotateCcwIcon />
+						</Button>
+						<Button
+							variant="outline"
+							size="icon-sm"
+							class="size-11 md:size-8"
+							title="Forward 10 seconds"
+							disabled={!selected}
+							onclick={() => skip(10)}
+						>
+							<RotateCwIcon />
+						</Button>
+					</div>
+				</section>
 
-				{#if playerError}
-					<p class="text-sm text-destructive" role="alert">{playerError}</p>
-				{/if}
-
-				{#if selectedOperationalEvent}
-					<OperationalEventDetail
-						event={selectedOperationalEvent}
-						onclose={() => (selectedOperationalEventId = null)}
+				{#if mobilePortrait}
+					<HorizontalTimeline
+						segments={orderedSegments}
+						{events}
+						selectedUrl={selected?.url ?? null}
+						{playheadMs}
+						{dayStartMs}
+						followRequest={timelineFollowRequest}
+						loading={timelineRepository.loading}
+						onSeek={seekToTimestamp}
+						onEventPreview={(event) => void previewEvent(event)}
+						onScrubStart={beginTimelineScrub}
+						onScrub={moveTimelineScrub}
+						onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+						onScrubCancel={cancelTimelineScrub}
+						onViewportChange={handleTimelineViewport}
+					/>
+				{:else}
+					<VerticalTimeline
+						segments={orderedSegments}
+						{events}
+						selectedUrl={selected?.url ?? null}
+						{playheadMs}
+						{dayStartMs}
+						followRequest={timelineFollowRequest}
+						loading={timelineRepository.loading}
+						onSeek={seekToTimestamp}
+						onEventPreview={(event) => void previewEvent(event)}
+						onScrubStart={beginTimelineScrub}
+						onScrub={moveTimelineScrub}
+						onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
+						onScrubCancel={cancelTimelineScrub}
+						onViewportChange={handleTimelineViewport}
 					/>
 				{/if}
-
-				<div
-					class="flex min-h-10 items-center justify-end gap-1 border-b pb-3"
-					aria-label="Playback controls"
-				>
-					<Button
-						variant="outline"
-						size="icon-sm"
-						class="size-11 md:size-8"
-						title="Back 10 seconds"
-						disabled={!selected}
-						onclick={() => skip(-10)}
-					>
-						<RotateCcwIcon />
-					</Button>
-					<Button
-						variant="outline"
-						size="icon-sm"
-						class="size-11 md:size-8"
-						title="Forward 10 seconds"
-						disabled={!selected}
-						onclick={() => skip(10)}
-					>
-						<RotateCwIcon />
-					</Button>
-				</div>
-			</section>
-
-			{#if mobilePortrait}
-				<HorizontalTimeline
-					segments={orderedSegments}
-					{events}
-					selectedUrl={selected?.url ?? null}
-					{playheadMs}
-					{dayStartMs}
-					followRequest={timelineFollowRequest}
-					loading={timelineRepository.loading}
-					onSeek={seekToTimestamp}
-					onEventPreview={(event) => void previewEvent(event)}
-					onScrubStart={beginTimelineScrub}
-					onScrub={moveTimelineScrub}
-					onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
-					onScrubCancel={cancelTimelineScrub}
-					onViewportChange={handleTimelineViewport}
-				/>
-			{:else}
-				<VerticalTimeline
-					segments={orderedSegments}
-					{events}
-					selectedUrl={selected?.url ?? null}
-					{playheadMs}
-					{dayStartMs}
-					followRequest={timelineFollowRequest}
-					loading={timelineRepository.loading}
-					onSeek={seekToTimestamp}
-					onEventPreview={(event) => void previewEvent(event)}
-					onScrubStart={beginTimelineScrub}
-					onScrub={moveTimelineScrub}
-					onScrubEnd={(timestampMs) => void finishTimelineScrub(timestampMs)}
-					onScrubCancel={cancelTimelineScrub}
-					onViewportChange={handleTimelineViewport}
-				/>
-			{/if}
-		</div>
-	{/if}
+			</div>
+		{/if}
+	</div>
 </div>
 
 <style>
+	@media (min-width: 48rem) {
+		.keep-view {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr);
+			grid-template-rows: 2.25rem minmax(0, 1fr);
+			gap: 0.5rem;
+		}
+
+		.keep-command-bar {
+			display: flex;
+			min-width: 0;
+			height: 2.25rem;
+			align-items: center;
+			gap: 0.5rem;
+			overflow-x: hidden;
+			overflow-y: hidden;
+		}
+
+		.keep-command-primary,
+		.keep-command-secondary {
+			display: flex;
+			min-width: 0;
+			align-items: center;
+			gap: 0.375rem;
+		}
+
+		.keep-command-primary [data-keep-mode-switcher] {
+			display: flex;
+		}
+
+		.keep-command-primary [data-keep-mode-switcher] > :global(*) {
+			min-width: 0;
+			justify-content: center;
+			padding-inline: 0.25rem;
+		}
+
+		.keep-command-secondary {
+			margin-left: auto;
+		}
+
+		.keep-command-secondary :global([data-camera-switcher] > span),
+		.keep-command-secondary [data-keep-date-control] > span,
+		.keep-command-secondary [data-keep-quality-control] > label {
+			display: none;
+		}
+
+		.keep-command-secondary :global([data-camera-switcher]) {
+			width: clamp(8rem, 15vw, 13rem);
+		}
+
+		.keep-command-secondary [data-keep-date-control] {
+			width: clamp(6rem, 12vw, 9rem);
+		}
+
+		.keep-command-secondary [data-keep-date-control] > div {
+			width: 100%;
+		}
+
+		.keep-command-secondary [data-keep-date-control] > div > :global(button) {
+			width: 2rem;
+			height: 2rem;
+		}
+
+		.keep-command-secondary [data-keep-date-control] > div > label {
+			min-width: 0;
+			gap: 0.25rem;
+			padding-inline: 0.25rem;
+			overflow: hidden;
+		}
+
+		.keep-command-secondary [data-keep-date-control] > div > label > :global(svg) {
+			display: none;
+		}
+
+		.keep-command-secondary [data-keep-date-control] select {
+			width: 100%;
+			min-width: 0;
+			text-overflow: ellipsis;
+		}
+
+		.keep-command-secondary [data-keep-quality-control] {
+			width: 4rem;
+		}
+
+		.keep-view-content {
+			min-width: 0;
+			min-height: 0;
+			overflow-y: hidden;
+		}
+	}
+
 	.camera-switch-enter-next {
 		animation: camera-switch-enter-next 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 	}

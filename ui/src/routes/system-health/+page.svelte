@@ -7,6 +7,7 @@
 	import HealthPriorityCard from '$lib/components/HealthPriorityCard.svelte';
 	import MobileHealthOverview from '$lib/components/MobileHealthOverview.svelte';
 	import { useLivePeer } from '$lib/stream-peer-context';
+	import { useShellHealthPublisher } from '$lib/shell-health-context';
 	import type { LivePeerTrack } from '$lib/stream-peer.svelte';
 	import type {
 		CameraHealth,
@@ -71,6 +72,7 @@
 	const clientStatsSamples = new SvelteMap<string, ClientStatsSample>();
 	const livePeer = useLivePeer();
 	const controlClient = useControlClient();
+	const publishShellHealth = useShellHealthPublisher();
 
 	let recordingDisk = $derived(health?.system.disks.find((disk) => disk.stores_recordings) ?? null);
 	let memoryUsedPercent = $derived(
@@ -135,6 +137,7 @@
 			const next = await controlClient.getHealth();
 			if (version !== requestVersion) return;
 			health = next;
+			publishShellHealth(next);
 			error = null;
 		} catch (cause) {
 			if (version !== requestVersion) return;
@@ -360,7 +363,7 @@
 	<title>Health - KeepPeek</title>
 </svelte:head>
 
-<div class="mx-auto max-w-[120rem] space-y-6">
+<div class="mx-auto h-full min-h-0 w-full max-w-[120rem] overflow-y-auto md:overflow-hidden">
 	{#if health}
 		<MobileHealthOverview {health} />
 	{:else if loading}
@@ -378,8 +381,8 @@
 		</div>
 	{/if}
 
-	<div class="hidden space-y-6 md:block">
-		<header class="flex flex-wrap items-start gap-3">
+	<div class="hidden h-full min-h-0 flex-col gap-6 overflow-hidden md:flex">
+		<header class="flex shrink-0 flex-wrap items-start gap-3">
 			<div class="min-w-0">
 				<h1 class="text-xl font-semibold">Health</h1>
 				{#if health}
@@ -468,7 +471,7 @@
 					id="client-health-panel"
 					role="tabpanel"
 					aria-labelledby="client-health-tab"
-					class="space-y-6"
+					class="min-h-0 flex-1 space-y-6 overflow-y-auto"
 				>
 					<section aria-labelledby="client-connection-heading">
 						<div class="mb-3 flex items-center gap-2">
@@ -605,7 +608,7 @@
 					id="server-health-panel"
 					role="tabpanel"
 					aria-labelledby="server-health-tab"
-					class="flex flex-col gap-6"
+					class="min-h-0 flex-1 flex-col gap-6 overflow-y-auto"
 				>
 					{#if rankedFindings.length > 0}
 						<section aria-labelledby="issues-heading">

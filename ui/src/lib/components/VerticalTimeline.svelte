@@ -463,7 +463,7 @@
 		? 'h-[718px] w-[396px] shrink-0 border-l border-hairline [font-synthesis:none]'
 		: mobileFrame
 			? 'h-[434px] w-full shrink-0 border-y'
-			: 'h-[28rem] w-full rounded-md border lg:h-[calc(100svh-10.5rem)] lg:max-h-[52rem] lg:min-h-[32rem] lg:w-[24.75rem]'}"
+			: 'h-[28rem] w-full rounded-md border lg:h-[calc(100svh-10.5rem)] lg:max-h-[52rem] lg:min-h-[32rem]'}"
 	aria-label="Recording timeline"
 >
 	{#if paperFrame}

@@ -129,12 +129,27 @@ test('meets dense metadata-first DOM, transfer, and long-task budgets', async ({
 	await page.goto(`/events?date=${eventDate}`);
 	await expect(page.locator('[data-event-card]')).toHaveCount(18);
 	const firstPageMs = performance.now() - startedAt;
+	const viewGeometry = await page.evaluate(() => {
+		const main = document.querySelector<HTMLElement>('[data-shell-main]');
+		const results = document.querySelector<HTMLElement>('[data-event-results-scroll]');
+		if (!main || !results) throw new Error('Event results viewport is unavailable');
+		return {
+			mainClientHeight: main.clientHeight,
+			mainScrollHeight: main.scrollHeight,
+			resultsClientHeight: results.clientHeight,
+			resultsScrollHeight: results.scrollHeight
+		};
+	});
+	expect(viewGeometry.mainScrollHeight).toBeLessThanOrEqual(viewGeometry.mainClientHeight + 1);
+	expect(viewGeometry.resultsScrollHeight).toBeGreaterThan(viewGeometry.resultsClientHeight);
 
 	expect(requests.eventSearchQueries).toHaveLength(1);
 	expect(requests.eventSearchQueries[0]?.pageSize).toBe(18);
 	expect(requests.storedTimelineQueries).toHaveLength(0);
 	expect(requests.eventMediaFetches).toHaveLength(0);
-	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await page.locator('[data-event-results-scroll]').evaluate((element) => {
+		element.scrollTop = element.scrollHeight;
+	});
 	await expect(page.locator('[data-event-card]')).toHaveCount(18);
 	const metrics = await page.evaluate(() => {
 		const state = (
