@@ -1358,8 +1358,8 @@
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png",
-						"bytes": 37426,
-						"sha256": "ad9316660e6572005bd424625c97a251819e71d583fd3201ddac774f4b1721e3",
+						"bytes": 37423,
+						"sha256": "a97fe92d7783151d8379742d416f70ecde305a1ac9334d541cf3cf1f1450b5a3",
 						"approvedAt": "2026-08-30",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
@@ -1529,8 +1529,8 @@
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png",
-						"bytes": 9977,
-						"sha256": "9a7c5ed89d963039a5883f95f42c83fa82a9a8877112b652cbff2ed89387bbed",
+						"bytes": 9978,
+						"sha256": "d9df5deffcf00880c0ead49aa5b8056c525ab3042c4cefb38528697d09a9f5c3",
 						"approvedAt": "2026-08-30",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
@@ -1560,8 +1560,8 @@
 					},
 					"lokiReference": {
 						"source": "visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png",
-						"bytes": 7207,
-						"sha256": "37ce335fdc5517bd8c5de98796d6f034e5ca3c5af63a2257352e1aa84db5fc26",
+						"bytes": 7184,
+						"sha256": "353243f1de4363cf3d9d8f29d4d8f8d8eaa761b6e84d19f781d3df05df39648f",
 						"approvedAt": "2026-08-30",
 						"approvedBy": "GitHub Copilot",
 						"paperTokenHash": "cf3b1cd7",
