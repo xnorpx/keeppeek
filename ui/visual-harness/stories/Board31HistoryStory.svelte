@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import CameraIcon from '@lucide/svelte/icons/camera';
 	import HistoryIcon from '@lucide/svelte/icons/history';
+	import InfoIcon from '@lucide/svelte/icons/info';
 	import Undo2Icon from '@lucide/svelte/icons/undo-2';
 
 	type State = 'focused' | 'keep';
@@ -40,13 +42,26 @@
 			class="flex size-full flex-col justify-between rounded-[var(--radius-lg)] border border-hairline bg-video p-3"
 		>
 			<div class="flex items-center justify-between">
-				<div
-					class="flex h-[22px] shrink-0 items-center rounded-[var(--radius-xs)] bg-[#0C0D0FB8] px-2"
-				>
-					<span class="font-mono text-2xs tracking-[0.08em] text-foreground">PEEK / FRONT DOOR</span
-					>
-				</div>
 				<span class="font-mono text-2xs text-[#FFFFFFD1]">06:37:23</span>
+				<div data-live-video-camera-controls class="flex h-[22px] items-stretch">
+					<a
+						href="/camera?camera=front-door"
+						class="grid w-6 place-items-center rounded-l-[var(--radius-xs)] border border-r-0 border-white/10 bg-[#0C0D0FB8] text-white/55"
+						aria-label="Open Front Door camera"
+					>
+						<CameraIcon class="size-3" />
+					</a>
+					<button
+						type="button"
+						class="flex items-center gap-1.5 rounded-r-[var(--radius-xs)] border border-white/10 bg-[#0C0D0FB8] px-1.5 text-white/80"
+						aria-label="Front Door camera information"
+					>
+						<span class="size-[5px] rounded-full bg-healthy"></span>
+						<span class="text-[10px] font-medium">Front Door</span>
+						<span class="h-[11px] w-px bg-white/10"></span>
+						<InfoIcon class="size-3 text-white/55" />
+					</button>
+				</div>
 			</div>
 			<div class="flex h-[76px] w-full shrink-0 flex-col items-center justify-center gap-2">
 				<button

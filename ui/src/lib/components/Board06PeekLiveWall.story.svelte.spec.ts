@@ -24,22 +24,24 @@ describe('Board 6 Dashboard live wall story', () => {
 			[1374, 858]
 		]);
 		const main = frame!.children[1];
-		expect([...main.children].map(roundedSize)).toEqual([
-			[1374, 858],
-			[139, 32]
-		]);
 		const selector = frame!.querySelector<HTMLElement>('[data-peek-paper-context]');
 		const grid = frame!.querySelector<HTMLElement>('[data-peek-paper-grid]');
 		expect(selector).not.toBeNull();
 		expect(grid).not.toBeNull();
+		expect(roundedSize(selector!)[1]).toBe(32);
 		expect([...grid!.children].map(roundedSize)).toEqual([
 			[1358, 390],
 			[1358, 390],
 			[1358, 38]
 		]);
 		const selectorBounds = selector!.getBoundingClientRect();
+		const mainBounds = main.getBoundingClientRect();
 		const gridBounds = grid!.getBoundingClientRect();
-		expect(selectorBounds.left).toBeGreaterThan(gridBounds.left);
+		expect(
+			Math.abs(
+				selectorBounds.left + selectorBounds.width / 2 - (mainBounds.left + mainBounds.width / 2)
+			)
+		).toBeLessThanOrEqual(1);
 		expect(selectorBounds.top).toBeGreaterThan(gridBounds.top);
 		expect(selectorBounds.bottom).toBeLessThan(gridBounds.bottom);
 		const tiles = [...frame!.querySelectorAll<HTMLElement>('[data-peek-camera]')];
@@ -59,7 +61,8 @@ describe('Board 6 Dashboard live wall story', () => {
 		expect(frontDoorLabel).toBe(frontDoorDiagnostics);
 		expect(labelBounds.left).toBeGreaterThan(tileBounds.left + tileBounds.width / 2);
 		expect(labelBounds).toEqual(diagnosticsBounds);
-		expect(selector!.textContent?.replace(/\s+/g, ' ').trim()).toBe('PEEK All cameras');
+		expect(selector!.textContent?.replace(/\s+/g, ' ').trim()).toBe('All cameras');
+		expect(selector!.textContent).not.toContain('PEEK');
 		expect(frame!.querySelector('[data-peek-paper-fleet-runtime]')).toBeNull();
 		expect(frame!.querySelector('[data-peek-paper-status]')).toBeNull();
 		expect(frame!.textContent).not.toContain('last frame');

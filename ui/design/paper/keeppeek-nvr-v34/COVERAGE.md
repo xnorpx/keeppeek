@@ -59,10 +59,10 @@
 | `keep.desktop.calendar`          | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.calendar.png`          | Approved `e192953cc22df1ef212112ae3a2293db3acaeb387f316d1f867655ad42cced40` |
 | `keep.desktop.export-lifecycle`  | `visual-harness/.loki/reference/chrome.desktop/keep.desktop.export-lifecycle.png`  | Approved `c045aad78865f1d3a5c8ebb8dd862018d3609711898a80b49fd4bc0fe307349d` |
 | `keep.waiting.cold-seek`         | `visual-harness/.loki/reference/chrome.desktop/keep.waiting.cold-seek.png`         | Approved `85bcb594d11464d3f0c0a06fb525a85a8c2ce84c604288f794b3f7a20e13550b` |
-| `peek.desktop.focus-history`     | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png`     | Approved `9076662f9be6f12b30e49220037bc9a68338e0d16a23275cd4cc128ef5e36dbc` |
-| `peek.desktop.history-keep`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png`      | Approved `b8ead2f325d9b5712058377a55095ee38ed8e21cc4abb234c4f8bfdbfab4f5d7` |
+| `peek.desktop.focus-history`     | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.focus-history.png`     | Approved `9a7c5ed89d963039a5883f95f42c83fa82a9a8877112b652cbff2ed89387bbed` |
+| `peek.desktop.history-keep`      | `visual-harness/.loki/reference/chrome.desktop/peek.desktop.history-keep.png`      | Approved `37ce335fdc5517bd8c5de98796d6f034e5ca3c5af63a2257352e1aa84db5fc26` |
 | `peek.waiting.first-keyframe`    | `visual-harness/.loki/reference/chrome.desktop/peek.waiting.first-keyframe.png`    | Approved `b41263a3034f5e4943a67825053acae19b6bc13d086ae187215ad70e51595e7f` |
-| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `8bebaa5aef87bf79e1048c723dac69bd9e5bff4fa1a917181c5c48fc05909a08` |
+| `settings.mobile.administration` | `visual-harness/.loki/reference/chrome.mobile/settings.mobile.administration.png`  | Approved `ad9316660e6572005bd424625c97a251819e71d583fd3201ddac774f4b1721e3` |
 | `settings.waiting.applying`      | `visual-harness/.loki/reference/chrome.desktop/settings.waiting.applying.png`      | Approved `21053c2823fc72bd151e5dab22cbd8c49372e495f3b8ffb89907a4e4b3fa6509` |
 
 ## Deliberate Capability Gates

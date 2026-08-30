@@ -39,7 +39,17 @@ describe('Board 34 light-theme Dashboard story', () => {
 		]);
 		const selector = container.querySelector<HTMLElement>('[data-peek-dashboard-switcher]');
 		expect(selector).not.toBeNull();
-		expect(selector!.textContent?.replace(/\s+/g, ' ').trim()).toBe('PEEK All cameras');
+		expect(selector!.textContent?.replace(/\s+/g, ' ').trim()).toBe('All cameras');
+		expect(selector!.textContent).not.toContain('PEEK');
+		const selectorBounds = selector!.getBoundingClientRect();
+		const dashboardBounds = selector!.parentElement!.getBoundingClientRect();
+		expect(
+			Math.abs(
+				selectorBounds.left +
+					selectorBounds.width / 2 -
+					(dashboardBounds.left + dashboardBounds.width / 2)
+			)
+		).toBeLessThanOrEqual(1);
 		await expect
 			.element(page.getByRole('link', { name: 'Dashboard' }))
 			.toHaveAttribute('aria-current', 'page');

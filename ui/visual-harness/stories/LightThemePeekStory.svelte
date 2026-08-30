@@ -3,6 +3,7 @@
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import BellIcon from '@lucide/svelte/icons/bell';
 	import CameraIcon from '@lucide/svelte/icons/camera';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import EyeIcon from '@lucide/svelte/icons/eye';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
@@ -207,15 +208,14 @@
 
 		<header
 			data-peek-dashboard-switcher
-			class="absolute top-3 left-3 z-30 flex h-8 items-center overflow-hidden rounded-sm border border-hairline-strong bg-surface/90 shadow-md backdrop-blur-md"
+			class="absolute top-3 left-1/2 z-30 flex h-8 -translate-x-1/2 items-center overflow-hidden rounded-sm border border-hairline-strong bg-surface/90 shadow-md backdrop-blur-md"
 		>
-			<h1
-				class="flex h-full items-center border-r border-hairline px-2 font-mono text-[9px] font-semibold text-text-faint"
+			<button
+				type="button"
+				class="inline-flex h-full shrink-0 items-center gap-2 px-2.5 text-xs font-medium text-foreground"
+				aria-label="Choose dashboard, All cameras"
 			>
-				PEEK
-			</h1>
-			<button type="button" class="h-full shrink-0 px-2.5 text-xs font-medium text-foreground">
-				All cameras
+				All cameras<ChevronDownIcon class="size-3.5 text-text-faint" />
 			</button>
 		</header>
 	</div>

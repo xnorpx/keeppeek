@@ -8,7 +8,7 @@
 		CameraListItem,
 		StreamHealthDimensions
 	} from '$lib/types';
-	import Grid2X2Icon from '@lucide/svelte/icons/grid-2x2';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	setLivePeer();
 
@@ -174,18 +174,14 @@
 
 		<header
 			data-peek-paper-context
-			class="absolute top-3 left-3 z-30 flex h-8 items-center overflow-hidden rounded-sm bg-video/70 text-white shadow-md ring-1 ring-white/10 backdrop-blur-md"
+			class="absolute top-3 left-1/2 z-30 flex h-8 -translate-x-1/2 items-center overflow-hidden rounded-sm bg-video/70 text-white shadow-md ring-1 ring-white/10 backdrop-blur-md"
 		>
-			<h1
-				class="flex h-full items-center border-r border-white/10 px-2 font-mono text-[9px] font-semibold text-white/55"
-			>
-				PEEK
-			</h1>
 			<button
 				type="button"
 				class="inline-flex h-full items-center gap-2 px-2.5 text-xs font-medium text-white/90"
+				aria-label="Choose dashboard, All cameras"
 			>
-				<Grid2X2Icon class="size-3.5 text-white/55" />All cameras
+				All cameras<ChevronDownIcon class="size-3.5 text-white/55" />
 			</button>
 		</header>
 	</section>
