@@ -469,6 +469,17 @@ test('Board 15 shows comprehensive server health and camera outages', async ({ p
 	await expect(page.getByRole('heading', { name: 'Process and host' })).toHaveCount(0);
 	await serverTab.click();
 	await expect(page.getByText('degraded', { exact: true })).toBeVisible();
+	const shellGeometry = await page.locator('[data-shell-main]').evaluate((element) => ({
+		clientHeight: element.clientHeight,
+		scrollHeight: element.scrollHeight
+	}));
+	expect(shellGeometry.scrollHeight).toBeLessThanOrEqual(shellGeometry.clientHeight + 1);
+	const serverPanel = page.locator('#server-health-panel');
+	const panelGeometry = await serverPanel.evaluate((element) => ({
+		clientHeight: element.clientHeight,
+		scrollHeight: element.scrollHeight
+	}));
+	expect(panelGeometry.scrollHeight).toBeGreaterThan(panelGeometry.clientHeight);
 	const summary = page.getByRole('region', { name: 'Health summary' });
 	const findings = page.locator('section').filter({
 		has: page.getByRole('heading', { name: 'Current findings' })
@@ -697,9 +708,8 @@ test('uses one canonical stale fixture across every health surface', async ({ pa
 	const peekTile = page.locator('[data-peek-camera="front-door"]');
 	await expect(peekTile).toHaveAttribute('data-peek-camera-state', 'stale');
 	await expect(peekTile).toContainText('STALE — Video frames are not arriving');
-	await expect(page.locator('[data-peek-fleet-status]')).toContainText(
-		'1 configured · 1 connected · 0 fresh · 0 decodable · 0/0 recording'
-	);
+	await expect(page.locator('[data-shell-status-indicator="cameras"]')).toHaveText('1/1');
+	await expect(page.locator('[data-shell-status-indicator="recording"]')).toHaveText('0/0');
 
 	await page.goto('/cameras');
 	const fleetRow = page.locator('[data-fleet-row="front-door"]');

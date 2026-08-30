@@ -1531,7 +1531,7 @@ impl BcSession {
                     // Subsequent messages carry raw continuation bytes (no header).
                     let data_start = body_start + header_total;
                     let data_avail = available_after_header;
-                    let mut data = Vec::with_capacity(data_len as usize);
+                    let mut data = Vec::with_capacity(data_avail);
                     data.extend_from_slice(&self.recv_buf[data_start..data_start + data_avail]);
 
                     self.video_accums.insert(
@@ -1772,7 +1772,7 @@ impl BcSession {
                         codec,
                         microseconds,
                         expected_data_len: data_len as usize,
-                        data: Vec::with_capacity(data_len as usize),
+                        data: Vec::new(),
                     },
                 );
                 self.stats.video_accum_started += 1;
@@ -1968,15 +1968,6 @@ impl BcSession {
             } else {
                 self.stats.pending_drops += 1;
             }
-        }
-
-        // Safety: cap accumulation to prevent unbounded growth from corrupt data
-        if self
-            .video_accums
-            .get(&accum_key)
-            .is_some_and(|a| a.data.len() > 2 * 1024 * 1024)
-        {
-            self.video_accums.remove(&accum_key);
         }
 
         Ok(())
@@ -3519,7 +3510,6 @@ mod tests {
         session.dispatch_stream(0, split, 1, None).unwrap();
         assert_eq!(session.stats().split_headers, 1);
         assert!(session.video_accums.is_empty());
-
         let rest = &frame[split..];
         let offset = 256;
         session.recv_buf[offset..offset + rest.len()].copy_from_slice(rest);
@@ -3539,6 +3529,51 @@ mod tests {
             other => panic!("expected frame with split header, got {other:?}"),
         }
         assert_eq!(header_total, 104);
+    }
+
+    #[test]
+    fn multimegabyte_high_resolution_frame_is_reassembled() {
+        let now = Instant::now();
+        let mut session = BcSession::default_client(now);
+        let frame_len = 2_292_974_usize;
+        let chunk_len = 64 * 1024;
+        let initial_payload = vec![0xAB; chunk_len];
+        let first = video_body(
+            crate::media::MEDIA_MAGIC_IFRAME_BASE,
+            b"H265",
+            &initial_payload,
+            frame_len as u32,
+        );
+
+        session.recv_buf[..first.len()].copy_from_slice(&first);
+        session.dispatch_stream(0, first.len(), 1, None).unwrap();
+        assert!(session.video_accums[&1].data.capacity() < frame_len);
+
+        let mut received = chunk_len;
+        while received < frame_len {
+            let next_len = chunk_len.min(frame_len - received);
+            session.recv_buf[..next_len].fill(0xAB);
+            session.dispatch_stream(0, next_len, 1, None).unwrap();
+            received += next_len;
+        }
+
+        let mut output = vec![0; crate::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
+        assert!(matches!(
+            session.poll_output(&mut output),
+            Err(BcError::BufferTooSmall { needed, available })
+                if needed == frame_len && available == crate::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE
+        ));
+        output.resize(frame_len, 0);
+        match session.poll_output(&mut output).unwrap() {
+            Output::Event(Event::VideoFrame {
+                data, is_keyframe, ..
+            }) => {
+                assert!(is_keyframe);
+                assert_eq!(data.len(), frame_len);
+                assert!(data.iter().all(|byte| *byte == 0xAB));
+            }
+            other => panic!("expected reassembled high-resolution frame, got {other:?}"),
+        }
     }
 
     #[test]

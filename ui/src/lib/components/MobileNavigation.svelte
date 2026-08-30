@@ -3,8 +3,9 @@
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import BellIcon from '@lucide/svelte/icons/bell';
 	import ClockIcon from '@lucide/svelte/icons/clock-3';
+	import EyeIcon from '@lucide/svelte/icons/eye';
+	import LayoutDashboardIcon from '@lucide/svelte/icons/layout-dashboard';
 	import MoreHorizontalIcon from '@lucide/svelte/icons/ellipsis';
-	import VideoIcon from '@lucide/svelte/icons/video';
 
 	type Props = {
 		pathname: string;
@@ -15,7 +16,20 @@
 	let { pathname, administrator = true, fixed = true }: Props = $props();
 
 	const allItems = [
-		{ href: resolve('/'), label: 'Peek', icon: VideoIcon, paths: ['/'], administrator: false },
+		{
+			href: resolve('/'),
+			label: 'Dashboard',
+			icon: LayoutDashboardIcon,
+			paths: ['/'],
+			administrator: false
+		},
+		{
+			href: resolve('/viewer'),
+			label: 'Viewer',
+			icon: EyeIcon,
+			paths: ['/viewer'],
+			administrator: false
+		},
 		{
 			href: resolve('/keep'),
 			label: 'Keep',
@@ -59,8 +73,8 @@
 	class="{fixed
 		? 'fixed inset-x-0 bottom-0 z-50'
 		: 'relative'} grid h-[78px] shrink-0 {administrator
-		? 'grid-cols-5'
-		: 'grid-cols-3'} border-t border-sidebar-border bg-sidebar pt-2.5 pb-6 text-sidebar-foreground md:hidden"
+		? 'grid-cols-6'
+		: 'grid-cols-4'} border-t border-sidebar-border bg-sidebar pt-2.5 pb-6 text-sidebar-foreground md:hidden"
 	aria-label="Primary navigation"
 >
 	{#each items as item (item.href)}

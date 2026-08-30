@@ -25,7 +25,12 @@ describe('Board 31 Focus to Keep history stories', () => {
 		const buttonBounds = button!.getBoundingClientRect();
 		expect(buttonBounds.right).toBeLessThanOrEqual(bounds.x + bounds.width);
 		await expect.element(page.getByText('HISTORY', { exact: true })).toBeVisible();
-		await expect.element(page.getByText('Front Door', { exact: true })).toBeVisible();
+		await expect.element(page.getByRole('link', { name: 'Open Front Door camera' })).toBeVisible();
+		await expect
+			.element(page.getByRole('button', { name: 'Front Door camera information' }))
+			.toBeVisible();
+		expect(container.textContent).not.toContain('PEEK');
+		expect(container.querySelectorAll('[data-focus-filmstrip] > span')).toHaveLength(3);
 		expect(container.textContent).not.toContain('Drag down');
 		expect(container.textContent).not.toContain('SUB ·');
 	});
@@ -34,7 +39,7 @@ describe('Board 31 Focus to Keep history stories', () => {
 		const { container } = await renderState('keep');
 		const keep = container.querySelector<HTMLElement>('[data-history-keep]');
 		expect(keep).not.toBeNull();
-		await expect.element(page.getByText('From Focus · Front Door', { exact: true })).toBeVisible();
+		await expect.element(page.getByText('From Viewer · Front Door', { exact: true })).toBeVisible();
 		await expect.element(page.getByText('LIVE', { exact: true })).toBeVisible();
 	});
 });

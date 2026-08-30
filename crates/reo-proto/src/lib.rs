@@ -54,8 +54,18 @@ pub const TCP_SEND_BUF_SIZE: usize = 64 * 1024;
 /// Maximum XML body size (8 KiB).
 pub const MAX_XML_BODY: usize = 8 * 1024;
 
-/// Maximum single media frame size (256 KiB).
-pub const MAX_MEDIA_FRAME: usize = 256 * 1024;
+/// Initial caller-owned output buffer size for media events (256 KiB).
+///
+/// `BcSession::poll_output` reports `BufferTooSmall` without consuming an event,
+/// so callers can grow this buffer when a larger frame arrives.
+pub const DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE: usize = 256 * 1024;
+
+/// Maximum encoded video frame size accepted from a camera (4 MiB).
+///
+/// Physical-camera recordings contain encoded frames up to 2,292,974 bytes.
+/// This bound uses the next binary size boundary and prevents unbounded
+/// allocation from a camera-declared frame length.
+pub const MAX_MEDIA_FRAME: usize = 4 * 1024 * 1024;
 
 /// Maximum JPEG snapshot size accepted from a camera (16 MiB).
 ///

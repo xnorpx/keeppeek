@@ -42,7 +42,7 @@
 
 <section
 	data-recording-camera-detail
-	class="min-w-0 border-t border-hairline bg-surface xl:border-t-0 xl:border-l"
+	class="min-w-0 border-t border-hairline bg-surface xl:h-full xl:min-h-0 xl:overflow-y-auto xl:border-t-0 xl:border-l"
 	aria-labelledby="recording-camera-heading"
 >
 	<header class="flex min-h-16 items-center gap-3 border-b border-hairline px-4 py-3">

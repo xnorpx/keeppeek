@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import type { GridTileVisibility } from '$lib/grid-visibility';
 	import type { CameraHealth, CameraListItem } from '$lib/types';
 	import {
 		addPeekLayoutCamera,
@@ -7,18 +8,23 @@
 		createPeekLayoutDraft,
 		movePeekLayoutItem,
 		peekLayoutPresets,
+		removePeekLayoutCamera,
 		resizePeekLayoutItem,
 		setPeekLayoutActivityFocus,
 		setPeekLayoutPinned,
 		type PeekLayoutDraft,
 		type PeekLayoutItem,
-		type PeekLayoutPreset
+		type PeekLayoutPreset,
+		type PeekLayout,
+		peekLayoutDraft
 	} from '$lib/peek-layout';
+	import CameraOffIcon from '@lucide/svelte/icons/camera-off';
 	import GripVerticalIcon from '@lucide/svelte/icons/grip-vertical';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PinIcon from '@lucide/svelte/icons/pin';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import Undo2Icon from '@lucide/svelte/icons/undo-2';
 	import XIcon from '@lucide/svelte/icons/x';
 	import PeekCameraTile from './PeekCameraTile.svelte';
@@ -28,6 +34,12 @@
 		healthById: ReadonlyMap<string, CameraHealth>;
 		streamFor: (camera: CameraListItem) => 'main' | 'sub';
 		ondiscard: () => void;
+		layout?: PeekLayout | null;
+		persistenceAvailable?: boolean;
+		saving?: boolean;
+		saveError?: string | null;
+		onsave?: (draft: PeekLayoutDraft) => void | Promise<void>;
+		onvisibilitychange?: (visibility: GridTileVisibility) => void;
 		paperFrame?: boolean;
 	};
 
@@ -51,9 +63,23 @@
 		draft: PeekLayoutDraft;
 	};
 
-	let { cameras, healthById, streamFor, ondiscard, paperFrame = false }: Props = $props();
+	let {
+		cameras,
+		healthById,
+		streamFor,
+		ondiscard,
+		layout = null,
+		persistenceAvailable = false,
+		saving = false,
+		saveError = null,
+		onsave,
+		onvisibilitychange,
+		paperFrame = false
+	}: Props = $props();
 	const cameraIds = untrack(() => cameras.map((camera) => camera.id));
-	const initialDraft = createPeekLayoutDraft(cameraIds.slice(0, 3));
+	const initialDraft = untrack(() =>
+		layout === null ? createPeekLayoutDraft(cameraIds.slice(0, 3)) : peekLayoutDraft(layout)
+	);
 	const gridGuides = Array.from({ length: 12 }, (_, index) => index);
 
 	let canvasElement = $state<HTMLElement | null>(null);
@@ -77,6 +103,9 @@
 		draft.items.find((item) => item.cameraId === selectedCameraId) ?? null
 	);
 	let selectedCamera = $derived(cameras.find((camera) => camera.id === selectedCameraId) ?? null);
+	let canSave = $derived(
+		persistenceAvailable && onsave !== undefined && !saving && history.length > 0
+	);
 
 	function cameraLabel(camera: CameraListItem): string {
 		return camera.name ?? camera.id;
@@ -118,6 +147,13 @@
 		if (next === draft) return;
 		record(next);
 		selectedCameraId = cameraId;
+	}
+
+	function removeSelectedCamera(): void {
+		if (selectedItem === null) return;
+		const next = removePeekLayoutCamera(draft, selectedItem.cameraId);
+		record(next);
+		selectedCameraId = next.items[0]?.cameraId ?? null;
 	}
 
 	function toggleActivityFocus(): void {
@@ -252,6 +288,11 @@
 			)
 		);
 	}
+
+	function save(): void {
+		if (!canSave || onsave === undefined) return;
+		void onsave(draft);
+	}
 </script>
 
 <section
@@ -260,7 +301,7 @@
 	class="overflow-hidden {paperFrame
 		? 'h-[838px] w-[1374px] shrink-0 bg-ground [font-synthesis:none]'
 		: 'rounded-lg border border-hairline bg-surface'}"
-	aria-label="Edit Front of house layout"
+	aria-label={`Edit ${layout?.name ?? 'Front of house'} layout`}
 >
 	<header
 		class="flex items-center border-b border-primary bg-primary-deep text-on-primary {paperFrame
@@ -268,7 +309,7 @@
 			: 'min-h-14 flex-wrap gap-3 px-4 py-2'}"
 	>
 		<PencilIcon class="size-4 shrink-0" strokeWidth={2} />
-		<h2 class="text-sm font-semibold">Editing “Front of house”</h2>
+		<h2 class="text-sm font-semibold">Editing “{layout?.name ?? 'Front of house'}”</h2>
 		<span class="rounded-full bg-white/10 px-2.5 py-1 font-mono text-2xs tracking-caps">
 			12-COL SNAP
 		</span>
@@ -294,17 +335,28 @@
 			{#if !paperFrame}<XIcon class="size-3.5" />{/if}
 			Discard
 		</button>
-		{#if paperFrame}
-			<button
-				type="button"
-				class="h-7 rounded-sm bg-on-primary px-[13px] text-xs font-semibold text-primary-deep opacity-55"
-				disabled
-				title="Server layout persistence is unavailable"
-			>
-				Done
-			</button>
-		{/if}
+		<button
+			type="button"
+			class="rounded-sm bg-on-primary px-[13px] text-xs font-semibold text-primary-deep focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-55 {paperFrame
+				? 'h-7'
+				: 'h-8'}"
+			disabled={!canSave}
+			title={!persistenceAvailable ? 'Server layout persistence is unavailable' : undefined}
+			aria-busy={saving}
+			aria-live="polite"
+			onclick={save}
+		>
+			{saving ? 'Saving…' : 'Done'}
+		</button>
 	</header>
+	{#if saveError}
+		<p
+			class="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive"
+			role="alert"
+		>
+			{saveError}
+		</p>
+	{/if}
 
 	<div
 		data-peek-layout-body
@@ -340,19 +392,19 @@
 
 			{#each draft.items as item (item.cameraId)}
 				{@const camera = cameras.find((candidate) => candidate.id === item.cameraId)}
-				{#if camera}
-					<div
-						data-peek-layout-item={item.cameraId}
-						data-layout-column={item.column}
-						data-layout-row={item.row}
-						data-layout-column-span={item.columnSpan}
-						data-layout-row-span={item.rowSpan}
-						class="relative z-10 min-h-0 min-w-0 touch-none select-none"
-						style:grid-column={paperFrame
-							? paperGridColumn(item)
-							: `${item.column} / span ${item.columnSpan}`}
-						style:grid-row={paperFrame ? paperGridRow(item) : `${item.row} / span ${item.rowSpan}`}
-					>
+				<div
+					data-peek-layout-item={item.cameraId}
+					data-layout-column={item.column}
+					data-layout-row={item.row}
+					data-layout-column-span={item.columnSpan}
+					data-layout-row-span={item.rowSpan}
+					class="relative z-10 min-h-0 min-w-0 touch-none select-none"
+					style:grid-column={paperFrame
+						? paperGridColumn(item)
+						: `${item.column} / span ${item.columnSpan}`}
+					style:grid-row={paperFrame ? paperGridRow(item) : `${item.row} / span ${item.rowSpan}`}
+				>
+					{#if camera}
 						<PeekCameraTile
 							{camera}
 							health={healthById.get(camera.id) ?? null}
@@ -367,38 +419,66 @@
 							onlayoutpointercancel={cancelDrag}
 							onlayoutlostpointercapture={cancelDrag}
 							onlayoutkeydown={(event) => nudge(event, item)}
+							{onvisibilitychange}
 						/>
-						{#if selectedCameraId === item.cameraId}
-							<div
-								class="pointer-events-none absolute inset-0 z-30 grid place-items-center rounded-lg"
-							>
-								{#if paperFrame}
-									<span
-										class="flex flex-col gap-2 text-center font-mono text-[11px] leading-[14px] tracking-caps text-white/45"
-									>
-										<span>SELECTED · DRAG TO MOVE · HANDLES TO RESIZE</span>
-										<span class="tracking-[0.1em]">ARROW KEYS NUDGE ONE COLUMN</span>
-									</span>
-								{:else}
-									<span
-										class="rounded-sm bg-video/75 px-2.5 py-1.5 text-center font-mono text-2xs tracking-caps text-white/70"
-									>
-										SELECTED · DRAG TO MOVE · CORNER TO RESIZE
-									</span>
-								{/if}
-							</div>
-							<span
-								class="pointer-events-none absolute -top-1 -left-1 z-40 size-2.5 rounded-[2px] border-2 border-ground bg-primary"
-							></span>
-							<span
-								class="pointer-events-none absolute -top-1 -right-1 z-40 size-2.5 rounded-[2px] border-2 border-ground bg-primary"
-							></span>
-							<span
-								class="pointer-events-none absolute -bottom-1 -left-1 z-40 size-2.5 rounded-[2px] border-2 border-ground bg-primary"
-							></span>
+					{:else}
+						<button
+							type="button"
+							data-peek-missing-camera={item.cameraId}
+							class="grid size-full place-items-center rounded-lg border border-dashed border-hairline-strong bg-surface p-3 text-center focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							aria-label={`Select unavailable camera ${item.cameraId} layout tile`}
+							aria-pressed={selectedCameraId === item.cameraId}
+							onclick={() => (selectedCameraId = item.cameraId)}
+							onkeydown={(event) => nudge(event, item)}
+						>
+							<span class="space-y-1">
+								<CameraOffIcon class="mx-auto size-5 text-text-faint" />
+								<span class="block text-xs font-medium">Camera unavailable</span>
+								<span class="block font-mono text-2xs text-text-muted">{item.cameraId}</span>
+							</span>
+						</button>
+					{/if}
+					{#if selectedCameraId === item.cameraId}
+						<div
+							data-peek-layout-selection-hint
+							class="pointer-events-none absolute inset-0 z-30 rounded-lg {paperFrame
+								? 'grid place-items-center'
+								: 'flex items-end justify-center pb-10'}"
+						>
+							{#if camera === undefined}
+								<span
+									class="rounded-sm bg-video/75 px-2.5 py-1.5 text-center font-mono text-2xs tracking-caps text-white/70"
+								>
+									MISSING · KEEP OR REMOVE
+								</span>
+							{:else if paperFrame}
+								<span
+									class="flex flex-col gap-2 text-center font-mono text-[11px] leading-[14px] tracking-caps text-white/45"
+								>
+									<span>SELECTED · DRAG TO MOVE · HANDLES TO RESIZE</span>
+									<span class="tracking-[0.1em]">ARROW KEYS NUDGE ONE COLUMN</span>
+								</span>
+							{:else}
+								<span
+									class="rounded-sm bg-video/75 px-2.5 py-1.5 text-center font-mono text-2xs tracking-caps text-white/70"
+								>
+									SELECTED · DRAG TO MOVE · CORNER TO RESIZE
+								</span>
+							{/if}
+						</div>
+						<span
+							class="pointer-events-none absolute -top-1 -left-1 z-40 size-2.5 rounded-[2px] border-2 border-ground bg-primary"
+						></span>
+						<span
+							class="pointer-events-none absolute -top-1 -right-1 z-40 size-2.5 rounded-[2px] border-2 border-ground bg-primary"
+						></span>
+						<span
+							class="pointer-events-none absolute -bottom-1 -left-1 z-40 size-2.5 rounded-[2px] border-2 border-ground bg-primary"
+						></span>
+						{#if camera}
 							<button
 								type="button"
-								class="absolute -right-3 -bottom-3 z-40 grid size-6 cursor-nwse-resize place-items-center rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+								class="absolute -right-5 -bottom-5 z-40 grid size-10 cursor-nwse-resize touch-none place-items-center rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 								aria-label={`Resize ${cameraLabel(camera)} layout tile`}
 								title="Drag or use arrow keys to resize"
 								onpointerdown={(event) => beginResize(event, item)}
@@ -411,8 +491,8 @@
 								<span class="size-2.5 rounded-[2px] border-2 border-ground bg-primary"></span>
 							</button>
 						{/if}
-					</div>
-				{/if}
+					{/if}
+				</div>
 			{/each}
 		</div>
 
@@ -458,30 +538,45 @@
 						onclick={toggleActivityFocus}
 					>
 						<span
-							class="absolute top-[3px] size-4 rounded-full bg-on-primary transition-transform {draft.activityFocus
+							class="absolute top-[3px] left-0 size-4 rounded-full bg-on-primary transition-transform {draft.activityFocus
 								? 'translate-x-[19px]'
 								: 'translate-x-[3px]'}"
 						></span>
 					</button>
 				</div>
-				{#if selectedCamera && selectedItem}
-					<button
-						type="button"
-						class="flex w-full items-center gap-2.5 rounded-md border border-hairline bg-raised px-3 py-2.5 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-						aria-pressed={selectedItem.pinned}
-						onclick={toggleSelectedPin}
-					>
-						<PinIcon class="size-3.5 shrink-0 text-primary-soft" />
-						<span class="min-w-0 flex-1">
-							<span class="block truncate text-xs font-medium">
-								{cameraLabel(selectedCamera)}
-								{selectedItem.pinned ? 'is pinned' : 'can be promoted'}
+				{#if selectedItem}
+					{#if selectedCamera}
+						<button
+							type="button"
+							class="flex w-full items-center gap-2.5 rounded-md border border-hairline bg-raised px-3 py-2.5 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							aria-pressed={selectedItem.pinned}
+							onclick={toggleSelectedPin}
+						>
+							<PinIcon class="size-3.5 shrink-0 text-primary-soft" />
+							<span class="min-w-0 flex-1">
+								<span class="block truncate text-xs font-medium">
+									{cameraLabel(selectedCamera)}
+									{selectedItem.pinned ? 'is pinned' : 'can be promoted'}
+								</span>
+								<span class="block text-2xs text-text-muted">
+									{selectedItem.pinned
+										? 'Never demoted, whatever moves'
+										: 'Pin this camera in place'}
+								</span>
 							</span>
-							<span class="block text-2xs text-text-muted">
-								{selectedItem.pinned ? 'Never demoted, whatever moves' : 'Pin this camera in place'}
-							</span>
-						</span>
-					</button>
+						</button>
+					{:else}
+						<p class="truncate font-mono text-2xs text-text-muted">{selectedItem.cameraId}</p>
+					{/if}
+					{#if !paperFrame}
+						<button
+							type="button"
+							class="flex h-8 w-full items-center justify-center gap-1.5 rounded-sm border border-destructive/40 text-xs font-medium text-destructive hover:bg-destructive/10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							onclick={removeSelectedCamera}
+						>
+							<Trash2Icon class="size-3.5" />Remove from layout
+						</button>
+					{/if}
 				{/if}
 			</div>
 

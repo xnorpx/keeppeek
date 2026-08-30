@@ -51,7 +51,7 @@
 	data-paper-scenario="peek.desktop.layout-editor"
 	class="flex h-[840px] w-[1440px] shrink-0 overflow-hidden rounded-lg border border-hairline bg-ground [font-synthesis:none]"
 >
-	<DesktopPaperRail active="peek" paperCompact />
+	<DesktopPaperRail active="settings" paperCompact />
 	<PeekLayoutEditor
 		{cameras}
 		{healthById}

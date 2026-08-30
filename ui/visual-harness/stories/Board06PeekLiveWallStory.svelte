@@ -8,9 +8,7 @@
 		CameraListItem,
 		StreamHealthDimensions
 	} from '$lib/types';
-	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
-	import Grid2X2Icon from '@lucide/svelte/icons/grid-2x2';
-	import SearchIcon from '@lucide/svelte/icons/search';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 
 	setLivePeer();
 
@@ -131,76 +129,14 @@
 	data-paper-scenario="peek.desktop.live-wall"
 	class="flex h-[860px] w-[1440px] shrink-0 overflow-hidden rounded-lg border border-hairline bg-ground [font-synthesis:none]"
 >
-	<DesktopPaperRail active="peek" paperFull />
+	<DesktopPaperRail active="dashboard" paperFull />
 
-	<section class="flex h-[858px] w-[1374px] shrink-0 flex-col" aria-label="Peek live wall">
-		<header
-			data-peek-paper-context
-			class="flex h-[52px] w-[1374px] shrink-0 items-center gap-3.5 border-b border-hairline px-5"
-		>
-			<h1 class="text-base leading-5 font-semibold">Peek</h1>
-			<span class="text-[13px] leading-4 text-text-muted">Live view</span>
-			<span class="h-4 w-px bg-hairline"></span>
-			<button
-				type="button"
-				class="inline-flex h-7 items-center gap-[7px] rounded-sm border border-hairline-strong bg-raised px-[11px] text-[13px]"
-			>
-				<Grid2X2Icon class="size-[13px] text-text-muted" />Front of house<ChevronRightIcon
-					class="size-3 rotate-90 text-text-faint"
-				/>
-			</button>
-			<div
-				data-peek-paper-fleet-runtime
-				class="ml-auto flex min-w-0 items-center justify-end gap-3 whitespace-nowrap"
-			>
-				<span
-					class="flex items-center gap-[7px] text-[11px] leading-[14px] font-semibold tracking-[0.04em]"
-					><span class="size-1.5 rounded-full bg-activity"></span>6 CONFIG · 5 LINK · 4 FRESH · 4
-					DECODE · 4/6 REC</span
-				>
-				<span class="h-3.5 w-px bg-hairline"></span>
-				<span class="flex items-baseline gap-1.5"
-					><span class="font-mono text-[10px] leading-[14px] tracking-[0.08em] text-text-faint"
-						>HOST</span
-					><span class="font-mono text-[11px] leading-[14px] text-text-muted"
-						>CPU 34% RAM 6.1/32 GB</span
-					></span
-				>
-				<span class="h-3.5 w-px bg-hairline"></span>
-				<span class="flex items-baseline gap-1.5"
-					><span class="font-mono text-[10px] leading-[14px] tracking-[0.08em] text-text-faint"
-						>KEEPPEEK</span
-					><span class="font-mono text-[11px] leading-[14px] text-text-muted"
-						>CPU 4% RAM 0.3 GB</span
-					></span
-				>
-			</div>
-			<label
-				class="flex h-[34px] w-[210px] items-center gap-2 rounded-sm border border-hairline bg-raised px-[11px] text-text-faint"
-			>
-				<SearchIcon class="size-[13px]" /><input
-					type="search"
-					aria-label="Search cameras"
-					placeholder="Search cameras"
-					class="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-text-faint"
-				/><kbd class="rounded-xs bg-surface px-[5px] py-0.5 font-mono text-[10px]">⌘K</kbd>
-			</label>
-			<span
-				class="rounded-sm border border-hairline bg-raised px-[11px] py-[5px] font-mono text-[11px] tracking-[0.08em] text-text-muted"
-				>AUTO</span
-			>
-			<button
-				type="button"
-				class="grid size-[30px] place-items-center rounded-sm border border-hairline bg-raised"
-				aria-label="Edit layout"><Grid2X2Icon class="size-[15px] text-text-muted" /></button
-			>
-		</header>
-
-		<div data-peek-paper-grid class="flex h-[774px] w-[1374px] shrink-0 flex-col gap-3 p-4">
+	<section class="relative h-[858px] w-[1374px] shrink-0" aria-label="Dashboard live wall">
+		<div data-peek-paper-grid class="absolute inset-0 flex flex-col gap-3 p-2">
 			{#each [0, 1] as row (row)}
-				<div data-peek-paper-row={row + 1} class="flex h-[340px] w-[1342px] shrink-0 gap-3">
+				<div data-peek-paper-row={row + 1} class="flex h-[390px] w-[1358px] shrink-0 gap-3">
 					{#each cameras.slice(row * 3, row * 3 + 3) as camera (camera.id)}
-						<div class="h-[340px] min-w-0 flex-1">
+						<div class="h-[390px] min-w-0 flex-1">
 							<PeekCameraTile
 								{camera}
 								health={healthById.get(camera.id)}
@@ -216,7 +152,7 @@
 			{/each}
 			<div
 				data-peek-paper-overflow
-				class="flex h-[38px] w-[1342px] shrink-0 items-center gap-3 pt-1"
+				class="flex h-[38px] w-[1358px] shrink-0 items-center gap-3 pt-1"
 			>
 				<span class="shrink-0 font-mono text-[11px] leading-[14px] tracking-[0.1em] text-text-faint"
 					>6 OF 6</span
@@ -236,20 +172,17 @@
 			</div>
 		</div>
 
-		<footer
-			data-peek-paper-status
-			class="flex h-8 w-[1374px] shrink-0 items-center gap-[18px] border-t border-hairline bg-surface px-4"
+		<header
+			data-peek-paper-context
+			class="absolute top-3 left-1/2 z-30 flex h-8 -translate-x-1/2 items-center overflow-hidden rounded-sm bg-video/70 text-white shadow-md ring-1 ring-white/10 backdrop-blur-md"
 		>
-			<span class="flex items-center gap-[7px] text-[13px]"
-				><span class="size-1.5 rounded-full bg-activity"></span>1 camera offline · 1 degraded</span
+			<button
+				type="button"
+				class="inline-flex h-full items-center gap-2 px-2.5 text-xs font-medium text-white/90"
+				aria-label="Choose dashboard, All cameras"
 			>
-			<span class="h-3.5 w-px bg-hairline"></span>
-			<span class="font-mono text-[11px] text-text-muted">STORAGE 71% · 12D PROJECTED</span>
-			<span class="flex-1"></span>
-			<span class="font-mono text-[11px] text-text-muted">RX 18.4 Mb/s</span>
-			<span class="flex items-center gap-[7px] text-[13px] text-text-muted"
-				><span class="size-1.5 rounded-full bg-healthy"></span>Recorder healthy</span
-			>
-		</footer>
+				All cameras<ChevronDownIcon class="size-3.5 text-white/55" />
+			</button>
+		</header>
 	</section>
 </main>

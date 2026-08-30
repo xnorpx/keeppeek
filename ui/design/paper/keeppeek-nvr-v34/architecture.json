@@ -3,11 +3,19 @@
 	"boardId": "5Q-0",
 	"desktopDestinations": [
 		{
-			"label": "Peek",
+			"label": "Dashboard",
 			"paperPath": "/",
 			"path": "/",
 			"routeSource": "src/routes/+page.svelte",
-			"scenarioIds": ["peek.desktop.live-wall", "peek.desktop.layout-editor"],
+			"scenarioIds": ["peek.desktop.live-wall"],
+			"status": "implemented"
+		},
+		{
+			"label": "Viewer",
+			"paperPath": "/viewer",
+			"path": "/viewer",
+			"routeSource": "src/routes/viewer/+page.svelte",
+			"scenarioIds": ["peek.desktop.focus-history", "peek.desktop.history-keep"],
 			"status": "implemented"
 		},
 		{
@@ -70,6 +78,8 @@
 			"path": "/settings",
 			"routeSource": "src/routes/settings/+page.svelte",
 			"scenarioIds": [
+				"peek.desktop.layout-editor",
+				"peek.desktop.layout-registry",
 				"settings.desktop.storage-retention",
 				"settings.desktop.event-sources",
 				"groups.desktop.administration",
@@ -85,12 +95,13 @@
 			]
 		}
 	],
-	"mobileTabs": ["Peek", "Keep", "Events", "Health", "More"],
+	"mobileTabs": ["Dashboard", "Viewer", "Keep", "Events", "Health", "More"],
 	"mobileCameraAccess": {
 		"path": "/cameras",
-		"reason": "The later responsive contract reserves five tabs; camera workflows remain reachable from Peek, camera detail, onboarding, and More rather than adding a sixth tab."
+		"reason": "The responsive contract reserves six tabs for Dashboard, Viewer, Keep, Events, Health, and More. Camera administration remains reachable from camera detail, onboarding, and More."
 	},
 	"settingsSections": [
+		"Dashboards",
 		"Storage & retention",
 		"Event sources",
 		"Groups",
@@ -102,10 +113,11 @@
 		"Logs & diagnostics"
 	],
 	"constraints": [
-		"Access remains a Settings section, never a seventh primary destination.",
+		"Access remains a Settings section, never an eighth primary destination.",
 		"Camera fleet and Add camera live under Cameras; configuration stays on one stacked per-camera page with anchors.",
 		"Settings contains server-wide concerns only and does not duplicate camera setup or per-camera editing.",
-		"Peek and Keep retain product names and carry plain-language context.",
+		"Dashboard owns camera grids, Viewer owns one-camera focus, and Keep owns recorded video.",
+		"Dashboard centers its label-free layout selector; Viewer groups its camera-page action with the top-right camera identity and diagnostics control.",
 		"Application controls remain on canonical WebRTC data channels."
 	]
 }

@@ -23,6 +23,8 @@ pub enum BcError {
     BufferTooSmall { needed: usize, available: usize },
     /// Internal buffer overflow (message exceeds configured max).
     MessageTooLarge { size: usize, max: usize },
+    /// Camera-declared encoded video frame exceeds the accepted limit.
+    MediaFrameTooLarge { size: usize, max: usize },
     /// Malformed Baichuan UDP datagram.
     InvalidUdpPacket(&'static str),
     /// Baichuan UDP discovery payload failed its checksum.
@@ -51,6 +53,9 @@ impl fmt::Display for BcError {
             }
             Self::MessageTooLarge { size, max } => {
                 write!(f, "message too large: {size} bytes exceeds max {max}")
+            }
+            Self::MediaFrameTooLarge { size, max } => {
+                write!(f, "video frame too large: {size} bytes exceeds max {max}")
             }
             Self::InvalidUdpPacket(message) => write!(f, "invalid UDP packet: {message}"),
             Self::UdpChecksumMismatch { expected, actual } => write!(

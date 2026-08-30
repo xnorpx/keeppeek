@@ -53,8 +53,8 @@
 	<main class="w-full max-w-sm" aria-labelledby="access-gate-heading">
 		<div class="mb-8 flex items-center gap-3">
 			<span
-				class="grid size-9 place-items-center rounded-sm bg-primary font-mono text-sm font-semibold text-primary-foreground"
-				>K</span
+				class="grid h-9 w-10 place-items-center rounded-sm bg-primary font-mono text-xs font-semibold text-primary-foreground"
+				>KP</span
 			>
 			<div>
 				<p class="text-sm font-semibold">KeepPeek</p>

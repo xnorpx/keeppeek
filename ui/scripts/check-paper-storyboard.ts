@@ -518,7 +518,15 @@ for (const [position, requirement] of handoffManifest.requirements.entries()) {
 	}
 }
 
-const expectedDestinations = ['Peek', 'Keep', 'Events', 'Cameras', 'Health', 'Settings'];
+const expectedDestinations = [
+	'Dashboard',
+	'Viewer',
+	'Keep',
+	'Events',
+	'Cameras',
+	'Health',
+	'Settings'
+];
 if (
 	architectureManifest.schemaVersion !== 1 ||
 	architectureManifest.boardId !== '5Q-0' ||
@@ -553,9 +561,9 @@ for (const [position, destination] of architectureManifest.desktopDestinations.e
 		throw new Error(`Board 03 partial destination needs blockers: ${destination.label}`);
 	}
 }
-const expectedMobileTabs = ['Peek', 'Keep', 'Events', 'Health', 'More'];
+const expectedMobileTabs = ['Dashboard', 'Viewer', 'Keep', 'Events', 'Health', 'More'];
 if (architectureManifest.mobileTabs.join('|') !== expectedMobileTabs.join('|')) {
-	throw new Error('Board 03 mobile navigation must retain the five-tab responsive contract');
+	throw new Error('Board 03 mobile navigation must retain the six-tab responsive contract');
 }
 if (
 	architectureManifest.mobileCameraAccess.path !== '/cameras' ||
@@ -564,8 +572,9 @@ if (
 	throw new Error('Board 03 must explain responsive Camera access');
 }
 if (
-	architectureManifest.settingsSections.length !== 9 ||
-	new Set(architectureManifest.settingsSections).size !== 9 ||
+	architectureManifest.settingsSections.length !== 10 ||
+	new Set(architectureManifest.settingsSections).size !== 10 ||
+	!architectureManifest.settingsSections.includes('Dashboards') ||
 	!architectureManifest.settingsSections.includes('Access') ||
 	architectureManifest.settingsSections.includes('Camera defaults') ||
 	architectureManifest.constraints.length === 0

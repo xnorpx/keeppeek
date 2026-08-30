@@ -115,7 +115,7 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 
 		await waitForNineLiveCameras(page, async () => {
 			await waitForAction(page, demoStartAt, 'a[aria-label="Peek"]');
-			await page.getByRole('link', { name: 'Peek', exact: true }).click();
+			await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
 		});
 
 		const diagnosticsSelector = '[data-camera-id="192.0.2.101"] button[data-peek-camera-label]';

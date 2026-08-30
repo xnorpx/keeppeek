@@ -3,9 +3,9 @@
 	import ActivityIcon from '@lucide/svelte/icons/activity';
 	import BellIcon from '@lucide/svelte/icons/bell';
 	import CameraIcon from '@lucide/svelte/icons/camera';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
+	import EyeIcon from '@lucide/svelte/icons/eye';
 	import HistoryIcon from '@lucide/svelte/icons/history';
-	import SearchIcon from '@lucide/svelte/icons/search';
-	import VideoIcon from '@lucide/svelte/icons/video';
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import { setLivePeer } from '$lib/stream-peer-context';
 	import type {
@@ -146,7 +146,7 @@
 			})
 		]
 	]);
-	const navigation = [VideoIcon, HistoryIcon, BellIcon, CameraIcon, ActivityIcon] as const;
+	const navigation = [EyeIcon, HistoryIcon, BellIcon, CameraIcon, ActivityIcon] as const;
 	const frameNowMs = Date.parse('2026-08-18T06:37:23Z');
 
 	onMount(() => {
@@ -173,56 +173,26 @@
 	>
 		<a
 			href="/"
-			class="grid size-[30px] shrink-0 place-items-center rounded-sm bg-primary text-md leading-[18px] font-bold text-on-primary"
-			aria-label="KeepPeek home"
+			class="grid h-[30px] w-[34px] shrink-0 place-items-center rounded-sm bg-primary font-mono text-[10px] font-semibold text-on-primary"
+			aria-label="Dashboard"
+			aria-current="page"
 		>
-			K
+			KP
 		</a>
 		<div class="h-[18px] shrink-0"></div>
 		{#each navigation as Icon, index (index)}
 			<a
-				href="/"
-				class="relative grid h-11 w-16 shrink-0 place-items-center {index === 0
-					? 'border-l-2 border-primary bg-[#B7410E1F] text-primary-soft'
-					: 'border-l-2 border-transparent text-text-faint'}"
-				aria-label={['Peek', 'Keep', 'Events', 'Cameras', 'Health'][index]}
-				aria-current={index === 0 ? 'page' : undefined}
+				href={index === 0 ? '/viewer' : '/'}
+				class="relative grid h-11 w-16 shrink-0 place-items-center border-l-2 border-transparent text-text-faint"
+				aria-label={['Viewer', 'Keep', 'Events', 'Cameras', 'Health'][index]}
 			>
 				<Icon class="size-5" strokeWidth={1.75} />
 			</a>
 		{/each}
 	</aside>
 
-	<div class="flex h-[360px] min-w-0 flex-1 flex-col">
-		<header
-			class="flex h-[52px] shrink-0 items-center gap-3 border-b border-hairline bg-surface px-5"
-		>
-			<h1 class="w-[47px] shrink-0 text-xl leading-6 font-semibold">Peek</h1>
-			<span class="w-[53px] shrink-0 text-sm leading-4 text-text-muted">Live view</span>
-			<span class="h-4 w-px bg-hairline-strong"></span>
-			<button
-				type="button"
-				class="h-7 w-[105px] shrink-0 rounded-sm border border-hairline bg-raised px-2.5 text-sm leading-4"
-			>
-				Front of house
-			</button>
-			<label
-				class="ml-auto flex h-[34px] w-[210px] items-center gap-2 rounded-sm border border-hairline bg-raised px-3 text-text-faint"
-			>
-				<SearchIcon class="size-[13px] shrink-0" strokeWidth={1.75} />
-				<input
-					type="search"
-					placeholder="Search cameras"
-					class="min-w-0 flex-1 bg-transparent text-sm leading-4 outline-none placeholder:text-text-faint"
-				/>
-				<kbd
-					class="grid h-5 min-w-[26px] place-items-center rounded-sm border border-hairline-strong bg-surface px-1 font-mono text-2xs leading-3 text-text-muted"
-					>⌘K</kbd
-				>
-			</label>
-		</header>
-
-		<section class="flex h-[268px] shrink-0 gap-4 bg-ground p-4">
+	<div class="relative h-[360px] min-w-0 flex-1">
+		<section class="absolute inset-0 flex gap-2 bg-ground p-2">
 			{#each cameras as camera (camera.id)}
 				<PeekCameraTile
 					{camera}
@@ -236,24 +206,17 @@
 			{/each}
 		</section>
 
-		<footer
-			class="flex h-8 shrink-0 items-center gap-[18px] border-t border-hairline bg-surface px-5"
+		<header
+			data-peek-dashboard-switcher
+			class="absolute top-3 left-1/2 z-30 flex h-8 -translate-x-1/2 items-center overflow-hidden rounded-sm border border-hairline-strong bg-surface/90 shadow-md backdrop-blur-md"
 		>
-			<span class="flex w-[164px] shrink-0 items-center gap-1.5 text-xs-plus leading-4">
-				<span class="size-1.5 rounded-full bg-activity"></span>
-				1 camera offline · 1 degraded
-			</span>
-			<span class="w-[47px] shrink-0 font-mono text-xs leading-[14px] text-text-muted">CPU 34%</span
+			<button
+				type="button"
+				class="inline-flex h-full shrink-0 items-center gap-2 px-2.5 text-xs font-medium text-foreground"
+				aria-label="Choose dashboard, All cameras"
 			>
-			<span class="w-[179px] shrink-0 font-mono text-xs leading-[14px] text-text-muted"
-				>STORAGE 71% · 12d PROJECTED</span
-			>
-			<span
-				class="ml-auto flex w-[103px] shrink-0 items-center gap-1.5 text-xs-plus leading-4 text-text-muted"
-			>
-				<span class="size-1.5 rounded-full bg-healthy"></span>
-				Recorder healthy
-			</span>
-		</footer>
+				All cameras<ChevronDownIcon class="size-3.5 text-text-faint" />
+			</button>
+		</header>
 	</div>
 </main>

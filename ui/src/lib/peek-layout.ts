@@ -20,6 +20,45 @@ export type PeekLayoutDraft = {
 	items: readonly PeekLayoutItem[];
 };
 
+export type PeekLayoutScope = 'private' | 'shared';
+
+export type PeekLayoutAudience = {
+	everyone: boolean;
+	credentialIds: readonly string[];
+};
+
+export type PeekLayout = {
+	id: string;
+	name: string;
+	scope: PeekLayoutScope;
+	ownerId: string;
+	audience: PeekLayoutAudience;
+	activityFocus: boolean;
+	items: readonly PeekLayoutItem[];
+};
+
+export type PeekLayoutRegistry = {
+	schemaVersion: 1;
+	revision: string;
+	activeLayoutId: string;
+	layouts: readonly PeekLayout[];
+};
+
+export type CreatePeekLayout = {
+	id: string;
+	name: string;
+	ownerId: string;
+	scope?: PeekLayoutScope;
+	audience?: PeekLayoutAudience;
+	draft: PeekLayoutDraft;
+};
+
+export type DuplicatePeekLayout = {
+	id: string;
+	name: string;
+	ownerId: string;
+};
+
 type LayoutSlot = Omit<PeekLayoutItem, 'cameraId' | 'pinned'>;
 
 const onePlusThreeSlots: readonly LayoutSlot[] = [
@@ -76,6 +115,190 @@ function overlaps(left: LayoutSlot, right: LayoutSlot): boolean {
 
 function clamp(value: number, minimum: number, maximum: number): number {
 	return Math.min(maximum, Math.max(minimum, value));
+}
+
+function requireLayout(registry: PeekLayoutRegistry, layoutId: string): PeekLayout {
+	const layout = registry.layouts.find((candidate) => candidate.id === layoutId);
+	if (layout === undefined) throw new Error('Layout does not exist.');
+	return layout;
+}
+
+function validatedIdentity(registry: PeekLayoutRegistry, id: string, name: string) {
+	const normalizedId = id.trim();
+	const normalizedName = name.trim();
+	if (normalizedId.length === 0 || normalizedId.length > 128) {
+		throw new Error('Layout ID is invalid.');
+	}
+	if (registry.layouts.some((layout) => layout.id === normalizedId)) {
+		throw new Error('Layout ID already exists.');
+	}
+	if (normalizedName.length === 0 || [...normalizedName].length > 80) {
+		throw new Error('Layout name is invalid.');
+	}
+	return { id: normalizedId, name: normalizedName };
+}
+
+function savedLayout(
+	identity: { id: string; name: string },
+	ownerId: string,
+	draft: PeekLayoutDraft,
+	scope: PeekLayoutScope = 'private',
+	audience?: PeekLayoutAudience
+): PeekLayout {
+	const normalizedOwnerId = ownerId.trim();
+	if (normalizedOwnerId.length === 0) throw new Error('Layout owner is invalid.');
+	return {
+		...identity,
+		scope,
+		ownerId: normalizedOwnerId,
+		audience: canonicalAudience(
+			audience ?? {
+				everyone: scope === 'shared',
+				credentialIds: scope === 'private' ? [normalizedOwnerId] : []
+			}
+		),
+		activityFocus: draft.activityFocus,
+		items: draft.items.map((item) => ({ ...item }))
+	};
+}
+
+function canonicalAudience(audience: PeekLayoutAudience): PeekLayoutAudience {
+	if (audience.everyone) return { everyone: true, credentialIds: [] };
+	const credentialIds = audience.credentialIds.map((id) => id.trim());
+	if (credentialIds.some((id) => id.length === 0 || id.length > 128)) {
+		throw new Error('Dashboard viewer identity is invalid.');
+	}
+	return {
+		everyone: false,
+		credentialIds: [...new Set(credentialIds)].toSorted()
+	};
+}
+
+export function createPeekLayout(
+	registry: PeekLayoutRegistry,
+	input: CreatePeekLayout
+): PeekLayoutRegistry {
+	const identity = validatedIdentity(registry, input.id, input.name);
+	return {
+		...registry,
+		activeLayoutId: identity.id,
+		layouts: [
+			...registry.layouts,
+			savedLayout(identity, input.ownerId, input.draft, input.scope, input.audience)
+		]
+	};
+}
+
+export function renamePeekLayout(
+	registry: PeekLayoutRegistry,
+	layoutId: string,
+	name: string
+): PeekLayoutRegistry {
+	const layout = requireLayout(registry, layoutId);
+	const normalizedName = name.trim();
+	if (normalizedName.length === 0 || [...normalizedName].length > 80) {
+		throw new Error('Layout name is invalid.');
+	}
+	if (layout.name === normalizedName) return registry;
+	return {
+		...registry,
+		layouts: registry.layouts.map((candidate) =>
+			candidate.id === layoutId ? { ...candidate, name: normalizedName } : candidate
+		)
+	};
+}
+
+export function duplicatePeekLayout(
+	registry: PeekLayoutRegistry,
+	layoutId: string,
+	input: DuplicatePeekLayout
+): PeekLayoutRegistry {
+	const source = requireLayout(registry, layoutId);
+	const identity = validatedIdentity(registry, input.id, input.name);
+	const duplicate = savedLayout(
+		identity,
+		input.ownerId,
+		{
+			preset: 'custom',
+			activityFocus: source.activityFocus,
+			items: source.items
+		},
+		source.scope,
+		source.audience
+	);
+	return {
+		...registry,
+		activeLayoutId: duplicate.id,
+		layouts: [...registry.layouts, duplicate]
+	};
+}
+
+export function selectPeekLayout(
+	registry: PeekLayoutRegistry,
+	layoutId: string
+): PeekLayoutRegistry {
+	requireLayout(registry, layoutId);
+	return registry.activeLayoutId === layoutId
+		? registry
+		: { ...registry, activeLayoutId: layoutId };
+}
+
+export function deletePeekLayout(
+	registry: PeekLayoutRegistry,
+	layoutId: string
+): PeekLayoutRegistry {
+	requireLayout(registry, layoutId);
+	if (registry.layouts.length === 1) throw new Error('The final layout cannot be deleted.');
+	const layouts = registry.layouts.filter((layout) => layout.id !== layoutId);
+	return {
+		...registry,
+		activeLayoutId:
+			registry.activeLayoutId === layoutId ? (layouts[0]?.id ?? '') : registry.activeLayoutId,
+		layouts
+	};
+}
+
+export function updatePeekLayout(
+	registry: PeekLayoutRegistry,
+	layoutId: string,
+	draft: PeekLayoutDraft
+): PeekLayoutRegistry {
+	requireLayout(registry, layoutId);
+	return {
+		...registry,
+		layouts: registry.layouts.map((layout) =>
+			layout.id === layoutId
+				? {
+						...layout,
+						activityFocus: draft.activityFocus,
+						items: draft.items.map((item) => ({ ...item }))
+					}
+				: layout
+		)
+	};
+}
+
+export function updatePeekLayoutAudience(
+	registry: PeekLayoutRegistry,
+	layoutId: string,
+	audience: PeekLayoutAudience
+): PeekLayoutRegistry {
+	requireLayout(registry, layoutId);
+	const canonical = canonicalAudience(audience);
+	return {
+		...registry,
+		layouts: registry.layouts.map((layout) =>
+			layout.id === layoutId ? { ...layout, audience: canonical } : layout
+		)
+	};
+}
+
+export function peekLayoutDraft(layout: PeekLayout): PeekLayoutDraft {
+	return {
+		preset: 'custom',
+		activityFocus: layout.activityFocus,
+		items: layout.items.map((item) => ({ ...item }))
+	};
 }
 
 export function createPeekLayoutDraft(
@@ -173,22 +396,35 @@ export function resizePeekLayoutItem(
 }
 
 export function addPeekLayoutCamera(draft: PeekLayoutDraft, cameraId: string): PeekLayoutDraft {
-	if (draft.items.some((item) => item.cameraId === cameraId)) return draft;
+	if (draft.items.length >= 64 || draft.items.some((item) => item.cameraId === cameraId)) {
+		return draft;
+	}
 
-	for (const row of [1, 5, 9]) {
-		for (const column of [1, 5, 9]) {
-			const candidate = { column, row, columnSpan: 4, rowSpan: 4 };
-			if (draft.items.every((item) => !overlaps(candidate, item))) {
-				return {
-					...draft,
-					preset: 'custom',
-					items: [...draft.items, { cameraId, ...candidate, pinned: false }]
-				};
+	for (const size of [4, 3, 2, 1]) {
+		for (let row = 1; row <= peekLayoutRows - size + 1; row += 1) {
+			for (let column = 1; column <= peekLayoutColumns - size + 1; column += 1) {
+				const candidate = { column, row, columnSpan: size, rowSpan: size };
+				if (draft.items.every((item) => !overlaps(candidate, item))) {
+					return {
+						...draft,
+						preset: 'custom',
+						items: [...draft.items, { cameraId, ...candidate, pinned: false }]
+					};
+				}
 			}
 		}
 	}
 
 	return draft;
+}
+
+export function removePeekLayoutCamera(draft: PeekLayoutDraft, cameraId: string): PeekLayoutDraft {
+	if (!draft.items.some((item) => item.cameraId === cameraId)) return draft;
+	return {
+		...draft,
+		preset: 'custom',
+		items: draft.items.filter((item) => item.cameraId !== cameraId)
+	};
 }
 
 export function setPeekLayoutPinned(

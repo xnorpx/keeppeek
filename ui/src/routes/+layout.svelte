@@ -31,8 +31,11 @@
 		type KeyboardOverlayMode
 	} from '$lib/keyboard-shortcuts';
 	import type { AccessConnectionState } from '$lib/access';
+	import type { ServerHealthResponse } from '$lib/types';
+	import { setShellHealthPublisher } from '$lib/shell-health-context';
 
 	initializeBrowserLogging();
+	const shellHealthRefreshIntervalMs = 5_000;
 
 	let { children }: { children: Snippet } = $props();
 	const controlClient = setControlClient();
@@ -54,6 +57,97 @@
 	let railFocusIndex = $state(0);
 	let railPathname = '';
 	let navigationChordTimer: ReturnType<typeof setTimeout> | null = null;
+	let shellHealth = $state.raw<ServerHealthResponse | null>(null);
+	let shellHealthRequestVersion = 0;
+	setShellHealthPublisher((health) => (shellHealth = health));
+	let shellStatusIndicators = $derived.by(() => {
+		if (shellHealth === null) {
+			return [
+				{ id: 'server', value: '—/1', label: 'Server health unavailable', tone: 'bg-text-faint' },
+				{ id: 'cameras', value: '—/—', label: 'Camera health unavailable', tone: 'bg-text-faint' },
+				{
+					id: 'recording',
+					value: '—/—',
+					label: 'Recording health unavailable',
+					tone: 'bg-text-faint'
+				},
+				{ id: 'clients', value: '—/—', label: 'Client health unavailable', tone: 'bg-text-faint' }
+			];
+		}
+		const totals = shellHealth.totals;
+		const activeSessions = shellHealth.webrtc.active_sessions;
+		const clientSessions = shellHealth.webrtc.browser_sessions;
+		return [
+			{
+				id: 'server',
+				value: '1/1',
+				label: `Server ${shellHealth.status}`,
+				tone:
+					shellHealth.status === 'healthy'
+						? 'bg-healthy'
+						: shellHealth.status === 'degraded'
+							? 'bg-activity'
+							: 'bg-live'
+			},
+			{
+				id: 'cameras',
+				value: `${totals.connected_cameras}/${totals.configured_cameras}`,
+				label: `Cameras connected: ${totals.connected_cameras} of ${totals.configured_cameras}`,
+				tone: ratioTone(totals.connected_cameras, totals.configured_cameras)
+			},
+			{
+				id: 'recording',
+				value: `${totals.recording_cameras}/${totals.recording_requested_cameras}`,
+				label: `Cameras recording: ${totals.recording_cameras} of ${totals.recording_requested_cameras} requested`,
+				tone: ratioTone(totals.recording_cameras, totals.recording_requested_cameras)
+			},
+			{
+				id: 'clients',
+				value: `${clientSessions}/${activeSessions}`,
+				label: `Client sessions: ${clientSessions} of ${activeSessions} active WebRTC sessions`,
+				tone: ratioTone(clientSessions, activeSessions)
+			}
+		];
+	});
+
+	function ratioTone(value: number, total: number): string {
+		if (total === 0 || value >= total) return 'bg-healthy';
+		if (value === 0) return 'bg-live';
+		return 'bg-activity';
+	}
+
+	$effect(() => {
+		if (accessState.status !== 'authenticated') {
+			shellHealth = null;
+			return;
+		}
+		if (
+			page.url.pathname === '/' ||
+			page.url.pathname === '/viewer' ||
+			page.url.pathname === '/system-health'
+		)
+			return;
+		const controller = new AbortController();
+		const requestVersion = ++shellHealthRequestVersion;
+		const refresh = async () => {
+			try {
+				const health = await controlClient.getHealth(controller.signal);
+				if (!controller.signal.aborted && requestVersion === shellHealthRequestVersion) {
+					shellHealth = health;
+				}
+			} catch {
+				if (!controller.signal.aborted && requestVersion === shellHealthRequestVersion) {
+					shellHealth = null;
+				}
+			}
+		};
+		void refresh();
+		const timer = window.setInterval(() => void refresh(), shellHealthRefreshIntervalMs);
+		return () => {
+			controller.abort();
+			window.clearInterval(timer);
+		};
+	});
 
 	onMount(() => {
 		const closeAppearance = appearance.initialize();
@@ -162,14 +256,14 @@
 	function moveRailFocus(event: KeyboardEvent, currentIndex: number): void {
 		if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
 		event.preventDefault();
-		const count = navigation.length + (administrator ? 1 : 0);
+		const count = 1 + navigation.length + (administrator ? 1 : 0);
 		railFocusIndex =
 			event.key === 'ArrowDown' ? (currentIndex + 1) % count : (currentIndex - 1 + count) % count;
 		document.querySelector<HTMLElement>(`[data-shell-rail-link="${railFocusIndex}"]`)?.focus();
 	}
 
 	const allNavigation = [
-		{ href: '/', label: 'Peek', icon: EyeIcon, paths: ['/'], administrator: false },
+		{ href: '/viewer', label: 'Viewer', icon: EyeIcon, paths: ['/viewer'], administrator: false },
 		{
 			href: '/keep',
 			label: 'Keep',
@@ -209,6 +303,11 @@
 	}
 
 	let settingsActive = $derived(page.url.pathname.startsWith('/settings'));
+	let dashboardActive = $derived(page.url.pathname === '/');
+	let primaryViewActive = $derived(
+		dashboardActive ||
+			allNavigation.some((item) => item.paths.some((pathname) => pathname === page.url.pathname))
+	);
 	let setupActive = $derived(page.url.pathname === '/setup');
 	let mobileCameraWizardActive = $derived(page.url.pathname === '/cameras/new');
 	let mobileCameraDetailActive = $derived(page.url.pathname === '/camera');
@@ -222,9 +321,12 @@
 	let currentRoute = $derived(
 		setupActive
 			? { label: 'First run' }
-			: settingsActive
-				? { label: 'Settings' }
-				: (navigation.find((item) => matchesRoute(item.paths, page.url.pathname)) ?? navigation[0])
+			: dashboardActive
+				? { label: 'Dashboard' }
+				: settingsActive
+					? { label: 'Settings' }
+					: (navigation.find((item) => matchesRoute(item.paths, page.url.pathname)) ??
+						navigation[0])
 	);
 	const healthNavigation = allNavigation[4];
 	let healthActive = $derived(matchesRoute(healthNavigation.paths, page.url.pathname));
@@ -244,13 +346,11 @@
 		const pathname = page.url.pathname;
 		if (pathname === railPathname) return;
 		railPathname = pathname;
-		railFocusIndex =
-			settingsActive && administrator
-				? navigation.length
-				: Math.max(
-						0,
-						navigation.findIndex((item) => matchesRoute(item.paths, pathname))
-					);
+		railFocusIndex = dashboardActive
+			? 0
+			: settingsActive && administrator
+				? navigation.length + 1
+				: Math.max(1, navigation.findIndex((item) => matchesRoute(item.paths, pathname)) + 1);
 	});
 
 	$effect.pre(() => {
@@ -272,11 +372,15 @@
 			>
 				<a
 					href={resolve('/')}
-					tabindex="-1"
-					class="grid size-[30px] shrink-0 place-items-center rounded-sm bg-primary font-mono text-xs font-semibold text-primary-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
-					aria-label="KeepPeek home"
+					data-shell-rail-link="0"
+					tabindex={railFocusIndex === 0 ? 0 : -1}
+					class="grid h-[30px] w-[34px] shrink-0 place-items-center rounded-sm bg-primary font-mono text-[10px] font-semibold text-primary-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
+					aria-label="Dashboard"
+					aria-current={dashboardActive ? 'page' : undefined}
+					onfocus={() => (railFocusIndex = 0)}
+					onkeydown={(event) => moveRailFocus(event, 0)}
 				>
-					K
+					KP
 				</a>
 
 				<div class="h-[18px] shrink-0"></div>
@@ -284,21 +388,22 @@
 				<nav class="flex w-full flex-col items-center gap-2.5" aria-label="Primary navigation">
 					{#each navigation as item, index (item.href)}
 						{@const active = matchesRoute(item.paths, page.url.pathname)}
+						{@const railIndex = index + 1}
 						<Tooltip.Root>
 							<Tooltip.Trigger>
 								{#snippet child({ props })}
 									<a
 										href={item.href}
 										{...props}
-										data-shell-rail-link={index}
-										tabindex={railFocusIndex === index ? 0 : -1}
+										data-shell-rail-link={railIndex}
+										tabindex={railFocusIndex === railIndex ? 0 : -1}
 										aria-label={item.label}
 										aria-current={active ? 'page' : undefined}
 										class="relative grid size-11 place-items-center text-sidebar-foreground/55 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none focus-visible:ring-inset {active
 											? 'bg-sidebar-accent text-sidebar-accent-foreground'
 											: ''}"
-										onfocus={() => (railFocusIndex = index)}
-										onkeydown={(event) => moveRailFocus(event, index)}
+										onfocus={() => (railFocusIndex = railIndex)}
+										onkeydown={(event) => moveRailFocus(event, railIndex)}
 									>
 										{#if active}
 											<span class="absolute inset-y-2 left-0 w-0.5 bg-primary"></span>
@@ -316,15 +421,15 @@
 									<a
 										href={resolve('/settings')}
 										{...props}
-										data-shell-rail-link={navigation.length}
-										tabindex={railFocusIndex === navigation.length ? 0 : -1}
+										data-shell-rail-link={navigation.length + 1}
+										tabindex={railFocusIndex === navigation.length + 1 ? 0 : -1}
 										aria-label="Settings"
 										aria-current={settingsActive ? 'page' : undefined}
 										class="relative grid size-11 place-items-center text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none focus-visible:ring-inset {settingsActive
 											? 'bg-sidebar-accent text-sidebar-accent-foreground'
 											: ''}"
-										onfocus={() => (railFocusIndex = navigation.length)}
-										onkeydown={(event) => moveRailFocus(event, navigation.length)}
+										onfocus={() => (railFocusIndex = navigation.length + 1)}
+										onkeydown={(event) => moveRailFocus(event, navigation.length + 1)}
 									>
 										{#if settingsActive}
 											<span class="absolute inset-y-2 left-0 w-0.5 bg-primary"></span>
@@ -336,6 +441,57 @@
 							<Tooltip.Content side="right" align="center">Settings</Tooltip.Content>
 						</Tooltip.Root>{/if}
 				</nav>
+
+				<div data-shell-rail-actions class="mt-auto flex flex-col items-center gap-2">
+					<div data-shell-status-indicators class="flex flex-col items-center gap-0.5">
+						{#each shellStatusIndicators as indicator (indicator.id)}
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									{#snippet child({ props })}
+										<span
+											{...props}
+											data-shell-status-indicator={indicator.id}
+											aria-label={indicator.label}
+											class="flex h-5 min-w-11 items-center justify-center gap-1 font-mono text-[9px] leading-none text-sidebar-foreground/70"
+										>
+											<span class="size-1.5 shrink-0 rounded-full {indicator.tone}"></span>
+											<span>{indicator.value}</span>
+										</span>
+									{/snippet}
+								</Tooltip.Trigger>
+								<Tooltip.Content side="right" align="center">{indicator.label}</Tooltip.Content>
+							</Tooltip.Root>
+						{/each}
+					</div>
+					{#if accessState.session?.local === false}
+						<button
+							type="button"
+							class="grid size-9 place-items-center rounded-sm text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
+							aria-label="Sign out"
+							title="Sign out"
+							onclick={() => void controlClient.signOut()}
+						>
+							<LogOutIcon class="size-4" strokeWidth={1.75} />
+						</button>
+					{/if}
+					<button
+						type="button"
+						class="grid size-9 place-items-center rounded-sm text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
+						aria-label={appearance.effectiveTheme === 'dark'
+							? 'Switch to light theme'
+							: 'Switch to dark theme'}
+						title={appearance.effectiveTheme === 'dark'
+							? 'Switch to light theme'
+							: 'Switch to dark theme'}
+						onclick={toggleTheme}
+					>
+						{#if appearance.effectiveTheme === 'dark'}
+							<SunIcon class="size-4" strokeWidth={1.75} />
+						{:else}
+							<MoonIcon class="size-4" strokeWidth={1.75} />
+						{/if}
+					</button>
+				</div>
 			</aside>
 
 			<div
@@ -355,8 +511,8 @@
 						healthOverviewActive ||
 						mobileCameraWizardActive ||
 						mobileCameraDetailActive
-							? 'hidden md:flex'
-							: 'flex'}"
+							? 'hidden'
+							: 'flex'} {primaryViewActive ? 'md:hidden' : 'md:flex'}"
 					>
 						<a href={resolve('/')} class="font-semibold md:hidden" aria-label="KeepPeek home">
 							KeepPeek
@@ -372,7 +528,7 @@
 						{#if accessState.session?.local === false}
 							<button
 								type="button"
-								class="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+								class="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:hidden"
 								aria-label="Sign out"
 								title="Sign out"
 								onclick={() => void controlClient.signOut()}
@@ -382,7 +538,7 @@
 						{/if}
 						<button
 							type="button"
-							class="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							class="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:hidden"
 							aria-label={appearance.effectiveTheme === 'dark'
 								? 'Switch to light theme'
 								: 'Switch to dark theme'}
@@ -401,25 +557,17 @@
 				{/if}
 
 				<main
-					class="min-h-0 flex-1 overflow-auto {page.url.pathname === '/'
+					data-shell-main
+					class="[container-type:size] min-h-0 flex-1 [container-name:view-shell] {dashboardActive ||
+					page.url.pathname === '/viewer'
+						? 'relative'
+						: ''} {primaryViewActive ? 'overflow-hidden' : 'overflow-auto'} {page.url.pathname ===
+					'/'
 						? 'live-surface'
 						: 'workspace-surface'}"
 				>
 					{@render children()}
 				</main>
-
-				{#if !cameraDiagnosisActive}
-					<footer
-						data-shell-status
-						class="hidden h-8 shrink-0 items-center border-t border-border bg-surface px-4 font-mono text-xs text-muted-foreground md:flex"
-					>
-						<span class="flex items-center gap-2">
-							<span class="size-1.5 rounded-full bg-healthy"></span>
-							{accessState.session?.local ? 'Local' : 'Remote'} recorder
-						</span>
-						<span class="ml-auto">{accessState.session?.displayName}</span>
-					</footer>
-				{/if}
 			</div>
 
 			{#if !mobileRouteOwnsBottom}

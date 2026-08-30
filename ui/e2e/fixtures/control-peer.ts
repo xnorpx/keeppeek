@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
+import { create, fromBinary, toBinary, type JsonObject } from '@bufbuild/protobuf';
 import { AnySchema, durationFromMs, timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Page } from '@playwright/test';
 import {
@@ -126,6 +126,8 @@ import {
 	StorageSafetyHealthSnapshotSchema,
 	StorageWriteProbeResultSchema,
 	StateEntrySchema,
+	StateStoreErrorCode,
+	StateStoreErrorSchema,
 	StateStoreResultSchema,
 	StreamHealthSnapshotSchema,
 	StreamHealthDimensionsSnapshotSchema,
@@ -319,6 +321,7 @@ export type ControlRequests = {
 	notificationActions: string[];
 	mqttUpdates: MqttSettingsUpdate[];
 	mqttTests: MqttSettingsUpdate[];
+	peekLayoutUpdates: JsonObject[];
 };
 
 export type MockControlPeerOptions = {
@@ -354,6 +357,11 @@ export type MockControlPeerOptions = {
 	mqttUpdateResult?: MqttIntegration;
 	mqttUpdateError?: string;
 	mqttTestResult?: MqttTestResult;
+	peekLayoutRegistry?: JsonObject;
+	peekLayoutRevision?: bigint;
+	peekLayoutSaveError?: string;
+	peekLayoutConflictOnSave?: boolean;
+	peekLayoutSaveGate?: Promise<void>;
 	storageWriteProbe?: { writable: boolean; detail: string };
 	cameras?: readonly CameraListItem[];
 	healthGate?: Promise<void>;
@@ -430,6 +438,61 @@ function encodedMqttState(
 			}
 		})
 	});
+}
+
+function encodedPeekLayoutState(
+	requestId: bigint,
+	value: JsonObject,
+	revision: bigint,
+	ownerId: string
+): number[] {
+	return encodedOk(requestId, {
+		case: 'stateStoreResult',
+		value: create(StateStoreResultSchema, {
+			result: {
+				case: 'entry',
+				value: create(StateEntrySchema, {
+					namespace: 'keeppeek.peek-layouts',
+					key: 'registry',
+					schema: 'keeppeek.peek-layout-registry.v1',
+					value,
+					revision,
+					ownerId
+				})
+			}
+		})
+	});
+}
+
+function encodedPeekLayoutConflict(requestId: bigint, currentRevision: bigint): number[] {
+	const detail = create(StateStoreErrorSchema, {
+		namespace: 'keeppeek.peek-layouts',
+		key: 'registry',
+		code: StateStoreErrorCode.CONFLICT,
+		currentRevision
+	});
+	const response = create(ControlEnvelopeSchema, {
+		message: {
+			case: 'response',
+			value: create(ResponseSchema, {
+				requestId,
+				result: {
+					case: 'error',
+					value: create(ErrorSchema, {
+						code: ErrorCode.REJECTED,
+						message: 'Peek layout registry revision conflict',
+						details: [
+							create(AnySchema, {
+								typeUrl: 'type.googleapis.com/keeppeek.webrtc.v1.StateStoreError',
+								value: toBinary(StateStoreErrorSchema, detail)
+							})
+						]
+					})
+				}
+			})
+		}
+	});
+	return Array.from(toBinary(ControlEnvelopeSchema, response));
 }
 
 function encodedMqttTest(
@@ -609,7 +672,8 @@ export async function mockControlPeer(
 		exportJobs: [],
 		notificationActions: [],
 		mqttUpdates: [],
-		mqttTests: []
+		mqttTests: [],
+		peekLayoutUpdates: []
 	};
 	let activeFilter = 'info,keeppeek=debug';
 	let activeDiscoveryId = '';
@@ -642,6 +706,10 @@ export async function mockControlPeer(
 	let mqttIntegration = options.mqttIntegration
 		? structuredClone(options.mqttIntegration)
 		: undefined;
+	let peekLayoutRegistry = options.peekLayoutRegistry
+		? structuredClone(options.peekLayoutRegistry)
+		: undefined;
+	let peekLayoutRevision = options.peekLayoutRevision ?? 1n;
 	const mqttIntegrationSequence = (options.mqttIntegrationSequence ?? []).map((integration) =>
 		structuredClone(integration)
 	);
@@ -716,6 +784,41 @@ export async function mockControlPeer(
 		}
 		if (request.command.case === 'stateStoreCommand') {
 			const action = request.command.value.action;
+			if (action.case === 'get' && action.value.namespace === 'keeppeek.peek-layouts') {
+				if (!peekLayoutRegistry) {
+					return encodedError(request.requestId, 'Peek layout state is not configured');
+				}
+				return encodedPeekLayoutState(
+					request.requestId,
+					peekLayoutRegistry,
+					peekLayoutRevision,
+					accessSessions[0]!.principalId
+				);
+			}
+			if (action.case === 'put' && action.value.namespace === 'keeppeek.peek-layouts') {
+				await options.peekLayoutSaveGate;
+				if (options.peekLayoutSaveError) {
+					return encodedError(request.requestId, options.peekLayoutSaveError);
+				}
+				if (options.peekLayoutConflictOnSave) {
+					return encodedPeekLayoutConflict(request.requestId, peekLayoutRevision + 1n);
+				}
+				if (action.value.expectedRevision !== peekLayoutRevision) {
+					return encodedPeekLayoutConflict(request.requestId, peekLayoutRevision);
+				}
+				if (!action.value.value) {
+					return encodedError(request.requestId, 'Peek layout registry value is required');
+				}
+				peekLayoutRegistry = structuredClone(action.value.value);
+				requests.peekLayoutUpdates.push(structuredClone(peekLayoutRegistry));
+				peekLayoutRevision += 1n;
+				return encodedPeekLayoutState(
+					request.requestId,
+					peekLayoutRegistry,
+					peekLayoutRevision,
+					accessSessions[0]!.principalId
+				);
+			}
 			if (action.case === 'get' && action.value.namespace === 'keeppeek.integrations.mqtt') {
 				mqttIntegration = mqttIntegrationSequence.shift() ?? mqttIntegration;
 				if (!mqttIntegration)

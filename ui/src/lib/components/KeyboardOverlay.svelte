@@ -43,6 +43,7 @@
 			type: 'destination' as const
 		})),
 		...[
+			['Dashboards', 'dashboards'],
 			['Storage & retention', 'storage'],
 			['Event sources', 'event-sources'],
 			['Groups', 'groups'],

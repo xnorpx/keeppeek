@@ -2113,6 +2113,7 @@ impl WebRtc {
 
     pub(crate) fn health_snapshot(&self) -> WebRtcHealth {
         self.live.inner.sessions.reap_finished();
+        let api_session_ids = self.live.inner.sessions.active_api_ids();
         let now = Instant::now();
         let (sources, session_ids, active_main, active_sub, source_bitrate_bps, mut session_queues) = {
             let source_states = self
@@ -2202,8 +2203,11 @@ impl WebRtc {
             .unwrap_or(0);
 
         let adaptive_sessions = 0;
-        let multi_track_sessions = 0;
-        let multi_tracks = 0;
+        let multi_track_sessions = api_session_ids.len();
+        let multi_tracks = session_queues
+            .iter()
+            .filter(|queue| queue.track_id.is_some() && api_session_ids.contains(&queue.session_id))
+            .count();
         let requested_auto = 0;
         let requested_high = 0;
         let requested_low = 0;
@@ -2212,7 +2216,7 @@ impl WebRtc {
         let estimated_bitrate_max_bps = estimates.iter().copied().max();
         let estimated_bitrate_avg_bps = (!estimates.is_empty())
             .then(|| estimates.iter().copied().sum::<u64>() / estimates.len() as u64);
-        let active_sessions = session_ids.len();
+        let active_sessions = session_ids.union(&api_session_ids).count();
 
         WebRtcHealth {
             active_sessions,
@@ -2432,13 +2436,20 @@ fn candidate_addresses() -> Vec<Ipv4Addr> {
                 let Addr::V4(address) = address else {
                     return None;
                 };
-                (!address.ip.is_unspecified() && !address.ip.is_loopback()).then_some(address.ip)
+                usable_ipv4_ice_address(address.ip).then_some(address.ip)
             })
         }));
     }
     addresses.sort_unstable();
     addresses.dedup();
     addresses
+}
+
+const fn usable_ipv4_ice_address(address: Ipv4Addr) -> bool {
+    !address.is_link_local()
+        && !address.is_broadcast()
+        && !address.is_multicast()
+        && !address.is_unspecified()
 }
 
 fn run_session(
@@ -4153,6 +4164,16 @@ mod tests {
     }
 
     #[test]
+    fn local_ice_candidates_exclude_unusable_ipv4_addresses() {
+        assert!(usable_ipv4_ice_address(Ipv4Addr::LOCALHOST));
+        assert!(usable_ipv4_ice_address(Ipv4Addr::new(192, 168, 1, 10)));
+        assert!(!usable_ipv4_ice_address(Ipv4Addr::new(169, 254, 1, 10)));
+        assert!(!usable_ipv4_ice_address(Ipv4Addr::BROADCAST));
+        assert!(!usable_ipv4_ice_address(Ipv4Addr::new(224, 0, 0, 1)));
+        assert!(!usable_ipv4_ice_address(Ipv4Addr::UNSPECIFIED));
+    }
+
+    #[test]
     fn frame_sequence_gap_rearms_keyframe_gate() {
         let mut gate = KeyframeGate::new();
         let mut last_sequence = None;
@@ -5110,6 +5131,37 @@ mod tests {
         assert!(answer.lines().any(|line| line.starts_with("m=application")));
         assert!(answer.lines().any(|line| line == "a=ice-lite"));
         assert!(webrtc.active_api_session_ids().contains(&session.id));
+
+        let connected = webrtc.health_snapshot();
+        assert_eq!(connected.active_sessions, 1);
+        assert_eq!(connected.multi_track_sessions, 1);
+        assert_eq!(connected.multi_tracks, 0);
+        assert_eq!(connected.fixed_sessions, 0);
+
+        let source = test_source();
+        let (tx, _rx) = bounded(1);
+        let subscription = SourceSubscription::fixed(
+            webrtc.live.inner.clone(),
+            SessionSender {
+                id: session.id,
+                track_id: Some(TrackId::parse("camera-0".to_owned()).unwrap()),
+                tx,
+                queue_stats: Arc::new(SessionQueueStats::default()),
+                queue_high_water: webrtc.live.inner.queue_high_water.clone(),
+                latest_keyframe: Arc::new(Mutex::new(None)),
+                poller: Arc::new(Poller::new().unwrap()),
+                shutdown: Arc::new(AtomicBool::new(false)),
+            },
+            source,
+            None,
+        );
+        let streaming = webrtc.health_snapshot();
+        assert_eq!(streaming.active_sessions, 1);
+        assert_eq!(streaming.multi_track_sessions, 1);
+        assert_eq!(streaming.multi_tracks, 1);
+        assert_eq!(streaming.fixed_sessions, 0);
+
+        drop(subscription);
         assert!(webrtc.close_api_session(session.id));
         assert_eq!(
             closed_rx.recv_timeout(Duration::from_secs(1)).unwrap(),

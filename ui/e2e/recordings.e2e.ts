@@ -68,6 +68,29 @@ test('shows fleet recording state, camera evidence, filters, and gap playback li
 	await expect(page).toHaveURL(/\/keep\?camera=front-door&stream=main&at=\d+/);
 });
 
+test('keeps recording coverage inside a short desktop shell', async ({ page }) => {
+	await page.setViewportSize({ width: 1188, height: 624 });
+	await mockRecordingCoverage(page);
+	await mockControlPeer(page);
+	await page.goto('/recordings');
+
+	await expect(page.locator('[data-recording-camera-detail]')).toBeVisible();
+	const geometry = await page.evaluate(() => {
+		const main = document.querySelector<HTMLElement>('[data-shell-main]');
+		const workspace = document.querySelector<HTMLElement>('[data-recording-workspace]');
+		if (!main || !workspace) throw new Error('Recording workspace is unavailable');
+		return {
+			mainClientHeight: main.clientHeight,
+			mainScrollHeight: main.scrollHeight,
+			workspaceClientHeight: workspace.clientHeight,
+			workspaceScrollHeight: workspace.scrollHeight
+		};
+	});
+
+	expect(geometry.mainScrollHeight).toBeLessThanOrEqual(geometry.mainClientHeight + 1);
+	expect(geometry.workspaceScrollHeight).toBeGreaterThan(geometry.workspaceClientHeight);
+});
+
 test('pages a 127-camera fleet without growing the recording dashboard DOM', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await mockRecordingCoverage(page, 127);

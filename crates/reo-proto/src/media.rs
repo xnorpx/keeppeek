@@ -258,7 +258,10 @@ pub(crate) fn parse_video_header(
 
     let data_len = read_u32_le(data, 8);
     if data_len as usize > crate::MAX_MEDIA_FRAME {
-        return Err(BcError::Protocol("video frame exceeds maximum size"));
+        return Err(BcError::MediaFrameTooLarge {
+            size: data_len as usize,
+            max: crate::MAX_MEDIA_FRAME,
+        });
     }
     let additional_header_size = read_u32_le(data, 12);
     let microseconds = read_u32_le(data, 16);
@@ -558,8 +561,25 @@ mod tests {
 
         assert!(matches!(
             parse_video_header(&header),
-            Err(BcError::Protocol(_))
+            Err(BcError::MediaFrameTooLarge { size, max })
+                if size == declared_len as usize && max == crate::MAX_MEDIA_FRAME
         ));
+    }
+
+    #[test]
+    fn high_resolution_video_frame_header_is_accepted() {
+        let declared_len = 800 * 1024_u32;
+        let mut header = Vec::new();
+        header.extend_from_slice(&MEDIA_MAGIC_IFRAME_BASE.to_le_bytes());
+        header.extend_from_slice(b"H265");
+        header.extend_from_slice(&declared_len.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+
+        let (_, data_len, _, _, _) = parse_video_header(&header).unwrap();
+
+        assert_eq!(data_len, declared_len);
     }
 
     #[test]

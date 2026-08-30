@@ -44,7 +44,12 @@ test('remote User signs in without persistent token artifacts and returns on rev
 	await page.getByLabel('Access key').fill(accessKey);
 	await page.getByRole('button', { name: 'Sign in' }).click();
 
-	await expect(page.locator('[data-shell-context]')).toContainText('Remote · User');
+	await expect(page.locator('[data-shell-context]')).toBeHidden();
+	await expect(page.locator('[data-shell-status]')).toHaveCount(0);
+	await expect(page.locator('[data-shell-status-indicators]')).toBeVisible();
+	await expect(
+		page.locator('[data-shell-rail-actions]').getByRole('button', { name: 'Sign out' })
+	).toBeVisible();
 	await expect(page.getByRole('navigation', { name: 'Primary navigation' })).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(0);
 	await expect(page.getByRole('link', { name: 'Cameras' })).toHaveCount(0);

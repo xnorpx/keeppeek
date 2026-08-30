@@ -1103,7 +1103,7 @@ mod tests {
             let mut sub_stream_id = None;
             let mut saw_main = false;
             let mut saw_sub = false;
-            let mut output = vec![0_u8; reo_proto::MAX_MEDIA_FRAME];
+            let mut output = vec![0_u8; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
 
             while Instant::now() < deadline && !(saw_main && saw_sub) {
                 drain_udp_client(
@@ -1240,7 +1240,7 @@ mod tests {
         let mut sub_stream_id = None;
         let mut saw_main = false;
         let mut saw_sub = false;
-        let mut output = vec![0_u8; reo_proto::MAX_MEDIA_FRAME];
+        let mut output = vec![0_u8; reo_proto::DEFAULT_MEDIA_OUTPUT_BUFFER_SIZE];
         let mut input = [0_u8; 64 * 1024];
 
         while Instant::now() < deadline && !(saw_main && saw_sub) {

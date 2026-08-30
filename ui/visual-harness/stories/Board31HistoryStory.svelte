@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import CameraIcon from '@lucide/svelte/icons/camera';
 	import HistoryIcon from '@lucide/svelte/icons/history';
+	import InfoIcon from '@lucide/svelte/icons/info';
 	import Undo2Icon from '@lucide/svelte/icons/undo-2';
 
 	type State = 'focused' | 'keep';
@@ -11,6 +13,7 @@
 
 	let { state, onhistory = () => {} }: Props = $props();
 	const cameraId = 'front-door';
+	const filmstripCameras = ['Front Door', 'Driveway', 'Porch'] as const;
 
 	onMount(() => {
 		const root = document.documentElement;
@@ -39,13 +42,26 @@
 			class="flex size-full flex-col justify-between rounded-[var(--radius-lg)] border border-hairline bg-video p-3"
 		>
 			<div class="flex items-center justify-between">
-				<div
-					class="flex h-[22px] w-16 shrink-0 items-center gap-1.5 rounded-[var(--radius-xs)] bg-[#0C0D0FB8] px-2"
-				>
-					<span class="size-[5px] shrink-0 rounded-full bg-white/85"></span>
-					<span class="font-mono text-2xs tracking-[0.08em] text-foreground">FOCUS</span>
-				</div>
 				<span class="font-mono text-2xs text-[#FFFFFFD1]">06:37:23</span>
+				<div data-live-video-camera-controls class="flex h-[22px] items-stretch">
+					<a
+						href="/camera?camera=front-door"
+						class="grid w-6 place-items-center rounded-l-[var(--radius-xs)] border border-r-0 border-white/10 bg-[#0C0D0FB8] text-white/55"
+						aria-label="Open Front Door camera"
+					>
+						<CameraIcon class="size-3" />
+					</a>
+					<button
+						type="button"
+						class="flex items-center gap-1.5 rounded-r-[var(--radius-xs)] border border-white/10 bg-[#0C0D0FB8] px-1.5 text-white/80"
+						aria-label="Front Door camera information"
+					>
+						<span class="size-[5px] rounded-full bg-healthy"></span>
+						<span class="text-[10px] font-medium">Front Door</span>
+						<span class="h-[11px] w-px bg-white/10"></span>
+						<InfoIcon class="size-3 text-white/55" />
+					</button>
+				</div>
 			</div>
 			<div class="flex h-[76px] w-full shrink-0 flex-col items-center justify-center gap-2">
 				<button
@@ -59,7 +75,20 @@
 				</button>
 				<p class="text-xs leading-4 text-text-muted">Open Keep for this camera</p>
 			</div>
-			<span class="text-md leading-[18px] font-semibold text-foreground">Front Door</span>
+			<aside
+				data-focus-filmstrip
+				class="flex h-10 shrink-0 gap-1 rounded-sm bg-[#0C0D0FB8] p-1"
+				aria-label="Camera filmstrip"
+			>
+				{#each filmstripCameras as camera (camera)}
+					<span
+						class="flex min-w-0 flex-1 items-end rounded-xs border px-1.5 pb-1 text-2xs font-medium {camera ===
+						'Front Door'
+							? 'border-primary text-white'
+							: 'border-white/10 text-white/55'}">{camera}</span
+					>
+				{/each}
+			</aside>
 		</section>
 	{:else}
 		<section
@@ -71,7 +100,7 @@
 				class="flex h-[38px] shrink-0 items-center gap-2 border-b border-hairline bg-[#B7410E24] px-3"
 			>
 				<Undo2Icon class="size-[13px] shrink-0 text-primary-soft" />
-				<span class="text-[13px] leading-4 text-foreground">From Focus · Front Door</span>
+				<span class="text-[13px] leading-4 text-foreground">From Viewer · Front Door</span>
 			</header>
 			<div class="flex min-h-0 flex-1">
 				<div class="flex min-w-0 flex-1 flex-col justify-end bg-video p-3">

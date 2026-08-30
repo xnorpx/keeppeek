@@ -1040,8 +1040,20 @@ fn register_webrtc_metrics(registry: &mut Registry, health: &ServerHealthRespons
     register_gauge(
         registry,
         "webrtc_active_sessions",
-        "Current WebRTC sessions delivering media",
+        "Current WebRTC sessions",
         webrtc.active_sessions,
+    );
+    register_gauge(
+        registry,
+        "webrtc_multi_track_sessions",
+        "Current API WebRTC client sessions",
+        webrtc.multi_track_sessions,
+    );
+    register_gauge(
+        registry,
+        "webrtc_multi_tracks",
+        "Current media tracks across API WebRTC client sessions",
+        webrtc.multi_tracks,
     );
     register_gauge(
         registry,

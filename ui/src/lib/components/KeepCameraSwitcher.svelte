@@ -89,7 +89,7 @@
 	}
 </script>
 
-<div class="grid gap-1" data-camera-switcher data-selected-camera={selectedCameraId}>
+<div class="grid min-w-0 gap-1" data-camera-switcher data-selected-camera={selectedCameraId}>
 	<span id="keep-camera-switcher-label" class="text-xs font-medium text-muted-foreground">
 		Camera
 	</span>
@@ -111,7 +111,7 @@
 
 		<Popover.Root bind:open>
 			<Popover.Trigger
-				class="flex min-w-0 flex-1 items-center justify-between gap-3 px-2.5 text-left transition-colors hover:bg-accent focus-visible:outline-none sm:min-w-48"
+				class="flex min-w-0 flex-1 items-center justify-between gap-3 px-2.5 text-left transition-colors hover:bg-accent focus-visible:outline-none"
 				disabled={!selectedCamera}
 				aria-label={`Choose camera, ${cameraName(selectedCamera)}, ${Math.max(0, selectedIndex) + 1} of ${cameras.length}`}
 			>

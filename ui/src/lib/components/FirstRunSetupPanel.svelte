@@ -65,8 +65,8 @@
 		<div class="flex items-center gap-3">
 			<span
 				class="grid place-items-center rounded-sm bg-primary font-semibold text-on-primary {paperFrame
-					? 'size-[34px] text-base leading-5'
-					: 'size-9'}">K</span
+					? 'h-[34px] w-[38px] font-mono text-xs leading-4'
+					: 'h-9 w-10 font-mono text-xs'}">KP</span
 			>
 			<h2
 				id="setup-heading"

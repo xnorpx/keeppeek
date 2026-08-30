@@ -9,8 +9,8 @@ function roundedSize(element: Element): [number, number] {
 	return [Math.round(bounds.width), Math.round(bounds.height)];
 }
 
-describe('Board 6 Peek live wall story', () => {
-	it('renders the exact shell, context, grid rows, overflow, and status lanes', async () => {
+describe('Board 6 Dashboard live wall story', () => {
+	it('renders the full-height grid with a floating selector', async () => {
 		await page.viewport(1440, 900);
 		const { container } = await render(Board06PeekLiveWallStory);
 		await document.fonts.ready;
@@ -24,21 +24,29 @@ describe('Board 6 Peek live wall story', () => {
 			[1374, 858]
 		]);
 		const main = frame!.children[1];
-		expect([...main.children].map(roundedSize)).toEqual([
-			[1374, 52],
-			[1374, 774],
-			[1374, 32]
-		]);
+		const selector = frame!.querySelector<HTMLElement>('[data-peek-paper-context]');
 		const grid = frame!.querySelector<HTMLElement>('[data-peek-paper-grid]');
+		expect(selector).not.toBeNull();
 		expect(grid).not.toBeNull();
+		expect(roundedSize(selector!)[1]).toBe(32);
 		expect([...grid!.children].map(roundedSize)).toEqual([
-			[1342, 340],
-			[1342, 340],
-			[1342, 38]
+			[1358, 390],
+			[1358, 390],
+			[1358, 38]
 		]);
+		const selectorBounds = selector!.getBoundingClientRect();
+		const mainBounds = main.getBoundingClientRect();
+		const gridBounds = grid!.getBoundingClientRect();
+		expect(
+			Math.abs(
+				selectorBounds.left + selectorBounds.width / 2 - (mainBounds.left + mainBounds.width / 2)
+			)
+		).toBeLessThanOrEqual(1);
+		expect(selectorBounds.top).toBeGreaterThan(gridBounds.top);
+		expect(selectorBounds.bottom).toBeLessThan(gridBounds.bottom);
 		const tiles = [...frame!.querySelectorAll<HTMLElement>('[data-peek-camera]')];
 		expect(tiles).toHaveLength(6);
-		expect(tiles.map(roundedSize)).toEqual(Array.from({ length: 6 }, () => [439, 340]));
+		expect(tiles.map(roundedSize)).toEqual(Array.from({ length: 6 }, () => [445, 390]));
 		const frontDoorTile = frame!.querySelector<HTMLElement>('[data-peek-camera="front-door"]');
 		const frontDoorLabel = frontDoorTile?.querySelector<HTMLElement>('[data-peek-camera-label]');
 		const frontDoorDiagnostics = frontDoorTile?.querySelector<HTMLElement>(
@@ -53,13 +61,10 @@ describe('Board 6 Peek live wall story', () => {
 		expect(frontDoorLabel).toBe(frontDoorDiagnostics);
 		expect(labelBounds.left).toBeGreaterThan(tileBounds.left + tileBounds.width / 2);
 		expect(labelBounds).toEqual(diagnosticsBounds);
-		const fleetRuntime = frame!.querySelector<HTMLElement>('[data-peek-paper-fleet-runtime]');
-		expect(fleetRuntime).not.toBeNull();
-		expect(fleetRuntime!.textContent?.replace(/\s+/g, ' ')).toContain(
-			'6 CONFIG · 5 LINK · 4 FRESH · 4 DECODE · 4/6 REC'
-		);
-		expect(fleetRuntime!.textContent).toContain('HOSTCPU 34% RAM 6.1/32 GB');
-		expect(fleetRuntime!.textContent).toContain('KEEPPEEKCPU 4% RAM 0.3 GB');
+		expect(selector!.textContent?.replace(/\s+/g, ' ').trim()).toBe('All cameras');
+		expect(selector!.textContent).not.toContain('PEEK');
+		expect(frame!.querySelector('[data-peek-paper-fleet-runtime]')).toBeNull();
+		expect(frame!.querySelector('[data-peek-paper-status]')).toBeNull();
 		expect(frame!.textContent).not.toContain('last frame');
 		expect(frame!.textContent).not.toContain('SUB ·');
 		await page.getByRole('button', { name: 'Front Door camera information' }).click();

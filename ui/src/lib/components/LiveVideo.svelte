@@ -4,6 +4,7 @@
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { LiveQuality } from '$lib/types';
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
+	import CameraIcon from '@lucide/svelte/icons/camera';
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import { Popover } from 'bits-ui';
 
@@ -86,6 +87,7 @@
 		diagnosticsLabel?: string;
 		diagnosticsStatusClass?: string;
 		diagnosticsPosition?: 'top-right' | 'bottom-right';
+		cameraHref?: string;
 		diagnosticsRecording?: {
 			state: 'recording' | 'not-progressing' | 'pending' | 'off' | 'unknown';
 			detail: string;
@@ -96,6 +98,7 @@
 		};
 		onframeactivitychange?: (active: boolean) => void;
 		onvisibilitychange?: (visibility: GridTileVisibility) => void;
+		onvideosizechange?: (size: { width: number; height: number; stream: 'main' | 'sub' }) => void;
 		class?: string;
 	};
 
@@ -108,9 +111,11 @@
 		diagnosticsLabel,
 		diagnosticsStatusClass = 'bg-white/65',
 		diagnosticsPosition = 'top-right',
+		cameraHref,
 		diagnosticsRecording,
 		onframeactivitychange,
 		onvisibilitychange,
+		onvideosizechange,
 		class: className = ''
 	}: Props = $props();
 
@@ -133,6 +138,7 @@
 	let lastPresentedFrameAt = 0;
 	let frameActivityActive = $state(false);
 	let frozenFrameUrl = $state<string | null>(null);
+	let reportedVideoSize = '';
 	let mounted = false;
 	// The compositor discards every frame while the tab is hidden; those are not render drops.
 	let renderDropsNeedRebaseline = false;
@@ -253,6 +259,11 @@
 		const width = video?.videoWidth ?? 0;
 		const height = video?.videoHeight ?? 0;
 		videoAspectRatio = width > 0 && height > 0 ? width / height : null;
+		if (width <= 0 || height <= 0) return;
+		const signature = `${activeStream}:${width}x${height}`;
+		if (signature === reportedVideoSize) return;
+		reportedVideoSize = signature;
+		onvideosizechange?.({ width, height, stream: activeStream });
 	}
 
 	function handleVideoResize() {
@@ -521,25 +532,45 @@
 		/>
 	{/if}
 	<Popover.Root bind:open={diagnosticsOpen}>
-		<Popover.Trigger
-			data-peek-camera-label={diagnosticsLabel ?? undefined}
-			class="absolute right-2 z-30 rounded-sm border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {diagnosticsPosition ===
+		<div
+			data-live-video-camera-controls={cameraHref ? '' : undefined}
+			class="absolute right-2 z-30 flex max-w-[calc(100%-1rem)] items-stretch justify-end {diagnosticsPosition ===
 			'bottom-right'
 				? 'bottom-2'
-				: 'top-2'} {diagnosticsLabel
-				? 'inline-flex h-[26px] max-w-[calc(100%-1rem)] items-center gap-2 px-2'
-				: 'grid size-6 place-items-center'} {showDiagnostics ? '' : 'hidden'} {diagnosticsOpen
-				? 'bg-black/90 text-white ring-1 ring-white/35'
-				: ''}"
-			aria-label={diagnosticsAccessibleLabel}
+				: 'top-2'}"
 		>
-			{#if diagnosticsLabel}
-				<span class="size-1.5 shrink-0 rounded-full {diagnosticsStatusClass}"></span>
-				<span class="max-w-36 truncate text-xs font-medium">{diagnosticsLabel}</span>
-				<span class="h-3.5 w-px shrink-0 bg-white/15"></span>
+			{#if cameraHref && diagnosticsLabel}
+				<!-- eslint-disable svelte/no-navigation-without-resolve -->
+				<a
+					href={cameraHref}
+					class="grid h-[26px] w-7 shrink-0 place-items-center rounded-l-sm border border-r-0 border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none"
+					aria-label={`Open ${diagnosticsLabel} camera`}
+					title={`Open ${diagnosticsLabel} camera`}
+				>
+					<CameraIcon class="size-3.5" />
+				</a>
+				<!-- eslint-enable svelte/no-navigation-without-resolve -->
 			{/if}
-			<InfoIcon class="size-3.5 shrink-0" />
-		</Popover.Trigger>
+			<Popover.Trigger
+				data-peek-camera-label={diagnosticsLabel ?? undefined}
+				class="min-w-0 border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {cameraHref &&
+				diagnosticsLabel
+					? 'rounded-r-sm'
+					: 'rounded-sm'} {diagnosticsLabel
+					? 'inline-flex h-[26px] items-center gap-2 px-2'
+					: 'grid size-6 place-items-center'} {showDiagnostics ? '' : 'hidden'} {diagnosticsOpen
+					? 'bg-black/90 text-white ring-1 ring-white/35'
+					: ''}"
+				aria-label={diagnosticsAccessibleLabel}
+			>
+				{#if diagnosticsLabel}
+					<span class="size-1.5 shrink-0 rounded-full {diagnosticsStatusClass}"></span>
+					<span class="max-w-36 truncate text-xs font-medium">{diagnosticsLabel}</span>
+					<span class="h-3.5 w-px shrink-0 bg-white/15"></span>
+				{/if}
+				<InfoIcon class="size-3.5 shrink-0" />
+			</Popover.Trigger>
+		</div>
 		<Popover.Portal>
 			<Popover.Content
 				role="dialog"
