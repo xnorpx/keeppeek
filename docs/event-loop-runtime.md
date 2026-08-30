@@ -29,7 +29,7 @@ The runtime supports Linux, macOS, and Windows using the same thread and message
 
 Windows timer-resolution requests use the `windows` crate, request 1 ms timing for the process runtime, and are balanced during shutdown and early error returns. Default configuration paths use `%APPDATA%` on Windows, `~/Library/Application Support` on macOS, and `$XDG_CONFIG_HOME` or `~/.config` on Linux.
 
-The CI build-and-test matrix runs natively on `ubuntu-latest`, `macos-latest`, and `windows-latest`. Platform support is not inferred from a Unix-host cross-compile alone.
+The CI Rust test matrix runs natively on `ubuntu-latest`, `macos-latest`, and `windows-latest`. Separate macOS and Windows build jobs verify platform service installation in parallel with the tests. Linux tests and Clippy compile the workspace without a duplicate build job. Platform support is not inferred from a Unix-host cross-compile alone.
 
 Each physical camera worker owns:
 

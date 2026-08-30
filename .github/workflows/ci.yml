@@ -244,14 +244,14 @@ jobs:
           KEEPPEEK_E2E_MODEL: ${{ github.workspace }}/target/yolo11n.pt
         run: python -m pytest -q tests/test_e2e.py
 
-  build-and-test:
-    name: Build & Test (${{ matrix.os }})
+  rust-build:
+    name: Rust Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -264,7 +264,7 @@ jobs:
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - if: runner.os != 'Linux'
+      - name: Build Rust workspace
         run: cargo build --all
       - name: Verify Windows service installation
         if: runner.os == 'Windows'
@@ -310,6 +310,27 @@ jobs:
           plutil -lint "$app/Contents/Info.plist"
           KEEPPEEK_NO_UI=1 "$app/Contents/MacOS/KeepPeek"
           launchctl print "gui/$(id -u)/com.keeppeek"
+
+  rust-test:
+    name: Rust Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Run Rust tests
         id: rust-tests
         shell: bash
@@ -328,6 +349,25 @@ jobs:
           path: rust-test-results.log
           if-no-files-found: ignore
           retention-days: 14
+
+  rust-compatibility-gate:
+    name: Build & Test (${{ matrix.os }})
+    if: always()
+    needs: [rust-build, rust-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Require separate Rust build and test jobs
+        env:
+          RUST_BUILD_RESULT: ${{ needs.rust-build.result }}
+          RUST_TEST_RESULT: ${{ needs.rust-test.result }}
+        run: |
+          test "$RUST_BUILD_RESULT" = success
+          test "$RUST_TEST_RESULT" = success
 
   windows-signing:
     name: Windows Signing
@@ -643,7 +683,9 @@ jobs:
         book,
         clippy,
         machete,
-        build-and-test,
+        rust-build,
+        rust-test,
+        rust-compatibility-gate,
         ui-static,
         ui-unit-bun,
         ui-gate,
@@ -662,7 +704,9 @@ jobs:
         fmt,
         clippy,
         machete,
-        build-and-test,
+        rust-build,
+        rust-test,
+        rust-compatibility-gate,
         ui-static,
         ui-unit-bun,
         ui-e2e-build,
@@ -701,6 +745,11 @@ jobs:
               'Format',
               'Clippy',
               'Unused Dependencies',
+              'Rust Build (macos-latest)',
+              'Rust Build (windows-latest)',
+              'Rust Test (ubuntu-latest)',
+              'Rust Test (macos-latest)',
+              'Rust Test (windows-latest)',
               'Build & Test (ubuntu-latest)',
               'Build & Test (macos-latest)',
               'Build & Test (windows-latest)',
