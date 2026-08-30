@@ -993,14 +993,14 @@ const fn video_dimensions(config: &MediaConfig) -> Option<(u16, u16)> {
     }
 }
 
-fn sample_entry_from_media_config(config: &MediaConfig) -> SampleEntry {
-    match config {
+fn sample_entry_from_media_config(config: &MediaConfig) -> Result<SampleEntry> {
+    Ok(match config {
         MediaConfig::AvcConfig(config) => SampleEntry::Avc1(Avc1Box::new(config)),
-        MediaConfig::HevcConfig(config) => SampleEntry::Hev1(Hev1Box::new(config)),
+        MediaConfig::HevcConfig(config) => SampleEntry::Hev1(Hev1Box::new(config)?),
         MediaConfig::Vp9Config(config) => SampleEntry::Vp09(Vp09Box::new(config)),
         MediaConfig::AacConfig(config) => SampleEntry::Mp4a(Mp4aBox::new(config)),
         MediaConfig::TtxtConfig(_) => SampleEntry::Tx3g(Tx3gBox::default()),
-    }
+    })
 }
 
 // TODO creation_time, modification_time
@@ -1077,7 +1077,7 @@ impl Mp4TrackWriter {
         trak.mdia.minf.stbl.stsd.entries = sample_descriptions
             .iter()
             .map(sample_entry_from_media_config)
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             trak,
             chunk_buffer: BytesMut::new(),

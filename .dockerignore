@@ -1,4 +1,11 @@
 .git
 target
+data/sample-videos
+ui/.cargo-ui
+ui/.svelte-kit
 ui/build
+ui/coverage
 ui/node_modules
+ui/playwright-report
+ui/test-results
+ui/visual-harness/node_modules

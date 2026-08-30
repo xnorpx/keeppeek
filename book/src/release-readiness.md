@@ -17,6 +17,29 @@ Those checks prove deterministic contracts and regression fixtures. They do not 
 particular camera firmware, network, disk, browser, reverse proxy, notification account, or broker
 will behave correctly under sustained load.
 
+## Release and dependency integrity
+
+`Cargo.lock` is a tracked release input. Direct Cargo requirements name a compatible version, and
+repository build, test, benchmark, container, and release commands use `--locked`. CI runs
+`cargo audit --deny warnings` without advisory exceptions.
+
+The UI and visual harness intentionally do not track JavaScript lockfiles. Every direct Bun
+dependency uses an exact version, while transitive dependencies resolve from the public npm
+registry on each clean install. CI creates a separate temporary lockfile for each manifest with
+dependency scripts disabled, runs `bun audit`, and rejects high or critical advisories. This policy
+detects current ecosystem breakage but does not make JavaScript transitive resolution reproducible
+between runs.
+
+The object-detection example intentionally tests the newest compatible Python packages. CI uses
+Python 3.12 and resolves `requirements.txt` through `pip-audit` without installing the full model
+runtime in the audit job.
+
+The embedded CCTV Camera Database comes from the v2.8.0 release archive. The build verifies its
+SHA-256 digest before opening the ZIP. Container builds use Bun 1.4.0 and immutable base-image
+digests, then CI starts the production image and probes its HTTP listener. A version tag can create
+release artifacts only when it points to a commit on `main` and that exact commit has a successful
+push CI run.
+
 ## Representative deployment matrix
 
 Before promotion, record exact evidence for the deployment that will rely on KeepPeek:

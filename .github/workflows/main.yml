@@ -59,12 +59,12 @@ jobs:
         env:
           KEEPPEEK_RUN_SLOW_TESTS: "1"
         run: |
-          cargo test -p test-camera checked_in_mp4_fixtures_stream_through_both_backends --lib
-          cargo test -p test-camera rtsp_camera_streams_main_and_sub_profiles --lib
+          cargo test --locked -p test-camera checked_in_mp4_fixtures_stream_through_both_backends --lib
+          cargo test --locked -p test-camera rtsp_camera_streams_main_and_sub_profiles --lib
       - name: Run opt-in storage pipeline regressions
         env:
           KEEPPEEK_RUN_SLOW_TESTS: "1"
-        run: cargo test --test storage_pipeline
+        run: cargo test --locked --test storage_pipeline
 
   rust-coverage:
     name: Rust Coverage
@@ -91,7 +91,7 @@ jobs:
       - name: Generate Rust coverage
         run: |
           mkdir -p target/main-coverage/rust
-          cargo llvm-cov --workspace --lib --bins --tests --lcov --output-path target/main-coverage/rust/lcov.info
+          cargo llvm-cov --locked --workspace --lib --bins --tests --lcov --output-path target/main-coverage/rust/lcov.info
           cargo llvm-cov report --json --output-path target/main-coverage/rust/coverage.json
           cargo llvm-cov report --html --output-dir target/main-coverage/rust/html
       - name: Upload Rust coverage
@@ -138,7 +138,7 @@ jobs:
           bun add --no-save --exact "$binding@$binding_version" --registry=https://registry.npmjs.org/
           bun -e "await import('rolldown')"
       - name: Build workspace
-        run: cargo build --all
+        run: cargo build --locked --all
       - name: Install NSIS
         if: runner.os == 'Windows'
         shell: bash
@@ -214,7 +214,7 @@ jobs:
       - name: Run platform Rust tests
         if: matrix.os != 'windows-latest'
         shell: bash
-        run: cargo test --all --lib --bins --tests
+        run: cargo test --locked --all --lib --bins --tests
 
   platform-ui-e2e:
     name: Main UI E2E (${{ matrix.os }})

@@ -90,6 +90,12 @@ pub(crate) mod recording_coverage;
 mod runtime_configuration;
 mod stored_media;
 
+use health_snapshot::{
+    bounded_health_detail, connected_video_stream_ids, expected_video_stream_ids,
+    frame_freshness_threshold_ms, keyframe_freshness_threshold_ms, normalized_video_stream_id,
+    recording_freshness_threshold_ms, recording_progressing, stream_transport_connected,
+};
+
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SERVER_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(3);
 const ROUTER_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -100,6 +106,7 @@ const MAX_LOG_STREAM_TAIL: usize = 1_000;
 const MEBIBYTE_BYTES: u64 = 1_048_576;
 const GIBIBYTE_BYTES: u64 = 1_073_741_824;
 const MAX_CREATE_BODY_BYTES: u64 = 4 * 1_024 * 1_024;
+const MAX_DELETE_BODY_BYTES: u64 = 16 * 1_024;
 const PUBLISHED_DETECTION_EVENT_TYPES: [&str; 2] = ["person", "vehicle"];
 const STORED_QUERY_PAGE_ITEMS: usize = 128;
 const DATA_MESSAGE_CHUNK_BYTES: usize = 32 * 1_024;
@@ -4303,15 +4310,8 @@ fn refill_stored_media(
         )
     };
     if !can_refill {
-        let cursors = state
-            .stored_media_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cursor = cursors
-            .get(&(session_id, refill.stored_media_id.clone()))
-            .expect("stored media cursor was validated above");
         return Ok((
-            proto_stored_media_state(&refill.stored_media_id, cursor),
+            stored_media_cursor_state(state, session_id, &refill.stored_media_id)?,
             Vec::new(),
         ));
     }
@@ -4320,15 +4320,8 @@ fn refill_stored_media(
         playback_time_ms.saturating_add(i64::try_from(target_buffer_ms).unwrap_or(i64::MAX));
     let delivery_end = end_time_ms.map_or(buffer_end, |end_time| end_time.min(buffer_end));
     if delivery_end <= delivered_through_ms {
-        let cursors = state
-            .stored_media_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cursor = cursors
-            .get(&(session_id, refill.stored_media_id.clone()))
-            .expect("stored media cursor was validated above");
         return Ok((
-            proto_stored_media_state(&refill.stored_media_id, cursor),
+            stored_media_cursor_state(state, session_id, &refill.stored_media_id)?,
             Vec::new(),
         ));
     }
@@ -4342,15 +4335,8 @@ fn refill_stored_media(
         previous_generation,
     )?
     else {
-        let cursors = state
-            .stored_media_cursors
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cursor = cursors
-            .get(&(session_id, refill.stored_media_id.clone()))
-            .expect("stored media cursor was validated above");
         return Ok((
-            proto_stored_media_state(&refill.stored_media_id, cursor),
+            stored_media_cursor_state(state, session_id, &refill.stored_media_id)?,
             Vec::new(),
         ));
     };
@@ -4379,6 +4365,27 @@ fn refill_stored_media(
     cursor.status = stored_media_status(cursor.end_time_ms, cursor.delivered_through_ms);
     let cursor_state = proto_stored_media_state(&refill.stored_media_id, cursor);
     Ok((cursor_state, batch.messages))
+}
+
+fn stored_media_cursor_state(
+    state: &ServerState,
+    session_id: SessionId,
+    stored_media_id: &str,
+) -> Result<proto::StoredMediaState, ControlCommandError> {
+    let cursors = state
+        .stored_media_cursors
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cursor = cursors
+        .get(&(session_id, stored_media_id.to_owned()))
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::NotFound,
+                404,
+                "stored media cursor was not found",
+            )
+        })?;
+    Ok(proto_stored_media_state(stored_media_id, cursor))
 }
 
 fn set_stored_media_playback(
@@ -8216,6 +8223,7 @@ pub struct ServerState {
     api_session_owners: Arc<Mutex<HashMap<SessionId, ApiSessionRecord>>>,
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
+    stored_media_cursor_reservations: Arc<Mutex<HashSet<(SessionId, String)>>>,
     ptz_owners: Arc<Mutex<HashMap<String, SessionId>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     export_history_path: Option<Arc<PathBuf>>,
@@ -8330,6 +8338,7 @@ impl ServerState {
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
             stored_media_cursors: Arc::new(Mutex::new(HashMap::new())),
+            stored_media_cursor_reservations: Arc::new(Mutex::new(HashSet::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
             export_history_path: Some(Arc::new(export_history_path)),
@@ -9667,7 +9676,18 @@ fn delete_api_session(
     let Some(body) = request.data() else {
         return api_status(400, "missing delete request body");
     };
-    let delete: DeleteRequest = match serde_json::from_reader(body) {
+    let mut encoded = Vec::new();
+    if body
+        .take(MAX_DELETE_BODY_BYTES + 1)
+        .read_to_end(&mut encoded)
+        .is_err()
+    {
+        return api_status(400, "unable to read delete request body");
+    }
+    if encoded.len() as u64 > MAX_DELETE_BODY_BYTES {
+        return api_status(413, "delete request body exceeds 16 KiB");
+    }
+    let delete: DeleteRequest = match serde_json::from_slice(&encoded) {
         Ok(delete) => delete,
         Err(error) => return api_status(400, &format!("invalid delete request JSON: {error}")),
     };
@@ -9928,154 +9948,6 @@ fn query_usize(
         ));
     }
     Ok(value)
-}
-
-fn normalized_video_stream_id(value: &str) -> Option<&str> {
-    match value.strip_prefix("video_").unwrap_or(value) {
-        "main" => Some("main"),
-        "sub" => Some("sub"),
-        _ => None,
-    }
-}
-
-fn expected_video_stream_ids(
-    camera: &CameraEntry,
-    router_status: Option<&CameraStatus>,
-    streams: &[StreamHealthReport],
-) -> Vec<String> {
-    let mut ids = router_status
-        .into_iter()
-        .flat_map(|status| status.expected_streams.iter())
-        .filter_map(|stream| normalized_video_stream_id(stream))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if ids.is_empty() {
-        ids.extend(
-            camera
-                .info
-                .profiles
-                .iter()
-                .filter_map(|profile| normalized_video_stream_id(&profile.stream))
-                .map(str::to_owned),
-        );
-    }
-    if ids.is_empty() {
-        ids.extend(
-            streams
-                .iter()
-                .filter_map(|stream| normalized_video_stream_id(&stream.report.kind))
-                .map(str::to_owned),
-        );
-    }
-    ids.sort_unstable();
-    ids.dedup();
-    ids
-}
-
-fn connected_video_stream_ids(router_status: Option<&CameraStatus>) -> Option<Vec<String>> {
-    let status = router_status?;
-    if status.expected_streams.is_empty() && status.connected_streams.is_empty() {
-        return None;
-    }
-    let mut ids = status
-        .connected_streams
-        .iter()
-        .filter_map(|stream| normalized_video_stream_id(stream))
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    ids.sort_unstable();
-    ids.dedup();
-    Some(ids)
-}
-
-fn stream_transport_connected(
-    stream_id: &str,
-    router_status: Option<&CameraStatus>,
-) -> Option<bool> {
-    let status = router_status?;
-    if !status.expected_streams.is_empty() || !status.connected_streams.is_empty() {
-        return Some(status.connected_streams.iter().any(|connected| {
-            normalized_video_stream_id(connected).is_some_and(|connected| connected == stream_id)
-        }));
-    }
-    match status.lifecycle {
-        CameraLifecycle::Connected => Some(true),
-        CameraLifecycle::Reconnecting | CameraLifecycle::Stopped => Some(false),
-        CameraLifecycle::Starting | CameraLifecycle::Degraded | CameraLifecycle::ShuttingDown => {
-            None
-        }
-    }
-}
-
-fn frame_freshness_threshold_ms(expected_fps: f64) -> u64 {
-    let report_floor = REPORT_INTERVAL
-        .as_millis()
-        .saturating_mul(2)
-        .try_into()
-        .unwrap_or(u64::MAX);
-    if !expected_fps.is_finite() || expected_fps <= 0.0 {
-        return STREAM_REPORT_FRESHNESS_THRESHOLD_MS;
-    }
-    let frame_window = (3_000.0 / expected_fps).ceil().max(1.0) as u64;
-    report_floor.max(frame_window).min(120_000)
-}
-
-fn keyframe_freshness_threshold_ms(profile: Option<&ProfileSummary>, observed_kf_fps: f64) -> u64 {
-    let configured_interval_ms = profile.and_then(|profile| {
-        let gop = f64::from(profile.gop?);
-        let fps = profile.framerate?;
-        (fps.is_finite() && fps > 0.0).then_some(gop / fps * 1_000.0)
-    });
-    let observed_interval_ms =
-        (observed_kf_fps.is_finite() && observed_kf_fps > 0.0).then_some(1_000.0 / observed_kf_fps);
-    configured_interval_ms.or(observed_interval_ms).map_or(
-        STREAM_REPORT_FRESHNESS_THRESHOLD_MS,
-        |interval| {
-            (interval * 3.0)
-                .ceil()
-                .max(STREAM_REPORT_FRESHNESS_THRESHOLD_MS as f64)
-                .min(120_000.0) as u64
-        },
-    )
-}
-
-fn recording_freshness_threshold_ms(config: &StorageConfig) -> u64 {
-    config
-        .short_term_duration
-        .saturating_add(config.flush_interval)
-        .saturating_add(Duration::from_millis(STREAM_REPORT_FRESHNESS_THRESHOLD_MS))
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
-fn recording_progressing(
-    health: Option<&RecordingStreamHealthSnapshot>,
-    threshold_ms: u64,
-    uptime_ms: u64,
-    frames_fresh: bool,
-) -> Option<bool> {
-    if health
-        .and_then(|health| health.last_error.as_ref())
-        .is_some()
-    {
-        return Some(false);
-    }
-    if let Some(age_ms) = health.and_then(|health| health.progress_age_ms) {
-        return Some(age_ms <= threshold_ms);
-    }
-    if health
-        .and_then(|health| health.attempt_age_ms)
-        .is_some_and(|age_ms| age_ms > threshold_ms)
-        || (health.is_none() && frames_fresh && uptime_ms > threshold_ms)
-    {
-        return Some(false);
-    }
-    None
-}
-
-fn bounded_health_detail(value: &str) -> String {
-    value.chars().take(240).collect()
 }
 
 struct StreamProjectionContext<'a> {
@@ -12973,6 +12845,21 @@ mod tests {
     }
 
     #[test]
+    fn delete_rejects_oversized_request_body() {
+        let state = ServerState::empty();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let body = format!(r#"{{"session_id":"{}"}}"#, "1".repeat(16 * 1_024)).into_bytes();
+
+        let response = handle_request(
+            &Request::fake_http("POST", "/delete", Vec::new(), body),
+            &router_tx,
+            &state,
+        );
+
+        assert_eq!(response.status_code, 413);
+    }
+
+    #[test]
     fn canonical_create_rejects_an_uncompressed_offer() {
         let state = ServerState::empty();
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
@@ -13098,6 +12985,24 @@ mod tests {
             );
             assert_eq!(response.status_code, 400);
         }
+        let credential_query_audit = state
+            .access_manager
+            .list_audit(10)
+            .into_iter()
+            .filter(|event| event.result == "credential_in_query")
+            .collect::<Vec<_>>();
+        assert_eq!(credential_query_audit.len(), 2);
+        assert!(
+            credential_query_audit
+                .iter()
+                .all(|event| event.target_id.as_deref() == Some("/metrics"))
+        );
+        assert!(credential_query_audit.iter().all(|event| {
+            !event
+                .target_id
+                .as_deref()
+                .is_some_and(|target| target.contains("550e8400"))
+        }));
     }
 
     #[test]
@@ -15265,6 +15170,18 @@ mod tests {
                 .snapshot(other, "shared-discovery")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn missing_stored_media_cursor_state_returns_not_found() {
+        let state = ServerState::empty();
+
+        let error =
+            stored_media_cursor_state(&state, SessionId::from_u64(1), "closed-during-refill")
+                .unwrap_err();
+
+        assert_eq!(error.code, proto::ErrorCode::NotFound);
+        assert_eq!(error._http_status, 404);
     }
 
     #[test]

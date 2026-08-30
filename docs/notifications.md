@@ -134,7 +134,7 @@ The camera and storage ingress path uses a nonblocking bounded-channel publish c
 release-mode overhead measurement with:
 
 ```sh
-cargo test --release --lib notification_publish_latency -- --ignored --nocapture
+cargo test --locked --release --lib notification_publish_latency -- --ignored --nocapture
 ```
 
 On macOS on the final issue #134 PR branch, 20,000 calls measured clone-only baseline p50/p95 of

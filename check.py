@@ -302,13 +302,22 @@ def write_reports(status: str = "running") -> None:
 
 def phase_commands() -> list[tuple[str, list[str], Path]]:
     macos_feature = ["--features", "macos-test-aws-crypto"] if sys.platform == "darwin" else []
-    nextest = ["cargo", "nextest", "run", "--all", *macos_feature]
+    nextest = ["cargo", "nextest", "run", "--locked", "--all", *macos_feature]
     return [
-        ("Rust build", ["cargo", "build", "--all", "--timings"], REPOSITORY_ROOT),
+        ("Rust build", ["cargo", "build", "--locked", "--all", "--timings"], REPOSITORY_ROOT),
         ("Rust tests", nextest, REPOSITORY_ROOT),
         (
             "Rust Clippy",
-            ["cargo", "clippy", "--all", "--all-targets", "--", "-D", "warnings"],
+            [
+                "cargo",
+                "clippy",
+                "--locked",
+                "--all",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings",
+            ],
             REPOSITORY_ROOT,
         ),
         ("Unused Rust dependencies", ["cargo", "machete"], REPOSITORY_ROOT),

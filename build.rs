@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     env, fs,
@@ -11,7 +12,9 @@ use std::{
 };
 
 const CAMERA_DATABASE_ARCHIVE_URL: &str =
-    "https://github.com/ch-bas/cctv-camera-database/releases/latest/download/cameras.zip";
+    "https://github.com/ch-bas/cctv-camera-database/releases/download/v2.8.0/cameras.zip";
+const CAMERA_DATABASE_ARCHIVE_SHA256: &str =
+    "9b86ff8d4afa8721ab115e3fd0b04ca33a4b28e5b519d2283ea2ef68a0c8f009";
 const CAMERA_DATABASE_ARCHIVE_ENV: &str = "KEEPPEEK_CAMERA_DATABASE_ARCHIVE";
 const CAMERA_DATABASE_ARCHIVE_FILE: &str = "cameras.zip";
 const CAMERA_DATABASE_FILES: &[&str] = &["cameras.json", "cameras.csv", "release-metadata.json"];
@@ -40,10 +43,11 @@ fn main() -> io::Result<()> {
     download_camera_database()?;
 
     println!("cargo:rerun-if-changed=api/webrtc.proto");
-    unsafe {
-        std::env::set_var("PROTOC", protoc_bin_vendored::protoc_bin_path().unwrap());
-    }
-    prost_build::compile_protos(&["api/webrtc.proto"], &["api/"])?;
+    let protoc = protoc_bin_vendored::protoc_bin_path()
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let mut prost_config = prost_build::Config::new();
+    prost_config.protoc_executable(protoc);
+    prost_config.compile_protos(&["api/webrtc.proto"], &["api/"])?;
 
     for input in UI_INPUTS {
         emit_rerun_if_changed(&manifest_dir.join(input), true)?;
@@ -114,8 +118,33 @@ fn download_camera_database() -> io::Result<()> {
         None => download_camera_database_archive()?,
     };
 
+    validate_camera_database_archive_digest(&bytes)?;
     validate_camera_database_archive(&bytes)?;
     fs::write(destination, bytes)
+}
+
+fn validate_camera_database_archive_digest(bytes: &[u8]) -> io::Result<()> {
+    let actual = encode_lower_hex(Sha256::digest(bytes));
+    if actual != CAMERA_DATABASE_ARCHIVE_SHA256 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "camera database archive SHA-256 {actual} does not match {CAMERA_DATABASE_ARCHIVE_SHA256}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = bytes.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
 }
 
 fn download_camera_database_archive() -> io::Result<Vec<u8>> {

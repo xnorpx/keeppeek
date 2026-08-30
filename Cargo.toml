@@ -84,52 +84,52 @@ harness = false
 test = false
 
 [dependencies]
-anyhow = { version = "*" }
-base64 = { version = "*" }
-bytes = { version = "*" }
+anyhow = { version = "1.0.104" }
+base64 = { version = "0.23.1" }
+bytes = { version = "1.12.1" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 chrono-tz = "0.10"
-clap = { version = "*", default-features = false, features = [
+clap = { version = "4.6.6", default-features = false, features = [
   "std",
   "derive",
   "help",
 ] }
-csv = { version = "*" }
+csv = { version = "1.4.0" }
 crossbeam-channel = "0.5.16"
-ctrlc = { version = "*" }
+ctrlc = { version = "3.5.2" }
 flate2 = "1"
 fs4 = { version = "1.1.0", default-features = false }
 hdrhistogram = { version = "7.6.0", default-features = false }
 hmac = "0.13.0"
-image = { version = "*", default-features = false, features = ["jpeg"] }
+image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
 include_dir = "0.7.4"
-mimalloc = { version = "*" }
+mimalloc = { version = "0.1.52" }
 mp4 = { path = "crates/mp4" }
 ipnet = { version = "2.12.1", features = ["serde"] }
 network-interface = "2.0.5"
 polling = "3.11.0"
 pollster = "1.0.1"
-rand = { version = "*" }
+rand = { version = "0.10.2" }
 rumqttc = { version = "0.25.1", default-features = false, features = [
   "use-native-tls",
 ] }
-toml = { version = "*" }
+toml = { version = "1.1.4" }
 onvif = { path = "crates/onvif/onvif" }
 rouille = { path = "crates/rouille" }
 schema = { path = "crates/onvif/schema", features = ["devicemgmt", "media"] }
 reo-proto = { path = "crates/reo-proto" }
 retina = { path = "crates/retina" }
-serde = { version = "*", features = ["derive"] }
-serde_json = { version = "*" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151" }
 socket2 = { version = "0.6" }
 time = { version = "0.3", features = ["macros"] }
-sha1 = { version = "*" }
+sha1 = { version = "0.11.0" }
 str0m = { version = "0.23.0", default-features = false }
-tracing = { version = "*" }
-tracing-subscriber = { version = "*", features = ["env-filter"] }
+tracing = { version = "0.1.44" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 turso = { version = "=0.7.2", default-features = false }
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
-url = { version = "*" }
+url = { version = "2.5.8" }
 sysinfo = "0.39.6"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 prost = "0.14"
@@ -138,7 +138,7 @@ prometheus-client = "0.25.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.11"
 subtle = "2"
-zip = { version = "*", default-features = false, features = ["deflate"] }
+zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 str0m = { version = "0.23.0", default-features = false, features = [
@@ -240,5 +240,6 @@ lto = 'fat'
 [build-dependencies]
 prost-build = "0.14"
 protoc-bin-vendored = "3.2.0"
+sha2 = "0.11"
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
-zip = { version = "*", default-features = false, features = ["deflate"] }
+zip = { version = "7.2.0", default-features = false, features = ["deflate"] }

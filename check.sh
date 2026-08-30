@@ -43,15 +43,15 @@ if ! "$python_cmd" -c 'import black' >/dev/null 2>&1; then
 fi
 
 echo "Building and Testing Rust..."
-cargo build --all
+cargo build --locked --all
 if [ "$(uname -s)" = "Darwin" ]; then
-        cargo nextest run --all --features macos-test-aws-crypto
+        cargo nextest run --locked --all --features macos-test-aws-crypto
 else
-        cargo nextest run --all
+        cargo nextest run --locked --all
 fi
 
 echo "Running Rust Clippy..."
-cargo clippy --all --all-targets -- -D warnings
+cargo clippy --locked --all --all-targets -- -D warnings
 
 echo "Checking for unused Rust dependencies..."
 cargo machete

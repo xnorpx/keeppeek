@@ -195,6 +195,30 @@ impl AvcCBox {
             },
         }
     }
+
+    fn validate(&self) -> Result<()> {
+        if self.sequence_parameter_sets.len() > 31 {
+            return Err(Error::InvalidData(
+                "avcC contains more than 31 sequence parameter sets",
+            ));
+        }
+        if self.picture_parameter_sets.len() > usize::from(u8::MAX) {
+            return Err(Error::InvalidData(
+                "avcC contains more than 255 picture parameter sets",
+            ));
+        }
+        if self
+            .sequence_parameter_sets
+            .iter()
+            .chain(&self.picture_parameter_sets)
+            .any(|nal| nal.bytes.len() > usize::from(u16::MAX))
+        {
+            return Err(Error::InvalidData(
+                "avcC parameter set exceeds the 16-bit wire length",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Mp4Box for AvcCBox {
@@ -263,6 +287,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for AvcCBox {
 
 impl<W: Write> WriteBox<&mut W> for AvcCBox {
     fn write_box(&self, writer: &mut W) -> Result<u64> {
+        self.validate()?;
         let size = self.box_size();
         BoxHeader::new(self.box_type(), size).write(writer)?;
 
@@ -312,7 +337,9 @@ impl NalUnit {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> Result<u64> {
-        writer.write_u16::<BigEndian>(self.bytes.len() as u16)?;
+        let length = u16::try_from(self.bytes.len())
+            .map_err(|_| Error::InvalidData("NAL unit exceeds the 16-bit wire length"))?;
+        writer.write_u16::<BigEndian>(length)?;
         writer.write_all(&self.bytes)?;
         Ok(self.size() as u64)
     }
@@ -386,5 +413,46 @@ mod tests {
 
         assert!(matches!(result, Err(Error::InvalidData(_))));
         assert!(reader.position() <= 16);
+    }
+
+    #[test]
+    fn avcc_rejects_parameter_sets_that_exceed_wire_lengths() {
+        let avcc = AvcCBox {
+            sequence_parameter_sets: vec![NalUnit {
+                bytes: vec![0; usize::from(u16::MAX) + 1],
+            }],
+            ..AvcCBox::default()
+        };
+
+        assert!(matches!(
+            avcc.write_box(&mut Vec::new()),
+            Err(Error::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn avcc_rejects_more_than_31_sequence_parameter_sets() {
+        let avcc = AvcCBox {
+            sequence_parameter_sets: (0..32).map(|_| NalUnit { bytes: vec![1] }).collect(),
+            ..AvcCBox::default()
+        };
+
+        assert!(matches!(
+            avcc.write_box(&mut Vec::new()),
+            Err(Error::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn avcc_rejects_more_than_255_picture_parameter_sets() {
+        let avcc = AvcCBox {
+            picture_parameter_sets: (0..256).map(|_| NalUnit { bytes: vec![1] }).collect(),
+            ..AvcCBox::default()
+        };
+
+        assert!(matches!(
+            avcc.write_box(&mut Vec::new()),
+            Err(Error::InvalidData(_))
+        ));
     }
 }

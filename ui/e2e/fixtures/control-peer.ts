@@ -350,7 +350,9 @@ export type MockControlPeerOptions = {
 	runtimeUpdateError?: string;
 	runtimeUpdateGate?: Promise<void>;
 	mqttIntegration?: MqttIntegration;
+	mqttIntegrationSequence?: readonly MqttIntegration[];
 	mqttUpdateResult?: MqttIntegration;
+	mqttUpdateError?: string;
 	mqttTestResult?: MqttTestResult;
 	storageWriteProbe?: { writable: boolean; detail: string };
 	cameras?: readonly CameraListItem[];
@@ -640,6 +642,9 @@ export async function mockControlPeer(
 	let mqttIntegration = options.mqttIntegration
 		? structuredClone(options.mqttIntegration)
 		: undefined;
+	const mqttIntegrationSequence = (options.mqttIntegrationSequence ?? []).map((integration) =>
+		structuredClone(integration)
+	);
 	const notificationHistory = structuredClone(options.notificationHistory ?? []);
 	const accessRole =
 		options.accessRole === 'user' ? ProtoAccessRole.USER : ProtoAccessRole.ADMINISTRATOR;
@@ -712,6 +717,7 @@ export async function mockControlPeer(
 		if (request.command.case === 'stateStoreCommand') {
 			const action = request.command.value.action;
 			if (action.case === 'get' && action.value.namespace === 'keeppeek.integrations.mqtt') {
+				mqttIntegration = mqttIntegrationSequence.shift() ?? mqttIntegration;
 				if (!mqttIntegration)
 					return encodedError(request.requestId, 'MQTT state is not configured');
 				return encodedMqttState(
@@ -722,9 +728,25 @@ export async function mockControlPeer(
 				);
 			}
 			if (action.case === 'put' && action.value.namespace === 'keeppeek.integrations.mqtt') {
-				const update = action.value.value as unknown as MqttSettingsUpdate;
+				const value = action.value.value as unknown as MqttSettingsUpdate;
+				const update: MqttSettingsUpdate = {
+					...value,
+					expected_configuration_revision: action.value.expectedRevision?.toString()
+				};
 				if (action.value.key === 'configuration') {
 					requests.mqttUpdates.push(update);
+					if (options.mqttUpdateError)
+						return encodedError(request.requestId, options.mqttUpdateError);
+					if (
+						mqttIntegration &&
+						update.expected_configuration_revision !== undefined &&
+						update.expected_configuration_revision !== mqttIntegration.configuration_revision
+					) {
+						return encodedError(
+							request.requestId,
+							'MQTT configuration changed after this editor was opened; reload before applying the draft'
+						);
+					}
 					mqttIntegration = options.mqttUpdateResult ?? mqttIntegration;
 					if (!mqttIntegration)
 						return encodedError(request.requestId, 'MQTT update is not configured');

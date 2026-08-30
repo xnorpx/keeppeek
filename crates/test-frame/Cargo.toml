@@ -8,7 +8,7 @@ license = "AGPL-3.0-only"
 workspace = true
 
 [dependencies]
-openh264 = { version = "*" }
+openh264 = { version = "0.9.8" }
 
 [dev-dependencies]
-image = "0.25"
+image = { version = "0.25.9", default-features = false }

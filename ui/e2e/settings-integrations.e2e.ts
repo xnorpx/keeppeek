@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { mockControlPeer } from './fixtures/control-peer';
+import { mockControlPeer, type MockControlPeerOptions } from './fixtures/control-peer';
 import type { MqttIntegration } from '../src/lib/integrations';
 
 const config = {
@@ -27,10 +27,8 @@ const config = {
 	}
 };
 
-test('Board 17 configures and observes the MQTT 5 event forwarder', async ({ page }) => {
-	await page.setViewportSize({ width: 1440, height: 900 });
-	const writes: string[] = [];
-	const mqtt: MqttIntegration = {
+function mqttFixture(): MqttIntegration {
+	return {
 		configuration: {
 			enabled: true,
 			broker_url: 'mqtt://broker.home:1883',
@@ -64,6 +62,12 @@ test('Board 17 configures and observes the MQTT 5 event forwarder', async ({ pag
 		},
 		configuration_revision: '1'
 	};
+}
+
+test('Board 17 configures and observes the MQTT 5 event forwarder', async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	const writes: string[] = [];
+	const mqtt = mqttFixture();
 	page.on('request', (request) => {
 		const pathname = new URL(request.url()).pathname;
 		if (request.method() !== 'GET' && pathname !== '/create' && pathname !== '/delete') {
@@ -151,4 +155,63 @@ test('Board 17 configures and observes the MQTT 5 event forwarder', async ({ pag
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
+});
+
+test('keeps MQTT edit feedback and revision stable across status polling', async ({ page }) => {
+	await page.clock.install();
+	const mqtt = mqttFixture();
+	const remoteMqtt = {
+		...mqtt,
+		status: { ...mqtt.status, pending_items: 9, pending_bytes: 9_216 },
+		configuration_revision: '9'
+	};
+	const peerOptions: MockControlPeerOptions = {
+		runtimeConfiguration: config,
+		health: { system: { disks: [] }, storage: { catalog: null } },
+		mqttIntegration: mqtt,
+		mqttIntegrationSequence: [mqtt, remoteMqtt],
+		mqttUpdateResult: { ...remoteMqtt, configuration_revision: '10' },
+		mqttUpdateError: 'MQTT configuration changed on the server.',
+		capabilityIds: ['keeppeek.mqtt-forwarder.v1']
+	};
+	const requests = await mockControlPeer(page, peerOptions);
+
+	await page.goto('/settings#integrations');
+	const section = page.getByRole('region', {
+		name: 'Everything has an explicit egress boundary'
+	});
+	await section.getByRole('button', { name: 'Edit broker' }).click();
+	await page.getByLabel('Broker URL').fill('mqtt://draft.home:1883');
+	await section.getByRole('button', { name: 'Save MQTT settings' }).click();
+	await expect(section.getByRole('alert')).toContainText(
+		'MQTT configuration changed on the server.'
+	);
+
+	await page.clock.fastForward(5_000);
+	await expect(section.getByText('9 items · 9.0 KiB', { exact: true })).toBeVisible();
+	await expect(section.getByRole('alert')).toContainText(
+		'MQTT configuration changed on the server.'
+	);
+	await expect(page.getByLabel('Broker URL')).toHaveValue('mqtt://draft.home:1883');
+	await section.getByRole('button', { name: 'Refresh status' }).click();
+	await expect(page.getByLabel('Broker URL')).toHaveValue('mqtt://draft.home:1883');
+	await expect(section.getByRole('alert')).toContainText(
+		'MQTT configuration changed on the server.'
+	);
+
+	peerOptions.mqttUpdateError = undefined;
+	await section.getByRole('button', { name: 'Save MQTT settings' }).click();
+	await expect(section.getByRole('alert')).toContainText(
+		'MQTT configuration changed after this editor was opened'
+	);
+	await section.getByRole('button', { name: 'Cancel' }).click();
+	await section.getByRole('button', { name: 'Edit broker' }).click();
+	await expect(page.getByLabel('Broker URL')).toHaveValue('mqtt://broker.home:1883');
+	await section.getByRole('button', { name: 'Save MQTT settings' }).click();
+	await expect(section.getByRole('status')).toContainText('MQTT settings saved and applied.');
+	expect(requests.mqttUpdates.map((update) => update.expected_configuration_revision)).toEqual([
+		'1',
+		'1',
+		'9'
+	]);
 });

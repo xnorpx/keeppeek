@@ -12,6 +12,11 @@ use crate::common::{HTTPVersion, Method};
 use crate::util::RefinedTcpStream;
 use crate::util::{SequentialReader, SequentialReaderBuilder, SequentialWriterBuilder};
 
+const MAX_REQUEST_LINE_BYTES: usize = 8 * 1024;
+const MAX_HEADER_LINE_BYTES: usize = 8 * 1024;
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+const MAX_HEADER_COUNT: usize = 100;
+
 /// A ClientConnection is an object that will store a socket to a client
 /// and return Request objects.
 pub struct ClientConnection {
@@ -74,36 +79,61 @@ impl ClientConnection {
     ///
     /// Reads until `CRLF` is reached. The next read will start
     ///  at the first byte of the new line.
-    fn read_next_line(&mut self) -> IoResult<AsciiString> {
-        let mut buf = Vec::new();
-        let mut prev_byte_was_cr = false;
+    fn read_next_line(&mut self, max_bytes: usize) -> IoResult<AsciiString> {
+        read_limited_line(&mut self.next_header_source, max_bytes)
+    }
+}
 
-        loop {
-            let mut byte_buffer = [0_u8; 1];
-            if self.next_header_source.read(&mut byte_buffer)? == 0 {
-                return Err(IoError::new(ErrorKind::ConnectionAborted, "Unexpected EOF"));
-            }
-            let byte = byte_buffer[0];
+fn read_limited_line(reader: &mut impl Read, max_bytes: usize) -> IoResult<AsciiString> {
+    let mut buf = Vec::new();
+    let mut pending_cr = false;
 
-            if byte == b'\n' && prev_byte_was_cr {
-                buf.pop(); // removing the '\r'
+    loop {
+        let mut byte_buffer = [0_u8; 1];
+        if reader.read(&mut byte_buffer)? == 0 {
+            return Err(IoError::new(ErrorKind::ConnectionAborted, "Unexpected EOF"));
+        }
+        let byte = byte_buffer[0];
+
+        if pending_cr {
+            if byte == b'\n' {
                 return AsciiString::from_ascii(buf)
                     .map_err(|_| IoError::new(ErrorKind::InvalidInput, "Header is not in ASCII"));
             }
+            if buf.len() >= max_bytes {
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    "HTTP request line or header exceeds the configured limit",
+                ));
+            }
+            buf.push(b'\r');
+        }
 
-            prev_byte_was_cr = byte == b'\r';
-
+        if byte == b'\r' {
+            pending_cr = true;
+        } else {
+            if buf.len() >= max_bytes {
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    "HTTP request line or header exceeds the configured limit",
+                ));
+            }
             buf.push(byte);
+            pending_cr = false;
         }
     }
+}
 
+impl ClientConnection {
     /// Reads a request from the stream.
     /// Blocks until the header has been read.
     fn read(&mut self) -> Result<Request, ReadError> {
         let (method, path, version, headers) = {
             // reading the request line
             let (method, path, version) = {
-                let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                let line = self
+                    .read_next_line(MAX_REQUEST_LINE_BYTES)
+                    .map_err(ReadError::ReadIoError)?;
 
                 parse_request_line(
                     line.as_str().trim(), // TODO: remove this conversion
@@ -113,12 +143,19 @@ impl ClientConnection {
             // getting all headers
             let headers = {
                 let mut headers = Vec::new();
+                let mut header_bytes = 0usize;
                 loop {
-                    let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
+                    let line = self
+                        .read_next_line(MAX_HEADER_LINE_BYTES)
+                        .map_err(ReadError::ReadIoError)?;
 
                     if line.is_empty() {
                         break;
                     };
+                    header_bytes += line.len() + 2;
+                    if header_bytes > MAX_HEADER_BYTES || headers.len() >= MAX_HEADER_COUNT {
+                        return Err(ReadError::WrongHeader(version));
+                    }
                     headers.push(match FromStr::from_str(line.as_str().trim()) {
                         // TODO: remove this conversion
                         Ok(h) => h,
@@ -291,6 +328,8 @@ fn parse_request_line(line: &str) -> Result<(Method, String, HTTPVersion), ReadE
 
 #[cfg(test)]
 mod test {
+    use std::io::{Cursor, ErrorKind};
+
     #[test]
     fn test_parse_request_line() {
         let (method, path, ver) = super::parse_request_line("GET /hello HTTP/1.1").unwrap();
@@ -301,5 +340,26 @@ mod test {
 
         assert!(super::parse_request_line("GET /hello").is_err());
         assert!(super::parse_request_line("qsd qsd qsd").is_err());
+    }
+
+    #[test]
+    fn request_line_reader_rejects_input_over_the_limit() {
+        let mut input = Cursor::new(vec![b'a'; super::MAX_REQUEST_LINE_BYTES + 1]);
+
+        let error =
+            super::read_limited_line(&mut input, super::MAX_REQUEST_LINE_BYTES).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn request_line_reader_accepts_content_at_the_limit() {
+        let mut bytes = vec![b'a'; super::MAX_REQUEST_LINE_BYTES];
+        bytes.extend_from_slice(b"\r\n");
+        let mut input = Cursor::new(bytes);
+
+        let line = super::read_limited_line(&mut input, super::MAX_REQUEST_LINE_BYTES).unwrap();
+
+        assert_eq!(line.len(), super::MAX_REQUEST_LINE_BYTES);
     }
 }

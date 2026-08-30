@@ -3,7 +3,6 @@
 debug
 target
 .DS_Store
-Cargo.lock
 bun.lock
 bun.lockb
 package-lock.json

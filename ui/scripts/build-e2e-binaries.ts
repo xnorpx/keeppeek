@@ -10,6 +10,7 @@ const keeppeekFeatures =
 
 await runCargo([
 	'build',
+	'--locked',
 	'--release',
 	'-p',
 	'keeppeek',
@@ -29,6 +30,7 @@ for (const binaryName of ['keeppeek', 'test_camera']) {
 
 await runCargo([
 	'run',
+	'--locked',
 	'--release',
 	'-p',
 	'mp4',

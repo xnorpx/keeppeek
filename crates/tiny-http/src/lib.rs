@@ -98,7 +98,7 @@ use std::io::Error as IoError;
 use std::io::Result as IoResult;
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::mpsc;
 use std::thread;
@@ -122,6 +122,13 @@ mod response;
 mod ssl;
 mod test;
 mod util;
+
+const MAX_CONNECTIONS: usize = 256;
+const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+const fn connection_capacity_available(active_connections: usize) -> bool {
+    active_connections < MAX_CONNECTIONS
+}
 
 /// The main class of this library.
 ///
@@ -291,22 +298,34 @@ impl Server {
             while !inside_close_trigger.load(Relaxed) {
                 let new_client = match server.accept() {
                     Ok((sock, _)) => {
-                        use util::RefinedTcpStream;
-                        let (read_closable, write_closable) = match ssl {
-                            None => RefinedTcpStream::new(sock),
-                            Some(ref ssl) => {
-                                // trying to apply SSL over the connection
-                                // if an error occurs, we just close the socket and resume listening
-                                let sock = match ssl.accept(sock) {
-                                    Ok(s) => s,
-                                    Err(_) => continue,
+                        if !connection_capacity_available(inside_connections.load(Acquire)) {
+                            let _ = sock.shutdown(Shutdown::Both);
+                            continue;
+                        }
+                        match sock
+                            .set_read_timeout(Some(CONNECTION_IO_TIMEOUT))
+                            .and_then(|()| sock.set_write_timeout(Some(CONNECTION_IO_TIMEOUT)))
+                        {
+                            Err(error) => Err(error),
+                            Ok(()) => {
+                                use util::RefinedTcpStream;
+                                let (read_closable, write_closable) = match ssl {
+                                    None => RefinedTcpStream::new(sock),
+                                    Some(ref ssl) => {
+                                        // trying to apply SSL over the connection
+                                        // if an error occurs, we just close the socket and resume listening
+                                        let sock = match ssl.accept(sock) {
+                                            Ok(s) => s,
+                                            Err(_) => continue,
+                                        };
+
+                                        RefinedTcpStream::new(sock)
+                                    }
                                 };
 
-                                RefinedTcpStream::new(sock)
+                                Ok(ClientConnection::new(write_closable, read_closable))
                             }
-                        };
-
-                        Ok(ClientConnection::new(write_closable, read_closable))
+                        }
                     }
                     Err(e) => Err(e),
                 };
@@ -466,5 +485,11 @@ mod tests {
 
         drop(connection);
         wait_for_connection_count(&server, 0);
+    }
+
+    #[test]
+    fn connection_capacity_stops_at_the_global_limit() {
+        assert!(connection_capacity_available(MAX_CONNECTIONS - 1));
+        assert!(!connection_capacity_available(MAX_CONNECTIONS));
     }
 }
