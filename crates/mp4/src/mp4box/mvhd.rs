@@ -85,9 +85,16 @@ impl Mp4Box for MvhdBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for MvhdBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
+
+        let minimum_size = match version {
+            0 => HEADER_SIZE + HEADER_EXT_SIZE + 16 + 80,
+            1 => HEADER_SIZE + HEADER_EXT_SIZE + 28 + 80,
+            _ => return Err(Error::InvalidData("version must be 0 or 1")),
+        };
+        ensure_box_size(size, minimum_size)?;
 
         let (creation_time, modification_time, timescale, duration) = if version == 1 {
             (
@@ -104,7 +111,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for MvhdBox {
                 reader.read_u32::<BigEndian>()? as u64,
             )
         } else {
-            return Err(Error::InvalidData("version must be 0 or 1"));
+            unreachable!("version was validated above")
         };
         let rate = FixedPointU16::new_raw(reader.read_u32::<BigEndian>()?);
 
@@ -130,7 +137,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for MvhdBox {
 
         let next_track_id = reader.read_u32::<BigEndian>()?;
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

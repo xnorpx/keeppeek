@@ -39,6 +39,7 @@ const DEFAULT_AAC_SAMPLE_RATE: u32 = 16_000;
 const AAC_SAMPLES_PER_RAW_BLOCK: u64 = 1_024;
 const NARROWBAND_AUDIO_SAMPLE_RATE: u32 = 8_000;
 const IMA_ADPCM_HEADER_LEN: usize = 4;
+pub(crate) const MAX_MEDIA_HEADER: usize = 512;
 
 /// Video codec identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -256,11 +257,18 @@ pub(crate) fn parse_video_header(
     };
 
     let data_len = read_u32_le(data, 8);
+    if data_len as usize > crate::MAX_MEDIA_FRAME {
+        return Err(BcError::Protocol("video frame exceeds maximum size"));
+    }
     let additional_header_size = read_u32_le(data, 12);
     let microseconds = read_u32_le(data, 16);
     let stream_handle_hint = read_u32_le(data, 20);
 
-    let header_total = 24 + additional_header_size as usize;
+    let header_total = usize::try_from(additional_header_size)
+        .ok()
+        .and_then(|additional| 24usize.checked_add(additional))
+        .filter(|total| *total <= MAX_MEDIA_HEADER)
+        .ok_or(BcError::Protocol("video frame header exceeds maximum size"))?;
     Ok((
         codec,
         data_len,
@@ -534,6 +542,40 @@ mod tests {
             buf.push(0);
         }
         buf
+    }
+
+    #[test]
+    fn oversized_video_frame_header_is_rejected() {
+        let declared_len = u32::try_from(crate::MAX_MEDIA_FRAME + 1)
+            .expect("maximum media frame size must fit in the wire field");
+        let mut header = Vec::new();
+        header.extend_from_slice(&MEDIA_MAGIC_IFRAME_BASE.to_le_bytes());
+        header.extend_from_slice(b"H264");
+        header.extend_from_slice(&declared_len.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+
+        assert!(matches!(
+            parse_video_header(&header),
+            Err(BcError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_video_extension_header_is_rejected() {
+        let mut header = Vec::new();
+        header.extend_from_slice(&MEDIA_MAGIC_IFRAME_BASE.to_le_bytes());
+        header.extend_from_slice(b"H264");
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&u32::MAX.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+
+        assert!(matches!(
+            parse_video_header(&header),
+            Err(BcError::Protocol(_))
+        ));
     }
 
     fn make_aac_frame_bytes(data: &[u8]) -> Vec<u8> {

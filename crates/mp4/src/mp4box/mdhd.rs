@@ -70,9 +70,16 @@ impl Mp4Box for MdhdBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for MdhdBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
+
+        let minimum_size = match version {
+            0 => HEADER_SIZE + HEADER_EXT_SIZE + 16 + 4,
+            1 => HEADER_SIZE + HEADER_EXT_SIZE + 28 + 4,
+            _ => return Err(Error::InvalidData("version must be 0 or 1")),
+        };
+        ensure_box_size(size, minimum_size)?;
 
         let (creation_time, modification_time, timescale, duration) = if version == 1 {
             (
@@ -89,12 +96,12 @@ impl<R: Read + Seek> ReadBox<&mut R> for MdhdBox {
                 reader.read_u32::<BigEndian>()? as u64,
             )
         } else {
-            return Err(Error::InvalidData("version must be 0 or 1"));
+            unreachable!("version was validated above")
         };
         let language_code = reader.read_u16::<BigEndian>()?;
         let language = language_string(language_code);
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

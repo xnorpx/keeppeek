@@ -9,6 +9,7 @@ implement independent services against KeepPeek's public API.
 import argparse
 import asyncio
 import logging
+import math
 import os
 import stat
 import uuid
@@ -101,13 +102,16 @@ def parse_args(arguments: Sequence[str] | None = None) -> ServiceConfig:
     namespace = parser.parse_args(arguments)
     if not namespace.source_id:
         parser.error("--source-id or KEEPPEEK_SOURCE_ID is required")
-    if not 0.0 <= namespace.confidence <= 1.0:
+    if not math.isfinite(namespace.confidence) or not 0.0 <= namespace.confidence <= 1.0:
         parser.error("--confidence must be between 0 and 1")
-    if namespace.cooldown_seconds < 0.0:
+    if not math.isfinite(namespace.cooldown_seconds) or namespace.cooldown_seconds < 0.0:
         parser.error("--cooldown-seconds must not be negative")
-    if namespace.inference_fps <= 0.0:
+    if not math.isfinite(namespace.inference_fps) or namespace.inference_fps <= 0.0:
         parser.error("--inference-fps must be positive")
-    if namespace.reconnect_delay_seconds <= 0.0:
+    if (
+        not math.isfinite(namespace.reconnect_delay_seconds)
+        or namespace.reconnect_delay_seconds <= 0.0
+    ):
         parser.error("--reconnect-delay-seconds must be positive")
     return ServiceConfig(
         url=str(namespace.url),

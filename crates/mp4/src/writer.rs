@@ -58,6 +58,9 @@ impl<W> Mp4Writer<W> {
 
 impl<W: Write + Seek> Mp4Writer<W> {
     pub fn write_start(mut writer: W, config: &Mp4Config) -> Result<Self> {
+        if config.timescale == 0 {
+            return Err(Error::InvalidData("MP4 timescales must be non-zero"));
+        }
         let ftyp = FtypBox {
             major_brand: config.major_brand,
             minor_version: config.minor_version,
@@ -83,6 +86,9 @@ impl<W: Write + Seek> Mp4Writer<W> {
     }
 
     pub fn add_track(&mut self, config: &TrackConfig) -> Result<()> {
+        if config.timescale == 0 {
+            return Err(Error::InvalidData("MP4 timescales must be non-zero"));
+        }
         let track_id = self.tracks.len() as u32 + 1;
         let track = Mp4TrackWriter::new(track_id, config)?;
         self.tracks.push(track);
@@ -141,5 +147,40 @@ impl<W: Write + Seek> Mp4Writer<W> {
         }
         moov.write_box(&mut self.writer)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn config(timescale: u32) -> Mp4Config {
+        Mp4Config {
+            major_brand: "isom".parse().unwrap(),
+            minor_version: 512,
+            compatible_brands: vec!["isom".parse().unwrap()],
+            timescale,
+        }
+    }
+
+    #[test]
+    fn rejects_zero_movie_timescale_before_writing() {
+        let writer = Cursor::new(Vec::new());
+
+        let result = Mp4Writer::write_start(writer, &config(0));
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn rejects_zero_track_timescale() {
+        let mut writer = Mp4Writer::write_start(Cursor::new(Vec::new()), &config(1_000)).unwrap();
+        let mut track = TrackConfig::from(AvcConfig::default());
+        track.timescale = 0;
+
+        let result = writer.add_track(&track);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
     }
 }

@@ -77,7 +77,7 @@ impl Mp4Box for TrunBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for TrunBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
@@ -89,6 +89,8 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrunBox {
             + if Self::FLAG_SAMPLE_SIZE & flags > 0 { size_of::<u32>() } else { 0 } // sample_size
             + if Self::FLAG_SAMPLE_FLAGS & flags > 0 { size_of::<u32>() } else { 0 } // sample_flags
             + if Self::FLAG_SAMPLE_CTS & flags > 0 { size_of::<u32>() } else { 0 }; // sample_composition_time_offset
+
+        ensure_box_size(size, header_size + other_size as u64)?;
 
         let sample_count = reader.read_u32::<BigEndian>()?;
 
@@ -152,7 +154,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrunBox {
             }
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

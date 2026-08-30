@@ -17,11 +17,20 @@ jobs:
 
     steps:
       - name: Checkout the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install mdBook and Mermaid
         run: |
-          curl --fail --location https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          curl --fail --location https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.1/mdbook-mermaid-v0.17.1-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          mdbook_archive=mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz
+          mermaid_archive=mdbook-mermaid-v0.17.1-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --location --output "$mdbook_archive" "https://github.com/rust-lang/mdBook/releases/download/v0.5.4/$mdbook_archive"
+          curl --fail --location --output "$mermaid_archive" "https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.1/$mermaid_archive"
+          printf '%s  %s\n' \
+            3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7 "$mdbook_archive" \
+            9afcfa5b8463afe606d48595a7ae338564302903e626ea5b6edb8007d29393a5 "$mermaid_archive" \
+            | sha256sum --check --strict
+          tar xzf "$mdbook_archive"
+          tar xzf "$mermaid_archive"
+          rm "$mdbook_archive" "$mermaid_archive"
           chmod +x mdbook mdbook-mermaid
           mv mdbook mdbook-mermaid /usr/local/bin/
       - name: Build the book

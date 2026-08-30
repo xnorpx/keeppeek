@@ -1,9 +1,28 @@
 use crate::{meta::MetaBox, mp4box::tfhd::TfhdBox, *};
 use std::{
     collections::HashMap,
-    io::{Read, Seek},
+    io::{Read, Seek, SeekFrom},
     time::Duration,
 };
+
+fn read_top_level_box_header<R: Read + Seek>(reader: &mut R, end: u64) -> Result<BoxHeader> {
+    let start = reader.stream_position()?;
+    let remaining = end
+        .checked_sub(start)
+        .ok_or(Error::InvalidData("reader is past the logical file end"))?;
+    if remaining < HEADER_SIZE {
+        return Err(Error::InvalidData("top-level box header is truncated"));
+    }
+    let mut encoded_size = [0; 4];
+    reader.read_exact(&mut encoded_size)?;
+    reader.seek(SeekFrom::Start(start))?;
+    if u32::from_be_bytes(encoded_size) == 1 && remaining < HEADER_SIZE + 8 {
+        return Err(Error::InvalidData(
+            "top-level extended box header is truncated",
+        ));
+    }
+    BoxHeader::read(reader)
+}
 
 #[derive(Debug)]
 pub struct Mp4Reader<R> {
@@ -30,17 +49,19 @@ impl<R: Read + Seek> Mp4Reader<R> {
         let mut current = start;
         while current < size {
             // Get box header.
-            let header = BoxHeader::read(&mut reader)?;
+            let header = read_top_level_box_header(&mut reader, size)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
-                return Err(Error::InvalidData(
-                    "file contains a box with a larger size than it",
-                ));
-            }
-
             // Break if size zero BoxHeader, which can result in dead-loop.
             if s == 0 {
                 break;
+            }
+            let box_end = box_start(&mut reader)?
+                .checked_add(s)
+                .ok_or(Error::InvalidData("top-level box size overflow"))?;
+            if box_end > size {
+                return Err(Error::InvalidData(
+                    "file contains a box with a larger size than it",
+                ));
             }
 
             // Match and parse the atom boxes.
@@ -173,10 +194,12 @@ impl<R: Read + Seek> Mp4Reader<R> {
     }
 
     pub fn duration(&self) -> Duration {
-        if self.moov.mvhd.duration > 0 {
-            return Duration::from_millis(
-                self.moov.mvhd.duration * 1000 / self.moov.mvhd.timescale as u64,
-            );
+        let timescale = u64::from(self.moov.mvhd.timescale);
+        if self.moov.mvhd.duration > 0 && timescale > 0 {
+            let seconds = self.moov.mvhd.duration / timescale;
+            let remainder = self.moov.mvhd.duration % timescale;
+            let milliseconds = remainder * 1_000 / timescale;
+            return Duration::from_secs(seconds) + Duration::from_millis(milliseconds);
         }
         self.tracks
             .values()
@@ -278,5 +301,72 @@ impl<R> Mp4Reader<R> {
                 _ => None,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mp4box::mvhd::MvhdBox;
+    use std::io::Cursor;
+
+    fn reader_with_movie_duration(duration: u64, timescale: u32) -> Mp4Reader<Cursor<Vec<u8>>> {
+        let mut bytes = Vec::new();
+        FtypBox::default().write_box(&mut bytes).unwrap();
+        MoovBox {
+            mvhd: MvhdBox {
+                version: u8::from(duration > u64::from(u32::MAX)),
+                duration,
+                timescale,
+                ..MvhdBox::default()
+            },
+            ..MoovBox::default()
+        }
+        .write_box(&mut bytes)
+        .unwrap();
+        let size = bytes.len() as u64;
+        Mp4Reader::read_header(Cursor::new(bytes), size).unwrap()
+    }
+
+    #[test]
+    fn rejects_box_that_extends_past_file_end() {
+        let mut bytes = Vec::new();
+        FtypBox::default().write_box(&mut bytes).unwrap();
+        MoovBox::default().write_box(&mut bytes).unwrap();
+        let file_size = bytes.len() as u64 + HEADER_SIZE;
+        BoxHeader::new(BoxType::FreeBox, file_size)
+            .write(&mut bytes)
+            .unwrap();
+
+        let result = Mp4Reader::read_header(Cursor::new(bytes), file_size);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn rejects_partial_top_level_header_at_logical_end() {
+        let mut bytes = Vec::new();
+        FtypBox::default().write_box(&mut bytes).unwrap();
+        MoovBox::default().write_box(&mut bytes).unwrap();
+        let logical_size = bytes.len() as u64 + 1;
+        bytes.extend_from_slice(&[0; 8]);
+
+        let result = Mp4Reader::read_header(Cursor::new(bytes), logical_size);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn zero_movie_timescale_returns_zero_duration() {
+        let reader = reader_with_movie_duration(1, 0);
+
+        assert_eq!(reader.duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn maximal_movie_duration_does_not_overflow() {
+        let reader = reader_with_movie_duration(u64::MAX, 1);
+
+        assert_eq!(reader.duration(), Duration::from_secs(u64::MAX));
     }
 }

@@ -42,7 +42,7 @@ impl Mp4Box for VpccBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for VpccBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 8)?;
         let (version, flags) = read_box_header_ext(reader)?;
 
         let profile: u8 = reader.read_u8()?;
@@ -51,11 +51,12 @@ impl<R: Read + Seek> ReadBox<&mut R> for VpccBox {
             let b = reader.read_u8()?;
             (b >> 4, b << 4 >> 5, b & 0x01 == 1)
         };
+        let color_primaries: u8 = reader.read_u8()?;
         let transfer_characteristics: u8 = reader.read_u8()?;
         let matrix_coefficients: u8 = reader.read_u8()?;
         let codec_initialization_data_size: u16 = reader.read_u16::<BigEndian>()?;
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,
@@ -65,7 +66,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for VpccBox {
             bit_depth,
             chroma_subsampling,
             video_full_range_flag,
-            color_primaries: 0,
+            color_primaries,
             transfer_characteristics,
             matrix_coefficients,
             codec_initialization_data_size,
@@ -109,12 +110,12 @@ mod tests {
             profile: 0,
             level: 0x1F,
             bit_depth: VpccBox::DEFAULT_BIT_DEPTH,
-            chroma_subsampling: 0,
-            video_full_range_flag: false,
-            color_primaries: 0,
-            transfer_characteristics: 0,
-            matrix_coefficients: 0,
-            codec_initialization_data_size: 0,
+            chroma_subsampling: 2,
+            video_full_range_flag: true,
+            color_primaries: 1,
+            transfer_characteristics: 13,
+            matrix_coefficients: 6,
+            codec_initialization_data_size: 258,
         };
         let mut buf = Vec::new();
         src_box.write_box(&mut buf).unwrap();

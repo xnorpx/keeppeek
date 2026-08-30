@@ -1,5 +1,9 @@
 # Copilot Instructions
 
+## Agent Skill Routing
+
+Before handling every request or command, read and apply [the using-agent-skills meta-skill](../.agents/skills/using-agent-skills/SKILL.md). Select and follow every additional skill that matches the work before acting. This routing step is mandatory even when no additional skill applies, and repository instructions override generic skill examples.
+
 ## Code Style
 
 - **No redundant comments.** Do not write comments that restate what the code already says.

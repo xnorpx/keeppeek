@@ -57,7 +57,7 @@ impl Mp4Box for ElstBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for ElstBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 4)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
@@ -94,7 +94,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for ElstBox {
             } else {
                 (
                     reader.read_u32::<BigEndian>()? as u64,
-                    reader.read_u32::<BigEndian>()? as u64,
+                    reader.read_i32::<BigEndian>()? as i64 as u64,
                 )
             };
 
@@ -107,7 +107,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for ElstBox {
             entries.push(entry);
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,
@@ -169,6 +169,28 @@ mod tests {
 
         let dst_box = ElstBox::read_box(&mut reader, header.size).unwrap();
         assert_eq!(src_box, dst_box);
+    }
+
+    #[test]
+    fn test_elst32_negative_media_time() {
+        let src_box = ElstBox {
+            version: 0,
+            flags: 0,
+            entries: vec![ElstEntry {
+                segment_duration: 1_000,
+                media_time: u64::MAX,
+                media_rate: 1,
+                media_rate_fraction: 0,
+            }],
+        };
+        let mut bytes = Vec::new();
+        src_box.write_box(&mut bytes).unwrap();
+        let mut reader = Cursor::new(bytes);
+        let header = BoxHeader::read(&mut reader).unwrap();
+
+        let dst_box = ElstBox::read_box(&mut reader, header.size).unwrap();
+
+        assert_eq!(dst_box, src_box);
     }
 
     #[test]

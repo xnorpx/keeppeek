@@ -3,11 +3,12 @@
 
 import asyncio
 import gzip
+import io
 import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -21,6 +22,7 @@ LOGGER = logging.getLogger(__name__)
 EVENT_PUBLICATION_CAPABILITY = "keeppeek.event-publication.v1"
 CONTROL_TIMEOUT_SECONDS = 10.0
 CONNECT_TIMEOUT_SECONDS = 15.0
+MAX_SESSION_RESPONSE_BYTES = 4 * 1024 * 1024
 LiteralStream = Literal["auto", "main", "sub"]
 
 
@@ -42,6 +44,36 @@ class ActiveSubscription:
 
 
 FrameHandler = Callable[[pb.VideoDataFrame, CodecName, int], None]
+
+
+class AsyncReader(Protocol):
+    async def read(self, n: int = -1) -> bytes: ...
+
+
+async def read_stream_limited(stream: AsyncReader, max_bytes: int) -> bytes:
+    output = bytearray()
+    while True:
+        chunk = await stream.read(min(64 * 1024, max_bytes + 1 - len(output)))
+        if not chunk:
+            return bytes(output)
+        output.extend(chunk)
+        if len(output) > max_bytes:
+            raise ProtocolError(f"KeepPeek session response exceeds {max_bytes} bytes")
+
+
+def decode_session_body(body: bytes, max_bytes: int) -> bytes:
+    if not body.startswith(b"\x1f\x8b"):
+        if len(body) > max_bytes:
+            raise ProtocolError(f"KeepPeek session response exceeds {max_bytes} bytes")
+        return body
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(body)) as stream:
+            decoded = stream.read(max_bytes + 1)
+    except (EOFError, OSError) as error:
+        raise ProtocolError("KeepPeek returned invalid gzip session data") from error
+    if len(decoded) > max_bytes:
+        raise ProtocolError(f"KeepPeek decompressed response exceeds {max_bytes} bytes")
+    return decoded
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:
@@ -206,16 +238,14 @@ class KeepPeekClient:
                         f"KeepPeek session creation failed with HTTP {response.status}; "
                         "check the URL, access key, and server logs"
                     )
-                response_body = await response.read()
+                response_body = await read_stream_limited(
+                    response.content, MAX_SESSION_RESPONSE_BYTES
+                )
         except aiohttp.ClientError as error:
             raise ProtocolError(
                 "unable to connect to KeepPeek; check the URL and that the server is running"
             ) from error
-        if response_body.startswith(b"\x1f\x8b"):
-            try:
-                response_body = gzip.decompress(response_body)
-            except OSError as error:
-                raise ProtocolError("KeepPeek returned invalid gzip session data") from error
+        response_body = decode_session_body(response_body, MAX_SESSION_RESPONSE_BYTES)
         try:
             decoded = cast(object, json.loads(response_body.decode("utf-8")))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:

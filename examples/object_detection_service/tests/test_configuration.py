@@ -103,3 +103,13 @@ def test_parse_args_accepts_documented_non_secret_configuration() -> None:
     assert parsed.confidence == 0.7
     assert parsed.cooldown_seconds == 3
     assert parsed.inference_fps == 2
+
+
+@pytest.mark.parametrize(
+    "option",
+    ["--confidence", "--cooldown-seconds", "--inference-fps", "--reconnect-delay-seconds"],
+)
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_parse_args_rejects_non_finite_numbers(option: str, value: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--source-id", "camera-1", option, value])

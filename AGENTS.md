@@ -1,5 +1,11 @@
 # Repository Agent Instructions
 
+## Agent Skill Routing
+
+Before handling every user request or agent command in this repository, read and apply [the using-agent-skills meta-skill](.agents/skills/using-agent-skills/SKILL.md). Use it to select any additional skills before planning, editing, reviewing, or running commands, then follow each selected workflow and its verification steps.
+
+This routing step is mandatory even when no additional skill applies. Repository instructions and the KeepPeek integrations in each vendored skill override generic skill examples when they differ.
+
 ## Pragmatic Rust Guidelines
 
 For every Rust implementation, refactor, review, test, or API design task in this repository, read and follow [the Pragmatic Rust Guidelines](.github/instructions/rust_pragmatic_guidelines.md).

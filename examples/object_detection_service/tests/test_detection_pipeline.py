@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import asyncio
+import math
 import os
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from google.protobuf import timestamp_pb2
 
 from detection_pipeline import (
     BoundedLatestQueue,
+    DecodedFrame,
     DecodeError,
     Detection,
     DetectionPipeline,
@@ -22,6 +24,7 @@ from detection_pipeline import (
     normalize_bounding_box,
     normalize_object_class,
     parse_ppm,
+    read_stream_limited,
     select_detections,
     verify_ffmpeg,
 )
@@ -173,6 +176,23 @@ def test_frame_assembler_never_mixes_reconnect_generations() -> None:
     assert assembler.discarded == 1
 
 
+def test_frame_assembler_discards_invalid_timestamp() -> None:
+    assembler = FrameAssembler(max_frame_bytes=32)
+    frame = pb.VideoDataFrame(
+        stream_binding_id="media:detector",
+        frame_id=1,
+        timestamp=timestamp_pb2.Timestamp(seconds=2**63 - 1),
+        fragment_index=0,
+        fragment_count=1,
+        key_frame=True,
+        payload=b"frame",
+        configuration_revision=1,
+    )
+
+    assert assembler.push(frame, "h264", 1) is None
+    assert assembler.discarded == 1
+
+
 def test_avcc_to_annex_b_validates_nal_lengths() -> None:
     assert avcc_to_annex_b(b"\x00\x00\x00\x02ab\x00\x00\x00\x01c") == (
         b"\x00\x00\x00\x01ab\x00\x00\x00\x01c"
@@ -241,6 +261,23 @@ def test_detection_normalization_tames_a_box_wandering_off_screen() -> None:
     assert normalize_object_class("toaster") is None
 
 
+def test_detection_normalization_rejects_non_finite_model_output() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        normalize_bounding_box((math.nan, 0, 1, 1), 100, 100)
+
+    detections = [Detection("person", math.inf, (0.1, 0.1, 0.2, 0.2))]
+    assert (
+        select_detections(
+            detections,
+            datetime(2026, 8, 29, tzinfo=UTC),
+            {},
+            timedelta(0),
+            0.5,
+        )
+        == []
+    )
+
+
 def test_external_ffmpeg_reports_malformed_fixture(tmp_path: Path) -> None:
     invalid = tmp_path / "invalid.mp4"
     invalid.write_bytes(b"not a media file")
@@ -252,6 +289,18 @@ def test_external_ffmpeg_reports_malformed_fixture(tmp_path: Path) -> None:
 def test_parse_ppm_rejects_malformed_pixel_payload() -> None:
     with pytest.raises(DecodeError, match="pixel payload"):
         parse_ppm(b"P6\n2 2\n255\nshort")
+
+
+def test_subprocess_output_reader_enforces_byte_limit() -> None:
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"123456")
+        reader.feed_eof()
+
+        with pytest.raises(DecodeError, match="exceeded"):
+            await read_stream_limited(reader, 5, "decoded frame")
+
+    asyncio.run(scenario())
 
 
 def test_cooldown_coalesces_each_class_and_keeps_highest_confidence() -> None:
@@ -320,3 +369,50 @@ def test_session_deactivation_clears_all_bounded_work() -> None:
     assert pipeline.encoded_queue.count == 0
     assert pipeline.inference_queue.count == 0
     assert pipeline.publication_queue.count == 0
+
+
+def test_inference_loop_recovers_after_detector_failure() -> None:
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        first_failure = asyncio.Event()
+        published = asyncio.Event()
+        calls = 0
+
+        def flaky_detector(image: np.ndarray) -> list[Detection]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                loop.call_soon_threadsafe(first_failure.set)
+                raise RuntimeError("transient detector failure")
+            return fake_detection(image)
+
+        async def publish(_: pb.Event, __: int) -> None:
+            published.set()
+
+        pipeline = DetectionPipeline(
+            verify_ffmpeg(),
+            flaky_detector,
+            "flaky-detector",
+            publish,
+            timedelta(0),
+            timedelta(0),
+            0.5,
+        )
+        pipeline.activate(1, "camera-1", "session-1", "sub")
+        pipeline.start()
+        image = np.zeros((2, 2, 3), dtype=np.uint8)
+        try:
+            pipeline.inference_queue.put_latest(
+                DecodedFrame(datetime(2026, 8, 29, tzinfo=UTC), image, 1)
+            )
+            await asyncio.wait_for(first_failure.wait(), timeout=1)
+            pipeline.inference_queue.put_latest(
+                DecodedFrame(datetime(2026, 8, 29, 0, 0, 1, tzinfo=UTC), image, 1)
+            )
+            await asyncio.wait_for(published.wait(), timeout=1)
+        finally:
+            await pipeline.stop()
+
+        assert calls == 2
+
+    asyncio.run(scenario())

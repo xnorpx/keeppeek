@@ -22,13 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
         with:
           tool: taplo@0.10.0
       - name: Check Rust formatting
@@ -41,11 +41,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install mdBook and Mermaid
         run: |
-          curl --fail --location https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          curl --fail --location https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.1/mdbook-mermaid-v0.17.1-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          mdbook_archive=mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz
+          mermaid_archive=mdbook-mermaid-v0.17.1-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --location --output "$mdbook_archive" "https://github.com/rust-lang/mdBook/releases/download/v0.5.4/$mdbook_archive"
+          curl --fail --location --output "$mermaid_archive" "https://github.com/badboy/mdbook-mermaid/releases/download/v0.17.1/$mermaid_archive"
+          printf '%s  %s\n' \
+            3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7 "$mdbook_archive" \
+            9afcfa5b8463afe606d48595a7ae338564302903e626ea5b6edb8007d29393a5 "$mermaid_archive" \
+            | sha256sum --check --strict
+          tar xzf "$mdbook_archive"
+          tar xzf "$mermaid_archive"
+          rm "$mdbook_archive" "$mermaid_archive"
           chmod +x mdbook mdbook-mermaid
           mv mdbook mdbook-mermaid /usr/local/bin/
       - name: Build the book
@@ -61,14 +70,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - uses: oven-sh/setup-bun@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
@@ -80,11 +89,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
         with:
           tool: cargo-machete@0.9.2
       - run: cargo machete
@@ -94,12 +103,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
@@ -115,10 +124,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: examples/object_detection_service/.python-version
           cache: pip
@@ -177,22 +186,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: examples/object_detection_service/.python-version
           cache: pip
           cache-dependency-path: examples/object_detection_service/requirements.txt
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install FFmpeg
         shell: bash
         run: |
@@ -235,27 +244,27 @@ jobs:
           KEEPPEEK_E2E_MODEL: ${{ github.workspace }}/target/yolo11n.pt
         run: python -m pytest -q tests/test_e2e.py
 
-  build-and-test:
-    name: Build & Test (${{ matrix.os }})
+  rust-build:
+    name: Rust Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - if: runner.os != 'Linux'
+      - name: Build Rust workspace
         run: cargo build --all
       - name: Verify Windows service installation
         if: runner.os == 'Windows'
@@ -301,6 +310,27 @@ jobs:
           plutil -lint "$app/Contents/Info.plist"
           KEEPPEEK_NO_UI=1 "$app/Contents/MacOS/KeepPeek"
           launchctl print "gui/$(id -u)/com.keeppeek"
+
+  rust-test:
+    name: Rust Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
       - name: Run Rust tests
         id: rust-tests
         shell: bash
@@ -313,12 +343,31 @@ jobs:
           fi
       - name: Upload Rust test log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rust-test-log-${{ matrix.os }}
           path: rust-test-results.log
           if-no-files-found: ignore
           retention-days: 14
+
+  rust-compatibility-gate:
+    name: Build & Test (${{ matrix.os }})
+    if: always()
+    needs: [rust-build, rust-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Require separate Rust build and test jobs
+        env:
+          RUST_BUILD_RESULT: ${{ needs.rust-build.result }}
+          RUST_TEST_RESULT: ${{ needs.rust-test.result }}
+        run: |
+          test "$RUST_BUILD_RESULT" = success
+          test "$RUST_TEST_RESULT" = success
 
   windows-signing:
     name: Windows Signing
@@ -332,11 +381,11 @@ jobs:
     env:
       AZURE_CORE_OUTPUT: none
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - working-directory: ui
@@ -344,7 +393,7 @@ jobs:
       - name: Build Windows binaries
         run: cargo build --bin keeppeek --bin keeppeek-service
       - name: Sign in to Azure
-        uses: azure/login@v3
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
         env:
           AZURE_LOGIN_PRE_CLEANUP: true
           AZURE_LOGIN_POST_CLEANUP: true
@@ -353,7 +402,7 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Sign Windows binaries
-        uses: Azure/artifact-signing-action@v2.0.0
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
@@ -403,7 +452,7 @@ jobs:
             throw "Installer was not created at $installer"
           }
       - name: Sign Windows installer
-        uses: Azure/artifact-signing-action@v2.0.0
+        uses: Azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
@@ -433,8 +482,8 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
@@ -452,8 +501,8 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
@@ -469,12 +518,12 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
@@ -482,7 +531,7 @@ jobs:
       - name: Build shared Playwright binaries and fixtures
         run: bun run test:e2e:prepare
       - name: Upload shared Playwright binaries and fixtures
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ui-e2e-linux
           path: |
@@ -505,8 +554,8 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
@@ -514,7 +563,7 @@ jobs:
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
       - name: Download shared Playwright binaries and fixtures
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ui-e2e-linux
           path: target
@@ -525,7 +574,7 @@ jobs:
         run: bun run test:e2e:run -- --shard=${{ matrix.shard }}/4
       - name: Upload UI test reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ui-e2e-reports-${{ matrix.shard }}-of-4
           path: |
@@ -542,8 +591,8 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
@@ -573,8 +622,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
@@ -615,7 +664,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage-reports
           path: ui/coverage
@@ -634,7 +683,9 @@ jobs:
         book,
         clippy,
         machete,
-        build-and-test,
+        rust-build,
+        rust-test,
+        rust-compatibility-gate,
         ui-static,
         ui-unit-bun,
         ui-gate,
@@ -653,7 +704,9 @@ jobs:
         fmt,
         clippy,
         machete,
-        build-and-test,
+        rust-build,
+        rust-test,
+        rust-compatibility-gate,
         ui-static,
         ui-unit-bun,
         ui-e2e-build,
@@ -672,13 +725,13 @@ jobs:
       - name: Download coverage reports
         if: always()
         continue-on-error: true
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: coverage-reports
           path: quality-reports/coverage
 
       - name: Write quality report and update pull request
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           COVERAGE_DIRECTORY: quality-reports/coverage
         with:
@@ -692,6 +745,11 @@ jobs:
               'Format',
               'Clippy',
               'Unused Dependencies',
+              'Rust Build (macos-latest)',
+              'Rust Build (windows-latest)',
+              'Rust Test (ubuntu-latest)',
+              'Rust Test (macos-latest)',
+              'Rust Test (windows-latest)',
               'Build & Test (ubuntu-latest)',
               'Build & Test (macos-latest)',
               'Build & Test (windows-latest)',

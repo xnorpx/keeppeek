@@ -10,6 +10,7 @@ use crate::{
     error::BcError,
     header::PacketHeader,
     magic::*,
+    media::MAX_MEDIA_HEADER,
 };
 use arrayvec::{ArrayString, ArrayVec};
 use std::{
@@ -23,9 +24,6 @@ const MAX_MISSED_PINGS: u8 = 5;
 
 /// Media frames are padded to this alignment on the wire.
 const MEDIA_FRAME_ALIGNMENT: usize = 8;
-
-/// Upper bound on a media frame header, used to bound the split-header carry buffer.
-const MAX_MEDIA_HEADER: usize = 512;
 
 /// Session role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

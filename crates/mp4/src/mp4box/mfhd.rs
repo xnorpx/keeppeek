@@ -50,12 +50,12 @@ impl Mp4Box for MfhdBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for MfhdBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 4)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
         let sequence_number = reader.read_u32::<BigEndian>()?;
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,
@@ -100,5 +100,15 @@ mod tests {
 
         let dst_box = MfhdBox::read_box(&mut reader, header.size).unwrap();
         assert_eq!(src_box, dst_box);
+    }
+
+    #[test]
+    fn test_mfhd_rejects_overflowing_end() {
+        let mut reader = Cursor::new(vec![0; 17]);
+        reader.set_position(9);
+
+        let result = MfhdBox::read_box(&mut reader, u64::MAX);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
     }
 }

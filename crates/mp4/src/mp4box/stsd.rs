@@ -139,7 +139,7 @@ impl Mp4Box for StsdBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for StsdBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 4)?;
         let (version, flags) = read_box_header_ext(reader)?;
         let entry_count = reader.read_u32::<BigEndian>()?;
         let entry_bytes = size
@@ -153,10 +153,8 @@ impl<R: Read + Seek> ReadBox<&mut R> for StsdBox {
             let BoxHeader {
                 name,
                 size: entry_size,
-            } = BoxHeader::read(reader)?;
-            if entry_size < HEADER_SIZE
-                || reader.stream_position()? - start + entry_size - HEADER_SIZE > size
-            {
+            } = read_box_header(reader, end)?;
+            if checked_box_end(reader, entry_size)? > end {
                 return Err(Error::InvalidData("invalid stsd sample entry size"));
             }
             let entry = match name {
@@ -179,7 +177,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for StsdBox {
             };
             entries.push(entry);
         }
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
         Ok(Self {
             version,
             flags,
@@ -276,7 +274,7 @@ mod tests {
         let mut reader = Cursor::new(bytes);
         let header = BoxHeader::read(&mut reader).unwrap();
         let error = StsdBox::read_box(&mut reader, header.size).unwrap_err();
-        assert!(matches!(error, Error::IoError(_)));
+        assert!(matches!(error, Error::InvalidData(_)));
     }
 
     #[test]

@@ -47,7 +47,7 @@ impl Mp4Box for TrexBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for TrexBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + HEADER_EXT_SIZE + 20)?;
 
         let (version, flags) = read_box_header_ext(reader)?;
 
@@ -57,7 +57,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrexBox {
         let default_sample_size = reader.read_u32::<BigEndian>()?;
         let default_sample_flags = reader.read_u32::<BigEndian>()?;
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             version,

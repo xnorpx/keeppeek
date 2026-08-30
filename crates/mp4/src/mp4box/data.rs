@@ -43,14 +43,22 @@ impl Mp4Box for DataBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for DataBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        if size < HEADER_SIZE + 8 {
+            return Err(Error::InvalidData("data box size is too small"));
+        }
+        let end = checked_box_end(reader, size)?;
 
         let data_type = DataType::try_from(reader.read_u32::<BigEndian>()?)?;
 
         reader.read_u32::<BigEndian>()?; // reserved = 0
 
         let current = reader.stream_position()?;
-        let mut data = vec![0u8; (start + size - current) as usize];
+        let data_len = end
+            .checked_sub(current)
+            .ok_or(Error::InvalidData("data box contents exceed its size"))?;
+        let data_len = usize::try_from(data_len)
+            .map_err(|_| Error::InvalidData("data box payload is too large"))?;
+        let mut data = vec![0u8; data_len];
         reader.read_exact(&mut data)?;
 
         Ok(Self { data, data_type })
@@ -108,5 +116,22 @@ mod tests {
 
         let dst_box = DataBox::read_box(&mut reader, header.size).unwrap();
         assert_eq!(src_box, dst_box);
+    }
+
+    #[test]
+    fn test_data_rejects_size_smaller_than_fixed_fields() {
+        let mut buf = Vec::new();
+        BoxHeader::new(BoxType::DataBox, HEADER_SIZE)
+            .write(&mut buf)
+            .unwrap();
+        buf.extend_from_slice(&0u64.to_be_bytes());
+        let mut reader = Cursor::new(&buf);
+        let header = BoxHeader::read(&mut reader).unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            DataBox::read_box(&mut reader, header.size)
+        }));
+
+        assert!(matches!(result, Ok(Err(Error::InvalidData(_)))));
     }
 }

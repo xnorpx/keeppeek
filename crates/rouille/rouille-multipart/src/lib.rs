@@ -37,9 +37,6 @@ extern crate tempfile;
 #[macro_use]
 extern crate quick_error;
 
-#[cfg(feature = "server")]
-extern crate safemem;
-
 #[cfg(test)]
 extern crate env_logger;
 

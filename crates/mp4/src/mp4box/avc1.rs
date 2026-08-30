@@ -80,7 +80,7 @@ impl Mp4Box for Avc1Box {
 
 impl<R: Read + Seek> ReadBox<&mut R> for Avc1Box {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + 78 + HEADER_SIZE)?;
 
         reader.read_u32::<BigEndian>()?; // reserved
         reader.read_u16::<BigEndian>()?; // reserved
@@ -99,9 +99,9 @@ impl<R: Read + Seek> ReadBox<&mut R> for Avc1Box {
         let depth = reader.read_u16::<BigEndian>()?;
         reader.read_i16::<BigEndian>()?; // pre-defined
 
-        let header = BoxHeader::read(reader)?;
+        let header = read_box_header(reader, end)?;
         let BoxHeader { name, size: s } = header;
-        if s > size {
+        if checked_box_end(reader, s)? > end {
             return Err(Error::InvalidData(
                 "avc1 box contains a box with a larger size than it",
             ));
@@ -109,7 +109,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for Avc1Box {
         if name == BoxType::AvcCBox {
             let avcc = AvcCBox::read_box(reader, s)?;
 
-            skip_bytes_to(reader, start + size)?;
+            skip_bytes_to(reader, end)?;
 
             Ok(Self {
                 data_reference_index,
@@ -226,7 +226,7 @@ impl Mp4Box for AvcCBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for AvcCBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + 7)?;
 
         let configuration_version = reader.read_u8()?;
         let avc_profile_indication = reader.read_u8()?;
@@ -236,17 +236,18 @@ impl<R: Read + Seek> ReadBox<&mut R> for AvcCBox {
         let num_of_spss = reader.read_u8()? & 0x1F;
         let mut sequence_parameter_sets = Vec::with_capacity(num_of_spss as usize);
         for _ in 0..num_of_spss {
-            let nal_unit = NalUnit::read(reader)?;
+            let nal_unit = NalUnit::read(reader, end)?;
             sequence_parameter_sets.push(nal_unit);
         }
+        ensure_box_bytes_remaining(reader, end, 1)?;
         let num_of_ppss = reader.read_u8()?;
         let mut picture_parameter_sets = Vec::with_capacity(num_of_ppss as usize);
         for _ in 0..num_of_ppss {
-            let nal_unit = NalUnit::read(reader)?;
+            let nal_unit = NalUnit::read(reader, end)?;
             picture_parameter_sets.push(nal_unit);
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             configuration_version,
@@ -301,8 +302,10 @@ impl NalUnit {
         2 + self.bytes.len()
     }
 
-    fn read<R: Read + Seek>(reader: &mut R) -> Result<Self> {
+    fn read<R: Read + Seek>(reader: &mut R, end: u64) -> Result<Self> {
+        ensure_box_bytes_remaining(reader, end, 2)?;
         let length = reader.read_u16::<BigEndian>()? as usize;
+        ensure_box_bytes_remaining(reader, end, length as u64)?;
         let mut bytes = vec![0u8; length];
         reader.read_exact(&mut bytes)?;
         Ok(Self { bytes })
@@ -358,5 +361,30 @@ mod tests {
 
         let dst_box = Avc1Box::read_box(&mut reader, header.size).unwrap();
         assert_eq!(src_box, dst_box);
+    }
+
+    #[test]
+    fn test_avc1_rejects_missing_child_header_without_reading_past_parent() {
+        let mut reader = Cursor::new(vec![0; 94]);
+        reader.set_position(HEADER_SIZE);
+
+        let result = Avc1Box::read_box(&mut reader, 86);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert!(reader.position() <= 86);
+    }
+
+    #[test]
+    fn test_avcc_rejects_nal_unit_that_extends_past_parent() {
+        let mut bytes = vec![0; 21];
+        bytes[8..14].copy_from_slice(&[1, 100, 0, 13, 3, 0xE1]);
+        bytes[14..16].copy_from_slice(&4u16.to_be_bytes());
+        let mut reader = Cursor::new(bytes);
+        reader.set_position(HEADER_SIZE);
+
+        let result = AvcCBox::read_box(&mut reader, 16);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert!(reader.position() <= 16);
     }
 }

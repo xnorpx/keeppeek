@@ -73,7 +73,7 @@ impl Mp4Box for StblBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for StblBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end(reader, size)?;
 
         let mut stsd = None;
         let mut stts = None;
@@ -85,12 +85,11 @@ impl<R: Read + Seek> ReadBox<&mut R> for StblBox {
         let mut co64 = None;
 
         let mut current = reader.stream_position()?;
-        let end = start + size;
         while current < end {
             // Get box header.
-            let header = BoxHeader::read(reader)?;
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
+            if checked_box_end(reader, s)? > end {
                 return Err(Error::InvalidData(
                     "stbl box contains a box with a larger size than it",
                 ));
@@ -145,7 +144,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for StblBox {
             return Err(Error::Box2NotFound(BoxType::StcoBox, BoxType::Co64Box));
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             stsd: stsd.unwrap(),

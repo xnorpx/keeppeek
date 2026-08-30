@@ -30,9 +30,9 @@ jobs:
       AZURE_LOGIN_PRE_CLEANUP: true
       AZURE_LOGIN_POST_CLEANUP: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version-file: ui/.bun-version
 
@@ -63,7 +63,7 @@ jobs:
         run: bun run demo:render
 
       - name: Sign in to Azure
-        uses: azure/login@v3
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -155,7 +155,7 @@ jobs:
             test-results/demo-videos/manifest.json >/dev/null
 
       - name: Upload demo videos
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: keeppeek-demo-videos
           path: ui/test-results/demo-videos

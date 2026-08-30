@@ -85,7 +85,7 @@ impl Mp4Box for Hev1Box {
 
 impl<R: Read + Seek> ReadBox<&mut R> for Hev1Box {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end_with_min(reader, size, HEADER_SIZE + 78 + HEADER_SIZE)?;
 
         reader.read_u32::<BigEndian>()?; // reserved
         reader.read_u16::<BigEndian>()?; // reserved
@@ -104,9 +104,9 @@ impl<R: Read + Seek> ReadBox<&mut R> for Hev1Box {
         let depth = reader.read_u16::<BigEndian>()?;
         reader.read_i16::<BigEndian>()?; // pre-defined
 
-        let header = BoxHeader::read(reader)?;
+        let header = read_box_header(reader, end)?;
         let BoxHeader { name, size: s } = header;
-        if s > size {
+        if checked_box_end(reader, s)? > end {
             return Err(Error::InvalidData(
                 "hev1 box contains a box with a larger size than it",
             ));
@@ -114,7 +114,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for Hev1Box {
         if name == BoxType::HvcCBox {
             let hvcc = HvcCBox::read_box(reader, s)?;
 
-            skip_bytes_to(reader, start + size)?;
+            skip_bytes_to(reader, end)?;
 
             Ok(Self {
                 data_reference_index,
@@ -360,20 +360,21 @@ impl Mp4Box for HvcCBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for HvcCBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end(reader, size)?;
         let content_size = size - HEADER_SIZE;
         if content_size <= 1 {
-            skip_bytes_to(reader, start + size)?;
+            skip_bytes_to(reader, end)?;
             return Ok(Self::new());
         }
         let configuration_version = reader.read_u8()?;
-        let remaining = (content_size - 1) as usize;
+        let remaining = usize::try_from(content_size - 1)
+            .map_err(|_| Error::InvalidData("hvcC configuration is too large"))?;
         let mut record_tail = vec![0u8; remaining];
         reader.read_exact(&mut record_tail)?;
         let mut record_data = Vec::with_capacity(1 + remaining);
         record_data.push(configuration_version);
         record_data.extend_from_slice(&record_tail);
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
         Ok(Self {
             configuration_version,
             record_data,

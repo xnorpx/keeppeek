@@ -55,7 +55,7 @@ impl Mp4Box for TrakBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for TrakBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end(reader, size)?;
 
         let mut tkhd = None;
         let mut edts = None;
@@ -63,12 +63,11 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrakBox {
         let mut mdia = None;
 
         let mut current = reader.stream_position()?;
-        let end = start + size;
         while current < end {
             // Get box header.
-            let header = BoxHeader::read(reader)?;
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
+            if checked_box_end(reader, s)? > end {
                 return Err(Error::InvalidData(
                     "trak box contains a box with a larger size than it",
                 ));
@@ -103,7 +102,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for TrakBox {
             return Err(Error::BoxNotFound(BoxType::MdiaBox));
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             tkhd: tkhd.unwrap(),

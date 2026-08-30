@@ -66,7 +66,7 @@ impl Mp4Box for MoovBox {
 
 impl<R: Read + Seek> ReadBox<&mut R> for MoovBox {
     fn read_box(reader: &mut R, size: u64) -> Result<Self> {
-        let start = box_start(reader)?;
+        let end = checked_box_end(reader, size)?;
 
         let mut mvhd = None;
         let mut meta = None;
@@ -75,12 +75,11 @@ impl<R: Read + Seek> ReadBox<&mut R> for MoovBox {
         let mut traks = Vec::new();
 
         let mut current = reader.stream_position()?;
-        let end = start + size;
         while current < end {
             // Get box header.
-            let header = BoxHeader::read(reader)?;
+            let header = read_box_header(reader, end)?;
             let BoxHeader { name, size: s } = header;
-            if s > size {
+            if checked_box_end(reader, s)? > end {
                 return Err(Error::InvalidData(
                     "moov box contains a box with a larger size than it",
                 ));
@@ -116,7 +115,7 @@ impl<R: Read + Seek> ReadBox<&mut R> for MoovBox {
             return Err(Error::BoxNotFound(BoxType::MvhdBox));
         }
 
-        skip_bytes_to(reader, start + size)?;
+        skip_bytes_to(reader, end)?;
 
         Ok(Self {
             mvhd: mvhd.unwrap(),
@@ -194,6 +193,61 @@ mod tests {
 
         let dst_box = MoovBox::read_box(&mut reader, header.size).unwrap();
         assert_eq!(dst_box, src_box);
+    }
+
+    #[test]
+    fn test_moov_rejects_child_that_extends_past_parent() {
+        let mut buf = Vec::new();
+        MoovBox::default().write_box(&mut buf).unwrap();
+        let parent_size = u32::try_from(buf.len() + HEADER_SIZE as usize)
+            .expect("test moov size must fit in a 32-bit box header");
+        buf[..4].copy_from_slice(&parent_size.to_be_bytes());
+        BoxHeader::new(BoxType::FreeBox, u64::from(parent_size))
+            .write(&mut buf)
+            .unwrap();
+
+        let mut reader = Cursor::new(&buf);
+        let header = BoxHeader::read(&mut reader).unwrap();
+        let error = MoovBox::read_box(&mut reader, header.size);
+
+        assert!(matches!(error, Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn test_moov_rejects_parent_size_overflow() {
+        let mut reader = Cursor::new([0; 9]);
+        reader.set_position(9);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            MoovBox::read_box(&mut reader, u64::MAX)
+        }));
+
+        assert!(matches!(result, Ok(Err(Error::InvalidData(_)))));
+    }
+
+    #[test]
+    fn test_moov_rejects_partial_child_header_without_reading_past_parent() {
+        let mut reader = Cursor::new([0; 16]);
+        reader.set_position(HEADER_SIZE);
+
+        let result = MoovBox::read_box(&mut reader, HEADER_SIZE + 1);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert!(reader.position() <= HEADER_SIZE + 1);
+    }
+
+    #[test]
+    fn test_moov_rejects_partial_extended_child_header_without_reading_past_parent() {
+        let mut bytes = vec![0; 24];
+        bytes[8..12].copy_from_slice(&1u32.to_be_bytes());
+        bytes[12..16].copy_from_slice(&u32::from(BoxType::FreeBox).to_be_bytes());
+        let mut reader = Cursor::new(bytes);
+        reader.set_position(HEADER_SIZE);
+
+        let result = MoovBox::read_box(&mut reader, HEADER_SIZE + HEADER_SIZE);
+
+        assert!(matches!(result, Err(Error::InvalidData(_))));
+        assert!(reader.position() <= HEADER_SIZE + HEADER_SIZE);
     }
 
     #[test]

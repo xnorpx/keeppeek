@@ -1,44 +1,43 @@
 use chrono::{NaiveDate, Utc};
+use clap::{Parser, Subcommand};
 use onvif::soap::{self, client::AuthType};
 use schema::transport;
-use structopt::StructOpt;
 use tracing::{debug, warn};
 use url::Url;
 
-#[derive(StructOpt)]
-#[structopt(name = "camera", about = "ONVIF camera control tool")]
+#[derive(Parser)]
+#[command(name = "camera", about = "ONVIF camera control tool")]
 struct Args {
-    #[structopt(global = true, long, requires = "password")]
+    #[arg(global = true, long, requires = "password")]
     username: Option<String>,
 
-    #[structopt(global = true, long, requires = "username")]
+    #[arg(global = true, long, requires = "username")]
     password: Option<String>,
 
     /// The device's base URI, typically just to the HTTP root.
     /// The service-specific path (such as `/onvif/device_support`) will be appended to this.
     // Note this is an `Option` because global options can't be required in clap.
     // https://github.com/clap-rs/clap/issues/1546
-    #[structopt(global = true, long)]
+    #[arg(global = true, long)]
     uri: Option<Url>,
 
     /// Service specific path
-    #[structopt(global = true, long, default_value = "onvif/device_service")]
+    #[arg(global = true, long, default_value = "onvif/device_service")]
     service_path: String,
 
     /// Auto fix time gap between PC and the camera
-    #[structopt(short = "t", long)]
+    #[arg(short = 't', long)]
     fix_time: bool,
 
     /// Authorization type [Any(Default), Digest, UsernameToken]
-    #[structopt(short = "a", long, default_value = "Any")]
+    #[arg(short = 'a', long, default_value = "Any")]
     auth_type: String,
 
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     cmd: Cmd,
 }
 
-#[derive(StructOpt)]
-#[structopt()]
+#[derive(Subcommand)]
 enum Cmd {
     GetSystemDateAndTime,
 
@@ -94,7 +93,7 @@ impl Clients {
                 password: password.clone(),
             }),
             (None, None) => None,
-            _ => panic!("username and password must be specified together"),
+            _ => return Err("username and password must be specified together".to_owned()),
         };
         let base_uri = args
             .uri
@@ -460,7 +459,7 @@ fn get_status(clients: &Clients) -> Result<(), transport::Error> {
 fn main() {
     tracing_subscriber::fmt::init();
 
-    let args = Args::from_args();
+    let args = Args::parse();
     let clients = Clients::new(&args).unwrap();
 
     match args.cmd {
