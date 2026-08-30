@@ -251,7 +251,7 @@ cd ..
 Then run the complete integration from the repository root:
 
 ```sh
-cargo build -p keeppeek -p test-camera --bin keeppeek --bin test_camera
+cargo build --locked -p keeppeek -p test-camera --bin keeppeek --bin test_camera
 cd examples/object_detection_service
 KEEPPEEK_RUN_OBJECT_DETECTION_E2E=1 \
   KEEPPEEK_E2E_MODEL="$PWD/../../target/yolo11n.pt" \

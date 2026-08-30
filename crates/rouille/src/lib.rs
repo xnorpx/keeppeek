@@ -273,14 +273,33 @@ impl Drop for AtomicCounter {
 
 /// Executes a function in either a thread of a thread pool
 enum Executor {
-    Threaded { count: Arc<AtomicUsize> },
-    Pooled { pool: threadpool::ThreadPool },
+    Threaded {
+        count: Arc<AtomicUsize>,
+    },
+    Pooled {
+        pool: threadpool::ThreadPool,
+        max_queued: usize,
+    },
 }
+
+const MAX_REQUEST_THREADS: usize = 64;
+const QUEUED_REQUESTS_PER_WORKER: usize = 8;
+
 impl Executor {
     /// `size` must be greater than zero or the call to `ThreadPool::new` will panic.
     fn with_size(size: usize) -> Self {
         let pool = threadpool::ThreadPool::new(size);
-        Self::Pooled { pool }
+        Self::Pooled {
+            pool,
+            max_queued: size.saturating_mul(QUEUED_REQUESTS_PER_WORKER),
+        }
+    }
+
+    fn has_capacity(&self) -> bool {
+        match self {
+            Self::Threaded { count } => count.load(Ordering::Acquire) < MAX_REQUEST_THREADS,
+            Self::Pooled { pool, max_queued } => pool.queued_count() < *max_queued,
+        }
     }
 
     #[inline]
@@ -293,7 +312,7 @@ impl Executor {
                     f();
                 });
             }
-            Self::Pooled { ref pool } => {
+            Self::Pooled { ref pool, .. } => {
                 pool.execute(f);
             }
         }
@@ -306,7 +325,7 @@ impl Executor {
                     thread::sleep(Duration::from_millis(100));
                 }
             }
-            Self::Pooled { ref pool } => {
+            Self::Pooled { ref pool, .. } => {
                 pool.join();
             }
         }
@@ -317,7 +336,7 @@ impl Executor {
         loop {
             let in_flight = match *self {
                 Self::Threaded { ref count } => count.load(Ordering::Acquire),
-                Self::Pooled { ref pool } => pool.active_count() + pool.queued_count(),
+                Self::Pooled { ref pool, .. } => pool.active_count() + pool.queued_count(),
             };
             if in_flight == 0 {
                 return true;
@@ -583,6 +602,10 @@ where
 
     // Internal function, called when we got a request from tiny-http that needs to be processed.
     fn process(&self, request: tiny_http::Request) {
+        if !self.executor.has_capacity() {
+            let _ = request.respond(tiny_http::Response::empty(tiny_http::StatusCode(503)));
+            return;
+        }
         // We spawn a thread so that requests are processed in parallel.
         let handler = self.handler.clone();
         self.executor.execute(|| {
@@ -1100,13 +1123,22 @@ impl<'a> Read for RequestBody<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Request, Response, ResponseBody, Server};
+    use crate::{Executor, Request, Response, ResponseBody, Server};
     use std::{
         io::{Read, Write},
         net::{TcpListener, TcpStream},
-        sync::mpsc,
+        sync::{Arc, atomic::AtomicUsize, mpsc},
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn default_executor_rejects_work_at_its_thread_limit() {
+        let executor = Executor::Threaded {
+            count: Arc::new(AtomicUsize::new(super::MAX_REQUEST_THREADS)),
+        };
+
+        assert!(!executor.has_capacity());
+    }
 
     #[test]
     fn join_timeout_returns_while_a_client_is_not_reading() {

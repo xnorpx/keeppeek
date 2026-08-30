@@ -1,5 +1,26 @@
 # Performance benchmarks
 
+## Runtime resource ceilings
+
+KeepPeek applies hard limits at untrusted network and session boundaries:
+
+- The HTTP listener accepts at most 256 active connections, applies 30-second socket read and
+  write timeouts, and buffers at most eight parsed requests for the application.
+- An HTTP request line and each header line contain at most 8 KiB. All non-empty header lines
+  contain at most 64 KiB in total, including line delimiters, and a request contains at most 100
+  headers.
+- The default request executor runs at most 64 handlers. A configured worker pool queues at most
+  eight requests per worker.
+- `POST /delete` accepts at most 16 KiB. Public Baichuan framing accepts at most 16 MiB per body.
+- BCUDP retains at most 256 receive-window packets and 4,096 in-flight send packets. Its command
+  and delivered-payload channels each retain at most 64 items.
+- One WebRTC session owns at most 16 stored-media cursors, and the server owns at most 1,024
+  stored-media cursors across all sessions.
+
+Requests that exceed a boundary fail instead of allocating or queueing without a limit. Operators
+must treat repeated limit failures as load or abuse evidence; increasing a limit requires a new
+memory and concurrency budget.
+
 ## Recording coverage snapshot
 
 The `recording_coverage` benchmark compares the bounded catalog snapshot used by the recording
@@ -8,7 +29,7 @@ corpus contains 127 cameras, `main` and `sub` streams, 30 days, 128 keyframed fr
 camera/day/stream, and 975,360 finalized playable fragments.
 
 ```sh
-cargo bench --bench recording_coverage
+cargo bench --locked --bench recording_coverage
 ```
 
 The benchmark seeds production catalog tables and maintained per-recording coverage summaries,
@@ -25,7 +46,7 @@ KEEPPEEK_COVERAGE_BENCH_CAMERAS=127 \
 KEEPPEEK_COVERAGE_BENCH_DAYS=30 \
 KEEPPEEK_COVERAGE_BENCH_SAMPLES=5 \
 KEEPPEEK_COVERAGE_BENCH_P95_BUDGET_MS=500 \
-cargo bench --bench recording_coverage
+cargo bench --locked --bench recording_coverage
 ```
 
 ### Reference measurement
@@ -70,7 +91,7 @@ The fragment/keyframe indexes impose a corpus floor of roughly 200 MiB even when
 requests a smaller smoke corpus; the target controls the minimum rather than an exact size.
 
 ```sh
-cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup -- --rebuild --prepare-only
+cargo bench --locked --features event-keyframe-benchmark --bench event_keyframe_lookup -- --rebuild --prepare-only
 ```
 
 Generated state is stored under `target/perf/event-keyframe-lookup/corpus/` and is not checked in.
@@ -80,7 +101,7 @@ still match. Use `--rebuild` to replace it explicitly.
 A smaller corpus is useful while changing the benchmark:
 
 ```sh
-cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup -- \
+cargo bench --locked --features event-keyframe-benchmark --bench event_keyframe_lookup -- \
   --rebuild \
   --prepare-only \
   --target-mib 16
@@ -89,7 +110,7 @@ cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup --
 ### Run measurements
 
 ```sh
-cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup
+cargo bench --locked --features event-keyframe-benchmark --bench event_keyframe_lookup
 ```
 
 The runner validates 10,000 exact recording IDs, fragment sequences, timestamps, byte ranges, and
@@ -102,7 +123,7 @@ measures for 20 seconds at concurrency 1, 8, and 32. It measures both:
 Short local runs can override durations:
 
 ```sh
-cargo bench --features event-keyframe-benchmark --bench event_keyframe_lookup -- \
+cargo bench --locked --features event-keyframe-benchmark --bench event_keyframe_lookup -- \
   --target-mib 16 \
   --warmup-secs 1 \
   --measurement-secs 2 \

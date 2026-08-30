@@ -33,13 +33,13 @@ impl Default for Hev1Box {
 }
 
 impl Hev1Box {
-    pub fn new(config: &HevcConfig) -> Self {
+    pub fn new(config: &HevcConfig) -> Result<Self> {
         let hvcc = if config.decoder_config.is_empty() {
-            HvcCBox::from_nalus(&config.vps, &config.sps, &config.pps)
+            HvcCBox::from_nalus(&config.vps, &config.sps, &config.pps)?
         } else {
             HvcCBox::from_record_data(config.decoder_config.clone())
         };
-        Self {
+        Ok(Self {
             data_reference_index: 1,
             width: config.width,
             height: config.height,
@@ -48,7 +48,7 @@ impl Hev1Box {
             frame_count: 1,
             depth: 0x0018,
             hvcc,
-        }
+        })
     }
 
     pub const fn get_type(&self) -> BoxType {
@@ -200,12 +200,12 @@ impl HvcCBox {
         }
     }
 
-    pub fn from_nalus(vps: &[u8], sps: &[u8], pps: &[u8]) -> Self {
-        let record_data = build_hvcc_record(vps, sps, pps);
-        Self {
+    pub fn from_nalus(vps: &[u8], sps: &[u8], pps: &[u8]) -> Result<Self> {
+        let record_data = build_hvcc_record(vps, sps, pps)?;
+        Ok(Self {
             configuration_version: 1,
             record_data,
-        }
+        })
     }
 
     pub fn from_record_data(record_data: Vec<u8>) -> Self {
@@ -275,9 +275,17 @@ fn read_hvcc_u16(record: &[u8], offset: &mut usize) -> Result<u16> {
     Ok(value)
 }
 
-fn build_hvcc_record(vps: &[u8], sps: &[u8], pps: &[u8]) -> Vec<u8> {
+fn build_hvcc_record(vps: &[u8], sps: &[u8], pps: &[u8]) -> Result<Vec<u8>> {
     if vps.is_empty() && sps.is_empty() && pps.is_empty() {
-        return vec![1];
+        return Ok(vec![1]);
+    }
+    if [vps, sps, pps]
+        .into_iter()
+        .any(|nalu| nalu.len() > usize::from(u16::MAX))
+    {
+        return Err(Error::InvalidData(
+            "hvcC parameter set exceeds the 16-bit wire length",
+        ));
     }
 
     let (ptl_byte, profile_compat, constraint, level, max_sub_layers, temporal_id_nested) =
@@ -324,10 +332,12 @@ fn build_hvcc_record(vps: &[u8], sps: &[u8], pps: &[u8]) -> Vec<u8> {
     for (nal_type, nalu) in &arrays {
         r.push(0x80 | (nal_type & 0x3F)); // array_completeness=1 | NAL_unit_type
         r.extend_from_slice(&1u16.to_be_bytes()); // numNalus
-        r.extend_from_slice(&(nalu.len() as u16).to_be_bytes()); // nalUnitLength
+        let nal_len = u16::try_from(nalu.len())
+            .map_err(|_| Error::InvalidData("hvcC parameter set exceeds the 16-bit wire length"))?;
+        r.extend_from_slice(&nal_len.to_be_bytes()); // nalUnitLength
         r.extend_from_slice(nalu);
     }
-    r
+    Ok(r)
 }
 
 impl Mp4Box for HvcCBox {
@@ -430,12 +440,28 @@ mod tests {
 
     #[test]
     fn hvc_configuration_decodes_parameter_sets() {
-        let hvcc = HvcCBox::from_nalus(&[0x40, 0x01], &[0x42, 0x01], &[0x44, 0x01]);
+        let sps = [
+            0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0xb0, 0x00, 0x00, 0x03, 0x00,
+            0x00, 0x03, 0x00, 0x5a, 0xa0, 0x05, 0x82, 0x01, 0xe1, 0x63, 0x6b, 0x92, 0x45, 0x2f,
+            0xcd, 0xc1, 0x41, 0x81, 0x41, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x03, 0x00,
+            0x0c, 0xa1,
+        ];
+        let hvcc = HvcCBox::from_nalus(&[0x40, 0x01], &sps, &[0x44, 0x01]).unwrap();
         let configuration = hvcc.configuration().unwrap();
 
         assert_eq!(configuration.nal_length_size, 4);
         assert_eq!(configuration.vps, vec![vec![0x40, 0x01]]);
-        assert_eq!(configuration.sps, vec![vec![0x42, 0x01]]);
+        assert_eq!(configuration.sps, vec![sps.to_vec()]);
         assert_eq!(configuration.pps, vec![vec![0x44, 0x01]]);
+    }
+
+    #[test]
+    fn hvcc_rejects_parameter_sets_that_exceed_wire_lengths() {
+        let oversized = vec![0; usize::from(u16::MAX) + 1];
+
+        assert!(matches!(
+            HvcCBox::from_nalus(&oversized, &[0x42, 0x01], &[0x44, 0x01]),
+            Err(Error::InvalidData(_))
+        ));
     }
 }

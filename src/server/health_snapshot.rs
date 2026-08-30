@@ -1,18 +1,20 @@
 use super::{CameraEntry, ControlCommandError, ServerState, millis_timestamp, server_health};
 use crate::{
     api::{
-        ProfileSummary,
+        CameraLifecycle, CameraStatus, ProfileSummary,
         proto::{self, health_command, ok as control_ok},
     },
     health::{
-        CameraHealth, CameraHealthDimensions, HealthIssue, HealthTotals, ServerHealthResponse,
-        StorageHealth, StreamHealth,
+        CameraHealth, CameraHealthDimensions, HealthIssue, HealthTotals,
+        STREAM_REPORT_FRESHNESS_THRESHOLD_MS, ServerHealthResponse, StorageHealth, StreamHealth,
     },
     operational_events::OperationalEvent,
     runtime::{FacadeSender, RouterMessage},
-    stats::StreamHealthReport,
+    stats::{REPORT_INTERVAL, StreamHealthReport},
+    storage::{RecordingStreamHealthSnapshot, StorageConfig},
 };
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 pub(super) fn dispatch(
     state: &ServerState,
@@ -601,6 +603,159 @@ fn nonzero_u64(value: u64) -> Option<u64> {
 
 fn nonzero_f64(value: f64) -> Option<f64> {
     (value != 0.0).then_some(value)
+}
+
+pub(super) fn normalized_video_stream_id(value: &str) -> Option<&str> {
+    match value.strip_prefix("video_").unwrap_or(value) {
+        "main" => Some("main"),
+        "sub" => Some("sub"),
+        _ => None,
+    }
+}
+
+pub(super) fn expected_video_stream_ids(
+    camera: &CameraEntry,
+    router_status: Option<&CameraStatus>,
+    streams: &[StreamHealthReport],
+) -> Vec<String> {
+    let mut ids = router_status
+        .into_iter()
+        .flat_map(|status| status.expected_streams.iter())
+        .filter_map(|stream| normalized_video_stream_id(stream))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        ids.extend(
+            camera
+                .info
+                .profiles
+                .iter()
+                .filter_map(|profile| normalized_video_stream_id(&profile.stream))
+                .map(str::to_owned),
+        );
+    }
+    if ids.is_empty() {
+        ids.extend(
+            streams
+                .iter()
+                .filter_map(|stream| normalized_video_stream_id(&stream.report.kind))
+                .map(str::to_owned),
+        );
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+pub(super) fn connected_video_stream_ids(
+    router_status: Option<&CameraStatus>,
+) -> Option<Vec<String>> {
+    let status = router_status?;
+    if status.expected_streams.is_empty() && status.connected_streams.is_empty() {
+        return None;
+    }
+    let mut ids = status
+        .connected_streams
+        .iter()
+        .filter_map(|stream| normalized_video_stream_id(stream))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    Some(ids)
+}
+
+pub(super) fn stream_transport_connected(
+    stream_id: &str,
+    router_status: Option<&CameraStatus>,
+) -> Option<bool> {
+    let status = router_status?;
+    if !status.expected_streams.is_empty() || !status.connected_streams.is_empty() {
+        return Some(status.connected_streams.iter().any(|connected| {
+            normalized_video_stream_id(connected).is_some_and(|connected| connected == stream_id)
+        }));
+    }
+    match status.lifecycle {
+        CameraLifecycle::Connected => Some(true),
+        CameraLifecycle::Reconnecting | CameraLifecycle::Stopped => Some(false),
+        CameraLifecycle::Starting | CameraLifecycle::Degraded | CameraLifecycle::ShuttingDown => {
+            None
+        }
+    }
+}
+
+pub(super) fn frame_freshness_threshold_ms(expected_fps: f64) -> u64 {
+    let report_floor = REPORT_INTERVAL
+        .as_millis()
+        .saturating_mul(2)
+        .try_into()
+        .unwrap_or(u64::MAX);
+    if !expected_fps.is_finite() || expected_fps <= 0.0 {
+        return STREAM_REPORT_FRESHNESS_THRESHOLD_MS;
+    }
+    let frame_window = (3_000.0 / expected_fps).ceil().max(1.0) as u64;
+    report_floor.max(frame_window).min(120_000)
+}
+
+pub(super) fn keyframe_freshness_threshold_ms(
+    profile: Option<&ProfileSummary>,
+    observed_kf_fps: f64,
+) -> u64 {
+    let configured_interval_ms = profile.and_then(|profile| {
+        let gop = f64::from(profile.gop?);
+        let fps = profile.framerate?;
+        (fps.is_finite() && fps > 0.0).then_some(gop / fps * 1_000.0)
+    });
+    let observed_interval_ms =
+        (observed_kf_fps.is_finite() && observed_kf_fps > 0.0).then_some(1_000.0 / observed_kf_fps);
+    configured_interval_ms.or(observed_interval_ms).map_or(
+        STREAM_REPORT_FRESHNESS_THRESHOLD_MS,
+        |interval| {
+            (interval * 3.0)
+                .ceil()
+                .max(STREAM_REPORT_FRESHNESS_THRESHOLD_MS as f64)
+                .min(120_000.0) as u64
+        },
+    )
+}
+
+pub(super) fn recording_freshness_threshold_ms(config: &StorageConfig) -> u64 {
+    config
+        .short_term_duration
+        .saturating_add(config.flush_interval)
+        .saturating_add(Duration::from_millis(STREAM_REPORT_FRESHNESS_THRESHOLD_MS))
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+pub(super) fn recording_progressing(
+    health: Option<&RecordingStreamHealthSnapshot>,
+    threshold_ms: u64,
+    uptime_ms: u64,
+    frames_fresh: bool,
+) -> Option<bool> {
+    if health
+        .and_then(|health| health.last_error.as_ref())
+        .is_some()
+    {
+        return Some(false);
+    }
+    if let Some(age_ms) = health.and_then(|health| health.progress_age_ms) {
+        return Some(age_ms <= threshold_ms);
+    }
+    if health
+        .and_then(|health| health.attempt_age_ms)
+        .is_some_and(|age_ms| age_ms > threshold_ms)
+        || (health.is_none() && frames_fresh && uptime_ms > threshold_ms)
+    {
+        return Some(false);
+    }
+    None
+}
+
+pub(super) fn bounded_health_detail(value: &str) -> String {
+    value.chars().take(240).collect()
 }
 
 pub(super) fn aggregate_video_streams(

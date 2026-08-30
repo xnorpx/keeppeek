@@ -261,6 +261,9 @@ pub struct BcUdpTransport {
     next_resend: Instant,
 }
 
+const MAX_RECEIVE_WINDOW: u32 = 256;
+const MAX_IN_FLIGHT_PACKETS: usize = 4_096;
+
 impl BcUdpTransport {
     pub fn new(
         client_id: i32,
@@ -292,6 +295,10 @@ impl BcUdpTransport {
 
     pub fn queue_payload(&mut self, payload: &[u8]) -> Result<(), BcError> {
         let chunk_size = self.config.mtu - DATA_HEADER_LEN;
+        let packet_count = payload.len().div_ceil(chunk_size);
+        if packet_count > MAX_IN_FLIGHT_PACKETS.saturating_sub(self.sent.len()) {
+            return Err(BcError::Protocol("UDP send window is full"));
+        }
         for chunk in payload.chunks(chunk_size) {
             let data = UdpData {
                 connection_id: self.camera_id,
@@ -315,9 +322,14 @@ impl BcUdpTransport {
             }
             BcUdpPacket::Ack(_) => {}
             BcUdpPacket::Data(data) if data.connection_id == self.client_id => {
-                if data.packet_id >= self.next_receive_packet {
+                let distance = data.packet_id.wrapping_sub(self.next_receive_packet);
+                if distance < MAX_RECEIVE_WINDOW {
                     self.received.entry(data.packet_id).or_insert(data.payload);
                     self.flush_received();
+                } else if distance < (1 << 31) {
+                    return Err(BcError::InvalidUdpPacket(
+                        "data packet is outside the receive window",
+                    ));
                 }
             }
             BcUdpPacket::Data(_) => {}
@@ -364,13 +376,19 @@ impl BcUdpTransport {
     }
 
     fn build_ack(&self) -> UdpAck {
-        if self.next_receive_packet == 0 {
-            return UdpAck::empty(self.camera_id);
-        }
-        let mut received = Vec::new();
-        if let Some(last) = self.received.keys().next_back().copied() {
-            for packet_id in self.next_receive_packet..=last {
-                received.push(u8::from(self.received.contains_key(&packet_id)));
+        let max_distance = self
+            .received
+            .keys()
+            .map(|packet_id| packet_id.wrapping_sub(self.next_receive_packet))
+            .filter(|distance| *distance < MAX_RECEIVE_WINDOW)
+            .max();
+        let mut received = max_distance.map_or_else(Vec::new, |distance| {
+            vec![0; usize::try_from(distance).unwrap_or(usize::MAX) + 1]
+        });
+        for packet_id in self.received.keys() {
+            let distance = packet_id.wrapping_sub(self.next_receive_packet);
+            if distance < MAX_RECEIVE_WINDOW {
+                received[distance as usize] = 1;
             }
         }
         UdpAck {
@@ -383,10 +401,10 @@ impl BcUdpTransport {
     }
 
     fn handle_ack(&mut self, ack: &UdpAck) {
-        if ack.packet_id == u32::MAX {
-            return;
-        }
-        self.sent.retain(|packet_id, _| *packet_id > ack.packet_id);
+        self.sent.retain(|packet_id, _| {
+            let distance = packet_id.wrapping_sub(ack.packet_id);
+            distance != 0 && distance < (1 << 31)
+        });
         for (offset, received) in ack.received.iter().copied().enumerate() {
             if received != 0 {
                 let packet_id = ack.packet_id.wrapping_add(1).wrapping_add(offset as u32);
@@ -772,6 +790,120 @@ mod tests {
         transport.handle_datagram(&ack).unwrap();
         assert_eq!(transport.pending_send_packets(), 1);
         assert!(transport.sent.contains_key(&1));
+    }
+
+    #[test]
+    fn cumulative_ack_preserves_newer_packets_across_sequence_rollover() {
+        let now = Instant::now();
+        let config = BcUdpConfig {
+            mtu: DATA_HEADER_LEN + 1,
+            ..BcUdpConfig::default()
+        };
+        let mut transport = BcUdpTransport::new(10, 20, now, config).unwrap();
+        transport.next_send_packet = u32::MAX - 1;
+        transport.queue_payload(b"abc").unwrap();
+        let ack = BcUdpPacket::Ack(UdpAck {
+            connection_id: 10,
+            group_id: 0,
+            packet_id: u32::MAX - 1,
+            latency: 0,
+            received: Vec::new(),
+        })
+        .encode()
+        .unwrap();
+
+        transport.handle_datagram(&ack).unwrap();
+
+        assert_eq!(transport.pending_send_packets(), 2);
+        assert!(transport.sent.contains_key(&u32::MAX));
+        assert!(transport.sent.contains_key(&0));
+    }
+
+    #[test]
+    fn cumulative_ack_accepts_maximum_packet_id_after_sequence_rollover() {
+        let now = Instant::now();
+        let config = BcUdpConfig {
+            mtu: DATA_HEADER_LEN + 1,
+            ..BcUdpConfig::default()
+        };
+        let mut transport = BcUdpTransport::new(10, 20, now, config).unwrap();
+        transport.next_send_packet = u32::MAX;
+        transport.queue_payload(b"ab").unwrap();
+        let ack = BcUdpPacket::Ack(UdpAck {
+            connection_id: 10,
+            group_id: 0,
+            packet_id: u32::MAX,
+            latency: 0,
+            received: Vec::new(),
+        })
+        .encode()
+        .unwrap();
+
+        transport.handle_datagram(&ack).unwrap();
+
+        assert_eq!(transport.pending_send_packets(), 1);
+        assert!(transport.sent.contains_key(&0));
+    }
+
+    #[test]
+    fn initial_empty_cumulative_ack_preserves_first_packet() {
+        let now = Instant::now();
+        let mut transport = BcUdpTransport::new(10, 20, now, BcUdpConfig::default()).unwrap();
+        transport.queue_payload(b"pending").unwrap();
+        let ack = BcUdpPacket::Ack(UdpAck::empty(10)).encode().unwrap();
+
+        transport.handle_datagram(&ack).unwrap();
+
+        assert_eq!(transport.pending_send_packets(), 1);
+        assert!(transport.sent.contains_key(&0));
+    }
+
+    #[test]
+    fn transport_rejects_packets_beyond_the_receive_window() {
+        let now = Instant::now();
+        let mut transport = BcUdpTransport::new(10, 20, now, BcUdpConfig::default()).unwrap();
+        let first = BcUdpPacket::Data(UdpData {
+            connection_id: 10,
+            packet_id: 0,
+            payload: b"first".to_vec(),
+        })
+        .encode()
+        .unwrap();
+        transport.handle_datagram(&first).unwrap();
+        assert!(matches!(
+            transport.poll_output(now).unwrap(),
+            BcUdpOutput::Payload(_)
+        ));
+
+        let far_future = BcUdpPacket::Data(UdpData {
+            connection_id: 10,
+            packet_id: MAX_RECEIVE_WINDOW + 1,
+            payload: b"future".to_vec(),
+        })
+        .encode()
+        .unwrap();
+
+        assert!(matches!(
+            transport.handle_datagram(&far_future),
+            Err(BcError::InvalidUdpPacket(_))
+        ));
+    }
+
+    #[test]
+    fn transport_rejects_payloads_that_exceed_the_send_window() {
+        let now = Instant::now();
+        let config = BcUdpConfig {
+            mtu: DATA_HEADER_LEN + 1,
+            ..BcUdpConfig::default()
+        };
+        let mut transport = BcUdpTransport::new(10, 20, now, config).unwrap();
+        let payload = vec![0; MAX_IN_FLIGHT_PACKETS + 1];
+
+        assert!(matches!(
+            transport.queue_payload(&payload),
+            Err(BcError::Protocol("UDP send window is full"))
+        ));
+        assert_eq!(transport.pending_send_packets(), 0);
     }
 
     #[test]

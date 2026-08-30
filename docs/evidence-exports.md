@@ -65,5 +65,5 @@ same independent check locally with:
 
 ```sh
 KEEPPEEK_VALIDATE_EXPORT_MEDIA=1 \
-  cargo test server::tests::export_job_runs_reports_gaps_and_downloads_verified_file --lib
+  cargo test --locked server::tests::export_job_runs_reports_gaps_and_downloads_verified_file --lib
 ```

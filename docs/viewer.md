@@ -188,6 +188,10 @@ This two-cursor handoff avoids ordered-channel backlog during rapid dragging wit
 loss during normal playback. A client that prefers lower latency over completeness may keep
 continuous playback on `unreliable-data`; KeepPeek never changes the requested route implicitly.
 
+A session can keep at most 16 stored-media cursors open, and one server can keep at most 1,024
+across all sessions. The server rejects a duplicate cursor ID or an exhausted quota before it
+opens storage. Close a replaceable scrub cursor as soon as its playback cursor takes ownership.
+
 ## Optional server log stream
 
 The viewer may open the authenticated HTTP SSE endpoint independently of its WebRTC session. The

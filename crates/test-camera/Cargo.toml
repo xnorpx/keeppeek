@@ -13,26 +13,26 @@ test = false
 workspace = true
 
 [dependencies]
-anyhow = { version = "*" }
+anyhow = { version = "1.0.104" }
 clap = { version = "4", default-features = false, features = [
   "std",
   "derive",
   "help",
 ] }
-ctrlc = { version = "*" }
+ctrlc = { version = "3.5.2" }
 keeppeek = { path = "../.." }
 mp4 = { path = "../mp4" }
 reo-proto = { path = "../reo-proto" }
 retina = { path = "../retina" }
 rouille = { path = "../rouille" }
-serde_json = { version = "*" }
-tracing = { version = "*" }
-tracing-subscriber = { version = "*", features = ["env-filter"] }
+serde_json = { version = "1.0.151" }
+tracing = { version = "0.1.44" }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
 onvif = { path = "../onvif/onvif" }
 schema = { path = "../onvif/schema", features = ["devicemgmt", "media"] }
-tempfile = { version = "*" }
+tempfile = { version = "3.27.0" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Media"] }

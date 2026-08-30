@@ -598,7 +598,15 @@ test('reviews and stages safe storage changes before a restart', async ({ page }
 	await page.getByLabel('Move existing storage during restart').check();
 
 	await page.getByText('Advanced storage paths and writer controls').click();
-	await page.getByLabel('Active recording path').fill('/archive/medium');
+	const activeRecordingPath = page.getByLabel('Active recording path');
+	await activeRecordingPath.fill('');
+	await expect(page.getByText('Active recording path is required.')).toBeVisible();
+	await expect(activeRecordingPath).toHaveAttribute('aria-describedby', 'medium-term-path-error');
+	await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
+	await page.getByText('Advanced storage paths and writer controls').click();
+	await expect(page.getByText('1 advanced setting needs attention.')).toBeVisible();
+	await page.getByText('Advanced storage paths and writer controls').click();
+	await activeRecordingPath.fill('/archive/medium');
 	await page.getByLabel('Recording catalog path').fill('/archive/metadata/recordings.db');
 	await page.getByLabel('Event thumbnail path').fill('/archive/events');
 	await page.getByLabel('Thumbnail storage limit (MiB)').fill('512');

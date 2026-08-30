@@ -32,6 +32,52 @@ jobs:
           fail-on-severity: moderate
           comment-summary-in-pr: always
 
+  dependency-audit:
+    name: Dependency Audit
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
+        with:
+          tool: cargo-audit@0.22.2
+      - name: Audit locked Rust dependencies
+        run: cargo audit --deny warnings
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Audit current public npm resolution
+        shell: bash
+        run: |
+          set -e -o pipefail
+          audit_manifest() {
+            manifest="$1"
+            name="$2"
+            audit_directory="$RUNNER_TEMP/$name"
+            mkdir -p "$audit_directory"
+            cp "$manifest" "$audit_directory/package.json"
+            (
+              cd "$audit_directory"
+              bun install --lockfile-only --ignore-scripts --registry=https://registry.npmjs.org/
+              bun audit --audit-level high
+            )
+          }
+          audit_manifest ui/package.json keeppeek-ui-audit
+          audit_manifest ui/visual-harness/package.json keeppeek-visual-harness-audit
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version-file: examples/object_detection_service/.python-version
+      - name: Audit current public PyPI resolution
+        working-directory: examples/object_detection_service
+        env:
+          PIP_INDEX_URL: https://pypi.org/simple
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          python -m pip_audit --index-url https://pypi.org/simple --requirement requirements.txt
+
   codeql-typescript:
     name: CodeQL (JavaScript/TypeScript)
     runs-on: ubuntu-latest

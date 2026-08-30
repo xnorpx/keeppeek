@@ -68,7 +68,16 @@ impl ReadBuffer {
             Err(e) => return Err(e),
         };
 
-        let total_len = header_len + header.body_len as usize;
+        let body_len = header.body_len as usize;
+        if body_len > crate::MAX_SNAPSHOT_BYTES {
+            return Err(BcError::MessageTooLarge {
+                size: body_len,
+                max: crate::MAX_SNAPSHOT_BYTES,
+            });
+        }
+        let total_len = header_len
+            .checked_add(body_len)
+            .ok_or(BcError::InvalidHeader("message length overflow"))?;
         if self.buf.len() < total_len {
             return Ok(None);
         }

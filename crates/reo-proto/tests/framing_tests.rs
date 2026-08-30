@@ -176,6 +176,24 @@ fn test_framing_large_message() {
 }
 
 #[test]
+fn test_framing_rejects_declared_body_over_the_protocol_limit() {
+    let mut rb = ReadBuffer::new();
+    let header_bytes = make_header_bytes(
+        3,
+        (reo_proto::MAX_SNAPSHOT_BYTES + 1) as u32,
+        0,
+        make_status(BC_CLASS_LEGACY, 0),
+        None,
+    );
+    rb.extend(&header_bytes);
+
+    assert!(matches!(
+        rb.try_parse_message(),
+        Err(reo_proto::BcError::MessageTooLarge { .. })
+    ));
+}
+
+#[test]
 fn test_framing_skips_garbage_before_magic() {
     let mut rb = ReadBuffer::new();
     let garbage = [0xFF, 0xFE, 0xFD, 0xFC, 0xFB];

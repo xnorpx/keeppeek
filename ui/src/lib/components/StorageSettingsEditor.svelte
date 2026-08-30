@@ -61,6 +61,16 @@
 
 	const GIBIBYTE_BYTES = 1_073_741_824;
 	const MAX_WRITE_BUFFER_BYTES = 64 * 1_024 * 1_024;
+	const advancedFields: readonly FieldName[] = [
+		'mediumTermPath',
+		'recordingCatalogPath',
+		'eventThumbnailPath',
+		'eventThumbnailMaxMegabytes',
+		'shortTermSeconds',
+		'mediumTermSeconds',
+		'flushIntervalSeconds',
+		'writeBufferBytes'
+	];
 	const initialDraft = untrack(() => storageDraftFromConfig(config));
 	let draft = $state<StorageDraft>({ ...initialDraft });
 	let migrationChoice = $state<MigrationChoice>('unselected');
@@ -79,6 +89,9 @@
 			draft.eventThumbnailPath.trim() !== initialDraft.eventThumbnailPath
 	);
 	let fieldErrors = $derived(validateDraft(draft, confirmUnlimited));
+	let advancedErrorCount = $derived(
+		advancedFields.filter((field) => fieldErrors[field] !== null).length
+	);
 	let migrationError = $derived(validateMigration());
 	let policyError = $derived(validatePolicy());
 	let hasErrors = $derived(
@@ -759,7 +772,16 @@
 						<summary
 							class="cursor-pointer text-sm font-semibold text-text marker:text-primary-soft"
 						>
-							Advanced storage paths and writer controls
+							<span class="flex items-center justify-between gap-3">
+								<span>Advanced storage paths and writer controls</span>
+								{#if advancedErrorCount > 0}
+									<span id="advanced-storage-error-summary" class="text-xs text-destructive">
+										{advancedErrorCount} advanced {advancedErrorCount === 1
+											? 'setting needs'
+											: 'settings need'} attention.
+									</span>
+								{/if}
+							</span>
 						</summary>
 						<div class="mt-4 grid gap-4 sm:grid-cols-2">
 							{#each [{ field: 'mediumTermPath', id: 'medium-term-path', label: 'Active recording path' }, { field: 'recordingCatalogPath', id: 'recording-catalog-path', label: 'Recording catalog path' }, { field: 'eventThumbnailPath', id: 'event-thumbnail-path', label: 'Event thumbnail path' }] as item (item.field)}
@@ -769,8 +791,16 @@
 										id={item.id}
 										bind:value={draft[item.field as FieldName]}
 										aria-invalid={fieldErrors[item.field as FieldName] !== null}
+										aria-describedby={fieldErrors[item.field as FieldName]
+											? `${item.id}-error`
+											: undefined}
 										autocomplete="off"
 									/>
+									{#if fieldErrors[item.field as FieldName]}
+										<span id={`${item.id}-error`} class="text-xs text-destructive"
+											>{fieldErrors[item.field as FieldName]}</span
+										>
+									{/if}
 								</label>
 							{/each}
 							{#each [{ field: 'eventThumbnailMaxMegabytes', id: 'event-thumbnail-max-megabytes', label: 'Thumbnail storage limit (MiB)', minimum: 0 }, { field: 'shortTermSeconds', id: 'short-term-seconds', label: 'Memory buffer (seconds)', minimum: 0 }, { field: 'mediumTermSeconds', id: 'medium-term-seconds', label: 'Recording file duration (seconds)', minimum: 0 }, { field: 'flushIntervalSeconds', id: 'flush-interval-seconds', label: 'Flush interval (seconds)', minimum: 0 }, { field: 'writeBufferBytes', id: 'write-buffer-bytes', label: 'Write buffer (bytes)', minimum: 1 }] as item (item.field)}

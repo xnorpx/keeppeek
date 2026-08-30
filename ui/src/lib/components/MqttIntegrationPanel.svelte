@@ -39,6 +39,7 @@
 	let saving = $state(false);
 	let testing = $state(false);
 	let editing = $state(false);
+	let editingRevision = $state<string | null>(null);
 	let error = $state<string | null>(null);
 	let result = $state<string | null>(null);
 
@@ -48,6 +49,7 @@
 			integration = null;
 			draft = null;
 			editing = false;
+			editingRevision = null;
 			runtimeStarted = false;
 			return;
 		}
@@ -87,7 +89,7 @@
 			const next = await controlClient.getMqttIntegration();
 			integration = next;
 			if (initializeDraft || draft === null) draft = draftFrom(next);
-			error = null;
+			if (!editing) error = null;
 		} catch (cause) {
 			if (initializeDraft) {
 				error = cause instanceof Error ? cause.message : 'MQTT integration is unavailable.';
@@ -107,7 +109,9 @@
 	}
 
 	function updateFromDraft(): MqttSettingsUpdate {
-		if (!draft || !integration) throw new Error('MQTT settings are unavailable.');
+		if (!draft || !integration || editingRevision === null) {
+			throw new Error('MQTT settings are unavailable.');
+		}
 		const update: MqttSettingsUpdate = {
 			enabled: draft.enabled,
 			broker_url: draft.brokerUrl.trim(),
@@ -123,7 +127,7 @@
 			outbox_max_mb: wholeNumber(draft.outboxMaxMb, 'Outbox limit', 1, 65_536),
 			retry_min_ms: wholeNumber(draft.retryMinMs, 'Retry minimum', 1, 3_600_000),
 			retry_max_ms: wholeNumber(draft.retryMaxMs, 'Retry maximum', 1, 3_600_000),
-			expected_configuration_revision: integration.configuration_revision
+			expected_configuration_revision: editingRevision
 		};
 		if (draft.password) update.password = draft.password;
 		if (draft.clearPassword) update.clear_password = true;
@@ -141,6 +145,7 @@
 			integration = updated;
 			draft = draftFrom(updated);
 			editing = false;
+			editingRevision = null;
 			result = updated.configuration.enabled
 				? 'MQTT settings saved and applied.'
 				: 'MQTT forwarding disabled. Queued events remain durable.';
@@ -180,6 +185,7 @@
 	function beginEditing(): void {
 		if (!integration) return;
 		draft = draftFrom(integration);
+		editingRevision = integration.configuration_revision;
 		error = null;
 		result = null;
 		editing = true;
@@ -187,6 +193,7 @@
 
 	function cancelEditing(): void {
 		if (integration) draft = draftFrom(integration);
+		editingRevision = null;
 		error = null;
 		editing = false;
 	}
@@ -484,7 +491,7 @@
 					<Button
 						type="button"
 						variant="ghost"
-						onclick={() => load(true)}
+						onclick={() => load(false)}
 						disabled={saving || testing}
 					>
 						<RefreshCwIcon /> Refresh status

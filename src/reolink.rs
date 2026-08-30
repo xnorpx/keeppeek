@@ -31,7 +31,11 @@ use std::{
     collections::{HashMap, VecDeque},
     io::{Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
+    },
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -45,6 +49,8 @@ const UDP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 const UDP_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 const UDP_RECEIVE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 const UDP_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const UDP_COMMAND_QUEUE_CAPACITY: usize = 64;
+const UDP_PAYLOAD_QUEUE_CAPACITY: usize = 64;
 
 trait BaichuanTransport {
     fn receive(&mut self, deadline: Instant, buf: &mut [u8]) -> anyhow::Result<Option<usize>>;
@@ -98,8 +104,9 @@ impl BaichuanTransport for TcpBaichuanTransport {
 }
 
 struct UdpBaichuanTransport {
-    commands: Sender<UdpCommand>,
+    commands: SyncSender<UdpCommand>,
     payloads: Receiver<Result<Vec<u8>, String>>,
+    stop_requested: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -201,26 +208,35 @@ impl UdpBaichuanTransport {
         socket.connect(camera_addr)?;
         let now = Instant::now();
         let transport = connection.transport(now, BcUdpConfig::default())?;
-        let (command_tx, command_rx) = mpsc::channel();
-        let (payload_tx, payload_rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::sync_channel(UDP_COMMAND_QUEUE_CAPACITY);
+        let (payload_tx, payload_rx) = mpsc::sync_channel(UDP_PAYLOAD_QUEUE_CAPACITY);
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let pump_stop_requested = Arc::clone(&stop_requested);
         let thread = std::thread::Builder::new()
             .name(format!("baichuan-udp-{camera_ip}"))
             .spawn(move || {
-                if let Err(error) =
-                    run_udp_pump(socket, connection, transport, command_rx, &payload_tx)
-                {
-                    let _ = payload_tx.send(Err(error.to_string()));
+                if let Err(error) = run_udp_pump(
+                    socket,
+                    connection,
+                    transport,
+                    command_rx,
+                    &payload_tx,
+                    &pump_stop_requested,
+                ) {
+                    let _ = payload_tx.try_send(Err(error.to_string()));
                 }
             })?;
         Ok(Self {
             commands: command_tx,
             payloads: payload_rx,
+            stop_requested,
             thread: Some(thread),
         })
     }
 
     fn stop(&mut self) -> anyhow::Result<()> {
-        let _ = self.commands.send(UdpCommand::Close);
+        self.stop_requested.store(true, Ordering::Release);
+        let _ = self.commands.try_send(UdpCommand::Close);
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
@@ -255,10 +271,14 @@ impl BaichuanTransport for UdpBaichuanTransport {
     }
 
     fn send(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        self.commands
-            .send(UdpCommand::Payload(data.to_vec()))
-            .map_err(|_| anyhow::anyhow!("BCUDP socket thread stopped"))?;
-        Ok(())
+        if self.stop_requested.load(Ordering::Acquire) {
+            anyhow::bail!("BCUDP socket thread stopped");
+        }
+        match self.commands.try_send(UdpCommand::Payload(data.to_vec())) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => anyhow::bail!("BCUDP command queue is full"),
+            Err(TrySendError::Disconnected(_)) => anyhow::bail!("BCUDP socket thread stopped"),
+        }
     }
 
     fn close(&mut self) -> anyhow::Result<()> {
@@ -277,12 +297,17 @@ fn run_udp_pump(
     connection: BcUdpConnection,
     mut transport: reo_proto::BcUdpTransport,
     commands: Receiver<UdpCommand>,
-    payloads: &Sender<Result<Vec<u8>, String>>,
+    payloads: &SyncSender<Result<Vec<u8>, String>>,
+    stop_requested: &AtomicBool,
 ) -> anyhow::Result<()> {
     let mut next_heartbeat = Instant::now();
     let mut datagram = [0u8; 65_535];
     loop {
         loop {
+            if stop_requested.load(Ordering::Acquire) {
+                socket.send(&connection.disconnect()?)?;
+                return Ok(());
+            }
             match commands.try_recv() {
                 Ok(UdpCommand::Payload(payload)) => transport.queue_payload(&payload)?,
                 Ok(UdpCommand::Close) | Err(TryRecvError::Disconnected) => {
@@ -300,15 +325,23 @@ fn run_udp_pump(
         }
 
         let transport_deadline = loop {
+            if stop_requested.load(Ordering::Acquire) {
+                socket.send(&connection.disconnect()?)?;
+                return Ok(());
+            }
             match transport.poll_output(now)? {
                 BcUdpOutput::Datagram(datagram) => {
                     socket.send(&datagram)?;
                 }
-                BcUdpOutput::Payload(payload) => {
-                    payloads
-                        .send(Ok(payload))
-                        .map_err(|_| anyhow::anyhow!("BCUDP payload receiver stopped"))?;
-                }
+                BcUdpOutput::Payload(payload) => match payloads.try_send(Ok(payload)) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        anyhow::bail!("BCUDP payload queue is full")
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        anyhow::bail!("BCUDP payload receiver stopped")
+                    }
+                },
                 BcUdpOutput::Timeout(deadline) => break deadline,
             }
         };
@@ -1310,6 +1343,40 @@ mod tests {
             panic!("cancelled BCUDP discovery unexpectedly connected");
         };
         assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn bcudp_stop_does_not_wait_for_command_queue_capacity() {
+        let (commands, command_receiver) = mpsc::sync_channel(1);
+        commands.send(UdpCommand::Payload(Vec::new())).unwrap();
+        let (_payload_sender, payloads) = mpsc::sync_channel(1);
+        let mut transport = UdpBaichuanTransport {
+            commands,
+            payloads,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            thread: Some(std::thread::spawn(|| {})),
+        };
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (stopped_sender, stopped_receiver) = mpsc::sync_channel(1);
+        let stopper = std::thread::spawn(move || {
+            started_sender.send(()).unwrap();
+            stopped_sender.send(transport.stop().is_ok()).unwrap();
+        });
+        started_receiver.recv().unwrap();
+
+        let stopped_without_drain = stopped_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .ok();
+        drop(command_receiver);
+        let stopped_cleanly = stopped_without_drain.unwrap_or_else(|| {
+            stopped_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+        });
+        stopper.join().unwrap();
+
+        assert!(stopped_without_drain.is_some());
+        assert!(stopped_cleanly);
     }
 
     #[test]
