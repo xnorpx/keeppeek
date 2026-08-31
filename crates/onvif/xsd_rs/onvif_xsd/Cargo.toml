@@ -15,7 +15,7 @@ b_2 = { path = "../../wsdl_rs/b_2" }
 common = { path = "../../xsd_rs/common" }
 soap_envelope = { path = "../../xsd_rs/soap_envelope" }
 validate = { path = "../../validate" }
-xml-rs = "0.8.29"
+xml-rs = "1.0.0"
 xmlmime = { path = "../../xsd_rs/xmlmime" }
 xop = { path = "../../xsd_rs/xop" }
 xsd-macro-utils = { path = "../../xsd-macro-utils" }

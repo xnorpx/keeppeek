@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 transport = { path = "../transport" }
-xml-rs = "0.8.29"
+xml-rs = "1.0.0"
 xsd-types = { path = "../xsd-types" }
 
 # xsd
