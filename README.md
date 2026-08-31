@@ -18,6 +18,22 @@ handling, deadlines, retention, authorization, and download integrity.
 The [recording integrity guide](docs/recording-integrity.md) documents coverage, retention,
 gap evidence, pagination, metrics, and alert inputs.
 
+## Stop KeepPeek
+
+Stop all KeepPeek server processes for the current user on macOS or Linux:
+
+```sh
+./stop.sh
+```
+
+On Windows, stop the registered KeepPeek service and any standalone server processes:
+
+```bat
+.\stop.bat
+```
+
+Both commands succeed when KeepPeek is already stopped.
+
 ## License
 
 Copyright (C) 2026 Marcus Asteborg.
