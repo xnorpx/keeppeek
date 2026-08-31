@@ -5,6 +5,12 @@ import type { CameraListItem, ServerHealthResponse } from './types';
 
 const PEEK_VIEW_STATE_CONTEXT = Symbol('keeppeek.peek-view-state');
 
+export type PeekTransition = {
+	dataUrl: string;
+	destination: 'dashboard' | 'viewer';
+	cameraId: string | null;
+};
+
 export class PeekViewState {
 	#cameras = $state.raw<CameraListItem[]>([]);
 	#serverHealth = $state.raw<ServerHealthResponse | null>(null);
@@ -13,6 +19,8 @@ export class PeekViewState {
 	#layoutError = $state<string | null>(null);
 	#loaded = $state(false);
 	#wallRevealed = $state(false);
+	#transition = $state.raw<PeekTransition | null>(null);
+	#cameraFrames = $state.raw<Record<string, string>>({});
 	#refresh: Promise<void> | null = null;
 	#generation = 0;
 
@@ -44,6 +52,14 @@ export class PeekViewState {
 		return this.#wallRevealed;
 	}
 
+	get transition(): PeekTransition | null {
+		return this.#transition;
+	}
+
+	cameraFrame(cameraId: string): string | null {
+		return this.#cameraFrames[cameraId] ?? null;
+	}
+
 	get generation(): number {
 		return this.#generation;
 	}
@@ -67,6 +83,20 @@ export class PeekViewState {
 		this.#layoutError = null;
 		this.#loaded = false;
 		this.#wallRevealed = false;
+		this.#transition = null;
+		this.#cameraFrames = {};
+	}
+
+	updateCameraFrames(frames: Readonly<Record<string, string>>): void {
+		this.#cameraFrames = { ...this.#cameraFrames, ...frames };
+	}
+
+	beginTransition(transition: PeekTransition): void {
+		this.#transition = transition;
+	}
+
+	finishTransition(transition: PeekTransition): void {
+		if (this.#transition === transition) this.#transition = null;
 	}
 
 	updateHealth(generation: number, health: ServerHealthResponse | null): boolean {

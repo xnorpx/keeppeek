@@ -5,8 +5,10 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+	nineCameraCircularStartSeparationSeconds,
 	nineCameraKeyframeIntervalsSeconds,
 	nineCameraKeyframeIntervalSeconds,
+	nineCameraMinimumStartSeparationSeconds,
 	nineCameraProfiles,
 	nineCameraProfileVariants,
 	type NineCameraKeyframeIntervalSeconds,
@@ -157,6 +159,8 @@ await writeFile(
 			schemaVersion: 1,
 			fixtureSha256: fixtureSetSha256(fixture.variants),
 			selection: {
+				sourceDurationSeconds: fixture.durationSeconds,
+				minimumStartSeparationSeconds: nineCameraMinimumStartSeparationSeconds,
 				safeBeforeSeconds,
 				safeAfterSeconds,
 				excludedBlackIntervals: fixture.blackIntervals
@@ -299,37 +303,42 @@ async function startTestCamera(camera: CameraStart, variant: FixtureVariant): Pr
 
 function randomCameraStarts(fixture: FixtureManifest): CameraStart[] {
 	const availableSeconds = fixture.durationSeconds;
-	if (availableSeconds < cameraNames.length) {
+	if (availableSeconds <= cameraNames.length * nineCameraMinimumStartSeparationSeconds) {
 		throw new Error(`Big Buck Bunny fixture is too short: ${fixture.durationSeconds}s`);
 	}
-	const bandSeconds = availableSeconds / cameraNames.length;
-	return cameraNames.map((name, index) => {
-		const bandMilliseconds = Math.max(1, Math.floor(bandSeconds * 1_000));
-		let startAtSeconds: number | undefined;
-		for (let attempt = 0; attempt < 1_000; attempt += 1) {
-			const candidate = (index * bandSeconds * 1_000 + randomInt(bandMilliseconds)) / 1_000;
-			if (
-				!fixture.blackIntervals.some(
+	const durationMilliseconds = Math.floor(availableSeconds * 1_000);
+	for (let setAttempt = 0; setAttempt < 100; setAttempt += 1) {
+		const starts: number[] = [];
+		for (let cameraIndex = 0; cameraIndex < cameraNames.length; cameraIndex += 1) {
+			let selected = false;
+			for (let candidateAttempt = 0; candidateAttempt < 1_000; candidateAttempt += 1) {
+				const candidate = randomInt(durationMilliseconds) / 1_000;
+				const overlapsBlackInterval = fixture.blackIntervals.some(
 					(interval) =>
 						candidate - safeBeforeSeconds < interval.endSeconds &&
 						candidate + safeAfterSeconds > interval.startSeconds
-				)
-			) {
-				startAtSeconds = candidate;
+				);
+				const tooClose =
+					starts.length > 0 &&
+					nineCameraCircularStartSeparationSeconds([...starts, candidate], availableSeconds) <
+						nineCameraMinimumStartSeparationSeconds;
+				if (overlapsBlackInterval || tooClose) continue;
+				starts.push(candidate);
+				selected = true;
 				break;
 			}
+			if (!selected) break;
 		}
-		if (startAtSeconds === undefined) {
-			throw new Error(`Unable to find a nonblack start for ${name}`);
-		}
-		return {
+		if (starts.length !== cameraNames.length) continue;
+		return cameraNames.map((name, index) => ({
 			id: `192.0.2.${101 + index}`,
 			name,
-			startAtSeconds: Number(startAtSeconds.toFixed(3)),
+			startAtSeconds: starts[index]!,
 			keyframeIntervalSeconds: nineCameraKeyframeIntervalSeconds(index),
 			profilePair: nineCameraProfiles(index)
-		};
-	});
+		}));
+	}
+	throw new Error('Unable to select separated nonblack starts for all nine cameras');
 }
 
 function fixtureVariant(fixture: FixtureManifest, camera: CameraStart): FixtureVariant {

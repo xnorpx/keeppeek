@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { mockControlPeer, type HealthFixture } from './fixtures/control-peer';
+import { presentMockVideoFrame } from './fixtures/media';
 import { mixedCameras, mixedHealth, mockMixedHealth } from './fixtures/peek';
 
 async function expectFrontDoorCameraInformation(page: Page, scope: Locator) {
@@ -251,42 +252,27 @@ test('separates Dashboard and Viewer while remembering the last camera', async (
 	await expect(page.getByRole('region', { name: 'Porch focus' })).toBeVisible();
 });
 
-test('combines filmstrip camera status, name, and information in a lower-right control', async ({
-	page
-}) => {
+test('renders the focus filmstrip as video-only camera switches', async ({ page }) => {
 	await mockMixedHealth(page);
 	await page.goto('/');
 
 	await page.getByRole('button', { name: 'Focus Porch live view' }).click();
 	const focus = page.getByRole('region', { name: 'Porch focus' });
 	const filmstrip = focus.getByLabel('Camera filmstrip');
-	const cameraSurface = filmstrip.getByRole('button', { name: 'Focus Front Door' });
-	const cameraInformation = filmstrip.getByRole('button', {
-		name: 'Front Door camera information'
-	});
-	await expect(cameraInformation).toContainText('Front Door');
-	await expect(cameraInformation.locator('span').first()).toHaveClass(/bg-healthy/);
-	await expect(filmstrip.getByText('Front Door', { exact: true })).toHaveCount(1);
-	const [surfaceBounds, informationBounds] = await Promise.all([
-		cameraSurface.boundingBox(),
-		cameraInformation.boundingBox()
-	]);
-	if (!surfaceBounds || !informationBounds) {
-		throw new Error('Filmstrip camera information geometry is unavailable');
-	}
-	expect(
-		surfaceBounds.x + surfaceBounds.width - informationBounds.x - informationBounds.width
-	).toBe(8);
-	expect(
-		surfaceBounds.y + surfaceBounds.height - informationBounds.y - informationBounds.height
-	).toBe(8);
-	expect(informationBounds.width).toBeLessThan(surfaceBounds.width - 24);
-
-	await cameraInformation.click();
-	await expect(page.getByRole('dialog', { name: 'Front Door camera information' })).toBeVisible();
-	await expect(page.locator('[data-web-rtc-recording="front-door"]')).toHaveText(
-		'Sub stream · recording'
+	await expect(filmstrip.locator('[data-focus-camera-option] video')).toHaveCount(
+		mixedCameras.length
 	);
+	await expect(filmstrip.getByText('Front Door', { exact: true })).toHaveCount(0);
+	await expect(filmstrip.getByRole('button', { name: /camera information$/ })).toHaveCount(0);
+	for (const camera of mixedCameras) {
+		const option = filmstrip.locator(`[data-focus-camera-option="${camera.id}"]`);
+		await expect(option.locator('video')).toHaveCount(1);
+		await expect(option.locator('[data-stream]')).toHaveAttribute('data-stream', 'sub');
+		await expect(option.locator('button')).toHaveCount(1);
+		await expect(option.getByRole('button')).toHaveAttribute('aria-label', `Focus ${camera.name}`);
+	}
+	await filmstrip.getByRole('button', { name: 'Focus Front Door' }).click();
+	await expect(page).toHaveURL(/\/viewer\?camera=front-door$/);
 });
 
 test('refreshes startup health evidence in place without reopening Peek', async ({ page }) => {
@@ -396,6 +382,13 @@ test('returns from Viewer to the coordinated Dashboard wall', async ({ page }) =
 		...mixedCameras[0],
 		profiles: [
 			{
+				name: 'Main',
+				stream: 'main' as const,
+				encoding: 'h264' as const,
+				resolution: '1920x1080',
+				framerate: 25
+			},
+			{
 				name: 'Sub',
 				stream: 'sub' as const,
 				encoding: 'h264' as const,
@@ -412,17 +405,120 @@ test('returns from Viewer to the coordinated Dashboard wall', async ({ page }) =
 
 	const wall = page.locator('[data-peek-wall]');
 	await expect(wall).toHaveAttribute('data-peek-wall-state', 'staging');
-	await wall.locator('video').dispatchEvent('playing');
+	await presentMockVideoFrame(wall.locator('video'));
 	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'frames');
 
 	await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
 	const focus = page.getByRole('region', { name: 'Front Door focus' });
-	await page.getByRole('link', { name: 'Dashboard' }).click();
+	const focusedVideo = focus.locator('[data-peek-focus-stage] [data-camera-id="front-door"]');
+	await expect(focus).toBeVisible();
+	await expect(page.locator('[data-peek-transition="viewer"]')).toHaveCount(0);
+	await expect(focusedVideo).toHaveAttribute('data-stream', 'sub');
+	await expect(focusedVideo).not.toHaveAttribute('data-pending-stream');
+	await expect(focus.locator('[data-peek-focus-stage] [data-peek-cached-frame]')).toBeVisible();
+	await presentMockVideoFrame(focusedVideo.locator('video'));
+	await expect(focusedVideo).toHaveAttribute('data-pending-stream', 'main');
+	const returnMs = await page
+		.getByRole('link', { name: 'Dashboard', exact: true })
+		.evaluate(async (link) => {
+			if (!(link instanceof HTMLAnchorElement)) throw new Error('Expected Dashboard link');
+			const startedAt = performance.now();
+			link.click();
+			while (document.querySelector('[data-peek-focus-stage]')) {
+				await new Promise<void>((resolveFrame) => requestAnimationFrame(() => resolveFrame()));
+			}
+			return performance.now() - startedAt;
+		});
 
+	expect(returnMs).toBeLessThanOrEqual(100);
 	await expect(page).toHaveURL(/\/$/);
 	await expect(focus).toHaveCount(0);
-	await wall.locator('video').dispatchEvent('playing');
+	await expect(page.locator('[data-peek-transition="dashboard"]')).toHaveCount(0);
+	await expect(wall).toHaveAttribute('aria-hidden', 'false');
 	await expect(wall).toHaveAttribute('data-peek-wall-reveal', 'frames');
+});
+
+test('reduces background decoding to one frame per second after five minutes', async ({ page }) => {
+	await page.clock.install();
+	const cameras = [
+		{ id: 'front-door', name: 'Front Door', ip: '192.0.2.10' },
+		{ id: 'garage', name: 'Garage', ip: '192.0.2.11' }
+	].map((camera) => ({
+		...camera,
+		manufacturer: null,
+		model: null,
+		firmware_version: null,
+		is_reolink: false,
+		profiles: [
+			{
+				name: 'Main',
+				stream: 'main' as const,
+				encoding: 'h264' as const,
+				resolution: '1920x1080',
+				framerate: 25
+			},
+			{
+				name: 'Sub',
+				stream: 'sub' as const,
+				encoding: 'h264' as const,
+				resolution: '640x360',
+				framerate: 15
+			}
+		]
+	}));
+	const requests = await mockControlPeer(page, {
+		cameras,
+		health: {
+			status: 'healthy',
+			cameras: cameras.map((camera) => ({
+				id: camera.id,
+				state: 'healthy',
+				lifecycle: 'Connected',
+				last_error: null,
+				streams: []
+			}))
+		}
+	});
+	await page.goto('/');
+	for (const video of await page.locator('[data-peek-wall] video').all()) {
+		await presentMockVideoFrame(video);
+	}
+
+	await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
+	const focus = page.getByRole('region', { name: 'Front Door focus' });
+	await expect(focus).toHaveAttribute('data-background-stream-rate', 'full');
+	const initialUnsubscriptions = requests.mediaUnsubscriptions.length;
+
+	await page.clock.fastForward(299_999);
+	expect(requests.mediaUnsubscriptions).toHaveLength(initialUnsubscriptions);
+	await page.clock.fastForward(1);
+	await expect(focus).toHaveAttribute('data-background-stream-rate', '1fps');
+	const increaseFps = focus.getByRole('button', { name: 'Increase background FPS' });
+	await expect(increaseFps).toBeVisible();
+
+	await presentMockVideoFrame(page.locator('[data-peek-camera="garage"] video'));
+	await expect
+		.poll(() => requests.mediaUnsubscriptions.length)
+		.toBeGreaterThan(initialUnsubscriptions);
+	const subscriptionsBeforePulse = requests.mediaSubscriptions.length;
+	await page.clock.fastForward(1_000);
+	await expect
+		.poll(() => requests.mediaSubscriptions.length)
+		.toBeGreaterThan(subscriptionsBeforePulse);
+	const unsubscriptionsBeforeDeadline = requests.mediaUnsubscriptions.length;
+	await page.clock.fastForward(750);
+	await expect
+		.poll(() => requests.mediaUnsubscriptions.length)
+		.toBeGreaterThan(unsubscriptionsBeforeDeadline);
+
+	await increaseFps.click();
+	await expect(focus).toHaveAttribute('data-background-stream-rate', 'full');
+	await expect(increaseFps).toHaveCount(0);
+	const resetUnsubscriptions = requests.mediaUnsubscriptions.length;
+	await page.clock.fastForward(299_999);
+	expect(requests.mediaUnsubscriptions).toHaveLength(resetUnsubscriptions);
+	await page.clock.fastForward(1);
+	await expect(focus).toHaveAttribute('data-background-stream-rate', '1fps');
 });
 
 test('keeps focused-live preferences device-local per camera and separate from the wall', async ({
@@ -502,7 +598,7 @@ test('keeps focused-live preferences device-local per camera and separate from t
 
 	await page.goto('/');
 	for (const video of await page.locator('[data-peek-wall] video').all()) {
-		await video.dispatchEvent('playing');
+		await presentMockVideoFrame(video);
 	}
 	await expect(page.locator('[data-peek-wall] [data-camera-id="front-door"]')).toHaveAttribute(
 		'data-requested-quality',

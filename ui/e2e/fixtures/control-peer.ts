@@ -321,6 +321,8 @@ export type ControlRequests = {
 	notificationActions: string[];
 	mqttUpdates: MqttSettingsUpdate[];
 	mqttTests: MqttSettingsUpdate[];
+	mediaSubscriptions: Array<{ subscriptionId: string; variantId: string }>;
+	mediaUnsubscriptions: string[][];
 	peekLayoutReads: number;
 	peekLayoutUpdates: JsonObject[];
 };
@@ -675,6 +677,8 @@ export async function mockControlPeer(
 		notificationActions: [],
 		mqttUpdates: [],
 		mqttTests: [],
+		mediaSubscriptions: [],
+		mediaUnsubscriptions: [],
 		peekLayoutReads: 0,
 		peekLayoutUpdates: []
 	};
@@ -774,6 +778,10 @@ export async function mockControlPeer(
 		if (envelope.message.case !== 'request') throw new Error('expected control request');
 		const request = envelope.message.value;
 		if (request.command.case === 'subscribeMedia') {
+			requests.mediaSubscriptions.push({
+				subscriptionId: request.command.value.subscriptionId,
+				variantId: request.command.value.variantId
+			});
 			return encodedOk(request.requestId, {
 				case: 'subscriptionResult',
 				value: create(SubscriptionResultSchema, {
@@ -784,6 +792,7 @@ export async function mockControlPeer(
 			});
 		}
 		if (request.command.case === 'unsubscribe') {
+			requests.mediaUnsubscriptions.push([...request.command.value.subscriptionIds]);
 			return encodedOk(request.requestId, undefined);
 		}
 		if (request.command.case === 'stateStoreCommand') {

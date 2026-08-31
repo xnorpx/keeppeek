@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { mockControlPeer } from './fixtures/control-peer';
+import { presentMockVideoFrame } from './fixtures/media';
 import { mixedCameras, mixedHealth, mockMixedHealth } from './fixtures/peek';
 
 const settingsStorage = {
@@ -227,18 +228,27 @@ test('keeps the custom dashboard warm across Dashboard and Viewer', async ({ pag
 		await page.goto('/');
 		const wall = page.locator('[data-peek-wall]');
 		const wallContent = page.locator('[data-peek-wall-content]');
+		const peekView = page.locator('[data-peek-view]');
+		const wallVideo = wall.locator('[data-peek-camera="front-door"] video');
 		await expect(wallContent).toHaveAttribute('data-peek-layout-id', 'front-of-house');
-		for (const video of await wall.locator('video').all()) await video.dispatchEvent('playing');
+		for (const video of await wall.locator('video').all()) await presentMockVideoFrame(video);
 		await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
+		await peekView.evaluate((element) => (element.dataset.peekInstance = 'persistent'));
+		await wallVideo.evaluate((element) => (element.dataset.peekVideoInstance = 'persistent'));
 
 		await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
-		await expect.poll(() => controls.peekLayoutReads).toBe(2);
+		await expect.poll(() => controls.peekLayoutReads).toBe(1);
 		await expect(page.getByRole('region', { name: 'Front Door focus' })).toBeVisible({
 			timeout: 1_500
 		});
+		await expect(peekView).toHaveAttribute('data-peek-instance', 'persistent');
+		await expect(wall).toHaveAttribute('aria-hidden', 'true');
+		await expect(wallVideo).toHaveAttribute('data-peek-video-instance', 'persistent');
 
 		await page.getByRole('link', { name: 'Dashboard' }).click();
 		await expect(page).toHaveURL(/\/$/);
+		await expect(peekView).toHaveAttribute('data-peek-instance', 'persistent');
+		await expect(wallVideo).toHaveAttribute('data-peek-video-instance', 'persistent');
 		await expect(wallContent).toHaveAttribute('data-peek-layout-id', 'front-of-house', {
 			timeout: 1_500
 		});

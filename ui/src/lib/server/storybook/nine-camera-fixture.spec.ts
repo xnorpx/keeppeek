@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+	nineCameraCircularStartSeparationSeconds,
 	nineCameraKeyframeIntervalsSeconds,
 	nineCameraKeyframeIntervalSeconds,
+	nineCameraMinimumStartSeparationSeconds,
 	nineCameraProfileGopFrames,
 	nineCameraProfiles,
 	nineCameraProfileVariants
@@ -85,5 +87,11 @@ describe('nine-camera fixture', () => {
 			'sub:h265:1s',
 			'sub:h265:2s'
 		]);
+	});
+
+	it('measures minimum start separation across the source loop boundary', () => {
+		expect(nineCameraMinimumStartSeparationSeconds).toBe(1);
+		expect(nineCameraCircularStartSeparationSeconds([0.6, 3.4, 47.5], 48)).toBeCloseTo(1.1);
+		expect(nineCameraCircularStartSeparationSeconds([1, 1, 30], 48)).toBe(0);
 	});
 });

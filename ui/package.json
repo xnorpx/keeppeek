@@ -82,6 +82,7 @@
 		"demo:publish:prepare": "bun scripts/prepare-demo-publish.ts",
 		"perf:diagnostics": "bun scripts/benchmark-diagnostics-bundle.ts",
 		"perf:keep:real": "bun scripts/benchmark-keep-real.ts",
+		"perf:peek": "playwright test --config playwright.peek-performance.config.ts",
 		"perf:timeline": "playwright test --config playwright.timeline-performance.config.ts",
 		"test": "bun run test:unit:run && bun run test:e2e",
 		"quality:static": "bun run registry:check && bun run paper:typecheck && bun run paper:check && bun run visual:harness:check && bun run demo:typecheck && bun run demo:check && bun run format:check && bun run format:markdown:check && bun run lint && bun run check && bun run test:e2e:typecheck",

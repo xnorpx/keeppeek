@@ -1,4 +1,5 @@
 export const nineCameraKeyframeIntervalsSeconds = [1, 2] as const;
+export const nineCameraMinimumStartSeparationSeconds = 1;
 
 export const nineCameraProfileVariants = [
 	{
@@ -66,6 +67,28 @@ export function nineCameraProfiles(cameraIndex: number): readonly NineCameraProf
 			(profile) => profile.stream === stream && profile.codec === codec
 		)!;
 	});
+}
+
+export function nineCameraCircularStartSeparationSeconds(
+	starts: readonly number[],
+	durationSeconds: number
+): number {
+	if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+		throw new Error('Nine-camera fixture duration must be positive');
+	}
+	if (starts.length < 2) {
+		throw new Error('Nine-camera fixture needs at least two start offsets');
+	}
+	if (starts.some((start) => !Number.isFinite(start) || start < 0 || start >= durationSeconds)) {
+		throw new Error('Nine-camera fixture start offsets must be inside the source duration');
+	}
+	const ordered = starts.toSorted((left, right) => left - right);
+	return Math.min(
+		...ordered.map((start, index) => {
+			const next = ordered[(index + 1) % ordered.length]!;
+			return next + (index === ordered.length - 1 ? durationSeconds : 0) - start;
+		})
+	);
 }
 
 export function nineCameraProfileGopFrames(

@@ -14,7 +14,9 @@ import {
 	parseFfprobeDurationMs
 } from '../src/lib/server/storybook/demo-video';
 import {
+	nineCameraCircularStartSeparationSeconds,
 	nineCameraKeyframeIntervalSeconds,
+	nineCameraMinimumStartSeparationSeconds,
 	nineCameraProfiles,
 	type NineCameraProfile
 } from '../src/lib/server/storybook/nine-camera-fixture';
@@ -53,6 +55,8 @@ type CameraDrafts = {
 	schemaVersion: 1;
 	fixtureSha256: string;
 	selection: {
+		sourceDurationSeconds: number;
+		minimumStartSeparationSeconds: number;
 		safeBeforeSeconds: number;
 		safeAfterSeconds: number;
 		excludedBlackIntervals: Array<{ startSeconds: number; endSeconds: number }>;
@@ -74,6 +78,15 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 	for (const [index, camera] of cameraDrafts.cameras.entries()) {
 		expect(camera.profiles).toEqual(nineCameraProfiles(index));
 	}
+	expect(cameraDrafts.selection.minimumStartSeparationSeconds).toBe(
+		nineCameraMinimumStartSeparationSeconds
+	);
+	expect(
+		nineCameraCircularStartSeparationSeconds(
+			cameraDrafts.cameras.map((camera) => camera.startAtSeconds),
+			cameraDrafts.selection.sourceDurationSeconds
+		)
+	).toBeGreaterThanOrEqual(cameraDrafts.selection.minimumStartSeparationSeconds);
 	expect(cameraDrafts.selection.safeAfterSeconds).toBeGreaterThanOrEqual(demo.durationMs / 1_000);
 	for (const camera of cameraDrafts.cameras) {
 		expect(

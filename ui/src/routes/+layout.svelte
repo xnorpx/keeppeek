@@ -25,6 +25,7 @@
 	import RemoteSignIn from '$lib/components/RemoteSignIn.svelte';
 	import MobileNavigation from '$lib/components/MobileNavigation.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
+	import PeekPage from './+page.svelte';
 	import {
 		isKeyboardTypingTarget,
 		keyboardDestinations,
@@ -578,7 +579,11 @@
 						? 'live-surface'
 						: 'workspace-surface'}"
 				>
-					{@render children()}
+					{#if liveViewActive}
+						<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
+					{:else}
+						{@render children()}
+					{/if}
 				</main>
 			</div>
 
