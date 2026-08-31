@@ -14,7 +14,7 @@ workspace = true
 transport = { path = "../../transport" }
 types = { path = "../../xsd_rs/types" }
 validate = { path = "../../validate" }
-xml-rs = "0.8.29"
+xml-rs = "1.0.0"
 xsd-types = { path = "../../xsd-types" }
 yaserde = "0.12"
 yaserde_derive = "0.12"
