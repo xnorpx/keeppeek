@@ -3572,7 +3572,7 @@ mod tests {
                 assert_eq!(data.len(), frame_len);
                 assert!(data.iter().all(|byte| *byte == 0xAB));
             }
-            other => panic!("expected reassembled high-resolution frame, got {other:?}"),
+            _ => panic!("expected reassembled high-resolution frame"),
         }
     }
 
