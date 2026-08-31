@@ -1,4 +1,4 @@
-use xml::reader::{Error as XmlError, XmlEvent};
+use yaserde::__xml::reader::{Error as XmlError, XmlEvent};
 
 pub fn assert_xml_eq(actual: &str, expected: &str) {
     for (a, e) in without_whitespaces(actual).zip(without_whitespaces(expected)) {
@@ -24,7 +24,7 @@ pub fn assert_xml_eq(actual: &str, expected: &str) {
 }
 
 fn without_whitespaces(expected: &str) -> impl Iterator<Item = Result<XmlEvent, XmlError>> + '_ {
-    xml::EventReader::new(expected.as_bytes())
+    yaserde::__xml::EventReader::new(expected.as_bytes())
         .into_iter()
         .filter(|e| !matches!(e, Ok(XmlEvent::Whitespace(_))))
 }

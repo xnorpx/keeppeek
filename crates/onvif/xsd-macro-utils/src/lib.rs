@@ -36,12 +36,12 @@ pub fn default_serde(input: TokenStream) -> TokenStream {
 
             fn serialize_attributes(
                 &self,
-                attributes: ::std::vec::Vec<::xml::attribute::OwnedAttribute>,
-                namespace: ::xml::namespace::Namespace,
+                attributes: ::std::vec::Vec<::yaserde::__xml::attribute::OwnedAttribute>,
+                namespace: ::yaserde::__xml::namespace::Namespace,
             ) -> ::std::result::Result<
                 (
-                    ::std::vec::Vec<::xml::attribute::OwnedAttribute>,
-                    ::xml::namespace::Namespace,
+                    ::std::vec::Vec<::yaserde::__xml::attribute::OwnedAttribute>,
+                    ::yaserde::__xml::namespace::Namespace,
                 ),
                 ::std::string::String,
             > {

@@ -79,12 +79,12 @@ pub fn serde(ast: &syn::DeriveInput) -> syn::Result<TokenStream> {
 
             fn serialize_attributes(
                 &self,
-                attributes: ::std::vec::Vec<::xml::attribute::OwnedAttribute>,
-                namespace: ::xml::namespace::Namespace,
+                attributes: ::std::vec::Vec<::yaserde::__xml::attribute::OwnedAttribute>,
+                namespace: ::yaserde::__xml::namespace::Namespace,
             ) -> ::std::result::Result<
                 (
-                    Vec<::xml::attribute::OwnedAttribute>,
-                    ::xml::namespace::Namespace,
+                    Vec<::yaserde::__xml::attribute::OwnedAttribute>,
+                    ::yaserde::__xml::namespace::Namespace,
                 ),
                 ::std::string::String,
             > {
