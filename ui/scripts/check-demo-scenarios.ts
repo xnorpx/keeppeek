@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { cameraLifecycleStory } from '../demo/camera-lifecycle.story';
@@ -114,7 +115,8 @@ for (const source of [
 	'demo/nine-camera-live.demo.ts',
 	'playwright.nine-camera-demo.config.ts',
 	'scripts/prepare-nine-camera-demo-fixture.ts',
-	'scripts/start-nine-camera-demo-server.ts'
+	'scripts/start-nine-camera-demo-server.ts',
+	'src/lib/server/storybook/nine-camera-fixture.ts'
 ]) {
 	await readFile(resolve(source));
 }
@@ -134,6 +136,16 @@ if (
 	!nineCameraLauncher.includes('testCameras.map((camera) => camera.config)')
 ) {
 	throw new Error('Nine-camera demo server must retain drafts and start from camera tables');
+}
+const fourKSource = await readFile(
+	resolve('../crates/test-camera/testdata/big-buck-bunny-3840x2160-h264.mp4')
+);
+if (
+	fourKSource.byteLength > 50_000_000 ||
+	createHash('sha256').update(fourKSource).digest('hex') !==
+		'21be06202908ddfb5adaa53cb63f8b0564fcab446045bc37be7b8faece6a564c'
+) {
+	throw new Error('Committed 4K Big Buck Bunny source must match its reviewed fixture');
 }
 
 const previewSource = await readFile(resolve('visual-harness/local-preview.ts'), 'utf8');

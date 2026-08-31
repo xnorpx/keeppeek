@@ -10,6 +10,7 @@
 	} from '$lib/grid-stream-scheduler';
 	import type { PeekLayoutDraft, PeekLayoutRegistry } from '$lib/peek-layout';
 	import { updatePeekLayout } from '$lib/peek-layout';
+	import { usePeekViewState } from '$lib/peek-view-context.svelte';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { LivePeerPlan } from '$lib/stream-peer.svelte';
 	import type { CameraListItem, ServerHealthResponse } from '$lib/types';
@@ -25,6 +26,7 @@
 	};
 
 	let { controller, health }: Props = $props();
+	const peekViewState = usePeekViewState();
 	const livePeer = useLivePeer();
 	const scheduler = new GridStreamScheduler({ subscriptionSlots: 4, decoderSlots: 4 });
 
@@ -83,12 +85,19 @@
 	async function load(): Promise<void> {
 		loading = true;
 		error = null;
+		const generation = peekViewState.generation;
 		try {
-			[cameras, registry, credentials] = await Promise.all([
+			const [loadedCameras, loadedRegistry, loadedCredentials] = await Promise.all([
 				controller.getCameras(),
 				controller.getPeekLayoutRegistry(),
 				controller.listAccessCredentials()
 			]);
+			if (!peekViewState.updateFromSettings(generation, loadedCameras, health, loadedRegistry)) {
+				return;
+			}
+			cameras = loadedCameras;
+			registry = loadedRegistry;
+			credentials = loadedCredentials;
 		} catch (cause) {
 			error = cause instanceof Error ? cause.message : 'Dashboards could not be loaded.';
 		} finally {
@@ -160,8 +169,11 @@
 	async function persist(candidate: PeekLayoutRegistry): Promise<boolean> {
 		busy = true;
 		error = null;
+		const generation = peekViewState.generation;
 		try {
-			registry = await controller.savePeekLayoutRegistry(candidate);
+			const savedRegistry = await controller.savePeekLayoutRegistry(candidate);
+			if (!peekViewState.updateLayoutRegistry(generation, savedRegistry)) return false;
+			registry = savedRegistry;
 			editing = false;
 			await tick();
 			reconcilePlans();

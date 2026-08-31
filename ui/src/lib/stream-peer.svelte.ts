@@ -387,8 +387,6 @@ export class LivePeer {
 			value: create(UnsubscribeSchema, { subscriptionIds: [subscriptionId] })
 		});
 		this.replaceTrack(cameraId, {
-			receiver: null,
-			stream: null,
 			status: 'queued',
 			subscribed: false,
 			pendingStream: null,
@@ -397,10 +395,14 @@ export class LivePeer {
 	}
 
 	private attachTrackEvent(cameraId: string, event: RTCTrackEvent): void {
+		const current = this.track(cameraId);
 		const mediaTrack = event.track ?? event.receiver.track;
-		const stream = mediaTrack
-			? new MediaStream([mediaTrack])
-			: (event.streams[0] ?? new MediaStream());
+		const stream =
+			current?.receiver === event.receiver && current.stream
+				? current.stream
+				: mediaTrack
+					? new MediaStream([mediaTrack])
+					: (event.streams[0] ?? new MediaStream());
 		this.replaceTrack(cameraId, { receiver: event.receiver, stream, status: 'live' });
 	}
 

@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { onMount } from 'svelte';
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
+	import { videoResolutionMatches } from '$lib/video-resolution';
 	import type { CameraHealth, CameraListItem } from '$lib/types';
 	import {
 		peekCameraStateColorClass,
@@ -28,7 +29,9 @@
 		compactNowMs?: number;
 		compactTimeZone?: string;
 		firstFrameElapsedMsOverride?: number;
+		fallbackFrameUrl?: string | null;
 		onfocus: (cameraId: string) => void;
+		onframepresented?: (cameraId: string) => void;
 		onframeactivitychange?: (cameraId: string, active: boolean) => void;
 		onvisibilitychange?: (visibility: GridTileVisibility) => void;
 		onlayoutpointerdown?: (event: PointerEvent) => void;
@@ -53,7 +56,9 @@
 		compactNowMs = Date.now(),
 		compactTimeZone,
 		firstFrameElapsedMsOverride,
+		fallbackFrameUrl = null,
 		onfocus,
+		onframepresented,
 		onframeactivitychange,
 		onvisibilitychange,
 		onlayoutpointerdown,
@@ -66,17 +71,19 @@
 	let tileElement: HTMLElement | null = $state(null);
 	let presentation = $derived(presentPeekCamera(camera, health));
 	let hasRecentFrames = $state(false);
+	let rendersVideo = $derived(presentation.state !== 'offline' && presentation.state !== 'stopped');
+	let showsCachedFrame = $derived(rendersVideo && !hasRecentFrames && fallbackFrameUrl !== null);
 	let waitingForFirstFrame = $derived(
-		presentation.state === 'healthy' &&
-			camera.profiles.some((profile) => profile.encoding !== null) &&
-			!hasRecentFrames
+		showsCachedFrame ||
+			(presentation.state === 'healthy' &&
+				camera.profiles.some((profile) => profile.encoding !== null) &&
+				!hasRecentFrames)
 	);
 	let firstFrameElapsedMs = $state(0);
 	let effectiveFirstFrameElapsedMs = $derived(firstFrameElapsedMsOverride ?? firstFrameElapsedMs);
 	let visualState = $derived(presentation.state);
 	let canonicalStateLabel = $derived(presentation.state.toUpperCase());
 	let label = $derived(camera.name ?? camera.id);
-	let rendersVideo = $derived(presentation.state !== 'offline' && presentation.state !== 'stopped');
 	let canFocus = $derived(
 		visualState === 'starting' ||
 			visualState === 'healthy' ||
@@ -187,8 +194,63 @@
 	}
 
 	function handleFrameActivity(active: boolean): void {
-		hasRecentFrames = active;
-		onframeactivitychange?.(camera.id, active);
+		if (active) return;
+		setFrameReady(false);
+	}
+
+	function handleFramePresented(frame: {
+		width: number;
+		height: number;
+		stream: 'main' | 'sub';
+		status: 'queued' | 'connecting' | 'live' | 'unavailable';
+	}): void {
+		if (frame.status !== 'live') {
+			setFrameReady(false);
+			return;
+		}
+		if (frame.stream !== stream) {
+			setFrameReady(false);
+			return;
+		}
+		const expectedResolution = camera.profiles.find(
+			(profile) => profile.stream === stream
+		)?.resolution;
+		if (!videoResolutionMatches(expectedResolution, frame.width, frame.height)) {
+			setFrameReady(false);
+			return;
+		}
+		const video = tileElement?.querySelector<HTMLVideoElement>('video');
+		if (!video || !videoFrameIsVisible(video)) {
+			setFrameReady(false);
+			return;
+		}
+		onframepresented?.(camera.id);
+		setFrameReady(true);
+	}
+
+	function setFrameReady(ready: boolean): void {
+		if (hasRecentFrames === ready) return;
+		hasRecentFrames = ready;
+		onframeactivitychange?.(camera.id, ready);
+	}
+
+	function videoFrameIsVisible(video: HTMLVideoElement): boolean {
+		const canvas = document.createElement('canvas');
+		canvas.width = 16;
+		canvas.height = 9;
+		const context = canvas.getContext('2d', { willReadFrequently: true });
+		if (!context) return false;
+		try {
+			context.drawImage(video, 0, 0, canvas.width, canvas.height);
+			const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+			let total = 0;
+			for (let index = 0; index < pixels.length; index += 4) {
+				total += pixels[index] + pixels[index + 1] + pixels[index + 2];
+			}
+			return total / (canvas.width * canvas.height * 3) > 8;
+		} catch {
+			return false;
+		}
 	}
 </script>
 
@@ -203,11 +265,13 @@
 		<LiveVideo
 			cameraId={camera.id}
 			{stream}
+			{fallbackFrameUrl}
 			showDiagnostics={!compactStatus && !layoutMode}
 			diagnosticsLabel={!compactStatus && !layoutMode ? label : undefined}
 			diagnosticsStatusClass={stateColor}
 			diagnosticsRecording={recordingDiagnostics}
 			onframeactivitychange={handleFrameActivity}
+			onframepresented={handleFramePresented}
 			class="size-full overflow-hidden rounded-[inherit]"
 		/>
 	{:else}
@@ -318,11 +382,12 @@
 		<FirstKeyframeState
 			{label}
 			elapsedMs={effectiveFirstFrameElapsedMs}
+			frameUrl={fallbackFrameUrl}
 			class="absolute inset-0 z-20"
 		/>
 	{/if}
 
-	{#if !compactStatus && (presentation.state === 'degraded' || presentation.state === 'stale')}
+	{#if !showsCachedFrame && !compactStatus && (presentation.state === 'degraded' || presentation.state === 'stale')}
 		<div
 			data-peek-camera-region="evidence"
 			class="pointer-events-none absolute right-2.5 left-2.5 z-20 rounded-sm border border-activity bg-activity/15 font-medium text-white {mobileFeatured
@@ -334,7 +399,7 @@
 					>{canonicalStateLabel} —</span
 				>{/if}{' '}{presentation.detail}
 		</div>
-	{:else if !compactStatus && (presentation.state === 'reconnecting' || presentation.state === 'starting')}
+	{:else if !showsCachedFrame && !compactStatus && (presentation.state === 'reconnecting' || presentation.state === 'starting')}
 		<div
 			class="pointer-events-none absolute inset-0 z-20 grid place-items-center px-3 pt-8 text-center md:px-6 md:pt-0"
 		>
@@ -347,7 +412,7 @@
 				<p class="text-xs text-white/70">{presentation.detail}</p>
 			</div>
 		</div>
-	{:else if !compactStatus && presentation.state === 'offline'}
+	{:else if !showsCachedFrame && !compactStatus && presentation.state === 'offline'}
 		<div
 			class="absolute inset-0 z-20 grid place-items-center px-3 pt-8 text-center md:px-6 md:pt-0"
 		>
@@ -368,7 +433,7 @@
 				</a>
 			</div>
 		</div>
-	{:else if !compactStatus && (presentation.state === 'unknown' || presentation.state === 'stopped')}
+	{:else if !showsCachedFrame && !compactStatus && (presentation.state === 'unknown' || presentation.state === 'stopped')}
 		<div
 			class="absolute inset-0 z-20 grid place-items-center px-3 pt-8 text-center md:px-6 md:pt-0"
 		>

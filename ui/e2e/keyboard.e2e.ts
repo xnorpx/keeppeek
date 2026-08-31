@@ -48,9 +48,8 @@ test('opens Board 32 keyboard help and returns focus to its invoker', async ({ p
 	await expect(dialog).toContainText('No shortcut is destructive');
 	await expect(dialog.getByText('Anywhere', { exact: true })).toBeVisible();
 	await expect(dialog.getByText('This screen', { exact: true })).toBeVisible();
-	await expect(dialog).toContainText('Move focus across the camera grid');
-	await expect(dialog).toContainText('Focus the selected camera or return to the grid');
-	await expect(dialog).toContainText('Open the focused camera');
+	await expect(dialog).toContainText('Move selection across the camera grid');
+	await expect(dialog).toContainText('Open the selected camera in Focus');
 	await expect(dialog).not.toContainText('Rewind from the focused live view control');
 	await expect(dialog).not.toContainText('Switch to a saved layout');
 	await expect
@@ -60,6 +59,18 @@ test('opens Board 32 keyboard help and returns focus to its invoker', async ({ p
 	await page.keyboard.press('Escape');
 	await expect(dialog).toBeHidden();
 	await expect(invoker).toBeFocused();
+});
+
+test('shows Focus arrow controls in Viewer keyboard help', async ({ page }) => {
+	await mockControlPeer(page, { cameras: [], health: { status: 'healthy', cameras: [] } });
+	await page.goto('/viewer');
+	await waitForKeyboard(page);
+	await page.keyboard.press('Shift+/');
+	const dialog = page.getByRole('dialog');
+	await expect(dialog).toBeVisible();
+	await expect(dialog).toContainText('Show the previous or next camera in Focus');
+	const returnShortcut = dialog.getByText('Return to Dashboard').locator('..');
+	await expect(returnShortcut.locator('kbd')).toHaveText(['↑', '↓', 'F', 'Esc']);
 });
 
 test('uses fixed G chords and lets typing beat single-letter navigation', async ({ page }) => {
@@ -102,7 +113,9 @@ test('finds a real camera through the Board 32 command palette', async ({ page }
 	await expect(dialog).toBeHidden();
 });
 
-test('moves Dashboard focus spatially and opens Viewer from Enter or F', async ({ page }) => {
+test('moves through Dashboard and Focus with arrows and opens cameras with Space', async ({
+	page
+}) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await mockMixedHealth(page);
 	await page.goto('/');
@@ -113,8 +126,24 @@ test('moves Dashboard focus spatially and opens Viewer from Enter or F', async (
 	await frontDoor.focus();
 	await page.keyboard.press('ArrowRight');
 	await expect(porch).toBeFocused();
-	await page.keyboard.press('Enter');
+	await page.keyboard.press('Space');
 	await expect(page).toHaveURL('/viewer?camera=porch');
+	await expect(page.getByRole('region', { name: 'Porch focus' })).toBeVisible();
+
+	await page.keyboard.press('ArrowRight');
+	await expect(page).toHaveURL('/viewer?camera=alley');
+	await expect(page.getByRole('region', { name: 'Alley focus' })).toBeVisible();
+	await page.keyboard.press('ArrowLeft');
+	await expect(page).toHaveURL('/viewer?camera=porch');
+	await expect(page.getByRole('region', { name: 'Porch focus' })).toBeVisible();
+	await page.keyboard.press('ArrowUp');
+	await expect(page).toHaveURL('/');
+	await expect(page.locator('[data-peek-focus="porch"]')).toBeFocused();
+	await page.keyboard.press('Space');
+	await expect(page).toHaveURL('/viewer?camera=porch');
+	await page.keyboard.press('ArrowDown');
+	await expect(page).toHaveURL('/');
+	await expect(page.locator('[data-peek-focus="porch"]')).toBeFocused();
 
 	await page.goto('/');
 	await waitForKeyboard(page);

@@ -248,6 +248,39 @@ describe('LivePeer', () => {
 		expect(peer.tracks).toEqual({});
 	});
 
+	it('preserves the negotiated receiver while delivery is pulsed', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'pulse-session',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		const peer = new LivePeer();
+		const plan = { cameraId: 'front-door', quality: 'low' as const, variantId: 'sub' as const };
+
+		await peer.configure([plan]);
+		const connection = FakePeerConnection.latest;
+		const receiver = {} as RTCRtpReceiver;
+		const stream = new MediaStream();
+		connection?.ontrack?.({
+			transceiver: connection.transceivers[0],
+			receiver,
+			track: null,
+			streams: [stream]
+		} as unknown as RTCTrackEvent);
+		expect(peer.track('front-door')).toMatchObject({ receiver, stream, subscribed: true });
+
+		await peer.configure([{ ...plan, active: false }]);
+		expect(peer.track('front-door')).toMatchObject({
+			receiver,
+			stream,
+			status: 'queued',
+			subscribed: false
+		});
+
+		await peer.configure([plan]);
+		expect(peer.track('front-door')).toMatchObject({ receiver, stream, subscribed: true });
+	});
+
 	it('deletes a created server session when remote setup fails', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		FakeDataChannel.suppressCapabilities = true;

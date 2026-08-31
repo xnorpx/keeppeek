@@ -321,6 +321,9 @@ export type ControlRequests = {
 	notificationActions: string[];
 	mqttUpdates: MqttSettingsUpdate[];
 	mqttTests: MqttSettingsUpdate[];
+	mediaSubscriptions: Array<{ subscriptionId: string; variantId: string }>;
+	mediaUnsubscriptions: string[][];
+	peekLayoutReads: number;
 	peekLayoutUpdates: JsonObject[];
 };
 
@@ -359,6 +362,7 @@ export type MockControlPeerOptions = {
 	mqttTestResult?: MqttTestResult;
 	peekLayoutRegistry?: JsonObject;
 	peekLayoutRevision?: bigint;
+	peekLayoutGetGates?: readonly Promise<void>[];
 	peekLayoutSaveError?: string;
 	peekLayoutConflictOnSave?: boolean;
 	peekLayoutSaveGate?: Promise<void>;
@@ -673,6 +677,9 @@ export async function mockControlPeer(
 		notificationActions: [],
 		mqttUpdates: [],
 		mqttTests: [],
+		mediaSubscriptions: [],
+		mediaUnsubscriptions: [],
+		peekLayoutReads: 0,
 		peekLayoutUpdates: []
 	};
 	let activeFilter = 'info,keeppeek=debug';
@@ -710,6 +717,7 @@ export async function mockControlPeer(
 		? structuredClone(options.peekLayoutRegistry)
 		: undefined;
 	let peekLayoutRevision = options.peekLayoutRevision ?? 1n;
+	const peekLayoutGetGates = [...(options.peekLayoutGetGates ?? [])];
 	const mqttIntegrationSequence = (options.mqttIntegrationSequence ?? []).map((integration) =>
 		structuredClone(integration)
 	);
@@ -770,6 +778,10 @@ export async function mockControlPeer(
 		if (envelope.message.case !== 'request') throw new Error('expected control request');
 		const request = envelope.message.value;
 		if (request.command.case === 'subscribeMedia') {
+			requests.mediaSubscriptions.push({
+				subscriptionId: request.command.value.subscriptionId,
+				variantId: request.command.value.variantId
+			});
 			return encodedOk(request.requestId, {
 				case: 'subscriptionResult',
 				value: create(SubscriptionResultSchema, {
@@ -780,11 +792,14 @@ export async function mockControlPeer(
 			});
 		}
 		if (request.command.case === 'unsubscribe') {
+			requests.mediaUnsubscriptions.push([...request.command.value.subscriptionIds]);
 			return encodedOk(request.requestId, undefined);
 		}
 		if (request.command.case === 'stateStoreCommand') {
 			const action = request.command.value.action;
 			if (action.case === 'get' && action.value.namespace === 'keeppeek.peek-layouts') {
+				requests.peekLayoutReads += 1;
+				await peekLayoutGetGates.shift();
 				if (!peekLayoutRegistry) {
 					return encodedError(request.requestId, 'Peek layout state is not configured');
 				}

@@ -1,9 +1,19 @@
-import { randomInt } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+	nineCameraCircularStartSeparationSeconds,
+	nineCameraKeyframeIntervalsSeconds,
+	nineCameraKeyframeIntervalSeconds,
+	nineCameraMinimumStartSeparationSeconds,
+	nineCameraProfiles,
+	nineCameraProfileVariants,
+	type NineCameraKeyframeIntervalSeconds,
+	type NineCameraProfile
+} from '../src/lib/server/storybook/nine-camera-fixture';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const testRoot = path.join(repositoryRoot, 'target', 'nine-camera-demo');
@@ -14,7 +24,7 @@ const fixtureManifestPath = path.join(
 	repositoryRoot,
 	'target',
 	'demo-fixtures',
-	'big-buck-bunny-640x360-h264.json'
+	'big-buck-bunny-camera-profiles.json'
 );
 const executableExtension = process.platform === 'win32' ? '.exe' : '';
 const releaseRoot = path.join(repositoryRoot, 'target', 'release');
@@ -33,10 +43,19 @@ const cameraNames = [
 ];
 
 type FixtureManifest = {
-	outputFile: string;
 	durationSeconds: number;
-	outputSha256: string;
+	variants: FixtureVariant[];
 	blackIntervals: BlackInterval[];
+};
+
+type FixtureVariant = {
+	keyframeIntervalSeconds: NineCameraKeyframeIntervalSeconds;
+	profiles: FixtureProfile[];
+};
+
+type FixtureProfile = NineCameraProfile & {
+	outputFile: string;
+	outputSha256: string;
 };
 
 type BlackInterval = {
@@ -48,9 +67,12 @@ type CameraStart = {
 	id: string;
 	name: string;
 	startAtSeconds: number;
+	keyframeIntervalSeconds: NineCameraKeyframeIntervalSeconds;
+	profilePair: readonly NineCameraProfile[];
 };
 
-type CameraDraft = CameraStart & {
+type CameraDraft = Omit<CameraStart, 'profilePair'> & {
+	profiles: NineCameraProfile[];
 	ip: string;
 	displayName: string;
 	username: string;
@@ -82,8 +104,36 @@ type BunRuntime = typeof globalThis & {
 };
 
 const fixture = JSON.parse(await readFile(fixtureManifestPath, 'utf8')) as FixtureManifest;
-if (!existsSync(fixture.outputFile)) {
-	throw new Error('Missing Big Buck Bunny fixture. Run `bun run demo:fixtures:prepare` first.');
+if (!Array.isArray(fixture.variants)) {
+	throw new Error(
+		'Big Buck Bunny fixture manifest is outdated. Run `bun run demo:fixtures:prepare`.'
+	);
+}
+for (const keyframeIntervalSeconds of nineCameraKeyframeIntervalsSeconds) {
+	const variant = fixture.variants.find(
+		(candidate) => candidate.keyframeIntervalSeconds === keyframeIntervalSeconds
+	);
+	if (!variant || !Array.isArray(variant.profiles)) {
+		throw new Error(
+			`Missing ${keyframeIntervalSeconds}s Big Buck Bunny fixture. Run \`bun run demo:fixtures:prepare\` first.`
+		);
+	}
+	for (const profile of nineCameraProfileVariants) {
+		const generated = fixtureProfile(variant, profile.stream, profile.codec);
+		if (
+			generated.codec !== profile.codec ||
+			generated.width !== profile.width ||
+			generated.height !== profile.height ||
+			generated.framesPerSecond !== profile.framesPerSecond ||
+			generated.bitrateKbps !== profile.bitrateKbps ||
+			!existsSync(generated.outputFile) ||
+			(await sha256(generated.outputFile)) !== generated.outputSha256
+		) {
+			throw new Error(
+				`Invalid ${keyframeIntervalSeconds}s Big Buck Bunny ${profile.stream} fixture. Run \`bun run demo:fixtures:prepare --force\` first.`
+			);
+		}
+	}
 }
 
 await rm(testRoot, { recursive: true, force: true });
@@ -95,7 +145,7 @@ const cameraStarts = randomCameraStarts(fixture);
 const testCameras: TestCamera[] = [];
 try {
 	for (const camera of cameraStarts) {
-		testCameras.push(await startTestCamera(camera, fixture.outputFile));
+		testCameras.push(await startTestCamera(camera, fixtureVariant(fixture, camera)));
 	}
 } catch (error) {
 	await stopCameras(testCameras);
@@ -107,8 +157,10 @@ await writeFile(
 	`${JSON.stringify(
 		{
 			schemaVersion: 1,
-			fixtureSha256: fixture.outputSha256,
+			fixtureSha256: fixtureSetSha256(fixture.variants),
 			selection: {
+				sourceDurationSeconds: fixture.durationSeconds,
+				minimumStartSeparationSeconds: nineCameraMinimumStartSeparationSeconds,
 				safeBeforeSeconds,
 				safeAfterSeconds,
 				excludedBlackIntervals: fixture.blackIntervals
@@ -147,7 +199,7 @@ ${testCameras.map((camera) => camera.config).join('\n')}
 
 const server = spawn(keeppeekBinary, [`--config=${configPath}`], {
 	cwd: repositoryRoot,
-	env: { ...process.env, RUST_LOG: 'info,keeppeek=debug' },
+	env: { ...process.env, RUST_LOG: process.env.RUST_LOG ?? 'info,keeppeek=debug' },
 	stdio: 'inherit'
 });
 
@@ -172,15 +224,19 @@ const exitCode = await new Promise<number | null>((resolveExit, rejectExit) => {
 await stopCameras(testCameras);
 process.exitCode = stopping ? 0 : (exitCode ?? 1);
 
-async function startTestCamera(camera: CameraStart, mediaPath: string): Promise<TestCamera> {
+async function startTestCamera(camera: CameraStart, variant: FixtureVariant): Promise<TestCamera> {
+	const selectedMain = camera.profilePair.find((profile) => profile.stream === 'main')!;
+	const selectedSub = camera.profilePair.find((profile) => profile.stream === 'sub')!;
+	const mainProfile = fixtureProfile(variant, 'main', selectedMain.codec);
+	const subProfile = fixtureProfile(variant, 'sub', selectedSub.codec);
 	const cameraProcess = spawn(
 		testCameraBinary,
 		[
 			'rtsp',
 			'--main',
-			mediaPath,
+			mainProfile.outputFile,
 			'--sub',
-			mediaPath,
+			subProfile.outputFile,
 			'--name',
 			camera.name,
 			'--config-ip',
@@ -226,11 +282,13 @@ async function startTestCamera(camera: CameraStart, mediaPath: string): Promise<
 		cameraProcess.kill('SIGINT');
 		throw new Error(`Unable to parse ${camera.name} test camera configuration`);
 	}
+	const { profilePair, ...cameraDraft } = camera;
 	return {
 		process: cameraProcess,
 		config,
 		draft: {
-			...camera,
+			...cameraDraft,
+			profiles: [...profilePair],
 			ip: entry.ip,
 			displayName: camera.name,
 			username: entry.username,
@@ -244,37 +302,89 @@ async function startTestCamera(camera: CameraStart, mediaPath: string): Promise<
 }
 
 function randomCameraStarts(fixture: FixtureManifest): CameraStart[] {
-	const minimumRemainingSeconds = 90;
-	const availableSeconds = fixture.durationSeconds - minimumRemainingSeconds;
-	if (availableSeconds < cameraNames.length) {
+	const availableSeconds = fixture.durationSeconds;
+	if (availableSeconds <= cameraNames.length * nineCameraMinimumStartSeparationSeconds) {
 		throw new Error(`Big Buck Bunny fixture is too short: ${fixture.durationSeconds}s`);
 	}
-	const bandSeconds = availableSeconds / cameraNames.length;
-	return cameraNames.map((name, index) => {
-		const bandMilliseconds = Math.max(1, Math.floor(bandSeconds * 1_000));
-		let startAtSeconds: number | undefined;
-		for (let attempt = 0; attempt < 1_000; attempt += 1) {
-			const candidate = (index * bandSeconds * 1_000 + randomInt(bandMilliseconds)) / 1_000;
-			if (
-				!fixture.blackIntervals.some(
+	const durationMilliseconds = Math.floor(availableSeconds * 1_000);
+	for (let setAttempt = 0; setAttempt < 100; setAttempt += 1) {
+		const starts: number[] = [];
+		for (let cameraIndex = 0; cameraIndex < cameraNames.length; cameraIndex += 1) {
+			let selected = false;
+			for (let candidateAttempt = 0; candidateAttempt < 1_000; candidateAttempt += 1) {
+				const candidate = randomInt(durationMilliseconds) / 1_000;
+				const overlapsBlackInterval = fixture.blackIntervals.some(
 					(interval) =>
 						candidate - safeBeforeSeconds < interval.endSeconds &&
 						candidate + safeAfterSeconds > interval.startSeconds
-				)
-			) {
-				startAtSeconds = candidate;
+				);
+				const tooClose =
+					starts.length > 0 &&
+					nineCameraCircularStartSeparationSeconds([...starts, candidate], availableSeconds) <
+						nineCameraMinimumStartSeparationSeconds;
+				if (overlapsBlackInterval || tooClose) continue;
+				starts.push(candidate);
+				selected = true;
 				break;
 			}
+			if (!selected) break;
 		}
-		if (startAtSeconds === undefined) {
-			throw new Error(`Unable to find a nonblack start for ${name}`);
-		}
-		return {
+		if (starts.length !== cameraNames.length) continue;
+		return cameraNames.map((name, index) => ({
 			id: `192.0.2.${101 + index}`,
 			name,
-			startAtSeconds: Number(startAtSeconds.toFixed(3))
-		};
-	});
+			startAtSeconds: starts[index]!,
+			keyframeIntervalSeconds: nineCameraKeyframeIntervalSeconds(index),
+			profilePair: nineCameraProfiles(index)
+		}));
+	}
+	throw new Error('Unable to select separated nonblack starts for all nine cameras');
+}
+
+function fixtureVariant(fixture: FixtureManifest, camera: CameraStart): FixtureVariant {
+	const variant = fixture.variants.find(
+		(candidate) => candidate.keyframeIntervalSeconds === camera.keyframeIntervalSeconds
+	);
+	if (!variant) {
+		throw new Error(`Big Buck Bunny fixture has no ${camera.keyframeIntervalSeconds}s variant`);
+	}
+	return variant;
+}
+
+function fixtureProfile(
+	variant: FixtureVariant,
+	stream: 'main' | 'sub',
+	codec: 'h264' | 'h265'
+): FixtureProfile {
+	const profile = variant.profiles.find(
+		(candidate) => candidate.stream === stream && candidate.codec === codec
+	);
+	if (!profile) {
+		throw new Error(
+			`Big Buck Bunny ${variant.keyframeIntervalSeconds}s fixture has no ${stream} ${codec} profile`
+		);
+	}
+	return profile;
+}
+
+function fixtureSetSha256(variants: readonly FixtureVariant[]): string {
+	const hash = createHash('sha256');
+	for (const variant of variants.toSorted(
+		(left, right) => left.keyframeIntervalSeconds - right.keyframeIntervalSeconds
+	)) {
+		for (const profile of variant.profiles.toSorted((left, right) =>
+			`${left.stream}:${left.codec}`.localeCompare(`${right.stream}:${right.codec}`)
+		)) {
+			hash.update(`${variant.keyframeIntervalSeconds}:${profile.stream}:${profile.outputSha256}\n`);
+		}
+	}
+	return hash.digest('hex');
+}
+
+async function sha256(filePath: string): Promise<string> {
+	const hash = createHash('sha256');
+	for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+	return hash.digest('hex');
 }
 
 async function stopCameras(cameras: TestCamera[]): Promise<void> {
