@@ -181,6 +181,11 @@
 			return;
 		}
 		const sourcePath = from?.url.pathname;
+		if (sourcePath !== dashboardPath && sourcePath !== viewerPath) {
+			const currentTransition = peekViewState.transition;
+			if (currentTransition) peekViewState.finishTransition(currentTransition);
+			return;
+		}
 		const destinationCameraId = to.url.searchParams.get('camera')?.trim() || null;
 		const sourceCameraId = from?.url.searchParams.get('camera')?.trim() || null;
 		if (
