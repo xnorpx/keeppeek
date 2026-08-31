@@ -4,19 +4,32 @@ import { createReadStream } from 'node:fs';
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+	nineCameraKeyframeIntervalsSeconds,
+	nineCameraProfileGopFrames,
+	nineCameraProfileVariants,
+	type NineCameraKeyframeIntervalSeconds,
+	type NineCameraProfile
+} from '../src/lib/server/storybook/nine-camera-fixture';
 
 const sourceUrl =
-	'https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_640x360.m4v.zip';
-const sourceArchiveSha256 = '7118242b6728d40c871479c5b3c0f0fb27d748089df15d7f1b469f297c74a2d6';
-const sourceMediaSha256 = '738e2f999860553d056dd79c952f58f63cbb73892a57c72342ce9e5330d9d2d7';
-const derivativeVersion = 1;
-const scriptDirectory = dirname(fileURLToPath(import.meta.url));
-const repositoryRoot = resolve(scriptDirectory, '../..');
+	'https://download.blender.org/demo/movies/BBB/bbb_sunflower_2160p_30fps_normal.mp4.zip';
+const sourceArchiveSha256 = '750b255c6d9fee1e2a03a6716d4f358bca56e9115bf3e06a66162fc5272ae151';
+const sourceMediaSha256 = '37f0ff251a606c2dcfa26c19fe6bf843234b4e7a8889cfab50bc26f644e55520';
+const sourceExcerptSha256 = '21be06202908ddfb5adaa53cb63f8b0564fcab446045bc37be7b8faece6a564c';
+const sourceExcerptMaxBytes = 50_000_000;
+const derivativeVersion = 4;
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const fixtureDirectory = join(repositoryRoot, 'target', 'demo-fixtures');
-const archivePath = join(fixtureDirectory, 'BigBuckBunny_640x360.m4v.zip');
-const sourcePath = join(fixtureDirectory, 'BigBuckBunny_640x360.m4v');
-const outputPath = join(fixtureDirectory, 'big-buck-bunny-640x360-h264.mp4');
-const manifestPath = join(fixtureDirectory, 'big-buck-bunny-640x360-h264.json');
+const sourcePath = join(
+	repositoryRoot,
+	'crates',
+	'test-camera',
+	'testdata',
+	'big-buck-bunny-3840x2160-h264.mp4'
+);
+const legacyManifestPath = join(fixtureDirectory, 'big-buck-bunny-640x360-h264.json');
+const manifestPath = join(fixtureDirectory, 'big-buck-bunny-camera-profiles.json');
 const force = process.argv.includes('--force');
 
 type Probe = {
@@ -28,8 +41,26 @@ type Probe = {
 		width?: number;
 		height?: number;
 		r_frame_rate?: string;
+		bit_rate?: string;
+		has_b_frames?: number;
+		nb_frames?: string;
 	}>;
 	format: { duration?: string; size?: string };
+};
+
+type KeyframeProbe = {
+	frames: Array<{ best_effort_timestamp_time?: string }>;
+};
+
+type FixtureProfile = NineCameraProfile & {
+	outputFile: string;
+	outputSha256: string;
+	bytes: number;
+};
+
+type FixtureVariant = {
+	keyframeIntervalSeconds: NineCameraKeyframeIntervalSeconds;
+	profiles: FixtureProfile[];
 };
 
 type FixtureManifest = {
@@ -41,15 +72,10 @@ type FixtureManifest = {
 	sourceMediaSha256: string;
 	license: string;
 	attribution: string;
-	outputFile: string;
-	outputSha256: string;
-	bytes: number;
+	sourceExcerptFile: string;
+	sourceExcerptSha256: string;
 	durationSeconds: number;
-	codec: 'h264';
-	profile: 'Constrained Baseline';
-	width: 640;
-	height: 360;
-	fps: 15;
+	variants: FixtureVariant[];
 	blackIntervals: BlackInterval[];
 };
 
@@ -59,83 +85,80 @@ type BlackInterval = {
 };
 
 await mkdir(fixtureDirectory, { recursive: true });
+const sourceProbe = await validateSourceFixture();
 if (!force && (await cachedFixture())) process.exit(0);
 
-if (!(await matchesHash(archivePath, sourceArchiveSha256))) {
-	const temporaryArchive = `${archivePath}.download`;
-	await rm(temporaryArchive, { force: true });
-	const response = await fetch(sourceUrl);
-	if (!response.ok) {
-		throw new Error(`Big Buck Bunny download failed: ${response.status} ${response.statusText}`);
+const variants: FixtureVariant[] = [];
+const durationSeconds = Number(sourceProbe.format.duration);
+for (const keyframeIntervalSeconds of nineCameraKeyframeIntervalsSeconds) {
+	const profiles: FixtureProfile[] = [];
+	for (const profile of nineCameraProfileVariants) {
+		const outputFile = fixtureOutputPath(profile, keyframeIntervalSeconds);
+		const temporaryOutput = `${outputFile}.tmp.mp4`;
+		const gopFrames = nineCameraProfileGopFrames(profile, keyframeIntervalSeconds);
+		await rm(temporaryOutput, { force: true });
+		await runProcess('ffmpeg', [
+			'-hide_banner',
+			'-loglevel',
+			'error',
+			'-y',
+			'-i',
+			sourcePath,
+			'-map',
+			'0:v:0',
+			'-vf',
+			`scale=${profile.width}:${profile.height}:flags=lanczos,fps=${profile.framesPerSecond}`,
+			'-an',
+			...encoderArguments(profile),
+			'-b:v',
+			`${profile.bitrateKbps}k`,
+			'-maxrate',
+			`${profile.bitrateKbps}k`,
+			'-bufsize',
+			`${profile.bitrateKbps * 2}k`,
+			'-pix_fmt',
+			'yuv420p',
+			'-g',
+			String(gopFrames),
+			'-keyint_min',
+			String(gopFrames),
+			'-sc_threshold',
+			'0',
+			'-bf',
+			'0',
+			'-map_metadata',
+			'-1',
+			'-movflags',
+			'+faststart',
+			temporaryOutput
+		]);
+		const probe = await validateFixture(temporaryOutput, profile, keyframeIntervalSeconds);
+		if (Math.abs(durationSeconds - Number(probe.format.duration)) > 0.05) {
+			throw new Error('Big Buck Bunny profile variants have different durations');
+		}
+		await rm(outputFile, { force: true });
+		await rename(temporaryOutput, outputFile);
+		const outputStats = await stat(outputFile);
+		profiles.push({
+			...profile,
+			outputFile,
+			outputSha256: await sha256(outputFile),
+			bytes: outputStats.size
+		});
 	}
-	await writeFile(temporaryArchive, new Uint8Array(await response.arrayBuffer()));
-	const downloadedHash = await sha256(temporaryArchive);
-	if (downloadedHash !== sourceArchiveSha256) {
-		await rm(temporaryArchive, { force: true });
-		throw new Error(
-			`Big Buck Bunny archive SHA-256 ${downloadedHash} does not match ${sourceArchiveSha256}`
-		);
-	}
-	await rm(archivePath, { force: true });
-	await rename(temporaryArchive, archivePath);
+	variants.push({ keyframeIntervalSeconds, profiles });
 }
-
-await runProcess('unzip', ['-o', archivePath, '-d', fixtureDirectory]);
-const extractedHash = await sha256(sourcePath);
-if (extractedHash !== sourceMediaSha256) {
+const blackIntervals = await detectBlackIntervals(
+	fixtureProfile(variants[0]!, 'sub').outputFile,
+	durationSeconds
+);
+if (blackIntervals.length > 0) {
 	throw new Error(
-		`Big Buck Bunny media SHA-256 ${extractedHash} does not match ${sourceMediaSha256}`
+		`Committed Big Buck Bunny excerpt contains black frames: ${JSON.stringify(blackIntervals)}`
 	);
 }
+await removeLegacyFixtures();
 
-const temporaryOutput = `${outputPath}.tmp.mp4`;
-await rm(temporaryOutput, { force: true });
-await runProcess('ffmpeg', [
-	'-hide_banner',
-	'-loglevel',
-	'error',
-	'-y',
-	'-i',
-	sourcePath,
-	'-map',
-	'0:v:0',
-	'-vf',
-	'scale=640:360:flags=lanczos,fps=15',
-	'-an',
-	'-c:v',
-	'libx264',
-	'-preset',
-	'veryfast',
-	'-crf',
-	'28',
-	'-profile:v',
-	'baseline',
-	'-level:v',
-	'3.1',
-	'-pix_fmt',
-	'yuv420p',
-	'-g',
-	'15',
-	'-keyint_min',
-	'15',
-	'-sc_threshold',
-	'0',
-	'-bf',
-	'0',
-	'-map_metadata',
-	'-1',
-	'-movflags',
-	'+faststart',
-	temporaryOutput
-]);
-const probe = await validateFixture(temporaryOutput);
-const durationSeconds = Number(probe.format.duration);
-const blackIntervals = await detectBlackIntervals(temporaryOutput, durationSeconds);
-await rm(outputPath, { force: true });
-await rename(temporaryOutput, outputPath);
-await rm(sourcePath, { force: true });
-
-const outputStats = await stat(outputPath);
 const manifest: FixtureManifest = {
 	schemaVersion: 1,
 	derivativeVersion,
@@ -145,15 +168,10 @@ const manifest: FixtureManifest = {
 	sourceMediaSha256,
 	license: 'Creative Commons Attribution 3.0',
 	attribution: '(c) copyright 2008, Blender Foundation / www.bigbuckbunny.org',
-	outputFile: outputPath,
-	outputSha256: await sha256(outputPath),
-	bytes: outputStats.size,
+	sourceExcerptFile: sourcePath,
+	sourceExcerptSha256,
 	durationSeconds,
-	codec: 'h264',
-	profile: 'Constrained Baseline',
-	width: 640,
-	height: 360,
-	fps: 15,
+	variants,
 	blackIntervals
 };
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -168,16 +186,49 @@ async function cachedFixture(): Promise<boolean> {
 		if (
 			manifest.derivativeVersion !== derivativeVersion ||
 			manifest.sourceArchiveSha256 !== sourceArchiveSha256 ||
-			manifest.outputFile !== outputPath ||
-			!(await matchesHash(outputPath, manifest.outputSha256))
+			manifest.sourceMediaSha256 !== sourceMediaSha256 ||
+			manifest.sourceExcerptFile !== sourcePath ||
+			manifest.sourceExcerptSha256 !== sourceExcerptSha256 ||
+			manifest.variants.length !== nineCameraKeyframeIntervalsSeconds.length
 		) {
 			return false;
 		}
-		const probe = await validateFixture(outputPath);
-		const durationSeconds = Number(probe.format.duration);
+		for (const keyframeIntervalSeconds of nineCameraKeyframeIntervalsSeconds) {
+			const variant = manifest.variants.find(
+				(candidate) => candidate.keyframeIntervalSeconds === keyframeIntervalSeconds
+			);
+			if (!variant || variant.profiles.length !== nineCameraProfileVariants.length) return false;
+			for (const profile of nineCameraProfileVariants) {
+				const generated = variant.profiles.find(
+					(candidate) => candidate.stream === profile.stream && candidate.codec === profile.codec
+				);
+				const outputFile = fixtureOutputPath(profile, keyframeIntervalSeconds);
+				if (
+					!generated ||
+					generated.codec !== profile.codec ||
+					generated.width !== profile.width ||
+					generated.height !== profile.height ||
+					generated.framesPerSecond !== profile.framesPerSecond ||
+					generated.bitrateKbps !== profile.bitrateKbps ||
+					generated.outputFile !== outputFile ||
+					!(await matchesHash(outputFile, generated.outputSha256))
+				) {
+					return false;
+				}
+				const probe = await validateFixture(outputFile, profile, keyframeIntervalSeconds);
+				if (Math.abs(Number(sourceProbe.format.duration) - Number(probe.format.duration)) > 0.05) {
+					return false;
+				}
+			}
+		}
+		const durationSeconds = Number(sourceProbe.format.duration);
 		const blackIntervals = validBlackIntervals(manifest.blackIntervals, durationSeconds)
 			? manifest.blackIntervals
-			: await detectBlackIntervals(outputPath, durationSeconds);
+			: await detectBlackIntervals(
+					fixtureProfile(manifest.variants[0]!, 'sub').outputFile,
+					durationSeconds
+				);
+		if (blackIntervals.length > 0) return false;
 		const completeManifest: FixtureManifest = {
 			...manifest,
 			durationSeconds,
@@ -254,36 +305,184 @@ function validBlackIntervals(
 	);
 }
 
-async function validateFixture(filePath: string): Promise<Probe> {
+async function validateFixture(
+	filePath: string,
+	profile: NineCameraProfile,
+	keyframeIntervalSeconds: NineCameraKeyframeIntervalSeconds
+): Promise<Probe> {
+	const probe = await probeFixture(filePath);
+	const video = probe.streams[0];
+	const expectedCodec = profile.codec === 'h264' ? 'h264' : 'hevc';
+	const expectedProfile = profile.codec === 'h265' ? 'Main' : 'Constrained Baseline';
+	const bitrate = Number(video?.bit_rate);
+	const expectedFrames = 48 * profile.framesPerSecond;
+	if (
+		probe.streams.length !== 1 ||
+		video?.codec_name !== expectedCodec ||
+		video.codec_type !== 'video' ||
+		video.profile !== expectedProfile ||
+		video.pix_fmt !== 'yuv420p' ||
+		video.width !== profile.width ||
+		video.height !== profile.height ||
+		video.r_frame_rate !== `${profile.framesPerSecond}/1` ||
+		video.has_b_frames !== 0 ||
+		Number(video.nb_frames) !== expectedFrames ||
+		!Number.isFinite(bitrate) ||
+		bitrate < profile.bitrateKbps * 750 ||
+		bitrate > profile.bitrateKbps * 1_250 ||
+		Number(probe.format.duration) < 47.9 ||
+		Number(probe.format.duration) > 48.1
+	) {
+		throw new Error(`Unexpected Big Buck Bunny derivative: ${JSON.stringify(probe)}`);
+	}
+	await validateKeyframeInterval(filePath, keyframeIntervalSeconds, profile.framesPerSecond);
+	return probe;
+}
+
+async function validateSourceFixture(): Promise<Probe> {
+	if (!(await matchesHash(sourcePath, sourceExcerptSha256))) {
+		throw new Error(
+			`Committed 4K Big Buck Bunny source is missing or has the wrong SHA-256: ${sourcePath}`
+		);
+	}
+	const sourceStats = await stat(sourcePath);
+	const probe = await probeFixture(sourcePath);
+	const video = probe.streams[0];
+	const bitrate = Number(video?.bit_rate);
+	if (
+		sourceStats.size > sourceExcerptMaxBytes ||
+		probe.streams.length !== 1 ||
+		video?.codec_name !== 'h264' ||
+		video.profile !== 'High' ||
+		video.pix_fmt !== 'yuv420p' ||
+		video.width !== 3840 ||
+		video.height !== 2160 ||
+		video.r_frame_rate !== '30/1' ||
+		video.has_b_frames !== 0 ||
+		Number(video.nb_frames) !== 1_440 ||
+		!Number.isFinite(bitrate) ||
+		bitrate < 6_000_000 ||
+		bitrate > 9_000_000 ||
+		Number(probe.format.duration) !== 48
+	) {
+		throw new Error(`Unexpected committed 4K Big Buck Bunny source: ${JSON.stringify(probe)}`);
+	}
+	await validateKeyframeInterval(sourcePath, 1, 30);
+	return probe;
+}
+
+async function probeFixture(filePath: string): Promise<Probe> {
 	const output = await runProcess(
 		'ffprobe',
 		[
 			'-v',
 			'error',
+			'-count_frames',
 			'-show_entries',
-			'format=duration,size:stream=codec_name,codec_type,profile,pix_fmt,width,height,r_frame_rate',
+			'format=duration,size:stream=codec_name,codec_type,profile,pix_fmt,width,height,r_frame_rate,bit_rate,has_b_frames,nb_frames',
 			'-of',
 			'json',
 			filePath
 		],
 		true
 	);
-	const probe = JSON.parse(output) as Probe;
-	const video = probe.streams[0];
-	if (
-		probe.streams.length !== 1 ||
-		video?.codec_name !== 'h264' ||
-		video.codec_type !== 'video' ||
-		video.profile !== 'Constrained Baseline' ||
-		video.pix_fmt !== 'yuv420p' ||
-		video.width !== 640 ||
-		video.height !== 360 ||
-		video.r_frame_rate !== '15/1' ||
-		Number(probe.format.duration) < 590
-	) {
-		throw new Error(`Unexpected Big Buck Bunny derivative: ${JSON.stringify(probe)}`);
+	return JSON.parse(output) as Probe;
+}
+
+async function validateKeyframeInterval(
+	filePath: string,
+	expectedIntervalSeconds: NineCameraKeyframeIntervalSeconds,
+	framesPerSecond: number
+): Promise<void> {
+	const output = await runProcess(
+		'ffprobe',
+		[
+			'-v',
+			'error',
+			'-skip_frame',
+			'nokey',
+			'-select_streams',
+			'v:0',
+			'-show_entries',
+			'frame=best_effort_timestamp_time',
+			'-of',
+			'json',
+			filePath
+		],
+		true
+	);
+	const timestamps = (JSON.parse(output) as KeyframeProbe).frames.map((frame) =>
+		Number(frame.best_effort_timestamp_time)
+	);
+	if (timestamps.length < 2 || timestamps.some((timestamp) => !Number.isFinite(timestamp))) {
+		throw new Error(`Big Buck Bunny derivative has invalid keyframe timestamps: ${filePath}`);
 	}
-	return probe;
+	const toleranceSeconds = 0.5 / framesPerSecond;
+	for (let index = 1; index < timestamps.length; index += 1) {
+		const intervalSeconds = timestamps[index]! - timestamps[index - 1]!;
+		if (Math.abs(intervalSeconds - expectedIntervalSeconds) > toleranceSeconds) {
+			throw new Error(
+				`Big Buck Bunny derivative keyframe interval ${intervalSeconds}s does not match ${expectedIntervalSeconds}s`
+			);
+		}
+	}
+}
+
+function encoderArguments(profile: NineCameraProfile): string[] {
+	if (profile.codec === 'h265') {
+		return [
+			'-c:v',
+			'libx265',
+			'-preset',
+			'ultrafast',
+			'-profile:v',
+			'main',
+			'-x265-params',
+			'log-level=error:open-gop=0',
+			'-tag:v',
+			'hvc1'
+		];
+	}
+	return profile.stream === 'main'
+		? ['-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'baseline', '-level:v', '5.1']
+		: ['-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'baseline', '-level:v', '3.1'];
+}
+
+function fixtureOutputPath(
+	profile: NineCameraProfile,
+	keyframeIntervalSeconds: NineCameraKeyframeIntervalSeconds
+): string {
+	return join(
+		fixtureDirectory,
+		`big-buck-bunny-${profile.stream}-${profile.width}x${profile.height}-${profile.codec}-gop-${keyframeIntervalSeconds}s.mp4`
+	);
+}
+
+function fixtureProfile(
+	variant: FixtureVariant,
+	stream: 'main' | 'sub',
+	codec: 'h264' | 'h265' = 'h264'
+): FixtureProfile {
+	const profile = variant.profiles.find(
+		(candidate) => candidate.stream === stream && candidate.codec === codec
+	);
+	if (!profile) {
+		throw new Error(
+			`Big Buck Bunny ${variant.keyframeIntervalSeconds}s fixture has no ${stream} ${codec} profile`
+		);
+	}
+	return profile;
+}
+
+async function removeLegacyFixtures(): Promise<void> {
+	await Promise.all([
+		rm(legacyManifestPath, { force: true }),
+		...nineCameraKeyframeIntervalsSeconds.map((interval) =>
+			rm(join(fixtureDirectory, `big-buck-bunny-640x360-h264-gop-${interval}s.mp4`), {
+				force: true
+			})
+		)
+	]);
 }
 
 async function matchesHash(filePath: string, expected: string): Promise<boolean> {
@@ -328,10 +527,13 @@ async function runProcess(command: string, args: string[], captureStdout = false
 function printFixture(manifest: FixtureManifest): void {
 	console.log(
 		JSON.stringify({
-			fixture: manifest.outputFile,
+			sourceExcerpt: {
+				file: manifest.sourceExcerptFile,
+				sha256: manifest.sourceExcerptSha256,
+				bytes: Number(sourceProbe.format.size)
+			},
 			durationSeconds: manifest.durationSeconds,
-			bytes: manifest.bytes,
-			sha256: manifest.outputSha256
+			variants: manifest.variants
 		})
 	);
 }

@@ -3,8 +3,9 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, tick } from 'svelte';
-	import type { CameraHealth, CameraListItem, LiveQuality, ServerHealthResponse } from '$lib/types';
+	import type { CameraHealth, CameraListItem, LiveQuality } from '$lib/types';
 	import { useControlClient } from '$lib/control-context';
+	import { usePeekViewState } from '$lib/peek-view-context.svelte';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import { useShellHealthPublisher } from '$lib/shell-health-context';
 	import type { LivePeerPlan } from '$lib/stream-peer.svelte';
@@ -24,7 +25,7 @@
 		presentPeekRecordingDiagnostics
 	} from '$lib/peek-camera';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
-	import { selectPeekLayout, type PeekLayout, type PeekLayoutRegistry } from '$lib/peek-layout';
+	import { selectPeekLayout, type PeekLayout } from '$lib/peek-layout';
 	import { browserSupportsLiveEncoding, selectRecordedStream } from '$lib/recorded-playback-policy';
 	import {
 		defaultPlaybackPreferences,
@@ -58,21 +59,24 @@
 	const healthRefreshIntervalMs = 5_000;
 	const lastViewerCameraKey = 'keeppeek.viewer.last-camera';
 	const controlClient = useControlClient();
+	const peekViewState = usePeekViewState();
 	const livePeer = useLivePeer();
 	const publishShellHealth = useShellHealthPublisher();
 	const gridScheduler = new GridStreamScheduler({ subscriptionSlots: 4, decoderSlots: 4 });
 	const legacyRootCameraId =
 		page.url.pathname === resolve('/') ? (page.url.searchParams.get('camera')?.trim() ?? '') : '';
+	const initialRequestedCameraId = page.url.searchParams.get('camera')?.trim() ?? '';
 
-	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
-	let cameras = $state.raw<CameraListItem[]>([]);
-	let error: string | null = $state(null);
-	let loading = $state(true);
-	let layoutRegistry = $state.raw<PeekLayoutRegistry | null>(null);
-	let layoutError = $state<string | null>(null);
+	let serverHealth = $derived(peekViewState.serverHealth);
+	let cameras = $derived(peekViewState.cameras);
+	let error = $derived(peekViewState.error);
+	let loading = $derived(!peekViewState.loaded);
+	let layoutRegistry = $derived(peekViewState.layoutRegistry);
+	let layoutError = $derived(peekViewState.layoutError);
 	let layoutSaving = $state(false);
 	let focusedCameraId: string | null = $state(null);
 	let lastViewerCameraId = '';
+	let viewerSelectionReady = $state(initialRequestedCameraId.length > 0);
 	let cameraViewActive = $derived(view === 'viewer');
 	let requestedCameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let focusQuality = $state<FocusedLivePreference>('auto');
@@ -81,13 +85,16 @@
 	let focusFallbackAttempted = false;
 	let focusRuntimeNotice = $state<string | null>(null);
 	let livePlans = $state.raw<LivePeerPlan[]>([]);
+	let livePlansReady = $state(false);
 	let tileVisibility = $state.raw<Record<string, GridTileVisibility>>({});
 	let screenActive = true;
 	let schedulerTimer: number | null = null;
 	let decoderCapacity = 4;
 	let wallFrameCameraIds = $state.raw<ReadonlySet<string>>(new Set());
 	let wallTargetCameraIds = $state.raw<readonly string[]>([]);
-	let wallRevealState = $state<'staging' | 'frames' | 'timeout'>('staging');
+	let wallRevealState = $state<'staging' | 'frames' | 'timeout'>(
+		peekViewState.wallRevealed ? 'frames' : 'staging'
+	);
 	let wallRevealTimer: ReturnType<typeof setTimeout> | null = null;
 	let healthRefreshInFlight = false;
 	let focusReturnPending = $state(false);
@@ -143,7 +150,7 @@
 		)
 	);
 	$effect(() => {
-		if (loading) return;
+		if (loading || !livePlansReady) return;
 		void livePeer.configure(livePlans).catch((error) => {
 			console.error('Unable to configure shared live view', error);
 		});
@@ -185,6 +192,7 @@
 			}
 			return;
 		}
+		if (!viewerSelectionReady) return;
 		const rememberedExists = cameras.some((camera) => camera.id === lastViewerCameraId);
 		const cameraId = requestedExists
 			? requestedCameraId
@@ -201,6 +209,7 @@
 	onMount(() => {
 		playbackPreferences = loadPlaybackPreferences(window.localStorage);
 		lastViewerCameraId = window.localStorage.getItem(lastViewerCameraKey)?.trim() ?? '';
+		viewerSelectionReady = true;
 		const decoderBudget = webDecoderBudget(navigator.hardwareConcurrency);
 		decoderCapacity = decoderBudget;
 		gridScheduler.setCapacity({
@@ -241,9 +250,10 @@
 	async function refreshHealth(): Promise<void> {
 		if (healthRefreshInFlight) return;
 		healthRefreshInFlight = true;
+		const generation = peekViewState.generation;
 		try {
 			const health = await controlClient.getHealth();
-			serverHealth = health;
+			if (!peekViewState.updateHealth(generation, health)) return;
 			publishShellHealth(health);
 		} catch {
 			// Retain the last authoritative snapshot until a later refresh succeeds.
@@ -252,37 +262,19 @@
 		}
 	}
 
-	async function loadDashboard() {
-		try {
-			const [camerasResult, healthResult, capabilitiesResult] = await Promise.allSettled([
-				controlClient.getCameras(),
-				controlClient.getHealth(),
-				controlClient.getServerCapabilities()
-			]);
-			if (camerasResult.status === 'rejected') throw camerasResult.reason;
-			cameras = camerasResult.value;
-			serverHealth = healthResult.status === 'fulfilled' ? healthResult.value : null;
-			publishShellHealth(serverHealth);
-			if (capabilitiesResult.status === 'fulfilled') {
-				if (capabilitiesResult.value.capabilityIds.includes('keeppeek.peek-layouts.v1')) {
-					try {
-						layoutRegistry = await controlClient.getPeekLayoutRegistry();
-						layoutError = null;
-					} catch (cause) {
-						layoutError =
-							cause instanceof Error ? cause.message : 'Failed to load saved Peek layouts.';
-					}
-				}
-			}
-			error = null;
-		} catch (cause) {
-			error = cause instanceof Error ? cause.message : 'Failed to load dashboard';
-		} finally {
-			loading = false;
-			armWallReveal();
+	async function loadDashboard(): Promise<void> {
+		const coldStart = !peekViewState.loaded;
+		const refresh = peekViewState.refresh(controlClient);
+		if (!coldStart) {
+			if (!peekViewState.wallRevealed) armWallReveal();
 			await tick();
 			reconcileLivePlans();
 		}
+		await refresh;
+		publishShellHealth(serverHealth);
+		if (coldStart) armWallReveal();
+		await tick();
+		reconcileLivePlans();
 	}
 
 	function armWallReveal(): void {
@@ -323,6 +315,7 @@
 	function revealWall(reason: 'frames' | 'timeout'): void {
 		if (wallRevealState !== 'staging') return;
 		wallRevealState = reason;
+		peekViewState.markWallRevealed();
 		if (wallRevealTimer) clearTimeout(wallRevealTimer);
 		wallRevealTimer = null;
 		if (focusReturnPending) finishFocusReturn();
@@ -377,9 +370,10 @@
 					? effectiveFocusQuality
 					: (grants.get(camera.id)?.quality ?? ('low' as const)),
 				active: grants.has(camera.id),
-				variantId: focused ? focusedVariant : undefined
+				variantId: focused ? focusedVariant : previewStream(camera)
 			};
 		});
+		livePlansReady = true;
 		for (const cameraId of grants.keys()) {
 			if (!previouslyActive.has(cameraId)) {
 				emitTimelinePerformanceEvent('GridTileAdmitted', { sourceId: cameraId });
@@ -499,16 +493,21 @@
 		if (layoutRegistry === null) return;
 		if (dashboardId === layoutRegistry.activeLayoutId) return;
 		layoutSaving = true;
-		layoutError = null;
+		const generation = peekViewState.generation;
+		peekViewState.updateLayoutError(generation, null);
 		try {
-			layoutRegistry = await controlClient.savePeekLayoutRegistry(
+			const savedRegistry = await controlClient.savePeekLayoutRegistry(
 				selectPeekLayout(layoutRegistry, dashboardId)
 			);
+			if (!peekViewState.updateLayoutRegistry(generation, savedRegistry)) return;
 			armWallReveal();
 			await tick();
 			reconcileLivePlans();
 		} catch (cause) {
-			layoutError = cause instanceof Error ? cause.message : 'Dashboard selection was not saved.';
+			peekViewState.updateLayoutError(
+				generation,
+				cause instanceof Error ? cause.message : 'Dashboard selection was not saved.'
+			);
 		} finally {
 			layoutSaving = false;
 		}

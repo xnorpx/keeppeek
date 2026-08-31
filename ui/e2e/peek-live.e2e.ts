@@ -225,21 +225,34 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 		'Windows CI does not establish the real WebRTC control channel used by this full-stack test.'
 	);
 	const svelteWarnings: string[] = [];
+	let sessionCreates = 0;
+	let sessionDeletes = 0;
 	page.on('console', (message) => {
 		if (message.type() === 'warning' && message.text().includes('[svelte]')) {
 			svelteWarnings.push(message.text());
 		}
 	});
+	page.on('request', (request) => {
+		if (request.method() !== 'POST') return;
+		if (request.url().endsWith('/create')) sessionCreates += 1;
+		if (request.url().endsWith('/delete')) sessionDeletes += 1;
+	});
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.goto('/');
 
 	const tile = page.locator(`[data-peek-camera="${streams[0].cameraId}"]`);
+	const wallLiveView = tile.locator(`[data-camera-id="${streams[0].cameraId}"]`);
+	await expect(wallLiveView).toHaveAttribute('data-status', 'live', { timeout: 30_000 });
+	const sessionId = await wallLiveView.getAttribute('data-session-id');
+	const initialSessionCreates = sessionCreates;
+	expect(sessionId).not.toBeNull();
 	await tile.getByRole('button', { name: /^Focus .* live view$/ }).click();
 	const focus = page.getByRole('region', { name: /focus$/ });
 	const liveView = focus.locator(
 		`[data-peek-focus-stage] [data-camera-id="${streams[0].cameraId}"]`
 	);
 	const video = liveView.locator('video');
+	await expect(liveView).toHaveAttribute('data-session-id', sessionId ?? '');
 	await expect(liveView).toHaveAttribute('data-requested-quality', 'auto');
 	await expect(liveView).toHaveAttribute('data-stream', 'main');
 	await expect(liveView).not.toHaveAttribute('data-pending-stream');
@@ -307,5 +320,11 @@ test('Peek focus automatic quality starts on the main stream and preserves expli
 		'data-status',
 		'live'
 	);
+	await expect(wall.locator(`[data-camera-id="${streams[0].cameraId}"]`)).toHaveAttribute(
+		'data-session-id',
+		sessionId ?? ''
+	);
+	expect(sessionCreates).toBe(initialSessionCreates);
+	expect(sessionDeletes).toBe(0);
 	expect(svelteWarnings).toEqual([]);
 });

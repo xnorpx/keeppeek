@@ -210,6 +210,53 @@ test('keeps dashboard mutations out of the Dashboard route', async ({ page }) =>
 	await expect(page.getByRole('button', { name: 'Edit grid' })).toHaveCount(0);
 });
 
+test('keeps the custom dashboard warm across Dashboard and Viewer', async ({ page }) => {
+	let releaseRefresh = () => {};
+	const blockedRefresh = new Promise<void>((resolve) => {
+		releaseRefresh = resolve;
+	});
+	const controls = await mockControlPeer(page, {
+		cameras: mixedCameras,
+		health: mixedHealth,
+		capabilityIds: ['keeppeek.peek-layouts.v1'],
+		peekLayoutRegistry: editableDashboardRegistry(),
+		peekLayoutGetGates: [Promise.resolve(), blockedRefresh, blockedRefresh]
+	});
+
+	try {
+		await page.goto('/');
+		const wall = page.locator('[data-peek-wall]');
+		const wallContent = page.locator('[data-peek-wall-content]');
+		await expect(wallContent).toHaveAttribute('data-peek-layout-id', 'front-of-house');
+		for (const video of await wall.locator('video').all()) await video.dispatchEvent('playing');
+		await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
+
+		await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
+		await expect.poll(() => controls.peekLayoutReads).toBe(2);
+		await expect(page.getByRole('region', { name: 'Front Door focus' })).toBeVisible({
+			timeout: 1_500
+		});
+
+		await page.getByRole('link', { name: 'Dashboard' }).click();
+		await expect(page).toHaveURL(/\/$/);
+		await expect(wallContent).toHaveAttribute('data-peek-layout-id', 'front-of-house', {
+			timeout: 1_500
+		});
+		await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
+		await expect(wallContent).toHaveCSS('opacity', '1');
+
+		await page.getByRole('button', { name: 'Focus Front Door live view' }).click();
+		await expect(page.getByRole('region', { name: 'Front Door focus' })).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(page).toHaveURL(/\/$/);
+		await expect(wallContent).toHaveAttribute('data-peek-layout-id', 'front-of-house');
+		await expect(wall).toHaveAttribute('data-peek-wall-state', 'ready');
+		await expect(wallContent).toHaveCSS('opacity', '1');
+	} finally {
+		releaseRefresh();
+	}
+});
+
 test('persists an accessible dashboard selection for a User without mutation controls', async ({
 	page
 }) => {

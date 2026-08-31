@@ -321,6 +321,7 @@ export type ControlRequests = {
 	notificationActions: string[];
 	mqttUpdates: MqttSettingsUpdate[];
 	mqttTests: MqttSettingsUpdate[];
+	peekLayoutReads: number;
 	peekLayoutUpdates: JsonObject[];
 };
 
@@ -359,6 +360,7 @@ export type MockControlPeerOptions = {
 	mqttTestResult?: MqttTestResult;
 	peekLayoutRegistry?: JsonObject;
 	peekLayoutRevision?: bigint;
+	peekLayoutGetGates?: readonly Promise<void>[];
 	peekLayoutSaveError?: string;
 	peekLayoutConflictOnSave?: boolean;
 	peekLayoutSaveGate?: Promise<void>;
@@ -673,6 +675,7 @@ export async function mockControlPeer(
 		notificationActions: [],
 		mqttUpdates: [],
 		mqttTests: [],
+		peekLayoutReads: 0,
 		peekLayoutUpdates: []
 	};
 	let activeFilter = 'info,keeppeek=debug';
@@ -710,6 +713,7 @@ export async function mockControlPeer(
 		? structuredClone(options.peekLayoutRegistry)
 		: undefined;
 	let peekLayoutRevision = options.peekLayoutRevision ?? 1n;
+	const peekLayoutGetGates = [...(options.peekLayoutGetGates ?? [])];
 	const mqttIntegrationSequence = (options.mqttIntegrationSequence ?? []).map((integration) =>
 		structuredClone(integration)
 	);
@@ -785,6 +789,8 @@ export async function mockControlPeer(
 		if (request.command.case === 'stateStoreCommand') {
 			const action = request.command.value.action;
 			if (action.case === 'get' && action.value.namespace === 'keeppeek.peek-layouts') {
+				requests.peekLayoutReads += 1;
+				await peekLayoutGetGates.shift();
 				if (!peekLayoutRegistry) {
 					return encodedError(request.requestId, 'Peek layout state is not configured');
 				}

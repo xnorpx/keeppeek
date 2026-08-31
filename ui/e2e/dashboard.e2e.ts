@@ -644,3 +644,53 @@ test('names the negotiated first-keyframe wait without rewriting server health',
 	await expect(state).toContainText('CONNECTING');
 	await expect(state).not.toContainText('DEGRADED');
 });
+
+test('uses a compatible H.264 main on the wall when the substream is H.265', async ({ page }) => {
+	await mockControlPeer(page, {
+		cameras: [
+			{
+				id: 'mixed-codec',
+				ip: '192.0.2.41',
+				name: 'Mixed codec',
+				manufacturer: 'ONVIF',
+				model: null,
+				firmware_version: null,
+				is_reolink: false,
+				profiles: [
+					{
+						name: 'Main',
+						stream: 'main',
+						encoding: 'h264',
+						resolution: '3840x2160',
+						framerate: 25
+					},
+					{
+						name: 'Sub',
+						stream: 'sub',
+						encoding: 'h265',
+						resolution: '640x360',
+						framerate: 15
+					}
+				]
+			}
+		],
+		health: {
+			status: 'healthy',
+			cameras: [
+				{
+					id: 'mixed-codec',
+					state: 'healthy',
+					lifecycle: 'Connected',
+					last_error: null,
+					streams: []
+				}
+			]
+		}
+	});
+	await page.goto('/');
+
+	await expect(page.locator('[data-camera-id="mixed-codec"]')).toHaveAttribute(
+		'data-requested-variant',
+		'main'
+	);
+});
