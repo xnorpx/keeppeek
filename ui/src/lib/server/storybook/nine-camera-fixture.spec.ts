@@ -6,7 +6,8 @@ import {
 	nineCameraMinimumStartSeparationSeconds,
 	nineCameraProfileGopFrames,
 	nineCameraProfiles,
-	nineCameraProfileVariants
+	nineCameraProfileVariants,
+	withinRelativeTolerance
 } from './nine-camera-fixture';
 
 describe('nine-camera fixture', () => {
@@ -93,5 +94,15 @@ describe('nine-camera fixture', () => {
 		expect(nineCameraMinimumStartSeparationSeconds).toBe(1);
 		expect(nineCameraCircularStartSeparationSeconds([0.6, 3.4, 47.5], 48)).toBeCloseTo(1.1);
 		expect(nineCameraCircularStartSeparationSeconds([1, 1, 30], 48)).toBe(0);
+	});
+
+	it('accepts normal measured stream variation within an explicit relative tolerance', () => {
+		expect(withinRelativeTolerance(24.9, 25, 0.1)).toBe(true);
+		expect(withinRelativeTolerance(25.1, 25, 0.1)).toBe(true);
+		expect(withinRelativeTolerance(22.5, 25, 0.1)).toBe(true);
+		expect(withinRelativeTolerance(27.5, 25, 0.1)).toBe(true);
+		expect(withinRelativeTolerance(22.4, 25, 0.1)).toBe(false);
+		expect(withinRelativeTolerance(27.6, 25, 0.1)).toBe(false);
+		expect(withinRelativeTolerance(null, 25, 0.1)).toBe(false);
 	});
 });

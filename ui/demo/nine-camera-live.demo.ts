@@ -18,6 +18,7 @@ import {
 	nineCameraKeyframeIntervalSeconds,
 	nineCameraMinimumStartSeparationSeconds,
 	nineCameraProfiles,
+	withinRelativeTolerance,
 	type NineCameraProfile
 } from '../src/lib/server/storybook/nine-camera-fixture';
 import { createDemoWebVtt } from '../src/lib/storybook/demo';
@@ -273,15 +274,23 @@ async function waitForCameraIngress(page: Page, cameras: readonly CameraDraft[])
 									camera_id: camera.id,
 									state: 'healthy'
 								}) === 1 &&
-								metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
-									camera_id: camera.id,
-									stream: 'video_main'
-								}) === main.framesPerSecond &&
-								metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
-									camera_id: camera.id,
-									stream: 'video_sub'
-								}) === sub.framesPerSecond &&
-								withinPercent(
+								withinRelativeTolerance(
+									metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
+										camera_id: camera.id,
+										stream: 'video_main'
+									}),
+									main.framesPerSecond,
+									0.1
+								) &&
+								withinRelativeTolerance(
+									metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
+										camera_id: camera.id,
+										stream: 'video_sub'
+									}),
+									sub.framesPerSecond,
+									0.1
+								) &&
+								withinRelativeTolerance(
 									metricValue(metrics, 'keeppeek_camera_ingress_bitrate_bits_per_second', {
 										camera_id: camera.id,
 										stream: 'video_main'
@@ -289,7 +298,7 @@ async function waitForCameraIngress(page: Page, cameras: readonly CameraDraft[])
 									main.bitrateKbps * 1_000,
 									0.25
 								) &&
-								withinPercent(
+								withinRelativeTolerance(
 									metricValue(metrics, 'keeppeek_camera_ingress_bitrate_bits_per_second', {
 										camera_id: camera.id,
 										stream: 'video_sub'
@@ -307,10 +316,6 @@ async function waitForCameraIngress(page: Page, cameras: readonly CameraDraft[])
 			{ timeout: 90_000 }
 		)
 		.toEqual(cameraIds);
-}
-
-function withinPercent(value: number | null, target: number, tolerance: number): boolean {
-	return value !== null && value >= target * (1 - tolerance) && value <= target * (1 + tolerance);
 }
 
 function metricValue(
