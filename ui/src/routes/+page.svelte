@@ -49,7 +49,6 @@
 
 	let { view = 'dashboard' }: Props = $props();
 
-	const placeholders = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
 	const qualityOptions: ReadonlyArray<{ value: FocusedLivePreference; label: string }> = [
 		{ value: 'auto', label: 'Auto' },
 		{ value: 'high', label: 'High' },
@@ -966,7 +965,7 @@
 	{#if !cameraViewActive}
 		<h1 class="sr-only">Dashboard</h1>
 	{/if}
-	{#if !cameraViewActive && (focusedCamera === null || focusReturnPending)}
+	{#if !cameraViewActive && !loading && (focusedCamera === null || focusReturnPending)}
 		<PeekDashboardSwitcher
 			layouts={layoutRegistry?.layouts ?? []}
 			{activeLayout}
@@ -984,11 +983,12 @@
 	{/if}
 	<div data-peek-view-content class="peek-view-content">
 		{#if loading}
-			<div class="grid grid-cols-2 gap-2 p-2 md:grid-cols-3 2xl:grid-cols-4">
-				{#each placeholders as placeholder (placeholder)}
-					<Skeleton class="aspect-video w-full rounded-md" />
-				{/each}
-			</div>
+			<div
+				data-peek-layout-loading
+				class="size-full"
+				role="status"
+				aria-label="Loading live view"
+			></div>
 		{:else if error}
 			<div
 				class="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
