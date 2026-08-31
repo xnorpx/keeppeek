@@ -24,22 +24,46 @@ profiles to deliver non-empty video, covering all eight backend-source pairs.
 | `cc-4k-3840x2160-h264.mp4` | H.264 (`avc1`) | 3840x2160  | `f3c5893d87a6559cc494a41dd328965a4095f6994ec09e90d4186b8573d2ae49` |
 | `cc-4k-3840x2160-h265.mp4` | H.265 (`hvc1`) | 3840x2160  | `81fc67e32fb8354b4374b3358caca2be1f45bf89c2deb50048dc1f1eae4352a4` |
 
-## Long Demo Fixture
+## Big Buck Bunny Camera Fixture
 
-The nine-camera Settings onboarding demo uses the complete 9:56 _Big Buck Bunny_ film
-rather than adding another large binary to git. From `ui/`, run:
+The nine-camera demo uses `big-buck-bunny-3840x2160-h264.mp4`, a committed
+48-second, video-only excerpt of Blender Foundation's official 2160p _Big Buck
+Bunny_ release. The excerpt is 42,568,277 bytes, uses H.264 High profile at
+3840x2160 and 30 fps, and has SHA-256
+`21be06202908ddfb5adaa53cb63f8b0564fcab446045bc37be7b8faece6a564c`.
+
+The official source archive is
+[`bbb_sunflower_2160p_30fps_normal.mp4.zip`](https://download.blender.org/demo/movies/BBB/bbb_sunflower_2160p_30fps_normal.mp4.zip).
+It is 632,204,510 bytes with SHA-256
+`750b255c6d9fee1e2a03a6716d4f358bca56e9115bf3e06a66162fc5272ae151`.
+Its contained MP4 has SHA-256
+`37f0ff251a606c2dcfa26c19fe6bf843234b4e7a8889cfab50bc26f644e55520`.
+The committed excerpt was generated from seconds 60 through 108 with:
+
+```sh
+ffmpeg -ss 60 -t 48 -i bbb_sunflower_2160p_30fps_normal.mp4 \
+	-map 0:v:0 -an -c:v libx264 -preset veryfast \
+	-b:v 7500k -maxrate 8000k -bufsize 15000k \
+	-profile:v high -level:v 5.1 -pix_fmt yuv420p \
+	-g 30 -keyint_min 30 -sc_threshold 0 -bf 0 \
+	-map_metadata -1 -movflags +faststart \
+	big-buck-bunny-3840x2160-h264.mp4
+```
+
+From `ui/`, generate the ignored camera profiles with:
 
 ```sh
 bun run demo:fixtures:prepare
 ```
 
-The script downloads Blender Foundation's official
-`BigBuckBunny_640x360.m4v.zip` release into ignored `target/demo-fixtures/`,
-requires archive SHA-256
-`7118242b6728d40c871479c5b3c0f0fb27d748089df15d7f1b469f297c74a2d6`, and
-derives a video-only 640x360, 15 fps, constrained-baseline H.264 MP4 with a
-one-second GOP. It validates the result with FFprobe and records its output hash
-in a neighboring generated manifest.
+The script verifies the committed source and derives all four requested camera
+profiles: 3840x2160 at 25 fps in H.264 and H.265, plus 640x360 at 15 fps in H.264
+at 512 Kbps and H.265 at 256 Kbps. The 4K profiles target 8192 Kbps. Generated
+H.264 uses Constrained Baseline so Chromium can negotiate it; generated H.265
+uses closed GOPs so every boundary is an IDR. The script creates exact one-second
+and two-second GOP variants, validates their streams and keyframe timestamps with
+FFprobe, and records their output hashes in an ignored manifest. The nine-camera
+launcher mixes codec pairs and GOP cadences across its looping sources.
 
 _Big Buck Bunny_ is © 2008 Blender Foundation and is licensed under
 [Creative Commons Attribution 3.0](https://creativecommons.org/licenses/by/3.0/).

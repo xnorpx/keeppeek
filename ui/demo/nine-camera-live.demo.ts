@@ -13,6 +13,13 @@ import {
 	finalizeDemoRecordingDirectory,
 	parseFfprobeDurationMs
 } from '../src/lib/server/storybook/demo-video';
+import {
+	nineCameraCircularStartSeparationSeconds,
+	nineCameraKeyframeIntervalSeconds,
+	nineCameraMinimumStartSeparationSeconds,
+	nineCameraProfiles,
+	type NineCameraProfile
+} from '../src/lib/server/storybook/nine-camera-fixture';
 import { createDemoWebVtt } from '../src/lib/storybook/demo';
 import { nineCameraLiveStory } from './nine-camera-live.story';
 
@@ -32,6 +39,8 @@ type CameraDraft = {
 	id: string;
 	name: string;
 	startAtSeconds: number;
+	keyframeIntervalSeconds: 1 | 2;
+	profiles: NineCameraProfile[];
 	ip: string;
 	displayName: string;
 	username: string;
@@ -46,6 +55,8 @@ type CameraDrafts = {
 	schemaVersion: 1;
 	fixtureSha256: string;
 	selection: {
+		sourceDurationSeconds: number;
+		minimumStartSeparationSeconds: number;
 		safeBeforeSeconds: number;
 		safeAfterSeconds: number;
 		excludedBlackIntervals: Array<{ startSeconds: number; endSeconds: number }>;
@@ -61,6 +72,21 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 	expect(new Set(cameraDrafts.cameras.map((camera) => camera.startAtSeconds)).size).toBe(
 		cameraIds.length
 	);
+	expect(cameraDrafts.cameras.map((camera) => camera.keyframeIntervalSeconds)).toEqual(
+		cameraIds.map((_, index) => nineCameraKeyframeIntervalSeconds(index))
+	);
+	for (const [index, camera] of cameraDrafts.cameras.entries()) {
+		expect(camera.profiles).toEqual(nineCameraProfiles(index));
+	}
+	expect(cameraDrafts.selection.minimumStartSeparationSeconds).toBe(
+		nineCameraMinimumStartSeparationSeconds
+	);
+	expect(
+		nineCameraCircularStartSeparationSeconds(
+			cameraDrafts.cameras.map((camera) => camera.startAtSeconds),
+			cameraDrafts.selection.sourceDurationSeconds
+		)
+	).toBeGreaterThanOrEqual(cameraDrafts.selection.minimumStartSeparationSeconds);
 	expect(cameraDrafts.selection.safeAfterSeconds).toBeGreaterThanOrEqual(demo.durationMs / 1_000);
 	for (const camera of cameraDrafts.cameras) {
 		expect(
@@ -109,11 +135,11 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 		expect(response.status(), await response.text()).toBe(201);
 		await expect(page.getByRole('heading', { name: 'Cameras', exact: true })).toBeVisible();
 		await expect(page.locator('[data-fleet-row]')).toHaveCount(cameraIds.length);
-		await waitForCameraIngress(page);
+		await waitForCameraIngress(page, cameraDrafts.cameras);
 		await documentReady(page);
 		const demoStartAt = performance.now();
 
-		await waitForNineLiveCameras(page, async () => {
+		await waitForNineLiveCameras(page, cameraDrafts.cameras, async () => {
 			await waitForAction(page, demoStartAt, 'a[aria-label="Peek"]');
 			await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
 		});
@@ -178,15 +204,21 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 					'playwright.nine-camera-demo.config.ts',
 					'scripts/prepare-nine-camera-demo-fixture.ts',
 					'scripts/start-nine-camera-demo-server.ts',
+					'src/lib/server/storybook/nine-camera-fixture.ts',
+					'../crates/test-camera/testdata/big-buck-bunny-3840x2160-h264.mp4',
 					'../crates/retina/src/testutil/fake_camera.rs',
 					'../crates/test-camera/src/lib.rs'
 				]),
 				sourceMediaSha256: cameraDrafts.fixtureSha256,
-				cameras: cameraDrafts.cameras.map(({ id, name, startAtSeconds }) => ({
-					id,
-					name,
-					startAtSeconds
-				})),
+				cameras: cameraDrafts.cameras.map(
+					({ id, name, startAtSeconds, keyframeIntervalSeconds, profiles }) => ({
+						id,
+						name,
+						startAtSeconds,
+						keyframeIntervalSeconds,
+						profiles
+					})
+				),
 				recordingPreRollMs,
 				mp4FileName: basename(mp4Path),
 				captionsFileName: basename(captionsPath),
@@ -224,7 +256,7 @@ test('shows nine configured RTSP cameras on the production WebRTC wall', async (
 	}
 });
 
-async function waitForCameraIngress(page: Page): Promise<void> {
+async function waitForCameraIngress(page: Page, cameras: readonly CameraDraft[]): Promise<void> {
 	await expect
 		.poll(
 			async () => {
@@ -232,17 +264,42 @@ async function waitForCameraIngress(page: Page): Promise<void> {
 					const response = await page.request.get(backendMetricsUrl);
 					if (!response.ok()) return [];
 					const metrics = await response.text();
-					return cameraIds.filter(
-						(cameraId) =>
-							metricValue(metrics, 'keeppeek_camera_info', {
-								camera_id: cameraId,
-								state: 'healthy'
-							}) === 1 &&
-							(metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
-								camera_id: cameraId,
-								stream: 'video_sub'
-							}) ?? 0) > 0
-					);
+					return cameras
+						.filter((camera) => {
+							const main = camera.profiles.find((profile) => profile.stream === 'main')!;
+							const sub = camera.profiles.find((profile) => profile.stream === 'sub')!;
+							return (
+								metricValue(metrics, 'keeppeek_camera_info', {
+									camera_id: camera.id,
+									state: 'healthy'
+								}) === 1 &&
+								metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
+									camera_id: camera.id,
+									stream: 'video_main'
+								}) === main.framesPerSecond &&
+								metricValue(metrics, 'keeppeek_camera_ingress_frames_per_second', {
+									camera_id: camera.id,
+									stream: 'video_sub'
+								}) === sub.framesPerSecond &&
+								withinPercent(
+									metricValue(metrics, 'keeppeek_camera_ingress_bitrate_bits_per_second', {
+										camera_id: camera.id,
+										stream: 'video_main'
+									}),
+									main.bitrateKbps * 1_000,
+									0.25
+								) &&
+								withinPercent(
+									metricValue(metrics, 'keeppeek_camera_ingress_bitrate_bits_per_second', {
+										camera_id: camera.id,
+										stream: 'video_sub'
+									}),
+									sub.bitrateKbps * 1_000,
+									0.25
+								)
+							);
+						})
+						.map((camera) => camera.id);
 				} catch {
 					return [];
 				}
@@ -250,6 +307,10 @@ async function waitForCameraIngress(page: Page): Promise<void> {
 			{ timeout: 90_000 }
 		)
 		.toEqual(cameraIds);
+}
+
+function withinPercent(value: number | null, target: number, tolerance: number): boolean {
+	return value !== null && value >= target * (1 - tolerance) && value <= target * (1 + tolerance);
 }
 
 function metricValue(
@@ -269,15 +330,22 @@ function metricValue(
 	return Number.isFinite(value) ? value : null;
 }
 
-async function waitForNineLiveCameras(page: Page, navigate: () => Promise<unknown>): Promise<void> {
+async function waitForNineLiveCameras(
+	page: Page,
+	cameras: readonly CameraDraft[],
+	navigate: () => Promise<unknown>
+): Promise<void> {
 	await navigate();
 	await expect(page.locator('[data-peek-camera]')).toHaveCount(cameraIds.length);
 
-	for (const cameraId of cameraIds) {
-		const liveView = page.locator(`[data-camera-id="${cameraId}"]`);
-		const tile = page.locator(`[data-peek-camera="${cameraId}"]`);
+	for (const camera of cameras) {
+		const wallProfile = compatibleWallProfile(camera);
+		const liveView = page.locator(`[data-camera-id="${camera.id}"]`);
+		const tile = page.locator(`[data-peek-camera="${camera.id}"]`);
 		await expect(liveView).toHaveAttribute('data-status', 'live', { timeout: 90_000 });
 		await expect(liveView).toHaveAttribute('data-frame-activity', 'active', { timeout: 90_000 });
+		await expect(liveView).toHaveAttribute('data-requested-variant', wallProfile.stream);
+		await expect(liveView).toHaveAttribute('data-stream', wallProfile.stream);
 		const video = liveView.locator('video');
 		await expect(video).toBeVisible();
 		await expect
@@ -289,7 +357,7 @@ async function waitForNineLiveCameras(page: Page, navigate: () => Promise<unknow
 					}),
 				{ timeout: 90_000 }
 			)
-			.toMatch(/^640x360:[1-9]\d*$/);
+			.toMatch(new RegExp(`^${wallProfile.width}x${wallProfile.height}:[1-9]\\d*$`));
 		await expect
 			.poll(
 				async () =>
@@ -315,6 +383,13 @@ async function waitForNineLiveCameras(page: Page, navigate: () => Promise<unknow
 		await expect(tile).not.toContainText('Reconnecting');
 		await expect(tile).not.toContainText('NO SIGNAL');
 	}
+}
+
+function compatibleWallProfile(camera: CameraDraft): NineCameraProfile {
+	return (
+		camera.profiles.find((profile) => profile.stream === 'sub' && profile.codec === 'h264') ??
+		camera.profiles.find((profile) => profile.codec === 'h264')!
+	);
 }
 
 async function documentReady(page: Page): Promise<void> {

@@ -170,30 +170,34 @@
 	let contextualShortcuts = $derived(
 		pathname === '/'
 			? [
-					{ keys: ['←', '→', '↑', '↓'], label: 'Move focus across the camera grid' },
-					{ keys: ['F'], label: 'Focus the selected camera or return to the grid' },
-					{ keys: ['Enter'], label: 'Open the focused camera' }
+					{ keys: ['←', '→', '↑', '↓'], label: 'Move selection across the camera grid' },
+					{ keys: ['Space', 'F', 'Enter'], label: 'Open the selected camera in Focus' }
 				]
-			: pathname.startsWith('/keep')
+			: pathname.startsWith('/viewer')
 				? [
-						{ keys: ['J', 'K', 'L'], label: 'Shuttle backward, pause, or forward' },
-						{ keys: ['↑', '↓'], label: 'Scroll the focused recording timeline' },
-						{ keys: ['←', '→'], label: 'Step one reported video frame' },
-						{ keys: ['[', ']'], label: 'Set export range in and out' },
-						{ keys: ['Space'], label: 'Play or pause without changing speed' },
-						{ keys: ['Home'], label: 'Return to the live edge and follow' }
+						{ keys: ['←', '→'], label: 'Show the previous or next camera in Focus' },
+						{ keys: ['↑', '↓', 'F', 'Esc'], label: 'Return to Dashboard' }
 					]
-				: pathname.startsWith('/settings')
+				: pathname.startsWith('/keep')
 					? [
-							{ keys: ['/'], label: 'Focus search when this screen has one' },
-							{ keys: ['⌘S'], label: 'Save the active settings draft' }
+							{ keys: ['J', 'K', 'L'], label: 'Shuttle backward, pause, or forward' },
+							{ keys: ['↑', '↓'], label: 'Scroll the focused recording timeline' },
+							{ keys: ['←', '→'], label: 'Step one reported video frame' },
+							{ keys: ['[', ']'], label: 'Set export range in and out' },
+							{ keys: ['Space'], label: 'Play or pause without changing speed' },
+							{ keys: ['Home'], label: 'Return to the live edge and follow' }
 						]
-					: [
-							{ keys: ['/'], label: 'Focus search when this screen has one' },
-							{ keys: ['↑', '↓'], label: 'Move the focused row or card' },
-							{ keys: ['Enter'], label: 'Open the focused control or row' },
-							{ keys: ['Space'], label: 'Toggle bulk selection when available' }
-						]
+					: pathname.startsWith('/settings')
+						? [
+								{ keys: ['/'], label: 'Focus search when this screen has one' },
+								{ keys: ['⌘S'], label: 'Save the active settings draft' }
+							]
+						: [
+								{ keys: ['/'], label: 'Focus search when this screen has one' },
+								{ keys: ['↑', '↓'], label: 'Move the focused row or card' },
+								{ keys: ['Enter'], label: 'Open the focused control or row' },
+								{ keys: ['Space'], label: 'Toggle bulk selection when available' }
+							]
 	);
 </script>
 

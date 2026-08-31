@@ -19,11 +19,13 @@
 	import { setCapabilityState } from '$lib/capability-context';
 	import { setControlClient } from '$lib/control-context';
 	import { setAppearanceState } from '$lib/appearance-context';
+	import { setPeekViewState } from '$lib/peek-view-context.svelte';
 	import { initializeBrowserLogging } from '$lib/browser-logs';
 	import KeyboardOverlay from '$lib/components/KeyboardOverlay.svelte';
 	import RemoteSignIn from '$lib/components/RemoteSignIn.svelte';
 	import MobileNavigation from '$lib/components/MobileNavigation.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
+	import PeekPage from './+page.svelte';
 	import {
 		isKeyboardTypingTarget,
 		keyboardDestinations,
@@ -43,6 +45,7 @@
 		create: (offer) => controlClient.createWebRtcSession(offer),
 		delete: (sessionId, options) => controlClient.deleteWebRtcSession(sessionId, options)
 	});
+	const peekViewState = setPeekViewState();
 	const appearance = setAppearanceState();
 	const capabilities = setCapabilityState();
 	let accessState = $state.raw<AccessConnectionState>({
@@ -155,7 +158,11 @@
 			capabilities.updateAdvertised(capabilityIds);
 		});
 		const closeAccessState = controlClient.onAccessState((state) => {
+			const previousPrincipalId = accessState.session?.principalId ?? null;
 			accessState = state;
+			if (state.status !== 'authenticated' || state.session?.principalId !== previousPrincipalId) {
+				peekViewState.reset();
+			}
 		});
 		void controlClient.checkAccess().catch(() => undefined);
 		const close = () => {
@@ -304,6 +311,12 @@
 
 	let settingsActive = $derived(page.url.pathname.startsWith('/settings'));
 	let dashboardActive = $derived(page.url.pathname === '/');
+	let viewerActive = $derived(page.url.pathname === '/viewer');
+	let liveViewActive = $derived(dashboardActive || viewerActive);
+	$effect(() => {
+		if (!liveViewActive) return;
+		return livePeer.hold();
+	});
 	let primaryViewActive = $derived(
 		dashboardActive ||
 			allNavigation.some((item) => item.paths.some((pathname) => pathname === page.url.pathname))
@@ -566,7 +579,11 @@
 						? 'live-surface'
 						: 'workspace-surface'}"
 				>
-					{@render children()}
+					{#if liveViewActive}
+						<PeekPage view={viewerActive ? 'viewer' : 'dashboard'} />
+					{:else}
+						{@render children()}
+					{/if}
 				</main>
 			</div>
 
