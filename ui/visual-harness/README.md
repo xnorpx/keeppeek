@@ -16,11 +16,14 @@ Loki references belong in `.loki/reference` and are committed only after compari
 linked Paper frame. Current captures, differences, dependencies, and static Storybook output are
 ignored.
 
-CI runs Loki with `--requireReference=false` and removes the generic CI environment variables that
-Loki 0.35 incorrectly uses to override an explicit false value. Existing approved references still
-fail on pixel drift. Stories without an approved reference are written under `.loki/reference` in
-the ephemeral CI checkout and uploaded as review-only artifacts; they are not accepted or committed
-automatically. Loki filenames are stable and derived from the Paper scenario ID:
+The CI runner serves the built Storybook from an already-bound random HTTP port, then runs desktop
+and mobile Loki configurations sequentially. This avoids Loki's `file:` bridge selecting the same
+host port as its Docker debugger. It uses `--requireReference=false` and removes the generic CI
+environment variables that Loki 0.35 incorrectly uses to override an explicit false value. Existing
+approved references still fail on pixel drift. Stories without an approved reference are written
+under `.loki/reference` in the ephemeral CI checkout and uploaded as review-only artifacts; they are
+not accepted or committed automatically. Loki filenames are stable and derived from the Paper
+scenario ID:
 
 ```text
 .loki/reference/chrome.desktop/peek.desktop.live-wall.png

@@ -52,6 +52,7 @@ const workflow = await readFile(resolve('..', '.github/workflows/visual-regressi
 const localPreviewHtml = await readFile(resolve('visual-harness/local-preview.html'), 'utf8');
 const localPreviewCss = await readFile(resolve('visual-harness/local-preview.css'), 'utf8');
 const storybookReadiness = await readFile(resolve('visual-harness/storybook-readiness.ts'), 'utf8');
+const lokiCiRunner = await readFile(resolve('visual-harness/run-loki-ci.ts'), 'utf8');
 const storybookPreviewEntry = await readFile(
 	resolve('visual-harness/.storybook/preview.ts'),
 	'utf8'
@@ -139,13 +140,15 @@ if (packageManifest.devDependencies['@ferocia-oss/osnap'] !== '1.3.5') {
 	throw new Error("The visual harness must pin Loki's eagerly required osnap runtime.");
 }
 if (
-	!ciCommand?.includes("--configurationFilter '^chrome\\.'") ||
-	!ciCommand.includes('--requireReference=false') ||
-	!ciCommand.includes('env -u CI -u CONTINUOUS_INTEGRATION -u BUILD_NUMBER -u RUN_ID') ||
-	!ciCommand.includes('--verboseRenderer')
+	ciCommand !== 'bun run run-loki-ci.ts' ||
+	!lokiCiRunner.includes("await runLoki('desktop')") ||
+	!lokiCiRunner.includes("await runLoki('mobile')") ||
+	!lokiCiRunner.includes('http://host.docker.internal:${server.port}') ||
+	!lokiCiRunner.includes("'--requireReference=false'") ||
+	!lokiCiRunner.includes("'--verboseRenderer'")
 ) {
 	throw new Error(
-		'Loki CI must compare both Chrome configurations and capture missing references noninteractively'
+		'Loki CI must compare desktop and mobile sequentially and capture missing references noninteractively'
 	);
 }
 for (const requiredWorkflowText of [

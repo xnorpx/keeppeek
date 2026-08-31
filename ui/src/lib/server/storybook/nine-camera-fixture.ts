@@ -97,3 +97,20 @@ export function nineCameraProfileGopFrames(
 ): number {
 	return profile.framesPerSecond * keyframeIntervalSeconds;
 }
+
+export function withinRelativeTolerance(
+	value: number | null,
+	target: number,
+	tolerance: number
+): boolean {
+	return (
+		value !== null &&
+		Number.isFinite(value) &&
+		Number.isFinite(target) &&
+		target > 0 &&
+		Number.isFinite(tolerance) &&
+		tolerance >= 0 &&
+		value >= target * (1 - tolerance) &&
+		value <= target * (1 + tolerance)
+	);
+}

@@ -668,6 +668,81 @@ test('renders a saved Dashboard without mobile management controls or overflow',
 	}
 });
 
+test('shows only the saved active dashboard on a cold load', async ({ page }) => {
+	await page.setViewportSize({ width: 1800, height: 900 });
+	const cameras = Array.from({ length: 9 }, (_, index) => ({
+		...mixedCameras[index % mixedCameras.length],
+		id: `camera-${index + 1}`,
+		ip: `192.0.2.${index + 1}`,
+		name: `Camera ${index + 1}`
+	}));
+	let releaseLayout!: () => void;
+	const layoutGate = new Promise<void>((resolve) => {
+		releaseLayout = resolve;
+	});
+	const controls = await mockControlPeer(page, {
+		cameras,
+		health: mixedHealth,
+		capabilityIds: ['keeppeek.peek-layouts.v1'],
+		peekLayoutGetGates: [layoutGate],
+		peekLayoutRegistry: {
+			schema_version: 1,
+			active_layout_id: 'grid-3x3',
+			layouts: [
+				{
+					id: 'grid-3x3',
+					name: 'Grid 3x3',
+					scope: 'shared',
+					owner_id: 'server',
+					audience: { everyone: true, credential_ids: [] },
+					activity_focus: false,
+					tiles: cameras.map((camera, index) => ({
+						camera_id: camera.id,
+						column: (index % 3) * 4 + 1,
+						row: Math.floor(index / 3) * 4 + 1,
+						column_span: 4,
+						row_span: 4,
+						pinned: false
+					}))
+				}
+			]
+		}
+	});
+
+	await page.goto('/');
+	await expect.poll(() => controls.peekLayoutReads).toBe(1);
+	const visibleRowCounts = (selector: string) =>
+		page.locator(selector).evaluateAll((elements) => {
+			const rows = new Map<number, number>();
+			for (const element of elements) {
+				const bounds = element.getBoundingClientRect();
+				if (bounds.width === 0 || bounds.height === 0) continue;
+				const top = Math.round(bounds.top);
+				rows.set(top, (rows.get(top) ?? 0) + 1);
+			}
+			return [...rows.entries()]
+				.toSorted(([left], [right]) => left - right)
+				.map(([, count]) => count);
+		});
+
+	try {
+		await expect
+			.poll(() => visibleRowCounts('[data-peek-view-content] [data-slot="skeleton"]'))
+			.toEqual([]);
+		await expect(page.locator('[data-peek-dashboard-switcher]')).toHaveCount(0);
+	} finally {
+		releaseLayout();
+	}
+
+	const wall = page.locator('[data-peek-wall-content]');
+	await expect(wall).toHaveAttribute('data-peek-layout-id', 'grid-3x3');
+	await expect(wall.locator('[data-peek-camera]')).toHaveCount(9);
+	await expect
+		.poll(() => visibleRowCounts('[data-peek-wall-content] [data-peek-camera]'))
+		.toEqual([3, 3, 3]);
+	await expect(page.getByRole('button', { name: 'Choose dashboard, Grid 3x3' })).toBeVisible();
+});
+
 test('floats the dashboard selector over a full-shell nine-camera wall', async ({ page }) => {
 	await page.setViewportSize({ width: 1188, height: 624 });
 	const cameras = Array.from({ length: 9 }, (_, index) => ({
