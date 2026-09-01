@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-54d68809.js";
+            window.path_to_searchindex_js = "searchindex-154bb687.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-77b41682.js"></script>
+        <script src="toc-68ecaa91.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1480,6 +1480,27 @@ work runs independently from camera media.</p>
 <p>Use <a href="#recording-and-evidence">Recording and evidence</a> to inspect retained coverage and explain
 gaps. Use <a href="#notifications-and-integrations">Notifications and integrations</a> to deliver these
 operational transitions without coupling providers or brokers to camera ingest.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="visual-configuration-management"><a class="header" href="#visual-configuration-management">Visual configuration management</a></h1>
+<p>The Cameras page can inspect and change shared camera defaults, effective inherited values,
+versioned templates, and explicit camera sets when the server advertises
+<code>keeppeek.configuration.v1</code>.</p>
+<p>Every inheritable policy shows its configured default, camera override, final effective value,
+source, and current runtime state. <strong>Use inherited value</strong> removes an override so future default
+changes continue to flow to that camera.</p>
+<p>Template and bulk operations always produce a server-owned preview before apply. The preview lists
+the exact authoritative cameras, semantic old and new values, skipped targets, validation issues,
+and reconnect or restart consequences. Applying a template creates explicit overrides; later
+template edits or deletion do not silently change cameras.</p>
+<p>Configuration writes use the edit-start revision, validate the complete candidate, preserve
+unrelated fields and secret references, and replace the configuration atomically. A conflict
+reloads current evidence without discarding the local draft. If a committed change cannot activate
+on one camera worker, KeepPeek reports that camera and the required restart recovery action.</p>
+<p>Templates exchange versioned JSON with secret references only. KeepPeek validates an import and
+shows its complete contents before mutation. General browser secret editing and raw TOML editing
+are not available.</p>
+<p>The detailed contract, limits, and ownership boundaries are in
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/configuration-management.md">Visual configuration management</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="recording-and-evidence"><a class="header" href="#recording-and-evidence">Recording and evidence</a></h1>
 <p>KeepPeek treats a recording as evidence only when the media is finalized, indexed, and playable.
