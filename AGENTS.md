@@ -6,6 +6,16 @@ Before handling every user request or agent command in this repository, read and
 
 This routing step is mandatory even when no additional skill applies. Repository instructions and the KeepPeek integrations in each vendored skill override generic skill examples when they differ.
 
+## TigerStyle
+
+For production architecture, implementation, debugging, tests, security, performance, and code
+review, read and follow [the TigerStyle skill](.agents/skills/tiger-style/SKILL.md) alongside the
+phase-specific skills. Apply its safety-first priority, bounded-work rules, invariant checks, and
+explicit failure handling.
+
+TigerBeetle's static-allocation policy is explicitly excluded. Follow KeepPeek's language-specific
+memory and performance rules instead.
+
 ## Pragmatic Rust Guidelines
 
 For every Rust implementation, refactor, review, test, or API design task in this repository, read and follow [the Pragmatic Rust Guidelines](.github/instructions/rust_pragmatic_guidelines.md).
