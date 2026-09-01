@@ -24,8 +24,10 @@ import type {
 } from './access';
 import { NotificationControlClient } from './control-client-notifications';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
+import { ConfigurationControlClient } from './control-client-configuration';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import { decodeStateStoreRequestError } from './state-store-error';
+import { decodeConfigurationRequestError } from './configuration-error';
 import {
 	AccessRole as ProtoAccessRole,
 	CameraBackend as ProtoCameraBackend,
@@ -142,6 +144,12 @@ import type {
 	CameraSettingsUpdateResponse,
 	CameraStreamProbeResult,
 	CameraTransport,
+	ConfigurationApplyResult,
+	ConfigurationPlan,
+	ConfigurationPlanRequest,
+	ConfigurationSnapshot,
+	ConfigurationTemplate,
+	ConfigurationTemplateImportPreview,
 	DiscoveredCameraSettings,
 	EventImageAvailability as EventImageAvailabilityState,
 	LoggingSettings,
@@ -447,6 +455,7 @@ export class ControlClient {
 	#notifications = new NotificationControlClient((command) => this.request(command));
 	#mqtt = new MqttControlClient((command) => this.request(command));
 	#peekLayouts = new PeekLayoutControlClient((command) => this.request(command));
+	#configuration = new ConfigurationControlClient((command) => this.request(command));
 	#system = new SystemControlClient(
 		(command) => this.request(command),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
@@ -1635,6 +1644,14 @@ export class ControlClient {
 	}
 
 	async getCameraSettings(): Promise<CameraSettings[]> {
+		const result = await this.getCameraConfigurationCollection();
+		return result.value.cameras.map((camera) => ({
+			...cameraSettings(camera),
+			configuration_revision: result.value.configurationRevision
+		}));
+	}
+
+	private async getCameraConfigurationCollection() {
 		const command = create(CameraConfigurationCommandSchema, {
 			action: { case: 'get', value: create(GetCameraConfigurationsSchema) }
 		});
@@ -1642,15 +1659,79 @@ export class ControlClient {
 		if (result.case !== 'cameraConfigurationResult') {
 			throw new Error('Server returned an unexpected camera configuration response.');
 		}
-		return result.value.cameras.map(cameraSettings);
+		return result;
+	}
+
+	async getConfigurationSnapshot(): Promise<ConfigurationSnapshot> {
+		return this.#configuration.getSnapshot();
+	}
+
+	async saveConfigurationTemplate(
+		expectedConfigurationRevision: string,
+		template: ConfigurationTemplate,
+		expectedTemplateVersion?: number
+	): Promise<ConfigurationTemplate> {
+		return this.#configuration.saveTemplate(
+			expectedConfigurationRevision,
+			template,
+			expectedTemplateVersion
+		);
+	}
+
+	async duplicateConfigurationTemplate(
+		expectedConfigurationRevision: string,
+		templateId: string,
+		name: string
+	): Promise<ConfigurationTemplate> {
+		return this.#configuration.duplicateTemplate(expectedConfigurationRevision, templateId, name);
+	}
+
+	async deleteConfigurationTemplate(
+		expectedConfigurationRevision: string,
+		templateId: string
+	): Promise<ConfigurationSnapshot> {
+		return this.#configuration.deleteTemplate(expectedConfigurationRevision, templateId);
+	}
+
+	async planConfigurationChange(request: ConfigurationPlanRequest): Promise<ConfigurationPlan> {
+		return this.#configuration.plan(request);
+	}
+
+	async applyConfigurationPlan(
+		planId: string,
+		expectedConfigurationRevision: string
+	): Promise<ConfigurationApplyResult> {
+		return this.#configuration.apply(planId, expectedConfigurationRevision);
+	}
+
+	async exportConfigurationTemplates(templateIds: string[] = []): Promise<string> {
+		return this.#configuration.exportTemplates(templateIds);
+	}
+
+	async previewConfigurationTemplateImport(
+		expectedConfigurationRevision: string,
+		documentJson: string
+	): Promise<ConfigurationTemplateImportPreview> {
+		return this.#configuration.previewImport(expectedConfigurationRevision, documentJson);
+	}
+
+	async applyConfigurationTemplateImport(
+		previewId: string,
+		expectedConfigurationRevision: string
+	): Promise<ConfigurationSnapshot> {
+		return this.#configuration.applyImport(previewId, expectedConfigurationRevision);
 	}
 
 	async updateCamera(
 		ip: string,
 		update: CameraSettingsUpdate
 	): Promise<CameraSettingsUpdateResponse> {
+		const expectedConfigurationRevision =
+			update.expected_configuration_revision ??
+			(await this.getCameraConfigurationCollection()).value.configurationRevision;
 		const payload = create(UpdateCameraConfigurationSchema, {
 			ip,
+			expectedConfigurationRevision,
 			displayName: stringPatch(update, 'display_name'),
 			manufacturer: stringPatch(update, 'manufacturer'),
 			username: update.username,
@@ -1677,16 +1758,25 @@ export class ControlClient {
 			throw new Error('Server returned an unexpected camera configuration response.');
 		}
 		return {
-			camera: cameraSettings(result.value.camera),
-			restart_required: result.value.restartRequired
+			camera: {
+				...cameraSettings(result.value.camera),
+				configuration_revision: result.value.configurationRevision
+			},
+			restart_required: result.value.restartRequired,
+			configuration_revision: result.value.configurationRevision
 		};
 	}
 
-	async removeCamera(ip: string): Promise<void> {
+	async removeCamera(ip: string, expectedConfigurationRevision?: string): Promise<void> {
+		expectedConfigurationRevision ??= (await this.getCameraConfigurationCollection()).value
+			.configurationRevision;
 		const command = create(CameraConfigurationCommandSchema, {
 			action: {
 				case: 'remove',
-				value: create(RemoveCameraConfigurationSchema, { ip })
+				value: create(RemoveCameraConfigurationSchema, {
+					ip,
+					expectedConfigurationRevision
+				})
 			}
 		});
 		const result = await this.request({ case: 'cameraConfigurationCommand', value: command });
@@ -1950,6 +2040,8 @@ export class ControlClient {
 			if (reply.result.case === 'error') {
 				const stateStoreError = decodeStateStoreRequestError(reply.result.value);
 				if (stateStoreError) throw stateStoreError;
+				const configurationError = decodeConfigurationRequestError(reply.result.value);
+				if (configurationError) throw configurationError;
 				const conflict = reply.result.value.details.find(
 					(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
 				);

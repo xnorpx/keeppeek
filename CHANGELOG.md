@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Add typed camera defaults, effective-value evidence, versioned templates, authoritative bulk
+  previews, conflict-safe atomic writes, and per-camera activation results through
+  `keeppeek.configuration.v1`.
+
 ### Security
 
 - Bound pre-authentication HTTP connections, parsing, request execution, delete bodies, and queued requests.

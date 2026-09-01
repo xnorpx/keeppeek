@@ -954,6 +954,7 @@ mod tests {
         let defaults = config::CameraCredentialDefaults {
             username: "admin".to_owned(),
             password: "shared-password".to_owned(),
+            ..config::CameraCredentialDefaults::default()
         };
         let mut usernames = Vec::new();
         let mut passwords = Vec::new();

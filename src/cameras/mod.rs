@@ -292,7 +292,7 @@ impl CameraConfig {
     }
 }
 
-const fn default_event_recording_duration_secs() -> u64 {
+pub(crate) const fn default_event_recording_duration_secs() -> u64 {
     60
 }
 

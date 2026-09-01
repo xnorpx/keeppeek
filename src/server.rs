@@ -82,6 +82,7 @@ use url::Url;
 use uuid::Uuid;
 
 mod camera_discovery;
+mod configuration;
 mod event_search;
 mod health_snapshot;
 mod logging;
@@ -139,6 +140,7 @@ const CAMERA_CATALOG_WEBSITE: &str = "https://www.cctv-database.com/";
 const DEFAULT_CAMERA_CATALOG_SEARCH_LIMIT: usize = 20;
 const CAMERA_STREAM_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_CAMERA_METADATA_WORKERS: usize = 4;
+const CONFIGURATION_CAPABILITY_ID: &str = "keeppeek.configuration.v1";
 // Limits user-provided search text before it becomes part of in-memory matching work.
 const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
 const MAX_NOTIFICATION_RULE_JSON_BYTES: usize = 64 * 1_024;
@@ -153,6 +155,8 @@ struct EventPageToken {
 
 #[derive(Default, Deserialize)]
 struct CameraSettingsUpdate {
+    #[serde(default)]
+    expected_configuration_revision: String,
     display_name: Option<Option<String>>,
     manufacturer: Option<Option<String>>,
     username: Option<String>,
@@ -243,6 +247,7 @@ struct DiscoveredCameraCatalog {
 struct CameraSettingsUpdateResponse {
     camera: CameraSettings,
     restart_required: bool,
+    configuration_revision: String,
 }
 
 #[derive(Serialize)]
@@ -383,6 +388,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::ExportCommand(_)) => "export",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
+        Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
     }
 }
@@ -464,6 +470,22 @@ fn sensitive_administrator_operation(
             }
             Some(notification_rule_command::Action::Delete(_)) => Some("notification_rule_delete"),
             Some(notification_rule_command::Action::Test(_)) => Some("notification_rule_test"),
+            _ => None,
+        },
+        Some(control_request::Command::ConfigurationCommand(command)) => match command.action {
+            Some(proto::configuration_command::Action::SaveTemplate(_)) => {
+                Some("configuration_template_save")
+            }
+            Some(proto::configuration_command::Action::DuplicateTemplate(_)) => {
+                Some("configuration_template_duplicate")
+            }
+            Some(proto::configuration_command::Action::DeleteTemplate(_)) => {
+                Some("configuration_template_delete")
+            }
+            Some(proto::configuration_command::Action::Apply(_)) => Some("configuration_apply"),
+            Some(proto::configuration_command::Action::ApplyImport(_)) => {
+                Some("configuration_template_import")
+            }
             _ => None,
         },
         Some(control_request::Command::PublishEvent(_)) => Some("event_publish"),
@@ -566,6 +588,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::NotificationRuleCommand(command)) => self
                         .handle_notification_rules(session_id, command)
                         .map(Some),
+                    Some(control_request::Command::ConfigurationCommand(command)) => {
+                        configuration::dispatch(&self.state, command).map(Some)
+                    }
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
                             Ok(dispatch) => {
@@ -717,6 +742,7 @@ impl ControlRequestHandler for ServerControlHandler {
         }
         if self.state.camera_config_path.is_some() {
             capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
+            capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
         }
         capability_ids.push("keeppeek.identity.v1".to_owned());
         let access_session = if session_id.as_u64() == 0 {
@@ -1847,17 +1873,26 @@ impl ServerControlHandler {
         command: proto::CameraConfigurationCommand,
     ) -> Result<control_ok::Result, ControlCommandError> {
         match command.action {
-            Some(camera_configuration_command::Action::Get(_)) => Ok(
-                control_ok::Result::CameraConfigurationResult(proto::CameraConfigurationResult {
-                    camera: None,
-                    restart_required: false,
-                    removed: false,
-                    cameras: camera_settings(&self.router_tx, &self.state)
-                        .into_iter()
-                        .map(proto_camera_settings)
-                        .collect(),
-                }),
-            ),
+            Some(camera_configuration_command::Action::Get(_)) => {
+                let _configuration_update = self
+                    .state
+                    .config_update
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let configuration_revision = camera_configuration_revision(&self.state)?;
+                Ok(control_ok::Result::CameraConfigurationResult(
+                    proto::CameraConfigurationResult {
+                        camera: None,
+                        restart_required: false,
+                        removed: false,
+                        cameras: camera_settings(&self.router_tx, &self.state)
+                            .into_iter()
+                            .map(proto_camera_settings)
+                            .collect(),
+                        configuration_revision,
+                    },
+                ))
+            }
             Some(camera_configuration_command::Action::Discover(request)) => {
                 camera_discovery::discover(&self.state, &self.router_tx, session_id, request)
             }
@@ -1968,17 +2003,23 @@ impl ServerControlHandler {
                         restart_required: result.restart_required,
                         removed: false,
                         cameras: Vec::new(),
+                        configuration_revision: result.configuration_revision,
                     },
                 ))
             }
             Some(camera_configuration_command::Action::Remove(request)) => {
-                delete_camera_settings(&self.state, &request.ip)?;
+                let configuration_revision = delete_camera_settings(
+                    &self.state,
+                    &request.ip,
+                    &request.expected_configuration_revision,
+                )?;
                 Ok(control_ok::Result::CameraConfigurationResult(
                     proto::CameraConfigurationResult {
                         camera: None,
                         restart_required: false,
                         removed: true,
                         cameras: Vec::new(),
+                        configuration_revision,
                     },
                 ))
             }
@@ -7597,6 +7638,7 @@ fn camera_settings_update_from_proto(
     update: proto::UpdateCameraConfiguration,
 ) -> Result<CameraSettingsUpdate, ControlCommandError> {
     Ok(CameraSettingsUpdate {
+        expected_configuration_revision: update.expected_configuration_revision,
         display_name: optional_string_update(update.display_name, "display name")?,
         manufacturer: optional_string_update(update.manufacturer, "manufacturer")?,
         username: update.username,
@@ -8244,6 +8286,7 @@ pub struct ServerState {
     event_search_tasks: EventSearchTasks,
     event_page_token_key: Arc<[u8; 32]>,
     camera_discovery_tasks: camera_discovery::Registry,
+    configuration_plans: configuration::Registry,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
@@ -8359,6 +8402,7 @@ impl ServerState {
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             event_page_token_key: Arc::new(rand::random()),
             camera_discovery_tasks: camera_discovery::Registry::default(),
+            configuration_plans: configuration::Registry::default(),
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
             recording_demand,
@@ -9056,6 +9100,20 @@ fn configuration_revision(config: &Config) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn camera_configuration_revision(state: &ServerState) -> Result<String, ControlCommandError> {
+    let Some(config_path) = state.camera_config_path.as_deref() else {
+        return Ok(String::new());
+    };
+    let current = config::load_config(config_path).map_err(|error| {
+        ControlCommandError::new(
+            proto::ErrorCode::Internal,
+            500,
+            format!("unable to load camera configuration revision: {error}"),
+        )
+    })?;
+    Ok(configuration_revision(&current))
 }
 
 fn recording_mode_includes_stream(mode: CameraRecordingMode, stream: &str) -> bool {
@@ -11337,6 +11395,19 @@ fn save_camera_settings(
             "camera configuration persistence is unavailable",
         ));
     };
+    let _config_update = state
+        .config_update
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let current_revision = camera_configuration_revision(state)?;
+    if !update.expected_configuration_revision.is_empty()
+        && update.expected_configuration_revision != current_revision
+    {
+        return Err(configuration::revision_conflict(
+            &current_revision,
+            "camera configuration changed after this editor was opened; reload current values before retrying",
+        ));
+    }
     let credential_defaults = config::load_camera_defaults(config_path).map_err(|error| {
         ControlCommandError::new(
             proto::ErrorCode::Internal,
@@ -11362,10 +11433,6 @@ fn save_camera_settings(
     update.sub_rtsp_url =
         resolve_optional_setting_secret(config_path, "sub RTSP URL", update.sub_rtsp_url)?;
     update.uid = resolve_optional_setting_secret(config_path, "UID", update.uid)?;
-    let _config_update = state
-        .config_update
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let persisted = match config::load_cameras(config_path) {
         Ok(cameras) => cameras
             .into_values()
@@ -11380,10 +11447,8 @@ fn save_camera_settings(
         }
     };
     let existing = state.camera(camera_id);
-    let existing_config = existing
-        .as_ref()
-        .map(|camera| camera.configuration.clone())
-        .or(persisted);
+    let existing_config =
+        persisted.or_else(|| existing.as_ref().map(|camera| camera.configuration.clone()));
     let is_new_camera = existing_config.is_none();
     let username = nonempty_setting(update.username)
         .or_else(|| {
@@ -11553,7 +11618,7 @@ fn save_camera_settings(
             )
         })?;
     config.name = Some(persisted_name);
-    let started_config = start_runtime_camera(state, &config, !is_new_camera);
+    let started_config = start_runtime_camera(state, &config, !is_new_camera, true);
     let dynamically_started = started_config.is_some();
     if let Some(started_config) = started_config {
         config = started_config;
@@ -11611,6 +11676,7 @@ fn save_camera_settings(
     Ok(CameraSettingsUpdateResponse {
         camera,
         restart_required: !dynamically_started,
+        configuration_revision: camera_configuration_revision(state)?,
     })
 }
 
@@ -11646,6 +11712,7 @@ fn start_runtime_camera(
     state: &ServerState,
     config: &CameraConfig,
     restart: bool,
+    persist_prepared: bool,
 ) -> Option<CameraConfig> {
     let Some(runtime) = &state.camera_runtime else {
         return None;
@@ -11665,7 +11732,7 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, "new camera configuration cannot be persisted");
         return None;
     };
-    if let Err(error) = config::upsert_camera(config_path, &camera.config) {
+    if persist_prepared && let Err(error) = config::upsert_camera(config_path, &camera.config) {
         tracing::warn!(ip = %config.ip, %error, "discovered camera endpoints could not be persisted");
         return None;
     }
@@ -11682,7 +11749,11 @@ fn start_runtime_camera(
     Some(camera.config)
 }
 
-fn delete_camera_settings(state: &ServerState, camera_id: &str) -> Result<(), ControlCommandError> {
+fn delete_camera_settings(
+    state: &ServerState,
+    camera_id: &str,
+    expected_configuration_revision: &str,
+) -> Result<String, ControlCommandError> {
     let Ok(ip) = camera_id.parse::<IpAddr>() else {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
@@ -11701,8 +11772,17 @@ fn delete_camera_settings(state: &ServerState, camera_id: &str) -> Result<(), Co
         .config_update
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let current_revision = camera_configuration_revision(state)?;
+    if !expected_configuration_revision.is_empty()
+        && expected_configuration_revision != current_revision
+    {
+        return Err(configuration::revision_conflict(
+            &current_revision,
+            "camera configuration changed before removal; reload current values before retrying",
+        ));
+    }
     match config::remove_camera(config_path, ip) {
-        Ok(()) => Ok(()),
+        Ok(()) => camera_configuration_revision(state),
         Err(error) => Err(ControlCommandError::new(
             proto::ErrorCode::Internal,
             500,
@@ -13759,6 +13839,12 @@ mod tests {
                 .capability_ids
                 .iter()
                 .any(|capability| capability == peek_layouts::CAPABILITY_ID)
+        );
+        assert!(
+            persisted
+                .capability_ids
+                .iter()
+                .any(|capability| capability == "keeppeek.configuration.v1")
         );
         let _ = std::fs::remove_dir_all(directory);
     }
@@ -17246,6 +17332,7 @@ mod tests {
                                 record_generic_motion_events: None,
                                 recording_mode: Some(proto::CameraRecordingMode::Off as i32),
                                 event_recording_duration_secs: Some(90),
+                                expected_configuration_revision: String::new(),
                             },
                         )),
                     },
@@ -17293,6 +17380,7 @@ mod tests {
                         action: Some(camera_configuration_command::Action::Remove(
                             proto::RemoveCameraConfiguration {
                                 ip: "192.0.2.77".to_owned(),
+                                expected_configuration_revision: String::new(),
                             },
                         )),
                     },
@@ -17370,6 +17458,7 @@ mod tests {
                                 record_generic_motion_events: None,
                                 recording_mode: None,
                                 event_recording_duration_secs: None,
+                                expected_configuration_revision: String::new(),
                             },
                         )),
                     },
@@ -18915,13 +19004,156 @@ mod tests {
         assert_eq!(config.main_rtsp_url, None);
         assert_eq!(config.sub_rtsp_url, None);
 
-        delete_camera_settings(&state, "192.0.2.77").unwrap();
+        delete_camera_settings(&state, "192.0.2.77", "").unwrap();
         assert!(
             crate::config::load_cameras(&config_path)
                 .unwrap()
                 .get("cameras")
                 .is_none_or(Vec::is_empty)
         );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_settings_reject_stale_revision_without_overwriting_current_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-settings-camera-conflict-{}",
+            rand::random::<u64>()
+        ));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(
+            &config_path,
+            br#"
+                [camera_defaults]
+                username = "operator"
+                password = "password"
+
+                [cameras.front]
+                ip = "192.0.2.77"
+                display_name = "Front"
+            "#,
+        )
+        .unwrap();
+        let edit_start = configuration_revision(&crate::config::load_config(&config_path).unwrap());
+        let mut current = crate::config::load_configuration_table(&config_path).unwrap();
+        current.insert(
+            "future_server_setting".to_owned(),
+            toml::Value::String("keep-current".to_owned()),
+        );
+        crate::config::write_configuration_table(&config_path, &current).unwrap();
+        let state = ServerState::empty().with_camera_config_path(config_path.clone());
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+
+        let Err(error) = save_camera_settings(
+            CameraSettingsUpdate {
+                expected_configuration_revision: edit_start.clone(),
+                display_name: Some(Some("Stale name".to_owned())),
+                ..CameraSettingsUpdate::default()
+            },
+            &router_tx,
+            &state,
+            "192.0.2.77",
+        ) else {
+            panic!("a stale camera update must fail");
+        };
+
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        let detail = proto::ConfigurationError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, proto::ConfigurationErrorCode::Conflict as i32);
+        assert_ne!(detail.current_configuration_revision, edit_start);
+        let saved = crate::config::load_configuration_table(&config_path).unwrap();
+        assert_eq!(
+            saved["future_server_setting"].as_str(),
+            Some("keep-current")
+        );
+        assert_eq!(
+            saved["cameras"]["front"]["display_name"].as_str(),
+            Some("Front")
+        );
+
+        let Err(remove_error) = delete_camera_settings(&state, "192.0.2.77", &edit_start) else {
+            panic!("a stale camera removal must fail");
+        };
+        let remove_detail =
+            proto::ConfigurationError::decode(remove_error.details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            remove_detail.code,
+            proto::ConfigurationErrorCode::Conflict as i32
+        );
+        assert!(
+            crate::config::load_configuration_table(&config_path).unwrap()["cameras"]["front"]
+                .is_table()
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_edit_uses_persisted_defaults_when_live_configuration_is_stale() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-settings-camera-stale-runtime-{}",
+            rand::random::<u64>()
+        ));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(
+            &config_path,
+            br#"
+                [camera_defaults]
+                username = "operator"
+                password = "password"
+
+                [cameras.front]
+                ip = "192.0.2.77"
+            "#,
+        )
+        .unwrap();
+        let config = crate::config::load_config(&config_path).unwrap();
+        let configured = crate::config::load_cameras(&config_path).unwrap();
+        let state = ServerState::new(
+            &config,
+            &configured,
+            &HashMap::new(),
+            &StorageConfig::default(),
+            RecordingDemand::new(TEST_RECORDING_DEMAND_GRACE),
+            WebRtc::new(),
+        )
+        .with_camera_config_path(config_path.clone());
+        let mut current = crate::config::load_configuration_table(&config_path).unwrap();
+        current
+            .get_mut("camera_defaults")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert(
+                "backend".to_owned(),
+                toml::Value::String("reo-proto".to_owned()),
+            );
+        crate::config::write_configuration_table(&config_path, &current).unwrap();
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+
+        let saved = save_camera_settings(
+            CameraSettingsUpdate {
+                display_name: Some(Some("Front entrance".to_owned())),
+                ..CameraSettingsUpdate::default()
+            },
+            &router_tx,
+            &state,
+            "192.0.2.77",
+        )
+        .unwrap();
+
+        assert_eq!(saved.camera.backend, "reo-proto");
+        let raw = crate::config::load_configuration_table(&config_path).unwrap();
+        assert!(
+            !raw["cameras"]["front"]
+                .as_table()
+                .unwrap()
+                .contains_key("backend")
+        );
+        assert_eq!(router_thread.join().unwrap(), 1);
 
         std::fs::remove_dir_all(directory).unwrap();
     }

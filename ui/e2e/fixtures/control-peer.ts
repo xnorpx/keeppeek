@@ -32,7 +32,29 @@ import {
 	AccessSessionSchema,
 	CatalogHealthSnapshotSchema,
 	CameraTransport as ProtoCameraTransport,
+	CameraDefaultValuesSchema,
+	CameraEffectiveConfigurationSchema,
+	CameraTemplateValuesSchema,
 	ControlEnvelopeSchema,
+	ConfigurationActivationSchema,
+	ConfigurationActivationStatus,
+	ConfigurationApplyResultSchema,
+	ConfigurationDomainSchema,
+	ConfigurationErrorCode,
+	ConfigurationErrorSchema,
+	ConfigurationFieldChangeSchema,
+	ConfigurationImpact as ProtoConfigurationImpact,
+	ConfigurationIssueSchema,
+	ConfigurationIssueSeverity,
+	ConfigurationLimitsSchema,
+	ConfigurationPlanSchema,
+	ConfigurationPlanTargetSchema,
+	ConfigurationResultSchema,
+	ConfigurationSnapshotSchema,
+	ConfigurationTemplateDocumentResultSchema,
+	ConfigurationTemplateImportPreviewSchema,
+	ConfigurationTemplateSchema,
+	ConfigurationValueSource as ProtoConfigurationValueSource,
 	CodecDescriptorSchema,
 	DataChannelKind,
 	DeliveryTransport,
@@ -58,6 +80,12 @@ import {
 	EventSchema,
 	ErrorCode,
 	ErrorSchema,
+	EffectiveBoolValueSchema,
+	EffectiveCameraBackendValueSchema,
+	EffectiveCameraRecordingModeValueSchema,
+	EffectiveCameraTransportValueSchema,
+	EffectiveSecretValueSchema,
+	EffectiveUint32ValueSchema,
 	ExportDownloadResultSchema,
 	ExportFileChunkSchema,
 	ExportJobListSchema,
@@ -140,6 +168,7 @@ import {
 	WebRtcSourceHealthSnapshotSchema,
 	type Ok,
 	type ExportJob,
+	type ConfigurationResult as ProtoConfigurationResult,
 	type StoredMediaState
 } from '../../src/lib/proto/webrtc_pb';
 import type {
@@ -151,6 +180,11 @@ import type {
 	CameraStreamProbeResult,
 	CameraListItem,
 	CameraOnboardingDefaults,
+	ConfigurationApplyResult,
+	ConfigurationPlan,
+	ConfigurationSnapshot,
+	ConfigurationTemplate,
+	ConfigurationTemplateImportPreview,
 	DiscoveredCameraSettings,
 	MotionDetection,
 	RecordingEvent,
@@ -325,6 +359,9 @@ export type ControlRequests = {
 	mediaUnsubscriptions: string[][];
 	peekLayoutReads: number;
 	peekLayoutUpdates: JsonObject[];
+	configurationActions: string[];
+	configurationPlans: Array<{ target: string; change: string }>;
+	publishCapabilities(capabilityIds: readonly string[]): Promise<void>;
 };
 
 export type MockControlPeerOptions = {
@@ -345,7 +382,10 @@ export type MockControlPeerOptions = {
 	discoveryGate?: Promise<void>;
 	cameraUpdateResult?: CameraSettingsUpdateResponse;
 	cameraUpdateError?: string;
+	cameraUpdateConflictRevision?: string;
 	cameraSettings?: readonly CameraSettings[];
+	cameraSettingsSequence?: readonly (readonly CameraSettings[])[];
+	cameraConfigurationRevision?: string;
 	runtimeConfiguration?: SanitizedConfig;
 	health?: HealthFixture;
 	healthSequence?: readonly HealthFixture[];
@@ -388,6 +428,15 @@ export type MockControlPeerOptions = {
 	notificationInbox?: NotificationInbox;
 	notificationHistory?: readonly NotificationHistoryGroup[];
 	notificationConflictOnSave?: boolean;
+	configurationSnapshots?: readonly ConfigurationSnapshot[];
+	configurationPlanResult?: ConfigurationPlan;
+	configurationApplyResult?: ConfigurationApplyResult;
+	configurationTemplateResult?: ConfigurationTemplate;
+	configurationTemplateResults?: readonly ConfigurationTemplate[];
+	configurationImportPreview?: ConfigurationTemplateImportPreview;
+	configurationExportDocument?: string;
+	configurationApplyConflictRevision?: string;
+	configurationApplyGate?: Promise<void>;
 };
 
 function encodedOk(requestId: bigint, result?: Ok['result']): number[] {
@@ -417,6 +466,49 @@ function encodedError(requestId: bigint, message: string): number[] {
 		}
 	});
 	return Array.from(toBinary(ControlEnvelopeSchema, response));
+}
+
+function encodedConfigurationError(
+	requestId: bigint,
+	message: string,
+	currentRevision: string
+): number[] {
+	const detail = create(ConfigurationErrorSchema, {
+		code: ConfigurationErrorCode.CONFLICT,
+		currentConfigurationRevision: currentRevision
+	});
+	const response = create(ControlEnvelopeSchema, {
+		message: {
+			case: 'response',
+			value: create(ResponseSchema, {
+				requestId,
+				result: {
+					case: 'error',
+					value: create(ErrorSchema, {
+						code: ErrorCode.REJECTED,
+						message,
+						details: [
+							create(AnySchema, {
+								typeUrl: 'type.keeppeek.dev/configuration-error.v1',
+								value: toBinary(ConfigurationErrorSchema, detail)
+							})
+						]
+					})
+				}
+			})
+		}
+	});
+	return Array.from(toBinary(ControlEnvelopeSchema, response));
+}
+
+function encodedConfigurationResult(
+	requestId: bigint,
+	result: ProtoConfigurationResult['result']
+): number[] {
+	return encodedOk(requestId, {
+		case: 'configurationResult',
+		value: create(ConfigurationResultSchema, { result })
+	});
 }
 
 function encodedMqttState(
@@ -680,9 +772,31 @@ export async function mockControlPeer(
 		mediaSubscriptions: [],
 		mediaUnsubscriptions: [],
 		peekLayoutReads: 0,
-		peekLayoutUpdates: []
+		peekLayoutUpdates: [],
+		configurationActions: [],
+		configurationPlans: [],
+		publishCapabilities: async (capabilityIds) => {
+			const payload = encodedCapabilities(
+				options.cameras ?? [],
+				options.storedRanges ?? [],
+				capabilityIds,
+				accessRole,
+				options.accessLocal !== false
+			);
+			await page.evaluate((message) => {
+				(
+					window as unknown as { pushKeepPeekCapabilities(message: number[]): void }
+				).pushKeepPeekCapabilities(message);
+			}, payload);
+		}
 	};
 	let activeFilter = 'info,keeppeek=debug';
+	let cameraConfigurationRevision =
+		options.cameraConfigurationRevision ?? 'camera-configuration-revision-1';
+	const cameraSettingsSequence = (options.cameraSettingsSequence ?? []).map((settings) => [
+		...settings
+	]);
+	let currentCameraSettings = [...(options.cameraSettings ?? [])];
 	let activeDiscoveryId = '';
 	let discoveryComplete = false;
 	let discoveryCancelled = false;
@@ -717,6 +831,9 @@ export async function mockControlPeer(
 		? structuredClone(options.peekLayoutRegistry)
 		: undefined;
 	let peekLayoutRevision = options.peekLayoutRevision ?? 1n;
+	const configurationSnapshots = [...(options.configurationSnapshots ?? [])];
+	const configurationTemplateResults = [...(options.configurationTemplateResults ?? [])];
+	let currentConfigurationSnapshot: ConfigurationSnapshot | undefined;
 	const peekLayoutGetGates = [...(options.peekLayoutGetGates ?? [])];
 	const mqttIntegrationSequence = (options.mqttIntegrationSequence ?? []).map((integration) =>
 		structuredClone(integration)
@@ -777,6 +894,93 @@ export async function mockControlPeer(
 		const envelope = fromBinary(ControlEnvelopeSchema, Uint8Array.from(payload));
 		if (envelope.message.case !== 'request') throw new Error('expected control request');
 		const request = envelope.message.value;
+		if (request.command.case === 'configurationCommand') {
+			const action = request.command.value.action;
+			if (!action.case) return encodedError(request.requestId, 'configuration action is required');
+			requests.configurationActions.push(action.case);
+			if (action.case === 'get') {
+				currentConfigurationSnapshot =
+					configurationSnapshots.shift() ?? currentConfigurationSnapshot;
+				if (!currentConfigurationSnapshot) {
+					return encodedError(request.requestId, 'configuration snapshot is not configured');
+				}
+				return encodedConfigurationResult(request.requestId, {
+					case: 'snapshot',
+					value: protoConfigurationSnapshot(currentConfigurationSnapshot)
+				});
+			}
+			if (action.case === 'plan') {
+				requests.configurationPlans.push({
+					target: action.value.targets?.selection.case ?? 'missing',
+					change: action.value.change?.change.case ?? 'missing'
+				});
+				if (!options.configurationPlanResult) {
+					return encodedError(request.requestId, 'configuration plan result is not configured');
+				}
+				return encodedConfigurationResult(request.requestId, {
+					case: 'plan',
+					value: protoConfigurationPlan(options.configurationPlanResult)
+				});
+			}
+			if (action.case === 'apply') {
+				await options.configurationApplyGate;
+				if (options.configurationApplyConflictRevision) {
+					return encodedConfigurationError(
+						request.requestId,
+						'configuration changed after this editor was opened',
+						options.configurationApplyConflictRevision
+					);
+				}
+				if (!options.configurationApplyResult) {
+					return encodedError(request.requestId, 'configuration apply result is not configured');
+				}
+				currentConfigurationSnapshot = options.configurationApplyResult.snapshot;
+				return encodedConfigurationResult(request.requestId, {
+					case: 'applied',
+					value: protoConfigurationApplyResult(options.configurationApplyResult)
+				});
+			}
+			if (action.case === 'saveTemplate' || action.case === 'duplicateTemplate') {
+				const templateResult =
+					configurationTemplateResults.shift() ?? options.configurationTemplateResult;
+				if (!templateResult) {
+					return encodedError(request.requestId, 'configuration template result is not configured');
+				}
+				return encodedConfigurationResult(request.requestId, {
+					case: 'template',
+					value: protoConfigurationTemplate(templateResult)
+				});
+			}
+			if (action.case === 'deleteTemplate' || action.case === 'applyImport') {
+				currentConfigurationSnapshot =
+					configurationSnapshots.shift() ?? currentConfigurationSnapshot;
+				if (!currentConfigurationSnapshot) {
+					return encodedError(request.requestId, 'configuration snapshot is not configured');
+				}
+				return encodedConfigurationResult(request.requestId, {
+					case: 'snapshot',
+					value: protoConfigurationSnapshot(currentConfigurationSnapshot)
+				});
+			}
+			if (action.case === 'exportTemplates') {
+				return encodedConfigurationResult(request.requestId, {
+					case: 'exportedTemplates',
+					value: create(ConfigurationTemplateDocumentResultSchema, {
+						documentJson:
+							options.configurationExportDocument ?? '{"document_version":1,"templates":[]}'
+					})
+				});
+			}
+			if (action.case === 'previewImport') {
+				if (!options.configurationImportPreview) {
+					return encodedError(request.requestId, 'configuration import preview is not configured');
+				}
+				return encodedConfigurationResult(request.requestId, {
+					case: 'importPreview',
+					value: protoConfigurationImportPreview(options.configurationImportPreview)
+				});
+			}
+		}
 		if (request.command.case === 'subscribeMedia') {
 			requests.mediaSubscriptions.push({
 				subscriptionId: request.command.value.subscriptionId,
@@ -2184,10 +2388,12 @@ export async function mockControlPeer(
 			request.command.case === 'cameraConfigurationCommand' &&
 			request.command.value.action.case === 'get'
 		) {
+			currentCameraSettings = cameraSettingsSequence.shift() ?? currentCameraSettings;
 			return encodedOk(request.requestId, {
 				case: 'cameraConfigurationResult',
 				value: create(CameraConfigurationResultSchema, {
-					cameras: (options.cameraSettings ?? []).map(protoCameraSettings)
+					cameras: currentCameraSettings.map(protoCameraSettings),
+					configurationRevision: cameraConfigurationRevision
 				})
 			});
 		}
@@ -2197,15 +2403,27 @@ export async function mockControlPeer(
 		) {
 			const update = request.command.value.action.value;
 			requests.cameraUpdates.push({ ip: update.ip, update: cameraUpdate(update) });
+			if (options.cameraUpdateConflictRevision) {
+				cameraConfigurationRevision = options.cameraUpdateConflictRevision;
+				return encodedConfigurationError(
+					request.requestId,
+					'camera configuration changed after this editor was opened; reload current values before retrying',
+					cameraConfigurationRevision
+				);
+			}
 			if (options.cameraUpdateError) {
 				return encodedError(request.requestId, options.cameraUpdateError);
 			}
 			if (!options.cameraUpdateResult) throw new Error('camera update result is not configured');
+			cameraConfigurationRevision =
+				options.cameraUpdateResult.configuration_revision ?? cameraConfigurationRevision;
+			currentCameraSettings = [options.cameraUpdateResult.camera];
 			return encodedOk(request.requestId, {
 				case: 'cameraConfigurationResult',
 				value: create(CameraConfigurationResultSchema, {
 					camera: protoCameraSettings(options.cameraUpdateResult.camera),
-					restartRequired: options.cameraUpdateResult.restart_required
+					restartRequired: options.cameraUpdateResult.restart_required,
+					configurationRevision: cameraConfigurationRevision
 				})
 			});
 		}
@@ -2216,7 +2434,10 @@ export async function mockControlPeer(
 			requests.removedCameraIps.push(request.command.value.action.value.ip);
 			return encodedOk(request.requestId, {
 				case: 'cameraConfigurationResult',
-				value: create(CameraConfigurationResultSchema, { removed: true })
+				value: create(CameraConfigurationResultSchema, {
+					removed: true,
+					configurationRevision: cameraConfigurationRevision
+				})
 			});
 		}
 		if (request.command.case !== 'cameraControlCommand') {
@@ -2316,6 +2537,7 @@ export async function mockControlPeer(
 			takeKeepPeekData(): Promise<number[][]>;
 			getKeepPeekCapabilities(): Promise<number[]>;
 			closeKeepPeekControl(): void;
+			pushKeepPeekCapabilities(payload: number[]): void;
 		};
 		let activeControlChannel: MockDataChannel | null = null;
 
@@ -2434,6 +2656,11 @@ export async function mockControlPeer(
 		Object.defineProperty(window, 'RTCPeerConnection', { value: MockPeerConnection });
 		Object.defineProperty(window, 'closeKeepPeekControl', {
 			value: () => activeControlChannel?.remoteClose()
+		});
+		Object.defineProperty(window, 'pushKeepPeekCapabilities', {
+			value: (payload: number[]) => {
+				activeControlChannel?.receive(Uint8Array.from(payload).buffer);
+			}
 		});
 		class MockVideoFrame {
 			displayWidth = 1;
@@ -3173,6 +3400,7 @@ function cameraUpdate(
 	update: import('../../src/lib/proto/webrtc_pb').UpdateCameraConfiguration
 ): CameraSettingsUpdate {
 	const result: CameraSettingsUpdate = {};
+	result.expected_configuration_revision = update.expectedConfigurationRevision;
 	applyStringPatch(result, 'display_name', update.displayName);
 	applyStringPatch(result, 'manufacturer', update.manufacturer);
 	if (update.username !== undefined) result.username = update.username;
@@ -3267,6 +3495,289 @@ function protoCameraSettings(camera: CameraSettings) {
 		health: camera.health ?? undefined,
 		model: camera.model ?? undefined
 	});
+}
+
+function protoConfigurationSnapshot(snapshot: ConfigurationSnapshot) {
+	return create(ConfigurationSnapshotSchema, {
+		contractVersion: snapshot.contract_version,
+		configurationRevision: snapshot.configuration_revision,
+		totalCameraCount: snapshot.cameras.length,
+		defaults: create(CameraDefaultValuesSchema, {
+			usernameConfigured: snapshot.defaults.username_configured,
+			passwordConfigured: snapshot.defaults.password_configured,
+			configuredBackend:
+				snapshot.defaults.configured_backend === null
+					? undefined
+					: protoCameraBackend(snapshot.defaults.configured_backend),
+			effectiveBackend: protoCameraBackend(snapshot.defaults.effective_backend),
+			configuredTransport:
+				snapshot.defaults.configured_transport === null
+					? undefined
+					: protoCameraTransport(snapshot.defaults.configured_transport),
+			effectiveTransport: protoCameraTransport(snapshot.defaults.effective_transport),
+			configuredRecordGenericMotionEvents:
+				snapshot.defaults.configured_record_generic_motion_events ?? undefined,
+			effectiveRecordGenericMotionEvents: snapshot.defaults.effective_record_generic_motion_events,
+			configuredRecordingMode:
+				snapshot.defaults.configured_recording_mode === null
+					? undefined
+					: protoCameraRecordingMode(snapshot.defaults.configured_recording_mode),
+			effectiveRecordingMode: protoCameraRecordingMode(snapshot.defaults.effective_recording_mode),
+			configuredEventRecordingDurationSecs:
+				snapshot.defaults.configured_event_recording_duration_secs ?? undefined,
+			effectiveEventRecordingDurationSecs: snapshot.defaults.effective_event_recording_duration_secs
+		}),
+		cameras: snapshot.cameras.map((entry) =>
+			create(CameraEffectiveConfigurationSchema, {
+				camera: protoCameraSettings(entry.camera),
+				groupIds: entry.group_ids,
+				username: create(EffectiveSecretValueSchema, {
+					defaultConfigured: entry.username.default_configured,
+					overrideConfigured: entry.username.override_configured,
+					effectiveConfigured: entry.username.effective_configured,
+					source: protoConfigurationSource(entry.username.source),
+					runtimeApplied: entry.username.runtime_applied,
+					warning: entry.username.warning ?? undefined
+				}),
+				password: create(EffectiveSecretValueSchema, {
+					defaultConfigured: entry.password.default_configured,
+					overrideConfigured: entry.password.override_configured,
+					effectiveConfigured: entry.password.effective_configured,
+					source: protoConfigurationSource(entry.password.source),
+					runtimeApplied: entry.password.runtime_applied,
+					warning: entry.password.warning ?? undefined
+				}),
+				backend: create(EffectiveCameraBackendValueSchema, {
+					configuredDefault:
+						entry.backend.configured_default === null
+							? undefined
+							: protoCameraBackend(entry.backend.configured_default),
+					cameraOverride:
+						entry.backend.camera_override === null
+							? undefined
+							: protoCameraBackend(entry.backend.camera_override),
+					effective: protoCameraBackend(entry.backend.effective),
+					source: protoConfigurationSource(entry.backend.source),
+					runtimeApplied: entry.backend.runtime_applied,
+					warning: entry.backend.warning ?? undefined
+				}),
+				transport: create(EffectiveCameraTransportValueSchema, {
+					configuredDefault:
+						entry.transport.configured_default === null
+							? undefined
+							: protoCameraTransport(entry.transport.configured_default),
+					cameraOverride:
+						entry.transport.camera_override === null
+							? undefined
+							: protoCameraTransport(entry.transport.camera_override),
+					effective: protoCameraTransport(entry.transport.effective),
+					source: protoConfigurationSource(entry.transport.source),
+					runtimeApplied: entry.transport.runtime_applied,
+					warning: entry.transport.warning ?? undefined
+				}),
+				recordGenericMotionEvents: create(EffectiveBoolValueSchema, {
+					configuredDefault: entry.record_generic_motion_events.configured_default ?? undefined,
+					cameraOverride: entry.record_generic_motion_events.camera_override ?? undefined,
+					effective: entry.record_generic_motion_events.effective,
+					source: protoConfigurationSource(entry.record_generic_motion_events.source),
+					runtimeApplied: entry.record_generic_motion_events.runtime_applied,
+					warning: entry.record_generic_motion_events.warning ?? undefined
+				}),
+				recordingMode: create(EffectiveCameraRecordingModeValueSchema, {
+					configuredDefault:
+						entry.recording_mode.configured_default === null
+							? undefined
+							: protoCameraRecordingMode(entry.recording_mode.configured_default),
+					cameraOverride:
+						entry.recording_mode.camera_override === null
+							? undefined
+							: protoCameraRecordingMode(entry.recording_mode.camera_override),
+					effective: protoCameraRecordingMode(entry.recording_mode.effective),
+					source: protoConfigurationSource(entry.recording_mode.source),
+					runtimeApplied: entry.recording_mode.runtime_applied,
+					warning: entry.recording_mode.warning ?? undefined
+				}),
+				eventRecordingDurationSecs: create(EffectiveUint32ValueSchema, {
+					configuredDefault: entry.event_recording_duration_secs.configured_default ?? undefined,
+					cameraOverride: entry.event_recording_duration_secs.camera_override ?? undefined,
+					effective: entry.event_recording_duration_secs.effective,
+					source: protoConfigurationSource(entry.event_recording_duration_secs.source),
+					runtimeApplied: entry.event_recording_duration_secs.runtime_applied,
+					warning: entry.event_recording_duration_secs.warning ?? undefined
+				})
+			})
+		),
+		templates: snapshot.templates.map(protoConfigurationTemplate),
+		limits: create(ConfigurationLimitsSchema, {
+			maximumTemplates: snapshot.limits.maximum_templates,
+			maximumTemplateNameBytes: snapshot.limits.maximum_template_name_bytes,
+			maximumTemplateDescriptionBytes: snapshot.limits.maximum_template_description_bytes,
+			maximumPlanTargets: snapshot.limits.maximum_plan_targets,
+			maximumImportBytes: snapshot.limits.maximum_import_bytes
+		}),
+		domains: snapshot.domains.map((domain) =>
+			create(ConfigurationDomainSchema, {
+				domainId: domain.domain_id,
+				label: domain.label,
+				ownerPath: domain.owner_path,
+				capabilityId: domain.capability_id,
+				readable: domain.readable,
+				mutable: domain.mutable,
+				unavailableReason: domain.unavailable_reason ?? undefined
+			})
+		)
+	});
+}
+
+function protoConfigurationTemplate(template: ConfigurationTemplate) {
+	return create(ConfigurationTemplateSchema, {
+		templateId: template.template_id,
+		version: BigInt(template.version),
+		name: template.name,
+		description: template.description,
+		values: create(CameraTemplateValuesSchema, {
+			usernameSecretReference: template.values.username_secret_reference,
+			passwordSecretReference: template.values.password_secret_reference,
+			onvifPort: template.values.onvif_port,
+			httpPort: template.values.http_port,
+			backend:
+				template.values.backend === undefined
+					? undefined
+					: protoCameraBackend(template.values.backend),
+			transport:
+				template.values.transport === undefined
+					? undefined
+					: protoCameraTransport(template.values.transport),
+			recordGenericMotionEvents: template.values.record_generic_motion_events,
+			recordingMode:
+				template.values.recording_mode === undefined
+					? undefined
+					: protoCameraRecordingMode(template.values.recording_mode),
+			eventRecordingDurationSecs: template.values.event_recording_duration_secs
+		}),
+		createdAtMs: BigInt(template.created_at_ms),
+		updatedAtMs: BigInt(template.updated_at_ms)
+	});
+}
+
+function protoConfigurationPlan(plan: ConfigurationPlan) {
+	return create(ConfigurationPlanSchema, {
+		planId: plan.plan_id,
+		configurationRevision: plan.configuration_revision,
+		expiresAtMs: BigInt(plan.expires_at_ms),
+		authoritativeTargetCount: plan.authoritative_target_count,
+		targets: plan.targets.map((target) =>
+			create(ConfigurationPlanTargetSchema, {
+				cameraId: target.camera_id,
+				displayName: target.display_name,
+				groupIds: target.group_ids,
+				skipped: target.skipped,
+				skipReason: target.skip_reason ?? undefined
+			})
+		),
+		changes: plan.changes.map((change) =>
+			create(ConfigurationFieldChangeSchema, {
+				cameraId: change.camera_id ?? undefined,
+				field: change.field,
+				oldConfiguredValue: change.old_configured_value,
+				oldEffectiveValue: change.old_effective_value,
+				newConfiguredValue: change.new_configured_value,
+				newEffectiveValue: change.new_effective_value,
+				source: protoConfigurationSource(change.source),
+				secret: change.secret
+			})
+		),
+		issues: plan.issues.map(protoConfigurationIssue),
+		impact: protoConfigurationImpact(plan.impact),
+		valid: plan.valid,
+		applySemantics: plan.apply_semantics
+	});
+}
+
+function protoConfigurationApplyResult(result: ConfigurationApplyResult) {
+	return create(ConfigurationApplyResultSchema, {
+		planId: result.plan_id,
+		configurationCommitted: result.configuration_committed,
+		snapshot: protoConfigurationSnapshot(result.snapshot),
+		activations: result.activations.map((activation) =>
+			create(ConfigurationActivationSchema, {
+				cameraId: activation.camera_id,
+				status:
+					activation.status === 'applied'
+						? ConfigurationActivationStatus.APPLIED
+						: activation.status === 'reconnect-required'
+							? ConfigurationActivationStatus.RECONNECT_REQUIRED
+							: activation.status === 'restart-required'
+								? ConfigurationActivationStatus.RESTART_REQUIRED
+								: ConfigurationActivationStatus.FAILED,
+				detail: activation.detail ?? undefined
+			})
+		),
+		impact: protoConfigurationImpact(result.impact)
+	});
+}
+
+function protoConfigurationImportPreview(preview: ConfigurationTemplateImportPreview) {
+	return create(ConfigurationTemplateImportPreviewSchema, {
+		previewId: preview.preview_id,
+		configurationRevision: preview.configuration_revision,
+		expiresAtMs: BigInt(preview.expires_at_ms),
+		templates: preview.templates.map(protoConfigurationTemplate),
+		issues: preview.issues.map(protoConfigurationIssue),
+		valid: preview.valid
+	});
+}
+
+function protoConfigurationIssue(issue: ConfigurationPlan['issues'][number]) {
+	return create(ConfigurationIssueSchema, {
+		cameraId: issue.camera_id ?? undefined,
+		field: issue.field,
+		severity:
+			issue.severity === 'info'
+				? ConfigurationIssueSeverity.INFO
+				: issue.severity === 'warning'
+					? ConfigurationIssueSeverity.WARNING
+					: ConfigurationIssueSeverity.ERROR,
+		code: issue.code,
+		message: issue.message,
+		requiredCapability: issue.required_capability ?? undefined
+	});
+}
+
+function protoConfigurationSource(
+	source: ConfigurationPlan['changes'][number]['source']
+): ProtoConfigurationValueSource {
+	if (source === 'default') return ProtoConfigurationValueSource.DEFAULT;
+	if (source === 'template') return ProtoConfigurationValueSource.TEMPLATE;
+	if (source === 'override') return ProtoConfigurationValueSource.OVERRIDE;
+	return ProtoConfigurationValueSource.BUILT_IN;
+}
+
+function protoConfigurationImpact(impact: ConfigurationPlan['impact']): ProtoConfigurationImpact {
+	if (impact === 'reconnect-camera') return ProtoConfigurationImpact.RECONNECT_CAMERA;
+	if (impact === 'restart-component') return ProtoConfigurationImpact.RESTART_COMPONENT;
+	if (impact === 'restart-server') return ProtoConfigurationImpact.RESTART_SERVER;
+	return ProtoConfigurationImpact.IMMEDIATE;
+}
+
+function protoCameraBackend(value: CameraSettings['backend']): ProtoCameraBackend {
+	if (value === 'retina') return ProtoCameraBackend.RETINA;
+	if (value === 'reo-proto') return ProtoCameraBackend.REO_PROTO;
+	return ProtoCameraBackend.AUTO;
+}
+
+function protoCameraTransport(value: CameraSettings['transport']): ProtoCameraTransport {
+	return value === 'udp' ? ProtoCameraTransport.UDP : ProtoCameraTransport.TCP;
+}
+
+function protoCameraRecordingMode(
+	value: CameraSettings['recording_mode']
+): ProtoCameraRecordingMode {
+	if (value === 'off') return ProtoCameraRecordingMode.OFF;
+	if (value === 'sub') return ProtoCameraRecordingMode.SUB;
+	if (value === 'main') return ProtoCameraRecordingMode.MAIN;
+	if (value === 'both') return ProtoCameraRecordingMode.BOTH;
+	return ProtoCameraRecordingMode.EVENT_BOOST;
 }
 
 function protoCameraDiscoveryResult(
