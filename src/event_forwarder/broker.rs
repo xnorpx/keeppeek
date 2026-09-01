@@ -402,6 +402,24 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn authenticated_tls_probe_uses_configured_ca_and_credentials() {
+        #[cfg(target_os = "macos")]
+        // Isolate Secure Transport because native-tls server handshakes can fail in a parallel macOS test process (rust-native-tls/rust-native-tls#34).
+        if std::env::var_os("KEEPPEEK_MQTT_TLS_TEST_CHILD").is_none() {
+            let current_thread = std::thread::current();
+            let test_name = current_thread
+                .name()
+                .expect("the Rust test harness must name its test threads");
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("the current test executable must be available"),
+            )
+            .args([test_name, "--exact", "--test-threads=1"])
+            .env("KEEPPEEK_MQTT_TLS_TEST_CHILD", "1")
+            .status()
+            .expect("the isolated MQTT TLS test process must start");
+            assert!(status.success(), "the isolated MQTT TLS test failed");
+            return;
+        }
+
         let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         ca_params
