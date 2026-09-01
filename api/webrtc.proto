@@ -44,6 +44,7 @@ message Request {
     ExportCommand export_command = 22;
     EventSearchCommand event_search_command = 23;
     NotificationRuleCommand notification_rule_command = 24;
+    ConfigurationCommand configuration_command = 25;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -302,10 +303,417 @@ message UpdateCameraConfiguration {
   optional bool record_generic_motion_events = 13;
   optional CameraRecordingMode recording_mode = 14;
   optional uint32 event_recording_duration_secs = 15;
+  string expected_configuration_revision = 16;
+}
+
+message ConfigurationCommand {
+  oneof action {
+    GetConfigurationSnapshot get = 1;
+    SaveConfigurationTemplate save_template = 2;
+    DuplicateConfigurationTemplate duplicate_template = 3;
+    DeleteConfigurationTemplate delete_template = 4;
+    PlanConfigurationChange plan = 5;
+    ApplyConfigurationPlan apply = 6;
+    ExportConfigurationTemplates export_templates = 7;
+    PreviewConfigurationTemplateImport preview_import = 8;
+    ApplyConfigurationTemplateImport apply_import = 9;
+  }
+}
+
+message GetConfigurationSnapshot {
+  optional uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message SaveConfigurationTemplate {
+  string expected_configuration_revision = 1;
+  ConfigurationTemplate template = 2;
+  optional uint64 expected_template_version = 3;
+}
+
+message DuplicateConfigurationTemplate {
+  string expected_configuration_revision = 1;
+  string template_id = 2;
+  string name = 3;
+}
+
+message DeleteConfigurationTemplate {
+  string expected_configuration_revision = 1;
+  string template_id = 2;
+}
+
+message PlanConfigurationChange {
+  string expected_configuration_revision = 1;
+  ConfigurationTargetSelector targets = 2;
+  ConfigurationChange change = 3;
+}
+
+message ConfigurationTargetSelector {
+  oneof selection {
+    CameraIdList camera_ids = 1;
+    CameraConfigurationFilter filtered_cameras = 2;
+    string group_id = 3;
+    bool all_cameras = 4;
+  }
+}
+
+message CameraIdList {
+  repeated string camera_ids = 1;
+}
+
+message CameraConfigurationFilter {
+  string search = 1;
+  optional CameraBackend backend = 2;
+  optional CameraRecordingMode recording_mode = 3;
+}
+
+message ConfigurationChange {
+  oneof change {
+    CameraConfigurationPatch patch = 1;
+    string template_id = 2;
+    CameraDefaultPatch defaults = 3;
+  }
+}
+
+message CameraConfigurationPatch {
+  OptionalStringUpdate display_name = 2;
+  OptionalStringUpdate manufacturer = 3;
+  OptionalStringUpdate username_secret_reference = 4;
+  OptionalStringUpdate password_secret_reference = 5;
+  OptionalUint32Update onvif_port = 6;
+  OptionalUint32Update http_port = 7;
+  OptionalStringUpdate main_rtsp_url = 8;
+  OptionalStringUpdate sub_rtsp_url = 9;
+  OptionalStringUpdate uid_secret_reference = 10;
+  OptionalCameraBackendUpdate backend = 11;
+  OptionalCameraTransportUpdate transport = 12;
+  OptionalBoolUpdate record_generic_motion_events = 13;
+  OptionalCameraRecordingModeUpdate recording_mode = 14;
+  OptionalUint32Update event_recording_duration_secs = 15;
+}
+
+message CameraDefaultPatch {
+  OptionalStringUpdate username_secret_reference = 1;
+  OptionalStringUpdate password_secret_reference = 2;
+  OptionalCameraBackendUpdate backend = 3;
+  OptionalCameraTransportUpdate transport = 4;
+  OptionalBoolUpdate record_generic_motion_events = 5;
+  OptionalCameraRecordingModeUpdate recording_mode = 6;
+  OptionalUint32Update event_recording_duration_secs = 7;
+}
+
+message CameraTemplateValues {
+  optional string username_secret_reference = 1;
+  optional string password_secret_reference = 2;
+  optional uint32 onvif_port = 3;
+  optional uint32 http_port = 4;
+  optional CameraBackend backend = 5;
+  optional CameraTransport transport = 6;
+  optional bool record_generic_motion_events = 7;
+  optional CameraRecordingMode recording_mode = 8;
+  optional uint32 event_recording_duration_secs = 9;
+}
+
+message OptionalCameraBackendUpdate {
+  oneof value {
+    CameraBackend set = 1;
+    bool clear = 2;
+  }
+}
+
+message OptionalCameraTransportUpdate {
+  oneof value {
+    CameraTransport set = 1;
+    bool clear = 2;
+  }
+}
+
+message OptionalCameraRecordingModeUpdate {
+  oneof value {
+    CameraRecordingMode set = 1;
+    bool clear = 2;
+  }
+}
+
+message OptionalBoolUpdate {
+  oneof value {
+    bool set = 1;
+    bool clear = 2;
+  }
+}
+
+message ApplyConfigurationPlan {
+  string plan_id = 1;
+  string expected_configuration_revision = 2;
+}
+
+message ExportConfigurationTemplates {
+  repeated string template_ids = 1;
+}
+
+message PreviewConfigurationTemplateImport {
+  string expected_configuration_revision = 1;
+  string document_json = 2;
+}
+
+message ApplyConfigurationTemplateImport {
+  string preview_id = 1;
+  string expected_configuration_revision = 2;
+}
+
+message ConfigurationTemplate {
+  string template_id = 1;
+  uint64 version = 2;
+  string name = 3;
+  string description = 4;
+  CameraTemplateValues values = 5;
+  int64 created_at_ms = 6;
+  int64 updated_at_ms = 7;
+}
+
+message ConfigurationSnapshot {
+  uint32 contract_version = 1;
+  string configuration_revision = 2;
+  CameraDefaultValues defaults = 3;
+  repeated CameraEffectiveConfiguration cameras = 4;
+  repeated ConfigurationTemplate templates = 5;
+  ConfigurationLimits limits = 6;
+  repeated ConfigurationDomain domains = 7;
+  uint32 total_camera_count = 8;
+  string next_page_token = 9;
+}
+
+message CameraDefaultValues {
+  bool username_configured = 1;
+  bool password_configured = 2;
+  optional CameraBackend configured_backend = 3;
+  CameraBackend effective_backend = 4;
+  optional CameraTransport configured_transport = 5;
+  CameraTransport effective_transport = 6;
+  optional bool configured_record_generic_motion_events = 7;
+  bool effective_record_generic_motion_events = 8;
+  optional CameraRecordingMode configured_recording_mode = 9;
+  CameraRecordingMode effective_recording_mode = 10;
+  optional uint32 configured_event_recording_duration_secs = 11;
+  uint32 effective_event_recording_duration_secs = 12;
+}
+
+message CameraEffectiveConfiguration {
+  CameraSettings camera = 1;
+  repeated string group_ids = 2;
+  EffectiveSecretValue username = 3;
+  EffectiveSecretValue password = 4;
+  EffectiveCameraBackendValue backend = 5;
+  EffectiveCameraTransportValue transport = 6;
+  EffectiveBoolValue record_generic_motion_events = 7;
+  EffectiveCameraRecordingModeValue recording_mode = 8;
+  EffectiveUint32Value event_recording_duration_secs = 9;
+}
+
+message EffectiveSecretValue {
+  bool default_configured = 1;
+  bool override_configured = 2;
+  bool effective_configured = 3;
+  ConfigurationValueSource source = 4;
+  bool runtime_applied = 5;
+  optional string warning = 6;
+}
+
+message EffectiveCameraBackendValue {
+  optional CameraBackend configured_default = 1;
+  optional CameraBackend camera_override = 2;
+  CameraBackend effective = 3;
+  ConfigurationValueSource source = 4;
+  bool runtime_applied = 5;
+  optional string warning = 6;
+}
+
+message EffectiveCameraTransportValue {
+  optional CameraTransport configured_default = 1;
+  optional CameraTransport camera_override = 2;
+  CameraTransport effective = 3;
+  ConfigurationValueSource source = 4;
+  bool runtime_applied = 5;
+  optional string warning = 6;
+}
+
+message EffectiveCameraRecordingModeValue {
+  optional CameraRecordingMode configured_default = 1;
+  optional CameraRecordingMode camera_override = 2;
+  CameraRecordingMode effective = 3;
+  ConfigurationValueSource source = 4;
+  bool runtime_applied = 5;
+  optional string warning = 6;
+}
+
+message EffectiveBoolValue {
+  optional bool configured_default = 1;
+  optional bool camera_override = 2;
+  bool effective = 3;
+  ConfigurationValueSource source = 4;
+  bool runtime_applied = 5;
+  optional string warning = 6;
+}
+
+message EffectiveUint32Value {
+  optional uint32 configured_default = 1;
+  optional uint32 camera_override = 2;
+  uint32 effective = 3;
+  ConfigurationValueSource source = 4;
+  bool runtime_applied = 5;
+  optional string warning = 6;
+}
+
+enum ConfigurationValueSource {
+  CONFIGURATION_VALUE_SOURCE_UNSPECIFIED = 0;
+  CONFIGURATION_VALUE_SOURCE_BUILT_IN = 1;
+  CONFIGURATION_VALUE_SOURCE_DEFAULT = 2;
+  CONFIGURATION_VALUE_SOURCE_TEMPLATE = 3;
+  CONFIGURATION_VALUE_SOURCE_OVERRIDE = 4;
+}
+
+message ConfigurationLimits {
+  uint32 maximum_templates = 1;
+  uint32 maximum_template_name_bytes = 2;
+  uint32 maximum_template_description_bytes = 3;
+  uint32 maximum_plan_targets = 4;
+  uint32 maximum_import_bytes = 5;
+}
+
+message ConfigurationDomain {
+  string domain_id = 1;
+  string label = 2;
+  string owner_path = 3;
+  string capability_id = 4;
+  bool readable = 5;
+  bool mutable = 6;
+  optional string unavailable_reason = 7;
+}
+
+message ConfigurationPlan {
+  string plan_id = 1;
+  string configuration_revision = 2;
+  int64 expires_at_ms = 3;
+  uint32 authoritative_target_count = 4;
+  repeated ConfigurationPlanTarget targets = 5;
+  repeated ConfigurationFieldChange changes = 6;
+  repeated ConfigurationIssue issues = 7;
+  ConfigurationImpact impact = 8;
+  bool valid = 9;
+  string apply_semantics = 10;
+}
+
+message ConfigurationPlanTarget {
+  string camera_id = 1;
+  string display_name = 2;
+  repeated string group_ids = 3;
+  bool skipped = 4;
+  optional string skip_reason = 5;
+}
+
+message ConfigurationFieldChange {
+  optional string camera_id = 1;
+  string field = 2;
+  string old_configured_value = 3;
+  string old_effective_value = 4;
+  string new_configured_value = 5;
+  string new_effective_value = 6;
+  ConfigurationValueSource source = 7;
+  bool secret = 8;
+}
+
+message ConfigurationIssue {
+  optional string camera_id = 1;
+  string field = 2;
+  ConfigurationIssueSeverity severity = 3;
+  string code = 4;
+  string message = 5;
+  optional string required_capability = 6;
+}
+
+enum ConfigurationIssueSeverity {
+  CONFIGURATION_ISSUE_SEVERITY_UNSPECIFIED = 0;
+  CONFIGURATION_ISSUE_SEVERITY_INFO = 1;
+  CONFIGURATION_ISSUE_SEVERITY_WARNING = 2;
+  CONFIGURATION_ISSUE_SEVERITY_ERROR = 3;
+}
+
+enum ConfigurationImpact {
+  CONFIGURATION_IMPACT_UNSPECIFIED = 0;
+  CONFIGURATION_IMPACT_IMMEDIATE = 1;
+  CONFIGURATION_IMPACT_RECONNECT_CAMERA = 2;
+  CONFIGURATION_IMPACT_RESTART_COMPONENT = 3;
+  CONFIGURATION_IMPACT_RESTART_SERVER = 4;
+}
+
+message ConfigurationApplyResult {
+  string plan_id = 1;
+  bool configuration_committed = 2;
+  ConfigurationSnapshot snapshot = 3;
+  repeated ConfigurationActivation activations = 4;
+  ConfigurationImpact impact = 5;
+}
+
+message ConfigurationActivation {
+  string camera_id = 1;
+  ConfigurationActivationStatus status = 2;
+  optional string detail = 3;
+}
+
+enum ConfigurationActivationStatus {
+  CONFIGURATION_ACTIVATION_STATUS_UNSPECIFIED = 0;
+  CONFIGURATION_ACTIVATION_STATUS_APPLIED = 1;
+  CONFIGURATION_ACTIVATION_STATUS_RECONNECT_REQUIRED = 2;
+  CONFIGURATION_ACTIVATION_STATUS_RESTART_REQUIRED = 3;
+  CONFIGURATION_ACTIVATION_STATUS_FAILED = 4;
+}
+
+message ConfigurationTemplateDocumentResult {
+  string document_json = 1;
+}
+
+message ConfigurationTemplateImportPreview {
+  string preview_id = 1;
+  string configuration_revision = 2;
+  int64 expires_at_ms = 3;
+  repeated ConfigurationTemplate templates = 4;
+  repeated ConfigurationIssue issues = 5;
+  bool valid = 6;
+}
+
+message ConfigurationError {
+  ConfigurationErrorCode code = 1;
+  string current_configuration_revision = 2;
+  repeated ConfigurationIssue issues = 3;
+}
+
+enum ConfigurationErrorCode {
+  CONFIGURATION_ERROR_CODE_UNSPECIFIED = 0;
+  CONFIGURATION_ERROR_CODE_CONFLICT = 1;
+  CONFIGURATION_ERROR_CODE_VALIDATION_FAILED = 2;
+  CONFIGURATION_ERROR_CODE_PLAN_NOT_FOUND = 3;
+  CONFIGURATION_ERROR_CODE_PLAN_EXPIRED = 4;
+  CONFIGURATION_ERROR_CODE_TARGET_CHANGED = 5;
+  CONFIGURATION_ERROR_CODE_CAPABILITY_LOST = 6;
+  CONFIGURATION_ERROR_CODE_TEMPLATE_NOT_FOUND = 7;
+  CONFIGURATION_ERROR_CODE_TEMPLATE_CONFLICT = 8;
+  CONFIGURATION_ERROR_CODE_IMPORT_INVALID = 9;
+}
+
+message ConfigurationResult {
+  oneof result {
+    ConfigurationSnapshot snapshot = 1;
+    ConfigurationTemplate template = 2;
+    ConfigurationPlan plan = 3;
+    ConfigurationApplyResult applied = 4;
+    ConfigurationTemplateDocumentResult exported_templates = 5;
+    ConfigurationTemplateImportPreview import_preview = 6;
+  }
 }
 
 message RemoveCameraConfiguration {
   string ip = 1;
+  string expected_configuration_revision = 2;
 }
 
 message OptionalStringUpdate {
@@ -1712,6 +2120,7 @@ message Ok {
     AccessCredentialResult access_credential_result = 33;
     AccessSessionResult access_session_result = 34;
     AccessAuditResult access_audit_result = 35;
+    ConfigurationResult configuration_result = 36;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -1843,6 +2252,7 @@ message CameraConfigurationResult {
   bool restart_required = 2;
   bool removed = 3;
   repeated CameraSettings cameras = 4;
+  string configuration_revision = 5;
 }
 
 message CameraSettings {

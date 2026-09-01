@@ -161,6 +161,7 @@ test('Board 12 discovers and saves a camera only after the fifth-step review', a
 		{
 			ip: '192.0.2.77',
 			update: {
+				expected_configuration_revision: 'camera-configuration-revision-1',
 				display_name: 'Front Gate',
 				username: 'operator',
 				password: 'write-only-password',
@@ -831,6 +832,7 @@ test('renders Board 25 mobile review and writes only from the final action', asy
 		{
 			ip: '192.0.2.77',
 			update: {
+				expected_configuration_revision: 'camera-configuration-revision-1',
 				display_name: 'Front Gate',
 				username: 'operator',
 				password: 'write-only-password',

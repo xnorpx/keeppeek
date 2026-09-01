@@ -4,17 +4,23 @@
 	import { presentCameraFleetRow } from '$lib/camera-fleet';
 	import CameraFleetRow from '$lib/components/CameraFleetRow.svelte';
 	import CameraFleetSkeleton from '$lib/components/CameraFleetSkeleton.svelte';
+	import CapabilityGate from '$lib/components/CapabilityGate.svelte';
+	import FleetConfigurationManager from '$lib/components/FleetConfigurationManager.svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { useCapabilityState } from '$lib/capability-context';
 	import { useControlClient } from '$lib/control-context';
 	import { fixedRowWindow } from '$lib/fixed-row-virtualizer';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { CameraListItem, ServerHealthResponse } from '$lib/types';
 	import CheckIcon from '@lucide/svelte/icons/check';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
 
 	const rowHeight = 56;
 	const virtualOptions = { rowHeight, overscan: 7, maxItems: 24 } as const;
 	const controlClient = useControlClient();
 	const livePeer = useLivePeer();
+	const capabilities = useCapabilityState();
 
 	let cameras = $state.raw<CameraListItem[]>([]);
 	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
@@ -27,6 +33,7 @@
 	let viewportElement = $state<HTMLElement | null>(null);
 	let viewportHeight = $state(560);
 	let scrollTop = $state(0);
+	let configurationOpen = $state(false);
 	let healthById = $derived(
 		new Map((serverHealth?.cameras ?? []).map((health) => [health.id, health]))
 	);
@@ -54,6 +61,7 @@
 	let allFilteredSelected = $derived(
 		filteredRows.length > 0 && filteredRows.every((row) => selectedIds.has(row.camera.id))
 	);
+	let configurationSupported = $derived(capabilities.supports('keeppeek.configuration.v1'));
 
 	$effect(() => {
 		void livePeer.configure([]).catch((cause) => {
@@ -206,6 +214,14 @@
 			Not healthy
 			<span class="font-mono text-2xs text-text-faint">{unhealthyCount}</span>
 		</button>
+		{#if configurationSupported}
+			<Button variant="outline" size="sm" onclick={() => (configurationOpen = true)}>
+				<SlidersHorizontalIcon />
+				Configuration
+			</Button>
+		{:else}
+			<CapabilityGate action="Configuration" capability="keeppeek.configuration.v1" />
+		{/if}
 		<a
 			href={resolve('/cameras/new')}
 			class="inline-flex h-8 items-center rounded-sm bg-primary px-3 text-xs font-semibold text-on-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -336,6 +352,16 @@
 					</button>
 				</div>
 			{/if}
+			{#if selectedIds.size > 0}
+				{#if configurationSupported}
+					<Button variant="outline" size="sm" onclick={() => (configurationOpen = true)}>
+						<SlidersHorizontalIcon />
+						Manage selected
+					</Button>
+				{:else}
+					<CapabilityGate action="Manage selected" capability="keeppeek.configuration.v1" />
+				{/if}
+			{/if}
 			<div class="min-w-2 flex-1"></div>
 			<span class="font-mono text-2xs tracking-caps text-text-faint">
 				VIRTUALISED · 56PX ROWS · RENDERS {visibleRows.length} OF {filteredRows.length}
@@ -343,3 +369,11 @@
 		</div>
 	{/if}
 </div>
+
+{#if configurationOpen}
+	<FleetConfigurationManager
+		selectedCameraIds={[...selectedIds]}
+		filteredCameraIds={filteredRows.map((row) => row.camera.id)}
+		onclose={() => (configurationOpen = false)}
+	/>
+{/if}

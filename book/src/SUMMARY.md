@@ -6,6 +6,7 @@
 - [Get started](./get-started.md)
 - [Authentication and access control](./authentication.md)
 - [Camera and stream health](./camera-health.md)
+- [Visual configuration management](./configuration-management.md)
 - [Recording and evidence](./recording-and-evidence.md)
 - [Notifications and integrations](./notifications-and-integrations.md)
 - [Release readiness and known limitations](./release-readiness.md)

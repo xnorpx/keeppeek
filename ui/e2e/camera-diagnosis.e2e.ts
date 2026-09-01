@@ -113,7 +113,15 @@ test('switches an advertised diagnosis transport through WebRTC control', async 
 	await expect(
 		page.getByRole('heading', { name: 'Review transport and ports', exact: true })
 	).toBeVisible();
-	expect(controls.cameraUpdates).toEqual([{ ip: '192.168.1.59', update: { transport: 'tcp' } }]);
+	expect(controls.cameraUpdates).toEqual([
+		{
+			ip: '192.168.1.59',
+			update: {
+				expected_configuration_revision: 'camera-configuration-revision-1',
+				transport: 'tcp'
+			}
+		}
+	]);
 });
 
 test('renders Board 26 mobile issue evidence without gap or retry history', async ({ page }) => {
@@ -185,6 +193,14 @@ test('renders Board 26 current stream evidence and switches TCP through WebRTC',
 	await expect(action).toBeEnabled();
 	await action.click();
 	await expect(diagnosis).toContainText('Transport saved. Apply the pending restart');
-	expect(controls.cameraUpdates).toEqual([{ ip: '192.168.1.59', update: { transport: 'tcp' } }]);
+	expect(controls.cameraUpdates).toEqual([
+		{
+			ip: '192.168.1.59',
+			update: {
+				expected_configuration_revision: 'camera-configuration-revision-1',
+				transport: 'tcp'
+			}
+		}
+	]);
 	await expect(page.locator('[data-shell-mobile-nav]')).toHaveCount(0);
 });

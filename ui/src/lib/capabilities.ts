@@ -7,6 +7,16 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.configuration.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Typed defaults, effective values, bounded templates, exact target plans, atomic writes, and activation evidence',
+		unlocks: 'Shared camera defaults, templates, and previewed fleet changes',
+		whenMissing:
+			'Current camera inventory remains visible; configuration management commands require a server update',
+		failureGuarantee:
+			'Drafts and live state survive validation, conflict, capability loss, network, and activation failures'
+	},
 	'keeppeek.runtime-config.v1': {
 		delivery: 'ships',
 		serverOwns:

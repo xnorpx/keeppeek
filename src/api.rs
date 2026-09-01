@@ -191,3 +191,54 @@ pub mod proto {
     #![allow(clippy::all, clippy::pedantic, clippy::nursery, warnings)]
     include!(concat!(env!("OUT_DIR"), "/keeppeek.webrtc.v1.rs"));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::proto;
+    use prost::Message as _;
+
+    #[test]
+    fn configuration_plan_round_trips_exact_targets_and_inheritance_clear() {
+        let request = proto::Request {
+            request_id: 17,
+            command: Some(proto::request::Command::ConfigurationCommand(
+                proto::ConfigurationCommand {
+                    action: Some(proto::configuration_command::Action::Plan(
+                        proto::PlanConfigurationChange {
+                            expected_configuration_revision: "revision-7".to_owned(),
+                            targets: Some(proto::ConfigurationTargetSelector {
+                                selection: Some(
+                                    proto::configuration_target_selector::Selection::CameraIds(
+                                        proto::CameraIdList {
+                                            camera_ids: vec![
+                                                "192.0.2.10".to_owned(),
+                                                "192.0.2.11".to_owned(),
+                                            ],
+                                        },
+                                    ),
+                                ),
+                            }),
+                            change: Some(proto::ConfigurationChange {
+                                change: Some(proto::configuration_change::Change::Patch(
+                                    proto::CameraConfigurationPatch {
+                                        backend: Some(proto::OptionalCameraBackendUpdate {
+                                            value: Some(
+                                                proto::optional_camera_backend_update::Value::Clear(
+                                                    true,
+                                                ),
+                                            ),
+                                        }),
+                                        ..Default::default()
+                                    },
+                                )),
+                            }),
+                        },
+                    )),
+                },
+            )),
+        };
+
+        let decoded = proto::Request::decode(request.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded, request);
+    }
+}

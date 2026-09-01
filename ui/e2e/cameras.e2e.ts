@@ -55,7 +55,10 @@ test('Board 11 virtualizes the 127-source Camera fleet into fixed 56px rows', as
 
 	await page.getByRole('checkbox', { name: 'Select Porch' }).check();
 	await expect(page.getByText('1 selected', { exact: true })).toBeVisible();
-	await expect(page.getByText('Manage selected', { exact: true })).toHaveCount(0);
+	await expect(page.getByText('Manage selected', { exact: true })).toBeVisible();
+	await expect(
+		page.locator('[data-capability-gate][data-capability="keeppeek.configuration.v1"]')
+	).toHaveCount(2);
 	await expect(
 		page.locator('[data-capability-gate][data-capability="keeppeek.runtime-config.v1"]')
 	).toHaveCount(0);
