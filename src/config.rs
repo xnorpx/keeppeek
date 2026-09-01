@@ -1,7 +1,10 @@
 pub use crate::access::AccessKey;
 use crate::{
     access,
-    cameras::CameraConfig,
+    cameras::{
+        CameraBackend, CameraConfig, CameraRecordingMode, CameraTransport,
+        default_event_recording_duration_secs,
+    },
     event_forwarder::config::{EventForwarderConfig, MQTT_PASSWORD_SECRET, MqttForwarderConfig},
 };
 use ipnet::IpNet;
@@ -58,6 +61,16 @@ pub struct CameraCredentialDefaults {
     /// Default camera login password, which may contain a secret reference.
     #[serde(default)]
     pub password: String,
+    #[serde(default)]
+    pub backend: Option<CameraBackend>,
+    #[serde(default)]
+    pub transport: Option<CameraTransport>,
+    #[serde(default)]
+    pub record_generic_motion_events: Option<bool>,
+    #[serde(default)]
+    pub recording_mode: Option<CameraRecordingMode>,
+    #[serde(default)]
+    pub event_recording_duration_secs: Option<u64>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1100,6 +1113,19 @@ pub(crate) fn contains_secret_reference(value: &str) -> bool {
     value.contains("{secret:")
 }
 
+pub(crate) fn is_secret_reference(value: &str) -> bool {
+    let Some(body) = value
+        .strip_prefix("{secret:")
+        .and_then(|value| value.strip_suffix('}'))
+    else {
+        return false;
+    };
+    let (key, modifier) = body
+        .split_once('|')
+        .map_or((body, None), |(key, modifier)| (key, Some(modifier)));
+    valid_secret_key(key) && modifier.is_none_or(|modifier| modifier == "url")
+}
+
 fn resolve_toml_secret_references(
     value: &mut toml::Value,
     secrets: &Secrets,
@@ -1464,10 +1490,41 @@ pub fn update_settings_with_migration(
 
 /// Loads and resolves the application configuration without writing it.
 pub fn load_config(path: &Path) -> anyhow::Result<Config> {
-    let text = std::fs::read_to_string(path)?;
-    let root: toml::Table = toml::from_str(&text)?;
+    let root = load_configuration_table(path)?;
     let secrets = load_secrets(path)?;
     config_from_table(&root, &secrets)
+}
+
+pub(crate) fn load_configuration_table(path: &Path) -> anyhow::Result<toml::Table> {
+    let text = std::fs::read_to_string(path)?;
+    toml::from_str(&text).map_err(Into::into)
+}
+
+pub(crate) fn write_configuration_table(path: &Path, root: &toml::Table) -> anyhow::Result<()> {
+    validate_configuration_table(path, root)?;
+    write_private_file_atomically(path, toml::to_string_pretty(root)?.as_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn validate_configuration_table(path: &Path, root: &toml::Table) -> anyhow::Result<()> {
+    let secrets = load_secrets(path)?;
+    let config = config_from_table(root, &secrets)?;
+    config.access.validate()?;
+    config.direct_card.validate()?;
+    config.battery_wake.validate()?;
+    config.operational_events.validate()?;
+    config.event_forwarder.mqtt.validate()?;
+    config.storage.validate_safety_thresholds()?;
+    cameras_from_table(root, &secrets)?;
+    Ok(())
+}
+
+pub(crate) fn cameras_from_configuration_table(
+    path: &Path,
+    root: &toml::Table,
+) -> anyhow::Result<HashMap<String, Vec<CameraConfig>>> {
+    let secrets = load_secrets(path)?;
+    cameras_from_table(root, &secrets)
 }
 
 fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Config> {
@@ -1521,18 +1578,19 @@ fn set_string_preserving_secret_reference(
 }
 
 pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraConfig>>> {
-    let text = std::fs::read_to_string(path)?;
-    let root: toml::Value = toml::from_str(&text)?;
-
-    let root_table = root
-        .as_table()
-        .ok_or_else(|| anyhow::anyhow!("cameras config is not a TOML table"))?;
-
-    let mut result: HashMap<String, Vec<CameraConfig>> = HashMap::new();
+    let root = load_configuration_table(path)?;
     let secrets = load_secrets(path)?;
-    let defaults = camera_defaults_from_table(root_table, &secrets)?;
+    cameras_from_table(&root, &secrets)
+}
 
-    for (namespace, ns_value) in root_table {
+fn cameras_from_table(
+    root: &toml::Table,
+    secrets: &Secrets,
+) -> anyhow::Result<HashMap<String, Vec<CameraConfig>>> {
+    let mut result: HashMap<String, Vec<CameraConfig>> = HashMap::new();
+    let defaults = camera_defaults_from_table(root, secrets)?;
+
+    for (namespace, ns_value) in root {
         if is_reserved_section(namespace) {
             continue;
         }
@@ -1544,7 +1602,7 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
         let mut cameras = Vec::new();
         for (cam_name, cam_value) in ns_table {
             let mut resolved = cam_value.clone();
-            resolve_toml_secret_references(&mut resolved, &secrets)?;
+            resolve_toml_secret_references(&mut resolved, secrets)?;
             let mut config: CameraConfig = resolved.try_into()?;
             config.name = Some(cam_name.clone());
             if config.username.is_empty() {
@@ -1552,6 +1610,34 @@ pub fn load_cameras(path: &Path) -> anyhow::Result<HashMap<String, Vec<CameraCon
             }
             if config.password.is_empty() {
                 config.password.clone_from(&defaults.password);
+            }
+            let configured = cam_value
+                .as_table()
+                .ok_or_else(|| anyhow::anyhow!("camera {cam_name} is not a configuration table"))?;
+            if !configured.contains_key("backend")
+                && let Some(backend) = defaults.backend
+            {
+                config.backend = backend;
+            }
+            if !configured.contains_key("transport")
+                && let Some(transport) = defaults.transport
+            {
+                config.transport = transport;
+            }
+            if !configured.contains_key("record_generic_motion_events")
+                && let Some(record_generic_motion_events) = defaults.record_generic_motion_events
+            {
+                config.record_generic_motion_events = record_generic_motion_events;
+            }
+            if !configured.contains_key("recording_mode")
+                && let Some(recording_mode) = defaults.recording_mode
+            {
+                config.recording_mode = recording_mode;
+            }
+            if !configured.contains_key("event_recording_duration_secs")
+                && let Some(event_recording_duration_secs) = defaults.event_recording_duration_secs
+            {
+                config.event_recording_duration_secs = event_recording_duration_secs;
             }
             cameras.push(config);
         }
@@ -1853,6 +1939,9 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
         "uid",
         "backend",
         "transport",
+        "record_generic_motion_events",
+        "recording_mode",
+        "event_recording_duration_secs",
     ];
     for key in MANAGED_CAMERA_KEYS {
         camera.remove(*key);
@@ -1879,6 +1968,11 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
         .unwrap_or_default();
     for (key, value) in serialized {
         if !matches!(key.as_str(), "name" | "username" | "password") {
+            if !original.contains_key(&key)
+                && camera_policy_matches_default(&key, config, &defaults)
+            {
+                continue;
+            }
             let value = preserve_secret_reference(original.get(&key), value, &secrets)?;
             camera.insert(key, value);
         }
@@ -1886,6 +1980,29 @@ pub fn upsert_camera(path: &Path, config: &CameraConfig) -> anyhow::Result<Strin
 
     write_private_file_atomically(path, toml::to_string_pretty(&root)?.as_bytes())?;
     Ok(name)
+}
+
+fn camera_policy_matches_default(
+    key: &str,
+    config: &CameraConfig,
+    defaults: &CameraCredentialDefaults,
+) -> bool {
+    match key {
+        "backend" => config.backend == defaults.backend.unwrap_or_default(),
+        "transport" => config.transport == defaults.transport.unwrap_or_default(),
+        "record_generic_motion_events" => {
+            config.record_generic_motion_events
+                == defaults.record_generic_motion_events.unwrap_or_default()
+        }
+        "recording_mode" => config.recording_mode == defaults.recording_mode.unwrap_or_default(),
+        "event_recording_duration_secs" => {
+            config.event_recording_duration_secs
+                == defaults
+                    .event_recording_duration_secs
+                    .unwrap_or_else(default_event_recording_duration_secs)
+        }
+        _ => false,
+    }
 }
 
 fn set_camera_credential(
@@ -2279,8 +2396,6 @@ mod tests {
 
         std::fs::remove_dir_all(directory).unwrap();
     }
-    use crate::cameras::{CameraBackend, CameraTransport};
-
     #[cfg(unix)]
     #[test]
     fn private_files_are_owner_only() {
@@ -2384,6 +2499,107 @@ mod tests {
             secrets.0.get("HOME_ASSISTANT_TOKEN").map(String::as_str),
             Some("integration-token")
         );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_policy_defaults_flow_to_fields_without_overrides() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-defaults-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [camera_defaults]
+                backend = "reo-proto"
+                transport = "udp"
+                record_generic_motion_events = true
+                recording_mode = "main"
+                event_recording_duration_secs = 90
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                username = "operator"
+                password = "password"
+                transport = "tcp"
+                recording_mode = "sub"
+            "#,
+        )
+        .unwrap();
+
+        let first = load_cameras(&path).unwrap();
+        let camera = &first["cameras"][0];
+        assert_eq!(camera.backend, CameraBackend::ReoProto);
+        assert_eq!(camera.transport, CameraTransport::Tcp);
+        assert!(camera.record_generic_motion_events);
+        assert_eq!(camera.recording_mode, CameraRecordingMode::Sub);
+        assert_eq!(camera.event_recording_duration_secs, 90);
+
+        let updated = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("backend = \"reo-proto\"", "backend = \"retina\"")
+            .replace(
+                "event_recording_duration_secs = 90",
+                "event_recording_duration_secs = 120",
+            );
+        write_private_file(&path, updated.as_bytes()).unwrap();
+
+        let second = load_cameras(&path).unwrap();
+        let camera = &second["cameras"][0];
+        assert_eq!(camera.backend, CameraBackend::Retina);
+        assert_eq!(camera.transport, CameraTransport::Tcp);
+        assert_eq!(camera.recording_mode, CameraRecordingMode::Sub);
+        assert_eq!(camera.event_recording_duration_secs, 120);
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_upsert_preserves_inherited_policy_and_unknown_fields() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-default-round-trip-{}",
+            rand::random::<u64>()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [camera_defaults]
+                username = "{secret:CAMERA_USERNAME}"
+                password = "{secret:CAMERA_PASSWORD}"
+                backend = "reo-proto"
+                transport = "udp"
+                recording_mode = "main"
+                event_recording_duration_secs = 90
+
+                [cameras.front]
+                ip = "192.0.2.10"
+                future_setting = "keep-me"
+            "#,
+        )
+        .unwrap();
+        write_private_file(
+            &secrets_path(&path),
+            b"CAMERA_USERNAME = \"operator\"\nCAMERA_PASSWORD = \"password\"\n",
+        )
+        .unwrap();
+
+        let mut camera = load_cameras(&path).unwrap()["cameras"][0].clone();
+        camera.display_name = Some("Front entrance".to_owned());
+        upsert_camera(&path, &camera).unwrap();
+
+        let root: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let saved = root["cameras"]["front"].as_table().unwrap();
+        assert_eq!(saved["future_setting"].as_str(), Some("keep-me"));
+        assert!(!saved.contains_key("username"));
+        assert!(!saved.contains_key("password"));
+        assert!(!saved.contains_key("backend"));
+        assert!(!saved.contains_key("transport"));
+        assert!(!saved.contains_key("recording_mode"));
+        assert!(!saved.contains_key("event_recording_duration_secs"));
 
         std::fs::remove_dir_all(directory).unwrap();
     }

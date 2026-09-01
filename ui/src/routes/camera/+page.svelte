@@ -7,6 +7,7 @@
 	import MobileCameraPage, { type MobileCameraMode } from '$lib/components/MobileCameraPage.svelte';
 	import { exactCatalogCameraMatch, firstHttpCameraCatalogSource } from '$lib/camera-wizard';
 	import { useControlClient } from '$lib/control-context';
+	import { ConfigurationRequestError } from '$lib/configuration-error';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type {
 		CameraDetailsResponse,
@@ -241,13 +242,23 @@
 		configurationError = null;
 		configurationStatus = null;
 		try {
-			const result = await controlClient.updateCamera(cameraSettings.ip, update);
+			const result = await controlClient.updateCamera(cameraSettings.ip, {
+				...update,
+				expected_configuration_revision: cameraSettings.configuration_revision
+			});
 			cameraSettings = result.camera;
 			configurationStatus = result.restart_required
 				? 'Camera settings saved. Restart KeepPeek from System settings to apply them.'
 				: 'Camera settings saved.';
 			closeConfiguration();
 		} catch (cause) {
+			if (cause instanceof ConfigurationRequestError) {
+				const current = await controlClient.getCameraSettings().catch(() => []);
+				cameraSettings =
+					current.find(
+						(candidate) => candidate.id === cameraId || candidate.ip === cameraSettings?.ip
+					) ?? cameraSettings;
+			}
 			configurationError =
 				cause instanceof Error ? cause.message : 'Camera settings were not saved.';
 		} finally {

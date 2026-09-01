@@ -354,6 +354,7 @@ export type CameraRecordingMode = 'off' | 'sub' | 'main' | 'both' | 'event-boost
 export interface CameraSettings {
 	id: string;
 	ip: string;
+	configuration_revision?: string;
 	display_name: string | null;
 	manufacturer_override: string | null;
 	username_configured: boolean;
@@ -466,6 +467,7 @@ export interface CameraDiscoveryNetwork {
 }
 
 export interface CameraSettingsUpdate {
+	expected_configuration_revision?: string;
 	display_name?: string | null;
 	manufacturer?: string | null;
 	username?: string;
@@ -485,7 +487,224 @@ export interface CameraSettingsUpdate {
 export interface CameraSettingsUpdateResponse {
 	camera: CameraSettings;
 	restart_required: boolean;
+	configuration_revision?: string;
 }
+
+export type ConfigurationValueSource = 'built-in' | 'default' | 'template' | 'override';
+
+export type ConfigurationImpact =
+	'immediate' | 'reconnect-camera' | 'restart-component' | 'restart-server';
+
+export type ConfigurationIssue = {
+	camera_id: string | null;
+	field: string;
+	severity: 'info' | 'warning' | 'error';
+	code: string;
+	message: string;
+	required_capability: string | null;
+};
+
+export type ConfigurationPatchValue<T> = { operation: 'set'; value: T } | { operation: 'clear' };
+
+export type CameraConfigurationPatch = {
+	display_name?: ConfigurationPatchValue<string>;
+	manufacturer?: ConfigurationPatchValue<string>;
+	username_secret_reference?: ConfigurationPatchValue<string>;
+	password_secret_reference?: ConfigurationPatchValue<string>;
+	onvif_port?: ConfigurationPatchValue<number>;
+	http_port?: ConfigurationPatchValue<number>;
+	main_rtsp_url?: ConfigurationPatchValue<string>;
+	sub_rtsp_url?: ConfigurationPatchValue<string>;
+	uid_secret_reference?: ConfigurationPatchValue<string>;
+	backend?: ConfigurationPatchValue<CameraBackend>;
+	transport?: ConfigurationPatchValue<CameraTransport>;
+	record_generic_motion_events?: ConfigurationPatchValue<boolean>;
+	recording_mode?: ConfigurationPatchValue<CameraRecordingMode>;
+	event_recording_duration_secs?: ConfigurationPatchValue<number>;
+};
+
+export type CameraDefaultPatch = Pick<
+	CameraConfigurationPatch,
+	| 'username_secret_reference'
+	| 'password_secret_reference'
+	| 'backend'
+	| 'transport'
+	| 'record_generic_motion_events'
+	| 'recording_mode'
+	| 'event_recording_duration_secs'
+>;
+
+export type ConfigurationTargetSelector =
+	| { mode: 'camera-ids'; camera_ids: string[] }
+	| {
+			mode: 'filtered-cameras';
+			search: string;
+			backend?: CameraBackend;
+			recording_mode?: CameraRecordingMode;
+	  }
+	| { mode: 'group'; group_id: string }
+	| { mode: 'all-cameras' };
+
+export type ConfigurationChange =
+	| { mode: 'patch'; patch: CameraConfigurationPatch }
+	| { mode: 'template'; template_id: string }
+	| { mode: 'defaults'; patch: CameraDefaultPatch };
+
+export type ConfigurationPlanRequest = {
+	expected_configuration_revision: string;
+	targets?: ConfigurationTargetSelector;
+	change: ConfigurationChange;
+};
+
+export type ConfigurationTemplateValues = {
+	username_secret_reference?: string;
+	password_secret_reference?: string;
+	onvif_port?: number;
+	http_port?: number;
+	backend?: CameraBackend;
+	transport?: CameraTransport;
+	record_generic_motion_events?: boolean;
+	recording_mode?: CameraRecordingMode;
+	event_recording_duration_secs?: number;
+};
+
+export type ConfigurationTemplate = {
+	template_id: string;
+	version: number;
+	name: string;
+	description: string;
+	values: ConfigurationTemplateValues;
+	created_at_ms: number;
+	updated_at_ms: number;
+};
+
+export type EffectiveSecretValue = {
+	default_configured: boolean;
+	override_configured: boolean;
+	effective_configured: boolean;
+	source: ConfigurationValueSource;
+	runtime_applied: boolean;
+	warning: string | null;
+};
+
+export type EffectiveConfigurationValue<T> = {
+	configured_default: T | null;
+	camera_override: T | null;
+	effective: T;
+	source: ConfigurationValueSource;
+	runtime_applied: boolean;
+	warning: string | null;
+};
+
+export type CameraEffectiveConfiguration = {
+	camera: CameraSettings;
+	group_ids: string[];
+	username: EffectiveSecretValue;
+	password: EffectiveSecretValue;
+	backend: EffectiveConfigurationValue<CameraBackend>;
+	transport: EffectiveConfigurationValue<CameraTransport>;
+	record_generic_motion_events: EffectiveConfigurationValue<boolean>;
+	recording_mode: EffectiveConfigurationValue<CameraRecordingMode>;
+	event_recording_duration_secs: EffectiveConfigurationValue<number>;
+};
+
+export type CameraDefaultValues = {
+	username_configured: boolean;
+	password_configured: boolean;
+	configured_backend: CameraBackend | null;
+	effective_backend: CameraBackend;
+	configured_transport: CameraTransport | null;
+	effective_transport: CameraTransport;
+	configured_record_generic_motion_events: boolean | null;
+	effective_record_generic_motion_events: boolean;
+	configured_recording_mode: CameraRecordingMode | null;
+	effective_recording_mode: CameraRecordingMode;
+	configured_event_recording_duration_secs: number | null;
+	effective_event_recording_duration_secs: number;
+};
+
+export type ConfigurationLimits = {
+	maximum_templates: number;
+	maximum_template_name_bytes: number;
+	maximum_template_description_bytes: number;
+	maximum_plan_targets: number;
+	maximum_import_bytes: number;
+};
+
+export type ConfigurationDomain = {
+	domain_id: string;
+	label: string;
+	owner_path: string;
+	capability_id: string;
+	readable: boolean;
+	mutable: boolean;
+	unavailable_reason: string | null;
+};
+
+export type ConfigurationSnapshot = {
+	contract_version: number;
+	configuration_revision: string;
+	defaults: CameraDefaultValues;
+	cameras: CameraEffectiveConfiguration[];
+	templates: ConfigurationTemplate[];
+	limits: ConfigurationLimits;
+	domains: ConfigurationDomain[];
+};
+
+export type ConfigurationPlanTarget = {
+	camera_id: string;
+	display_name: string;
+	group_ids: string[];
+	skipped: boolean;
+	skip_reason: string | null;
+};
+
+export type ConfigurationFieldChange = {
+	camera_id: string | null;
+	field: string;
+	old_configured_value: string;
+	old_effective_value: string;
+	new_configured_value: string;
+	new_effective_value: string;
+	source: ConfigurationValueSource;
+	secret: boolean;
+};
+
+export type ConfigurationPlan = {
+	plan_id: string;
+	configuration_revision: string;
+	expires_at_ms: number;
+	authoritative_target_count: number;
+	targets: ConfigurationPlanTarget[];
+	changes: ConfigurationFieldChange[];
+	issues: ConfigurationIssue[];
+	impact: ConfigurationImpact;
+	valid: boolean;
+	apply_semantics: string;
+};
+
+export type ConfigurationActivation = {
+	camera_id: string;
+	status: 'applied' | 'reconnect-required' | 'restart-required' | 'failed';
+	detail: string | null;
+};
+
+export type ConfigurationApplyResult = {
+	plan_id: string;
+	configuration_committed: boolean;
+	snapshot: ConfigurationSnapshot;
+	activations: ConfigurationActivation[];
+	impact: ConfigurationImpact;
+};
+
+export type ConfigurationTemplateImportPreview = {
+	preview_id: string;
+	configuration_revision: string;
+	expires_at_ms: number;
+	templates: ConfigurationTemplate[];
+	issues: ConfigurationIssue[];
+	valid: boolean;
+};
 
 export interface Health {
 	status: string;

@@ -21,6 +21,36 @@ Requests that exceed a boundary fail instead of allocating or queueing without a
 must treat repeated limit failures as load or abuse evidence; increasing a limit requires a new
 memory and concurrency budget.
 
+## Configuration planning
+
+The ignored `configuration_planning_benchmark` test measures the maximum 64-camera visual
+configuration batch. Its read-only baseline builds the first typed configuration snapshot page.
+The result resolves all camera targets, applies five named policy fields to an in-memory TOML
+candidate, validates the complete candidate, computes redacted semantic changes, and encodes the
+authoritative plan.
+
+```sh
+cargo test --release configuration_planning_benchmark --lib -- --ignored --nocapture
+```
+
+Set `KEEPPEEK_CONFIGURATION_BENCH_SAMPLES` to change the default 30 measured runs. The benchmark
+warms both paths, reports nearest-rank p50 and p95 wall time, fails above a 250 ms plan p95 budget,
+and fails when the encoded plan exceeds the 64 KiB WebRTC control-message limit.
+
+### Reference measurement
+
+Captured on 2026-08-31 with macOS 26.6.2 arm64 on an Apple M5 Max developer workstation with
+18 logical CPUs and 64 GiB RAM, Rust 1.97.1. The optimized process used 64 cameras and 30 runs.
+
+| Path                                  | p50 ms | p95 ms | p95 delta ms | Budget ms |
+| ------------------------------------- | -----: | -----: | -----------: | --------: |
+| Typed configuration snapshot baseline |  0.238 |  0.445 |     baseline |       N/A |
+| Five-field authoritative bulk plan    |  0.595 |  1.167 |        0.721 |       250 |
+
+The final plan encoded to 23,348 bytes against the 65,536-byte transport budget. Snapshot pages
+also have an executable 64 KiB regression with 127 cameras and a near-limit 16 KiB template
+document.
+
 ## Recording coverage snapshot
 
 The `recording_coverage` benchmark compares the bounded catalog snapshot used by the recording

@@ -338,6 +338,38 @@ test('edits this camera configuration without replacing untouched credentials', 
 	expect(submitted?.update).not.toHaveProperty('password');
 });
 
+test('preserves the camera draft and reloads current values after a revision conflict', async ({
+	page
+}) => {
+	const { camera, health } = mobilePtzCamera();
+	const settings = configuredCamera(camera);
+	const currentSettings = { ...settings, display_name: 'Server name' };
+	const controls = await mockControlPeer(page, {
+		cameras: [camera],
+		health: { cameras: [{ ...health, configured_profiles: camera.profiles }] },
+		cameraSettingsSequence: [[settings], [currentSettings]],
+		cameraConfigurationRevision: 'camera-revision-1',
+		cameraUpdateConflictRevision: 'camera-revision-2',
+		motionDetection: { supported: true, controllable: true, enabled: true, error: null }
+	});
+	await page.goto(`/camera?camera=${camera.id}`);
+
+	await page.getByRole('button', { name: 'Edit settings' }).click();
+	const editor = page.locator('[data-camera-configuration-editor]');
+	await editor.getByLabel('Display name').fill('Unsaved local name');
+	await editor.getByRole('button', { name: 'Save camera settings' }).click();
+
+	await expect(editor.getByRole('alert')).toContainText(
+		'camera configuration changed after this editor was opened'
+	);
+	await expect(editor.getByRole('alert')).toContainText('current revision camera-revision-2');
+	await expect(editor.getByLabel('Display name')).toHaveValue('Unsaved local name');
+	expect(controls.cameraUpdates).toHaveLength(1);
+	expect(controls.cameraUpdates[0]?.update.expected_configuration_revision).toBe(
+		'camera-revision-1'
+	);
+});
+
 test('Board 7 operates Reo-Proto PTZ over WebRTC and updates its motion setting', async ({
 	page
 }) => {

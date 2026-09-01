@@ -50,6 +50,9 @@ compatibility guarantees begin with the 1.0 release.
   and [Pushover configuration](../docs/pushover.md).
 - [Access control](../docs/access-control.md) defines local network trust, remote credentials,
   Administrator/User authorization, session revocation, trusted proxies, and audit evidence.
+- [Visual configuration management](../docs/configuration-management.md) defines typed effective
+  values, explicit inheritance, versioned templates, revision-bound bulk plans, atomic writes,
+  per-camera activation evidence, and secret-safe import and export.
 - [Home Assistant card](../docs/home-assistant.md) shows a direct browser-to-KeepPeek Lovelace card with
   one named credential, direct live media/events/timeline review, and no Home Assistant proxy.
 

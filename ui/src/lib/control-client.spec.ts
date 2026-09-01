@@ -1076,7 +1076,8 @@ class FakeDataChannel {
 																health: 'healthy',
 																model: 'RLC-811A'
 															})
-														]
+														],
+														configurationRevision: 'camera-revision-7'
 													})
 												}
 											: command.case === 'cameraConfigurationCommand' &&
@@ -1163,6 +1164,13 @@ class FakeDataChannel {
 																		if (update.mainRtspUrl?.value.case !== 'clear') {
 																			throw new Error('null RTSP URL must encode as clear');
 																		}
+																		if (
+																			update.expectedConfigurationRevision !== 'camera-revision-7'
+																		) {
+																			throw new Error(
+																				'camera update must include the current revision'
+																			);
+																		}
 																		return {
 																			case: 'cameraConfigurationResult' as const,
 																			value: create(CameraConfigurationResultSchema, {
@@ -1178,18 +1186,30 @@ class FakeDataChannel {
 																					backend: update.backend,
 																					transport: update.transport
 																				}),
-																				restartRequired: true
+																				restartRequired: true,
+																				configurationRevision: 'camera-revision-8'
 																			})
 																		};
 																	})()
 																: command.case === 'cameraConfigurationCommand' &&
 																	  command.value.action.case === 'remove'
-																	? {
-																			case: 'cameraConfigurationResult' as const,
-																			value: create(CameraConfigurationResultSchema, {
-																				removed: true
-																			})
-																		}
+																	? (() => {
+																			if (
+																				command.value.action.value.expectedConfigurationRevision !==
+																				'camera-revision-7'
+																			) {
+																				throw new Error(
+																					'camera removal must include the current revision'
+																				);
+																			}
+																			return {
+																				case: 'cameraConfigurationResult' as const,
+																				value: create(CameraConfigurationResultSchema, {
+																					removed: true,
+																					configurationRevision: 'camera-revision-8'
+																				})
+																			};
+																		})()
 																	: command.case === 'runtimeConfigurationCommand' &&
 																		  command.value.action.case === 'get'
 																		? {
@@ -1909,6 +1929,7 @@ describe('ControlClient', () => {
 			{
 				id: '192.0.2.50',
 				ip: '192.0.2.50',
+				configuration_revision: 'camera-revision-7',
 				display_name: 'Gate',
 				manufacturer_override: null,
 				username_configured: true,
