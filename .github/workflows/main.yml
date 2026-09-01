@@ -242,7 +242,7 @@ jobs:
       - name: Install Chromium
         run: bunx playwright install chromium
       - name: Run full platform Playwright suite
-        run: bun run test:e2e
+        run: bun run test:e2e:prepare && bun run test:e2e:run -- --workers=1
       - name: Upload UI test reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
