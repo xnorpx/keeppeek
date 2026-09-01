@@ -1,6 +1,7 @@
 pub(crate) mod access;
 pub mod api;
 pub mod app;
+pub mod backup;
 pub mod battery_wake;
 pub mod camera_catalog;
 pub(crate) mod camera_database;
