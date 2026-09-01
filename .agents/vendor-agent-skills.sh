@@ -36,9 +36,12 @@ lock_file="$vendor_dir/UPSTREAM_COMMIT"
 managed_skills_file="$vendor_dir/SKILLS"
 rust_guidelines="$repo_root/.github/instructions/rust_pragmatic_guidelines.md"
 svelte_guidelines="$repo_root/.github/instructions/svelte5_pragmatic_guidelines.md"
+tiger_style_skill="$skills_dir/tiger-style/SKILL.md"
 
 [[ -f "$rust_guidelines" ]] || fail "missing Pragmatic Rust Guidelines: ${rust_guidelines#"$repo_root/"}"
 [[ -f "$svelte_guidelines" ]] || fail "missing Pragmatic Svelte 5 Guidelines: ${svelte_guidelines#"$repo_root/"}"
+[[ -f "$tiger_style_skill" ]] ||
+	fail "missing TigerStyle skill: ${tiger_style_skill#"$repo_root/"}"
 
 mode="sync"
 requested_ref=""
@@ -113,6 +116,30 @@ Before applying this skill:
 - For any Svelte, SvelteKit, or frontend TypeScript work under `ui/`, read and follow the [Pragmatic Svelte 5 Guidelines](../../../.github/instructions/svelte5_pragmatic_guidelines.md). Every applicable Svelte `M-*` rule is required. Use Bun under `ui/` and finish UI changes by running `./check.sh` from the repository root.
 EOF
 
+tiger_style_integration_file="$temporary_dir/keeppeek-tiger-style-integration.md"
+cp "$integration_file" "$tiger_style_integration_file"
+cat >>"$tiger_style_integration_file" <<'EOF'
+- For executable designs and production code, read and follow
+  [TigerStyle](../tiger-style/SKILL.md). Apply its explicit exclusion of TigerBeetle's
+  static-allocation policy.
+EOF
+
+using_agent_overlay_file="$temporary_dir/keeppeek-using-agent-overlay.md"
+cat >"$using_agent_overlay_file" <<'EOF'
+### 7. Write Comments in Simplified Technical English
+
+Write every new or changed comment in
+[Simplified Technical English](https://en.wikipedia.org/wiki/Simplified_Technical_English)
+(ASD-STE100). This rule applies to source comments, doc comments, script comments, and
+configuration comments.
+
+- Use active voice unless the actor is unknown.
+- Use short, complete sentences.
+- Put one instruction or one topic in each sentence.
+- Use clear and specific words. Keep necessary technical terms.
+- Do not omit articles, subjects, or verbs to make a sentence shorter.
+EOF
+
 skill_names=()
 for skill_source_dir in "$stage_dir/skills"/*; do
 	[[ -d "$skill_source_dir" ]] || continue
@@ -121,8 +148,20 @@ for skill_source_dir in "$stage_dir/skills"/*; do
 	skill_file="$skill_source_dir/SKILL.md"
 	[[ -f "$skill_file" ]] || fail "upstream skill has no SKILL.md: $skill_name"
 
+	case "$skill_name" in
+		api-and-interface-design | code-review-and-quality | code-simplification | \
+			debugging-and-error-recovery | incremental-implementation | performance-optimization | \
+			security-and-hardening | spec-driven-development | test-driven-development | \
+			using-agent-skills)
+			skill_integration_file="$tiger_style_integration_file"
+			;;
+		*)
+			skill_integration_file="$integration_file"
+			;;
+	esac
+
 	rewritten_skill="$skill_file.keeppeek"
-	if ! awk -v integration_file="$integration_file" '
+	if ! awk -v integration_file="$skill_integration_file" '
 		$0 == "---" && separators < 2 { separators += 1 }
 		{ print }
 		separators == 2 && !inserted && $0 ~ /^# / {
@@ -137,6 +176,31 @@ for skill_source_dir in "$stage_dir/skills"/*; do
 		fail "could not locate YAML frontmatter and a top-level heading in $skill_name/SKILL.md"
 	fi
 	mv "$rewritten_skill" "$skill_file"
+	grep -Fqx "## KeepPeek Repository Integration" "$skill_file" ||
+		fail "KeepPeek integration is missing from $skill_name/SKILL.md"
+	if [[ "$skill_integration_file" == "$tiger_style_integration_file" ]]; then
+		grep -Fq "[TigerStyle](../tiger-style/SKILL.md)" "$skill_file" ||
+			fail "TigerStyle integration is missing from $skill_name/SKILL.md"
+	fi
+
+	if [[ "$skill_name" == "using-agent-skills" ]]; then
+		if ! awk -v overlay_file="$using_agent_overlay_file" '
+			$0 == "## Failure Modes to Avoid" && !inserted {
+				while ((getline line < overlay_file) > 0) print line
+				close(overlay_file)
+				print ""
+				inserted = 1
+			}
+			{ print }
+			END { if (!inserted) exit 42 }
+		' "$skill_file" >"$rewritten_skill"; then
+			rm -f "$rewritten_skill"
+			fail "could not locate the core-behavior insertion point in $skill_name/SKILL.md"
+		fi
+		mv "$rewritten_skill" "$skill_file"
+		grep -Fqx "### 7. Write Comments in Simplified Technical English" "$skill_file" ||
+			fail "using-agent-skills overlay is missing from $skill_name/SKILL.md"
+	fi
 	skill_names+=("$skill_name")
 done
 

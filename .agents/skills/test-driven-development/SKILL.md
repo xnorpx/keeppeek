@@ -12,6 +12,9 @@ Before applying this skill:
 - Treat KeepPeek repository instructions as authoritative when they differ from generic examples in this skill.
 - For any Rust implementation, refactor, review, test, or API design work, read and follow the [Pragmatic Rust Guidelines](../../../.github/instructions/rust_pragmatic_guidelines.md). Every applicable `M-*` rule is required.
 - For any Svelte, SvelteKit, or frontend TypeScript work under `ui/`, read and follow the [Pragmatic Svelte 5 Guidelines](../../../.github/instructions/svelte5_pragmatic_guidelines.md). Every applicable Svelte `M-*` rule is required. Use Bun under `ui/` and finish UI changes by running `./check.sh` from the repository root.
+- For executable designs and production code, read and follow
+  [TigerStyle](../tiger-style/SKILL.md). Apply its explicit exclusion of TigerBeetle's
+  static-allocation policy.
 
 ## Overview
 
