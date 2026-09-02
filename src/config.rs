@@ -2208,37 +2208,6 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
         std::fs::set_permissions(&temporary, permissions)?;
     }
     drop(file);
-    #[cfg(windows)]
-    if path.exists() {
-        use std::os::windows::ffi::OsStrExt;
-        use windows::{
-            Win32::Storage::FileSystem::{REPLACE_FILE_FLAGS, ReplaceFileW},
-            core::PCWSTR,
-        };
-
-        let replaced = path
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
-        let replacement = temporary
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<_>>();
-        unsafe {
-            ReplaceFileW(
-                PCWSTR(replaced.as_ptr()),
-                PCWSTR(replacement.as_ptr()),
-                None,
-                REPLACE_FILE_FLAGS(0),
-                None,
-                None,
-            )
-        }
-        .map_err(std::io::Error::other)?;
-        return Ok(());
-    }
     std::fs::rename(temporary, path)
 }
 
