@@ -5,6 +5,7 @@
 This directory defines the initial public HTTP API used by viewer clients and services.
 
 - `openapi.yaml` is the source of truth for this HTTP contract.
+- `backup.proto` is the source of truth for the backup HTTP ProtoJSON contract.
 - Scenario walkthroughs live in [docs/](../docs/).
 
 The in-band WebRTC data-channel contract is defined by [webrtc.proto](webrtc.proto) and
@@ -53,12 +54,14 @@ compatibility guarantees begin with the 1.0 release.
 - [Visual configuration management](../docs/configuration-management.md) defines typed effective
   values, explicit inheritance, versioned templates, revision-bound bulk plans, atomic writes,
   per-camera activation evidence, and secret-safe import and export.
+- [Backup and restore](backup.md) defines the Administrator-only ProtoJSON control plane, bounded
+  ZIP transfers, dry-run planning, staged activation, health verification, and rollback.
 - [Home Assistant card](../docs/home-assistant.md) shows a direct browser-to-KeepPeek Lovelace card with
   one named credential, direct live media/events/timeline review, and no Home Assistant proxy.
 
 ## HTTP API
 
-The initial API has five operations:
+The session and observability API has five core operations:
 
 1. `POST /create` sends a gzip-compressed SDP offer and returns a gzip-compressed SDP answer
    with a session ID.
@@ -66,6 +69,10 @@ The initial API has five operations:
 3. `GET /logs` reads server logs through Server-Sent Events.
 4. `GET /logs/snapshot` returns the complete bounded retained log buffer as JSON.
 5. `GET /metrics` exposes Prometheus text metrics.
+
+The versioned backup API is rooted at `/api/backups`. It uses the messages in `backup.proto` as
+ProtoJSON and streams ZIP artifacts separately. See [Backup HTTP API](backup.md) for its endpoint,
+authorization, limit, and error contract.
 
 ## Access control
 

@@ -64,22 +64,17 @@ KeepPeek. See the
 [secrets guide](https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md) for references,
 precedence, and migration behavior.
 
-## Back up before relying on recordings
+## Create a recovery backup
 
-KeepPeek does not yet provide a validated online backup or restore workflow. Before treating an
-installation as evidence storage, configure a host-level backup that includes the complete KeepPeek
-configuration directory and every configured recording, catalog, thumbnail, and export path.
+Open **Settings → Backup and restore** as an Administrator and create a validated reference-only
+bundle before relying on the recorder. Download the ZIP and retain it separately from the recorder.
+The bundle includes configuration and critical metadata but intentionally omits resolved secrets,
+sessions, MP4 recordings, and thumbnail JPEG bytes.
 
-Stop the KeepPeek service before taking a file-level copy so the catalog, its write-ahead log, and
-recording files represent one point in time. Preserve file ownership and permissions, keep backup
-media encrypted, and test restoration on an isolated host before depending on it. A live copy can
-capture mismatched database and media state; an untested copy may not be recoverable when evidence
-is needed.
-
-Validated online backup, restore, migration checks, and guided recovery are owned by
-[issue #128](https://github.com/xnorpx/keeppeek/issues/128) for the Alpha milestone. Until that work
-is complete, the supported workaround is a stopped-service copy managed and verified by the host
-administrator.
+Test recovery on an isolated installation. Inspection and dry run do not change live state. Dry run
+requires explicit target path mappings and reports required external secrets, capacity, conflicts,
+migrations, and restart consequences. Activation and rollback require confirmation and a controlled
+restart. See [Backup and restore](./backup-and-restore.md) for the complete workflow and limits.
 
 ## Add the first camera
 

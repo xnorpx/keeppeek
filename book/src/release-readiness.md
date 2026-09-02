@@ -88,13 +88,12 @@ stream that it cannot decode. Keep a broadly compatible H.264 substream for live
 and treat a truthful incompatibility message as different from missing footage. Automatic
 transcoding remains separate work.
 
-### Backup and restore are not automated
+### Configuration bundles do not archive recording media
 
-Validated online backup and guided restore are owned by
-[issue #128](https://github.com/xnorpx/keeppeek/issues/128) for Alpha. Until then, stop the service,
-copy the complete configuration and storage roots, preserve permissions, encrypt the backup, and
-test restoration on an isolated host. A live file copy can capture mismatched catalog and media
-state.
+KeepPeek provides validated reference-only configuration and metadata backups, dry-run restore,
+staged activation, and bounded rollback. Recording MP4s and thumbnail JPEGs remain a separate
+archive responsibility. A recovery rehearsal must test both the KeepPeek bundle and the mapped
+media archive. See [Backup and restore](./backup-and-restore.md).
 
 ### Access roles are intentionally fixed
 
