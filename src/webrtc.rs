@@ -66,6 +66,7 @@ const CONTROL_CHANNEL_LABEL: &str = "control-channel";
 const RELIABLE_DATA_CHANNEL_LABEL: &str = "reliable-data";
 const UNRELIABLE_DATA_CHANNEL_LABEL: &str = "unreliable-data";
 const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1_024;
+const MAX_DATA_MESSAGE_BYTES: usize = 64 * 1_024;
 const API_MEDIA_FRAME_CHUNK_BYTES: usize = 48 * 1_024;
 
 #[derive(Debug, Clone, Copy)]
@@ -140,6 +141,18 @@ pub(crate) trait ControlRequestHandler: Send + Sync {
         request: crate::api::proto::Request,
     ) -> ControlDispatch {
         self.handle(request)
+    }
+
+    fn handle_data_for_session(
+        &self,
+        _session_id: SessionId,
+        _channel: crate::api::proto::DataChannelKind,
+        _message: crate::api::proto::Message,
+    ) -> Result<(), ControlHandlerError> {
+        Err(ControlHandlerError::new(
+            ErrorCode::UnsupportedRequest,
+            "data messages are not implemented by this server",
+        ))
     }
 
     fn session_closed(&self, _session_id: SessionId) {}
@@ -3036,6 +3049,35 @@ fn drain_api_outputs(
                     api_control_reply(data.binary, &data.data, handler.as_deref(), control, media);
                 enqueue_control_dispatch(reply, control_runtime)?;
             }
+            Output::Event(Event::ChannelData(data))
+                if data.id == channels.reliable_data || data.id == channels.unreliable_data =>
+            {
+                let handler = control
+                    .control_handler
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .and_then(Weak::upgrade);
+                let channel = if data.id == channels.reliable_data {
+                    crate::api::proto::DataChannelKind::ReliableData
+                } else {
+                    crate::api::proto::DataChannelKind::UnreliableData
+                };
+                if let Err(error) = api_data_message(
+                    data.binary,
+                    &data.data,
+                    handler.as_deref(),
+                    control.session_id,
+                    channel,
+                ) {
+                    tracing::debug!(
+                        session_id = %control.session_id,
+                        ?channel,
+                        message = %error.message,
+                        "rejected API data message"
+                    );
+                }
+            }
             Output::Event(Event::ChannelClose(channel_id)) if channel_id == channels.control => {
                 anyhow::bail!("WebRTC control channel closed")
             }
@@ -3565,6 +3607,39 @@ fn decode_control_request(
     Ok(request)
 }
 
+fn api_data_message(
+    binary: bool,
+    payload: &[u8],
+    handler: Option<&dyn ControlRequestHandler>,
+    session_id: SessionId,
+    channel: crate::api::proto::DataChannelKind,
+) -> Result<(), ControlHandlerError> {
+    if !binary {
+        return Err(ControlHandlerError::new(
+            ErrorCode::InvalidRequest,
+            "data messages must be binary",
+        ));
+    }
+    if payload.len() > MAX_DATA_MESSAGE_BYTES {
+        return Err(ControlHandlerError::new(
+            ErrorCode::InvalidRequest,
+            "data message exceeds 64 KiB",
+        ));
+    }
+    let message = crate::api::proto::Message::decode(payload)
+        .map_err(|_| ControlHandlerError::new(ErrorCode::InvalidRequest, "invalid data message"))?;
+    if message.message.is_none() {
+        return Err(ControlHandlerError::new(
+            ErrorCode::InvalidRequest,
+            "data message has no payload",
+        ));
+    }
+    let handler = handler.ok_or_else(|| {
+        ControlHandlerError::new(ErrorCode::Unavailable, "data service is unavailable")
+    })?;
+    handler.handle_data_for_session(session_id, channel, message)
+}
+
 fn unavailable_control_dispatch(request_id: u64) -> ControlDispatch {
     failed_control_dispatch(
         request_id,
@@ -3752,6 +3827,35 @@ mod tests {
             received_at,
             timestamp: None,
             data: Arc::new(MediaFrameData::new(Bytes::from(vec![0; bytes]))),
+        }
+    }
+
+    fn test_event_data_message() -> crate::api::proto::Message {
+        crate::api::proto::Message {
+            message: Some(crate::api::proto::message::Message::Event(
+                crate::api::proto::EventMessage {
+                    message: Some(crate::api::proto::event_message::Message::Attachment(
+                        crate::api::proto::EventAttachmentChunk {
+                            context: Some(
+                                crate::api::proto::event_attachment_chunk::Context::PublicationId(
+                                    "publication-1".to_owned(),
+                                ),
+                            ),
+                            event_id: "event-1".to_owned(),
+                            revision: 1,
+                            attachment_id: "snapshot-1".to_owned(),
+                            attachment_type: "snapshot".to_owned(),
+                            content_type: "image/jpeg".to_owned(),
+                            ordinal: 0,
+                            timestamp: None,
+                            sequence: 1,
+                            chunk_index: 0,
+                            chunk_count: 1,
+                            payload: vec![0xff, 0xd8, 0xff, 0xd9],
+                        },
+                    )),
+                },
+            )),
         }
     }
 
@@ -4572,6 +4676,133 @@ mod tests {
             unreliable.reliability,
             Reliability::MaxRetransmits { retransmits: 0 }
         );
+    }
+
+    #[test]
+    fn reliable_event_data_is_decoded_and_bound_to_its_api_session() {
+        struct DataHandler {
+            received: Mutex<
+                Option<(
+                    SessionId,
+                    crate::api::proto::DataChannelKind,
+                    crate::api::proto::Message,
+                )>,
+            >,
+        }
+
+        impl ControlRequestHandler for DataHandler {
+            fn handle(&self, request: crate::api::proto::Request) -> ControlDispatch {
+                failed_control_dispatch(
+                    request.request_id,
+                    ErrorCode::UnsupportedRequest,
+                    "test handler does not process control requests",
+                )
+            }
+
+            fn handle_data_for_session(
+                &self,
+                session_id: SessionId,
+                channel: crate::api::proto::DataChannelKind,
+                message: crate::api::proto::Message,
+            ) -> Result<(), ControlHandlerError> {
+                *self.received.lock().unwrap() = Some((session_id, channel, message));
+                Ok(())
+            }
+        }
+
+        let message = test_event_data_message();
+        let handler = DataHandler {
+            received: Mutex::new(None),
+        };
+
+        api_data_message(
+            true,
+            &message.encode_to_vec(),
+            Some(&handler),
+            SessionId(42),
+            crate::api::proto::DataChannelKind::ReliableData,
+        )
+        .unwrap();
+
+        let (session_id, channel, received) = handler.received.lock().unwrap().take().unwrap();
+        assert_eq!(session_id, SessionId(42));
+        assert_eq!(channel, crate::api::proto::DataChannelKind::ReliableData);
+        assert_eq!(received, message);
+    }
+
+    #[test]
+    fn inbound_data_rejects_text_messages() {
+        let error = api_data_message(
+            false,
+            b"not binary",
+            None,
+            SessionId(42),
+            crate::api::proto::DataChannelKind::ReliableData,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "data messages must be binary");
+    }
+
+    #[test]
+    fn inbound_data_rejects_malformed_protobuf() {
+        let error = api_data_message(
+            true,
+            &[0xff],
+            None,
+            SessionId(42),
+            crate::api::proto::DataChannelKind::ReliableData,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "invalid data message");
+    }
+
+    #[test]
+    fn inbound_data_rejects_empty_envelopes() {
+        let error = api_data_message(
+            true,
+            &crate::api::proto::Message::default().encode_to_vec(),
+            None,
+            SessionId(42),
+            crate::api::proto::DataChannelKind::ReliableData,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "data message has no payload");
+    }
+
+    #[test]
+    fn inbound_data_rejects_oversized_messages_before_decode() {
+        let error = api_data_message(
+            true,
+            &vec![0; MAX_DATA_MESSAGE_BYTES + 1],
+            None,
+            SessionId(42),
+            crate::api::proto::DataChannelKind::ReliableData,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "data message exceeds 64 KiB");
+    }
+
+    #[test]
+    fn inbound_data_rejects_valid_messages_without_a_handler() {
+        let error = api_data_message(
+            true,
+            &test_event_data_message().encode_to_vec(),
+            None,
+            SessionId(42),
+            crate::api::proto::DataChannelKind::ReliableData,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert_eq!(error.message, "data service is unavailable");
     }
 
     #[test]
