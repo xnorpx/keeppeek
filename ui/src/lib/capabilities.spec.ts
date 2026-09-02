@@ -8,8 +8,9 @@ import {
 } from './capabilities';
 
 describe('server capability contract', () => {
-	it('contains the eleven exact capability identifiers without duplicates', () => {
+	it('contains the twelve exact capability identifiers without duplicates', () => {
 		expect(serverCapabilityIds).toEqual([
+			'keeppeek.backup.v1',
 			'keeppeek.configuration.v1',
 			'keeppeek.runtime-config.v1',
 			'keeppeek.media-export.v1',

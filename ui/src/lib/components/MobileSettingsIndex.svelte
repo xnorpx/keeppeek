@@ -6,12 +6,13 @@
 
 	type Props = {
 		config: SanitizedConfig;
+		backupAvailable?: boolean;
 	};
 
-	let { config }: Props = $props();
+	let { config, backupAvailable = false }: Props = $props();
 	const appearance = useAppearanceState();
 	let query = $state('');
-	let filtered = $derived(filterMobileSettingsSections(query));
+	let filtered = $derived(filterMobileSettingsSections(query, backupAvailable));
 	let administration = $derived(filtered.filter((section) => section.group === 'administration'));
 	let system = $derived(filtered.filter((section) => section.group === 'system'));
 

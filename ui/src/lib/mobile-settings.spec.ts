@@ -35,6 +35,12 @@ describe('mobile settings navigation', () => {
 		expect(filterMobileSettingsSections('  ')).toHaveLength(11);
 	});
 
+	it('hides backup navigation when the Administrator capability is unavailable', () => {
+		expect(filterMobileSettingsSections('', false)).toHaveLength(10);
+		expect(filterMobileSettingsSections('rollback', false)).toEqual([]);
+		expect(mobileSettingsFocus('#backups', false)).toBeNull();
+	});
+
 	it('maps system to the shared appearance renderer and keeps logs on its route', () => {
 		expect(mobileSettingsFocus('#system')).toMatchObject({
 			label: 'System & updates',
