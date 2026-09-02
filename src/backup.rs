@@ -15,8 +15,15 @@ use zip::ZipArchive;
 
 mod create;
 pub(crate) mod database;
+mod manager;
+mod restore;
 
 pub use create::{CreateBundleOptions, create_bundle};
+pub use manager::BackupManager;
+pub use restore::{
+    RestorePlanOptions, StageRestoreOptions, mark_restore_healthy, plan_restore,
+    recover_pending_restore, request_restore_rollback, stage_restore, target_revision,
+};
 
 /// The ZIP member that describes every section in a backup bundle.
 pub const MANIFEST_PATH: &str = "manifest.json";

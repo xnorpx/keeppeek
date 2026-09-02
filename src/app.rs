@@ -5,6 +5,7 @@ use std::{path::Path, sync::Arc};
 use crate::{
     access::AccessManager,
     api::{CameraId, CameraLifecycle, CameraStatus},
+    backup,
     battery_wake::BatteryWakeService,
     camera_database::CameraDatabase,
     cameras,
@@ -301,7 +302,13 @@ pub fn run(
             .map(std::sync::mpsc::Receiver::try_recv)
         {
             match result {
-                Ok(Ok(())) => camera_start_rx = None,
+                Ok(Ok(())) => {
+                    if let Err(error) = mark_pending_restore_healthy(config_path) {
+                        startup_error = Some(error);
+                        shutdown.cancel();
+                    }
+                    camera_start_rx = None;
+                }
                 Ok(Err(error)) => {
                     startup_error = Some(error);
                     camera_start_rx = None;
@@ -364,4 +371,14 @@ pub fn run(
     tracing::info!("all recordings saved");
 
     startup_error.map_or_else(|| Ok(restart.is_requested()), Err)
+}
+
+fn mark_pending_restore_healthy(config_path: &Path) -> anyhow::Result<()> {
+    let now_unix_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    backup::mark_restore_healthy(config_path, now_unix_ms)?;
+    Ok(())
 }

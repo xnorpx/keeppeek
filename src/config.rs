@@ -1194,6 +1194,12 @@ fn read_access_key_arg() -> anyhow::Result<Option<AccessKey>> {
 
 pub fn load() -> anyhow::Result<(Config, PathBuf)> {
     let path = read_config_arg().unwrap_or_else(config_path);
+    let now_unix_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    crate::backup::recover_pending_restore(&path, now_unix_ms)?;
     let config_directory = ensure_config_dir()?;
     let mut secrets = ensure_secrets_file(&path)?;
 
@@ -1682,6 +1688,10 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "camera_defaults"
             | STORAGE_MIGRATION_SECTION
     )
+}
+
+pub(crate) fn is_camera_namespace(namespace: &str, value: &toml::Value) -> bool {
+    !is_reserved_section(namespace) && value.is_table()
 }
 
 fn apply_pending_storage_migration(root: &mut toml::Table) -> anyhow::Result<()> {
