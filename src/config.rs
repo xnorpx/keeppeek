@@ -2225,7 +2225,6 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
-        // Both paths are NUL-terminated UTF-16 strings that remain valid for this call.
         unsafe {
             ReplaceFileW(
                 PCWSTR(replaced.as_ptr()),
