@@ -98,9 +98,14 @@ enum Command {
     Snapshot {
         destination: std::path::PathBuf,
         maximum_bytes: u64,
-        reply: SyncSender<anyhow::Result<u64>>,
+        reply: SyncSender<anyhow::Result<BackupSnapshot>>,
     },
     Shutdown,
+}
+
+pub struct BackupSnapshot {
+    pub bytes: u64,
+    pub required_secret_references: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -329,11 +334,11 @@ impl Handle {
             .map_err(|error| anyhow::anyhow!("notification scoped clear timed out: {error}"))?
     }
 
-    pub(crate) fn snapshot_to(
+    pub(crate) fn snapshot_reference_only_to(
         &self,
         destination: &Path,
         maximum_bytes: u64,
-    ) -> anyhow::Result<u64> {
+    ) -> anyhow::Result<BackupSnapshot> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
             .send(Command::Snapshot {
@@ -541,15 +546,41 @@ fn run(store: store::Store, rx: Receiver<Command>) {
                 maximum_bytes,
                 reply,
             } => {
-                let _ = reply.send(crate::backup::database::snapshot_turso_database(
-                    &store.connection,
-                    &destination,
-                    maximum_bytes,
-                ));
+                let result = (|| {
+                    crate::backup::database::snapshot_turso_database(
+                        &store.connection,
+                        &destination,
+                        maximum_bytes,
+                    )?;
+                    let snapshot = store::Store::open(&destination)?;
+                    let required_secret_references = snapshot.sanitize_backup()?;
+                    drop(snapshot);
+                    let bytes = std::fs::metadata(&destination)?.len();
+                    if bytes == 0 || bytes > maximum_bytes {
+                        anyhow::bail!("notification snapshot exceeds its size limit");
+                    }
+                    Ok(BackupSnapshot {
+                        bytes,
+                        required_secret_references,
+                    })
+                })();
+                let _ = reply.send(result);
             }
             Command::Shutdown => break,
         }
     }
+}
+
+pub fn resolve_backup_snapshot_references(
+    database_path: &Path,
+    config_path: &Path,
+) -> anyhow::Result<()> {
+    let snapshot = store::Store::open(database_path)?;
+    snapshot.resolve_backup_references(config_path)
+}
+
+pub fn validate_backup_snapshot(database_path: &Path) -> anyhow::Result<()> {
+    store::Store::open(database_path)?.validate_backup()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -739,10 +770,12 @@ mod snapshot_tests {
         let handle = runtime.handle();
         let snapshot_path = directory.join("snapshot.db");
 
-        handle
-            .snapshot_to(&snapshot_path, 16 * 1024 * 1024)
+        let result = handle
+            .snapshot_reference_only_to(&snapshot_path, 16 * 1024 * 1024)
             .unwrap();
 
+        assert!(result.bytes > 0);
+        assert!(result.required_secret_references.is_empty());
         let snapshot = store::Store::open(&snapshot_path).unwrap();
         assert!(snapshot.rules("operator").unwrap().is_empty());
         assert!(handle.rules("operator").unwrap().is_empty());

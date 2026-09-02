@@ -1199,7 +1199,27 @@ pub fn load() -> anyhow::Result<(Config, PathBuf)> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis(),
     )?;
-    crate::backup::recover_pending_restore(&path, now_unix_ms)?;
+    let restore_applied =
+        crate::backup::recover_pending_restore(&path, now_unix_ms)?.is_some_and(|record| {
+            record.state == crate::api::backup_proto::RestoreState::Verifying as i32
+        });
+    match load_from_path(path.clone()) {
+        Ok(config) => Ok(config),
+        Err(error) if restore_applied => {
+            match crate::backup::recover_pending_restore(&path, now_unix_ms.saturating_add(1)) {
+                Ok(_) => Err(anyhow::anyhow!(
+                    "restored configuration failed to load and the previous state was restored: {error:#}"
+                )),
+                Err(rollback_error) => Err(anyhow::anyhow!(
+                    "restored configuration failed to load: {error:#}; rollback also failed: {rollback_error:#}"
+                )),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn load_from_path(path: PathBuf) -> anyhow::Result<(Config, PathBuf)> {
     let config_directory = ensure_config_dir()?;
     let mut secrets = ensure_secrets_file(&path)?;
 

@@ -1,6 +1,13 @@
-use std::{fmt, path::Path, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fmt::{self, Write as _},
+    path::Path,
+    time::Duration,
+};
 
-use super::model::Rule;
+use sha2::{Digest, Sha256};
+
+use super::model::{Channel, Rule};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RULE_JSON_BYTES: usize = 64 * 1_024;
@@ -271,10 +278,254 @@ impl Store {
         })
     }
 
+    pub(super) fn sanitize_backup(&self) -> anyhow::Result<Vec<String>> {
+        let references = pollster::block_on(async {
+            self.connection
+                .execute_batch("PRAGMA secure_delete = ON; BEGIN IMMEDIATE")
+                .await?;
+            let result = sanitize_backup_rules(&self.connection).await;
+            finish_transaction(&self.connection, result).await
+        })?;
+        pollster::block_on(self.connection.execute_batch("VACUUM"))?;
+        Ok(references.into_iter().collect())
+    }
+
+    pub(super) fn resolve_backup_references(&self, config_path: &Path) -> anyhow::Result<()> {
+        pollster::block_on(async {
+            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
+            let result = resolve_backup_rules(&self.connection, config_path).await;
+            finish_transaction(&self.connection, result).await
+        })?;
+        pollster::block_on(self.connection.execute_batch("VACUUM"))?;
+        Ok(())
+    }
+
+    pub(super) fn validate_backup(&self) -> anyhow::Result<()> {
+        pollster::block_on(async {
+            for (_, active, draft) in backup_rule_documents(&self.connection).await? {
+                if let Some(active) = active {
+                    validate_backup_rule(&active, true)?;
+                }
+                validate_backup_rule(&draft, false)?;
+            }
+            for (_, _, definition) in backup_rule_versions(&self.connection).await? {
+                validate_backup_rule(&definition, true)?;
+            }
+            for table in [
+                "notification_attempts",
+                "notification_outbox",
+                "notification_receipts",
+                "notification_history",
+                "logical_notifications",
+                "notification_operational_intervals",
+                "notification_cooldowns",
+                "notification_rate_windows",
+                "notification_audit",
+            ] {
+                let statement = format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)");
+                let mut rows = self.connection.query(&statement, ()).await?;
+                if rows
+                    .next()
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("notification backup validation returned no row")
+                    })?
+                    .get::<i64>(0)?
+                    != 0
+                {
+                    anyhow::bail!("notification backup contains operational state");
+                }
+            }
+            Ok(())
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn rule(&self, rule_id: &str) -> anyhow::Result<Option<RuleRecord>> {
         pollster::block_on(rule_by_id(&self.connection, rule_id))
     }
+}
+
+async fn sanitize_backup_rules(connection: &turso::Connection) -> anyhow::Result<BTreeSet<String>> {
+    let mut references = BTreeSet::new();
+    for (id, active, draft) in backup_rule_documents(connection).await? {
+        let active = active
+            .map(|value| sanitize_rule_json(&value, &format!("{id}:active"), &mut references))
+            .transpose()?;
+        let draft = sanitize_rule_json(&draft, &format!("{id}:draft"), &mut references)?;
+        connection
+            .execute(
+                "UPDATE notification_rules
+                 SET active_json = ?2, draft_json = ?3,
+                     last_match_at_ms = NULL, last_delivery_at_ms = NULL
+                 WHERE id = ?1",
+                turso::params![id, active, draft],
+            )
+            .await?;
+    }
+    for (rule_id, revision, definition) in backup_rule_versions(connection).await? {
+        let definition = sanitize_rule_json(
+            &definition,
+            &format!("{rule_id}:version:{revision}"),
+            &mut references,
+        )?;
+        connection
+            .execute(
+                "UPDATE notification_rule_versions
+                 SET definition_json = ?3 WHERE rule_id = ?1 AND revision = ?2",
+                turso::params![rule_id, revision, definition],
+            )
+            .await?;
+    }
+    connection
+        .execute_batch(
+            "DELETE FROM notification_attempts;
+             DELETE FROM notification_outbox;
+             DELETE FROM notification_receipts;
+             DELETE FROM notification_history;
+             DELETE FROM logical_notifications;
+             DELETE FROM notification_operational_intervals;
+             DELETE FROM notification_cooldowns;
+             DELETE FROM notification_rate_windows;
+             DELETE FROM notification_audit;",
+        )
+        .await?;
+    Ok(references)
+}
+
+async fn resolve_backup_rules(
+    connection: &turso::Connection,
+    config_path: &Path,
+) -> anyhow::Result<()> {
+    for (id, active, draft) in backup_rule_documents(connection).await? {
+        let active = active
+            .map(|value| resolve_rule_json(&value, config_path, true))
+            .transpose()?;
+        let draft = resolve_rule_json(&draft, config_path, false)?;
+        connection
+            .execute(
+                "UPDATE notification_rules SET active_json = ?2, draft_json = ?3 WHERE id = ?1",
+                turso::params![id, active, draft],
+            )
+            .await?;
+    }
+    for (rule_id, revision, definition) in backup_rule_versions(connection).await? {
+        let definition = resolve_rule_json(&definition, config_path, true)?;
+        connection
+            .execute(
+                "UPDATE notification_rule_versions
+                 SET definition_json = ?3 WHERE rule_id = ?1 AND revision = ?2",
+                turso::params![rule_id, revision, definition],
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn backup_rule_documents(
+    connection: &turso::Connection,
+) -> anyhow::Result<Vec<(String, Option<String>, String)>> {
+    let mut rows = connection
+        .query(
+            "SELECT id, active_json, draft_json FROM notification_rules ORDER BY id",
+            (),
+        )
+        .await?;
+    let mut documents = Vec::new();
+    while let Some(row) = rows.next().await? {
+        documents.push((row.get(0)?, row.get(1)?, row.get(2)?));
+    }
+    Ok(documents)
+}
+
+async fn backup_rule_versions(
+    connection: &turso::Connection,
+) -> anyhow::Result<Vec<(String, i64, String)>> {
+    let mut rows = connection
+        .query(
+            "SELECT rule_id, revision, definition_json
+             FROM notification_rule_versions ORDER BY rule_id, revision",
+            (),
+        )
+        .await?;
+    let mut documents = Vec::new();
+    while let Some(row) = rows.next().await? {
+        documents.push((row.get(0)?, row.get(1)?, row.get(2)?));
+    }
+    Ok(documents)
+}
+
+fn sanitize_rule_json(
+    value: &str,
+    context: &str,
+    references: &mut BTreeSet<String>,
+) -> anyhow::Result<String> {
+    let mut rule: Rule = serde_json::from_str(value)?;
+    for (index, action) in rule.actions.iter_mut().enumerate() {
+        if action.destination.is_empty() {
+            continue;
+        }
+        let reference = if crate::config::is_secret_reference(&action.destination) {
+            action.destination.clone()
+        } else {
+            notification_secret_reference(&format!("{context}:{index}"))
+        };
+        references.insert(reference.clone());
+        action.destination = reference;
+    }
+    serialize_rule(&rule)
+}
+
+fn resolve_rule_json(value: &str, config_path: &Path, validate: bool) -> anyhow::Result<String> {
+    let mut rule: Rule = serde_json::from_str(value)?;
+    for action in &mut rule.actions {
+        action.destination =
+            crate::config::resolve_secret_references(config_path, &action.destination)?;
+    }
+    if validate {
+        rule.validate()?;
+    }
+    serialize_rule(&rule)
+}
+
+fn validate_backup_rule(value: &str, validate: bool) -> anyhow::Result<()> {
+    let mut rule: Rule = serde_json::from_str(value)?;
+    for action in &mut rule.actions {
+        match action.channel {
+            Channel::Browser if !action.destination.is_empty() => {
+                anyhow::bail!("browser backup action contains a destination");
+            }
+            Channel::Browser => {}
+            Channel::Push | Channel::Webhook | Channel::Forwarder => {
+                if !crate::config::is_secret_reference(&action.destination) {
+                    anyhow::bail!("notification backup contains a resolved destination");
+                }
+                action.destination = match action.channel {
+                    Channel::Push => serde_json::json!({
+                        "application_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "user_key": "UUUUUUUUUUUUUUUUUUUUUUUUUUUUUU"
+                    })
+                    .to_string(),
+                    Channel::Webhook => "https://example.invalid/keeppeek".to_owned(),
+                    Channel::Forwarder => "configured-forwarder".to_owned(),
+                    Channel::Browser => unreachable!("browser actions were handled above"),
+                };
+            }
+        }
+    }
+    if validate {
+        rule.validate()?;
+    }
+    Ok(())
+}
+
+fn notification_secret_reference(context: &str) -> String {
+    let digest = Sha256::digest(context.as_bytes());
+    let mut key = String::from("BACKUP_NOTIFICATION_");
+    for byte in &digest[..12] {
+        write!(&mut key, "{byte:02X}").expect("writing to a String cannot fail");
+    }
+    format!("{{secret:{key}}}")
 }
 
 async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
@@ -778,8 +1029,8 @@ mod tests {
     use crate::notifications::{
         Cooldown, CooldownScope,
         model::{
-            Action, AttachmentPolicy, Channel, EnrichmentPolicy, FailurePolicy, Filter, Schedule,
-            Template, Trigger,
+            Action, AttachmentPolicy, EnrichmentPolicy, FailurePolicy, Filter, Schedule, Template,
+            Trigger,
         },
     };
 
@@ -890,6 +1141,97 @@ mod tests {
                 draft_revision: active.draft_revision,
             })
         );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn reference_only_snapshot_scrubs_and_restores_notification_destinations() {
+        let directory = test_dir("notification-reference-backup");
+        let database_path = directory.join("notifications.db");
+        let store = Store::open(&database_path).unwrap();
+        let application_token = "a23456789012345678901234567890";
+        let user_key = "u23456789012345678901234567890";
+        let destination = serde_json::json!({
+            "application_token": application_token,
+            "user_key": user_key,
+            "priority": 0
+        })
+        .to_string();
+        let mut rule = draft("rule-1");
+        rule.actions[0].channel = Channel::Push;
+        rule.actions[0].destination.clone_from(&destination);
+        let saved = store.save_draft(rule, 0, 1_000).unwrap();
+        store
+            .activate("rule-1", "owner-1", 0, saved.draft_revision, 2_000)
+            .unwrap();
+        let snapshot_path = directory.join("snapshot.db");
+        crate::backup::database::snapshot_turso_database(
+            &store.connection,
+            &snapshot_path,
+            16 * 1024 * 1024,
+        )
+        .unwrap();
+        assert!(store.validate_backup().is_err());
+        drop(store);
+
+        let snapshot = Store::open(&snapshot_path).unwrap();
+        let references = snapshot.sanitize_backup().unwrap();
+        snapshot.validate_backup().unwrap();
+        drop(snapshot);
+        let bytes = std::fs::read(&snapshot_path).unwrap();
+        assert!(
+            !bytes
+                .windows(application_token.len())
+                .any(|value| value == application_token.as_bytes())
+        );
+        assert!(
+            !bytes
+                .windows(user_key.len())
+                .any(|value| value == user_key.as_bytes())
+        );
+        assert_eq!(references.len(), 3);
+
+        let secrets = references
+            .iter()
+            .map(|reference| {
+                let key = reference
+                    .strip_prefix("{secret:")
+                    .and_then(|value| value.strip_suffix('}'))
+                    .unwrap();
+                format!("{key} = {destination:?}\n")
+            })
+            .collect::<String>();
+        std::fs::write(directory.join("config.toml"), "").unwrap();
+        std::fs::write(directory.join("secrets.toml"), secrets).unwrap();
+        let snapshot = Store::open(&snapshot_path).unwrap();
+        snapshot
+            .resolve_backup_references(&directory.join("config.toml"))
+            .unwrap();
+        let restored = snapshot.rule("rule-1").unwrap().unwrap();
+        assert_eq!(restored.active.unwrap().actions[0].destination, destination);
+        assert_eq!(restored.draft.actions[0].destination, destination);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_validation_rejects_operational_state() {
+        let directory = test_dir("notification-backup-operational-state");
+        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let saved = store.save_draft(draft("rule-1"), 0, 1_000).unwrap();
+        store
+            .activate("rule-1", "owner-1", 0, saved.draft_revision, 2_000)
+            .unwrap();
+        pollster::block_on(store.connection.execute(
+            "INSERT INTO notification_audit (
+                principal_id, action, subject_id, revision, detail, occurred_at_ms
+             ) VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
+            turso::params!["owner-1", "test", "rule-1", 3_000_i64],
+        ))
+        .unwrap();
+
+        let error = store.validate_backup().unwrap_err();
+
+        assert!(error.to_string().contains("operational state"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

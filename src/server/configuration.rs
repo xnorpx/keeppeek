@@ -2093,6 +2093,16 @@ fn validate_stored_templates(document: &StoredTemplateDocument) -> anyhow::Resul
     Ok(())
 }
 
+pub(super) fn validate_backup_template_document(bytes: &[u8]) -> anyhow::Result<()> {
+    if bytes.len() > MAXIMUM_TEMPLATE_DOCUMENT_BYTES {
+        anyhow::bail!(
+            "configuration template document exceeds {MAXIMUM_TEMPLATE_DOCUMENT_BYTES} bytes"
+        );
+    }
+    let document: StoredTemplateDocument = serde_json::from_slice(bytes)?;
+    validate_stored_templates(&document)
+}
+
 fn valid_template_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
