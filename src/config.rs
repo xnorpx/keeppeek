@@ -2207,6 +2207,7 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
     if let Some(permissions) = permissions {
         std::fs::set_permissions(&temporary, permissions)?;
     }
+    drop(file);
     #[cfg(windows)]
     if path.exists() {
         use std::os::windows::ffi::OsStrExt;
