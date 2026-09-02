@@ -202,15 +202,18 @@ impl EventStore {
         let temporary = self
             .thumbnail_root
             .join(format!(".publication-{}.tmp", uuid::Uuid::new_v4()));
-        crate::config::write_private_file(&temporary, jpeg)
-            .map_err(|error| Storage(error.into()))?;
-        fs::File::open(&temporary)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| Storage(error.into()))?;
-        if destination.exists() {
-            fs::remove_file(&destination).map_err(|error| Storage(error.into()))?;
+        let promote = (|| -> std::io::Result<()> {
+            crate::config::write_private_file(&temporary, jpeg)?;
+            fs::File::open(&temporary)?.sync_all()?;
+            if destination.exists() {
+                fs::remove_file(&destination)?;
+            }
+            fs::rename(&temporary, &destination)
+        })();
+        if let Err(error) = promote {
+            let _ = fs::remove_file(&temporary);
+            return Err(Storage(error.into()));
         }
-        fs::rename(&temporary, &destination).map_err(|error| Storage(error.into()))?;
         event.thumbnail_filename = Some(filename.clone());
         if let Err(error) = self.catalog.insert_event(event) {
             let _ = fs::remove_file(destination);
@@ -411,6 +414,8 @@ mod tests {
                         bbox: None,
                         bbox_attachment_id: Some("snapshot".to_owned()),
                         zone: None,
+                        text: None,
+                        payload: None,
                         attachments: vec![crate::storage::metadata::EventAttachment {
                             id: "snapshot".to_owned(),
                             attachment_type: "snapshot".to_owned(),
@@ -469,6 +474,8 @@ mod tests {
                 bbox: None,
                 bbox_attachment_id: None,
                 zone: None,
+                text: None,
+                payload: None,
                 attachments: Vec::new(),
                 canonical_attachment_id: None,
                 icon_key: "motion".to_owned(),
@@ -553,6 +560,8 @@ mod tests {
                     bbox: None,
                     bbox_attachment_id: None,
                     zone: None,
+                    text: None,
+                    payload: None,
                     attachments: Vec::new(),
                     canonical_attachment_id: None,
                     icon_key: "motion".to_owned(),
@@ -626,6 +635,8 @@ mod tests {
                         bbox: None,
                         bbox_attachment_id: Some("snapshot".to_owned()),
                         zone: None,
+                        text: None,
+                        payload: None,
                         attachments: vec![crate::storage::metadata::EventAttachment {
                             id: "snapshot".to_owned(),
                             attachment_type: "snapshot".to_owned(),
@@ -704,6 +715,8 @@ mod tests {
                     bbox: None,
                     bbox_attachment_id: Some("snapshot".to_owned()),
                     zone: None,
+                    text: None,
+                    payload: None,
                     attachments: vec![attachment.clone()],
                     canonical_attachment_id: Some("snapshot".to_owned()),
                     icon_key: "person".to_owned(),
@@ -727,6 +740,8 @@ mod tests {
                 bbox: None,
                 bbox_attachment_id: Some("snapshot".to_owned()),
                 zone: None,
+                text: None,
+                payload: None,
                 attachments: vec![attachment],
                 canonical_attachment_id: Some("snapshot".to_owned()),
                 icon_key: "person".to_owned(),

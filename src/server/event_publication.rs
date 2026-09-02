@@ -1,6 +1,6 @@
 use super::{
-    ControlCommandError, PUBLISHED_DETECTION_EVENT_TYPES, ServerState, camera_source_session_id,
-    millis_timestamp, proto_camera_source_session, required_timestamp_ms, validate_client_id,
+    ControlCommandError, PUBLISHED_DETECTION_EVENT_TYPES, ServerState, millis_timestamp,
+    proto_camera_source_session, required_timestamp_ms, validate_client_id,
 };
 use crate::{
     api::proto::{self, event_publication_command},
@@ -23,6 +23,12 @@ const MAXIMUM_EVENT_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAXIMUM_STAGED_BYTES: u64 = 64 * 1024 * 1024;
 const MAXIMUM_ATTACHMENT_CHUNKS: u32 = 256;
 const MAXIMUM_ATTACHMENT_TEXT_CHARS: usize = 4_096;
+const MAXIMUM_EVENT_TEXT_CHARS: usize = 4_096;
+const MAXIMUM_EVENT_PAYLOAD_BYTES: usize = 16 * 1_024;
+const MAXIMUM_EVENT_PAYLOAD_NODES: usize = 256;
+const MAXIMUM_EVENT_PAYLOAD_DEPTH: usize = 8;
+const MAXIMUM_EVENT_PAYLOAD_COLLECTION_ITEMS: usize = 64;
+const MAXIMUM_EVENT_PAYLOAD_KEY_BYTES: usize = 128;
 const PUBLICATION_TTL_MS: u64 = 30_000;
 const DEFAULT_COMMIT_WAIT_MS: u64 = 1_000;
 
@@ -65,6 +71,18 @@ struct PendingCommit {
     attachment_channel: proto::DataChannelKind,
     expires_at_ms: u64,
     attachment_bytes: Vec<u8>,
+}
+
+pub(super) struct CommittedPublication {
+    pub(super) event: proto::Event,
+    pub(super) timeline_event: TimelineEvent,
+    pub(super) attachment_bytes: Arc<[u8]>,
+}
+
+pub(super) struct Dispatch {
+    pub(super) result: proto::ok::Result,
+    pub(super) committed: Option<CommittedPublication>,
+    pub(super) mqtt_retry: Option<TimelineEvent>,
 }
 
 enum CommitPreparation {
@@ -262,13 +280,26 @@ impl Registry {
         session_id: SessionId,
         request: proto::CommitEventPublication,
         now_ms: u64,
-    ) -> Result<proto::EventPublicationState, ControlCommandError> {
+    ) -> Result<
+        (
+            proto::EventPublicationState,
+            Option<CommittedPublication>,
+            Option<TimelineEvent>,
+        ),
+        ControlCommandError,
+    > {
         validate_path_id(&request.publication_id, "event publication ID")?;
         let wait_ms =
             commit_wait_timeout_ms(&request.publication_id, request.wait_timeout.as_ref())?;
         let key = (session_id, request.publication_id.clone());
         let pending = match self.prepare_commit(&key, &request.publication_id, now_ms, wait_ms)? {
-            CommitPreparation::Committed(state) => return Ok(*state),
+            CommitPreparation::Committed(publication) => {
+                let mqtt_retry = state
+                    .events
+                    .as_ref()
+                    .and_then(|store| store.event_by_id(&publication.event_id).ok().flatten());
+                return Ok((*publication, None, mqtt_retry));
+            }
             CommitPreparation::Pending(pending) => *pending,
         };
         let _commit_guard = self
@@ -292,7 +323,7 @@ impl Registry {
                 "event publication expired",
             ));
         }
-        let commit_result = (|| -> Result<(), (ControlCommandError, bool)> {
+        let commit_result = (|| -> Result<TimelineEvent, (ControlCommandError, bool)> {
             validate_event_identity(state, &request.publication_id, &event)
                 .map_err(|error| (error, false))?;
             validate_revision(state, &request.publication_id, &event)
@@ -310,8 +341,8 @@ impl Registry {
                     true,
                 )
             })?;
-            match store.commit_published_image(timeline_event, &attachment_bytes) {
-                Ok(()) => Ok(()),
+            match store.commit_published_image(timeline_event.clone(), &attachment_bytes) {
+                Ok(()) => Ok(timeline_event),
                 Err(PublishedImageCommitError::Invalid(_)) => Err((
                     publication_error(
                         &request.publication_id,
@@ -349,16 +380,28 @@ impl Registry {
                 }
             }
         })();
-        if let Err((error, retryable)) = commit_result {
-            self.finish_failed_commit(&key, attachment_bytes, retryable, super::unix_time_ms());
-            return Err(error);
-        }
-        Ok(self.finish_successful_commit(
+        let timeline_event = match commit_result {
+            Ok(event) => event,
+            Err((error, retryable)) => {
+                self.finish_failed_commit(&key, attachment_bytes, retryable, super::unix_time_ms());
+                return Err(error);
+            }
+        };
+        let publication = self.finish_successful_commit(
             &key,
             &request.publication_id,
-            event,
+            &event,
             attachment_channel,
             expires_at_ms,
+        );
+        Ok((
+            publication,
+            Some(CommittedPublication {
+                event,
+                timeline_event,
+                attachment_bytes: Arc::from(attachment_bytes),
+            }),
+            None,
         ))
     }
 
@@ -472,7 +515,7 @@ impl Registry {
         &self,
         key: &(SessionId, String),
         publication_id: &str,
-        event: proto::Event,
+        event: &proto::Event,
         attachment_channel: proto::DataChannelKind,
         expires_at_ms: u64,
     ) -> proto::EventPublicationState {
@@ -489,7 +532,7 @@ impl Registry {
             publication_state(
                 publication_id,
                 &StagedPublication {
-                    event,
+                    event: event.clone(),
                     attachment_channel,
                     expires_at_ms,
                     status: PublicationStatus::Committed,
@@ -550,6 +593,22 @@ impl Registry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(owner, _), _| *owner != session_id);
+        self.inner.changed.notify_all();
+    }
+
+    pub(super) fn invalidate_source(&self, source_id: &str) {
+        let mut publications = self
+            .inner
+            .publications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for publication in publications.values_mut() {
+            if publication.event.source_id == source_id && publication.status.is_active() {
+                publication.status = PublicationStatus::Aborted;
+                publication.attachment_bytes.clear();
+                publication.reserved_bytes = 0;
+            }
+        }
         self.inner.changed.notify_all();
     }
 
@@ -626,15 +685,25 @@ pub(super) fn dispatch(
     state: &ServerState,
     session_id: SessionId,
     command: proto::EventPublicationCommand,
-) -> Result<proto::ok::Result, ControlCommandError> {
+) -> Result<Dispatch, ControlCommandError> {
+    let mut committed = None;
+    let mut mqtt_retry = None;
     let publication =
         match command.action {
             Some(event_publication_command::Action::Start(request)) => state
                 .event_publications
                 .start(state, session_id, request, super::unix_time_ms())?,
-            Some(event_publication_command::Action::Commit(request)) => state
-                .event_publications
-                .commit(state, session_id, request, super::unix_time_ms())?,
+            Some(event_publication_command::Action::Commit(request)) => {
+                let (publication, committed_publication, retry) = state.event_publications.commit(
+                    state,
+                    session_id,
+                    request,
+                    super::unix_time_ms(),
+                )?;
+                committed = committed_publication;
+                mqtt_retry = retry;
+                publication
+            }
             Some(event_publication_command::Action::Abort(request)) => state
                 .event_publications
                 .abort(session_id, request, super::unix_time_ms())?,
@@ -646,7 +715,11 @@ pub(super) fn dispatch(
                 ));
             }
         };
-    Ok(proto::ok::Result::EventPublicationState(publication))
+    Ok(Dispatch {
+        result: proto::ok::Result::EventPublicationState(publication),
+        committed,
+        mqtt_retry,
+    })
 }
 
 pub(super) fn ingest(
@@ -909,6 +982,16 @@ fn timeline_event(event: &proto::Event) -> Result<TimelineEvent, ControlCommandE
             .map(|bbox| [bbox.x, bbox.y, bbox.width, bbox.height]),
         bbox_attachment_id: event.bounding_box_attachment_id.clone(),
         zone: event.zone.clone(),
+        text: event.text.clone(),
+        payload: json_payload(event.payload.as_ref()).map_err(|_| {
+            publication_error(
+                "",
+                &event.event_id,
+                proto::EventPublicationErrorCode::EventInvalid,
+                None,
+                "event publication payload is invalid",
+            )
+        })?,
         attachments,
         canonical_attachment_id: event.canonical_attachment_id.clone(),
         icon_key: icon.key.to_owned(),
@@ -987,8 +1070,8 @@ fn validate_event_identity(
                 "event source was not found",
             )
         })?;
-    if camera_source_session_id(&camera.info.id) != source_session_id
-        || proto_camera_source_session(&camera.info, &state.webrtc).is_none()
+    if proto_camera_source_session(&camera.info, &state.webrtc)
+        .is_none_or(|source| source.source_session_id != source_session_id)
     {
         return Err(publication_error(
             publication_id,
@@ -1032,10 +1115,114 @@ fn validate_event_values(
             || bbox.x + bbox.width > 1.0
             || bbox.y + bbox.height > 1.0
     });
-    if end_time_ms.is_some_and(|end| end < start_time_ms) || invalid_confidence || invalid_box {
+    if end_time_ms.is_some_and(|end| end < start_time_ms)
+        || invalid_confidence
+        || invalid_box
+        || !text_and_payload_valid(event)
+    {
         return Err(invalid_event());
     }
     Ok(())
+}
+
+pub(super) fn text_and_payload_valid(event: &proto::Event) -> bool {
+    !event
+        .text
+        .as_ref()
+        .is_some_and(|text| text.chars().count() > MAXIMUM_EVENT_TEXT_CHARS)
+        && !event
+            .payload
+            .as_ref()
+            .is_some_and(|payload| !valid_structured_payload(payload))
+}
+
+pub(super) fn json_payload(
+    payload: Option<&prost_types::Struct>,
+) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
+    payload
+        .map(|payload| {
+            payload
+                .fields
+                .iter()
+                .map(|(key, value)| Ok((key.clone(), json_value(value)?)))
+                .collect::<anyhow::Result<serde_json::Map<_, _>>>()
+        })
+        .transpose()
+}
+
+fn json_value(value: &prost_types::Value) -> anyhow::Result<serde_json::Value> {
+    match value
+        .kind
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("structured payload value has no kind"))?
+    {
+        prost_types::value::Kind::NullValue(_) => Ok(serde_json::Value::Null),
+        prost_types::value::Kind::NumberValue(number) => serde_json::Number::from_f64(*number)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| anyhow::anyhow!("structured payload number is not finite")),
+        prost_types::value::Kind::StringValue(value) => {
+            Ok(serde_json::Value::String(value.clone()))
+        }
+        prost_types::value::Kind::BoolValue(value) => Ok(serde_json::Value::Bool(*value)),
+        prost_types::value::Kind::StructValue(value) => {
+            json_payload(Some(value)).and_then(|value| {
+                value
+                    .map(serde_json::Value::Object)
+                    .ok_or_else(|| anyhow::anyhow!("structured payload object is missing"))
+            })
+        }
+        prost_types::value::Kind::ListValue(value) => value
+            .values
+            .iter()
+            .map(json_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
+    }
+}
+
+fn valid_structured_payload(payload: &prost_types::Struct) -> bool {
+    if payload.encoded_len() > MAXIMUM_EVENT_PAYLOAD_BYTES
+        || payload.fields.len() > MAXIMUM_EVENT_PAYLOAD_COLLECTION_ITEMS
+    {
+        return false;
+    }
+    let mut nodes = 0;
+    payload.fields.iter().all(|(key, value)| {
+        !key.is_empty()
+            && key.len() <= MAXIMUM_EVENT_PAYLOAD_KEY_BYTES
+            && !key.chars().any(char::is_control)
+            && valid_structured_value(value, 1, &mut nodes)
+    })
+}
+
+fn valid_structured_value(value: &prost_types::Value, depth: usize, nodes: &mut usize) -> bool {
+    *nodes = nodes.saturating_add(1);
+    if depth > MAXIMUM_EVENT_PAYLOAD_DEPTH || *nodes > MAXIMUM_EVENT_PAYLOAD_NODES {
+        return false;
+    }
+    match value.kind.as_ref() {
+        Some(prost_types::value::Kind::NullValue(_))
+        | Some(prost_types::value::Kind::BoolValue(_))
+        | Some(prost_types::value::Kind::StringValue(_)) => true,
+        Some(prost_types::value::Kind::NumberValue(number)) => number.is_finite(),
+        Some(prost_types::value::Kind::StructValue(structure)) => {
+            structure.fields.len() <= MAXIMUM_EVENT_PAYLOAD_COLLECTION_ITEMS
+                && structure.fields.iter().all(|(key, value)| {
+                    !key.is_empty()
+                        && key.len() <= MAXIMUM_EVENT_PAYLOAD_KEY_BYTES
+                        && !key.chars().any(char::is_control)
+                        && valid_structured_value(value, depth.saturating_add(1), nodes)
+                })
+        }
+        Some(prost_types::value::Kind::ListValue(list)) => {
+            list.values.len() <= MAXIMUM_EVENT_PAYLOAD_COLLECTION_ITEMS
+                && list
+                    .values
+                    .iter()
+                    .all(|value| valid_structured_value(value, depth.saturating_add(1), nodes))
+        }
+        None => false,
+    }
 }
 
 fn validate_attachments(
@@ -1207,6 +1394,7 @@ mod tests {
             event: proto::Event {
                 event_id: "event-1".to_owned(),
                 revision: 1,
+                source_id: "front-door".to_owned(),
                 attachments: vec![proto::EventAttachmentDescriptor {
                     attachment_id: "snapshot-1".to_owned(),
                     attachment_type: "snapshot".to_owned(),
@@ -1332,6 +1520,50 @@ mod tests {
         assert_eq!(
             publication_code(&error),
             proto::EventPublicationErrorCode::AttachmentInvalid
+        );
+    }
+
+    #[test]
+    fn event_text_and_structured_payload_are_bounded() {
+        let mut event = staged_publication().event;
+        event.start_time = Some(millis_timestamp(1_000));
+
+        event.text = Some("x".repeat(MAXIMUM_EVENT_TEXT_CHARS + 1));
+        let error = validate_event_values("publication-1", &event).unwrap_err();
+        assert_eq!(
+            publication_code(&error),
+            proto::EventPublicationErrorCode::EventInvalid
+        );
+
+        event.text = None;
+        event.payload = Some(prost_types::Struct {
+            fields: std::collections::BTreeMap::from([(
+                "confidence".to_owned(),
+                prost_types::Value {
+                    kind: Some(prost_types::value::Kind::NumberValue(f64::NAN)),
+                },
+            )]),
+        });
+        let error = validate_event_values("publication-1", &event).unwrap_err();
+        assert_eq!(
+            publication_code(&error),
+            proto::EventPublicationErrorCode::EventInvalid
+        );
+
+        event.payload = Some(prost_types::Struct {
+            fields: std::collections::BTreeMap::from([(
+                "description".to_owned(),
+                prost_types::Value {
+                    kind: Some(prost_types::value::Kind::StringValue(
+                        "x".repeat(MAXIMUM_EVENT_PAYLOAD_BYTES),
+                    )),
+                },
+            )]),
+        });
+        let error = validate_event_values("publication-1", &event).unwrap_err();
+        assert_eq!(
+            publication_code(&error),
+            proto::EventPublicationErrorCode::EventInvalid
         );
     }
 
@@ -1489,5 +1721,28 @@ mod tests {
                 .unwrap()
                 .contains_key(&key)
         );
+    }
+
+    #[test]
+    fn source_invalidation_aborts_staged_publication_bytes() {
+        let registry = Registry::default();
+        let key = (SessionId::from_u64(7), "publication-1".to_owned());
+        let mut publication = staged_publication();
+        publication.attachment_bytes = vec![1, 2];
+        publication.reserved_bytes = 2;
+        registry
+            .inner
+            .publications
+            .lock()
+            .unwrap()
+            .insert(key.clone(), publication);
+
+        registry.invalidate_source("front-door");
+
+        let publications = registry.inner.publications.lock().unwrap();
+        let invalidated = publications.get(&key).unwrap();
+        assert_eq!(invalidated.status, PublicationStatus::Aborted);
+        assert!(invalidated.attachment_bytes.is_empty());
+        assert_eq!(invalidated.reserved_bytes, 0);
     }
 }

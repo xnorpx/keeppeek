@@ -38,6 +38,8 @@ pub(super) struct NormalizedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bounding_box: Option<BoundingBox>,
     #[serde(skip_serializing_if = "Value::is_null")]
     pub payload: Value,
@@ -115,6 +117,20 @@ pub(super) fn normalize_timeline_event(
     timestamp_ms: i64,
 ) -> NormalizedEvent {
     let canonical_attachment_id = event.canonical_attachment_id.as_deref();
+    let mut payload = event.payload.clone().unwrap_or_default();
+    payload.insert("icon_key".to_owned(), json!(event.icon_key));
+    payload.insert(
+        "rejected_icon_key".to_owned(),
+        json!(event.rejected_icon_key),
+    );
+    payload.insert(
+        "bounding_box_attachment_id".to_owned(),
+        json!(event.bbox_attachment_id),
+    );
+    payload.insert(
+        "canonical_attachment_id".to_owned(),
+        json!(event.canonical_attachment_id),
+    );
     NormalizedEvent {
         schema_version: SCHEMA_VERSION,
         instance_id: config.instance_id.clone(),
@@ -130,18 +146,14 @@ pub(super) fn normalize_timeline_event(
         end_timestamp_ms: event.end_time_ms,
         confidence: event.confidence,
         zone: event.zone.clone(),
+        text: event.text.clone(),
         bounding_box: event.bbox.map(|[x, y, width, height]| BoundingBox {
             x,
             y,
             width,
             height,
         }),
-        payload: json!({
-            "icon_key": event.icon_key,
-            "rejected_icon_key": event.rejected_icon_key,
-            "bounding_box_attachment_id": event.bbox_attachment_id,
-            "canonical_attachment_id": event.canonical_attachment_id,
-        }),
+        payload: Value::Object(payload),
         attachments: event
             .attachments
             .iter()
@@ -190,6 +202,7 @@ pub(super) fn normalize_operational_event(
         end_timestamp_ms: event.end_time_ms,
         confidence: None,
         zone: None,
+        text: None,
         bounding_box: None,
         payload: json!({
             "severity": event.severity.as_str(),
@@ -250,6 +263,17 @@ mod tests {
             bbox: Some([0.31, 0.16, 0.22, 0.71]),
             bbox_attachment_id: Some("snapshot-0".to_owned()),
             zone: Some("porch".to_owned()),
+            text: Some("Person waiting at the porch".to_owned()),
+            payload: Some(serde_json::Map::from_iter([
+                (
+                    "object_class".to_owned(),
+                    Value::String("person".to_owned()),
+                ),
+                (
+                    "icon_key".to_owned(),
+                    Value::String("producer-value".to_owned()),
+                ),
+            ])),
             attachments: vec![EventAttachment {
                 id: "snapshot-0".to_owned(),
                 attachment_type: "thumbnail".to_owned(),
@@ -283,6 +307,9 @@ mod tests {
         assert_eq!(value["transition"], "ended");
         assert_eq!(value["source_id"], "front-door");
         assert_eq!(value["timestamp_ms"], 1_786_800_006_500_i64);
+        assert_eq!(value["text"], "Person waiting at the porch");
+        assert_eq!(value["payload"]["object_class"], "person");
+        assert_eq!(value["payload"]["icon_key"], "motion");
         assert_eq!(value["attachments"][0]["status"], "available");
     }
 

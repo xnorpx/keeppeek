@@ -135,6 +135,8 @@ mod tests {
                 bbox: None,
                 bbox_attachment_id: None,
                 zone: None,
+                text: None,
+                payload: None,
                 attachments: Vec::new(),
                 canonical_attachment_id: None,
                 icon_key: "motion".to_owned(),

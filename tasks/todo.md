@@ -11,14 +11,14 @@
 
 ## Live and stored visibility
 
-- [ ] Admit bounded source/stream/type/attachment event subscriptions.
-- [ ] Route committed revisions to matching live subscribers and MQTT independently.
-- [ ] Disconnect or shed one saturated subscriber without delaying persistence or peers.
-- [ ] Return the same revision and attachment ordering through stored search and the normal UI.
+- [x] Admit bounded source/stream/type/attachment event subscriptions.
+- [x] Route committed revisions to matching live subscribers and MQTT independently.
+- [x] Disconnect or shed one saturated subscriber without delaying persistence or peers.
+- [x] Return the same revision and attachment ordering through stored search and the normal UI.
 
 ## Media conformance
 
-- [ ] Verify H.264 and H.265 decoder configuration, fragmentation, timestamps, and keyframe recovery.
+- [x] Verify H.264 and H.265 decoder configuration, fragmentation, timestamps, and keyframe recovery.
 - [ ] Run one deterministic external client against two low-bandwidth test-camera streams.
 - [ ] Publish a person/vehicle event and request one timestamp-correct high-quality image.
 - [ ] Reject malformed media, credentials, source sessions, types, transports, and stale work.

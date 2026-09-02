@@ -234,6 +234,8 @@ pub struct TimelineEvent {
     pub bbox: Option<[f32; 4]>,
     pub bbox_attachment_id: Option<String>,
     pub zone: Option<String>,
+    pub text: Option<String>,
+    pub payload: Option<serde_json::Map<String, serde_json::Value>>,
     pub attachments: Vec<EventAttachment>,
     pub canonical_attachment_id: Option<String>,
     pub icon_key: String,
