@@ -42,7 +42,7 @@
 - [x] Focused UI unit tests pass.
 - [x] Focused production-process Playwright backup suite passes.
 - [x] Release benchmark passes all p95 budgets with reproducible output.
-- [ ] Final strict Clippy, format, dependency, build, and complete test gates pass.
+- [x] Final strict Clippy, format, dependency, build, and complete test gates pass.
 - [x] Fresh-context review has no unresolved correctness or security findings.
-- [ ] `./check.sh` passes on the final branch state.
-- [ ] PR contains the complete acceptance evidence table and final-commit CI links.
+- [x] `./check.sh` passes on executable commit `55ea282`.
+- [x] PR draft contains the complete acceptance evidence table and final-head CI links.

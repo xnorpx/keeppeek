@@ -75,8 +75,8 @@ health; and retains a bounded rollback point.
 
 - [x] Complete final fresh-context correctness and security review.
 - [x] Run focused Rust, CLI, UI, HTTP, browser, and benchmark validation on the final tree.
-- [ ] Run `./check.sh` from the repository root.
-- [ ] Publish a PR with one evidence row per issue criterion and final-commit CI links.
+- [x] Run `./check.sh` from the repository root.
+- [x] Prepare a PR with one evidence row per issue criterion and final-head CI links.
 
 ## Acceptance Criteria Verification
 
@@ -88,7 +88,7 @@ health; and retains a bounded rollback point.
 | Activation is staged, crash-safe, and rollback-bounded                                | Live state is unchanged through staging; startup journal applies before owners open and restores before-images on failure                               | Restore lifecycle, partial activation, interrupted database, changed-target, and failed-health tests                          | Focused tests pass               |
 | Same/older restores preserve identities and references                                | Format 2 full-domain and format 1 migration paths retain stable records and explicit external references                                                | `full_supported_round_trip_preserves_ids_references_and_mapped_paths`, `legacy_format_one_runtime_config_migrates_atomically` | Focused tests pass               |
 | Future schemas and invalid selections fail without mutation                           | Unsupported formats/schemas, duplicate sections, missing dependencies, stale revisions, changed digests, and blocked plans fail closed                  | Archive adversarial suite and stale-plan tests                                                                                | Focused tests pass               |
-| CLI/UI/cross-platform/security/migration/failure/rollback/full-round-trip checks pass | One generated contract drives Rust, browser, and automation; path fixtures cover Unix, Windows drive, and UNC sources                                   | ProtoJSON tests, CLI E2E, Settings E2E, restore failure suite, canonical gate                                                 | Final canonical gate pending     |
+| CLI/UI/cross-platform/security/migration/failure/rollback/full-round-trip checks pass | One generated contract drives Rust, browser, and automation; path fixtures cover Unix, Windows drive, and UNC sources                                   | ProtoJSON tests, CLI E2E, Settings E2E, restore failure suite, canonical gate                                                 | Canonical gate passed            |
 
 ## Performance Evidence
 
@@ -114,6 +114,18 @@ fixture.
 The final workflow is slower than raw copying because it adds consistent live snapshots,
 sanitization, schema/checksum validation, migration planning, and rollback evidence. It remains
 within all declared budgets.
+
+## Canonical Evidence
+
+`./check.sh` passed on executable commit `55ea282`:
+
+- Rust: 1,639 passed, 20 skipped.
+- Server-compatible UI tests: 28 passed.
+- Playwright: 193 passed, 2 expected codec skips.
+- Clippy, cargo-machete, Rust/Python/TOML/Prettier formatting, Svelte diagnostics, Paper,
+  visual-harness, demo, browser-unit, and production build gates passed.
+
+The following commit changes only this evidence record. GitHub CI provides final-head evidence.
 
 ## Risks and Mitigations
 
