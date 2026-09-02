@@ -455,7 +455,7 @@ fn split_configuration(root: &toml::Table) -> (toml::Table, toml::Table, toml::T
         }
         if key == "event_forwarder" {
             integrations.insert(key.clone(), value.clone());
-        } else if key == "camera_defaults" || !config::is_reserved_section(key) {
+        } else if key == "camera_defaults" || config::is_camera_namespace(key, value) {
             cameras.insert(key.clone(), value.clone());
         } else {
             runtime.insert(key.clone(), value.clone());
@@ -647,6 +647,13 @@ password = "{secret:MQTT_PASSWORD}"
                 .iter()
                 .any(|reference| reference.starts_with("{secret:BACKUP_ACCESS_KEY_"))
         );
+        let mut runtime = String::new();
+        archive
+            .by_name("config/runtime.toml")
+            .unwrap()
+            .read_to_string(&mut runtime)
+            .unwrap();
+        assert!(runtime.contains("access_key = \"{secret:BACKUP_ACCESS_KEY_"));
         super::super::inspect_bundle(Cursor::new(second.into_inner())).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
