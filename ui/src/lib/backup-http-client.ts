@@ -24,7 +24,6 @@ import {
 	type ActivateRestoreRequest,
 	type BackupCapabilities,
 	type BackupRecord,
-	type BackupTransfer,
 	type CreateBackupRequest,
 	type CreateRestorePlanRequest,
 	type DeleteBackupRequest,
