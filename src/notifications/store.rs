@@ -61,7 +61,11 @@ impl Store {
         let path = path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("notification database path is not valid UTF-8"))?;
-        let database = pollster::block_on(turso::Builder::new_local(path).build())?;
+        let database = pollster::block_on(
+            turso::Builder::new_local(path)
+                .experimental_vacuum(true)
+                .build(),
+        )?;
         let connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         pollster::block_on(initialize_schema(&connection))?;

@@ -1668,7 +1668,7 @@ fn camera_defaults_from_table(
     resolved.try_into().map_err(Into::into)
 }
 
-fn is_reserved_section(namespace: &str) -> bool {
+pub(crate) fn is_reserved_section(namespace: &str) -> bool {
     matches!(
         namespace,
         "access"
