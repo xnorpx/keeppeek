@@ -1,0 +1,332 @@
+// SPDX-License-Identifier: MIT
+syntax = "proto3";
+
+package keeppeek.backup.v1;
+
+// BackupService defines the JSON control plane under /api/backups.
+// ZIP artifacts use the transfer URIs returned by this service.
+service BackupService {
+  rpc GetCapabilities(GetBackupCapabilitiesRequest) returns (BackupCapabilities);
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+  rpc CreateBackup(CreateBackupRequest) returns (BackupRecord);
+  rpc GetBackup(GetBackupRequest) returns (BackupRecord);
+  rpc BeginUpload(BeginBackupUploadRequest) returns (BackupTransfer);
+  rpc BeginDownload(BeginBackupDownloadRequest) returns (BackupTransfer);
+  rpc InspectBackup(InspectBackupRequest) returns (BackupRecord);
+  rpc CreateRestorePlan(CreateRestorePlanRequest) returns (RestorePlan);
+  rpc ActivateRestore(ActivateRestoreRequest) returns (RestoreRecord);
+  rpc GetRestore(GetRestoreRequest) returns (RestoreRecord);
+  rpc RollbackRestore(RollbackRestoreRequest) returns (RestoreRecord);
+  rpc DeleteBackup(DeleteBackupRequest) returns (DeleteBackupResponse);
+}
+
+enum BackupSection {
+  BACKUP_SECTION_UNSPECIFIED = 0;
+  BACKUP_SECTION_RUNTIME_CONFIG = 1;
+  BACKUP_SECTION_CAMERA_DATABASE = 2;
+  BACKUP_SECTION_RECORDING_CATALOG = 3;
+  BACKUP_SECTION_EVENT_METADATA = 4;
+  BACKUP_SECTION_EVENT_THUMBNAILS = 5;
+  BACKUP_SECTION_GROUPS = 6;
+  BACKUP_SECTION_LAYOUTS = 7;
+  BACKUP_SECTION_NOTIFICATIONS = 8;
+  BACKUP_SECTION_INTEGRATIONS = 9;
+  BACKUP_SECTION_ACCESS = 10;
+  BACKUP_SECTION_STATE_STORE = 11;
+  BACKUP_SECTION_CONFIGURATION_TEMPLATES = 12;
+}
+
+enum BackupSecretPolicy {
+  BACKUP_SECRET_POLICY_UNSPECIFIED = 0;
+  BACKUP_SECRET_POLICY_REFERENCES_ONLY = 1;
+}
+
+enum BackupOrigin {
+  BACKUP_ORIGIN_UNSPECIFIED = 0;
+  BACKUP_ORIGIN_CREATED = 1;
+  BACKUP_ORIGIN_UPLOADED = 2;
+}
+
+enum BackupState {
+  BACKUP_STATE_UNSPECIFIED = 0;
+  BACKUP_STATE_CREATING = 1;
+  BACKUP_STATE_UPLOADING = 2;
+  BACKUP_STATE_VALIDATING = 3;
+  BACKUP_STATE_READY = 4;
+  BACKUP_STATE_FAILED = 5;
+}
+
+enum RestoreState {
+  RESTORE_STATE_UNSPECIFIED = 0;
+  RESTORE_STATE_STAGING = 1;
+  RESTORE_STATE_AWAITING_RESTART = 2;
+  RESTORE_STATE_VERIFYING = 3;
+  RESTORE_STATE_COMPLETE = 4;
+  RESTORE_STATE_ROLLING_BACK = 5;
+  RESTORE_STATE_ROLLED_BACK = 6;
+  RESTORE_STATE_FAILED = 7;
+}
+
+enum RestoreIssueSeverity {
+  RESTORE_ISSUE_SEVERITY_UNSPECIFIED = 0;
+  RESTORE_ISSUE_SEVERITY_INFORMATION = 1;
+  RESTORE_ISSUE_SEVERITY_WARNING = 2;
+  RESTORE_ISSUE_SEVERITY_BLOCKING = 3;
+}
+
+enum BackupPathKind {
+  BACKUP_PATH_KIND_UNSPECIFIED = 0;
+  BACKUP_PATH_KIND_CONFIG_DIRECTORY = 1;
+  BACKUP_PATH_KIND_RECORDING_CATALOG = 2;
+  BACKUP_PATH_KIND_LONG_TERM_MEDIA = 3;
+  BACKUP_PATH_KIND_EVENT_THUMBNAILS = 4;
+  BACKUP_PATH_KIND_NOTIFICATION_DATABASE = 5;
+}
+
+enum BackupErrorCode {
+  BACKUP_ERROR_CODE_UNSPECIFIED = 0;
+  BACKUP_ERROR_CODE_INVALID_REQUEST = 1;
+  BACKUP_ERROR_CODE_NOT_FOUND = 2;
+  BACKUP_ERROR_CODE_CONFLICT = 3;
+  BACKUP_ERROR_CODE_UNSUPPORTED_FORMAT = 4;
+  BACKUP_ERROR_CODE_UNSUPPORTED_SCHEMA = 5;
+  BACKUP_ERROR_CODE_CHECKSUM_MISMATCH = 6;
+  BACKUP_ERROR_CODE_CAPACITY = 7;
+  BACKUP_ERROR_CODE_PERMISSION = 8;
+  BACKUP_ERROR_CODE_EXPIRED = 9;
+  BACKUP_ERROR_CODE_BUSY = 10;
+  BACKUP_ERROR_CODE_INTERNAL = 11;
+}
+
+message GetBackupCapabilitiesRequest {}
+
+message BackupCapabilities {
+  string contract_id = 1;
+  uint32 current_bundle_format = 2;
+  uint32 minimum_bundle_format = 3;
+  uint64 maximum_upload_bytes = 4;
+  uint64 maximum_expanded_bytes = 5;
+  uint64 maximum_section_bytes = 6;
+  uint32 maximum_archive_members = 7;
+  uint32 maximum_retained_backups = 8;
+  uint32 maximum_retained_restore_plans = 9;
+  uint64 restore_plan_ttl_seconds = 10;
+  uint64 rollback_window_seconds = 11;
+  repeated BackupSection supported_sections = 12;
+}
+
+message BackupSource {
+  string operating_system = 1;
+  string architecture = 2;
+}
+
+message BackupPath {
+  BackupPathKind kind = 1;
+  string path = 2;
+}
+
+message BackupSectionDescriptor {
+  BackupSection section = 1;
+  string path = 2;
+  uint32 schema_version = 3;
+  uint64 bytes = 4;
+  string sha256 = 5;
+  string revision = 6;
+  repeated BackupSection dependencies = 7;
+}
+
+message BackupManifest {
+  uint32 format_version = 1;
+  uint64 created_at_unix_ms = 2;
+  string keeppeek_version = 3;
+  BackupSource source = 4;
+  repeated string feature_capabilities = 5;
+  BackupSecretPolicy secret_policy = 6;
+  repeated BackupSectionDescriptor sections = 7;
+  repeated string omitted_data = 8;
+  repeated string required_secret_references = 9;
+  repeated BackupPath source_paths = 10;
+  string snapshot_revision = 11;
+}
+
+message BackupProgress {
+  uint32 completed_per_mille = 1;
+  uint64 completed_bytes = 2;
+  optional uint64 total_bytes = 3;
+  optional BackupSection active_section = 4;
+}
+
+message BackupRecord {
+  string backup_id = 1;
+  BackupOrigin origin = 2;
+  BackupState state = 3;
+  string file_name = 4;
+  uint64 created_at_unix_ms = 5;
+  uint64 updated_at_unix_ms = 6;
+  uint64 archive_bytes = 7;
+  string archive_sha256 = 8;
+  optional BackupManifest manifest = 9;
+  optional BackupProgress progress = 10;
+  optional BackupError error = 11;
+}
+
+message ListBackupsRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListBackupsResponse {
+  repeated BackupRecord backups = 1;
+  string next_page_token = 2;
+}
+
+message CreateBackupRequest {
+  string client_request_id = 1;
+  repeated BackupSection sections = 2;
+  uint64 expected_archive_bytes = 3;
+}
+
+message GetBackupRequest {
+  string backup_id = 1;
+}
+
+message BeginBackupUploadRequest {
+  string client_request_id = 1;
+  string file_name = 2;
+  uint64 content_length = 3;
+  string archive_sha256 = 4;
+}
+
+message BeginBackupDownloadRequest {
+  string backup_id = 1;
+}
+
+message BackupTransfer {
+  string transfer_id = 1;
+  string backup_id = 2;
+  string uri = 3;
+  string content_type = 4;
+  uint64 maximum_bytes = 5;
+  uint64 expires_at_unix_ms = 6;
+  string expected_sha256 = 7;
+}
+
+message InspectBackupRequest {
+  string backup_id = 1;
+}
+
+message RestorePathMapping {
+  BackupPathKind kind = 1;
+  string source_path = 2;
+  string target_path = 3;
+}
+
+message CreateRestorePlanRequest {
+  string client_request_id = 1;
+  string backup_id = 2;
+  repeated BackupSection sections = 3;
+  repeated RestorePathMapping path_mappings = 4;
+  string expected_target_revision = 5;
+}
+
+message BackupMigration {
+  BackupSection section = 1;
+  uint32 source_schema_version = 2;
+  uint32 target_schema_version = 3;
+  string description = 4;
+}
+
+message RestoreIssue {
+  RestoreIssueSeverity severity = 1;
+  string code = 2;
+  string message = 3;
+  optional BackupSection section = 4;
+  string field = 5;
+}
+
+message RestoreCapacityCheck {
+  BackupPathKind kind = 1;
+  string target_path = 2;
+  uint64 required_bytes = 3;
+  uint64 available_bytes = 4;
+  bool writable = 5;
+  bool sufficient = 6;
+}
+
+message RestoreRestartImpact {
+  bool server_restart_required = 1;
+  repeated string components = 2;
+  string consequence = 3;
+}
+
+message RestorePlan {
+  string plan_id = 1;
+  string backup_id = 2;
+  string archive_sha256 = 3;
+  uint64 created_at_unix_ms = 4;
+  uint64 expires_at_unix_ms = 5;
+  string target_revision = 6;
+  repeated BackupSection selected_sections = 7;
+  repeated RestorePathMapping path_mappings = 8;
+  repeated BackupMigration migrations = 9;
+  repeated RestoreIssue issues = 10;
+  repeated RestoreCapacityCheck capacity_checks = 11;
+  repeated string required_secret_references = 12;
+  RestoreRestartImpact restart_impact = 13;
+  bool can_activate = 14;
+}
+
+message ActivateRestoreRequest {
+  string client_request_id = 1;
+  string plan_id = 2;
+  string archive_sha256 = 3;
+  bool confirm = 4;
+}
+
+message RestoreHealthCheck {
+  string name = 1;
+  bool passed = 2;
+  string detail = 3;
+}
+
+message RestoreRecord {
+  string restore_id = 1;
+  string plan_id = 2;
+  string backup_id = 3;
+  RestoreState state = 4;
+  uint64 created_at_unix_ms = 5;
+  uint64 updated_at_unix_ms = 6;
+  optional uint64 rollback_expires_at_unix_ms = 7;
+  string target_revision = 8;
+  bool restart_required = 9;
+  repeated RestoreHealthCheck health_checks = 10;
+  optional BackupProgress progress = 11;
+  optional BackupError error = 12;
+}
+
+message GetRestoreRequest {
+  string restore_id = 1;
+}
+
+message RollbackRestoreRequest {
+  string client_request_id = 1;
+  string restore_id = 2;
+  bool confirm = 3;
+}
+
+message DeleteBackupRequest {
+  string client_request_id = 1;
+  string backup_id = 2;
+}
+
+message DeleteBackupResponse {
+  string backup_id = 1;
+  bool deleted = 2;
+}
+
+message BackupError {
+  BackupErrorCode code = 1;
+  string message = 2;
+  string field = 3;
+  bool retryable = 4;
+}

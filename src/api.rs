@@ -192,6 +192,103 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/keeppeek.webrtc.v1.rs"));
 }
 
+pub mod backup_proto {
+    #![allow(clippy::all, clippy::pedantic, clippy::nursery, warnings)]
+    include!(concat!(env!("OUT_DIR"), "/keeppeek.backup.v1.rs"));
+    include!(concat!(env!("OUT_DIR"), "/keeppeek.backup.v1.serde.rs"));
+}
+
+#[cfg(test)]
+mod backup_proto_json_tests {
+    use super::backup_proto;
+
+    #[test]
+    fn create_request_uses_canonical_protojson() {
+        let request = backup_proto::CreateBackupRequest {
+            client_request_id: "request-1".to_owned(),
+            sections: vec![backup_proto::BackupSection::RuntimeConfig as i32],
+            expected_archive_bytes: 1_048_576,
+        };
+
+        let encoded = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(encoded["clientRequestId"], "request-1");
+        assert_eq!(encoded["sections"][0], "BACKUP_SECTION_RUNTIME_CONFIG");
+        assert_eq!(encoded["expectedArchiveBytes"], "1048576");
+        assert_eq!(
+            serde_json::from_value::<backup_proto::CreateBackupRequest>(encoded).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn create_request_rejects_unknown_json_fields() {
+        let error = serde_json::from_str::<backup_proto::CreateBackupRequest>(
+            r#"{"clientRequestId":"request-1","unexpected":true}"#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn create_request_rejects_unknown_enum_values() {
+        let error = serde_json::from_str::<backup_proto::CreateBackupRequest>(
+            r#"{"sections":["BACKUP_SECTION_FUTURE"]}"#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn create_request_rejects_uint64_overflow() {
+        let decoded = serde_json::from_str::<backup_proto::CreateBackupRequest>(
+            r#"{"expectedArchiveBytes":"18446744073709551616"}"#,
+        );
+
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn restore_plan_round_trips_http_json_evidence() {
+        let encoded = serde_json::json!({
+            "planId": "plan-1",
+            "backupId": "backup-1",
+            "archiveSha256": "ab",
+            "createdAtUnixMs": "10",
+            "expiresAtUnixMs": "20",
+            "targetRevision": "revision-3",
+            "selectedSections": ["BACKUP_SECTION_RUNTIME_CONFIG"],
+            "pathMappings": [{
+                "kind": "BACKUP_PATH_KIND_CONFIG_DIRECTORY",
+                "sourcePath": "/source",
+                "targetPath": "/target"
+            }],
+            "issues": [{
+                "severity": "RESTORE_ISSUE_SEVERITY_WARNING",
+                "code": "missing_secret",
+                "message": "A required secret is unavailable.",
+                "section": "BACKUP_SECTION_RUNTIME_CONFIG",
+                "field": "camera.password"
+            }],
+            "restartImpact": {
+                "serverRestartRequired": true,
+                "components": ["recording"],
+                "consequence": "Recording restarts after activation."
+            },
+            "canActivate": false
+        });
+
+        let plan: backup_proto::RestorePlan = serde_json::from_value(encoded.clone()).unwrap();
+
+        assert!(!plan.can_activate);
+        let mut canonical = encoded;
+        canonical.as_object_mut().unwrap().remove("canActivate");
+        assert_eq!(serde_json::to_value(plan).unwrap(), canonical);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::proto;

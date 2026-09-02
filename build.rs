@@ -42,12 +42,22 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-env-changed={CAMERA_DATABASE_ARCHIVE_ENV}");
     download_camera_database()?;
 
+    println!("cargo:rerun-if-changed=api/backup.proto");
     println!("cargo:rerun-if-changed=api/webrtc.proto");
     let protoc = protoc_bin_vendored::protoc_bin_path()
         .map_err(|error| io::Error::other(error.to_string()))?;
+    let descriptor_path = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR"))
+        .join("keeppeek-proto-descriptor.bin");
     let mut prost_config = prost_build::Config::new();
     prost_config.protoc_executable(protoc);
-    prost_config.compile_protos(&["api/webrtc.proto"], &["api/"])?;
+    prost_config.file_descriptor_set_path(&descriptor_path);
+    prost_config.compile_protos(&["api/backup.proto", "api/webrtc.proto"], &["api/"])?;
+    let descriptors = fs::read(descriptor_path)?;
+    pbjson_build::Builder::new()
+        .register_descriptors(&descriptors)
+        .map_err(|error| io::Error::other(error.to_string()))?
+        .build(&[".keeppeek.backup.v1"])
+        .map_err(|error| io::Error::other(error.to_string()))?;
 
     for input in UI_INPUTS {
         emit_rerun_if_changed(&manifest_dir.join(input), true)?;
