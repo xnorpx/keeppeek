@@ -2,7 +2,7 @@
 
 ## Atomic publication
 
-- [ ] Decode inbound binary event messages on the declared data channel with strict size limits.
+- [x] Decode inbound binary event messages on the declared data channel with strict size limits.
 - [ ] Start a publication only for an active stable source/session and advertised event policy.
 - [ ] Validate descriptors, chunk order/count/metadata, per-file bytes, aggregate bytes, and expiry.
 - [ ] Commit one event revision and all attachment bytes atomically before any fanout.

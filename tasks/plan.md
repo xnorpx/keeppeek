@@ -33,7 +33,7 @@ of the recorder lifecycle.
 
 ### Phase 1: Atomic Attachment Publication
 
-- [ ] Route bounded inbound reliable/unreliable `Message` envelopes to a session-aware handler.
+- [x] Route bounded inbound reliable/unreliable `Message` envelopes to a session-aware handler.
 - [ ] Start, receive chunks for, commit, retry, abort, and expire one bounded event publication.
 - [ ] Persist monotonic event revisions and attachment descriptors/bytes atomically.
 - [ ] Reject invalid source/session/type/channel/count/metadata/size/revision transitions with typed
