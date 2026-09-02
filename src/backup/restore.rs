@@ -933,7 +933,10 @@ fn recording_path_routes(
 
 fn write_staged_bytes(target: &RestoreJournalTarget, bytes: &[u8]) -> anyhow::Result<()> {
     config::write_private_file(&target.staged, bytes)?;
-    std::fs::File::open(&target.staged)?.sync_all()?;
+    std::fs::File::options()
+        .write(true)
+        .open(&target.staged)?
+        .sync_all()?;
     let actual = hash_file(
         &target.staged,
         super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
