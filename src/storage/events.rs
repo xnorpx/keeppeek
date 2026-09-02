@@ -5,7 +5,9 @@ use crate::{
 use image::{DynamicImage, ImageFormat, codecs::jpeg::JpegEncoder};
 use reo_proto::MAX_SNAPSHOT_BYTES;
 use std::{
+    collections::HashSet,
     fs,
+    io::Cursor,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -13,12 +15,46 @@ use std::{
 const THUMBNAIL_WIDTH: u32 = 384;
 const THUMBNAIL_HEIGHT: u32 = 216;
 const JPEG_QUALITY: u8 = 82;
+const PUBLISHED_IMAGE_DIMENSION_MAX: u32 = 8_192;
+const PUBLISHED_IMAGE_ALLOCATION_MAX: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct EventStore {
     catalog: RecordingCatalogHandle,
     thumbnail_root: PathBuf,
     max_thumbnail_bytes: u64,
+}
+
+#[derive(Debug)]
+pub(crate) enum PublishedImageCommitError {
+    Invalid(anyhow::Error),
+    Conflict(Option<u64>),
+    Storage(anyhow::Error),
+}
+
+impl std::fmt::Display for PublishedImageCommitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(error) => write!(formatter, "invalid published image: {error}"),
+            Self::Conflict(Some(revision)) => {
+                write!(
+                    formatter,
+                    "published image conflicts with revision {revision}"
+                )
+            }
+            Self::Conflict(None) => formatter.write_str("published image revision conflicts"),
+            Self::Storage(error) => write!(formatter, "published image storage failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PublishedImageCommitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Invalid(error) | Self::Storage(error) => Some(error.as_ref()),
+            Self::Conflict(_) => None,
+        }
+    }
 }
 
 impl EventStore {
@@ -33,6 +69,7 @@ impl EventStore {
             thumbnail_root: thumbnail_root.canonicalize()?,
             max_thumbnail_bytes,
         };
+        store.reconcile_image_files()?;
         store.enforce_thumbnail_limit()?;
         Ok(store)
     }
@@ -116,6 +153,81 @@ impl EventStore {
         Ok(())
     }
 
+    pub(crate) fn commit_published_image(
+        &self,
+        mut event: TimelineEvent,
+        jpeg: &[u8],
+    ) -> Result<(), PublishedImageCommitError> {
+        use PublishedImageCommitError::{Invalid, Storage};
+
+        if !safe_event_id(&event.id) {
+            return Err(Invalid(anyhow::anyhow!("invalid event identifier")));
+        }
+        let descriptor = event.canonical_attachment().ok_or_else(|| {
+            Invalid(anyhow::anyhow!(
+                "published event has no canonical attachment"
+            ))
+        })?;
+        let jpeg_len = u64::try_from(jpeg.len()).map_err(|error| Invalid(error.into()))?;
+        if descriptor.content_type != "image/jpeg" || descriptor.byte_len != Some(jpeg_len) {
+            return Err(Invalid(anyhow::anyhow!(
+                "published event image does not match its descriptor"
+            )));
+        }
+        if jpeg.len() > MAX_SNAPSHOT_BYTES
+            || (self.max_thumbnail_bytes != 0 && jpeg_len > self.max_thumbnail_bytes)
+        {
+            return Err(Invalid(anyhow::anyhow!(
+                "published event image exceeds the storage limit"
+            )));
+        }
+        validate_published_jpeg(jpeg).map_err(Invalid)?;
+
+        let previous = self.catalog.event_by_id(&event.id).map_err(Storage)?;
+        match previous.as_ref() {
+            Some(stored)
+                if event.revision <= stored.revision
+                    || event.camera_id != stored.camera_id
+                    || event.source != stored.source =>
+            {
+                return Err(PublishedImageCommitError::Conflict(Some(stored.revision)));
+            }
+            None if event.revision != 1 => {
+                return Err(PublishedImageCommitError::Conflict(None));
+            }
+            Some(_) | None => {}
+        }
+        let filename = format!("{}--r{}.jpg", event.id, event.revision);
+        let destination = self.thumbnail_root.join(&filename);
+        let temporary = self
+            .thumbnail_root
+            .join(format!(".publication-{}.tmp", uuid::Uuid::new_v4()));
+        crate::config::write_private_file(&temporary, jpeg)
+            .map_err(|error| Storage(error.into()))?;
+        fs::File::open(&temporary)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| Storage(error.into()))?;
+        if destination.exists() {
+            fs::remove_file(&destination).map_err(|error| Storage(error.into()))?;
+        }
+        fs::rename(&temporary, &destination).map_err(|error| Storage(error.into()))?;
+        event.thumbnail_filename = Some(filename.clone());
+        if let Err(error) = self.catalog.insert_event(event) {
+            let _ = fs::remove_file(destination);
+            return Err(Storage(error));
+        }
+        if let Some(previous_filename) = previous.and_then(|event| event.thumbnail_filename)
+            && previous_filename != filename
+            && safe_image_filename(&previous_filename)
+        {
+            let _ = fs::remove_file(self.thumbnail_root.join(previous_filename));
+        }
+        if let Err(error) = self.enforce_thumbnail_limit() {
+            tracing::warn!(%error, "unable to enforce event image retention after commit");
+        }
+        Ok(())
+    }
+
     pub fn thumbnail_path(
         &self,
         camera_id: &str,
@@ -133,7 +245,7 @@ impl EventStore {
         let Some(filename) = event.thumbnail_filename else {
             return Ok(None);
         };
-        if filename != format!("{event_id}.jpg") {
+        if !safe_image_filename(&filename) {
             return Ok(None);
         }
         let candidate = self.thumbnail_root.join(filename);
@@ -146,6 +258,34 @@ impl EventStore {
         Ok(Some(candidate))
     }
 
+    fn reconcile_image_files(&self) -> anyhow::Result<()> {
+        let mut referenced = self
+            .catalog
+            .event_thumbnail_filenames()?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        for entry in fs::read_dir(&self.thumbnail_root)? {
+            let entry = entry?;
+            let filename = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("event image filename is not valid UTF-8"))?;
+            let metadata = entry.metadata()?;
+            if !metadata.is_file() {
+                continue;
+            }
+            let interrupted = filename.starts_with('.') && filename.ends_with(".tmp");
+            let orphaned = safe_image_filename(&filename) && !referenced.remove(&filename);
+            if interrupted || orphaned {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        for filename in referenced {
+            self.catalog.detach_event_thumbnail_file(&filename)?;
+        }
+        Ok(())
+    }
+
     fn enforce_thumbnail_limit(&self) -> anyhow::Result<()> {
         if self.max_thumbnail_bytes == 0 {
             return Ok(());
@@ -154,13 +294,11 @@ impl EventStore {
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let path = entry.path();
-                let event_id = path.file_stem()?.to_str()?.to_owned();
+                let filename = path.file_name()?.to_str()?.to_owned();
                 let metadata = entry.metadata().ok()?;
-                (path.extension().and_then(|extension| extension.to_str()) == Some("jpg")
-                    && safe_event_id(&event_id))
-                .then_some((
+                safe_image_filename(&filename).then_some((
                     metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    event_id,
+                    filename,
                     path,
                     metadata.len(),
                 ))
@@ -168,11 +306,11 @@ impl EventStore {
             .collect::<Vec<_>>();
         let mut total = thumbnails.iter().map(|(_, _, _, bytes)| bytes).sum::<u64>();
         thumbnails.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
-        for (_, event_id, path, bytes) in thumbnails {
+        for (_, filename, path, bytes) in thumbnails {
             if total <= self.max_thumbnail_bytes {
                 break;
             }
-            self.catalog.detach_event_thumbnail(&event_id)?;
+            self.catalog.detach_event_thumbnail_file(&filename)?;
             fs::remove_file(path)?;
             total = total.saturating_sub(bytes);
         }
@@ -186,6 +324,25 @@ fn encode_jpeg(image: &DynamicImage) -> anyhow::Result<Vec<u8>> {
     Ok(encoded)
 }
 
+fn validate_published_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
+    let mut reader = image::ImageReader::with_format(Cursor::new(jpeg), ImageFormat::Jpeg);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(PUBLISHED_IMAGE_DIMENSION_MAX);
+    limits.max_image_height = Some(PUBLISHED_IMAGE_DIMENSION_MAX);
+    limits.max_alloc = Some(PUBLISHED_IMAGE_ALLOCATION_MAX);
+    reader.limits(limits);
+    reader.decode()?;
+    Ok(())
+}
+
+fn safe_image_filename(filename: &str) -> bool {
+    filename.ends_with(".jpg")
+        && !matches!(filename, "." | "..")
+        && filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+}
+
 fn safe_event_id(id: &str) -> bool {
     !id.is_empty()
         && id
@@ -197,6 +354,100 @@ fn safe_event_id(id: &str) -> bool {
 mod tests {
     use super::*;
     use crate::storage::{RecordingCatalog, metadata::EventSource};
+
+    fn jpeg_with_declared_dimensions(width: u16, height: u16) -> Vec<u8> {
+        let mut jpeg = encode_jpeg(&DynamicImage::new_rgb8(16, 16)).unwrap();
+        let sof = jpeg
+            .windows(2)
+            .position(|marker| marker == [0xff, 0xc0])
+            .expect("test JPEG must contain a baseline start-of-frame marker");
+        jpeg[sof + 5..sof + 7].copy_from_slice(&height.to_be_bytes());
+        jpeg[sof + 7..sof + 9].copy_from_slice(&width.to_be_bytes());
+        jpeg
+    }
+
+    #[test]
+    fn published_jpeg_validation_bounds_dimensions_and_decoded_allocation() {
+        let valid = encode_jpeg(&DynamicImage::new_rgb8(16, 16)).unwrap();
+        validate_published_jpeg(&valid).unwrap();
+
+        for jpeg in [
+            jpeg_with_declared_dimensions(8_193, 16),
+            jpeg_with_declared_dimensions(8_192, 8_192),
+        ] {
+            let error = validate_published_jpeg(&jpeg).unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<image::ImageError>(),
+                Some(image::ImageError::Limits(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn published_image_revision_replaces_the_catalog_and_previous_file() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-published-image-revision-{}",
+            rand::random::<u64>()
+        ));
+        let thumbnail_root = root.join("thumbnails");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let events = catalog.handle();
+        let store = EventStore::new(events.clone(), &thumbnail_root, 0).unwrap();
+        let first = encode_jpeg(&DynamicImage::new_rgb8(16, 16)).unwrap();
+        let second = encode_jpeg(&DynamicImage::new_rgb8(24, 16)).unwrap();
+        for (revision, jpeg) in [(1, &first), (2, &second)] {
+            store
+                .commit_published_image(
+                    TimelineEvent {
+                        id: "published-event".to_owned(),
+                        revision,
+                        camera_id: "front-door".to_owned(),
+                        stream: Some("sub".to_owned()),
+                        source: EventSource::KeepPeek,
+                        kind: "person".to_owned(),
+                        start_time_ms: 1_000,
+                        end_time_ms: None,
+                        confidence: Some(0.9),
+                        bbox: None,
+                        bbox_attachment_id: Some("snapshot".to_owned()),
+                        zone: None,
+                        attachments: vec![crate::storage::metadata::EventAttachment {
+                            id: "snapshot".to_owned(),
+                            attachment_type: "snapshot".to_owned(),
+                            content_type: "image/jpeg".to_owned(),
+                            byte_len: Some(jpeg.len() as u64),
+                            ordinal: 0,
+                            timestamp_ms: Some(1_000),
+                            text: None,
+                        }],
+                        canonical_attachment_id: Some("snapshot".to_owned()),
+                        icon_key: "person".to_owned(),
+                        rejected_icon_key: None,
+                        thumbnail_filename: None,
+                    },
+                    jpeg,
+                )
+                .unwrap();
+        }
+
+        let stored = events.event_by_id("published-event").unwrap().unwrap();
+        assert_eq!(stored.revision, 2);
+        assert_eq!(stored.attachments[0].byte_len, Some(second.len() as u64));
+        let mut stale = stored;
+        stale.thumbnail_filename = None;
+        stale.attachments[0].byte_len = Some(first.len() as u64);
+        store.commit_published_image(stale, &first).unwrap_err();
+        assert!(!thumbnail_root.join("published-event--r1.jpg").exists());
+        assert_eq!(
+            fs::read(thumbnail_root.join("published-event--r2.jpg")).unwrap(),
+            second
+        );
+
+        drop(store);
+        drop(events);
+        catalog.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn thumbnail_is_resized_and_requires_camera_ownership() {
@@ -344,6 +595,164 @@ mod tests {
 
         drop(limited);
         drop(store);
+        catalog.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn thumbnail_limit_prunes_published_revision_files_by_catalog_filename() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-published-image-limit-{}",
+            rand::random::<u64>()
+        ));
+        let thumbnail_root = root.join("thumbnails");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let events = catalog.handle();
+        let store = EventStore::new(events.clone(), &thumbnail_root, 0).unwrap();
+        let jpeg = encode_jpeg(&DynamicImage::new_rgb8(16, 16)).unwrap();
+        for (id, start_time_ms) in [("published-1", 1_000), ("published-2", 2_000)] {
+            store
+                .commit_published_image(
+                    TimelineEvent {
+                        id: id.to_owned(),
+                        revision: 1,
+                        camera_id: "front-door".to_owned(),
+                        stream: Some("sub".to_owned()),
+                        source: EventSource::KeepPeek,
+                        kind: "person".to_owned(),
+                        start_time_ms,
+                        end_time_ms: None,
+                        confidence: None,
+                        bbox: None,
+                        bbox_attachment_id: Some("snapshot".to_owned()),
+                        zone: None,
+                        attachments: vec![crate::storage::metadata::EventAttachment {
+                            id: "snapshot".to_owned(),
+                            attachment_type: "snapshot".to_owned(),
+                            content_type: "image/jpeg".to_owned(),
+                            byte_len: Some(jpeg.len() as u64),
+                            ordinal: 0,
+                            timestamp_ms: Some(start_time_ms),
+                            text: None,
+                        }],
+                        canonical_attachment_id: Some("snapshot".to_owned()),
+                        icon_key: "person".to_owned(),
+                        rejected_icon_key: None,
+                        thumbnail_filename: None,
+                    },
+                    &jpeg,
+                )
+                .unwrap();
+        }
+        let retained_size = fs::metadata(thumbnail_root.join("published-2--r1.jpg"))
+            .unwrap()
+            .len();
+        drop(store);
+
+        let limited = EventStore::new(events, &thumbnail_root, retained_size).unwrap();
+
+        assert!(
+            limited
+                .thumbnail_path("front-door", "published-1")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            limited
+                .thumbnail_path("front-door", "published-2")
+                .unwrap()
+                .is_some()
+        );
+
+        drop(limited);
+        catalog.shutdown();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_reconciles_orphaned_and_missing_event_images() {
+        let root = std::env::temp_dir().join(format!(
+            "keeppeek-event-image-reconcile-{}",
+            rand::random::<u64>()
+        ));
+        let thumbnail_root = root.join("thumbnails");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let events = catalog.handle();
+        let store = EventStore::new(events.clone(), &thumbnail_root, 0).unwrap();
+        let jpeg = encode_jpeg(&DynamicImage::new_rgb8(16, 16)).unwrap();
+        let attachment = crate::storage::metadata::EventAttachment {
+            id: "snapshot".to_owned(),
+            attachment_type: "snapshot".to_owned(),
+            content_type: "image/jpeg".to_owned(),
+            byte_len: Some(jpeg.len() as u64),
+            ordinal: 0,
+            timestamp_ms: Some(1_000),
+            text: None,
+        };
+        store
+            .commit_published_image(
+                TimelineEvent {
+                    id: "retained".to_owned(),
+                    revision: 1,
+                    camera_id: "front-door".to_owned(),
+                    stream: Some("sub".to_owned()),
+                    source: EventSource::KeepPeek,
+                    kind: "person".to_owned(),
+                    start_time_ms: 1_000,
+                    end_time_ms: None,
+                    confidence: None,
+                    bbox: None,
+                    bbox_attachment_id: Some("snapshot".to_owned()),
+                    zone: None,
+                    attachments: vec![attachment.clone()],
+                    canonical_attachment_id: Some("snapshot".to_owned()),
+                    icon_key: "person".to_owned(),
+                    rejected_icon_key: None,
+                    thumbnail_filename: None,
+                },
+                &jpeg,
+            )
+            .unwrap();
+        events
+            .insert_event(TimelineEvent {
+                id: "missing".to_owned(),
+                revision: 1,
+                camera_id: "front-door".to_owned(),
+                stream: Some("sub".to_owned()),
+                source: EventSource::KeepPeek,
+                kind: "person".to_owned(),
+                start_time_ms: 2_000,
+                end_time_ms: None,
+                confidence: None,
+                bbox: None,
+                bbox_attachment_id: Some("snapshot".to_owned()),
+                zone: None,
+                attachments: vec![attachment],
+                canonical_attachment_id: Some("snapshot".to_owned()),
+                icon_key: "person".to_owned(),
+                rejected_icon_key: None,
+                thumbnail_filename: Some("missing--r1.jpg".to_owned()),
+            })
+            .unwrap();
+        fs::write(thumbnail_root.join("orphan--r1.jpg"), &jpeg).unwrap();
+        fs::write(thumbnail_root.join(".publication-interrupted.tmp"), &jpeg).unwrap();
+        drop(store);
+
+        let reconciled = EventStore::new(events, &thumbnail_root, 0).unwrap();
+
+        assert!(thumbnail_root.join("retained--r1.jpg").exists());
+        assert!(!thumbnail_root.join("orphan--r1.jpg").exists());
+        assert!(!thumbnail_root.join(".publication-interrupted.tmp").exists());
+        assert!(
+            reconciled
+                .event_by_id("missing")
+                .unwrap()
+                .unwrap()
+                .thumbnail_filename
+                .is_none()
+        );
+
+        drop(reconciled);
         catalog.shutdown();
         fs::remove_dir_all(root).unwrap();
     }

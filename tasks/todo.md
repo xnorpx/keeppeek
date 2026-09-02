@@ -3,11 +3,11 @@
 ## Atomic publication
 
 - [x] Decode inbound binary event messages on the declared data channel with strict size limits.
-- [ ] Start a publication only for an active stable source/session and advertised event policy.
-- [ ] Validate descriptors, chunk order/count/metadata, per-file bytes, aggregate bytes, and expiry.
-- [ ] Commit one event revision and all attachment bytes atomically before any fanout.
-- [ ] Make start/commit retries idempotent and return typed current-revision conflicts.
-- [ ] Abort, expire, and disconnect without retained staging state or visible partial events.
+- [x] Start a publication only for an active stable source/session and advertised event policy.
+- [x] Validate descriptors, chunk order/count/metadata, per-file bytes, aggregate bytes, and expiry.
+- [x] Commit one event revision and all attachment bytes atomically before any fanout.
+- [x] Make start/commit retries idempotent and return typed current-revision conflicts.
+- [x] Abort, expire, and disconnect without retained staging state or visible partial events.
 
 ## Live and stored visibility
 

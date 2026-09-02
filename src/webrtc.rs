@@ -446,6 +446,7 @@ enum ApiSessionCommand {
         group: String,
         completion: ApiDataCompletion,
     },
+    Notification(Box<crate::api::proto::Notification>),
 }
 
 struct ApiDataCompletion(Option<PostSendAction>);
@@ -611,7 +612,7 @@ struct ApiSessionControl {
     completion: SessionCompletion,
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
     data_tx: Sender<ApiSessionCommand>,
-    camera_operation_in_flight: Arc<AtomicBool>,
+    background_operation_in_flight: Arc<AtomicBool>,
 }
 
 struct ApiControlRuntime {
@@ -1970,6 +1971,32 @@ impl WebRtc {
         Ok(())
     }
 
+    pub(crate) fn try_enqueue_api_notification(
+        &self,
+        session_id: SessionId,
+        notification: crate::api::proto::Notification,
+    ) -> anyhow::Result<bool> {
+        let control = self
+            .live
+            .inner
+            .sessions
+            .api_control(session_id)
+            .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
+        match control
+            .data_tx
+            .try_send(ApiSessionCommand::Notification(Box::new(notification)))
+        {
+            Ok(()) => {
+                control.poller.notify()?;
+                Ok(true)
+            }
+            Err(TrySendError::Full(_)) => Ok(false),
+            Err(TrySendError::Disconnected(_)) => {
+                Err(anyhow::anyhow!("API WebRTC session data queue is closed"))
+            }
+        }
+    }
+
     pub(crate) fn accept_api_offer(&self, offer: SdpOffer) -> anyhow::Result<Session> {
         self.live.inner.sessions.reap_finished();
         let (
@@ -1993,7 +2020,7 @@ impl WebRtc {
             completion: SessionCompletion::default(),
             control_handler: self.live.inner.control_handler.clone(),
             data_tx,
-            camera_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         });
         self.live
             .inner
@@ -2702,6 +2729,9 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
             ApiSessionCommand::Complete { group, completion } => media
                 .outbound
                 .push_back(QueuedApiData::Complete { group, completion }),
+            ApiSessionCommand::Notification(notification) => {
+                media.control_notifications.push_back(*notification);
+            }
         }
     }
 }
@@ -3009,36 +3039,36 @@ fn drain_api_outputs(
                     .as_ref()
                     .and_then(Weak::upgrade);
                 if let Ok(request) = decode_control_request(data.binary, &data.data)
-                    && is_background_camera_configuration_request(&request)
+                    && is_background_control_request(&request)
                     && let Some(handler) = handler.clone()
                 {
                     let request_id = request.request_id;
                     if control
-                        .camera_operation_in_flight
+                        .background_operation_in_flight
                         .swap(true, Ordering::AcqRel)
                     {
                         enqueue_control_dispatch(
                             envelope_dispatch(failed_control_dispatch(
                                 request_id,
                                 ErrorCode::Rejected,
-                                "another camera operation is already in progress",
+                                "another background control operation is already in progress",
                             )),
                             control_runtime,
                         )?;
-                    } else if let Err(error) = spawn_background_camera_operation(
+                    } else if let Err(error) = spawn_background_control_operation(
                         request,
                         handler,
                         control,
                         control_runtime.dispatch_tx.clone(),
                     ) {
                         control
-                            .camera_operation_in_flight
+                            .background_operation_in_flight
                             .store(false, Ordering::Release);
                         enqueue_control_dispatch(
                             envelope_dispatch(failed_control_dispatch(
                                 request_id,
                                 ErrorCode::Unavailable,
-                                format!("unable to start camera operation: {error}"),
+                                format!("unable to start background control operation: {error}"),
                             )),
                             control_runtime,
                         )?;
@@ -3150,21 +3180,26 @@ fn flush_control_channel_outputs(
     Ok(())
 }
 
-const fn is_background_camera_configuration_request(request: &crate::api::proto::Request) -> bool {
-    matches!(
-        request.command.as_ref(),
-        Some(crate::api::proto::request::Command::CameraConfigurationCommand(command))
-            if matches!(
+const fn is_background_control_request(request: &crate::api::proto::Request) -> bool {
+    match request.command.as_ref() {
+        Some(crate::api::proto::request::Command::CameraConfigurationCommand(command)) => {
+            matches!(
                 command.action.as_ref(),
                 Some(
                     crate::api::proto::camera_configuration_command::Action::Discover(_)
                         | crate::api::proto::camera_configuration_command::Action::ProbeStreams(_)
                 )
             )
-    )
+        }
+        Some(crate::api::proto::request::Command::EventPublicationCommand(command)) => matches!(
+            command.action.as_ref(),
+            Some(crate::api::proto::event_publication_command::Action::Commit(_))
+        ),
+        _ => false,
+    }
 }
 
-fn spawn_background_camera_operation(
+fn spawn_background_control_operation(
     request: crate::api::proto::Request,
     handler: Arc<dyn ControlRequestHandler>,
     control: &ApiSessionControl,
@@ -3172,12 +3207,12 @@ fn spawn_background_camera_operation(
 ) -> std::io::Result<()> {
     let session_id = control.session_id;
     let poller = control.poller.clone();
-    let camera_operation_in_flight = control.camera_operation_in_flight.clone();
+    let operation_in_flight = control.background_operation_in_flight.clone();
     std::thread::Builder::new()
-        .name(format!("webrtc-camera-operation-{session_id}"))
+        .name(format!("webrtc-control-operation-{session_id}"))
         .spawn(move || {
             let dispatch = handler.handle_for_session(session_id, request);
-            camera_operation_in_flight.store(false, Ordering::Release);
+            operation_in_flight.store(false, Ordering::Release);
             if dispatch_tx.try_send(dispatch).is_ok() {
                 let _ = poller.notify();
             }
@@ -4806,10 +4841,37 @@ mod tests {
     }
 
     #[test]
+    fn api_session_notification_commands_enter_the_control_queue() {
+        let (sender, receiver) = bounded(1);
+        let notification = crate::api::proto::Notification {
+            event: Some(
+                crate::api::proto::notification::Event::EventPublicationState(
+                    crate::api::proto::EventPublicationState {
+                        publication_id: "publication-1".to_owned(),
+                        status: crate::api::proto::EventPublicationStatus::Expired as i32,
+                        ..Default::default()
+                    },
+                ),
+            ),
+        };
+        sender
+            .send(ApiSessionCommand::Notification(Box::new(
+                notification.clone(),
+            )))
+            .unwrap();
+        let mut media = ApiMediaRuntime::default();
+
+        drain_api_session_commands(&receiver, &mut media);
+
+        assert_eq!(media.control_notifications.pop_front(), Some(notification));
+    }
+
+    #[test]
     fn background_camera_operations_dispatch_without_blocking_the_api_session() {
         use crate::api::proto::{
-            CameraConfigurationCommand, DiscoverCameras, ProbeCameraStreams, Request,
-            camera_configuration_command, request,
+            CameraConfigurationCommand, CommitEventPublication, DiscoverCameras,
+            EventPublicationCommand, ProbeCameraStreams, Request, camera_configuration_command,
+            event_publication_command, request,
         };
 
         struct DiscoveryHandler {
@@ -4841,7 +4903,7 @@ mod tests {
             completion: SessionCompletion::default(),
             control_handler: Arc::new(RwLock::new(None)),
             data_tx: bounded(1).0,
-            camera_operation_in_flight: discovery_in_flight.clone(),
+            background_operation_in_flight: discovery_in_flight.clone(),
         };
         let request = Request {
             request_id: 42,
@@ -4857,7 +4919,7 @@ mod tests {
                 },
             )),
         };
-        assert!(is_background_camera_configuration_request(&request));
+        assert!(is_background_control_request(&request));
         let probe_request = Request {
             request_id: 43,
             command: Some(request::Command::CameraConfigurationCommand(
@@ -4874,12 +4936,26 @@ mod tests {
                 },
             )),
         };
-        assert!(is_background_camera_configuration_request(&probe_request));
+        assert!(is_background_control_request(&probe_request));
+        let commit_request = Request {
+            request_id: 44,
+            command: Some(request::Command::EventPublicationCommand(
+                EventPublicationCommand {
+                    action: Some(event_publication_command::Action::Commit(
+                        CommitEventPublication {
+                            publication_id: "publication-1".to_owned(),
+                            wait_timeout: None,
+                        },
+                    )),
+                },
+            )),
+        };
+        assert!(is_background_control_request(&commit_request));
 
         let (started_tx, started_rx) = bounded(1);
         let (release_tx, release_rx) = bounded(0);
         let (dispatch_tx, dispatch_rx) = bounded(1);
-        spawn_background_camera_operation(
+        spawn_background_control_operation(
             request,
             Arc::new(DiscoveryHandler {
                 started: started_tx,
@@ -5052,7 +5128,7 @@ mod tests {
             completion: SessionCompletion::default(),
             control_handler: Arc::new(RwLock::new(None)),
             data_tx: bounded(1).0,
-            camera_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime {
             available_video_mids: vec![Mid::from("video_0")],
@@ -5202,7 +5278,7 @@ mod tests {
             completion: SessionCompletion::default(),
             control_handler: Arc::new(RwLock::new(None)),
             data_tx: bounded(1).0,
-            camera_operation_in_flight: Arc::new(AtomicBool::new(false)),
+            background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         };
         let mut media = ApiMediaRuntime::default();
         let request = crate::api::proto::SubscribeMedia {
