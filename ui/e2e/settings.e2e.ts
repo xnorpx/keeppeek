@@ -38,7 +38,7 @@ test('redirects the retired Camera defaults bookmark to the Cameras fleet', asyn
 	await expect(page.getByText('No cameras configured.')).toBeVisible();
 });
 
-test('uses a searchable ten-section mobile administration index with focused owners', async ({
+test('uses a searchable eleven-section mobile administration index with focused owners', async ({
 	page
 }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
@@ -73,10 +73,11 @@ test('uses a searchable ten-section mobile administration index with focused own
 	await expect(
 		page.locator('[data-mobile-settings-header]').getByRole('heading', { name: 'More' })
 	).toBeVisible();
-	await expect(navigation.getByRole('link')).toHaveCount(10);
+	await expect(navigation.getByRole('link')).toHaveCount(11);
 	for (const label of [
 		'Dashboards',
 		'Storage & retention',
+		'Backup & restore',
 		'Event sources',
 		'Groups',
 		'Notifications',

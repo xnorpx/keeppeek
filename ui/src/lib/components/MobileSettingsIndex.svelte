@@ -24,6 +24,7 @@
 					? '—'
 					: `${Math.round(config.recording_estimate.estimated_retention_days)} days`;
 			case 'event-sources':
+			case 'backups':
 			case 'groups':
 			case 'notifications':
 			case 'access':
@@ -42,6 +43,8 @@
 				return 'rounded-sm bg-activity';
 			case 'storage':
 				return 'rounded-sm bg-primary-deep';
+			case 'backups':
+				return 'rounded-sm bg-live';
 			case 'event-sources':
 				return 'rounded-full bg-healthy';
 			case 'groups':

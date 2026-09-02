@@ -13,6 +13,7 @@
 	} from '$lib/types';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import AccessSection from '$lib/components/AccessSection.svelte';
+	import BackupRestoreSection from '$lib/components/BackupRestoreSection.svelte';
 	import MobileAccessSection from '$lib/components/MobileAccessSection.svelte';
 	import MobileSettingsActionBar from '$lib/components/MobileSettingsActionBar.svelte';
 	import MobileSettingsHeader from '$lib/components/MobileSettingsHeader.svelte';
@@ -159,6 +160,7 @@
 		if (
 			![
 				'dashboards',
+				'backups',
 				'storage',
 				'event-sources',
 				'groups',
@@ -488,6 +490,10 @@
 
 			<div class={mobileSectionClass('event-sources')}>
 				<EventSourcesSection health={serverHealth} healthError={serverHealthError} />
+			</div>
+
+			<div class={mobileSectionClass('backups')}>
+				<BackupRestoreSection controller={controlClient} onrestart={restartRecorder} />
 			</div>
 
 			<div class={mobileSectionClass('groups')}>
