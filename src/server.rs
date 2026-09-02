@@ -83,6 +83,7 @@ use uuid::Uuid;
 
 mod camera_discovery;
 mod configuration;
+mod event_publication;
 mod event_search;
 mod health_snapshot;
 mod logging;
@@ -359,7 +360,6 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             | control_request::Command::StoredMediaCommand(_)
             | control_request::Command::GroupCommand(_)
             | control_request::Command::PublicationCommand(_)
-            | control_request::Command::EventPublicationCommand(_)
             | control_request::Command::PublicationReport(_),
         ) => AccessRole::User,
         _ => AccessRole::Administrator,
@@ -512,6 +512,22 @@ impl ControlRequestHandler for ServerControlHandler {
         .map_err(|(error, _)| ControlHandlerError::new(error.code, error.message))
     }
 
+    fn handle_data_for_session(
+        &self,
+        session_id: SessionId,
+        channel: proto::DataChannelKind,
+        message: proto::Message,
+    ) -> Result<(), ControlHandlerError> {
+        self.authorize_api_session(
+            session_id,
+            AccessRole::Administrator,
+            "event_attachment_publish",
+        )
+        .map_err(|(error, _)| ControlHandlerError::new(error.code, error.message))?;
+        event_publication::ingest(&self.state, session_id, channel, message)
+            .map_err(|error| ControlHandlerError::new(error.code, error.message))
+    }
+
     fn handle_for_session(
         &self,
         session_id: SessionId,
@@ -604,6 +620,9 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::PublishEvent(command)) => {
                         self.handle_publish_event(command).map(|()| None)
                     }
+                    Some(control_request::Command::EventPublicationCommand(command)) => {
+                        event_publication::dispatch(&self.state, session_id, command).map(Some)
+                    }
                     Some(_) => Err(ControlCommandError::new(
                         proto::ErrorCode::UnsupportedRequest,
                         501,
@@ -670,6 +689,7 @@ impl ControlRequestHandler for ServerControlHandler {
             );
         }
         event_search::close_session(&self.state, session_id);
+        self.state.event_publications.close_session(session_id);
         self.state.camera_discovery_tasks.close_session(session_id);
         stored_media::close_session(&self.state, session_id);
         let source_ids = {
@@ -6046,7 +6066,7 @@ fn resolve_event_search_attachment(
             "stored event has no canonical attachment descriptor",
         )
     })?;
-    if descriptor.attachment_type != "thumbnail" {
+    if !crate::storage::metadata::is_supported_event_image(&descriptor) {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Unavailable,
             503,
@@ -6509,7 +6529,7 @@ fn refresh_event_search_image_availability(
         hit.image_available = hit
             .canonical_attachment
             .as_ref()
-            .is_some_and(|attachment| attachment.attachment_type == "thumbnail")
+            .is_some_and(crate::storage::metadata::is_supported_event_image)
             && state.events.as_ref().is_some_and(|store| {
                 store
                     .thumbnail_path(&hit.source_id, &hit.event_id)
@@ -8284,6 +8304,7 @@ pub struct ServerState {
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     export_history_path: Option<Arc<PathBuf>>,
     event_search_tasks: EventSearchTasks,
+    event_publications: event_publication::Registry,
     event_page_token_key: Arc<[u8; 32]>,
     camera_discovery_tasks: camera_discovery::Registry,
     configuration_plans: configuration::Registry,
@@ -8400,6 +8421,7 @@ impl ServerState {
             export_jobs: Arc::new(Mutex::new(export_jobs)),
             export_history_path: Some(Arc::new(export_history_path)),
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
+            event_publications: event_publication::Registry::default(),
             event_page_token_key: Arc::new(rand::random()),
             camera_discovery_tasks: camera_discovery::Registry::default(),
             configuration_plans: configuration::Registry::default(),
@@ -9263,6 +9285,7 @@ fn serve_with_state_on_listener_inner(
 
     while !shutdown.is_cancelled() {
         expire_api_sessions(&session_reaper_state);
+        expire_event_publications(&session_reaper_state);
         if let Err(error) = session_reaper_state.access_manager.flush_audit(false) {
             tracing::warn!(%error, "unable to flush access audit events");
         }
@@ -9283,6 +9306,31 @@ fn serve_with_state_on_listener_inner(
     }
 
     Ok(addr)
+}
+
+fn expire_event_publications(state: &ServerState) {
+    for (session_id, publication) in state.event_publications.expire(unix_time_ms()) {
+        let notification = proto::Notification {
+            event: Some(proto::notification::Event::EventPublicationState(
+                publication,
+            )),
+        };
+        match state
+            .webrtc
+            .try_enqueue_api_notification(session_id, notification)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(%session_id, "closing API session with a saturated notification queue");
+                state.webrtc.request_api_session_close(session_id);
+            }
+            Err(error) if state.webrtc.has_api_session(session_id) => {
+                tracing::warn!(%session_id, %error, "unable to enqueue event publication expiry");
+                state.webrtc.request_api_session_close(session_id);
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 fn expire_api_sessions(state: &ServerState) {
@@ -13300,9 +13348,6 @@ mod tests {
             control_request::Command::GroupCommand(proto::GroupCommand::default()),
             control_request::Command::StateStoreCommand(proto::StateStoreCommand::default()),
             control_request::Command::PublicationCommand(proto::PublicationCommand::default()),
-            control_request::Command::EventPublicationCommand(
-                proto::EventPublicationCommand::default(),
-            ),
             control_request::Command::PublicationReport(proto::PublicationReport::default()),
             control_request::Command::CameraControlCommand(proto::CameraControlCommand {
                 action: Some(camera_control_command::Action::GetMotionDetection(
@@ -13349,6 +13394,9 @@ mod tests {
             control_request::Command::HealthCommand(proto::HealthCommand::default()),
             control_request::Command::ExportCommand(proto::ExportCommand::default()),
             control_request::Command::PublishEvent(proto::PublishEvent::default()),
+            control_request::Command::EventPublicationCommand(
+                proto::EventPublicationCommand::default(),
+            ),
             control_request::Command::CameraControlCommand(proto::CameraControlCommand {
                 action: Some(camera_control_command::Action::SetMotionDetection(
                     proto::SetMotionDetection::default(),
@@ -13369,6 +13417,33 @@ mod tests {
             administrator_commands.iter().all(|command| {
                 required_access_role(Some(command)) == AccessRole::Administrator
             })
+        );
+    }
+
+    #[test]
+    fn event_publication_data_requires_an_administrator_session() {
+        let state = ServerState::empty();
+        let mut session = local_test_session();
+        session.principal.role = AccessRole::User;
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(SessionId::from_u64(7), session);
+        let handler = test_control_handler(state);
+
+        let error = handler
+            .handle_data_for_session(
+                SessionId::from_u64(7),
+                proto::DataChannelKind::ReliableData,
+                proto::Message::default(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, proto::ErrorCode::Rejected);
+        assert_eq!(
+            error.message,
+            "Administrator role is required for this operation"
         );
     }
 
@@ -14390,6 +14465,576 @@ mod tests {
         drop(handler);
         drop(handle);
         drop(catalog);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn event_publication_commits_one_snapshot_and_retries_idempotently() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-event-publication-start-{}",
+            rand::random::<u64>()
+        ));
+        let catalog = RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let events = EventStore::new(handle.clone(), &directory.join("thumbnails"), 0).unwrap();
+        let mut state = media_test_state();
+        state.events = Some(events);
+        state.catalog = Some(handle.clone());
+        state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(SessionId::from_u64(7), local_test_session());
+        state.webrtc.live().publish(
+            crate::webrtc::Source {
+                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                stream: StreamKind::Sub,
+            },
+            crate::storage::VideoCodec::H264,
+            true,
+            Instant::now(),
+            None,
+            bytes::Bytes::from_static(&[0, 0, 0, 1]),
+        );
+        let handler = test_control_handler(state);
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&image::DynamicImage::new_rgb8(2, 2))
+            .unwrap();
+        let event = proto::Event {
+            event_id: "detector-event-attachment-1".to_owned(),
+            revision: 1,
+            source_id: "127.0.0.1".to_owned(),
+            media_kind: Some(proto::MediaKind::Video as i32),
+            origin: proto::EventOrigin::Keeppeek as i32,
+            event_type: "person".to_owned(),
+            start_time: Some(millis_timestamp(12_345)),
+            confidence: Some(0.91),
+            bounding_box: Some(proto::EventBoundingBox {
+                x: 0.1,
+                y: 0.2,
+                width: 0.3,
+                height: 0.4,
+            }),
+            payload: Some(prost_types::Struct {
+                fields: std::collections::BTreeMap::from([(
+                    "stream_id".to_owned(),
+                    prost_types::Value {
+                        kind: Some(prost_types::value::Kind::StringValue("sub".to_owned())),
+                    },
+                )]),
+            }),
+            attachments: vec![proto::EventAttachmentDescriptor {
+                attachment_id: "snapshot-1".to_owned(),
+                attachment_type: "snapshot".to_owned(),
+                content_type: "image/jpeg".to_owned(),
+                byte_len: Some(jpeg.len() as u64),
+                ordinal: 0,
+                timestamp: Some(millis_timestamp(12_345)),
+                text: None,
+            }],
+            source_session_id: Some(camera_source_session_id("127.0.0.1")),
+            canonical_attachment_id: Some("snapshot-1".to_owned()),
+            bounding_box_attachment_id: Some("snapshot-1".to_owned()),
+            image_availability: proto::EventImageAvailability::Available as i32,
+            ..Default::default()
+        };
+        let start = proto::StartEventPublication {
+            publication_id: "publication-1".to_owned(),
+            event: Some(event),
+            attachment_channel: proto::DataChannelKind::ReliableData as i32,
+        };
+
+        let dispatch = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 51,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(
+                            start.clone(),
+                        )),
+                    },
+                )),
+            },
+        );
+
+        let Some(control_response::Result::Ok(proto::Ok {
+            result: Some(control_ok::Result::EventPublicationState(publication)),
+        })) = dispatch.response.result
+        else {
+            panic!("event publication start must return publication state");
+        };
+        assert_eq!(
+            publication.status,
+            proto::EventPublicationStatus::AcceptingAttachments as i32
+        );
+        assert_eq!(publication.publication_id, "publication-1");
+        assert_eq!(publication.event_id, "detector-event-attachment-1");
+        assert_eq!(publication.revision, 1);
+        assert_eq!(
+            publication.attachment_channel,
+            proto::DataChannelKind::ReliableData as i32
+        );
+        assert!(publication.max_attachment_bytes >= 4);
+        assert!(publication.max_event_attachment_bytes >= 4);
+        assert!(publication.expires_at.is_some());
+        assert!(
+            handle
+                .event_by_id("detector-event-attachment-1")
+                .unwrap()
+                .is_none()
+        );
+
+        let split = jpeg.len() / 2;
+        let attachment_message = |chunk_index: u32, payload: &[u8]| proto::Message {
+            message: Some(proto::message::Message::Event(proto::EventMessage {
+                message: Some(proto::event_message::Message::Attachment(
+                    proto::EventAttachmentChunk {
+                        context: Some(proto::event_attachment_chunk::Context::PublicationId(
+                            "publication-1".to_owned(),
+                        )),
+                        event_id: "detector-event-attachment-1".to_owned(),
+                        revision: 1,
+                        attachment_id: "snapshot-1".to_owned(),
+                        attachment_type: "snapshot".to_owned(),
+                        content_type: "image/jpeg".to_owned(),
+                        ordinal: 0,
+                        timestamp: Some(millis_timestamp(12_345)),
+                        sequence: 1,
+                        chunk_index,
+                        chunk_count: 2,
+                        payload: payload.to_vec(),
+                    },
+                )),
+            })),
+        };
+        handler
+            .handle_data_for_session(
+                SessionId::from_u64(7),
+                proto::DataChannelKind::ReliableData,
+                attachment_message(0, &jpeg[..split]),
+            )
+            .unwrap();
+        let incomplete = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 52,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Commit(
+                            proto::CommitEventPublication {
+                                publication_id: "publication-1".to_owned(),
+                                wait_timeout: Some(prost_types::Duration {
+                                    seconds: 0,
+                                    nanos: 1_000_000,
+                                }),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(proto::Error { details, .. })) =
+            incomplete.response.result
+        else {
+            panic!("incomplete publication must return an error");
+        };
+        let detail = proto::EventPublicationError::decode(details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::EventPublicationErrorCode::AttachmentsIncomplete as i32
+        );
+        assert!(
+            handle
+                .event_by_id("detector-event-attachment-1")
+                .unwrap()
+                .is_none()
+        );
+
+        let dispatch = std::thread::scope(|scope| {
+            let commit = scope.spawn(|| {
+                handler.handle_for_session(
+                    SessionId::from_u64(7),
+                    proto::Request {
+                        request_id: 53,
+                        command: Some(control_request::Command::EventPublicationCommand(
+                            proto::EventPublicationCommand {
+                                action: Some(proto::event_publication_command::Action::Commit(
+                                    proto::CommitEventPublication {
+                                        publication_id: "publication-1".to_owned(),
+                                        wait_timeout: Some(prost_types::Duration {
+                                            seconds: 1,
+                                            nanos: 0,
+                                        }),
+                                    },
+                                )),
+                            },
+                        )),
+                    },
+                )
+            });
+            handler
+                .state
+                .event_publications
+                .wait_until_commit_waiting(SessionId::from_u64(7), "publication-1");
+            handler
+                .handle_data_for_session(
+                    SessionId::from_u64(7),
+                    proto::DataChannelKind::ReliableData,
+                    attachment_message(1, &jpeg[split..]),
+                )
+                .unwrap();
+            commit.join().unwrap()
+        });
+        let Some(control_response::Result::Ok(proto::Ok {
+            result: Some(control_ok::Result::EventPublicationState(publication)),
+        })) = dispatch.response.result
+        else {
+            panic!("event publication commit must return publication state");
+        };
+        assert_eq!(
+            publication.status,
+            proto::EventPublicationStatus::Committed as i32
+        );
+
+        let dispatch = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 55,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Commit(
+                            proto::CommitEventPublication {
+                                publication_id: "publication-1".to_owned(),
+                                wait_timeout: None,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(proto::Ok {
+            result: Some(control_ok::Result::EventPublicationState(publication)),
+        })) = dispatch.response.result
+        else {
+            panic!("event publication commit must return publication state");
+        };
+        assert_eq!(
+            publication.status,
+            proto::EventPublicationStatus::Committed as i32
+        );
+
+        let stored = handle
+            .event_by_id("detector-event-attachment-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.revision, 1);
+        assert_eq!(stored.attachments.len(), 1);
+        assert_eq!(
+            stored.canonical_attachment_id.as_deref(),
+            Some("snapshot-1")
+        );
+        let image_path = handler
+            .state
+            .events
+            .as_ref()
+            .unwrap()
+            .thumbnail_path("127.0.0.1", "detector-event-attachment-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(image_path).unwrap(), jpeg);
+
+        let retry = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 57,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(
+                            start.clone(),
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(proto::Ok {
+            result: Some(control_ok::Result::EventPublicationState(publication)),
+        })) = retry.response.result
+        else {
+            panic!("event publication start retry must return publication state");
+        };
+        assert_eq!(
+            publication.status,
+            proto::EventPublicationStatus::Committed as i32
+        );
+
+        let mut stale_start = start.clone();
+        stale_start.publication_id = "publication-2".to_owned();
+        let stale = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 59,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(stale_start)),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(proto::Error { details, .. })) =
+            stale.response.result
+        else {
+            panic!("stale publication must return an error");
+        };
+        let detail = proto::EventPublicationError::decode(details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::EventPublicationErrorCode::RevisionConflict as i32
+        );
+        assert_eq!(detail.current_revision, Some(1));
+
+        let mut unknown_source = start.clone();
+        unknown_source.publication_id = "reject-source".to_owned();
+        unknown_source.event.as_mut().unwrap().source_id = "unknown-camera".to_owned();
+        let mut unsupported_type = start.clone();
+        unsupported_type.publication_id = "reject-type".to_owned();
+        unsupported_type.event.as_mut().unwrap().event_type = "motion".to_owned();
+        let mut wrong_channel = start.clone();
+        wrong_channel.publication_id = "reject-channel".to_owned();
+        wrong_channel.attachment_channel = proto::DataChannelKind::UnreliableData as i32;
+        let mut wrong_count = start.clone();
+        wrong_count.publication_id = "reject-count".to_owned();
+        wrong_count.event.as_mut().unwrap().attachments.clear();
+        let mut wrong_metadata = start.clone();
+        wrong_metadata.publication_id = "reject-metadata".to_owned();
+        wrong_metadata.event.as_mut().unwrap().attachments[0].content_type = "image/png".to_owned();
+        let mut oversized = start.clone();
+        oversized.publication_id = "reject-size".to_owned();
+        oversized.event.as_mut().unwrap().attachments[0].byte_len =
+            Some(event_publication::MAXIMUM_ATTACHMENT_BYTES + 1);
+        for (request_id, rejected, expected) in [
+            (
+                60,
+                unknown_source,
+                proto::EventPublicationErrorCode::SourceNotFound,
+            ),
+            (
+                61,
+                unsupported_type,
+                proto::EventPublicationErrorCode::EventInvalid,
+            ),
+            (
+                62,
+                wrong_channel,
+                proto::EventPublicationErrorCode::AttachmentInvalid,
+            ),
+            (
+                63,
+                wrong_count,
+                proto::EventPublicationErrorCode::AttachmentCountMismatch,
+            ),
+            (
+                64,
+                wrong_metadata,
+                proto::EventPublicationErrorCode::AttachmentInvalid,
+            ),
+            (
+                65,
+                oversized,
+                proto::EventPublicationErrorCode::SizeLimitExceeded,
+            ),
+        ] {
+            let rejected = handler.handle_for_session(
+                SessionId::from_u64(7),
+                proto::Request {
+                    request_id,
+                    command: Some(control_request::Command::EventPublicationCommand(
+                        proto::EventPublicationCommand {
+                            action: Some(proto::event_publication_command::Action::Start(rejected)),
+                        },
+                    )),
+                },
+            );
+            let Some(control_response::Result::Error(proto::Error { details, .. })) =
+                rejected.response.result
+            else {
+                panic!("invalid publication start must return an error");
+            };
+            let detail = proto::EventPublicationError::decode(details[0].value.as_slice()).unwrap();
+            assert_eq!(
+                proto::EventPublicationErrorCode::try_from(detail.code),
+                Ok(expected)
+            );
+        }
+
+        handle
+            .insert_event(TimelineEvent {
+                id: "camera-owned-event".to_owned(),
+                revision: 1,
+                camera_id: "127.0.0.1".to_owned(),
+                stream: Some("sub".to_owned()),
+                source: EventSource::Camera,
+                kind: "motion".to_owned(),
+                start_time_ms: 12_345,
+                end_time_ms: None,
+                confidence: None,
+                bbox: None,
+                bbox_attachment_id: None,
+                zone: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "motion".to_owned(),
+                rejected_icon_key: None,
+                thumbnail_filename: None,
+            })
+            .unwrap();
+        let mut foreign_revision = start.clone();
+        foreign_revision.publication_id = "reject-foreign-revision".to_owned();
+        let foreign_event = foreign_revision.event.as_mut().unwrap();
+        foreign_event.event_id = "camera-owned-event".to_owned();
+        foreign_event.revision = 2;
+        let rejected = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 66,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(
+                            foreign_revision,
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(proto::Error { details, .. })) =
+            rejected.response.result
+        else {
+            panic!("foreign event revision must return an error");
+        };
+        let detail = proto::EventPublicationError::decode(details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::EventPublicationErrorCode::RevisionConflict as i32
+        );
+        assert_eq!(detail.current_revision, Some(1));
+
+        let mut invalid_start = start;
+        invalid_start.publication_id = "publication-invalid".to_owned();
+        let invalid_event = invalid_start.event.as_mut().unwrap();
+        invalid_event.event_id = "detector-event-invalid-image".to_owned();
+        invalid_event.attachments[0].byte_len = Some(4);
+        let started = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 61,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(
+                            invalid_start,
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            started.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        handler
+            .handle_data_for_session(
+                SessionId::from_u64(7),
+                proto::DataChannelKind::ReliableData,
+                proto::Message {
+                    message: Some(proto::message::Message::Event(proto::EventMessage {
+                        message: Some(proto::event_message::Message::Attachment(
+                            proto::EventAttachmentChunk {
+                                context: Some(
+                                    proto::event_attachment_chunk::Context::PublicationId(
+                                        "publication-invalid".to_owned(),
+                                    ),
+                                ),
+                                event_id: "detector-event-invalid-image".to_owned(),
+                                revision: 1,
+                                attachment_id: "snapshot-1".to_owned(),
+                                attachment_type: "snapshot".to_owned(),
+                                content_type: "image/jpeg".to_owned(),
+                                ordinal: 0,
+                                timestamp: Some(millis_timestamp(12_345)),
+                                sequence: 1,
+                                chunk_index: 0,
+                                chunk_count: 1,
+                                payload: vec![0, 1, 2, 3],
+                            },
+                        )),
+                    })),
+                },
+            )
+            .unwrap();
+        let invalid = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 63,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Commit(
+                            proto::CommitEventPublication {
+                                publication_id: "publication-invalid".to_owned(),
+                                wait_timeout: None,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(proto::Error { details, .. })) =
+            invalid.response.result
+        else {
+            panic!("invalid publication image must return an error");
+        };
+        let detail = proto::EventPublicationError::decode(details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::EventPublicationErrorCode::AttachmentInvalid as i32
+        );
+        assert!(
+            handle
+                .event_by_id("detector-event-invalid-image")
+                .unwrap()
+                .is_none()
+        );
+        let aborted = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 65,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Abort(
+                            proto::AbortEventPublication {
+                                publication_id: "publication-invalid".to_owned(),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            aborted.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::EventPublicationState(
+                    proto::EventPublicationState { status, .. }
+                ))
+            })) if status == proto::EventPublicationStatus::Aborted as i32
+        ));
+        assert!(
+            !directory
+                .join("thumbnails/detector-event-invalid-image--r1.jpg")
+                .exists()
+        );
+
+        drop(handler);
+        drop(handle);
+        catalog.shutdown();
         std::fs::remove_dir_all(directory).unwrap();
     }
 

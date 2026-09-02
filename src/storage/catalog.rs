@@ -376,6 +376,13 @@ enum Command {
         id: String,
         reply: SyncSender<anyhow::Result<()>>,
     },
+    DetachEventThumbnailFile {
+        thumbnail_filename: String,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
+    EventThumbnailFilenames {
+        reply: SyncSender<anyhow::Result<Vec<String>>>,
+    },
     EventsInRange {
         camera_id: String,
         start_ms: i64,
@@ -892,6 +899,32 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    pub(crate) fn detach_event_thumbnail_file(
+        &self,
+        thumbnail_filename: &str,
+    ) -> anyhow::Result<()> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::DetachEventThumbnailFile {
+                thumbnail_filename: thumbnail_filename.to_owned(),
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn event_thumbnail_filenames(&self) -> anyhow::Result<Vec<String>> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::EventThumbnailFilenames { reply })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
     pub fn events_in_range(
         &self,
         camera_id: &str,
@@ -1349,6 +1382,18 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             }
             Command::DetachEventThumbnail { id, reply } => {
                 let _ = reply.send(pollster::block_on(detach_event_thumbnail(&connection, &id)));
+            }
+            Command::DetachEventThumbnailFile {
+                thumbnail_filename,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(detach_event_thumbnail_file(
+                    &connection,
+                    &thumbnail_filename,
+                )));
+            }
+            Command::EventThumbnailFilenames { reply } => {
+                let _ = reply.send(pollster::block_on(event_thumbnail_filenames(&connection)));
             }
             Command::EventsInRange {
                 camera_id,
@@ -4173,6 +4218,66 @@ async fn detach_event_thumbnail(connection: &turso::Connection, id: &str) -> any
             Err(error)
         }
     }
+}
+
+async fn detach_event_thumbnail_file(
+    connection: &turso::Connection,
+    thumbnail_filename: &str,
+) -> anyhow::Result<()> {
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let mut rows = connection
+            .query(
+                "SELECT id FROM recording_events WHERE thumbnail_filename = ?1 LIMIT 1",
+                turso::params![thumbnail_filename],
+            )
+            .await?;
+        let event_id = rows
+            .next()
+            .await?
+            .map(|row| row.get::<String>(0))
+            .transpose()?;
+        drop(rows);
+        if let Some(event_id) = event_id {
+            let changed = connection
+                .execute(
+                    "UPDATE recording_events
+                     SET thumbnail_filename = NULL
+                     WHERE id = ?1 AND thumbnail_filename = ?2",
+                    turso::params![event_id.clone(), thumbnail_filename],
+                )
+                .await?;
+            if changed == 1 {
+                record_event_search_mutation(connection, &event_id).await?;
+            }
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            Err(error)
+        }
+    }
+}
+
+async fn event_thumbnail_filenames(connection: &turso::Connection) -> anyhow::Result<Vec<String>> {
+    let mut rows = connection
+        .query(
+            "SELECT thumbnail_filename
+             FROM recording_events
+             WHERE thumbnail_filename IS NOT NULL
+             ORDER BY thumbnail_filename",
+            (),
+        )
+        .await?;
+    let mut filenames = Vec::new();
+    while let Some(row) = rows.next().await? {
+        filenames.push(row.get(0)?);
+    }
+    Ok(filenames)
 }
 
 fn normalize_event_presentation(event: &mut TimelineEvent) -> anyhow::Result<()> {

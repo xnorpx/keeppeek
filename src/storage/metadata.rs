@@ -253,7 +253,7 @@ impl TimelineEvent {
     /// Returns whether the canonical image bytes are retained locally.
     pub fn canonical_image_available(&self) -> bool {
         self.canonical_attachment().is_some_and(|attachment| {
-            attachment.attachment_type == "thumbnail" && self.thumbnail_filename.is_some()
+            is_supported_event_image(attachment) && self.thumbnail_filename.is_some()
         })
     }
 

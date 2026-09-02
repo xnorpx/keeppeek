@@ -34,16 +34,16 @@ of the recorder lifecycle.
 ### Phase 1: Atomic Attachment Publication
 
 - [x] Route bounded inbound reliable/unreliable `Message` envelopes to a session-aware handler.
-- [ ] Start, receive chunks for, commit, retry, abort, and expire one bounded event publication.
-- [ ] Persist monotonic event revisions and attachment descriptors/bytes atomically.
-- [ ] Reject invalid source/session/type/channel/count/metadata/size/revision transitions with typed
+- [x] Start, receive chunks for, commit, retry, abort, and expire one bounded event publication.
+- [x] Persist monotonic event revisions and attachment descriptors/bytes atomically.
+- [x] Reject invalid source/session/type/channel/count/metadata/size/revision transitions with typed
       publication errors.
 
 ### Checkpoint: Publication
 
-- [ ] One JPEG remains invisible before commit and is durable after commit.
-- [ ] Retried commit is idempotent; stale/conflicting revisions return the current revision.
-- [ ] Crash/abort/expiry cleanup leaves no visible event or retained staging bytes.
+- [x] One JPEG remains invisible before commit and is durable after commit.
+- [x] Retried commit is idempotent; stale/conflicting revisions return the current revision.
+- [x] Crash/abort/expiry cleanup leaves no visible event or retained staging bytes.
 
 ### Phase 2: Event Subscription and Fanout
 
