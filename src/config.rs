@@ -2209,33 +2209,30 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
     }
     drop(file);
     #[cfg(windows)]
-    if path.exists() {
+    {
         use std::os::windows::ffi::OsStrExt;
         use windows::{
             Win32::Storage::FileSystem::{
-                REPLACE_FILE_FLAGS, REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW,
+                MOVE_FILE_FLAGS, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
             },
             core::PCWSTR,
         };
 
-        let replaced = path
+        let destination = path
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
-        let replacement = temporary
+        let source = temporary
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect::<Vec<_>>();
         unsafe {
-            ReplaceFileW(
-                PCWSTR(replaced.as_ptr()),
-                PCWSTR(replacement.as_ptr()),
-                None,
-                REPLACE_FILE_FLAGS(REPLACEFILE_IGNORE_MERGE_ERRORS.0),
-                None,
-                None,
+            MoveFileExW(
+                PCWSTR(source.as_ptr()),
+                PCWSTR(destination.as_ptr()),
+                MOVE_FILE_FLAGS(MOVEFILE_REPLACE_EXISTING.0 | MOVEFILE_WRITE_THROUGH.0),
             )
         }
         .map_err(std::io::Error::other)?;
@@ -3594,8 +3591,9 @@ mod tests {
 
         write_private_file_atomically(&path, b"first").unwrap();
         write_private_file_atomically(&path, b"second").unwrap();
+        write_private_file_atomically(&path, b"third").unwrap();
 
-        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert_eq!(std::fs::read(&path).unwrap(), b"third");
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
