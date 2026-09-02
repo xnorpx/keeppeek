@@ -64,7 +64,10 @@ pub fn snapshot_turso_database_path(
     drop(connection);
     drop(database);
     remove_database_sidecars(destination);
-    std::fs::File::open(destination)?.sync_all()?;
+    std::fs::File::options()
+        .write(true)
+        .open(destination)?
+        .sync_all()?;
     Ok(bytes)
 }
 
