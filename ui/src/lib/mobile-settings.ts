@@ -1,6 +1,7 @@
 export type MobileSettingsRenderTarget =
 	| 'access'
 	| 'appearance'
+	| 'backups'
 	| 'dashboards'
 	| 'event-sources'
 	| 'groups'
@@ -33,6 +34,14 @@ export const mobileSettingsSections = Object.freeze<MobileSettingsSection[]>([
 		href: '#storage',
 		renderTarget: 'storage',
 		keywords: ['storage', 'retention', 'disk', 'archive', 'recordings']
+	},
+	{
+		id: 'backups',
+		label: 'Backup & restore',
+		group: 'administration',
+		href: '#backups',
+		renderTarget: 'backups',
+		keywords: ['backup', 'restore', 'recovery', 'migration', 'rollback']
 	},
 	{
 		id: 'event-sources',

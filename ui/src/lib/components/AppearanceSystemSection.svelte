@@ -263,16 +263,11 @@
 						</div>
 					{/if}
 				</dl>
-				<div class="grid grid-cols-2 gap-2">
+				<div>
 					<button
 						type="button"
-						class="h-8 rounded-sm border border-hairline bg-raised px-3 text-xs text-text-muted disabled:cursor-not-allowed"
+						class="h-8 w-full rounded-sm border border-hairline bg-raised px-3 text-xs text-text-muted disabled:cursor-not-allowed"
 						disabled>Update check unavailable</button
-					>
-					<button
-						type="button"
-						class="h-8 rounded-sm border border-hairline bg-raised px-3 text-xs text-text-muted disabled:cursor-not-allowed"
-						disabled>Config backup unavailable</button
 					>
 				</div>
 				<div class="border-t border-hairline pt-3">
