@@ -53,8 +53,8 @@ use crate::{
     },
     webrtc::{
         ControlDispatch, ControlHandlerError, ControlRequestHandler, DataChannelTarget,
-        MediaSubscriptionPlan, OutboundDataMessage, PostSendAction, SessionId, StreamQuality,
-        WebRtc,
+        MediaSubscriptionPlan, OutboundDataMessage, OutboundEventDelivery, PostSendAction,
+        SessionId, StreamQuality, WebRtc,
     },
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -85,6 +85,7 @@ mod camera_discovery;
 mod configuration;
 mod event_publication;
 mod event_search;
+mod event_subscription;
 mod health_snapshot;
 mod logging;
 mod mqtt_integration;
@@ -528,6 +529,29 @@ impl ControlRequestHandler for ServerControlHandler {
             .map_err(|error| ControlHandlerError::new(error.code, error.message))
     }
 
+    fn unsubscribe_for_session(&self, session_id: SessionId, subscription_ids: &[String]) {
+        self.state
+            .event_subscriptions
+            .unsubscribe(session_id, subscription_ids);
+    }
+
+    fn has_event_subscription(&self, session_id: SessionId, subscription_id: &str) -> bool {
+        self.state
+            .event_subscriptions
+            .contains(session_id, subscription_id)
+    }
+
+    fn source_reset(&self, camera_ip: IpAddr) {
+        let source_id =
+            self.state.camera_entries().into_iter().find_map(|camera| {
+                (camera.info.ip.parse() == Ok(camera_ip)).then_some(camera.info.id)
+            });
+        if let Some(source_id) = source_id {
+            self.state.event_publications.invalidate_source(&source_id);
+            self.state.event_subscriptions.invalidate_source(&source_id);
+        }
+    }
+
     fn handle_for_session(
         &self,
         session_id: SessionId,
@@ -621,8 +645,35 @@ impl ControlRequestHandler for ServerControlHandler {
                         self.handle_publish_event(command).map(|()| None)
                     }
                     Some(control_request::Command::EventPublicationCommand(command)) => {
-                        event_publication::dispatch(&self.state, session_id, command).map(Some)
+                        match event_publication::dispatch(&self.state, session_id, command) {
+                            Ok(dispatch) => {
+                                if let Some(committed) = dispatch.committed {
+                                    self.route_committed_event(
+                                        committed.event,
+                                        committed.timeline_event,
+                                        Some(committed.attachment_bytes),
+                                    );
+                                }
+                                if let Some(event) = dispatch.mqtt_retry
+                                    && let Err(error) =
+                                        self.forward_published_event(&event, event.start_time_ms)
+                                {
+                                    tracing::warn!(
+                                        message = %error.message,
+                                        "committed event MQTT retry failed"
+                                    );
+                                }
+                                Ok(Some(dispatch.result))
+                            }
+                            Err(error) => Err(error),
+                        }
                     }
+                    Some(control_request::Command::SubscribeEvents(request)) => self
+                        .state
+                        .event_subscriptions
+                        .subscribe(&self.state, session_id, request)
+                        .map(control_ok::Result::SubscriptionResult)
+                        .map(Some),
                     Some(_) => Err(ControlCommandError::new(
                         proto::ErrorCode::UnsupportedRequest,
                         501,
@@ -690,6 +741,7 @@ impl ControlRequestHandler for ServerControlHandler {
         }
         event_search::close_session(&self.state, session_id);
         self.state.event_publications.close_session(session_id);
+        self.state.event_subscriptions.close_session(session_id);
         self.state.camera_discovery_tasks.close_session(session_id);
         stored_media::close_session(&self.state, session_id);
         let source_ids = {
@@ -829,7 +881,10 @@ impl ControlRequestHandler for ServerControlHandler {
             .state
             .camera_entries()
             .into_iter()
-            .find(|camera| camera_source_session_id(&camera.info.id) == request.source_session_id)
+            .find(|camera| {
+                proto_camera_source_session(&camera.info, &self.state.webrtc)
+                    .is_some_and(|source| source.source_session_id == request.source_session_id)
+            })
             .ok_or_else(|| {
                 ControlHandlerError::new(
                     proto::ErrorCode::NotFound,
@@ -918,6 +973,15 @@ impl ControlRequestHandler for ServerControlHandler {
                     "selected video variant is no longer available",
                 )
             })?;
+        if !selected_variant
+            .delivery_transports
+            .contains(&(delivery_transport as i32))
+        {
+            return Err(ControlHandlerError::new(
+                proto::ErrorCode::Unavailable,
+                "selected video delivery transport is unavailable",
+            ));
+        }
         let codec = selected_variant.codec.ok_or_else(|| {
             ControlHandlerError::new(
                 proto::ErrorCode::Internal,
@@ -944,8 +1008,8 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 }
 
-fn camera_source_session_id(source_id: &str) -> String {
-    format!("camera:{source_id}")
+fn camera_source_session_id(source_id: &str, generation: u64) -> String {
+    format!("camera:{source_id}:{generation}")
 }
 
 fn proto_camera_source_session(
@@ -964,18 +1028,21 @@ fn proto_camera_source_session(
                 .profiles
                 .iter()
                 .find(|profile| profile.stream == stream);
-            let codec = profile
-                .and_then(|profile| profile.encoding.as_deref())
-                .filter(|encoding| {
-                    encoding.eq_ignore_ascii_case("h264") || encoding.eq_ignore_ascii_case("h265")
-                })
-                .map(str::to_lowercase)
-                .unwrap_or_else(|| live_source.codec.to_owned());
-            let (width, height) = profile
+            let codec = live_source.codec.to_owned();
+            let profile_dimensions = profile
                 .and_then(|profile| profile.resolution.as_deref())
                 .and_then(|resolution| resolution.split_once('x'))
                 .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
                 .unwrap_or((0, 0));
+            let (width, height) = if live_source.width > 0 && live_source.height > 0 {
+                (live_source.width, live_source.height)
+            } else {
+                profile_dimensions
+            };
+            let mut delivery_transports = vec![proto::DeliveryTransport::Rtp as i32];
+            if !live_source.decoder_config.is_empty() {
+                delivery_transports.push(proto::DeliveryTransport::ReliableData as i32);
+            }
             Some(proto::MediaVariantCapability {
                 variant_id: stream.to_owned(),
                 codec: Some(proto::CodecDescriptor {
@@ -987,14 +1054,11 @@ fn proto_camera_source_session(
                         proto::VideoDataFormat {
                             width,
                             height,
-                            decoder_config: Vec::new(),
+                            decoder_config: live_source.decoder_config.clone(),
                         },
                     )),
                 }),
-                delivery_transports: vec![
-                    proto::DeliveryTransport::Rtp as i32,
-                    proto::DeliveryTransport::ReliableData as i32,
-                ],
+                delivery_transports,
                 nominal_bitrate_bps: u64::from(
                     profile
                         .and_then(|profile| profile.bitrate_kbps)
@@ -1007,7 +1071,10 @@ fn proto_camera_source_session(
         })
         .collect::<Vec<_>>();
     (!variants.is_empty()).then(|| proto::SourceSession {
-        source_session_id: camera_source_session_id(&camera.id),
+        source_session_id: camera_source_session_id(
+            &camera.id,
+            webrtc.camera_generation(camera_ip),
+        ),
         source_id: camera.id.clone(),
         display_name: camera.name.clone().unwrap_or_else(|| camera.id.clone()),
         audio: None,
@@ -1018,11 +1085,24 @@ fn proto_camera_source_session(
             .map(|event_type| proto::EventType {
                 event_type: event_type.to_owned(),
                 metadata: None,
-                attachments: Vec::new(),
+                attachments: vec![published_snapshot_capability()],
             })
             .collect(),
         publication_capabilities: Vec::new(),
     })
+}
+
+fn published_snapshot_capability() -> proto::EventAttachmentCapability {
+    proto::EventAttachmentCapability {
+        attachment_type: "snapshot".to_owned(),
+        content_type: "image/jpeg".to_owned(),
+        delivery_channels: vec![
+            proto::DataChannelKind::ReliableData as i32,
+            proto::DataChannelKind::UnreliableData as i32,
+        ],
+        maximum_count: 1,
+        minimum_count: 1,
+    }
 }
 
 fn proto_camera_stored_media_source(
@@ -1276,8 +1356,8 @@ impl ServerControlHandler {
                     "published event source was not found",
                 )
             })?;
-        if camera_source_session_id(&camera.info.id) != source_session_id
-            || proto_camera_source_session(&camera.info, &self.state.webrtc).is_none()
+        if proto_camera_source_session(&camera.info, &self.state.webrtc)
+            .is_none_or(|source| source.source_session_id != source_session_id)
         {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::NotFound,
@@ -1325,6 +1405,20 @@ impl ServerControlHandler {
                 "event bounding box must be normalized within the frame",
             ));
         }
+        if !event_publication::text_and_payload_valid(&event) {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "published event text or payload is invalid",
+            ));
+        }
+        let payload = event_publication::json_payload(event.payload.as_ref()).map_err(|_| {
+            ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "published event payload is invalid",
+            )
+        })?;
         let stream = event
             .payload
             .as_ref()
@@ -1338,6 +1432,7 @@ impl ServerControlHandler {
             .map(str::to_owned);
         let icon =
             crate::storage::metadata::event_icon(event.icon_key.as_deref(), &event.event_type);
+        let published_event = event.clone();
         let stored_event = TimelineEvent {
             id: event.event_id,
             revision: event.revision,
@@ -1351,6 +1446,8 @@ impl ServerControlHandler {
             bbox,
             bbox_attachment_id: None,
             zone: event.zone,
+            text: event.text,
+            payload,
             attachments: Vec::new(),
             canonical_attachment_id: None,
             icon_key: icon.key.to_owned(),
@@ -1372,7 +1469,13 @@ impl ServerControlHandler {
             )
         })? {
             return if existing == stored_event {
-                self.forward_published_event(&existing, start_time_ms)
+                if let Err(error) = self.forward_published_event(&existing, start_time_ms) {
+                    tracing::warn!(
+                        message = %error.message,
+                        "committed event MQTT retry failed"
+                    );
+                }
+                Ok(())
             } else {
                 Err(ControlCommandError::new(
                     proto::ErrorCode::Rejected,
@@ -1388,7 +1491,8 @@ impl ServerControlHandler {
                 format!("unable to store published event: {error}"),
             )
         })?;
-        self.forward_published_event(&stored_event, start_time_ms)
+        self.route_committed_event(published_event, stored_event, None);
+        Ok(())
     }
 
     fn forward_published_event(
@@ -1412,6 +1516,54 @@ impl ServerControlHandler {
                     format!("event was stored but MQTT forwarding is unavailable: {error}"),
                 )
             })
+    }
+
+    fn route_committed_event(
+        &self,
+        mut event: proto::Event,
+        timeline_event: TimelineEvent,
+        attachment_bytes: Option<Arc<[u8]>>,
+    ) {
+        event.origin = proto::EventOrigin::Keeppeek as i32;
+        event.icon_key = Some(timeline_event.icon_key.clone());
+        event.rejected_icon_key = timeline_event.rejected_icon_key.clone();
+        event.image_availability = if timeline_event.canonical_attachment_id.is_none() {
+            proto::EventImageAvailability::None as i32
+        } else if attachment_bytes.is_some() {
+            proto::EventImageAvailability::Available as i32
+        } else {
+            proto::EventImageAvailability::Unavailable as i32
+        };
+        if let Err(error) =
+            self.forward_published_event(&timeline_event, timeline_event.start_time_ms)
+        {
+            tracing::warn!(message = %error.message, "committed event MQTT fanout failed");
+        }
+        for delivery in self.state.event_subscriptions.deliveries(&event) {
+            let mut delivered_event = event.clone();
+            delivered_event.subscription_id = Some(delivery.subscription_id.clone());
+            let attachment_bytes = delivery
+                .attachment_target
+                .and_then(|_| attachment_bytes.as_ref().map(Arc::clone));
+            let queued = self.state.webrtc.try_enqueue_api_event(
+                delivery.session_id,
+                OutboundEventDelivery {
+                    event: delivered_event,
+                    attachment_target: delivery.attachment_target,
+                    attachment_bytes,
+                },
+            );
+            if !matches!(queued, Ok(true)) {
+                self.state
+                    .event_subscriptions
+                    .shed(delivery.session_id, &delivery.subscription_id);
+                tracing::warn!(
+                    session_id = %delivery.session_id,
+                    subscription_id = %delivery.subscription_id,
+                    "shed event subscription after its delivery queue stopped accepting work"
+                );
+            }
+        }
     }
 
     fn camera_database(&self) -> Result<&CameraDatabase, ControlCommandError> {
@@ -3166,7 +3318,7 @@ fn export_event_seed(
     }
     let image_available = event
         .canonical_attachment()
-        .is_some_and(|attachment| attachment.attachment_type == "thumbnail")
+        .is_some_and(crate::storage::metadata::is_supported_event_image)
         && store
             .thumbnail_path(&event.camera_id, &event.id)
             .ok()
@@ -6613,6 +6765,35 @@ fn proto_event_attachment_descriptor(
     }
 }
 
+fn proto_event_payload(payload: serde_json::Map<String, serde_json::Value>) -> prost_types::Struct {
+    prost_types::Struct {
+        fields: payload
+            .into_iter()
+            .map(|(key, value)| (key, proto_event_payload_value(value)))
+            .collect(),
+    }
+}
+
+fn proto_event_payload_value(value: serde_json::Value) -> prost_types::Value {
+    let kind = match value {
+        serde_json::Value::Null => prost_types::value::Kind::NullValue(0),
+        serde_json::Value::Bool(value) => prost_types::value::Kind::BoolValue(value),
+        serde_json::Value::Number(value) => {
+            prost_types::value::Kind::NumberValue(value.as_f64().unwrap_or_default())
+        }
+        serde_json::Value::String(value) => prost_types::value::Kind::StringValue(value),
+        serde_json::Value::Array(values) => {
+            prost_types::value::Kind::ListValue(prost_types::ListValue {
+                values: values.into_iter().map(proto_event_payload_value).collect(),
+            })
+        }
+        serde_json::Value::Object(value) => {
+            prost_types::value::Kind::StructValue(proto_event_payload(value))
+        }
+    };
+    prost_types::Value { kind: Some(kind) }
+}
+
 const fn proto_event_image_availability(has_image: bool, available: bool) -> i32 {
     if !has_image {
         proto::EventImageAvailability::None as i32
@@ -7035,7 +7216,7 @@ fn query_stored_events(
             let canonical_descriptor = event.canonical_attachment().cloned();
             let attachment = canonical_descriptor
                 .as_ref()
-                .filter(|descriptor| descriptor.attachment_type == "thumbnail")
+                .filter(|descriptor| crate::storage::metadata::is_supported_event_image(descriptor))
                 .and_then(|_| {
                     store
                         .thumbnail_path(&camera.info.id, &event.id)
@@ -7103,8 +7284,8 @@ fn query_stored_events(
                             height,
                         }),
                     zone: event.zone,
-                    text: None,
-                    payload: None,
+                    text: event.text,
+                    payload: event.payload.map(proto_event_payload),
                     attachments: descriptors,
                     source_session_id: None,
                     subscription_id: None,
@@ -8305,6 +8486,7 @@ pub struct ServerState {
     export_history_path: Option<Arc<PathBuf>>,
     event_search_tasks: EventSearchTasks,
     event_publications: event_publication::Registry,
+    event_subscriptions: event_subscription::Registry,
     event_page_token_key: Arc<[u8; 32]>,
     camera_discovery_tasks: camera_discovery::Registry,
     configuration_plans: configuration::Registry,
@@ -8422,6 +8604,7 @@ impl ServerState {
             export_history_path: Some(Arc::new(export_history_path)),
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             event_publications: event_publication::Registry::default(),
+            event_subscriptions: event_subscription::Registry::default(),
             event_page_token_key: Arc::new(rand::random()),
             camera_discovery_tasks: camera_discovery::Registry::default(),
             configuration_plans: configuration::Registry::default(),
@@ -12181,6 +12364,44 @@ mod tests {
         health::CameraHealthReason,
     };
 
+    fn fixture_video_keyframe(name: &str, media_type: mp4::MediaType) -> bytes::Bytes {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("crates/test-camera/testdata")
+            .join(name);
+        let mut reader = mp4::read_mp4(std::fs::File::open(path).unwrap()).unwrap();
+        let (&track_id, track) = reader
+            .tracks()
+            .iter()
+            .find(|(_, track)| track.media_type().ok() == Some(media_type))
+            .unwrap();
+        let config = track.media_config_for_description(1).unwrap();
+        let sample = (1..=track.sample_count())
+            .find_map(|sample_id| {
+                let sample = reader.read_sample(track_id, sample_id).unwrap().unwrap();
+                sample.is_sync.then_some(sample)
+            })
+            .unwrap();
+        let mut data = Vec::new();
+        let mut append = |nal: &[u8]| {
+            data.extend_from_slice(&u32::try_from(nal.len()).unwrap().to_be_bytes());
+            data.extend_from_slice(nal);
+        };
+        match config {
+            mp4::MediaConfig::AvcConfig(config) => {
+                append(&config.seq_param_set);
+                append(&config.pic_param_set);
+            }
+            mp4::MediaConfig::HevcConfig(config) => {
+                append(&config.vps);
+                append(&config.sps);
+                append(&config.pps);
+            }
+            _ => panic!("fixture must use H.264 or H.265"),
+        }
+        data.extend_from_slice(&sample.bytes);
+        bytes::Bytes::from(data)
+    }
+
     #[test]
     fn indexed_video_format_reports_coded_dimensions() {
         let initialization = std::fs::read(
@@ -12978,7 +13199,7 @@ mod tests {
     ) -> proto::SubscribeMedia {
         proto::SubscribeMedia {
             subscription_id: "front-door-live".to_owned(),
-            source_session_id: camera_source_session_id("127.0.0.1"),
+            source_session_id: camera_source_session_id("127.0.0.1", 0),
             kind: kind as i32,
             requested_delivery_transport: transport as i32,
             video_quality: quality as i32,
@@ -14308,7 +14529,63 @@ mod tests {
     }
 
     #[test]
-    fn media_subscription_accepts_reliable_data_delivery() {
+    fn media_subscription_accepts_decoder_ready_h264_and_h265_data() {
+        for (filename, media_type, codec, codec_name, dimensions) in [
+            (
+                "cc-4k-640x360-h264.mp4",
+                mp4::MediaType::H264,
+                crate::storage::VideoCodec::H264,
+                "h264",
+                (640, 368),
+            ),
+            (
+                "cc-4k-640x360-h265.mp4",
+                mp4::MediaType::H265,
+                crate::storage::VideoCodec::H265,
+                "h265",
+                (640, 360),
+            ),
+        ] {
+            let state = media_test_state();
+            state.webrtc.live().publish(
+                crate::webrtc::Source {
+                    camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    stream: StreamKind::Sub,
+                },
+                codec,
+                true,
+                Instant::now(),
+                None,
+                fixture_video_keyframe(filename, media_type),
+            );
+            let handler = test_control_handler(state);
+
+            let plan = handler
+                .resolve_media_subscription(&media_request(
+                    proto::MediaKind::Video,
+                    proto::DeliveryTransport::ReliableData,
+                    proto::VideoQuality::Low,
+                    "",
+                ))
+                .unwrap();
+
+            assert_eq!(plan.selected_variant_id, "sub");
+            assert_eq!(plan.quality, StreamQuality::Low);
+            assert_eq!(
+                plan.delivery_transport,
+                proto::DeliveryTransport::ReliableData
+            );
+            assert_eq!(plan.codec.name, codec_name);
+            let Some(proto::media_data_format::Format::Video(format)) = plan.format.format else {
+                panic!("reliable video subscription must return a video format");
+            };
+            assert_eq!((format.width, format.height), dimensions);
+            assert!(!format.decoder_config.is_empty());
+        }
+    }
+
+    #[test]
+    fn media_subscription_rejects_reliable_data_without_decoder_parameters() {
         let state = media_test_state();
         state.webrtc.live().publish(
             crate::webrtc::Source {
@@ -14322,21 +14599,32 @@ mod tests {
             bytes::Bytes::from_static(&[0, 0, 0, 1]),
         );
         let handler = test_control_handler(state);
+        let source = handler
+            .initial_capabilities(SessionId::from_u64(7))
+            .unwrap()
+            .source_sessions
+            .into_iter()
+            .find(|source| source.source_id == "127.0.0.1")
+            .unwrap();
+        let variant = source.video.unwrap().variants.remove(0);
+        assert_eq!(
+            variant.delivery_transports,
+            [proto::DeliveryTransport::Rtp as i32]
+        );
 
-        let plan = handler
+        let error = handler
             .resolve_media_subscription(&media_request(
                 proto::MediaKind::Video,
                 proto::DeliveryTransport::ReliableData,
                 proto::VideoQuality::Low,
                 "",
             ))
-            .unwrap();
+            .unwrap_err();
 
-        assert_eq!(plan.selected_variant_id, "sub");
-        assert_eq!(plan.quality, StreamQuality::Low);
+        assert_eq!(error.code, proto::ErrorCode::Unavailable);
         assert_eq!(
-            plan.delivery_transport,
-            proto::DeliveryTransport::ReliableData
+            error.message,
+            "selected video delivery transport is unavailable"
         );
     }
 
@@ -14385,6 +14673,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["person", "vehicle"]
         );
+        for event_type in &source.event_types {
+            assert_eq!(
+                event_type.attachments,
+                [proto::EventAttachmentCapability {
+                    attachment_type: "snapshot".to_owned(),
+                    content_type: "image/jpeg".to_owned(),
+                    delivery_channels: vec![
+                        proto::DataChannelKind::ReliableData as i32,
+                        proto::DataChannelKind::UnreliableData as i32,
+                    ],
+                    maximum_count: 1,
+                    minimum_count: 1,
+                }]
+            );
+        }
         let event = proto::Event {
             event_id: "detector-event-1".to_owned(),
             revision: 1,
@@ -14402,17 +14705,25 @@ mod tests {
                 height: 0.4,
             }),
             zone: Some("porch".to_owned()),
-            text: None,
+            text: Some("Person waiting at the porch".to_owned()),
             payload: Some(prost_types::Struct {
-                fields: std::collections::BTreeMap::from([(
-                    "stream_id".to_owned(),
-                    prost_types::Value {
-                        kind: Some(prost_types::value::Kind::StringValue("sub".to_owned())),
-                    },
-                )]),
+                fields: std::collections::BTreeMap::from([
+                    (
+                        "object_class".to_owned(),
+                        prost_types::Value {
+                            kind: Some(prost_types::value::Kind::StringValue("person".to_owned())),
+                        },
+                    ),
+                    (
+                        "stream_id".to_owned(),
+                        prost_types::Value {
+                            kind: Some(prost_types::value::Kind::StringValue("sub".to_owned())),
+                        },
+                    ),
+                ]),
             }),
             attachments: Vec::new(),
-            source_session_id: Some(camera_source_session_id("127.0.0.1")),
+            source_session_id: Some(camera_source_session_id("127.0.0.1", 0)),
             subscription_id: None,
             canonical_attachment_id: None,
             icon_key: Some("<svg onload=alert(1)>".to_owned()),
@@ -14426,19 +14737,40 @@ mod tests {
                 proto::PublishEvent { event: Some(event) },
             )),
         };
-        for request_id in [41, 43] {
-            let dispatch = handler.handle_for_session(
-                SessionId::from_u64(7),
-                proto::Request {
-                    request_id,
-                    ..request.clone()
-                },
-            );
-            assert!(matches!(
-                dispatch.response.result,
-                Some(control_response::Result::Ok(proto::Ok { result: None }))
-            ));
-        }
+        let subscribe = || {
+            handler
+                .state
+                .event_subscriptions
+                .subscribe(
+                    &handler.state,
+                    SessionId::from_u64(7),
+                    proto::SubscribeEvents {
+                        subscription_id: "events-1".to_owned(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        };
+        subscribe();
+        let first = handler.handle_for_session(SessionId::from_u64(7), request.clone());
+        assert!(matches!(
+            first.response.result,
+            Some(control_response::Result::Ok(proto::Ok { result: None }))
+        ));
+        assert_eq!(handler.state.event_subscriptions.len(), 0);
+        subscribe();
+        let retry = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 43,
+                ..request
+            },
+        );
+        assert!(matches!(
+            retry.response.result,
+            Some(control_response::Result::Ok(proto::Ok { result: None }))
+        ));
+        assert_eq!(handler.state.event_subscriptions.len(), 1);
         assert!(
             handler
                 .state
@@ -14454,6 +14786,8 @@ mod tests {
         assert_eq!(stored.stream.as_deref(), Some("sub"));
         assert_eq!(stored.kind, "person");
         assert_eq!(stored.start_time_ms, 12_345);
+        assert_eq!(stored.text.as_deref(), Some("Person waiting at the porch"));
+        assert_eq!(stored.payload.as_ref().unwrap()["object_class"], "person");
         assert_eq!(stored.confidence, Some(0.91));
         assert_eq!(stored.bbox, Some([0.1, 0.2, 0.3, 0.4]));
         assert_eq!(stored.icon_key, "person");
@@ -14501,6 +14835,35 @@ mod tests {
         image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
             .encode_image(&image::DynamicImage::new_rgb8(2, 2))
             .unwrap();
+        let subscription = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 49,
+                command: Some(control_request::Command::SubscribeEvents(
+                    proto::SubscribeEvents {
+                        subscription_id: "events-1".to_owned(),
+                        attachment_routes: vec![proto::EventAttachmentRoute {
+                            attachment_type: "snapshot".to_owned(),
+                            content_type: "image/jpeg".to_owned(),
+                            channel: proto::DataChannelKind::ReliableData as i32,
+                        }],
+                        ..Default::default()
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            subscription.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::SubscriptionResult(
+                    proto::SubscriptionResult {
+                        delivery: Some(proto::subscription_result::Delivery::Events(_)),
+                        ..
+                    }
+                ))
+            }))
+        ));
+        assert_eq!(handler.state.event_subscriptions.len(), 1);
         let event = proto::Event {
             event_id: "detector-event-attachment-1".to_owned(),
             revision: 1,
@@ -14517,12 +14880,20 @@ mod tests {
                 height: 0.4,
             }),
             payload: Some(prost_types::Struct {
-                fields: std::collections::BTreeMap::from([(
-                    "stream_id".to_owned(),
-                    prost_types::Value {
-                        kind: Some(prost_types::value::Kind::StringValue("sub".to_owned())),
-                    },
-                )]),
+                fields: std::collections::BTreeMap::from([
+                    (
+                        "object_class".to_owned(),
+                        prost_types::Value {
+                            kind: Some(prost_types::value::Kind::StringValue("person".to_owned())),
+                        },
+                    ),
+                    (
+                        "stream_id".to_owned(),
+                        prost_types::Value {
+                            kind: Some(prost_types::value::Kind::StringValue("sub".to_owned())),
+                        },
+                    ),
+                ]),
             }),
             attachments: vec![proto::EventAttachmentDescriptor {
                 attachment_id: "snapshot-1".to_owned(),
@@ -14533,10 +14904,11 @@ mod tests {
                 timestamp: Some(millis_timestamp(12_345)),
                 text: None,
             }],
-            source_session_id: Some(camera_source_session_id("127.0.0.1")),
+            source_session_id: Some(camera_source_session_id("127.0.0.1", 0)),
             canonical_attachment_id: Some("snapshot-1".to_owned()),
             bounding_box_attachment_id: Some("snapshot-1".to_owned()),
             image_availability: proto::EventImageAvailability::Available as i32,
+            text: Some("Person waiting at the porch".to_owned()),
             ..Default::default()
         };
         let start = proto::StartEventPublication {
@@ -14544,6 +14916,7 @@ mod tests {
             event: Some(event),
             attachment_channel: proto::DataChannelKind::ReliableData as i32,
         };
+        let stale_source_start = start.clone();
 
         let dispatch = handler.handle_for_session(
             SessionId::from_u64(7),
@@ -14585,6 +14958,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(handler.state.event_subscriptions.len(), 1);
 
         let split = jpeg.len() / 2;
         let attachment_message = |chunk_index: u32, payload: &[u8]| proto::Message {
@@ -14697,6 +15071,7 @@ mod tests {
             publication.status,
             proto::EventPublicationStatus::Committed as i32
         );
+        assert_eq!(handler.state.event_subscriptions.len(), 0);
 
         let dispatch = handler.handle_for_session(
             SessionId::from_u64(7),
@@ -14730,6 +15105,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.revision, 1);
+        assert_eq!(stored.text.as_deref(), Some("Person waiting at the porch"));
+        assert_eq!(stored.payload.as_ref().unwrap()["object_class"], "person");
         assert_eq!(stored.attachments.len(), 1);
         assert_eq!(
             stored.canonical_attachment_id.as_deref(),
@@ -14744,6 +15121,86 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(std::fs::read(image_path).unwrap(), jpeg);
+        let stored_timeline = query_stored_events(
+            &handler.state,
+            &handler.state.camera_entries(),
+            12_000,
+            13_000,
+            proto::StoredMediaEventQuery {
+                event_types: vec!["person".to_owned()],
+                include_attachments: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(stored_timeline.len(), 1);
+        assert_eq!(
+            stored_timeline[0].event.text.as_deref(),
+            Some("Person waiting at the porch")
+        );
+        assert!(matches!(
+            stored_timeline[0]
+                .event
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.fields.get("object_class"))
+                .and_then(|value| value.kind.as_ref()),
+            Some(prost_types::value::Kind::StringValue(value)) if value == "person"
+        ));
+        let stored_attachment = stored_timeline[0].attachment.as_ref().unwrap();
+        assert_eq!(stored_attachment.descriptor.id, "snapshot-1");
+        assert_eq!(std::fs::read(&stored_attachment.path).unwrap(), jpeg);
+        let mut search_query = EventMetadataQuery::new("sub", 12_000, 13_000);
+        search_query.event_ids = vec!["detector-event-attachment-1".to_owned()];
+        search_query.source_ids = vec!["127.0.0.1".to_owned()];
+        search_query.text = Some("person waiting".to_owned());
+        let mut hits = EventSearch::new(handle.clone())
+            .search_metadata(search_query)
+            .unwrap()
+            .hits;
+        refresh_event_search_image_availability(&handler.state, &mut hits);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].revision, 1);
+        assert_eq!(hits[0].text.as_deref(), Some("Person waiting at the porch"));
+        assert!(hits[0].image_available);
+        assert_eq!(
+            hits[0]
+                .canonical_attachment
+                .as_ref()
+                .map(|attachment| attachment.id.as_str()),
+            Some("snapshot-1")
+        );
+        let (_, attachment_messages) = fetch_event_search_media(
+            &handler.state,
+            proto::FetchEventSearchMedia {
+                transfer_id: "published-snapshot".to_owned(),
+                objects: vec![proto::EventSearchMediaObject {
+                    object_id: "snapshot".to_owned(),
+                    source_id: "127.0.0.1".to_owned(),
+                    representation: proto::StoredMediaObjectRepresentation::EventAttachment as i32,
+                    event_id: "detector-event-attachment-1".to_owned(),
+                    event_revision: 1,
+                    attachment_id: "snapshot-1".to_owned(),
+                    ..Default::default()
+                }],
+                channel: proto::DataChannelKind::ReliableData as i32,
+            },
+        )
+        .unwrap();
+        let published_snapshot = attachment_messages
+            .iter()
+            .find_map(|message| {
+                let Some(proto::message::Message::EventSearch(search)) = &message.message.message
+                else {
+                    return None;
+                };
+                let Some(proto::event_search_message::Message::MediaChunk(chunk)) = &search.message
+                else {
+                    return None;
+                };
+                Some(chunk.payload.as_slice())
+            })
+            .unwrap();
+        assert_eq!(published_snapshot, jpeg);
 
         let retry = handler.handle_for_session(
             SessionId::from_u64(7),
@@ -14793,6 +15250,115 @@ mod tests {
             proto::EventPublicationErrorCode::RevisionConflict as i32
         );
         assert_eq!(detail.current_revision, Some(1));
+
+        let mut revised_jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut revised_jpeg)
+            .encode_image(&image::DynamicImage::new_rgb8(3, 2))
+            .unwrap();
+        let mut revision_start = start.clone();
+        revision_start.publication_id = "publication-revision-2".to_owned();
+        let revision_event = revision_start.event.as_mut().unwrap();
+        revision_event.revision = 2;
+        revision_event.confidence = Some(0.97);
+        revision_event.text = Some("Person entered the porch".to_owned());
+        revision_event.attachments[0].byte_len = Some(revised_jpeg.len() as u64);
+        revision_event.payload.as_mut().unwrap().fields.insert(
+            "model_version".to_owned(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue("2".to_owned())),
+            },
+        );
+        let started = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 68,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(
+                            revision_start,
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            started.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        handler
+            .handle_data_for_session(
+                SessionId::from_u64(7),
+                proto::DataChannelKind::ReliableData,
+                proto::Message {
+                    message: Some(proto::message::Message::Event(proto::EventMessage {
+                        message: Some(proto::event_message::Message::Attachment(
+                            proto::EventAttachmentChunk {
+                                context: Some(
+                                    proto::event_attachment_chunk::Context::PublicationId(
+                                        "publication-revision-2".to_owned(),
+                                    ),
+                                ),
+                                event_id: "detector-event-attachment-1".to_owned(),
+                                revision: 2,
+                                attachment_id: "snapshot-1".to_owned(),
+                                attachment_type: "snapshot".to_owned(),
+                                content_type: "image/jpeg".to_owned(),
+                                ordinal: 0,
+                                timestamp: Some(millis_timestamp(12_345)),
+                                sequence: 1,
+                                chunk_index: 0,
+                                chunk_count: 1,
+                                payload: revised_jpeg.clone(),
+                            },
+                        )),
+                    })),
+                },
+            )
+            .unwrap();
+        for request_id in [69, 70] {
+            let committed = handler.handle_for_session(
+                SessionId::from_u64(7),
+                proto::Request {
+                    request_id,
+                    command: Some(control_request::Command::EventPublicationCommand(
+                        proto::EventPublicationCommand {
+                            action: Some(proto::event_publication_command::Action::Commit(
+                                proto::CommitEventPublication {
+                                    publication_id: "publication-revision-2".to_owned(),
+                                    wait_timeout: None,
+                                },
+                            )),
+                        },
+                    )),
+                },
+            );
+            assert!(matches!(
+                committed.response.result,
+                Some(control_response::Result::Ok(proto::Ok {
+                    result: Some(control_ok::Result::EventPublicationState(
+                        proto::EventPublicationState { status, revision: 2, .. }
+                    ))
+                })) if status == proto::EventPublicationStatus::Committed as i32
+            ));
+        }
+        let revised = handle
+            .event_by_id("detector-event-attachment-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(revised.revision, 2);
+        assert_eq!(revised.confidence, Some(0.97));
+        assert_eq!(revised.text.as_deref(), Some("Person entered the porch"));
+        assert_eq!(revised.payload.as_ref().unwrap()["model_version"], "2");
+        assert!(
+            !directory
+                .join("thumbnails/detector-event-attachment-1--r1.jpg")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read(directory.join("thumbnails/detector-event-attachment-1--r2.jpg"))
+                .unwrap(),
+            revised_jpeg
+        );
 
         let mut unknown_source = start.clone();
         unknown_source.publication_id = "reject-source".to_owned();
@@ -14882,6 +15448,8 @@ mod tests {
                 bbox: None,
                 bbox_attachment_id: None,
                 zone: None,
+                text: None,
+                payload: None,
                 attachments: Vec::new(),
                 canonical_attachment_id: None,
                 icon_key: "motion".to_owned(),
@@ -15031,6 +15599,56 @@ mod tests {
                 .join("thumbnails/detector-event-invalid-image--r1.jpg")
                 .exists()
         );
+        handler
+            .state
+            .webrtc
+            .live()
+            .reset_camera(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        handler.state.webrtc.live().publish(
+            crate::webrtc::Source {
+                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                stream: StreamKind::Sub,
+            },
+            crate::storage::VideoCodec::H264,
+            true,
+            Instant::now(),
+            None,
+            bytes::Bytes::from_static(&[0, 0, 0, 1]),
+        );
+        let current_source = handler
+            .initial_capabilities(SessionId::from_u64(7))
+            .unwrap()
+            .source_sessions
+            .into_iter()
+            .find(|source| source.source_id == "127.0.0.1")
+            .unwrap();
+        assert_eq!(current_source.source_session_id, "camera:127.0.0.1:1");
+        let mut stale_source_start = stale_source_start;
+        stale_source_start.publication_id = "publication-stale-source".to_owned();
+        stale_source_start.event.as_mut().unwrap().event_id = "stale-source-event".to_owned();
+        let stale_source = handler.handle_for_session(
+            SessionId::from_u64(7),
+            proto::Request {
+                request_id: 67,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(
+                            stale_source_start,
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(proto::Error { details, .. })) =
+            stale_source.response.result
+        else {
+            panic!("stale source session must return an error");
+        };
+        let detail = proto::EventPublicationError::decode(details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::EventPublicationErrorCode::SourceNotFound as i32
+        );
 
         drop(handler);
         drop(handle);
@@ -15139,6 +15757,8 @@ mod tests {
                 bbox: Some([0.1, 0.2, 0.3, 0.4]),
                 bbox_attachment_id: None,
                 zone: Some("porch".to_owned()),
+                text: None,
+                payload: None,
                 attachments: Vec::new(),
                 canonical_attachment_id: None,
                 icon_key: "motion".to_owned(),
@@ -15361,6 +15981,8 @@ mod tests {
                 bbox: Some([0.1, 0.2, 0.3, 0.4]),
                 bbox_attachment_id: Some("thumbnail".to_owned()),
                 zone: Some("Porch".to_owned()),
+                text: None,
+                payload: None,
                 attachments: vec![EventAttachment {
                     id: "thumbnail".to_owned(),
                     attachment_type: "thumbnail".to_owned(),
@@ -16693,6 +17315,8 @@ mod tests {
                 bbox: None,
                 bbox_attachment_id: None,
                 zone: None,
+                text: None,
+                payload: None,
                 attachments: vec![EventAttachment {
                     id: "snapshot-hero".to_owned(),
                     attachment_type: "snapshot".to_owned(),

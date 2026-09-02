@@ -37,6 +37,8 @@ const MAX_ATTACHMENT_ID_BYTES: usize = 64;
 const MAX_ATTACHMENT_TYPE_BYTES: usize = 64;
 const MAX_CONTENT_TYPE_BYTES: usize = 128;
 const MAX_ATTACHMENT_TEXT_CHARS: usize = 4_096;
+const MAX_EVENT_TEXT_CHARS: usize = 4_096;
+const MAX_EVENT_PAYLOAD_BYTES: usize = 16 * 1_024;
 /// Bounds exact recent coverage detail while retaining per-stream totals.
 const MAX_COVERAGE_RANGES_PER_STREAM: usize = 256;
 /// Keeps exact coverage scans bounded while long-term totals remain aggregated.
@@ -65,11 +67,14 @@ const EVENT_SEARCH_COLUMNS: &str = "e.id, e.camera_id, e.stream, e.source, e.kin
          e.start_time_ms, e.end_time_ms, e.confidence, e.bbox_json, e.zone,
          e.thumbnail_filename, e.revision, e.bbox_attachment_id, e.attachments_json,
          e.canonical_attachment_id, e.icon_key, e.rejected_icon_key,
-         (SELECT t.display_value
-          FROM recording_event_search_terms AS t
-          WHERE t.event_id = e.id AND t.field = 'text'
-          ORDER BY t.normalized_value
-          LIMIT 1) AS text";
+         COALESCE(
+             e.text,
+             (SELECT t.display_value
+              FROM recording_event_search_terms AS t
+              WHERE t.event_id = e.id AND t.field = 'text'
+              ORDER BY t.normalized_value
+              LIMIT 1)
+         ) AS text";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2317,6 +2322,8 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
                  bbox_json TEXT,
                  bbox_attachment_id TEXT,
                  zone TEXT,
+                 text TEXT,
+                 payload_json TEXT,
                  attachments_json TEXT NOT NULL DEFAULT '[]',
                  canonical_attachment_id TEXT,
                  icon_key TEXT NOT NULL DEFAULT 'event',
@@ -2447,6 +2454,8 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     )
     .await?;
     ensure_column(connection, "recording_events", "rejected_icon_key", "TEXT").await?;
+    ensure_column(connection, "recording_events", "text", "TEXT").await?;
+    ensure_column(connection, "recording_events", "payload_json", "TEXT").await?;
     ensure_column(
         connection,
         "recording_events",
@@ -3871,6 +3880,11 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
         .map(|bbox| serde_json::to_string(&bbox))
         .transpose()?;
     let attachments_json = serde_json::to_string(&event.attachments)?;
+    let payload_json = event
+        .payload
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
         let existing = event_by_id(connection, &event.id).await?;
@@ -3893,7 +3907,8 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                          bbox_json = ?9, zone = ?10, thumbnail_filename = ?11,
                          revision = ?12, bbox_attachment_id = ?13,
                          attachments_json = ?14, canonical_attachment_id = ?15,
-                         icon_key = ?16, rejected_icon_key = ?17
+                         icon_key = ?16, rejected_icon_key = ?17,
+                         text = ?18, payload_json = ?19
                      WHERE id = ?1",
                     turso::params![
                         event.id.clone(),
@@ -3913,24 +3928,18 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                         event.canonical_attachment_id.clone(),
                         event.icon_key.clone(),
                         event.rejected_icon_key.clone(),
+                        event.text.clone(),
+                        payload_json.clone(),
                     ],
                 )
                 .await?;
-            connection
-                .execute(
-                    "DELETE FROM recording_event_search_terms
-                     WHERE event_id = ?1 AND field = 'event_type'",
-                    turso::params![event.id.clone()],
-                )
-                .await?;
-            connection
-                .execute(
-                    "INSERT INTO recording_event_search_terms (
-                         event_id, field, normalized_value, display_value
-                     ) VALUES (?1, 'event_type', lower(trim(?2)), ?3)",
-                    turso::params![event.id.clone(), event.kind.clone(), event.kind.clone()],
-                )
-                .await?;
+            replace_intrinsic_event_terms(
+                connection,
+                &event.id,
+                &event.kind,
+                event.text.as_deref(),
+            )
+            .await?;
             record_event_search_mutation(connection, &event.id).await?;
         } else {
             if event.revision != 1 {
@@ -3942,17 +3951,18 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                      id, camera_id, stream, source, kind, start_time_ms,
                      end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
                      revision, bbox_attachment_id, attachments_json,
-                     canonical_attachment_id, icon_key, rejected_icon_key
+                     canonical_attachment_id, icon_key, rejected_icon_key,
+                     text, payload_json
                  ) VALUES (
                      ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                     ?12, ?13, ?14, ?15, ?16, ?17
+                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
                  )",
                     turso::params![
                         event.id.clone(),
                         event.camera_id.clone(),
                         event.stream.clone(),
                         event.source.as_str(),
-                        event.kind,
+                        event.kind.clone(),
                         event.start_time_ms,
                         event.end_time_ms,
                         event.confidence,
@@ -3964,10 +3974,19 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                         attachments_json,
                         event.canonical_attachment_id,
                         event.icon_key,
-                        event.rejected_icon_key,
+                        event.rejected_icon_key.clone(),
+                        event.text.clone(),
+                        payload_json,
                     ],
                 )
                 .await?;
+            replace_intrinsic_event_terms(
+                connection,
+                &event.id,
+                &event.kind,
+                event.text.as_deref(),
+            )
+            .await?;
         }
         reconcile_keyframes_for_event(
             connection,
@@ -3987,6 +4006,45 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
             Err(error)
         }
     }
+}
+
+async fn replace_intrinsic_event_terms(
+    connection: &turso::Connection,
+    event_id: &str,
+    event_type: &str,
+    text: Option<&str>,
+) -> anyhow::Result<()> {
+    connection
+        .execute(
+            "DELETE FROM recording_event_search_terms
+             WHERE event_id = ?1 AND field IN ('event_type', 'event_text')",
+            turso::params![event_id],
+        )
+        .await?;
+    connection
+        .execute(
+            "INSERT INTO recording_event_search_terms (
+                 event_id, field, normalized_value, display_value
+             ) VALUES (?1, 'event_type', lower(trim(?2)), ?3)",
+            turso::params![event_id, event_type, event_type],
+        )
+        .await?;
+    if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
+        let normalized = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        connection
+            .execute(
+                "INSERT INTO recording_event_search_terms (
+                     event_id, field, normalized_value, display_value
+                 ) VALUES (?1, 'event_text', ?2, ?3)",
+                turso::params![event_id, normalized, text],
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn reconcile_keyframes_for_event(
@@ -4281,6 +4339,18 @@ async fn event_thumbnail_filenames(connection: &turso::Connection) -> anyhow::Re
 }
 
 fn normalize_event_presentation(event: &mut TimelineEvent) -> anyhow::Result<()> {
+    if event
+        .text
+        .as_ref()
+        .is_some_and(|text| text.chars().count() > MAX_EVENT_TEXT_CHARS)
+    {
+        anyhow::bail!("event text exceeds {MAX_EVENT_TEXT_CHARS} characters");
+    }
+    if event.payload.as_ref().is_some_and(|payload| {
+        serde_json::to_vec(payload).map_or(true, |json| json.len() > MAX_EVENT_PAYLOAD_BYTES)
+    }) {
+        anyhow::bail!("event payload exceeds {MAX_EVENT_PAYLOAD_BYTES} bytes");
+    }
     if event.attachments.len() > MAX_EVENT_ATTACHMENTS {
         anyhow::bail!("event attachment count exceeds {MAX_EVENT_ATTACHMENTS}");
     }
@@ -4348,7 +4418,8 @@ async fn events_in_range(
             "SELECT id, camera_id, stream, source, kind, start_time_ms,
                     end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
                     revision, bbox_attachment_id, attachments_json,
-                    canonical_attachment_id, icon_key, rejected_icon_key
+                    canonical_attachment_id, icon_key, rejected_icon_key,
+                    text, payload_json
              FROM recording_events
              WHERE camera_id = ?1
                AND start_time_ms < ?3
@@ -4359,7 +4430,7 @@ async fn events_in_range(
         .await?;
     let mut events = Vec::new();
     while let Some(row) = rows.next().await? {
-        events.push(event_from_row(&row)?);
+        events.push(event_from_row(&row, true)?);
     }
     Ok(events)
 }
@@ -4373,7 +4444,8 @@ async fn event_by_id(
             "SELECT id, camera_id, stream, source, kind, start_time_ms,
                     end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
                     revision, bbox_attachment_id, attachments_json,
-                    canonical_attachment_id, icon_key, rejected_icon_key
+                    canonical_attachment_id, icon_key, rejected_icon_key,
+                    text, payload_json
              FROM recording_events
              WHERE id = ?1",
             turso::params![id],
@@ -4381,7 +4453,7 @@ async fn event_by_id(
         .await?;
     rows.next()
         .await?
-        .map(|row| event_from_row(&row))
+        .map(|row| event_from_row(&row, true))
         .transpose()
 }
 
@@ -4849,26 +4921,27 @@ async fn search_event_text(
     ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
     let prefix_end = format!("{}\u{10ffff}", query.query);
     let field = query.field.map(|field| field.as_str().to_owned());
+    let include_event_text = i64::from(query.field == Some(crate::storage::EventSearchField::Text));
     let source_id = query.source_id;
     let sql = format!(
         "SELECT {EVENT_SEARCH_COLUMNS}
              FROM recording_event_search_terms AS t
              JOIN recording_events AS e ON e.id = t.event_id
              WHERE t.normalized_value >= ?1 AND t.normalized_value < ?2
-               AND (?3 IS NULL OR t.field = ?4)
-               AND (?5 IS NULL OR e.camera_id = ?6)
-                   AND (e.stream IS NULL OR e.stream = ?7)
-                   AND e.start_time_ms < ?9
-                   AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?8
-                         AND e.rowid <= ?10
+               AND (?3 IS NULL OR t.field = ?4 OR (?5 = 1 AND t.field = 'event_text'))
+               AND (?6 IS NULL OR e.camera_id = ?7)
+                   AND (e.stream IS NULL OR e.stream = ?8)
+                   AND e.start_time_ms < ?10
+                   AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?9
+                         AND e.rowid <= ?11
                              AND (
-                             ?11 IS NULL
-                             OR e.start_time_ms < ?12
-                             OR (e.start_time_ms = ?13 AND e.id > ?14)
+                             ?12 IS NULL
+                             OR e.start_time_ms < ?13
+                             OR (e.start_time_ms = ?14 AND e.id > ?15)
                              )
              GROUP BY e.id
              ORDER BY e.start_time_ms DESC, e.id
-                     LIMIT ?15"
+                     LIMIT ?16"
     );
     let mut rows = connection
         .query(
@@ -4878,6 +4951,7 @@ async fn search_event_text(
                 prefix_end,
                 field.clone(),
                 field,
+                include_event_text,
                 source_id.clone(),
                 source_id,
                 query.stream_id.clone(),
@@ -5338,7 +5412,7 @@ fn event_search_hit(
     preview_before_ms: u64,
     preview_after_ms: u64,
 ) -> anyhow::Result<EventSearchHit> {
-    let event = event_from_row(row)?;
+    let event = event_from_row(row, false)?;
     let text = row.get(17)?;
     let canonical_attachment = event.canonical_attachment().cloned();
     let attachments = event.attachments.clone();
@@ -5618,7 +5692,7 @@ async fn catalog_stats(connection: &turso::Connection) -> anyhow::Result<Catalog
     })
 }
 
-fn event_from_row(row: &turso::Row) -> anyhow::Result<TimelineEvent> {
+fn event_from_row(row: &turso::Row, protocol_metadata: bool) -> anyhow::Result<TimelineEvent> {
     let source = row.get::<String>(3)?;
     let source = EventSource::parse(&source)
         .ok_or_else(|| anyhow::anyhow!("unknown event source '{source}'"))?;
@@ -5626,6 +5700,18 @@ fn event_from_row(row: &turso::Row) -> anyhow::Result<TimelineEvent> {
     let bbox = bbox_json.as_deref().map(serde_json::from_str).transpose()?;
     let attachments_json = row.get::<String>(13)?;
     let attachments: Vec<EventAttachment> = serde_json::from_str(&attachments_json)?;
+    let (text, payload) = if protocol_metadata {
+        let payload_json = row.get::<Option<String>>(18)?;
+        (
+            row.get(17)?,
+            payload_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?,
+        )
+    } else {
+        (None, None)
+    };
     Ok(TimelineEvent {
         id: row.get(0)?,
         revision: to_u64(row.get(11)?, "event revision")?,
@@ -5639,6 +5725,8 @@ fn event_from_row(row: &turso::Row) -> anyhow::Result<TimelineEvent> {
         bbox,
         bbox_attachment_id: row.get(12)?,
         zone: row.get(9)?,
+        text,
+        payload,
         attachments,
         canonical_attachment_id: row.get(14)?,
         icon_key: row.get(15)?,
@@ -5839,6 +5927,8 @@ mod tests {
                 bbox: None,
                 bbox_attachment_id: None,
                 zone: None,
+                text: None,
+                payload: None,
                 attachments: Vec::new(),
                 canonical_attachment_id: None,
                 icon_key: "motion".to_owned(),
@@ -5922,6 +6012,11 @@ mod tests {
         event.canonical_attachment_id = Some("story-explicit".to_owned());
         event.bbox_attachment_id = Some("story-explicit".to_owned());
         event.icon_key = "<svg onload=alert(1)>".to_owned();
+        event.text = Some("Person waiting at the porch".to_owned());
+        event.payload = Some(serde_json::Map::from_iter([(
+            "object_class".to_owned(),
+            serde_json::Value::String("person".to_owned()),
+        )]));
         handle.insert_event(event).unwrap();
         drop(handle);
         catalog.shutdown();
@@ -5935,6 +6030,23 @@ mod tests {
             Some("story-explicit")
         );
         assert_eq!(persisted.icon_key, "motion");
+        assert_eq!(
+            persisted.text.as_deref(),
+            Some("Person waiting at the porch")
+        );
+        assert_eq!(
+            persisted.payload.as_ref().unwrap()["object_class"],
+            "person"
+        );
+        handle
+            .replace_event_search_terms(
+                "event-1",
+                vec![EventSearchTerm {
+                    field: crate::storage::EventSearchField::Text,
+                    value: "operator alias".to_owned(),
+                }],
+            )
+            .unwrap();
         assert_eq!(
             persisted.rejected_icon_key.as_deref(),
             Some("<svg?onload=alert(1)>")
@@ -5964,6 +6076,11 @@ mod tests {
         revision_two.canonical_attachment_id = None;
         revision_two.icon_key = "vehicle".to_owned();
         revision_two.rejected_icon_key = None;
+        revision_two.text = Some("Vehicle entered the driveway".to_owned());
+        revision_two.payload = Some(serde_json::Map::from_iter([(
+            "object_class".to_owned(),
+            serde_json::Value::String("vehicle".to_owned()),
+        )]));
         handle.insert_event(revision_two).unwrap();
         let replaced = handle.event_by_id("event-1").unwrap().unwrap();
         assert_eq!(replaced.revision, 2);
@@ -5972,6 +6089,21 @@ mod tests {
             Some("snapshot-first")
         );
         assert_eq!(replaced.icon_key, "vehicle");
+        assert_eq!(
+            replaced.text.as_deref(),
+            Some("Vehicle entered the driveway")
+        );
+        assert_eq!(
+            replaced.payload.as_ref().unwrap()["object_class"],
+            "vehicle"
+        );
+        for query in ["operator", "vehicle entered"] {
+            let mut search = EventTextSearchQuery::new(query, "main", 0, 10_000);
+            search.field = Some(crate::storage::EventSearchField::Text);
+            let hits = handle.search_event_text(search).unwrap();
+            assert_eq!(hits.hits.len(), 1);
+            assert_eq!(hits.hits[0].event_id, "event-1");
+        }
         assert!(!replaced.canonical_image_owns_bbox());
         assert_eq!(
             replaced
@@ -6647,6 +6779,8 @@ mod tests {
             bbox: None,
             bbox_attachment_id: None,
             zone: None,
+            text: None,
+            payload: None,
             attachments: Vec::new(),
             canonical_attachment_id: None,
             icon_key: "motion".to_owned(),

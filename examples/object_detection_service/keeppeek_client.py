@@ -43,6 +43,73 @@ class ActiveSubscription:
     codec: CodecName
 
 
+@dataclass(frozen=True)
+class ActiveMediaConfiguration:
+    stream_binding_id: str
+    revision: int
+    codec: CodecName
+    width: int
+    height: int
+    decoder_config: bytes
+
+
+class MediaConfigurationTracker:
+    def __init__(self) -> None:
+        self.current: ActiveMediaConfiguration | None = None
+
+    def initialize(self, delivery: pb.MediaDataDelivery) -> ActiveMediaConfiguration:
+        configuration = parse_media_configuration(delivery)
+        self.current = configuration
+        return configuration
+
+    def apply(self, update: pb.MediaDataConfiguration) -> ActiveMediaConfiguration:
+        current = self.current
+        if current is None:
+            raise ProtocolError("KeepPeek sent media configuration before subscription")
+        configuration = parse_media_configuration(update)
+        if configuration.stream_binding_id != current.stream_binding_id:
+            raise ProtocolError("KeepPeek changed the media configuration binding")
+        if configuration.revision <= current.revision:
+            raise ProtocolError("KeepPeek media configuration revision did not increase")
+        self.current = configuration
+        return configuration
+
+    def codec_for(self, frame: pb.VideoDataFrame) -> CodecName | None:
+        current = self.current
+        if (
+            current is None
+            or frame.stream_binding_id != current.stream_binding_id
+            or frame.configuration_revision != current.revision
+        ):
+            return None
+        return current.codec
+
+
+def parse_media_configuration(
+    value: pb.MediaDataDelivery | pb.MediaDataConfiguration,
+) -> ActiveMediaConfiguration:
+    if not value.stream_binding_id or value.configuration_revision < 1:
+        raise ProtocolError("KeepPeek returned invalid media configuration identity")
+    if not value.HasField("codec") or not value.HasField("format"):
+        raise ProtocolError("KeepPeek returned incomplete media configuration")
+    codec_name = value.codec.name.casefold()
+    if codec_name not in {"h264", "h265"}:
+        raise ProtocolError(f"KeepPeek selected unsupported codec {codec_name}")
+    if value.format.WhichOneof("format") != "video":
+        raise ProtocolError("KeepPeek returned a non-video media configuration")
+    video = value.format.video
+    if video.width < 1 or video.height < 1 or not video.decoder_config:
+        raise ProtocolError("KeepPeek returned a non-decodable video configuration")
+    return ActiveMediaConfiguration(
+        stream_binding_id=value.stream_binding_id,
+        revision=value.configuration_revision,
+        codec=cast(CodecName, codec_name),
+        width=video.width,
+        height=video.height,
+        decoder_config=bytes(video.decoder_config),
+    )
+
+
 FrameHandler = Callable[[pb.VideoDataFrame, CodecName, int], None]
 
 
@@ -138,6 +205,7 @@ class KeepPeekClient:
         self._next_request_id = 1
         self._capabilities: pb.ServerCapabilities | None = None
         self._subscription: ActiveSubscription | None = None
+        self._media_configuration = MediaConfigurationTracker()
         self._session_id: str | None = None
         self._closed = False
         self._control.on("open", self._control_open.set)
@@ -344,15 +412,13 @@ class KeepPeekClient:
         delivery = result.media_data
         if delivery.channel != pb.DATA_CHANNEL_KIND_RELIABLE_DATA:
             raise ProtocolError("KeepPeek returned the wrong media data channel")
-        codec_name = delivery.codec.name.casefold()
-        if codec_name not in {"h264", "h265"}:
-            raise ProtocolError(f"KeepPeek selected unsupported codec {codec_name}")
+        configuration = self._media_configuration.initialize(delivery)
         return ActiveSubscription(
             source_id=source.source_id,
             source_session_id=source.source_session_id,
             stream_id=result.selected_variant_id,
             stream_binding_id=delivery.stream_binding_id,
-            codec=cast(CodecName, codec_name),
+            codec=configuration.codec,
         )
 
     async def _request(self, request: pb.Request) -> pb.Response:
@@ -394,19 +460,33 @@ class KeepPeekClient:
                 response = pb.Response()
                 response.CopyFrom(envelope.response)
                 future.set_result(response)
-        elif kind == "notification" and envelope.notification.WhichOneof("event") == (
-            "initial_capabilities"
-        ):
-            capabilities = pb.ServerCapabilities()
-            capabilities.CopyFrom(envelope.notification.initial_capabilities)
-            self._capabilities = capabilities
-            self._capabilities_ready.set()
-            subscription = self._subscription
-            if subscription is not None and not any(
-                source.source_session_id == subscription.source_session_id
-                for source in capabilities.source_sessions
-            ):
-                self._signal_lost("subscribed KeepPeek source session ended")
+        elif kind == "notification":
+            notification_kind = envelope.notification.WhichOneof("event")
+            if notification_kind == "initial_capabilities":
+                capabilities = pb.ServerCapabilities()
+                capabilities.CopyFrom(envelope.notification.initial_capabilities)
+                self._capabilities = capabilities
+                self._capabilities_ready.set()
+                subscription = self._subscription
+                if subscription is not None and not any(
+                    source.source_session_id == subscription.source_session_id
+                    for source in capabilities.source_sessions
+                ):
+                    self._signal_lost("subscribed KeepPeek source session ended")
+            elif notification_kind == "media_data_configuration":
+                try:
+                    configuration = self._media_configuration.apply(
+                        envelope.notification.media_data_configuration
+                    )
+                except ProtocolError as error:
+                    self._signal_lost(str(error))
+                    return
+                LOGGER.info(
+                    "media configuration updated binding=%s revision=%d codec=%s",
+                    configuration.stream_binding_id,
+                    configuration.revision,
+                    configuration.codec,
+                )
 
     def _on_data_message(self, value: object) -> None:
         if not isinstance(value, bytes):
@@ -418,14 +498,21 @@ class KeepPeekClient:
             LOGGER.warning("discarding malformed reliable-data protobuf")
             return
         subscription = self._subscription
+        codec = (
+            self._media_configuration.codec_for(message.video.frame)
+            if message.WhichOneof("message") == "video"
+            and message.video.WhichOneof("message") == "frame"
+            else None
+        )
         if (
             subscription is None
+            or codec is None
             or message.WhichOneof("message") != "video"
             or message.video.WhichOneof("message") != "frame"
             or message.video.frame.stream_binding_id != subscription.stream_binding_id
         ):
             return
-        self._frame_handler(message.video.frame, subscription.codec, self._generation)
+        self._frame_handler(message.video.frame, codec, self._generation)
 
     def _on_connection_state_change(self) -> None:
         if self._peer.connectionState in {"closed", "failed", "disconnected"}:

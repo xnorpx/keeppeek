@@ -47,20 +47,20 @@ of the recorder lifecycle.
 
 ### Phase 2: Event Subscription and Fanout
 
-- [ ] Implement filtered `SubscribeEvents` admission and typed subscription results.
-- [ ] Fan out committed event envelopes and requested attachment routes only after durable commit.
-- [ ] Bound subscriber messages/bytes independently and disconnect or shed without blocking commit.
-- [ ] Remove subscriptions and staged publications on session/source/capability replacement.
+- [x] Implement filtered `SubscribeEvents` admission and typed subscription results.
+- [x] Fan out committed event envelopes and requested attachment routes only after durable commit.
+- [x] Bound subscriber messages/bytes independently and disconnect or shed without blocking commit.
+- [x] Remove subscriptions and staged publications on session/source/capability replacement.
 
 ### Checkpoint: Visibility
 
-- [ ] The same committed revision is visible live, through stored event search, and in the normal UI.
-- [ ] Viewer and MQTT filters preserve source, stream, type, timestamp, class, confidence, bounding
+- [x] The same committed revision is visible live, through stored event search, and in the normal UI.
+- [x] Viewer and MQTT filters preserve source, stream, type, timestamp, class, confidence, bounding
       box, revision, text, and attachment identity.
 
 ### Phase 3: Deterministic Conformance
 
-- [ ] Prove decoder-ready H.264/H.265 reliable-data delivery, fragmentation, timestamps, and
+- [x] Prove decoder-ready H.264/H.265 reliable-data delivery, fragmentation, timestamps, and
       keyframe recovery with malformed-input rejection.
 - [ ] Add a no-model external client that consumes two low-bandwidth streams and publishes a person
       or vehicle event with deterministic evidence.
