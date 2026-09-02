@@ -1,99 +1,35 @@
-# Issue #136 Tasks
+# Issue #67 Tasks
 
-## Task 1: Add the configuration v1 contract
+## Atomic publication
 
-**Acceptance criteria:**
+- [ ] Decode inbound binary event messages on the declared data channel with strict size limits.
+- [ ] Start a publication only for an active stable source/session and advertised event policy.
+- [ ] Validate descriptors, chunk order/count/metadata, per-file bytes, aggregate bytes, and expiry.
+- [ ] Commit one event revision and all attachment bytes atomically before any fanout.
+- [ ] Make start/commit retries idempotent and return typed current-revision conflicts.
+- [ ] Abort, expire, and disconnect without retained staging state or visible partial events.
 
-- [x] Snapshot, template CRUD, plan, apply, import, and export actions are typed and versioned.
-- [x] Plans carry a revision, exact targets, expiry, impact, validation, and semantic changes.
-- [x] Existing protocol fields and behavior remain compatible.
+## Live and stored visibility
 
-**Verification:**
+- [ ] Admit bounded source/stream/type/attachment event subscriptions.
+- [ ] Route committed revisions to matching live subscribers and MQTT independently.
+- [ ] Disconnect or shed one saturated subscriber without delaying persistence or peers.
+- [ ] Return the same revision and attachment ordering through stored search and the normal UI.
 
-- [x] Regenerate protobuf bindings.
-- [x] Run focused Rust and UI type checks.
+## Media conformance
 
-## Task 2: Resolve defaults, overrides, and templates
+- [ ] Verify H.264 and H.265 decoder configuration, fragmentation, timestamps, and keyframe recovery.
+- [ ] Run one deterministic external client against two low-bandwidth test-camera streams.
+- [ ] Publish a person/vehicle event and request one timestamp-correct high-quality image.
+- [ ] Reject malformed media, credentials, source sessions, types, transports, and stale work.
+- [ ] Prove client crash/disconnect/reconnect cannot stop ingest, recording, live view, or playback.
 
-**Acceptance criteria:**
+## Operations and evidence
 
-- [x] Shared camera defaults remain inherited rather than copied.
-- [x] Effective values identify their source and applied state.
-- [x] Template documents and fields are bounded and never contain resolved secrets.
-
-**Verification:**
-
-- [x] Run focused config resolution and template-store unit tests.
-
-## Task 3: Preview exact bulk and template changes
-
-**Acceptance criteria:**
-
-- [x] Explicit IDs, filtered snapshots, and groups resolve to an authoritative server count.
-- [x] Preview reports old/effective/new values, skipped targets, validation, capabilities, and impact.
-- [x] A partial visible page cannot become an implicit fleet target.
-
-**Verification:**
-
-- [x] Run focused server planning tests.
-
-## Task 4: Apply plans safely
-
-**Acceptance criteria:**
-
-- [x] Stale, expired, changed, or capability-incompatible plans fail without writes.
-- [x] Valid plans preserve unknown values and secret references in one atomic configuration write.
-- [x] Camera activation outcomes and restart/reconnect recovery are explicit.
-
-**Verification:**
-
-- [x] Run focused server apply, conflict, rollback, and round-trip tests.
-
-## Task 5: Manage and exchange templates
-
-**Acceptance criteria:**
-
-- [x] Create, duplicate, edit, apply, delete, import, and export are bounded and revision-aware.
-- [x] Applying creates documented explicit overrides; edits and deletion never mutate cameras silently.
-- [x] Imports are fully validated and previewed before mutation.
-
-**Verification:**
-
-- [x] Run focused template lifecycle and import/export tests.
-
-## Task 6: Implement the typed client
-
-**Acceptance criteria:**
-
-- [x] Client types and protobuf conversions preserve optional set/clear semantics.
-- [x] Structured conflict and validation evidence reaches field-addressable UI state.
-- [x] Capability loss leaves readable values available.
-
-**Verification:**
-
-- [x] Run focused control-client tests.
-
-## Task 7: Build the fleet configuration UI
-
-**Acceptance criteria:**
-
-- [x] Users can inspect defaults, overrides, effective sources, templates, and applied state.
-- [x] Template and bulk workflows require preview and preserve drafts on every failure.
-- [x] Search covers setting, camera, capability, and source; controls fit desktop and 390 px mobile.
-
-**Verification:**
-
-- [x] Run focused Svelte browser tests and accessibility checks.
-
-## Task 8: Verify end to end
-
-**Acceptance criteria:**
-
-- [x] Playwright covers CRUD, preview/apply, conflict, capability loss, import/export, keyboard, and mobile.
-- [x] Existing configuration workflows do not regress.
-- [x] The canonical repository gate passes.
-
-**Verification:**
-
-- [x] Run focused Playwright tests.
-- [x] Run `./check.sh` from the repository root.
+- [ ] Expose bounded session/subscription/publication/queue/drop/latency health and metrics.
+- [ ] Verify logs, diagnostics, and generated bindings contain no credentials or binary payloads.
+- [ ] Keep API definitions/docs/generated bindings MIT-compatible for independent clients.
+- [ ] Run every conformance test in default CI with no camera, GPU, model, cloud service, or secret.
+- [ ] Record reproducible performance and memory evidence with p50/p95 budgets.
+- [ ] Complete fresh-context review and `./check.sh`.
+- [ ] Publish the criterion-by-criterion PR and final-head CI evidence.
