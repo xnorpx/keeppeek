@@ -4,12 +4,18 @@
 
 ### Added
 
+- Add Administrator-only reference-safe backup creation, inspection, download, upload, dry-run
+  restore, migration, staged activation, health verification, rollback, HTTP ProtoJSON automation,
+  CLI commands, and Settings UI through `keeppeek.backup.v1`.
 - Add typed camera defaults, effective-value evidence, versioned templates, authoritative bulk
   previews, conflict-safe atomic writes, and per-camera activation results through
   `keeppeek.configuration.v1`.
 
 ### Security
 
+- Validate archive paths, bounds, inventories, checksums, section schemas, SQLite integrity,
+  notification rule references, and target path identity before backup activation; retain no
+  resolved secrets, sessions, provider state, or access audit activity in default bundles.
 - Bound pre-authentication HTTP connections, parsing, request execution, delete bodies, and queued requests.
 - Bound Baichuan frame bodies, BCUDP packet windows, and application transport queues.
 - Verify the pinned CCTV Camera Database v2.8.0 archive with SHA-256 before ZIP parsing.
