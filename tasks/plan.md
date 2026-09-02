@@ -1,96 +1,116 @@
-# Implementation Plan: External Analysis API Hardening
+# Implementation Plan: Validated Backup, Restore, and Migration
 
 ## Overview
 
-Implement issue #67 as a vendor-neutral conformance boundary for external analysis clients. KeepPeek
-continues to own camera ingest, recording, event validation, durable storage, and fanout. External
-clients consume bounded encoded media and publish normalized event revisions without becoming part
-of the recorder lifecycle.
+Implement issue #128 as an Administrator-only HTTP API whose control and status documents use
+the canonical ProtoJSON mapping from a dedicated `keeppeek.backup.v1` schema. Backup artifacts
+stream as bounded ZIP bodies over HTTP. The implementation creates consistent reference-only
+snapshots, validates uploaded bundles before planning, stages selected restores, activates them
+through a crash-recoverable journal, retains one bounded rollback point, exposes the workflow in
+Settings and the CLI, and audits every security-relevant operation without logging bundle data.
 
 ## Architecture Decisions
 
-- Keep `api/webrtc.proto` as the public MIT-licensed contract. Extend it only when an existing
-  message cannot express a required invariant.
-- Decode inbound `Message` envelopes only on the negotiated reliable/unreliable data channels and
-  route them through a session-aware handler. Reject wrong-channel, oversized, malformed, and
-  unexpected payloads without closing unrelated media paths.
-- Own staged event publications in one bounded server subsystem keyed by API session and publication
-  ID. Bind each publication to one source session, stable source, event revision, attachment policy,
-  channel, expiry, count limit, and byte budget.
-- Reuse the recording catalog's transactional event-revision model. Store attachment bytes in an
-  owner-only same-volume staging area, promote them before the catalog commit, and reconcile orphaned
-  files after failures.
-- Treat a committed catalog revision as the sole durability boundary. Retries return the same
-  committed state; live subscribers and MQTT receive only committed revisions.
-- Add bounded per-session event subscriptions with independent output queues. A stalled subscriber
-  cannot delay persistence or another subscriber.
-- Build deterministic Rust/Python conformance fixtures with H.264/H.265 test-camera media and fake
-  detections. Do not require a model, GPU, cloud service, physical camera, or secret.
-- Keep external-client failure independent from camera workers, recording, playback, and existing
-  WebRTC sessions. Session/source replacement cancels only affected subscriptions/publications.
+- Add `api/backup.proto` as the canonical HTTP JSON and manifest contract. Generate Rust
+  ProtoJSON codecs with `pbjson` and TypeScript types with the existing Buf ES generator.
+- Use lower-camel ProtoJSON with named enums and quoted 64-bit integers. Reject unknown fields at
+  the HTTP boundary so unsupported clients and future schemas fail before mutation.
+- Keep control traffic JSON. Stream ZIP upload and download bodies as `application/zip` to avoid
+  base64 expansion and unbounded whole-artifact JSON allocations.
+- Store managed artifacts under a bounded `.backups` directory beside `config.toml`. Use opaque
+  UUID identifiers, deterministic member paths, per-section SHA-256, a whole-artifact SHA-256,
+  and owner-only permissions.
+- Export supported durable state into independent logical sections: runtime/camera/group and
+  integration configuration, recording/event catalog metadata, notification state, access
+  records, layouts, configuration templates, and thumbnail inventory. Omit caches and media bytes.
+- Sanitize configuration and notification data from typed supported fields. Preserve secret
+  references, replace inline sensitive values with explicit unresolved references, and fail closed
+  if a selected section cannot prove reference-only output.
+- Snapshot Turso databases through database-native consistent transactions or snapshot primitives;
+  never copy a live database file directly. Bind all section revisions into one manifest.
+- Make dry-run plans immutable, content-addressed, revision-bound, capacity-checked, path-mapped,
+  dependency-validated, and short-lived. Activation accepts only an unexpired unchanged plan.
+- Stage every target on its target filesystem. A persistent journal records before-images and each
+  swap. Startup completes rollback after interruption, and the previous state remains available
+  until post-restore validation passes or the rollback window expires.
+- Keep recording media outside the bundle. Catalog restore reports missing media and remaps source
+  archive roots explicitly without treating media absence as archive corruption.
+- Put Backup and restore in server-wide Settings. The browser keeps uploaded `File` objects only in
+  memory, preserves draft mappings after validation errors, and never stores bundle bytes or
+  credentials in browser persistence.
+- Add direct `keeppeek backup` commands that use the same core planner and ProtoJSON documents as
+  HTTP. Non-interactive output is machine-readable and secrets never appear in arguments.
 
 ## Task List
 
-### Phase 1: Atomic Attachment Publication
+### Phase 1: Contract and Safe Bundle Core
 
-- [x] Route bounded inbound reliable/unreliable `Message` envelopes to a session-aware handler.
-- [x] Start, receive chunks for, commit, retry, abort, and expire one bounded event publication.
-- [x] Persist monotonic event revisions and attachment descriptors/bytes atomically.
-- [x] Reject invalid source/session/type/channel/count/metadata/size/revision transitions with typed
-      publication errors.
+- [x] Task 1: Add the versioned backup ProtoJSON contract and generated Rust/TypeScript bindings.
+- [ ] Task 2: Extend the existing inspector with whole-artifact bounds, semantic section
+      validation, dependency rules, and typed manifest conversion.
+- [ ] Task 3: Create deterministic reference-only bundles for file-backed sections with secret
+      scans and cross-platform fixtures.
 
-### Checkpoint: Publication
+### Checkpoint: Bundle Foundation
 
-- [x] One JPEG remains invisible before commit and is durable after commit.
-- [x] Retried commit is idempotent; stale/conflicting revisions return the current revision.
-- [x] Crash/abort/expiry cleanup leaves no visible event or retained staging bytes.
+- [x] ProtoJSON round trips and rejects unknown or malformed input.
+- [ ] Adversarial archive, section dependency, path, checksum, size, and secret tests pass.
 
-### Phase 2: Event Subscription and Fanout
+### Phase 2: Consistent State and Restore Planning
 
-- [x] Implement filtered `SubscribeEvents` admission and typed subscription results.
-- [x] Fan out committed event envelopes and requested attachment routes only after durable commit.
-- [x] Bound subscriber messages/bytes independently and disconnect or shed without blocking commit.
-- [x] Remove subscriptions and staged publications on session/source/capability replacement.
+- [ ] Task 4: Add consistent recording and notification database snapshot/export adapters.
+- [ ] Task 5: Build revision-bound dry-run plans with migration, conflict, ID, path, capacity,
+      permission, media consequence, and restart evidence.
+- [ ] Task 6: Stage selected sections and activate them through a crash-recoverable rollback journal.
 
-### Checkpoint: Visibility
+### Checkpoint: Recovery Core
 
-- [x] The same committed revision is visible live, through stored event search, and in the normal UI.
-- [x] Viewer and MQTT filters preserve source, stream, type, timestamp, class, confidence, bounding
-      box, revision, text, and attachment identity.
+- [ ] Same-version and supported older-version round trips preserve identities and references.
+- [ ] Failure injection before, during, and after activation restores the exact previous state.
 
-### Phase 3: Deterministic Conformance
+### Phase 3: HTTP API, CLI, and Audit
 
-- [x] Prove decoder-ready H.264/H.265 reliable-data delivery, fragmentation, timestamps, and
-      keyframe recovery with malformed-input rejection.
-- [x] Add a no-model external client that consumes two low-bandwidth streams and publishes a person
-      or vehicle event with deterministic evidence.
-- [x] Obtain one timestamp-correct high-quality image without continuously decoding the main stream.
-- [x] Prove rejected credentials, unknown/stale sources, unsupported types/transports, disconnect,
-      crash, reconnect, and withheld-client isolation.
+- [ ] Task 7: Add bounded Administrator-only HTTP JSON lifecycle endpoints plus streaming ZIP
+      upload/download and operation metrics/audit events.
+- [ ] Task 8: Add `keeppeek backup` create, list, inspect, dry-run, restore, rollback, and delete
+      commands with ProtoJSON output.
 
-### Phase 4: Operations and Publication
+### Checkpoint: Automation
 
-- [x] Add bounded health/metrics for sessions, subscriptions, publications, queues, drops, expiry,
-      rejection, commit latency, and storage failure without payloads or credentials.
-- [x] Add secret/binary log scans and independent-client license/conformance documentation.
-- [x] Measure publication/fanout latency and queue memory against explicit p50/p95 budgets.
-- [x] Run fresh-context review, focused suites, and `./check.sh`.
-- [x] Publish a PR with one evidence row for every issue criterion.
-- [ ] Record successful final-head CI evidence in the PR and issue.
+- [ ] HTTP and CLI authorization, cancellation, timeout, concurrency, restart, and secret tests pass.
+- [ ] Linux, macOS, and Windows path fixtures produce equivalent plans.
+
+### Phase 4: Administrator UI and End-to-End Evidence
+
+- [ ] Task 9: Add the typed HTTP client and responsive Settings backup/restore workflow with
+      progress, warnings, mapping drafts, confirmation, rollback, and deletion.
+- [ ] Task 10: Add browser and real-process round-trip coverage for cameras, policies, groups,
+      layouts, catalog metadata, users, notifications, and integrations.
+- [ ] Task 11: Document bundle format, operator recovery, migration support, limits, security,
+      CLI/API examples, and rollback behavior.
+
+### Checkpoint: Complete
+
+- [ ] Focused contract, Rust, UI, CLI, HTTP, migration, failure-injection, and browser tests pass.
+- [ ] Performance benchmarks meet documented snapshot, dry-run, activation, and memory budgets.
+- [ ] `./check.sh` passes from the repository root.
+- [ ] Every issue criterion has final-commit evidence in the PR table.
 
 ## Risks and Mitigations
 
-| Risk                                                  | Impact   | Mitigation                                                                               |
-| ----------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------- |
-| Metadata becomes visible before attachment durability | Critical | Stage bytes, verify all descriptors, then commit one catalog revision before fanout      |
-| Retry creates duplicate or conflicting revisions      | Critical | Bind immutable publication intent and return typed current-revision conflicts            |
-| A slow client applies backpressure to recording       | Critical | Independent bounded queues and no waits on camera/storage owner loops                    |
-| Stale source sessions publish after reconnect         | High     | Revalidate source/session identity at start, chunk, commit, and session teardown         |
-| Binary or model output leaks into logs                | High     | Log bounded identifiers/status only and scan diagnostics with sentinel payloads          |
-| H.264/H.265 payloads are not decoder-ready            | High     | Test exact codec config, fragments, timestamps, and keyframe recovery with real fixtures |
-| Staging or subscriber state grows without bound       | High     | Cap sessions, publications, attachments, chunks, bytes, waits, and queue age/count       |
+| Risk                                                   | Impact   | Mitigation                                                                                 |
+| ------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------ |
+| A default artifact leaks a supported or unknown secret | Critical | Export allowlisted typed fields, scan final ZIP/log/API/browser evidence, and fail closed  |
+| Multi-file activation crashes between swaps            | Critical | Persist a before-image journal, use same-filesystem atomic renames, and recover on startup |
+| A live database copy is inconsistent                   | Critical | Use database-native snapshots or one bounded read transaction, never raw file copy         |
+| Partial restore breaks cross-references                | High     | Encode section dependencies and validate all references before creating a plan             |
+| A stale plan overwrites newer state                    | High     | Bind plans to revisions, source digest, target paths, expiry, and exact selected sections  |
+| Archive upload exhausts memory or disk                 | High     | Stream to an owner-only temporary file with compressed and uncompressed limits             |
+| Catalog restore implies missing media exists           | High     | Validate exact media coverage, report gaps, and require explicit path mappings             |
+| Restore invalidates the active process                 | High     | Stage first, restart only required owners, retain rollback, and gate completion on health  |
+| ProtoJSON evolves incompatibly                         | Medium   | Version package/messages, add fields only, reject unknown input, and test old fixtures     |
 
 ## Open Questions
 
-- None. The existing public event-publication and event-subscription messages are sufficient for the
-  first slice; contract changes will be additive and justified by a failing conformance case.
+- None. The user authorized a protobuf-defined HTTP JSON API. Bulk ZIP bytes remain streamed HTTP
+  bodies because encoding them in JSON would violate the feature's bounded-memory requirement.

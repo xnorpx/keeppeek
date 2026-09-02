@@ -134,6 +134,7 @@ sysinfo = "0.39.6"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 prost = "0.14"
 prost-types = "0.14"
+pbjson = "0.9.0"
 prometheus-client = "0.25.0"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.11"
@@ -238,6 +239,7 @@ codegen-units = 1
 lto = 'fat'
 
 [build-dependencies]
+pbjson-build = "0.9.0"
 prost-build = "0.14"
 protoc-bin-vendored = "3.2.0"
 sha2 = "0.11"
