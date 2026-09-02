@@ -1,6 +1,9 @@
 use std::{
-    path::Path,
-    sync::mpsc::{self, Receiver, SyncSender},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, SyncSender},
+    },
     time::Duration,
 };
 
@@ -92,15 +95,25 @@ enum Command {
         now_ms: i64,
         reply: SyncSender<anyhow::Result<u64>>,
     },
+    Snapshot {
+        destination: std::path::PathBuf,
+        maximum_bytes: u64,
+        reply: SyncSender<anyhow::Result<u64>>,
+    },
     Shutdown,
 }
 
 #[derive(Debug, Clone)]
 pub struct Handle {
     tx: SyncSender<Command>,
+    database_path: Arc<PathBuf>,
 }
 
 impl Handle {
+    pub(crate) fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
     pub fn save_draft(
         &self,
         draft: model::Rule,
@@ -316,6 +329,24 @@ impl Handle {
             .map_err(|error| anyhow::anyhow!("notification scoped clear timed out: {error}"))?
     }
 
+    pub(crate) fn snapshot_to(
+        &self,
+        destination: &Path,
+        maximum_bytes: u64,
+    ) -> anyhow::Result<u64> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::Snapshot {
+                destination: destination.to_owned(),
+                maximum_bytes,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow::anyhow!("notification runtime is no longer running"))?;
+        reply_rx
+            .recv_timeout(crate::backup::database::DATABASE_SNAPSHOT_TIMEOUT)
+            .map_err(|error| anyhow::anyhow!("notification snapshot timed out: {error}"))?
+    }
+
     fn receipt_command(
         &self,
         logical_id: impl Into<String>,
@@ -359,7 +390,10 @@ impl Runtime {
         store.recover_interrupted_deliveries()?;
         let deliveries = delivery::Workers::start(path)?;
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
-        let handle = Handle { tx };
+        let handle = Handle {
+            tx,
+            database_path: Arc::new(std::fs::canonicalize(path)?),
+        };
         let thread = std::thread::Builder::new()
             .name("notifications".to_owned())
             .spawn(move || run(store, rx))?;
@@ -501,6 +535,17 @@ fn run(store: store::Store, rx: Receiver<Command>) {
                 reply,
             } => {
                 let _ = reply.send(store.clear_scope(&principal_id, &scope, now_ms));
+            }
+            Command::Snapshot {
+                destination,
+                maximum_bytes,
+                reply,
+            } => {
+                let _ = reply.send(crate::backup::database::snapshot_turso_database(
+                    &store.connection,
+                    &destination,
+                    maximum_bytes,
+                ));
             }
             Command::Shutdown => break,
         }
@@ -677,6 +722,34 @@ fn cooldown_keys(rule: &RulePolicy, transition: &Transition) -> Vec<(CooldownKey
 }
 
 #[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn notification_snapshot_is_readable_while_the_runtime_stays_available() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("test-output")
+            .join("notification-snapshot");
+        if directory.exists() {
+            std::fs::remove_dir_all(&directory).unwrap();
+        }
+        std::fs::create_dir_all(&directory).unwrap();
+        let runtime = Runtime::open(&directory.join("notifications.db")).unwrap();
+        let handle = runtime.handle();
+        let snapshot_path = directory.join("snapshot.db");
+
+        handle
+            .snapshot_to(&snapshot_path, 16 * 1024 * 1024)
+            .unwrap();
+
+        let snapshot = store::Store::open(&snapshot_path).unwrap();
+        assert!(snapshot.rules("operator").unwrap().is_empty());
+        assert!(handle.rules("operator").unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
 mod performance {
     use std::{hint::black_box, time::Instant};
 
@@ -694,7 +767,10 @@ mod performance {
     #[ignore = "run with cargo test --release --lib notification_publish_latency -- --ignored --nocapture"]
     fn notification_publish_latency() {
         let (tx, rx) = std::sync::mpsc::sync_channel(ITERATIONS);
-        let handle = Handle { tx };
+        let handle = Handle {
+            tx,
+            database_path: std::sync::Arc::new(std::path::PathBuf::new()),
+        };
         let drain = std::thread::spawn(move || while rx.recv().is_ok() {});
         let candidate = Candidate {
             trigger: Trigger::EventCreated,

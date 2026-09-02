@@ -319,6 +319,7 @@ pub(crate) struct CatalogStreamCoverage {
 pub struct RecordingCatalogHandle {
     tx: SyncSender<Command>,
     search_tx: SyncSender<SearchCommand>,
+    database_path: Arc<PathBuf>,
 }
 
 pub struct RecordingCatalog {
@@ -492,6 +493,11 @@ enum Command {
     Stats {
         reply: SyncSender<anyhow::Result<CatalogStats>>,
     },
+    Snapshot {
+        destination: PathBuf,
+        maximum_bytes: u64,
+        reply: SyncSender<anyhow::Result<u64>>,
+    },
     Shutdown,
 }
 
@@ -531,7 +537,11 @@ impl RecordingCatalog {
         let path = path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Turso catalog path is not valid UTF-8"))?;
-        let database = pollster::block_on(turso::Builder::new_local(path).build())?;
+        let database = pollster::block_on(
+            turso::Builder::new_local(path)
+                .experimental_vacuum(true)
+                .build(),
+        )?;
         let connection = database.connect()?;
         let search_connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
@@ -546,7 +556,11 @@ impl RecordingCatalog {
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
-        let handle = RecordingCatalogHandle { tx, search_tx };
+        let handle = RecordingCatalogHandle {
+            tx,
+            search_tx,
+            database_path: Arc::new(std::fs::canonicalize(path)?),
+        };
         let thread = std::thread::Builder::new()
             .name("recording-catalog".to_owned())
             .spawn(move || run_catalog(connection, rx))?;
@@ -699,6 +713,10 @@ pub(crate) fn rewrite_recording_paths(
 }
 
 impl RecordingCatalogHandle {
+    pub(crate) fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
     pub fn upsert_recording(&self, recording: CatalogRecording) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -1347,6 +1365,24 @@ impl RecordingCatalogHandle {
             .recv()
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
+
+    pub(crate) fn snapshot_to(
+        &self,
+        destination: &Path,
+        maximum_bytes: u64,
+    ) -> anyhow::Result<u64> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::Snapshot {
+                destination: destination.to_owned(),
+                maximum_bytes,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv_timeout(crate::backup::database::DATABASE_SNAPSHOT_TIMEOUT)
+            .map_err(|error| anyhow::anyhow!("recording catalog snapshot timed out: {error}"))?
+    }
 }
 
 fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
@@ -1633,6 +1669,17 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             }
             Command::Stats { reply } => {
                 let _ = reply.send(pollster::block_on(catalog_stats(&connection)));
+            }
+            Command::Snapshot {
+                destination,
+                maximum_bytes,
+                reply,
+            } => {
+                let _ = reply.send(crate::backup::database::snapshot_turso_database(
+                    &connection,
+                    &destination,
+                    maximum_bytes,
+                ));
             }
             Command::Shutdown => break,
         }
@@ -6018,6 +6065,51 @@ mod tests {
 
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn catalog_snapshot_is_consistent_and_independent_from_later_writes() {
+        let root = test_dir("turso-catalog-snapshot");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "recording-before".to_owned(),
+                stream_id: "front-door/main".to_owned(),
+                source_id: Some("front-door".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                started_at_ms: 1_000,
+                ended_at_ms: Some(2_000),
+                path: "front-door/main/before.mp4".to_owned(),
+                init_offset: 0,
+                init_len: 512,
+                finalized: true,
+            })
+            .unwrap();
+        let snapshot_path = root.join("snapshot.db");
+
+        handle
+            .snapshot_to(&snapshot_path, 16 * 1024 * 1024)
+            .unwrap();
+
+        let snapshot = RecordingCatalog::open(&snapshot_path).unwrap();
+        assert_eq!(snapshot.handle().stats().unwrap().recording_files, 1);
+        handle
+            .upsert_recording(CatalogRecording {
+                id: "recording-after".to_owned(),
+                stream_id: "front-door/main".to_owned(),
+                source_id: Some("front-door".to_owned()),
+                logical_stream_id: Some("main".to_owned()),
+                started_at_ms: 3_000,
+                ended_at_ms: Some(4_000),
+                path: "front-door/main/after.mp4".to_owned(),
+                init_offset: 0,
+                init_len: 512,
+                finalized: true,
+            })
+            .unwrap();
+        assert_eq!(handle.stats().unwrap().recording_files, 2);
+        assert_eq!(snapshot.handle().stats().unwrap().recording_files, 1);
     }
 
     #[test]
