@@ -2212,7 +2212,9 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
     if path.exists() {
         use std::os::windows::ffi::OsStrExt;
         use windows::{
-            Win32::Storage::FileSystem::{REPLACE_FILE_FLAGS, ReplaceFileW},
+            Win32::Storage::FileSystem::{
+                REPLACE_FILE_FLAGS, REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW,
+            },
             core::PCWSTR,
         };
 
@@ -2231,7 +2233,7 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
                 PCWSTR(replaced.as_ptr()),
                 PCWSTR(replacement.as_ptr()),
                 None,
-                REPLACE_FILE_FLAGS(0),
+                REPLACE_FILE_FLAGS(REPLACEFILE_IGNORE_MERGE_ERRORS.0),
                 None,
                 None,
             )
