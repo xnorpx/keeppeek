@@ -61,7 +61,7 @@ compatibility guarantees begin with the 1.0 release.
 
 ## HTTP API
 
-The session and observability API has five core operations:
+The initial API has five operations:
 
 1. `POST /create` sends a gzip-compressed SDP offer and returns a gzip-compressed SDP answer
    with a session ID.

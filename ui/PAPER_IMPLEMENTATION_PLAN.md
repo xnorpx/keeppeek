@@ -6,7 +6,7 @@
 > Canonical design revision: 34 boards
 > Canonical token hash: `cf3b1cd7`
 
-Implement the complete current 34-board Paper system as a phased Svelte 5 migration. The anti-drift path is **Paper → Storybook → Svelte → Loki → GitHub Actions**: Paper defines each approved scenario, Storybook renders that scenario with deterministic Svelte fixtures, Loki compares the rendered story to its approved reference, and GitHub Actions blocks drift. The same stories may carry structured demo direction that Playwright records as captioned videos. Playwright separately proves route integration and behavior. The checked-in `api/` contract owns transport: HTTP is limited to `/create`, `/delete`, `/logs`, and `/metrics`; application commands use binary protobuf over the negotiated WebRTC control channel and fail closed when not implemented.
+Implement the complete current 34-board Paper system as a phased Svelte 5 migration. The anti-drift path is **Paper → Storybook → Svelte → Loki → GitHub Actions**: Paper defines each approved scenario, Storybook renders that scenario with deterministic Svelte fixtures, Loki compares the rendered story to its approved reference, and GitHub Actions blocks drift. The same stories may carry structured demo direction that Playwright records as captioned videos. Playwright separately proves route integration and behavior. The checked-in `api/` contract owns transport: application commands use binary protobuf over the negotiated WebRTC control channel and fail closed when not implemented; public HTTP is limited to `/create`, `/delete`, `/logs`, `/metrics`, and the protobuf-defined `/api/backups` recovery API.
 
 ## How To Track Progress
 

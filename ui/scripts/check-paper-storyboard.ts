@@ -147,6 +147,7 @@ type PositioningContract = {
 		blockers: string[];
 	};
 	httpPaths: string[];
+	backupHttpPaths: string[];
 	internalHttpPaths: string[];
 	principles: Array<{
 		index: number;
@@ -423,9 +424,26 @@ if (
 	throw new Error('Board 01 stored-event limitations are missing');
 }
 const expectedHttpPaths = ['/create', '/delete', '/logs', '/logs/snapshot', '/metrics'];
+const expectedBackupHttpPaths = [
+	'/api/backups',
+	'/api/backups/capabilities',
+	'/api/backups/download',
+	'/api/backups/downloads',
+	'/api/backups/uploads',
+	'/api/backups/transfers',
+	'/api/backups/inspect',
+	'/api/backups/restore-plans',
+	'/api/backups/restores',
+	'/api/backups/restores/get',
+	'/api/backups/rollbacks',
+	'/api/backups/delete'
+];
 const expectedInternalHttpPaths = ['/recording-coverage'];
 if (positioningContract.httpPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('Board 01 HTTP boundary changed');
+}
+if (positioningContract.backupHttpPaths.join('|') !== expectedBackupHttpPaths.join('|')) {
+	throw new Error('Board 01 backup HTTP boundary changed');
 }
 if (positioningContract.internalHttpPaths.join('|') !== expectedInternalHttpPaths.join('|')) {
 	throw new Error('Board 45 first-party HTTP boundary changed');
@@ -440,12 +458,15 @@ if (openApiPaths.join('|') !== expectedHttpPaths.join('|')) {
 const serverSource = await readFile(resolve('..', 'src/server.rs'), 'utf8');
 const serverPaths = [
 	...new Set(
-		[...serverSource.matchAll(/\((?:GET|POST|OPTIONS)\) \((\/[a-z-]+(?:\/[a-z-]+)*)\)/g)].map(
+		[...serverSource.matchAll(/\((?:GET|POST|PUT|OPTIONS)\) \((\/[a-z-]+(?:\/[a-z-]+)*)\)/g)].map(
 			(match) => match[1]
 		)
 	)
 ];
-if (serverPaths.join('|') !== [...expectedHttpPaths, ...expectedInternalHttpPaths].join('|')) {
+if (
+	serverPaths.join('|') !==
+	[...expectedHttpPaths, ...expectedInternalHttpPaths, ...expectedBackupHttpPaths].join('|')
+) {
 	throw new Error('Rust router exposes a noncanonical Board 01 HTTP path');
 }
 const expectedPrinciples = [
