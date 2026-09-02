@@ -50,7 +50,7 @@ test('uses a searchable eleven-section mobile administration index with focused 
 		}
 	});
 	await mockControlPeer(page, {
-		capabilityIds: ['keeppeek.identity.v1'],
+		capabilityIds: ['keeppeek.backup.v1', 'keeppeek.identity.v1'],
 		runtimeConfiguration: {
 			host: '0.0.0.0',
 			port: 3000,
@@ -90,7 +90,7 @@ test('uses a searchable eleven-section mobile administration index with focused 
 		await expect(navigation.getByRole('link', { name: new RegExp(label) })).toBeVisible();
 	}
 	await expect(index).toContainText('25 days');
-	await expect(index.getByText('—')).toHaveCount(5);
+	await expect(index.getByText('—')).toHaveCount(6);
 	await expect(page.getByRole('region', { name: 'Storage & retention' })).toBeHidden();
 
 	await page.getByLabel('Search settings').fill('MQTT');
@@ -329,11 +329,7 @@ test('Board 20 uses real theme, runtime, restart, and log evidence without inven
 	await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 	await expect(page.locator('html')).toHaveClass(/dark/);
 
-	for (const command of [
-		'Update check unavailable',
-		'Config backup unavailable',
-		'Erase unavailable'
-	]) {
+	for (const command of ['Update check unavailable', 'Erase unavailable']) {
 		await expect(section.getByRole('button', { name: command })).toBeDisabled();
 	}
 	await expect(section.getByRole('button', { name: 'Download diagnostics' })).toBeEnabled();
