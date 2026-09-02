@@ -478,6 +478,40 @@ impl Default for AccessCatalog {
     }
 }
 
+pub fn backup_catalog_document(config_path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    let path = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(ACCESS_CATALOG_NAME);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut catalog = toml::from_str::<AccessCatalog>(&text)
+        .with_context(|| format!("unable to parse {}", path.display()))?;
+    validate_catalog(&catalog)?;
+    catalog.audit.clear();
+    for credential in &mut catalog.credentials {
+        credential.last_used_at_ms = None;
+    }
+    Ok(Some(toml::to_string(&catalog)?.into_bytes()))
+}
+
+pub fn validate_backup_catalog_document(bytes: &[u8]) -> anyhow::Result<()> {
+    let catalog = toml::from_str::<AccessCatalog>(std::str::from_utf8(bytes)?)?;
+    validate_catalog(&catalog)?;
+    if !catalog.audit.is_empty()
+        || catalog
+            .credentials
+            .iter()
+            .any(|credential| credential.last_used_at_ms.is_some())
+    {
+        anyhow::bail!("backup access catalog contains non-recovery activity");
+    }
+    Ok(())
+}
+
 struct FailedAuthenticationWindow {
     started_at: Instant,
     attempts: u32,

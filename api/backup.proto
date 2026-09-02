@@ -113,6 +113,9 @@ message BackupCapabilities {
   uint64 restore_plan_ttl_seconds = 10;
   uint64 rollback_window_seconds = 11;
   repeated BackupSection supported_sections = 12;
+  string target_revision = 13;
+  repeated BackupPath target_paths = 14;
+  optional RestoreRecord active_restore = 15;
 }
 
 message BackupSource {
@@ -194,7 +197,7 @@ message BeginBackupUploadRequest {
   string client_request_id = 1;
   string file_name = 2;
   uint64 content_length = 3;
-  string archive_sha256 = 4;
+  optional string archive_sha256 = 4;
 }
 
 message BeginBackupDownloadRequest {

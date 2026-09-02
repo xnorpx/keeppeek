@@ -5,7 +5,7 @@ use std::{path::Path, sync::Arc};
 use crate::{
     access::AccessManager,
     api::{CameraId, CameraLifecycle, CameraStatus},
-    backup,
+    backup::{self, BackupManager, BackupStoragePaths},
     battery_wake::BatteryWakeService,
     camera_database::CameraDatabase,
     cameras,
@@ -162,6 +162,15 @@ pub fn run(
         .join("notifications.db");
     let notification_runtime = NotificationRuntime::open(&notification_path)?;
     let notification_handle = notification_runtime.handle();
+    let backup_manager = BackupManager::open(
+        config_path.to_path_buf(),
+        Some(recording_catalog.handle()),
+        Some(notification_handle.clone()),
+        Some(BackupStoragePaths::new(
+            storage_config.long_term_path.clone(),
+            storage_config.event_thumbnail_path.clone(),
+        )),
+    )?;
     let recording_demand = storage_engine.demand();
     let recording_health = storage_engine.health();
     let notification_health = NotificationHealthMonitor::start(
@@ -187,6 +196,7 @@ pub fn run(
     .with_event_store(event_store.clone())
     .with_health_registry(health_registry.clone())
     .with_recording_catalog(recording_catalog.handle())
+    .with_backup_manager(backup_manager)
     .with_recording_health(recording_health)
     .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
     let server_state = server_state
@@ -370,7 +380,15 @@ pub fn run(
     recording_catalog.shutdown();
     tracing::info!("all recordings saved");
 
-    startup_error.map_or_else(|| Ok(restart.is_requested()), Err)
+    if let Some(error) = startup_error {
+        return match rollback_pending_restore(config_path) {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(anyhow::anyhow!(
+                "application startup failed: {error:#}; restore rollback also failed: {rollback_error:#}"
+            )),
+        };
+    }
+    Ok(restart.is_requested())
 }
 
 fn mark_pending_restore_healthy(config_path: &Path) -> anyhow::Result<()> {
@@ -380,5 +398,15 @@ fn mark_pending_restore_healthy(config_path: &Path) -> anyhow::Result<()> {
             .as_millis(),
     )?;
     backup::mark_restore_healthy(config_path, now_unix_ms)?;
+    Ok(())
+}
+
+fn rollback_pending_restore(config_path: &Path) -> anyhow::Result<()> {
+    let now_unix_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    backup::recover_pending_restore(config_path, now_unix_ms)?;
     Ok(())
 }

@@ -123,10 +123,20 @@ pub struct ExternalAnalysisMetricsSnapshot {
     pub(crate) event_publication_commit_latency_ms_p95: u64,
 }
 
-pub fn encode_health_with_access_and_mqtt(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BackupMetricsSnapshot {
+    pub(crate) operation_successes: u64,
+    pub(crate) operation_failures: u64,
+    pub(crate) retained_backups: u64,
+    pub(crate) retained_archive_bytes: u64,
+    pub(crate) active_restore: u64,
+}
+
+pub fn encode_health_metrics(
     health: &ServerHealthResponse,
     access: Option<AccessMetricsSnapshot>,
     recording: Option<&RecordingCoverageMetricSnapshot>,
+    backup: Option<BackupMetricsSnapshot>,
     mqtt: Option<&MqttStatus>,
     external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
 ) -> Result<String, std::fmt::Error> {
@@ -608,6 +618,39 @@ pub fn encode_health_with_access_and_mqtt(
 
     if let Some(external_analysis) = external_analysis {
         register_external_analysis_metrics(&mut registry, external_analysis);
+    }
+
+    if let Some(backup) = backup {
+        register_counter(
+            &mut registry,
+            "backup_operations_successes",
+            "Successful authenticated backup and restore HTTP operations",
+            backup.operation_successes,
+        );
+        register_counter(
+            &mut registry,
+            "backup_operations_failures",
+            "Failed authenticated backup and restore HTTP operations",
+            backup.operation_failures,
+        );
+        register_gauge(
+            &mut registry,
+            "backup_artifacts_retained",
+            "Validated backup artifacts retained by this server",
+            backup.retained_backups,
+        );
+        register_gauge(
+            &mut registry,
+            "backup_artifacts_retained_bytes",
+            "Bytes used by validated retained backup artifacts",
+            backup.retained_archive_bytes,
+        );
+        register_gauge(
+            &mut registry,
+            "backup_restore_active",
+            "Whether a staged restore or retained rollback point is active",
+            backup.active_restore,
+        );
     }
 
     if let Some(mqtt) = mqtt {

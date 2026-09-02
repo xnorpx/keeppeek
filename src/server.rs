@@ -15,6 +15,7 @@ use crate::{
         CreateResponse, DeleteRequest, MotionDetection, ProfileSummary, RecordingCapacityEstimate,
         SanitizedConfig, SanitizedStorage, SdpAnswer as ApiSdpAnswer, Status,
     },
+    backup::BackupManager,
     battery_wake::BatteryWakeHandle,
     camera_database::{CameraDatabase, CameraMatch, CatalogCamera, StreamHints},
     cameras::{
@@ -63,6 +64,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use include_dir::{Dir, File as EmbeddedFile, include_dir};
 use prost::Message as _;
 use rouille::{Request, Response, ResponseBody, Server, router};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -93,6 +95,18 @@ mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod runtime_configuration;
 mod stored_media;
+
+pub(crate) fn validate_backup_layout_document(bytes: &[u8]) -> anyhow::Result<()> {
+    peek_layouts::validate_backup_document(bytes)
+}
+
+pub(crate) fn backup_layout_camera_ids(bytes: &[u8]) -> anyhow::Result<Vec<String>> {
+    peek_layouts::backup_camera_ids(bytes)
+}
+
+pub(crate) fn validate_backup_template_document(bytes: &[u8]) -> anyhow::Result<()> {
+    configuration::validate_backup_template_document(bytes)
+}
 
 use health_snapshot::{
     bounded_health_detail, connected_video_stream_ids, expected_video_stream_ids,
@@ -146,6 +160,7 @@ const CONFIGURATION_CAPABILITY_ID: &str = "keeppeek.configuration.v1";
 // Limits user-provided search text before it becomes part of in-memory matching work.
 const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
 const MAX_NOTIFICATION_RULE_JSON_BYTES: usize = 64 * 1_024;
+const MAX_BACKUP_JSON_BYTES: u64 = 64 * 1_024;
 
 static UI_ASSETS: Dir<'static> = include_dir!("$KEEPPEEK_UI_BUILD_DIR");
 
@@ -823,6 +838,9 @@ impl ControlRequestHandler for ServerControlHandler {
         if self.state.camera_config_path.is_some() {
             capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
             capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
+        }
+        if self.state.backup_manager.is_some() {
+            capability_ids.push("keeppeek.backup.v1".to_owned());
         }
         capability_ids.push("keeppeek.identity.v1".to_owned());
         let access_session = if session_id.as_u64() == 0 {
@@ -8516,6 +8534,7 @@ pub struct ServerState {
     storage_config: StorageConfig,
     camera_database: Option<Arc<CameraDatabase>>,
     catalog: Option<RecordingCatalogHandle>,
+    backup_manager: Option<Arc<BackupManager>>,
     logging: Option<LoggingService>,
     notifications: Option<NotificationHandle>,
     event_forwarder: Option<EventForwarderHandle>,
@@ -8634,6 +8653,7 @@ impl ServerState {
             storage_config: storage.clone(),
             camera_database: None,
             catalog: None,
+            backup_manager: None,
             logging: None,
             notifications: None,
             event_forwarder: None,
@@ -8843,6 +8863,11 @@ impl ServerState {
 
     pub fn with_recording_catalog(mut self, catalog: RecordingCatalogHandle) -> Self {
         self.catalog = Some(catalog);
+        self
+    }
+
+    pub fn with_backup_manager(mut self, manager: BackupManager) -> Self {
+        self.backup_manager = Some(Arc::new(manager));
         self
     }
 
@@ -9616,6 +9641,9 @@ fn handle_request(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> Response {
+    if request.method() == "OPTIONS" && request.url().starts_with("/api/backups") {
+        return backup_api_preflight(request, state);
+    }
     router!(request,
         (POST) (/create) => {
             authenticated_api_request(request, state, true, AccessRole::User, |identity| {
@@ -9653,8 +9681,540 @@ fn handle_request(
                 recording_coverage::get(request, router_tx, state)
             })
         },
+        (GET) (/api/backups) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_list(state, &identity)
+            })
+        },
+        (GET) (/api/backups/capabilities) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_json_result(state, &identity, "backup_capabilities", None, 200, || {
+                    backup_manager(state)?.capabilities(unix_time_ms())
+                })
+            })
+        },
+        (POST) (/api/backups) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_create(request, state, &identity)
+            })
+        },
+        (GET) (/api/backups/download) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_download(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/downloads) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_download_begin(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/uploads) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_upload_begin(request, state, &identity)
+            })
+        },
+        (PUT) (/api/backups/transfers) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_upload_accept(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/inspect) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_inspect(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/restore-plans) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_restore_plan(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/restores) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_restore_activate(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/restores/get) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_restore_get(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/rollbacks) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_restore_rollback(request, state, &identity)
+            })
+        },
+        (POST) (/api/backups/delete) => {
+            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
+                backup_delete(request, state, &identity)
+            })
+        },
         _ => serve_ui(request)
     )
+}
+
+fn backup_api_preflight(request: &Request, state: &ServerState) -> Response {
+    let response = api_preflight(request, state);
+    response.with_additional_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+}
+
+fn backup_list(state: &ServerState, identity: &AuthenticatedApiRequest) -> Response {
+    backup_json_result(state, identity, "backup_list", None, 200, || {
+        backup_manager(state)?.list()
+    })
+}
+
+fn backup_create(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request = match backup_json_body(request, state, identity, "backup_create") {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    backup_json_result(state, identity, "backup_create", None, 201, || {
+        backup_manager(state)?.create(&request, unix_time_ms())
+    })
+}
+
+fn backup_download(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let Some(backup_id) = request.get_param("backup_id") else {
+        return backup_rejected_response(
+            state,
+            identity,
+            "backup_download",
+            400,
+            "backup_id query parameter is required",
+        );
+    };
+    let manager = match backup_manager(state) {
+        Ok(manager) => manager,
+        Err(error) => return backup_download_error(state, identity, &backup_id, error),
+    };
+    let record = match manager.inspect(&backup_id) {
+        Ok(record) => record,
+        Err(error) => return backup_download_error(state, identity, &backup_id, error),
+    };
+    let path = match manager.artifact_path(&backup_id) {
+        Ok(path) => path,
+        Err(error) => return backup_download_error(state, identity, &backup_id, error),
+    };
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => return backup_download_error(state, identity, &backup_id, error.into()),
+    };
+    record_backup_http_audit(
+        state,
+        identity,
+        "backup_download",
+        Some(&backup_id),
+        "success",
+    );
+    Response::from_file("application/zip", file)
+        .with_additional_header("Cache-Control", "no-store")
+        .with_additional_header(
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", record.file_name),
+        )
+}
+
+fn backup_download_error(
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+    backup_id: &str,
+    error: anyhow::Error,
+) -> Response {
+    record_backup_http_audit(
+        state,
+        identity,
+        "backup_download",
+        Some(backup_id),
+        "failed",
+    );
+    backup_error_from_anyhow(error)
+}
+
+fn backup_download_begin(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::BeginBackupDownloadRequest =
+        match backup_json_body(request, state, identity, "backup_download_begin") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    let target = request.backup_id.clone();
+    backup_json_result(
+        state,
+        identity,
+        "backup_download_begin",
+        Some(&target),
+        200,
+        || backup_manager(state)?.begin_download(&request, unix_time_ms()),
+    )
+}
+
+fn backup_upload_begin(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::BeginBackupUploadRequest =
+        match backup_json_body(request, state, identity, "backup_upload_begin") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    backup_json_result(state, identity, "backup_upload_begin", None, 201, || {
+        backup_manager(state)?.begin_upload(&request, unix_time_ms())
+    })
+}
+
+fn backup_upload_accept(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    if request.header("Content-Type") != Some("application/zip") {
+        return backup_rejected_response(
+            state,
+            identity,
+            "backup_upload",
+            415,
+            "backup upload must use application/zip",
+        );
+    }
+    let Some(transfer_id) = request.get_param("transfer_id") else {
+        return backup_rejected_response(
+            state,
+            identity,
+            "backup_upload",
+            400,
+            "transfer_id query parameter is required",
+        );
+    };
+    let Some(content_length) = request
+        .header("Content-Length")
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return backup_rejected_response(
+            state,
+            identity,
+            "backup_upload",
+            411,
+            "backup upload requires Content-Length",
+        );
+    };
+    let Some(body) = request.data() else {
+        return backup_rejected_response(
+            state,
+            identity,
+            "backup_upload",
+            400,
+            "backup upload body is required",
+        );
+    };
+    backup_json_result(
+        state,
+        identity,
+        "backup_upload",
+        Some(&transfer_id),
+        201,
+        || backup_manager(state)?.accept_upload(&transfer_id, body, content_length, unix_time_ms()),
+    )
+}
+
+fn backup_inspect(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::InspectBackupRequest =
+        match backup_json_body(request, state, identity, "backup_inspect") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    let target = request.backup_id.clone();
+    backup_json_result(
+        state,
+        identity,
+        "backup_inspect",
+        Some(&target),
+        200,
+        || backup_manager(state)?.inspect(&request.backup_id),
+    )
+}
+
+fn backup_restore_plan(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::CreateRestorePlanRequest =
+        match backup_json_body(request, state, identity, "backup_restore_plan") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    let target = request.backup_id.clone();
+    backup_json_result(
+        state,
+        identity,
+        "backup_restore_plan",
+        Some(&target),
+        201,
+        || backup_manager(state)?.create_restore_plan(&request, unix_time_ms()),
+    )
+}
+
+fn backup_restore_activate(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::ActivateRestoreRequest =
+        match backup_json_body(request, state, identity, "backup_restore_activate") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    let target = request.plan_id.clone();
+    backup_json_result(
+        state,
+        identity,
+        "backup_restore_activate",
+        Some(&target),
+        202,
+        || backup_manager(state)?.activate_restore(&request, unix_time_ms()),
+    )
+}
+
+fn backup_restore_get(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::GetRestoreRequest =
+        match backup_json_body(request, state, identity, "backup_restore_get") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    let target = request.restore_id.clone();
+    backup_json_result(
+        state,
+        identity,
+        "backup_restore_get",
+        Some(&target),
+        200,
+        || backup_manager(state)?.get_restore(&request, unix_time_ms()),
+    )
+}
+
+fn backup_restore_rollback(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::RollbackRestoreRequest =
+        match backup_json_body(request, state, identity, "backup_restore_rollback") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    let target = request.restore_id.clone();
+    backup_json_result(
+        state,
+        identity,
+        "backup_restore_rollback",
+        Some(&target),
+        202,
+        || backup_manager(state)?.rollback_restore(&request, unix_time_ms()),
+    )
+}
+
+fn backup_delete(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let request: crate::api::backup_proto::DeleteBackupRequest =
+        match backup_json_body(request, state, identity, "backup_delete") {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    validate_backup_delete(request, state, identity)
+}
+
+fn validate_backup_delete(
+    request: crate::api::backup_proto::DeleteBackupRequest,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+) -> Response {
+    let target = request.backup_id;
+    backup_json_result(state, identity, "backup_delete", Some(&target), 200, || {
+        backup_manager(state)?.delete(&target)
+    })
+}
+
+fn backup_manager(state: &ServerState) -> anyhow::Result<&BackupManager> {
+    state
+        .backup_manager
+        .as_deref()
+        .ok_or_else(|| crate::backup::ServiceError::busy("backup service is unavailable").into())
+}
+
+fn backup_json_body<T: DeserializeOwned>(
+    request: &Request,
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+    action: &str,
+) -> Result<T, Response> {
+    if request
+        .header("Content-Type")
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        != Some("application/json")
+    {
+        return Err(backup_rejected_response(
+            state,
+            identity,
+            action,
+            415,
+            "backup requests must use application/json",
+        ));
+    }
+    let Some(body) = request.data() else {
+        return Err(backup_rejected_response(
+            state,
+            identity,
+            action,
+            400,
+            "backup request body is required",
+        ));
+    };
+    let mut bytes = Vec::new();
+    body.take(MAX_BACKUP_JSON_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| {
+            backup_rejected_response(
+                state,
+                identity,
+                action,
+                400,
+                "backup request body could not be read",
+            )
+        })?;
+    if bytes.len() as u64 > MAX_BACKUP_JSON_BYTES {
+        return Err(backup_rejected_response(
+            state,
+            identity,
+            action,
+            413,
+            "backup request body is too large",
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(|_| {
+        backup_rejected_response(
+            state,
+            identity,
+            action,
+            400,
+            "backup request contains invalid ProtoJSON",
+        )
+    })
+}
+
+fn backup_rejected_response(
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+    action: &str,
+    status: u16,
+    message: &str,
+) -> Response {
+    record_backup_http_audit(state, identity, action, None, "failed");
+    backup_error_response(status, message)
+}
+
+fn backup_json_result<T: Serialize>(
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+    action: &str,
+    target_id: Option<&str>,
+    success_status: u16,
+    operation: impl FnOnce() -> anyhow::Result<T>,
+) -> Response {
+    match operation() {
+        Ok(value) => {
+            record_backup_http_audit(state, identity, action, target_id, "success");
+            Response::json(&value)
+                .with_status_code(success_status)
+                .with_additional_header("Cache-Control", "no-store")
+        }
+        Err(error) => {
+            record_backup_http_audit(state, identity, action, target_id, "failed");
+            backup_error_from_anyhow(error)
+        }
+    }
+}
+
+fn record_backup_http_audit(
+    state: &ServerState,
+    identity: &AuthenticatedApiRequest,
+    action: &str,
+    target_id: Option<&str>,
+    result: &str,
+) {
+    if let Some(manager) = &state.backup_manager {
+        manager.record_http_result(result == "success");
+    }
+    record_access_audit(
+        state,
+        i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+        Some(&identity.principal.id()),
+        Some(identity.principal.role),
+        action,
+        target_id,
+        result,
+        identity.classification.reason,
+    );
+}
+
+fn backup_error_from_anyhow(error: anyhow::Error) -> Response {
+    if let Some(error) = error.downcast_ref::<crate::backup::ServiceError>() {
+        let (status, body) = error.response();
+        return Response::json(&body)
+            .with_status_code(status)
+            .with_additional_header("Cache-Control", "no-store");
+    }
+    tracing::warn!("backup operation failed without a public error classification");
+    Response::json(&crate::api::backup_proto::BackupError {
+        code: crate::api::backup_proto::BackupErrorCode::Internal as i32,
+        message: "backup operation failed".to_owned(),
+        field: String::new(),
+        retryable: false,
+    })
+    .with_status_code(500)
+    .with_additional_header("Cache-Control", "no-store")
+}
+
+fn backup_error_response(status: u16, message: &str) -> Response {
+    let code = match status {
+        404 => crate::api::backup_proto::BackupErrorCode::NotFound,
+        409 => crate::api::backup_proto::BackupErrorCode::Conflict,
+        410 => crate::api::backup_proto::BackupErrorCode::Expired,
+        413 => crate::api::backup_proto::BackupErrorCode::Capacity,
+        503 => crate::api::backup_proto::BackupErrorCode::Busy,
+        _ => crate::api::backup_proto::BackupErrorCode::InvalidRequest,
+    };
+    Response::json(&crate::api::backup_proto::BackupError {
+        code: code as i32,
+        message: message.chars().take(512).collect(),
+        field: String::new(),
+        retryable: matches!(status, 409 | 503),
+    })
+    .with_status_code(status)
+    .with_additional_header("Cache-Control", "no-store")
 }
 
 fn authenticated_api_request(
@@ -11033,10 +11593,17 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
         .as_ref()
         .map(EventForwarderHandle::status);
     let external_analysis = external_analysis_metrics_snapshot(state, &health);
-    match crate::metrics::encode_health_with_access_and_mqtt(
+    let backup = state.backup_manager.as_ref().and_then(|manager| {
+        manager
+            .metric_snapshot(unix_time_ms())
+            .map_err(|error| tracing::warn!(%error, "backup metrics are unavailable"))
+            .ok()
+    });
+    match crate::metrics::encode_health_metrics(
         &health,
         Some(access_metrics_snapshot(state)),
         recording.as_ref().ok(),
+        backup,
         mqtt.as_ref(),
         Some(external_analysis),
     ) {
@@ -13186,10 +13753,17 @@ mod tests {
             duplicate_count: 4,
             outbox_limit_bytes: 67_108_864,
         };
-        let metrics = crate::metrics::encode_health_with_access_and_mqtt(
+        let metrics = crate::metrics::encode_health_metrics(
             &health,
             None,
             None,
+            Some(crate::metrics::BackupMetricsSnapshot {
+                operation_successes: 7,
+                operation_failures: 2,
+                retained_backups: 3,
+                retained_archive_bytes: 14_595,
+                active_restore: 1,
+            }),
             Some(&mqtt),
             None,
         )
@@ -13206,6 +13780,11 @@ mod tests {
         assert!(metrics.contains("keeppeek_mqtt_forwarder_outbox_bytes 2048"));
         assert!(metrics.contains("keeppeek_mqtt_forwarder_retries_total 3"));
         assert!(metrics.contains("keeppeek_mqtt_forwarder_duplicates_total 4"));
+        assert!(metrics.contains("keeppeek_backup_operations_successes_total 7"));
+        assert!(metrics.contains("keeppeek_backup_operations_failures_total 2"));
+        assert!(metrics.contains("keeppeek_backup_artifacts_retained 3"));
+        assert!(metrics.contains("keeppeek_backup_artifacts_retained_bytes 14595"));
+        assert!(metrics.contains("keeppeek_backup_restore_active 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_track_sessions 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_tracks 3"));
         let proto = health_snapshot::proto_health_snapshot(health);
@@ -14193,6 +14772,31 @@ mod tests {
                 .any(|capability| capability == "keeppeek.configuration.v1")
         );
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn initial_capabilities_advertise_backup_only_when_available() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-backup-capability-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let capabilities = test_control_handler(
+            ServerState::empty()
+                .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap()),
+        )
+        .initial_capabilities(SessionId::from_u64(0))
+        .unwrap();
+
+        assert!(
+            capabilities
+                .capability_ids
+                .iter()
+                .any(|capability| capability == "keeppeek.backup.v1")
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -19480,6 +20084,379 @@ mod tests {
         assert_eq!(snapshot.entries[1].message, "two");
         assert!(!snapshot.truncated);
         std::fs::remove_dir_all(filter_file.path().parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn backup_http_create_list_and_download_use_protojson_and_zip() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-backup-http-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let manager = BackupManager::open(config_path, None, None, None).unwrap();
+        let state = ServerState::empty().with_backup_manager(manager);
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let request = crate::api::backup_proto::CreateBackupRequest {
+            client_request_id: "http-create-1".to_owned(),
+            sections: vec![
+                crate::api::backup_proto::BackupSection::RuntimeConfig as i32,
+                crate::api::backup_proto::BackupSection::CameraDatabase as i32,
+            ],
+            expected_archive_bytes: 1024 * 1024,
+        };
+
+        let create = handle_request(
+            &Request::fake_http(
+                "POST",
+                "/api/backups",
+                vec![("Content-Type".to_owned(), "application/json".to_owned())],
+                serde_json::to_vec(&request).unwrap(),
+            ),
+            &router_tx,
+            &state,
+        );
+
+        assert_eq!(create.status_code, 201);
+        let created: crate::api::backup_proto::BackupRecord =
+            serde_json::from_slice(&response_data(create)).unwrap();
+        let list = handle_request(
+            &Request::fake_http("GET", "/api/backups", Vec::new(), Vec::new()),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(list.status_code, 200);
+        let listed: crate::api::backup_proto::ListBackupsResponse =
+            serde_json::from_slice(&response_data(list)).unwrap();
+        assert_eq!(listed.backups[0].backup_id, created.backup_id);
+        let download = handle_request(
+            &Request::fake_http(
+                "GET",
+                format!("/api/backups/download?backup_id={}", created.backup_id),
+                Vec::new(),
+                Vec::new(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(download.status_code, 200);
+        assert!(download.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("Content-Type") && value == "application/zip"
+        }));
+        crate::backup::inspect_bundle(Cursor::new(response_data(download))).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_http_upload_inspect_plan_and_activate_use_protojson() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-backup-http-restore-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = directory.join("source");
+        let target = directory.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let source_config = source.join("config.toml");
+        let target_config = target.join("config.toml");
+        std::fs::write(&source_config, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
+        let (bundle, source_manifest) = crate::backup::create_bundle(
+            Cursor::new(Vec::new()),
+            crate::backup::CreateBundleOptions {
+                config_path: &source_config,
+                sections: &[
+                    crate::backup::BackupSection::RuntimeConfig,
+                    crate::backup::BackupSection::CameraDatabase,
+                ],
+                created_at_unix_ms: 1_788_000_000_000,
+                recording_catalog: None,
+                notifications: None,
+                storage_paths: None,
+            },
+        )
+        .unwrap();
+        let bytes = bundle.into_inner();
+        let manager = BackupManager::open(target_config.clone(), None, None, None).unwrap();
+        let state = ServerState::empty().with_backup_manager(manager);
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let upload_request = crate::api::backup_proto::BeginBackupUploadRequest {
+            client_request_id: "http-upload-1".to_owned(),
+            file_name: "restore.zip".to_owned(),
+            content_length: u64::try_from(bytes.len()).unwrap(),
+            archive_sha256: Some(encode_lower_hex(Sha256::digest(&bytes))),
+        };
+        let upload = handle_request(
+            &backup_json_request("POST", "/api/backups/uploads", &upload_request),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(upload.status_code, 201);
+        let transfer: crate::api::backup_proto::BackupTransfer =
+            serde_json::from_slice(&response_data(upload)).unwrap();
+
+        let accepted = handle_request(
+            &Request::fake_http(
+                "PUT",
+                format!(
+                    "/api/backups/transfers?transfer_id={}",
+                    transfer.transfer_id
+                ),
+                vec![
+                    ("Content-Type".to_owned(), "application/zip".to_owned()),
+                    ("Content-Length".to_owned(), bytes.len().to_string()),
+                ],
+                bytes,
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(accepted.status_code, 201);
+        let uploaded: crate::api::backup_proto::BackupRecord =
+            serde_json::from_slice(&response_data(accepted)).unwrap();
+        let inspected = handle_request(
+            &backup_json_request(
+                "POST",
+                "/api/backups/inspect",
+                &crate::api::backup_proto::InspectBackupRequest {
+                    backup_id: uploaded.backup_id.clone(),
+                },
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(inspected.status_code, 200);
+        let plan_request = crate::api::backup_proto::CreateRestorePlanRequest {
+            client_request_id: "http-plan-1".to_owned(),
+            backup_id: uploaded.backup_id,
+            sections: Vec::new(),
+            path_mappings: vec![crate::api::backup_proto::RestorePathMapping {
+                kind: crate::api::backup_proto::BackupPathKind::ConfigDirectory as i32,
+                source_path: source_manifest.source_paths[0].path.clone(),
+                target_path: target.to_string_lossy().into_owned(),
+            }],
+            expected_target_revision: crate::backup::target_revision(&target_config).unwrap(),
+        };
+        let planned = handle_request(
+            &backup_json_request("POST", "/api/backups/restore-plans", &plan_request),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(planned.status_code, 201);
+        let plan: crate::api::backup_proto::RestorePlan =
+            serde_json::from_slice(&response_data(planned)).unwrap();
+        assert!(plan.can_activate);
+        let activated = handle_request(
+            &backup_json_request(
+                "POST",
+                "/api/backups/restores",
+                &crate::api::backup_proto::ActivateRestoreRequest {
+                    client_request_id: "http-activate-1".to_owned(),
+                    plan_id: plan.plan_id,
+                    archive_sha256: plan.archive_sha256,
+                    confirm: true,
+                },
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(activated.status_code, 202);
+        assert!(state.access_manager.list_audit(20).iter().any(|event| {
+            event.action == "backup_restore_activate" && event.result == "success"
+        }));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_http_rejects_remote_user_role() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-backup-http-user-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let mut state = ServerState::empty()
+            .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap());
+        state.require_secure_remote = false;
+        let issued = state
+            .access_manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let remote = SocketAddr::from(([203, 0, 113, 8], 42_000));
+        let request = crate::api::backup_proto::CreateBackupRequest {
+            client_request_id: "denied".to_owned(),
+            sections: Vec::new(),
+            expected_archive_bytes: 0,
+        };
+
+        let response = handle_request(
+            &Request::fake_http_from(
+                remote,
+                "POST",
+                "/api/backups",
+                vec![
+                    (
+                        "Authorization".to_owned(),
+                        format!("Bearer {}", issued.access_key.canonical()),
+                    ),
+                    ("Content-Type".to_owned(), "application/json".to_owned()),
+                ],
+                serde_json::to_vec(&request).unwrap(),
+            ),
+            &router_tx,
+            &state,
+        );
+
+        assert_eq!(response.status_code, 403);
+        assert!(
+            state
+                .backup_manager
+                .as_ref()
+                .unwrap()
+                .list()
+                .unwrap()
+                .backups
+                .is_empty()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_http_preflight_advertises_one_complete_method_set() {
+        let state = ServerState::empty();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let response = handle_request(
+            &Request::fake_http(
+                "OPTIONS",
+                "/api/backups/uploads",
+                vec![("Origin".to_owned(), "http://localhost".to_owned())],
+                Vec::new(),
+            ),
+            &router_tx,
+            &state,
+        );
+
+        let methods = response
+            .headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case("Access-Control-Allow-Methods"))
+            .map(|(_, value)| value.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(methods, ["GET, POST, PUT, OPTIONS"]);
+    }
+
+    #[test]
+    fn backup_http_audits_rejected_protojson_requests() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-backup-http-audit-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let state = ServerState::empty()
+            .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap());
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+
+        let response = handle_request(
+            &Request::fake_http(
+                "POST",
+                "/api/backups",
+                vec![("Content-Type".to_owned(), "text/plain".to_owned())],
+                b"not ProtoJSON".to_vec(),
+            ),
+            &router_tx,
+            &state,
+        );
+
+        assert_eq!(response.status_code, 415);
+        assert!(
+            state
+                .access_manager
+                .list_audit(10)
+                .iter()
+                .any(|event| { event.action == "backup_create" && event.result == "failed" })
+        );
+        let response = handle_request(
+            &Request::fake_http(
+                "PUT",
+                "/api/backups/transfers",
+                vec![("Content-Type".to_owned(), "text/plain".to_owned())],
+                b"not a ZIP".to_vec(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(response.status_code, 415);
+        assert!(
+            state
+                .access_manager
+                .list_audit(10)
+                .iter()
+                .any(|event| { event.action == "backup_upload" && event.result == "failed" })
+        );
+        let metrics = state
+            .backup_manager
+            .as_ref()
+            .unwrap()
+            .metric_snapshot(1_000)
+            .unwrap();
+        assert_eq!(metrics.operation_successes, 0);
+        assert_eq!(metrics.operation_failures, 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_http_errors_are_typed_and_hide_internal_details() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-backup-http-errors-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let state = ServerState::empty()
+            .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap());
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let response = handle_request(
+            &backup_json_request(
+                "POST",
+                "/api/backups/inspect",
+                &crate::api::backup_proto::InspectBackupRequest {
+                    backup_id: "private/path/token".to_owned(),
+                },
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(response.status_code, 400);
+        let error: crate::api::backup_proto::BackupError =
+            serde_json::from_slice(&response_data(response)).unwrap();
+        assert_eq!(
+            error.code,
+            crate::api::backup_proto::BackupErrorCode::InvalidRequest as i32
+        );
+        assert_eq!(error.field, "backupId");
+        assert!(!error.message.contains("private"));
+
+        let response = backup_error_from_anyhow(anyhow::anyhow!(
+            "database /private/path contains provider-token"
+        ));
+        assert_eq!(response.status_code, 500);
+        let body = String::from_utf8(response_data(response)).unwrap();
+        assert!(!body.contains("/private/path"));
+        assert!(!body.contains("provider-token"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn backup_json_request(value: &str, path: &str, body: &impl Serialize) -> Request {
+        Request::fake_http(
+            value,
+            path,
+            vec![("Content-Type".to_owned(), "application/json".to_owned())],
+            serde_json::to_vec(body).unwrap(),
+        )
     }
 
     #[test]

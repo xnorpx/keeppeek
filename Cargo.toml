@@ -42,7 +42,7 @@ keywords = ["nvr", "ip-camera", "rtsp", "webrtc", "video-surveillance"]
 categories = ["multimedia::video", "network-programming"]
 
 [package.metadata.cargo-machete]
-ignored = ["prost", "prost-types"]
+ignored = ["pbjson"]
 
 [features]
 event-keyframe-benchmark = []
@@ -93,6 +93,7 @@ clap = { version = "4.6.6", default-features = false, features = [
   "std",
   "derive",
   "help",
+  "usage",
 ] }
 csv = { version = "1.4.0" }
 crossbeam-channel = "0.5.16"

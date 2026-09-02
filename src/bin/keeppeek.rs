@@ -1,3 +1,6 @@
+mod keeppeek_backup;
+
+use clap::{Parser, Subcommand};
 use keeppeek::{
     config,
     logging::initialize_global_logging,
@@ -8,7 +11,65 @@ use tracing::info;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-fn main() -> anyhow::Result<()> {
+#[derive(Parser)]
+#[command(name = "keeppeek", version)]
+struct Cli {
+    /// Use a specific server configuration file.
+    #[arg(short = 'c', long, value_name = "PATH")]
+    config: Option<std::path::PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Manage reference-only configuration backups through the HTTP API.
+    Backup(keeppeek_backup::BackupArgs),
+}
+
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::from(error.exit_code())
+        }
+    }
+}
+
+enum MainError {
+    Server(anyhow::Error),
+    Backup(keeppeek_backup::BackupCliError),
+}
+
+impl MainError {
+    const fn exit_code(&self) -> u8 {
+        match self {
+            Self::Server(_) => 1,
+            Self::Backup(error) => error.exit_code(),
+        }
+    }
+}
+
+impl std::fmt::Display for MainError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Server(error) => error.fmt(formatter),
+            Self::Backup(error) => error.fmt(formatter),
+        }
+    }
+}
+
+fn run() -> Result<(), MainError> {
+    let cli = Cli::parse();
+    if let Some(Command::Backup(args)) = cli.command {
+        return keeppeek_backup::run(args).map_err(MainError::Backup);
+    }
+    let _ = cli.config;
+    run_server().map_err(MainError::Server)
+}
+
+fn run_server() -> anyhow::Result<()> {
     let (cfg, config_path) = config::load()?;
     let logging = initialize_global_logging(&config_path)?;
 

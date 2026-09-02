@@ -111,6 +111,36 @@ struct RegistryStore {
     registry: StoredRegistry,
 }
 
+pub(super) fn validate_backup_document(bytes: &[u8]) -> anyhow::Result<()> {
+    if bytes.len() > MAX_REGISTRY_BYTES {
+        anyhow::bail!("layout registry exceeds its size limit");
+    }
+    let registry: StoredRegistry = serde_json::from_slice(bytes)?;
+    RegistryStore {
+        path: PathBuf::new(),
+        camera_ids: HashSet::new(),
+        registry,
+    }
+    .validate_stored()
+    .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+pub(super) fn backup_camera_ids(bytes: &[u8]) -> anyhow::Result<Vec<String>> {
+    if bytes.len() > MAX_REGISTRY_BYTES {
+        anyhow::bail!("layout registry exceeds its size limit");
+    }
+    let registry: StoredRegistry = serde_json::from_slice(bytes)?;
+    let mut camera_ids = registry
+        .shared_layouts
+        .iter()
+        .chain(registry.users.values().flat_map(|user| user.layouts.iter()))
+        .flat_map(|layout| layout.tiles.iter().map(|tile| tile.camera_id.clone()))
+        .collect::<Vec<_>>();
+    camera_ids.sort_unstable();
+    camera_ids.dedup();
+    Ok(camera_ids)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum RegistryError {
     Conflict { current_revision: u64 },

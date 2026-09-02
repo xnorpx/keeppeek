@@ -10,23 +10,153 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     io::{Read, Seek, SeekFrom},
+    path::{Path, PathBuf},
 };
 use zip::ZipArchive;
 
 mod create;
 pub(crate) mod database;
+mod http_client;
 mod manager;
 mod restore;
 
 pub use create::{CreateBundleOptions, create_bundle};
+pub use http_client::{BackupClientError, BackupHttpClient};
 pub use manager::BackupManager;
 pub use restore::{
-    RestorePlanOptions, StageRestoreOptions, mark_restore_healthy, plan_restore,
-    recover_pending_restore, request_restore_rollback, stage_restore, target_revision,
+    RestorePlanOptions, StageRestoreOptions, active_restore, current_restore, mark_restore_healthy,
+    plan_restore, recover_pending_restore, request_restore_rollback, stage_restore,
+    target_revision,
 };
+
+#[derive(Clone)]
+pub struct BackupStoragePaths {
+    long_term_media: PathBuf,
+    event_thumbnails: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) struct ServiceError {
+    status: u16,
+    code: backup_proto::BackupErrorCode,
+    message: &'static str,
+    field: &'static str,
+    retryable: bool,
+}
+
+impl ServiceError {
+    pub(crate) const fn invalid(field: &'static str, message: &'static str) -> Self {
+        Self {
+            status: 400,
+            code: backup_proto::BackupErrorCode::InvalidRequest,
+            message,
+            field,
+            retryable: false,
+        }
+    }
+
+    pub(crate) const fn not_found(message: &'static str) -> Self {
+        Self {
+            status: 404,
+            code: backup_proto::BackupErrorCode::NotFound,
+            message,
+            field: "",
+            retryable: false,
+        }
+    }
+
+    pub(crate) const fn conflict(message: &'static str) -> Self {
+        Self {
+            status: 409,
+            code: backup_proto::BackupErrorCode::Conflict,
+            message,
+            field: "",
+            retryable: true,
+        }
+    }
+
+    pub(crate) const fn expired(message: &'static str) -> Self {
+        Self {
+            status: 410,
+            code: backup_proto::BackupErrorCode::Expired,
+            message,
+            field: "",
+            retryable: false,
+        }
+    }
+
+    pub(crate) const fn capacity(message: &'static str) -> Self {
+        Self {
+            status: 413,
+            code: backup_proto::BackupErrorCode::Capacity,
+            message,
+            field: "",
+            retryable: false,
+        }
+    }
+
+    pub(crate) const fn checksum(message: &'static str) -> Self {
+        Self {
+            status: 422,
+            code: backup_proto::BackupErrorCode::ChecksumMismatch,
+            message,
+            field: "",
+            retryable: false,
+        }
+    }
+
+    pub(crate) const fn busy(message: &'static str) -> Self {
+        Self {
+            status: 503,
+            code: backup_proto::BackupErrorCode::Busy,
+            message,
+            field: "",
+            retryable: true,
+        }
+    }
+
+    pub(crate) fn response(&self) -> (u16, backup_proto::BackupError) {
+        (
+            self.status,
+            backup_proto::BackupError {
+                code: self.code as i32,
+                message: self.message.to_owned(),
+                field: self.field.to_owned(),
+                retryable: self.retryable,
+            },
+        )
+    }
+}
+
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for ServiceError {}
+
+impl BackupStoragePaths {
+    #[must_use]
+    pub const fn new(long_term_media: PathBuf, event_thumbnails: PathBuf) -> Self {
+        Self {
+            long_term_media,
+            event_thumbnails,
+        }
+    }
+
+    fn path(&self, kind: BackupPathKind) -> anyhow::Result<&Path> {
+        match kind {
+            BackupPathKind::LongTermMedia => Ok(&self.long_term_media),
+            BackupPathKind::EventThumbnails => Ok(&self.event_thumbnails),
+            _ => anyhow::bail!("backup storage path kind is not a directory root"),
+        }
+    }
+}
 
 /// The ZIP member that describes every section in a backup bundle.
 pub const MANIFEST_PATH: &str = "manifest.json";
+const LEGACY_CONFIG_SOURCE_PATH: &str = "legacy://config-directory";
 
 const LEGACY_FORMAT_VERSION: u32 = 1;
 const FORMAT_VERSION: u32 = 2;
@@ -402,7 +532,10 @@ impl From<UnvalidatedBackupManifest> for BackupManifest {
                 .collect(),
             omitted_data: Vec::new(),
             required_secret_references: Vec::new(),
-            source_paths: Vec::new(),
+            source_paths: vec![BackupPath {
+                kind: BackupPathKind::ConfigDirectory,
+                path: LEGACY_CONFIG_SOURCE_PATH.to_owned(),
+            }],
             snapshot_revision: String::new(),
         }
     }
@@ -616,7 +749,7 @@ fn inspect_bundle_with_limits<R: Read + Seek>(
     for section in &manifest.sections {
         verify_section(&mut archive, section)?;
         if manifest.format_version == FORMAT_VERSION {
-            validate_section_content(&mut archive, section)?;
+            validate_section_content(&mut archive, section, &manifest)?;
         }
     }
     if let Some(path) = archive_paths
@@ -638,6 +771,13 @@ fn validate_sections(
     for section in &manifest.sections {
         if section.schema_version == 0 {
             anyhow::bail!("backup section schemas must be nonzero");
+        }
+        if manifest.format_version == LEGACY_FORMAT_VERSION && section.schema_version != 1 {
+            anyhow::bail!(
+                "backup {} section uses unsupported legacy schema {}",
+                section.kind.as_str(),
+                section.schema_version
+            );
         }
         if manifest.format_version == FORMAT_VERSION && section.schema_version != 1 {
             anyhow::bail!(
@@ -782,6 +922,7 @@ fn verify_section<R: Read + Seek>(
 fn validate_section_content<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     section: &BackupManifestSection,
+    manifest: &BackupManifest,
 ) -> anyhow::Result<()> {
     match section.kind.encoding() {
         SectionEncoding::Toml => {
@@ -796,6 +937,9 @@ fn validate_section_content<R: Read + Seek>(
             toml::from_str::<toml::Table>(text).map_err(|error| {
                 anyhow::anyhow!("invalid {} section: {error}", section.kind.as_str())
             })?;
+            if section.kind == BackupSection::Access {
+                crate::access::validate_backup_catalog_document(&bytes)?;
+            }
         }
         SectionEncoding::Json => {
             let bytes = read_member(
@@ -803,25 +947,29 @@ fn validate_section_content<R: Read + Seek>(
                 &section.path,
                 section.kind.maximum_document_bytes(),
             )?;
-            let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
-                anyhow::anyhow!("invalid {} section: {error}", section.kind.as_str())
-            })?;
-            if !value.is_object() {
+            let document: create::ConfigurationSectionDocument = serde_json::from_slice(&bytes)
+                .map_err(|error| {
+                    anyhow::anyhow!("invalid {} section: {error}", section.kind.as_str())
+                })?;
+            if !document.values.is_object() {
                 anyhow::bail!(
                     "invalid {} section: expected a JSON object",
                     section.kind.as_str()
                 );
             }
-            if value
-                .get("schemaVersion")
-                .and_then(serde_json::Value::as_u64)
-                != Some(u64::from(section.schema_version))
-            {
+            if document.schema_version != section.schema_version {
                 anyhow::bail!(
                     "invalid {} section: schemaVersion does not match the manifest",
                     section.kind.as_str()
                 );
             }
+            if document.revision != section.revision {
+                anyhow::bail!(
+                    "invalid {} section: revision does not match the manifest",
+                    section.kind.as_str()
+                );
+            }
+            validate_json_section(document.values, section.kind, manifest)?;
         }
         SectionEncoding::Sqlite => {
             let mut entry = archive.by_name(&section.path).map_err(|error| {
@@ -837,9 +985,124 @@ fn validate_section_content<R: Read + Seek>(
                     section.kind.as_str()
                 );
             }
+            drop(entry);
+            validate_sqlite_section(archive, section)?;
         }
     }
     Ok(())
+}
+
+fn validate_json_section(
+    values: serde_json::Value,
+    section: BackupSection,
+    manifest: &BackupManifest,
+) -> anyhow::Result<()> {
+    let catalog_revision = || {
+        manifest
+            .sections()
+            .iter()
+            .find(|candidate| candidate.kind() == BackupSection::RecordingCatalog)
+            .map(|descriptor| descriptor.revision())
+            .ok_or_else(|| anyhow::anyhow!("recording catalog descriptor is missing"))
+    };
+    match section {
+        BackupSection::EventMetadata => {
+            let document: create::EventMetadataDocument = serde_json::from_value(values)?;
+            if document.catalog_revision != catalog_revision()? {
+                anyhow::bail!("event metadata revision does not match the recording catalog");
+            }
+        }
+        BackupSection::EventThumbnails => {
+            let inventory: create::EventThumbnailInventory = serde_json::from_value(values)?;
+            validate_event_thumbnail_inventory(&inventory, catalog_revision()?)?;
+        }
+        BackupSection::Layouts => {
+            crate::server::validate_backup_layout_document(&serde_json::to_vec(&values)?)?;
+        }
+        BackupSection::ConfigurationTemplates => {
+            crate::server::validate_backup_template_document(&serde_json::to_vec(&values)?)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_event_thumbnail_inventory(
+    inventory: &create::EventThumbnailInventory,
+    catalog_revision: &str,
+) -> anyhow::Result<()> {
+    const MAXIMUM_ENTRIES: usize = 100_000;
+    const MAXIMUM_THUMBNAIL_BYTES: u64 = 4 * 1_024 * 1_024;
+    if inventory.policy != "inventory_only" || inventory.catalog_revision != catalog_revision {
+        anyhow::bail!("event thumbnail inventory does not match the recording catalog");
+    }
+    if inventory.entries.len() > MAXIMUM_ENTRIES {
+        anyhow::bail!("event thumbnail inventory exceeds its entry limit");
+    }
+    let mut event_ids = HashSet::with_capacity(inventory.entries.len());
+    let mut file_names = HashSet::with_capacity(inventory.entries.len());
+    for entry in &inventory.entries {
+        if !event_ids.insert(entry.event_id.as_str())
+            || !file_names.insert(entry.file_name.as_str())
+        {
+            anyhow::bail!("event thumbnail inventory contains a duplicate event or file");
+        }
+        if entry.event_id.is_empty()
+            || entry.event_id.len() > MAX_METADATA_VALUE_BYTES
+            || !entry
+                .event_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || entry.file_name != format!("{}.jpg", entry.event_id)
+            || entry.bytes == 0
+            || entry.bytes > MAXIMUM_THUMBNAIL_BYTES
+            || entry.sha256.len() != 64
+            || !entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            anyhow::bail!("event thumbnail inventory contains an invalid entry");
+        }
+    }
+    Ok(())
+}
+
+fn validate_sqlite_section<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    section: &BackupManifestSection,
+) -> anyhow::Result<()> {
+    let path = std::env::temp_dir().join(format!(
+        ".keeppeek-inspect-{}-{}.db",
+        section.kind.as_str(),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut destination = options.open(&path)?;
+        let source = archive.by_name(&section.path)?;
+        let copied = std::io::copy(
+            &mut source.take(section.bytes.saturating_add(1)),
+            &mut destination,
+        )?;
+        destination.sync_all()?;
+        if copied != section.bytes {
+            anyhow::bail!(
+                "{} database size does not match its manifest",
+                section.kind.as_str()
+            );
+        }
+        database::validate_backup_database(&path, section.kind)?;
+        if section.kind == BackupSection::Notifications {
+            crate::notifications::validate_backup_snapshot(&path)?;
+        }
+        Ok(())
+    })();
+    database::remove_database_family(&path);
+    result
 }
 
 fn validate_manifest_metadata(manifest: &BackupManifest) -> anyhow::Result<()> {
@@ -1235,6 +1498,42 @@ mod tests {
         let error = inspect_bundle(Cursor::new(bundle)).unwrap_err();
 
         assert!(error.to_string().contains("invalid SQLite header"));
+    }
+
+    #[test]
+    fn rejects_a_corrupt_database_with_a_valid_sqlite_header() {
+        let mut contents = vec![0_u8; 4_096];
+        contents[..16].copy_from_slice(b"SQLite format 3\0");
+        let manifest = current_manifest(vec![current_section(
+            crate::api::backup_proto::BackupSection::RecordingCatalog,
+            "catalog/recordings.db",
+            &contents,
+            Vec::new(),
+        )]);
+        let bundle = archive_with_manifest(&manifest, &[("catalog/recordings.db", &contents)]);
+
+        let error = inspect_bundle(Cursor::new(bundle)).unwrap_err();
+
+        assert!(error.to_string().contains("recording_catalog database"));
+    }
+
+    #[test]
+    fn rejects_duplicate_event_thumbnail_inventory_entries() {
+        let entry = crate::storage::catalog::CatalogEventThumbnailBackupEntry {
+            event_id: "event-1".to_owned(),
+            file_name: "event-1.jpg".to_owned(),
+            bytes: 128,
+            sha256: "00".repeat(32),
+        };
+        let inventory = create::EventThumbnailInventory {
+            policy: "inventory_only".to_owned(),
+            catalog_revision: "catalog-1".to_owned(),
+            entries: vec![entry.clone(), entry],
+        };
+
+        let error = validate_event_thumbnail_inventory(&inventory, "catalog-1").unwrap_err();
+
+        assert!(error.to_string().contains("duplicate event"));
     }
 
     #[test]

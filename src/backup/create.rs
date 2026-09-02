@@ -1,4 +1,4 @@
-use super::{BackupSection, MANIFEST_PATH};
+use super::{BackupPathKind, BackupSection, BackupStoragePaths, MANIFEST_PATH};
 use crate::{api::backup_proto, config};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,6 +26,8 @@ pub struct CreateBundleOptions<'a> {
     pub recording_catalog: Option<&'a crate::storage::RecordingCatalogHandle>,
     /// The live notification store used when its section is selected.
     pub notifications: Option<&'a crate::notifications::Handle>,
+    /// Storage roots referenced by catalog metadata but omitted as media bytes.
+    pub storage_paths: Option<&'a BackupStoragePaths>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -34,6 +36,25 @@ pub(super) struct ConfigurationSectionDocument {
     pub schema_version: u32,
     pub revision: String,
     pub values: serde_json::Value,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct EventMetadataDocument {
+    pub events: u64,
+    pub operational_events: u64,
+    pub keyframe_links: u64,
+    pub search_terms: u64,
+    pub embeddings: u64,
+    pub catalog_revision: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct EventThumbnailInventory {
+    pub policy: String,
+    pub catalog_revision: String,
+    pub entries: Vec<crate::storage::catalog::CatalogEventThumbnailBackupEntry>,
 }
 
 struct PreparedSection {
@@ -62,13 +83,11 @@ pub fn create_bundle<W: Write + Seek>(
     let mut required_secret_references = BTreeSet::new();
     let sanitized = sanitize_table(root, &mut required_secret_references)?;
     let prepared = prepare_sections(
-        options.config_path,
+        options,
         &sanitized,
         &selected,
         &config_revision,
         &mut required_secret_references,
-        options.recording_catalog,
-        options.notifications,
     )?;
     let manifest = build_manifest(
         options,
@@ -101,6 +120,10 @@ fn selected_sections(options: CreateBundleOptions<'_>) -> anyhow::Result<Vec<Bac
         }
         if options.recording_catalog.is_some() {
             selected.push(BackupSection::RecordingCatalog);
+            selected.push(BackupSection::EventMetadata);
+            if options.storage_paths.is_some() {
+                selected.push(BackupSection::EventThumbnails);
+            }
         }
         if options.notifications.is_some() {
             selected.push(BackupSection::Notifications);
@@ -125,6 +148,8 @@ fn selected_sections(options: CreateBundleOptions<'_>) -> anyhow::Result<Vec<Bac
                 | BackupSection::Layouts
                 | BackupSection::ConfigurationTemplates
                 | BackupSection::RecordingCatalog
+                | BackupSection::EventMetadata
+                | BackupSection::EventThumbnails
                 | BackupSection::Notifications
         )
     }) {
@@ -188,14 +213,45 @@ fn sanitize_string(
     required: &mut BTreeSet<String>,
 ) -> anyhow::Result<()> {
     let references = secret_references(value)?;
-    if references.is_empty() && !value.is_empty() && !public_string(path, value) {
+    if value.is_empty() || (references.is_empty() && public_string(path, value)) {
+        return Ok(());
+    }
+    if references.len() == 1 && value == &references[0]
+        || !references.is_empty() && reference_url_is_safe(value, &references)
+    {
+        required.extend(references);
+    } else {
         let reference = generated_secret_reference(path);
         required.insert(reference.clone());
         *value = reference;
-    } else {
-        required.extend(references);
     }
     Ok(())
+}
+
+fn reference_url_is_safe(value: &str, references: &[String]) -> bool {
+    let mut normalized = value.to_owned();
+    for reference in references {
+        normalized = normalized.replacen(reference, "BACKUPSECRET", 1);
+    }
+    let Ok(url) = url::Url::parse(&normalized) else {
+        return false;
+    };
+    if !matches!(
+        url.scheme(),
+        "http" | "https" | "rtsp" | "rtsps" | "mqtt" | "mqtts"
+    ) || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let username_referenced = url.username() == "BACKUPSECRET";
+    let password_referenced = url.password() == Some("BACKUPSECRET");
+    if (!url.username().is_empty() && !username_referenced)
+        || (url.password().is_some() && !password_referenced)
+    {
+        return false;
+    }
+    usize::from(username_referenced) + usize::from(password_referenced) == references.len()
 }
 
 fn public_string(path: &[String], value: &str) -> bool {
@@ -284,16 +340,28 @@ fn generated_secret_reference(path: &[String]) -> String {
 }
 
 fn prepare_sections(
-    config_path: &Path,
+    options: CreateBundleOptions<'_>,
     root: &toml::Table,
     selected: &[BackupSection],
     config_revision: &str,
     required_secret_references: &mut BTreeSet<String>,
-    recording_catalog: Option<&crate::storage::RecordingCatalogHandle>,
-    notifications: Option<&crate::notifications::Handle>,
 ) -> anyhow::Result<Vec<PreparedSection>> {
     let (runtime, cameras, integrations) = split_configuration(root);
     let mut prepared = Vec::with_capacity(selected.len());
+    let mut catalog_sections = selected
+        .contains(&BackupSection::RecordingCatalog)
+        .then(|| {
+            recording_catalog_sections(
+                options.config_path,
+                options
+                    .recording_catalog
+                    .ok_or_else(|| anyhow::anyhow!("recording catalog is unavailable"))?,
+                selected.contains(&BackupSection::EventMetadata),
+                selected.contains(&BackupSection::EventThumbnails),
+                options.storage_paths,
+            )
+        })
+        .transpose()?;
     for kind in selected {
         let section = match kind {
             BackupSection::RuntimeConfig => PreparedSection {
@@ -307,37 +375,59 @@ fn prepare_sections(
             BackupSection::Integrations => {
                 json_section(*kind, serde_json::to_value(&integrations)?, config_revision)?
             }
-            BackupSection::Access => toml_sidecar(*kind, config_path, "access.toml")?,
+            BackupSection::Access => {
+                let bytes = crate::access::backup_catalog_document(options.config_path)?
+                    .ok_or_else(|| anyhow::anyhow!("access catalog is unavailable"))?;
+                PreparedSection {
+                    kind: *kind,
+                    revision: super::encode_lower_hex(Sha256::digest(&bytes)),
+                    bytes,
+                }
+            }
             BackupSection::Layouts => json_sidecar(
                 *kind,
-                config_path,
+                options.config_path,
                 "peek-layouts.json",
                 required_secret_references,
             )?,
             BackupSection::ConfigurationTemplates => json_sidecar(
                 *kind,
-                config_path,
+                options.config_path,
                 "configuration-templates.json",
                 required_secret_references,
             )?,
-            BackupSection::RecordingCatalog => {
-                database_section(*kind, config_path, |destination| {
-                    recording_catalog
-                        .ok_or_else(|| anyhow::anyhow!("recording catalog is unavailable"))?
-                        .snapshot_to(
+            BackupSection::RecordingCatalog => catalog_sections
+                .as_mut()
+                .and_then(|sections| sections.catalog.take())
+                .ok_or_else(|| anyhow::anyhow!("recording catalog snapshot is unavailable"))?,
+            BackupSection::EventMetadata => catalog_sections
+                .as_mut()
+                .and_then(|sections| sections.events.take())
+                .ok_or_else(|| anyhow::anyhow!("event metadata snapshot is unavailable"))?,
+            BackupSection::EventThumbnails => catalog_sections
+                .as_mut()
+                .and_then(|sections| sections.thumbnails.take())
+                .ok_or_else(|| anyhow::anyhow!("event thumbnail inventory is unavailable"))?,
+            BackupSection::Notifications => database_section(
+                *kind,
+                options.config_path,
+                required_secret_references,
+                |destination| {
+                    let snapshot = options
+                        .notifications
+                        .ok_or_else(|| anyhow::anyhow!("notification store is unavailable"))?
+                        .snapshot_reference_only_to(
                             destination,
                             super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
-                        )
-                })?
-            }
-            BackupSection::Notifications => database_section(*kind, config_path, |destination| {
-                notifications
-                    .ok_or_else(|| anyhow::anyhow!("notification store is unavailable"))?
-                    .snapshot_to(
-                        destination,
-                        super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
-                    )
-            })?,
+                        )?;
+                    if snapshot.bytes == 0
+                        || snapshot.bytes > super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes
+                    {
+                        anyhow::bail!("notification snapshot exceeds its size limit");
+                    }
+                    Ok(snapshot.required_secret_references)
+                },
+            )?,
             _ => unreachable!("selected_sections permits only implemented file sections"),
         };
         prepared.push(section);
@@ -345,10 +435,91 @@ fn prepare_sections(
     Ok(prepared)
 }
 
+struct PreparedCatalogSections {
+    catalog: Option<PreparedSection>,
+    events: Option<PreparedSection>,
+    thumbnails: Option<PreparedSection>,
+}
+
+fn recording_catalog_sections(
+    config_path: &Path,
+    catalog: &crate::storage::RecordingCatalogHandle,
+    include_events: bool,
+    include_thumbnails: bool,
+    storage_paths: Option<&BackupStoragePaths>,
+) -> anyhow::Result<PreparedCatalogSections> {
+    let destination = config_path.with_file_name(format!(
+        ".keeppeek-backup-recording-catalog-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| {
+        catalog.snapshot_to(
+            &destination,
+            super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
+        )?;
+        if !include_events {
+            crate::storage::catalog::strip_event_metadata(&destination)?;
+        }
+        let summary = include_events
+            .then(|| crate::storage::catalog::event_backup_summary(&destination))
+            .transpose()?;
+        let thumbnails = include_thumbnails
+            .then(|| {
+                let root = storage_paths
+                    .ok_or_else(|| anyhow::anyhow!("event thumbnail root is unavailable"))?
+                    .path(BackupPathKind::EventThumbnails)?;
+                crate::storage::catalog::event_thumbnail_backup_entries(&destination, root)
+            })
+            .transpose()?;
+        let bytes = read_bounded_file(
+            &destination,
+            super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
+        )?;
+        let revision = super::encode_lower_hex(Sha256::digest(&bytes));
+        let events = summary
+            .map(|summary| {
+                let values = serde_json::to_value(EventMetadataDocument {
+                    events: summary.events,
+                    operational_events: summary.operational_events,
+                    keyframe_links: summary.keyframe_links,
+                    search_terms: summary.search_terms,
+                    embeddings: summary.embeddings,
+                    catalog_revision: revision.clone(),
+                })?;
+                json_section(BackupSection::EventMetadata, values, &revision)
+            })
+            .transpose()?;
+        let thumbnails = thumbnails
+            .map(|entries| {
+                let values = serde_json::to_value(EventThumbnailInventory {
+                    policy: "inventory_only".to_owned(),
+                    catalog_revision: revision.clone(),
+                    entries,
+                })?;
+                let thumbnail_revision =
+                    super::encode_lower_hex(Sha256::digest(serde_json::to_vec(&values)?));
+                json_section(BackupSection::EventThumbnails, values, &thumbnail_revision)
+            })
+            .transpose()?;
+        Ok(PreparedCatalogSections {
+            catalog: Some(PreparedSection {
+                kind: BackupSection::RecordingCatalog,
+                bytes,
+                revision,
+            }),
+            events,
+            thumbnails,
+        })
+    })();
+    super::database::remove_database_family(&destination);
+    result
+}
+
 fn database_section(
     kind: BackupSection,
     config_path: &Path,
-    snapshot: impl FnOnce(&Path) -> anyhow::Result<u64>,
+    required_secret_references: &mut BTreeSet<String>,
+    snapshot: impl FnOnce(&Path) -> anyhow::Result<Vec<String>>,
 ) -> anyhow::Result<PreparedSection> {
     let destination = config_path.with_file_name(format!(
         ".keeppeek-backup-{}-{}.db",
@@ -356,8 +527,11 @@ fn database_section(
         uuid::Uuid::new_v4()
     ));
     let result = (|| {
-        snapshot(&destination)?;
-        let bytes = read_bounded_file(&destination)?;
+        required_secret_references.extend(snapshot(&destination)?);
+        let bytes = read_bounded_file(
+            &destination,
+            super::DEFAULT_INSPECTION_LIMITS.maximum_section_bytes,
+        )?;
         let revision = super::encode_lower_hex(Sha256::digest(&bytes));
         Ok(PreparedSection {
             kind,
@@ -386,22 +560,6 @@ fn json_section(
     })
 }
 
-fn toml_sidecar(
-    kind: BackupSection,
-    config_path: &Path,
-    file_name: &str,
-) -> anyhow::Result<PreparedSection> {
-    let path = config_path.with_file_name(file_name);
-    let bytes = read_bounded_file(&path)?;
-    toml::from_str::<toml::Table>(std::str::from_utf8(&bytes)?)?;
-    let revision = super::encode_lower_hex(Sha256::digest(&bytes));
-    Ok(PreparedSection {
-        kind,
-        bytes,
-        revision,
-    })
-}
-
 fn json_sidecar(
     kind: BackupSection,
     config_path: &Path,
@@ -409,16 +567,16 @@ fn json_sidecar(
     required_secret_references: &mut BTreeSet<String>,
 ) -> anyhow::Result<PreparedSection> {
     let path = config_path.with_file_name(file_name);
-    let bytes = read_bounded_file(&path)?;
+    let bytes = read_bounded_file(&path, MAXIMUM_FILE_SECTION_BYTES)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     collect_json_secret_references(&value, required_secret_references)?;
     let revision = super::encode_lower_hex(Sha256::digest(&bytes));
     json_section(kind, value, &revision)
 }
 
-fn read_bounded_file(path: &Path) -> anyhow::Result<Vec<u8>> {
+fn read_bounded_file(path: &Path, maximum_bytes: u64) -> anyhow::Result<Vec<u8>> {
     let size = std::fs::metadata(path)?.len();
-    if size > MAXIMUM_FILE_SECTION_BYTES {
+    if size > maximum_bytes {
         anyhow::bail!("backup section {} exceeds the size limit", path.display());
     }
     std::fs::read(path).map_err(Into::into)
@@ -515,6 +673,25 @@ fn build_manifest(
             kind: backup_proto::BackupPathKind::RecordingCatalog as i32,
             path: catalog.database_path().to_string_lossy().into_owned(),
         });
+        if let Some(storage_paths) = options.storage_paths {
+            let mut kinds = vec![BackupPathKind::LongTermMedia];
+            if sections
+                .iter()
+                .any(|section| section.kind == BackupSection::EventThumbnails)
+            {
+                kinds.push(BackupPathKind::EventThumbnails);
+            }
+            for kind in kinds {
+                source_paths.push(backup_proto::BackupPath {
+                    kind: kind.to_proto() as i32,
+                    path: storage_paths
+                        .path(kind)?
+                        .canonicalize()?
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            }
+        }
     }
     if sections
         .iter()
@@ -594,6 +771,7 @@ ip = "192.0.2.10"
 username = "inline-camera-user"
 password = "inline-camera-password"
 main_rtsp_url = "rtsp://inline-user:inline-password@camera.local/main"
+sub_rtsp_url = "rtsp://mixed-inline-user:{secret:CAMERA_PASSWORD}@camera.local/sub"
 custom_note = "inline-unknown-secret"
 
 [event_forwarder.mqtt]
@@ -613,6 +791,7 @@ password = "{secret:MQTT_PASSWORD}"
             created_at_unix_ms: 1_788_000_000_000,
             recording_catalog: None,
             notifications: None,
+            storage_paths: None,
         };
 
         let (first, manifest) = create_bundle(Cursor::new(Vec::new()), options).unwrap();
@@ -635,6 +814,7 @@ password = "{secret:MQTT_PASSWORD}"
             "inline-camera-user",
             "inline-camera-password",
             "inline-user:inline-password",
+            "mixed-inline-user",
             "inline-unknown-secret",
         ] {
             assert!(!expanded.contains(secret), "artifact contains {secret}");
@@ -663,19 +843,29 @@ password = "{secret:MQTT_PASSWORD}"
         let directory = test_directory();
         let config_path = directory.join("config.toml");
         std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        std::fs::write(
-            directory.join("access.toml"),
-            "version = 1\ncredentials = []\naudit = []\n",
+        let access = crate::access::AccessManager::open(
+            &config_path,
+            crate::access::AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap(),
         )
         .unwrap();
+        access.record_audit(crate::access::NewAccessAuditEvent {
+            timestamp_ms: 1_788_000_000_000,
+            principal_id: Some("local-administrator"),
+            role: Some(crate::access::AccessRole::Administrator),
+            action: "backup_download",
+            target_id: Some("private-backup-id"),
+            result: "success",
+            client_classification: crate::access::ClientClassificationReason::DirectLocal,
+        });
+        access.flush_audit(true).unwrap();
         std::fs::write(
             directory.join("peek-layouts.json"),
-            r#"{"schema_version":1,"revision":1,"shared_layouts":[],"users":{}}"#,
+            r#"{"schema_version":1,"revision":1,"shared_layouts":[{"id":"default","name":"All cameras","scope":"shared","owner_id":"server","audience":{"everyone":true,"credential_ids":[]},"activity_focus":true,"tiles":[]}],"users":{}}"#,
         )
         .unwrap();
         std::fs::write(
             directory.join("configuration-templates.json"),
-            r#"{"document_version":1,"revision":1,"templates":[{"password_secret_reference":"{secret:TEMPLATE_PASSWORD}"}]}"#,
+            r#"{"document_version":1,"templates":[]}"#,
         )
         .unwrap();
         let options = CreateBundleOptions {
@@ -690,17 +880,24 @@ password = "{secret:MQTT_PASSWORD}"
             created_at_unix_ms: 1_788_000_000_000,
             recording_catalog: None,
             notifications: None,
+            storage_paths: None,
         };
 
         let (bundle, manifest) = create_bundle(Cursor::new(Vec::new()), options).unwrap();
 
         assert_eq!(manifest.sections.len(), 5);
-        assert!(
-            manifest
-                .required_secret_references
-                .contains(&"{secret:TEMPLATE_PASSWORD}".to_owned())
-        );
-        super::super::inspect_bundle(Cursor::new(bundle.into_inner())).unwrap();
+        let bytes = bundle.into_inner();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+        let mut access_document = String::new();
+        archive
+            .by_name("access/access.toml")
+            .unwrap()
+            .read_to_string(&mut access_document)
+            .unwrap();
+        assert!(access_document.contains("Initial Administrator"));
+        assert!(!access_document.contains("backup_download"));
+        assert!(!access_document.contains("private-backup-id"));
+        super::super::inspect_bundle(Cursor::new(bytes)).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -710,6 +907,10 @@ password = "{secret:MQTT_PASSWORD}"
         let config_path = directory.join("config.toml");
         std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
         let catalog_path = directory.join("recordings.db");
+        let media_path = directory.join("media");
+        let thumbnail_path = directory.join("event-thumbnails");
+        std::fs::create_dir_all(&media_path).unwrap();
+        std::fs::create_dir_all(&thumbnail_path).unwrap();
         let catalog = crate::storage::RecordingCatalog::open(&catalog_path).unwrap();
         let catalog_handle = catalog.handle();
         catalog_handle
@@ -720,26 +921,76 @@ password = "{secret:MQTT_PASSWORD}"
                 logical_stream_id: Some("main".to_owned()),
                 started_at_ms: 1_000,
                 ended_at_ms: Some(2_000),
-                path: "front/main/recording-1.mp4".to_owned(),
+                path: media_path
+                    .join("front/main/recording-1.mp4")
+                    .to_string_lossy()
+                    .into_owned(),
                 init_offset: 0,
                 init_len: 512,
                 finalized: true,
             })
             .unwrap();
+        catalog_handle
+            .insert_event(crate::storage::metadata::TimelineEvent {
+                id: "event-1".to_owned(),
+                revision: 1,
+                camera_id: "front".to_owned(),
+                stream: Some("main".to_owned()),
+                source: crate::storage::metadata::EventSource::Camera,
+                kind: "person".to_owned(),
+                start_time_ms: 1_500,
+                end_time_ms: Some(1_600),
+                confidence: Some(0.9),
+                bbox: None,
+                bbox_attachment_id: None,
+                zone: None,
+                text: None,
+                payload: None,
+                attachments: Vec::new(),
+                canonical_attachment_id: None,
+                icon_key: "person".to_owned(),
+                rejected_icon_key: None,
+                thumbnail_filename: None,
+            })
+            .unwrap();
+        let mut thumbnail = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut thumbnail)
+            .encode_image(&image::DynamicImage::new_rgb8(1, 1))
+            .unwrap();
+        std::fs::write(thumbnail_path.join("event-1.jpg"), &thumbnail).unwrap();
+        catalog_handle
+            .attach_event_thumbnail(
+                "event-1",
+                "event-1.jpg",
+                u64::try_from(thumbnail.len()).unwrap(),
+            )
+            .unwrap();
         let notification_path = directory.join("notifications.db");
         let notifications = crate::notifications::Runtime::open(&notification_path).unwrap();
         let notification_handle = notifications.handle();
+        let storage_paths = BackupStoragePaths::new(media_path.clone(), thumbnail_path.clone());
+        let application_token = "a23456789012345678901234567890";
+        let user_key = "u23456789012345678901234567890";
+        let saved = notification_handle
+            .save_draft(notification_rule(application_token, user_key), 0, 1_000)
+            .unwrap();
+        notification_handle
+            .activate("rule-1", "owner-1", 0, saved.draft_revision, 2_000)
+            .unwrap();
         let options = CreateBundleOptions {
             config_path: &config_path,
             sections: &[
                 BackupSection::RuntimeConfig,
                 BackupSection::CameraDatabase,
                 BackupSection::RecordingCatalog,
+                BackupSection::EventMetadata,
+                BackupSection::EventThumbnails,
                 BackupSection::Notifications,
             ],
             created_at_unix_ms: 1_788_000_000_000,
             recording_catalog: Some(&catalog_handle),
             notifications: Some(&notification_handle),
+            storage_paths: Some(&storage_paths),
         };
 
         let (bundle, manifest) = create_bundle(Cursor::new(Vec::new()), options).unwrap();
@@ -749,6 +1000,20 @@ password = "{secret:MQTT_PASSWORD}"
         assert!(manifest.source_paths.iter().any(|path| {
             path.kind == backup_proto::BackupPathKind::RecordingCatalog as i32
                 && path.path == canonical_catalog.to_string_lossy()
+        }));
+        assert!(manifest.source_paths.iter().any(|path| {
+            path.kind == backup_proto::BackupPathKind::LongTermMedia as i32
+                && path.path
+                    == std::fs::canonicalize(&media_path)
+                        .unwrap()
+                        .to_string_lossy()
+        }));
+        assert!(manifest.source_paths.iter().any(|path| {
+            path.kind == backup_proto::BackupPathKind::EventThumbnails as i32
+                && path.path
+                    == std::fs::canonicalize(&thumbnail_path)
+                        .unwrap()
+                        .to_string_lossy()
         }));
         assert!(manifest.source_paths.iter().any(|path| {
             path.kind == backup_proto::BackupPathKind::NotificationDatabase as i32
@@ -761,7 +1026,50 @@ password = "{secret:MQTT_PASSWORD}"
                 .to_string_lossy()
                 .starts_with(".keeppeek-backup-")
         }));
-        super::super::inspect_bundle(Cursor::new(bundle.into_inner())).unwrap();
+        let bytes = bundle.into_inner();
+        super::super::inspect_bundle(Cursor::new(bytes.clone())).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut expanded = Vec::new();
+        for index in 0..archive.len() {
+            archive
+                .by_index(index)
+                .unwrap()
+                .read_to_end(&mut expanded)
+                .unwrap();
+        }
+        for secret in [application_token, user_key] {
+            assert!(
+                !expanded
+                    .windows(secret.len())
+                    .any(|candidate| candidate == secret.as_bytes()),
+                "artifact contains a notification credential"
+            );
+        }
+        assert_eq!(manifest.required_secret_references.len(), 3);
+        assert!(manifest.sections.iter().any(|section| {
+            section.section == backup_proto::BackupSection::EventMetadata as i32
+        }));
+        let thumbnails = manifest
+            .sections
+            .iter()
+            .find(|section| section.section == backup_proto::BackupSection::EventThumbnails as i32)
+            .unwrap();
+        let inventory: ConfigurationSectionDocument = serde_json::from_slice(
+            &super::super::read_member(&mut archive, &thumbnails.path, thumbnails.bytes).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inventory.values["entries"][0]["eventId"], "event-1");
+        assert_eq!(
+            inventory.values["entries"][0]["bytes"],
+            u64::try_from(thumbnail.len()).unwrap()
+        );
+        assert_eq!(
+            inventory.values["entries"][0]["sha256"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
         drop(notification_handle);
         notifications.shutdown();
         drop(catalog_handle);
@@ -773,5 +1081,47 @@ password = "{secret:MQTT_PASSWORD}"
         let path = std::env::temp_dir().join(format!("keeppeek-backup-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&path).unwrap();
         path
+    }
+
+    fn notification_rule(
+        application_token: &str,
+        user_key: &str,
+    ) -> crate::notifications::model::Rule {
+        serde_json::from_value(serde_json::json!({
+            "id": "rule-1",
+            "name": "Front door alert",
+            "enabled": true,
+            "revision": 0,
+            "owner_id": "owner-1",
+            "triggers": ["test"],
+            "filter": {},
+            "schedule": { "timezone": "UTC", "active_windows": [], "quiet_hours": null },
+            "critical_bypass": null,
+            "enrichment": {
+                "deadline_ms": 10000,
+                "maximum_revisions": 2,
+                "maximum_attempts": 2,
+                "maximum_attachment_bytes": 1048576,
+                "wake_after_deadline": false
+            },
+            "actions": [{
+                "enabled": true,
+                "channel": "push",
+                "destination": serde_json::json!({
+                    "application_token": application_token,
+                    "user_key": user_key,
+                    "priority": 0
+                }).to_string(),
+                "template": { "title": "Alert", "body": "Open KeepPeek" },
+                "attachment": "never",
+                "allow_second_delivery": false
+            }],
+            "failure": {
+                "maximum_attempts": 3,
+                "maximum_retry_interval_ms": 60000,
+                "expiry_ms": 3600000
+            }
+        }))
+        .unwrap()
     }
 }
