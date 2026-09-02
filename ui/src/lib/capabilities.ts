@@ -7,6 +7,15 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.backup.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Versioned reference-only bundles, validation, dry-run plans, staged activation, health evidence, and bounded rollback',
+		unlocks: 'Administrator backup creation, inspection, migration, restore, and rollback',
+		whenMissing: 'Backup and restore controls remain hidden',
+		failureGuarantee:
+			'Invalid, stale, unsupported, or incomplete restores leave live state unchanged or restore retained before-images'
+	},
 	'keeppeek.configuration.v1': {
 		delivery: 'ships',
 		serverOwns:

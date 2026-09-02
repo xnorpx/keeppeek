@@ -109,19 +109,30 @@ export const mobileSettingsSections = Object.freeze<MobileSettingsSection[]>([
 	}
 ]);
 
-export function filterMobileSettingsSections(query: string): MobileSettingsSection[] {
+export function filterMobileSettingsSections(
+	query: string,
+	backupAvailable = true
+): MobileSettingsSection[] {
 	const normalized = query.trim().toLocaleLowerCase();
-	if (!normalized) return [...mobileSettingsSections];
-	return mobileSettingsSections.filter((section) =>
-		[section.label, ...section.keywords].some((value) =>
-			value.toLocaleLowerCase().includes(normalized)
-		)
+	return mobileSettingsSections.filter(
+		(section) =>
+			(section.id !== 'backups' || backupAvailable) &&
+			(!normalized ||
+				[section.label, ...section.keywords].some((value) =>
+					value.toLocaleLowerCase().includes(normalized)
+				))
 	);
 }
 
-export function mobileSettingsFocus(hash: string): MobileSettingsSection | null {
+export function mobileSettingsFocus(
+	hash: string,
+	backupAvailable = true
+): MobileSettingsSection | null {
 	const id = hash.startsWith('#') ? hash.slice(1) : hash;
 	return (
-		mobileSettingsSections.find((section) => section.id === id && section.renderTarget) ?? null
+		mobileSettingsSections.find(
+			(section) =>
+				section.id === id && section.renderTarget && (section.id !== 'backups' || backupAvailable)
+		) ?? null
 	);
 }

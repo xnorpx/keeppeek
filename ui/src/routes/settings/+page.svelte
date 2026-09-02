@@ -37,6 +37,7 @@
 	import SaveIcon from '@lucide/svelte/icons/save';
 	import TerminalIcon from '@lucide/svelte/icons/terminal';
 	import { mobileSettingsFocus, type MobileSettingsRenderTarget } from '$lib/mobile-settings';
+	import { useCapabilityState } from '$lib/capability-context';
 	import { useControlClient } from '$lib/control-context';
 
 	type RuntimeEditorMode = 'server' | 'storage' | null;
@@ -47,6 +48,7 @@
 	};
 
 	const controlClient = useControlClient();
+	const capabilities = useCapabilityState();
 
 	let config = $state.raw<SanitizedConfig | null>(null);
 	let serverHealth = $state.raw<ServerHealthResponse | null>(null);
@@ -66,7 +68,9 @@
 	let runtimeSettingsError = $state<string | null>(null);
 	let runtimeSettingsForm = $state<RuntimeSettingsForm>(emptyRuntimeSettingsForm());
 	let restartTargetOrigin = $state<string | null>(null);
-	let mobileFocus = $derived(mobileSettingsFocus(page.url.hash));
+	let administrator = $state(false);
+	let backupAvailable = $derived(administrator && capabilities.supports('keeppeek.backup.v1'));
+	let mobileFocus = $derived(mobileSettingsFocus(page.url.hash, backupAvailable));
 
 	onMount(() => {
 		if (window.location.hash === '#camera-defaults') {
@@ -74,9 +78,15 @@
 			return;
 		}
 		void loadSettings();
+		const closeAccessState = controlClient.onAccessState((state) => {
+			administrator = state.session?.role === 'administrator';
+		});
 		const handleHashChange = () => void scrollToHashTarget();
 		window.addEventListener('hashchange', handleHashChange);
-		return () => window.removeEventListener('hashchange', handleHashChange);
+		return () => {
+			closeAccessState();
+			window.removeEventListener('hashchange', handleHashChange);
+		};
 	});
 
 	function emptyRuntimeSettingsForm(): RuntimeSettingsForm {
@@ -418,7 +428,7 @@
 						/>
 					</div>
 				{:else}
-					<MobileSettingsIndex {config} />
+					<MobileSettingsIndex {config} {backupAvailable} />
 				{/if}
 			</div>
 
