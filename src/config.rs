@@ -2207,6 +2207,38 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
     if let Some(permissions) = permissions {
         std::fs::set_permissions(&temporary, permissions)?;
     }
+    #[cfg(windows)]
+    if path.exists() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::{
+            Win32::Storage::FileSystem::{REPLACE_FILE_FLAGS, ReplaceFileW},
+            core::PCWSTR,
+        };
+
+        let replaced = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let replacement = temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        // Both paths are NUL-terminated UTF-16 strings that remain valid for this call.
+        unsafe {
+            ReplaceFileW(
+                PCWSTR(replaced.as_ptr()),
+                PCWSTR(replacement.as_ptr()),
+                None,
+                REPLACE_FILE_FLAGS(0),
+                None,
+                None,
+            )
+        }
+        .map_err(std::io::Error::other)?;
+        return Ok(());
+    }
     std::fs::rename(temporary, path)
 }
 
@@ -3549,6 +3581,19 @@ mod tests {
         assert!(!public.contains("MQTT_PASSWORD"));
         assert!(!private.contains("MQTT_PASSWORD"));
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn atomic_private_file_write_replaces_an_existing_file() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-atomic-write-{}", rand::random::<u64>()));
+        let path = directory.join("config.toml");
+
+        write_private_file_atomically(&path, b"first").unwrap();
+        write_private_file_atomically(&path, b"second").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
