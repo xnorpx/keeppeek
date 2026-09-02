@@ -130,7 +130,8 @@
 		confirmed = false;
 		const next: Record<number, string> = {};
 		for (const source of selected.manifest?.sourcePaths ?? []) {
-			next[source.kind] = capabilities?.targetPaths.find((target) => target.kind === source.kind)?.path ?? '';
+			next[source.kind] =
+				capabilities?.targetPaths.find((target) => target.kind === source.kind)?.path ?? '';
 		}
 		mappings = next;
 	}
@@ -234,11 +235,17 @@
 	}
 
 	function sectionLabel(section: BackupSection): string {
-		return BackupSection[section]?.replace('BACKUP_SECTION_', '').replaceAll('_', ' ').toLowerCase() ?? 'unknown';
+		return (
+			BackupSection[section]?.replace('BACKUP_SECTION_', '').replaceAll('_', ' ').toLowerCase() ??
+			'unknown'
+		);
 	}
 
 	function pathLabel(kind: BackupPathKind): string {
-		return BackupPathKind[kind]?.replace('BACKUP_PATH_KIND_', '').replaceAll('_', ' ').toLowerCase() ?? 'path';
+		return (
+			BackupPathKind[kind]?.replace('BACKUP_PATH_KIND_', '').replaceAll('_', ' ').toLowerCase() ??
+			'path'
+		);
 	}
 
 	function issueClass(severity: RestoreIssueSeverity): string {
@@ -246,43 +253,75 @@
 	}
 
 	function issueLabel(severity: RestoreIssueSeverity): string {
-		return RestoreIssueSeverity[severity]
-			.replace('RESTORE_ISSUE_SEVERITY_', '')
-			.toLowerCase();
+		return RestoreIssueSeverity[severity].replace('RESTORE_ISSUE_SEVERITY_', '').toLowerCase();
 	}
 </script>
 
 {#if administrator && supported}
-	<section id="backups" class="scroll-mt-4 overflow-hidden rounded-md border border-hairline bg-surface" aria-labelledby="backup-heading">
-		<header class="flex flex-wrap items-end justify-between gap-4 border-b border-hairline px-5 py-5">
+	<section
+		id="backups"
+		class="scroll-mt-4 overflow-hidden rounded-md border border-hairline bg-surface"
+		aria-labelledby="backup-heading"
+	>
+		<header
+			class="flex flex-wrap items-end justify-between gap-4 border-b border-hairline px-5 py-5"
+		>
 			<div class="max-w-2xl">
-				<p class="font-mono text-2xs tracking-caps text-primary-soft">RECOVERY · PROTOJSON · LOCAL</p>
+				<p class="font-mono text-2xs tracking-caps text-primary-soft">
+					RECOVERY · PROTOJSON · LOCAL
+				</p>
 				<h2 id="backup-heading" class="mt-1 text-xl font-semibold">Backup and restore</h2>
-				<p class="mt-1 text-sm leading-6 text-text-muted">Create reference-only recovery bundles, inspect every section, and stage an atomic restore before restarting.</p>
+				<p class="mt-1 text-sm leading-6 text-text-muted">
+					Create reference-only recovery bundles, inspect every section, and stage an atomic restore
+					before restarting.
+				</p>
 			</div>
-			<Button variant="outline" size="sm" onclick={() => void load()} disabled={loading || action !== null}>
+			<Button
+				variant="outline"
+				size="sm"
+				onclick={() => void load()}
+				disabled={loading || action !== null}
+			>
 				<RefreshCwIcon class={loading ? 'animate-spin' : undefined} /> Refresh
 			</Button>
 		</header>
 
 		{#if error}
-			<p class="border-b border-destructive/30 bg-destructive/5 px-5 py-3 text-sm text-destructive" role="alert">{error}</p>
+			<p
+				class="border-b border-destructive/30 bg-destructive/5 px-5 py-3 text-sm text-destructive"
+				role="alert"
+			>
+				{error}
+			</p>
 		{/if}
 		{#if action}
-			<p class="border-b border-hairline px-5 py-2 font-mono text-xs text-text-muted" role="status">{action}…</p>
+			<p class="border-b border-hairline px-5 py-2 font-mono text-xs text-text-muted" role="status">
+				{action}…
+			</p>
 		{/if}
 
 		<div class="grid lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
 			<div class="space-y-5 border-b border-hairline p-5 lg:border-r lg:border-b-0">
 				<div class="flex flex-wrap gap-2">
-					<Button onclick={() => void createBackup()} disabled={!loaded || action !== null}><ArchiveIcon /> Create backup</Button>
-					<label class="inline-flex h-9 cursor-pointer items-center gap-2 rounded-sm border border-hairline-strong bg-raised px-3 text-sm font-medium focus-within:ring-2 focus-within:ring-ring">
+					<Button onclick={() => void createBackup()} disabled={!loaded || action !== null}
+						><ArchiveIcon /> Create backup</Button
+					>
+					<label
+						class="inline-flex h-9 cursor-pointer items-center gap-2 rounded-sm border border-hairline-strong bg-raised px-3 text-sm font-medium focus-within:ring-2 focus-within:ring-ring"
+					>
 						<UploadIcon class="size-4" /> Upload ZIP
-						<input class="sr-only" type="file" accept=".zip,application/zip" onchange={uploadBackup} />
+						<input
+							class="sr-only"
+							type="file"
+							accept=".zip,application/zip"
+							onchange={uploadBackup}
+						/>
 					</label>
 				</div>
 				{#if uploadedFile}
-					<p class="text-xs text-text-muted">Selected upload: <span class="font-mono">{uploadedFile.name}</span></p>
+					<p class="text-xs text-text-muted">
+						Selected upload: <span class="font-mono">{uploadedFile.name}</span>
+					</p>
 				{/if}
 				<div>
 					<h3 class="text-sm font-semibold">Retained backups</h3>
@@ -292,12 +331,30 @@
 						<ul class="mt-2 divide-y divide-hairline border-y border-hairline">
 							{#each backups as backup (backup.backupId)}
 								<li class="flex min-w-0 items-center gap-2 py-2.5">
-									<button type="button" class="min-w-0 flex-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none" onclick={() => void selectBackup(backup.backupId)}>
+									<button
+										type="button"
+										class="min-w-0 flex-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+										onclick={() => void selectBackup(backup.backupId)}
+									>
 										<span class="block truncate text-sm font-medium">{backup.fileName}</span>
-										<span class="font-mono text-2xs text-text-faint">{formatBytes(backup.archiveBytes)} · {new Date(Number(backup.createdAtUnixMs)).toISOString()}</span>
+										<span class="font-mono text-2xs text-text-faint"
+											>{formatBytes(backup.archiveBytes)} · {new Date(
+												Number(backup.createdAtUnixMs)
+											).toISOString()}</span
+										>
 									</button>
-									<Button variant="ghost" size="icon-sm" aria-label={`Download ${backup.fileName}`} onclick={() => void download(backup)}><DownloadIcon /></Button>
-									<Button variant="ghost" size="icon-sm" aria-label={`Delete ${backup.fileName}`} onclick={() => void remove(backup)}><Trash2Icon /></Button>
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										aria-label={`Download ${backup.fileName}`}
+										onclick={() => void download(backup)}><DownloadIcon /></Button
+									>
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										aria-label={`Delete ${backup.fileName}`}
+										onclick={() => void remove(backup)}><Trash2Icon /></Button
+									>
 								</li>
 							{/each}
 						</ul>
@@ -305,8 +362,14 @@
 				</div>
 				{#if capabilities?.activeRestore}
 					<div class="border-t border-hairline pt-4">
-						<h3 class="flex items-center gap-2 text-sm font-semibold"><ShieldCheckIcon class="size-4" /> Recovery point</h3>
-						<p class="mt-1 text-xs text-text-muted">State: {RestoreState[capabilities.activeRestore.state].replace('RESTORE_STATE_', '').toLowerCase()}</p>
+						<h3 class="flex items-center gap-2 text-sm font-semibold">
+							<ShieldCheckIcon class="size-4" /> Recovery point
+						</h3>
+						<p class="mt-1 text-xs text-text-muted">
+							State: {RestoreState[capabilities.activeRestore.state]
+								.replace('RESTORE_STATE_', '')
+								.toLowerCase()}
+						</p>
 						{#if capabilities.activeRestore.progress}
 							<p class="mt-1 font-mono text-2xs text-text-faint">
 								Progress {Math.floor(capabilities.activeRestore.progress.completedPerMille / 10)}%
@@ -317,7 +380,9 @@
 								{#each capabilities.activeRestore.healthChecks as check (check.name)}
 									<li class="flex items-start gap-2 text-xs text-healthy">
 										<CheckCircleIcon class="mt-0.5 size-3.5 shrink-0" />
-										<span><span class="font-medium">{check.name.replaceAll('_', ' ')}</span> · {check.detail}</span>
+										<span
+											><span class="font-medium">{check.name.replaceAll('_', ' ')}</span> · {check.detail}</span
+										>
 									</li>
 								{/each}
 							</ul>
@@ -325,7 +390,9 @@
 						<div class="mt-3 flex flex-wrap gap-2">
 							<Button onclick={onrestart}><RotateCcwIcon /> Restart to apply</Button>
 							{#if capabilities.activeRestore.state === RestoreState.COMPLETE}
-								<Button variant="outline" onclick={() => void rollback()} disabled={action !== null}>Stage rollback</Button>
+								<Button variant="outline" onclick={() => void rollback()} disabled={action !== null}
+									>Stage rollback</Button
+								>
 							{/if}
 						</div>
 					</div>
@@ -334,8 +401,14 @@
 
 			<div class="space-y-5 p-5">
 				{#if !selected}
-					<div class="grid min-h-48 place-items-center border border-dashed border-hairline-strong px-5 text-center">
-						<div><ShieldCheckIcon class="mx-auto size-6 text-text-faint" /><p class="mt-2 text-sm font-medium">Select or upload a backup</p><p class="mt-1 text-xs text-text-muted">Inspection never changes live state.</p></div>
+					<div
+						class="grid min-h-48 place-items-center border border-dashed border-hairline-strong px-5 text-center"
+					>
+						<div>
+							<ShieldCheckIcon class="mx-auto size-6 text-text-faint" />
+							<p class="mt-2 text-sm font-medium">Select or upload a backup</p>
+							<p class="mt-1 text-xs text-text-muted">Inspection never changes live state.</p>
+						</div>
 					</div>
 				{:else if selected.manifest}
 					<div>
@@ -345,14 +418,23 @@
 						</p>
 						{#if selected.progress}
 							<p class="mt-1 font-mono text-2xs text-text-faint">
-								Inspection {Math.floor(selected.progress.completedPerMille / 10)}% · {formatBytes(selected.archiveBytes)}
+								Inspection {Math.floor(selected.progress.completedPerMille / 10)}% · {formatBytes(
+									selected.archiveBytes
+								)}
 							</p>
 						{/if}
 						<ul class="mt-3 grid gap-2 sm:grid-cols-2">
 							{#each selected.manifest.sections as section (section.path)}
 								<li class="flex items-start gap-2 border border-hairline px-3 py-2">
 									<CheckCircleIcon class="mt-0.5 size-3.5 shrink-0 text-healthy" />
-									<span><span class="block text-sm capitalize">{sectionLabel(section.section)}</span><span class="font-mono text-2xs text-text-faint">verified · schema {section.schemaVersion} · {formatBytes(section.bytes)}</span></span>
+									<span
+										><span class="block text-sm capitalize">{sectionLabel(section.section)}</span
+										><span class="font-mono text-2xs text-text-faint"
+											>verified · schema {section.schemaVersion} · {formatBytes(
+												section.bytes
+											)}</span
+										></span
+									>
 								</li>
 							{/each}
 						</ul>
@@ -362,21 +444,52 @@
 						{#each selected.manifest.sourcePaths as source (source.kind)}
 							<label class="grid gap-1 text-xs font-medium" for={`backup-path-${source.kind}`}>
 								<span class="capitalize">{pathLabel(source.kind)}</span>
-								<Input id={`backup-path-${source.kind}`} value={mappings[source.kind] ?? ''} oninput={(event) => (mappings = { ...mappings, [source.kind]: event.currentTarget.value })} />
-								<span class="truncate font-mono text-2xs font-normal text-text-faint">Source: {source.path}</span>
+								<Input
+									id={`backup-path-${source.kind}`}
+									value={mappings[source.kind] ?? ''}
+									oninput={(event) =>
+										(mappings = { ...mappings, [source.kind]: event.currentTarget.value })}
+								/>
+								<span class="truncate font-mono text-2xs font-normal text-text-faint"
+									>Source: {source.path}</span
+								>
 							</label>
 						{/each}
-						<Button variant="outline" onclick={() => void createPlan()} disabled={action !== null}>Run dry check</Button>
+						<Button variant="outline" onclick={() => void createPlan()} disabled={action !== null}
+							>Run dry check</Button
+						>
 					</div>
 					{#if plan}
 						<div class="space-y-3 border-t border-hairline pt-4">
 							<h3 class="text-sm font-semibold">Dry-run result</h3>
 							{#if plan.issues.length > 0}
-								<ul class="space-y-1 text-xs">{#each plan.issues as issue}<li class={issueClass(issue.severity)}><span class="font-medium capitalize">{issueLabel(issue.severity)}:</span> {issue.message}</li>{/each}</ul>
-							{:else}<p class="text-sm text-healthy">All selected sections are ready to stage.</p>{/if}
-							{#if plan.requiredSecretReferences.length > 0}<p class="text-xs text-text-muted">External secrets required: {plan.requiredSecretReferences.join(', ')}</p>{/if}
-							<label class="flex items-start gap-2 text-xs"><input class="mt-0.5" type="checkbox" bind:checked={confirmed} disabled={!plan.canActivate} /><span>I understand that activation restarts the recorder and retains a 30-minute rollback point.</span></label>
-							<Button onclick={() => void activate()} disabled={!confirmed || !plan.canActivate || action !== null}>Stage restore</Button>
+								<ul class="space-y-1 text-xs">
+									{#each plan.issues as issue}<li class={issueClass(issue.severity)}>
+											<span class="font-medium capitalize">{issueLabel(issue.severity)}:</span>
+											{issue.message}
+										</li>{/each}
+								</ul>
+							{:else}<p class="text-sm text-healthy">
+									All selected sections are ready to stage.
+								</p>{/if}
+							{#if plan.requiredSecretReferences.length > 0}<p class="text-xs text-text-muted">
+									External secrets required: {plan.requiredSecretReferences.join(', ')}
+								</p>{/if}
+							<label class="flex items-start gap-2 text-xs"
+								><input
+									class="mt-0.5"
+									type="checkbox"
+									bind:checked={confirmed}
+									disabled={!plan.canActivate}
+								/><span
+									>I understand that activation restarts the recorder and retains a 30-minute
+									rollback point.</span
+								></label
+							>
+							<Button
+								onclick={() => void activate()}
+								disabled={!confirmed || !plan.canActivate || action !== null}>Stage restore</Button
+							>
 						</div>
 					{/if}
 				{/if}

@@ -50,7 +50,9 @@ test('non-interactive CLI completes the managed ProtoJSON lifecycle', async () =
 	expect(created.archiveSha256).toMatch(/^[0-9a-f]{64}$/);
 
 	const listed = await backupCli(['list']);
-	expect(listed.backups.some((backup: { backupId: string }) => backup.backupId === created.backupId)).toBe(true);
+	expect(
+		listed.backups.some((backup: { backupId: string }) => backup.backupId === created.backupId)
+	).toBe(true);
 	const inspected = await backupCli(['inspect', created.backupId]);
 	expect(inspected.archiveSha256).toBe(created.archiveSha256);
 
