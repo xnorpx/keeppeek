@@ -2716,9 +2716,12 @@ export async function mockControlPeer(
 			json: { session_id: 'playwright-control', answer: { type: 'answer', sdp: 'v=0' } }
 		});
 	});
-	await page.route((url) => url.pathname === '/delete', async (route) => {
-		await route.fulfill({ status: 204 });
-	});
+	await page.route(
+		(url) => url.pathname === '/delete',
+		async (route) => {
+			await route.fulfill({ status: 204 });
+		}
+	);
 	return requests;
 }
 

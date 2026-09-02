@@ -64,9 +64,7 @@ describe('BackupHttpClient', () => {
 
 		await client.upload(file);
 
-		expect(fetchMock.mock.calls[1]![0]).toBe(
-			'/api/backups/transfers?transfer_id=transfer-1'
-		);
+		expect(fetchMock.mock.calls[1]![0]).toBe('/api/backups/transfers?transfer_id=transfer-1');
 		expect(fetchMock.mock.calls[1]![1]).toMatchObject({
 			method: 'PUT',
 			body: file,

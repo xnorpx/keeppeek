@@ -583,10 +583,7 @@ export class ControlClient {
 	}
 
 	async uploadBackup(file: File) {
-		return this.authenticatedHttp(
-			() => this.#backups.upload(file),
-			[400, 409, 410, 411, 413, 415]
-		);
+		return this.authenticatedHttp(() => this.#backups.upload(file), [400, 409, 410, 411, 413, 415]);
 	}
 
 	async inspectBackup(backupId: string) {
@@ -601,24 +598,15 @@ export class ControlClient {
 	}
 
 	async activateBackupRestore(request: ActivateRestoreRequest) {
-		return this.authenticatedHttp(
-			() => this.#backups.activate(request),
-			[400, 409, 410, 413, 415]
-		);
+		return this.authenticatedHttp(() => this.#backups.activate(request), [400, 409, 410, 413, 415]);
 	}
 
 	async getBackupRestore(restoreId: string) {
-		return this.authenticatedHttp(
-			() => this.#backups.getRestore(restoreId),
-			[400, 404, 409, 410]
-		);
+		return this.authenticatedHttp(() => this.#backups.getRestore(restoreId), [400, 404, 409, 410]);
 	}
 
 	async rollbackBackupRestore(request: RollbackRestoreRequest) {
-		return this.authenticatedHttp(
-			() => this.#backups.rollback(request),
-			[400, 404, 409, 410]
-		);
+		return this.authenticatedHttp(() => this.#backups.rollback(request), [400, 404, 409, 410]);
 	}
 
 	async deleteBackup(request: DeleteBackupRequest) {
