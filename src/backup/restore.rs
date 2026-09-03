@@ -3248,9 +3248,10 @@ password = "{{secret:MQTT_PASSWORD}}"
         assert!(config.contains("[cameras.front]"));
         assert!(config.contains("{secret:CAMERA_PASSWORD}"));
         let config: toml::Table = toml::from_str(&config).unwrap();
+        let canonical_media = target.media.canonicalize().unwrap();
         assert_eq!(
-            config["storage"]["long_term_path"].as_str(),
-            Some(target.media.to_string_lossy().as_ref())
+            config["storage"]["long_term_path"].as_str().map(Path::new),
+            Some(canonical_media.as_path())
         );
         let access = crate::access::AccessManager::open(
             &target.config,
