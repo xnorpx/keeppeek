@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 const eventId = requiredEnvironment('KEEPPEEK_CONFORMANCE_EVENT_ID');
 const eventDate = requiredEnvironment('KEEPPEEK_CONFORMANCE_EVENT_DATE');
+const eventRevision = requiredEnvironment('KEEPPEEK_CONFORMANCE_EVENT_REVISION');
 const eventTimestamp = requiredEnvironment('KEEPPEEK_CONFORMANCE_EVENT_TIMESTAMP');
 const sourceId = requiredEnvironment('KEEPPEEK_CONFORMANCE_SOURCE_ID');
 
@@ -17,7 +18,7 @@ test('external conformance event is visible through normal query and UI', async 
 
 	const detail = page.getByRole('complementary', { name: 'Event detail' });
 	await expect(detail).toBeVisible();
-	await expect(detail.getByText('REVISION 1', { exact: true })).toBeVisible();
+	await expect(detail.getByText(`REVISION ${eventRevision}`, { exact: true })).toBeVisible();
 	await expect(detail.getByText('KeepPeek event pipeline', { exact: true })).toBeVisible();
 	await expect(detail.locator('[data-event-bounding-box]')).toBeVisible();
 	const image = detail.locator('[data-event-preview-image]');

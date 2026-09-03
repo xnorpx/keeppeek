@@ -30,6 +30,6 @@
 - [x] Verify logs, diagnostics, and generated bindings contain no credentials or binary payloads.
 - [x] Keep API definitions/docs/generated bindings MIT-compatible for independent clients.
 - [x] Run every conformance test in default CI with no camera, GPU, model, cloud service, or secret.
-- [ ] Record reproducible performance and memory evidence with p50/p95 budgets.
+- [x] Record reproducible performance and memory evidence with p50/p95 budgets.
 - [ ] Complete fresh-context review and `./check.sh`.
 - [ ] Publish the criterion-by-criterion PR and final-head CI evidence.

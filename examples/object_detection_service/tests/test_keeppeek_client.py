@@ -13,6 +13,7 @@ from keeppeek_client import (
     EventAttachment,
     KeepPeekClient,
     LiveEventAssembler,
+    LiveEventDelivery,
     MediaConfigurationTracker,
     ProtocolError,
     decode_session_body,
@@ -313,5 +314,25 @@ def test_live_event_assembler_rejects_descriptor_length_mismatch() -> None:
 
         with pytest.raises(ProtocolError, match="descriptor length"):
             await assembler.wait(0.1)
+
+    asyncio.run(scenario())
+
+
+def test_client_resets_live_event_assembler_after_delivery() -> None:
+    async def scenario() -> None:
+        client = KeepPeekClient("http://127.0.0.1:3000", "", "camera-1", "sub", 1, lambda *_: None)
+        first = LiveEventAssembler("events-1")
+        delivered = pb.Event(event_id="event-1", revision=1)
+        first._future.set_result(LiveEventDelivery(delivered, b"jpeg"))
+        client._live_events = first
+
+        result = await client.wait_for_live_event(0.1)
+
+        assert result.event == delivered
+        replacement = client._live_events
+        assert replacement is not first
+        assert replacement is not None
+        assert replacement.subscription_id == "events-1"
+        await client.close()
 
     asyncio.run(scenario())
