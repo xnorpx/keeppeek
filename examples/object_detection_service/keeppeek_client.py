@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from google.protobuf import timestamp_pb2
+from google.protobuf import duration_pb2, timestamp_pb2
 from google.protobuf.message import DecodeError as ProtobufDecodeError
 
 from detection_pipeline import CodecName, ServiceError
@@ -26,6 +26,7 @@ LOGGER = logging.getLogger(__name__)
 EVENT_PUBLICATION_CAPABILITY = "keeppeek.event-publication.v1"
 CONTROL_TIMEOUT_SECONDS = 10.0
 CONNECT_TIMEOUT_SECONDS = 15.0
+EVENT_COMMIT_WAIT_SECONDS = 5
 MAX_SESSION_RESPONSE_BYTES = 4 * 1024 * 1024
 LiteralStream = Literal["auto", "main", "sub"]
 
@@ -130,7 +131,7 @@ class EventAttachment:
 class AtomicEventPublisher:
     """Publishes one deterministic event revision and attachment atomically."""
 
-    CHUNK_BYTES = 64 * 1024
+    CHUNK_BYTES = 60 * 1024
     MAXIMUM_CHUNKS = 256
 
     def __init__(
@@ -202,7 +203,10 @@ class AtomicEventPublisher:
         response = await self._request(
             pb.Request(
                 event_publication_command=pb.EventPublicationCommand(
-                    commit=pb.CommitEventPublication(publication_id=publication_id)
+                    commit=pb.CommitEventPublication(
+                        publication_id=publication_id,
+                        wait_timeout=duration_pb2.Duration(seconds=EVENT_COMMIT_WAIT_SECONDS),
+                    )
                 )
             )
         )
@@ -215,7 +219,7 @@ def publication_identity(event: pb.Event) -> str:
     if not event.event_id or event.revision < 1:
         raise ProtocolError("event publication identity is invalid")
     digest = hashlib.sha256(f"{event.event_id}\0{event.revision}".encode()).hexdigest()
-    return f"event-{digest}"
+    return f"ep-{digest[:61]}"
 
 
 def event_with_attachment(event: pb.Event, attachment: EventAttachment) -> pb.Event:
@@ -235,6 +239,7 @@ def event_with_attachment(event: pb.Event, attachment: EventAttachment) -> pb.Ev
     )
     result.canonical_attachment_id = attachment.attachment_id
     result.bounding_box_attachment_id = attachment.attachment_id
+    result.image_availability = pb.EVENT_IMAGE_AVAILABILITY_AVAILABLE
     return result
 
 

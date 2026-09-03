@@ -19,8 +19,8 @@
 ## Media conformance
 
 - [x] Verify H.264 and H.265 decoder configuration, fragmentation, timestamps, and keyframe recovery.
-- [ ] Run one deterministic external client against two low-bandwidth test-camera streams.
-- [ ] Publish a person/vehicle event and request one timestamp-correct high-quality image.
+- [x] Run one deterministic external client against two low-bandwidth test-camera streams.
+- [x] Publish a person/vehicle event and request one timestamp-correct high-quality image.
 - [ ] Reject malformed media, credentials, source sessions, types, transports, and stale work.
 - [ ] Prove client crash/disconnect/reconnect cannot stop ingest, recording, live view, or playback.
 

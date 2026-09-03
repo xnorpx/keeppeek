@@ -199,15 +199,19 @@ def test_atomic_event_publisher_chunks_once_and_retries_the_durable_commit() -> 
             "commit",
             "start",
         ]
+        assert requests[1].event_publication_command.commit.wait_timeout.seconds == 5
         assert len(messages) == 2
+        assert all(message.ByteSize() <= 64 * 1024 for message in messages)
         chunks = [message.event.attachment for message in messages]
         assert [chunk.chunk_index for chunk in chunks] == [0, 1]
         assert all(chunk.chunk_count == 2 for chunk in chunks)
         assert b"".join(chunk.payload for chunk in chunks) == attachment.payload
         start = requests[0].event_publication_command.start
+        assert len(start.publication_id) == 64
         assert start.event.attachments[0].attachment_id == attachment.attachment_id
         assert start.event.attachments[0].byte_len == len(attachment.payload)
         assert start.event.attachments[0].timestamp.ToDatetime(tzinfo=UTC) == timestamp
+        assert start.event.image_availability == pb.EVENT_IMAGE_AVAILABILITY_AVAILABLE
         assert chunks[0].publication_id == start.publication_id
         assert chunks[0].timestamp.ToDatetime(tzinfo=UTC) == timestamp
 
