@@ -80,6 +80,11 @@ struct WebRtcSourceLabels {
     stream: String,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct QuantileLabels {
+    quantile: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessMetricsSnapshot {
     pub(crate) authentication_successes: u64,
@@ -91,11 +96,39 @@ pub struct AccessMetricsSnapshot {
     pub(crate) active_credentials: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExternalAnalysisMetricsSnapshot {
+    pub(crate) sessions_active: u64,
+    pub(crate) media_subscriptions_active: u64,
+    pub(crate) event_subscriptions_active: u64,
+    pub(crate) event_subscription_starts: u64,
+    pub(crate) event_subscription_rejections: u64,
+    pub(crate) event_subscription_deliveries: u64,
+    pub(crate) event_subscription_sheds: u64,
+    pub(crate) event_delivery_queue_depth: u64,
+    pub(crate) event_delivery_queue_depth_high_water: u64,
+    pub(crate) event_delivery_pending_bytes: u64,
+    pub(crate) event_delivery_pending_bytes_high_water: u64,
+    pub(crate) event_deliveries_queued: u64,
+    pub(crate) event_delivery_drops: u64,
+    pub(crate) event_publications_active: u64,
+    pub(crate) event_publication_staged_bytes: u64,
+    pub(crate) event_publication_starts: u64,
+    pub(crate) event_publication_commits: u64,
+    pub(crate) event_publication_aborts: u64,
+    pub(crate) event_publication_expirations: u64,
+    pub(crate) event_publication_rejections: u64,
+    pub(crate) event_publication_storage_failures: u64,
+    pub(crate) event_publication_commit_latency_ms_p50: u64,
+    pub(crate) event_publication_commit_latency_ms_p95: u64,
+}
+
 pub fn encode_health_with_access_and_mqtt(
     health: &ServerHealthResponse,
     access: Option<AccessMetricsSnapshot>,
     recording: Option<&RecordingCoverageMetricSnapshot>,
     mqtt: Option<&MqttStatus>,
+    external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
 ) -> Result<String, std::fmt::Error> {
     let mut registry = Registry::with_prefix("keeppeek");
 
@@ -573,6 +606,10 @@ pub fn encode_health_with_access_and_mqtt(
         );
     }
 
+    if let Some(external_analysis) = external_analysis {
+        register_external_analysis_metrics(&mut registry, external_analysis);
+    }
+
     if let Some(mqtt) = mqtt {
         register_gauge(
             &mut registry,
@@ -639,6 +676,173 @@ pub fn encode_health_with_access_and_mqtt(
     let mut output = String::new();
     encode_registry(&mut output, &registry)?;
     Ok(output)
+}
+
+fn register_external_analysis_metrics(
+    registry: &mut Registry,
+    snapshot: ExternalAnalysisMetricsSnapshot,
+) {
+    register_external_analysis_gauges(registry, snapshot);
+    register_external_analysis_subscription_counters(registry, snapshot);
+    register_external_analysis_publication_counters(registry, snapshot);
+    register_external_analysis_latency(registry, snapshot);
+}
+
+fn register_external_analysis_gauges(
+    registry: &mut Registry,
+    snapshot: ExternalAnalysisMetricsSnapshot,
+) {
+    for (name, help, value) in [
+        (
+            "external_analysis_sessions_active",
+            "Current API sessions available to external analysis clients",
+            snapshot.sessions_active,
+        ),
+        (
+            "external_analysis_media_subscriptions_active",
+            "Current external analysis media subscriptions",
+            snapshot.media_subscriptions_active,
+        ),
+        (
+            "external_analysis_event_subscriptions_active",
+            "Current external analysis event subscriptions",
+            snapshot.event_subscriptions_active,
+        ),
+        (
+            "external_analysis_event_delivery_queue_depth",
+            "Current API background commands queued across external analysis sessions",
+            snapshot.event_delivery_queue_depth,
+        ),
+        (
+            "external_analysis_event_delivery_queue_depth_high_water",
+            "Lifetime maximum external analysis event delivery queue depth",
+            snapshot.event_delivery_queue_depth_high_water,
+        ),
+        (
+            "external_analysis_event_delivery_pending_bytes",
+            "Current bytes reserved for external analysis event delivery",
+            snapshot.event_delivery_pending_bytes,
+        ),
+        (
+            "external_analysis_event_delivery_pending_bytes_high_water",
+            "Lifetime maximum bytes reserved for external analysis event delivery",
+            snapshot.event_delivery_pending_bytes_high_water,
+        ),
+        (
+            "external_analysis_event_publications_active",
+            "Current external analysis event publications accepting, waiting, or committing",
+            snapshot.event_publications_active,
+        ),
+        (
+            "external_analysis_event_publication_staged_bytes",
+            "Current attachment bytes staged by external analysis event publications",
+            snapshot.event_publication_staged_bytes,
+        ),
+    ] {
+        register_gauge(registry, name, help, value);
+    }
+}
+
+fn register_external_analysis_subscription_counters(
+    registry: &mut Registry,
+    snapshot: ExternalAnalysisMetricsSnapshot,
+) {
+    for (name, help, value) in [
+        (
+            "external_analysis_event_subscription_starts",
+            "External analysis event subscriptions admitted",
+            snapshot.event_subscription_starts,
+        ),
+        (
+            "external_analysis_event_subscription_rejections",
+            "External analysis event subscriptions rejected",
+            snapshot.event_subscription_rejections,
+        ),
+        (
+            "external_analysis_event_subscription_deliveries",
+            "Committed events matched to external analysis subscriptions",
+            snapshot.event_subscription_deliveries,
+        ),
+        (
+            "external_analysis_event_subscription_sheds",
+            "External analysis event subscriptions shed after queue refusal",
+            snapshot.event_subscription_sheds,
+        ),
+        (
+            "external_analysis_event_deliveries_queued",
+            "External analysis event deliveries accepted by API session queues",
+            snapshot.event_deliveries_queued,
+        ),
+        (
+            "external_analysis_event_delivery_drops",
+            "External analysis event deliveries rejected by API session queues",
+            snapshot.event_delivery_drops,
+        ),
+    ] {
+        register_counter(registry, name, help, value);
+    }
+}
+
+fn register_external_analysis_publication_counters(
+    registry: &mut Registry,
+    snapshot: ExternalAnalysisMetricsSnapshot,
+) {
+    for (name, help, value) in [
+        (
+            "external_analysis_event_publication_starts",
+            "External analysis event publications started",
+            snapshot.event_publication_starts,
+        ),
+        (
+            "external_analysis_event_publication_commits",
+            "External analysis event publications committed durably",
+            snapshot.event_publication_commits,
+        ),
+        (
+            "external_analysis_event_publication_aborts",
+            "External analysis event publications aborted",
+            snapshot.event_publication_aborts,
+        ),
+        (
+            "external_analysis_event_publication_expirations",
+            "External analysis event publications expired",
+            snapshot.event_publication_expirations,
+        ),
+        (
+            "external_analysis_event_publication_rejections",
+            "External analysis publication commands or chunks rejected",
+            snapshot.event_publication_rejections,
+        ),
+        (
+            "external_analysis_event_publication_storage_failures",
+            "External analysis publication operations rejected by unavailable storage",
+            snapshot.event_publication_storage_failures,
+        ),
+    ] {
+        register_counter(registry, name, help, value);
+    }
+}
+
+fn register_external_analysis_latency(
+    registry: &mut Registry,
+    snapshot: ExternalAnalysisMetricsSnapshot,
+) {
+    let commit_latency = Family::<QuantileLabels, Gauge>::default();
+    for (quantile, value) in [
+        ("p50", snapshot.event_publication_commit_latency_ms_p50),
+        ("p95", snapshot.event_publication_commit_latency_ms_p95),
+    ] {
+        commit_latency
+            .get_or_create(&QuantileLabels {
+                quantile: quantile.to_owned(),
+            })
+            .set(saturating_i64(value));
+    }
+    registry.register(
+        "external_analysis_event_publication_commit_latency_milliseconds",
+        "Recent external analysis publication latency from start through durable commit",
+        commit_latency,
+    );
 }
 
 fn register_optional_timestamp(

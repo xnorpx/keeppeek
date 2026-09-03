@@ -9,7 +9,10 @@ use crate::{
 use prost::Message as _;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 const MAXIMUM_EVENT_SUBSCRIPTIONS: usize = 256;
@@ -21,6 +24,19 @@ const MAXIMUM_ATTACHMENT_ROUTES: usize = 8;
 #[derive(Clone, Default)]
 pub(super) struct Registry {
     inner: Arc<Mutex<HashMap<(SessionId, String), Subscription>>>,
+    starts: Arc<AtomicU64>,
+    rejections: Arc<AtomicU64>,
+    deliveries: Arc<AtomicU64>,
+    sheds: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct MetricsSnapshot {
+    pub(super) active: u64,
+    pub(super) starts: u64,
+    pub(super) rejections: u64,
+    pub(super) deliveries: u64,
+    pub(super) sheds: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -44,7 +60,11 @@ impl Registry {
         session_id: SessionId,
         request: proto::SubscribeEvents,
     ) -> Result<proto::SubscriptionResult, ControlCommandError> {
-        self.subscribe_with_clock(state, session_id, request, super::unix_time_ms)
+        let result = self.subscribe_with_clock(state, session_id, request, super::unix_time_ms);
+        if result.is_err() {
+            self.rejections.fetch_add(1, Ordering::Relaxed);
+        }
+        result
     }
 
     fn subscribe_with_clock(
@@ -61,7 +81,8 @@ impl Registry {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !subscriptions.contains_key(&key) {
+        let is_new = !subscriptions.contains_key(&key);
+        if is_new {
             let session_count = subscriptions
                 .keys()
                 .filter(|(owner, _)| *owner == session_id)
@@ -79,6 +100,9 @@ impl Registry {
         let attachment_routes = subscription.attachment_routes.clone();
         subscriptions.insert(key, subscription);
         drop(subscriptions);
+        if is_new {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+        }
         let backfill_end_ms = clock();
         Ok(proto::SubscriptionResult {
             subscription_id: request.subscription_id,
@@ -180,14 +204,21 @@ impl Registry {
                 .cmp(&right.session_id.as_u64())
                 .then(left.subscription_id.cmp(&right.subscription_id))
         });
+        self.deliveries
+            .fetch_add(deliveries.len() as u64, Ordering::Relaxed);
         deliveries
     }
 
     pub(super) fn shed(&self, session_id: SessionId, subscription_id: &str) {
-        self.inner
+        let removed = self
+            .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&(session_id, subscription_id.to_owned()));
+            .remove(&(session_id, subscription_id.to_owned()))
+            .is_some();
+        if removed {
+            self.sheds.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub(super) fn contains(&self, session_id: SessionId, subscription_id: &str) -> bool {
@@ -195,6 +226,20 @@ impl Registry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&(session_id, subscription_id.to_owned()))
+    }
+
+    pub(super) fn metrics_snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            active: self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len() as u64,
+            starts: self.starts.load(Ordering::Relaxed),
+            rejections: self.rejections.load(Ordering::Relaxed),
+            deliveries: self.deliveries.load(Ordering::Relaxed),
+            sheds: self.sheds.load(Ordering::Relaxed),
+        }
     }
 
     #[cfg(test)]
@@ -365,9 +410,11 @@ mod tests {
             );
         }
         assert_eq!(registry.inner.lock().unwrap().len(), 1);
+        assert_eq!(registry.metrics_snapshot().starts, 1);
 
         registry.unsubscribe(SessionId::from_u64(7), &["events-1".to_owned()]);
         assert!(registry.inner.lock().unwrap().is_empty());
+        assert_eq!(registry.metrics_snapshot().active, 0);
     }
 
     fn subscription_code(error: &ControlCommandError) -> proto::SubscriptionErrorCode {
@@ -432,6 +479,19 @@ mod tests {
             let error = validate_subscription(&state, &request).unwrap_err();
             assert_eq!(subscription_code(&error), expected);
         }
+        let registry = Registry::default();
+        registry
+            .subscribe(
+                &state,
+                SessionId::from_u64(7),
+                proto::SubscribeEvents {
+                    subscription_id: "events-1".to_owned(),
+                    source_ids: vec!["missing-camera".to_owned()],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(registry.metrics_snapshot().rejections, 1);
     }
 
     #[test]
@@ -566,5 +626,9 @@ mod tests {
         assert_eq!(registry.deliveries(&event).len(), 1);
         registry.shed(SessionId::from_u64(8), "all");
         assert!(registry.deliveries(&event).is_empty());
+        let metrics = registry.metrics_snapshot();
+        assert_eq!(metrics.active, 1);
+        assert_eq!(metrics.deliveries, 3);
+        assert_eq!(metrics.sheds, 1);
     }
 }

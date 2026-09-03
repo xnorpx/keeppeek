@@ -11023,11 +11023,13 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
         .event_forwarder
         .as_ref()
         .map(EventForwarderHandle::status);
+    let external_analysis = external_analysis_metrics_snapshot(state, &health);
     match crate::metrics::encode_health_with_access_and_mqtt(
         &health,
         Some(access_metrics_snapshot(state)),
         recording.as_ref().ok(),
         mqtt.as_ref(),
+        Some(external_analysis),
     ) {
         Ok(metrics) => Response::from_data(
             "text/plain; version=0.0.4; charset=utf-8",
@@ -11037,6 +11039,40 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
             tracing::error!(%error, "unable to encode Prometheus metrics");
             api_status(503, "Prometheus metrics are unavailable")
         }
+    }
+}
+
+fn external_analysis_metrics_snapshot(
+    state: &ServerState,
+    health: &ServerHealthResponse,
+) -> crate::metrics::ExternalAnalysisMetricsSnapshot {
+    let publications = state.event_publications.metrics_snapshot();
+    let subscriptions = state.event_subscriptions.metrics_snapshot();
+    let queue = state.webrtc.api_event_queue_metrics_snapshot();
+    crate::metrics::ExternalAnalysisMetricsSnapshot {
+        sessions_active: queue.sessions_active,
+        media_subscriptions_active: health.webrtc.multi_tracks as u64,
+        event_subscriptions_active: subscriptions.active,
+        event_subscription_starts: subscriptions.starts,
+        event_subscription_rejections: subscriptions.rejections,
+        event_subscription_deliveries: subscriptions.deliveries,
+        event_subscription_sheds: subscriptions.sheds,
+        event_delivery_queue_depth: queue.queue_depth,
+        event_delivery_queue_depth_high_water: queue.queue_depth_high_water,
+        event_delivery_pending_bytes: queue.pending_bytes,
+        event_delivery_pending_bytes_high_water: queue.pending_bytes_high_water,
+        event_deliveries_queued: queue.deliveries_queued,
+        event_delivery_drops: queue.delivery_drops,
+        event_publications_active: publications.active,
+        event_publication_staged_bytes: publications.staged_bytes,
+        event_publication_starts: publications.starts,
+        event_publication_commits: publications.commits,
+        event_publication_aborts: publications.aborts,
+        event_publication_expirations: publications.expirations,
+        event_publication_rejections: publications.rejections,
+        event_publication_storage_failures: publications.storage_failures,
+        event_publication_commit_latency_ms_p50: publications.commit_latency_ms_p50,
+        event_publication_commit_latency_ms_p95: publications.commit_latency_ms_p95,
     }
 }
 
@@ -13141,9 +13177,14 @@ mod tests {
             duplicate_count: 4,
             outbox_limit_bytes: 67_108_864,
         };
-        let metrics =
-            crate::metrics::encode_health_with_access_and_mqtt(&health, None, None, Some(&mqtt))
-                .unwrap();
+        let metrics = crate::metrics::encode_health_with_access_and_mqtt(
+            &health,
+            None,
+            None,
+            Some(&mqtt),
+            None,
+        )
+        .unwrap();
         assert!(metrics.contains("state=\"starting\""));
         assert!(!metrics.contains("keeppeek_camera_online"));
         assert!(!metrics.contains("keeppeek_camera_degraded"));
@@ -19459,6 +19500,28 @@ mod tests {
         assert!(body.contains("keeppeek_storage_pressure_state 0"));
         assert!(body.contains("keeppeek_storage_recording_paused 0"));
         assert!(body.contains("keeppeek_storage_last_cleanup_files_removed 0"));
+        assert!(body.contains("keeppeek_external_analysis_sessions_active 0"));
+        assert!(body.contains("keeppeek_external_analysis_media_subscriptions_active 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_subscriptions_active 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_delivery_queue_depth 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_delivery_pending_bytes 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_delivery_drops_total 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_publications_active 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_publication_staged_bytes 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_publication_starts_total 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_publication_commits_total 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_publication_aborts_total 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_publication_expirations_total 0"));
+        assert!(body.contains("keeppeek_external_analysis_event_publication_rejections_total 0"));
+        assert!(
+            body.contains("keeppeek_external_analysis_event_publication_storage_failures_total 0")
+        );
+        assert!(body.contains(
+            "keeppeek_external_analysis_event_publication_commit_latency_milliseconds{quantile=\"p50\"} 0"
+        ));
+        assert!(body.contains(
+            "keeppeek_external_analysis_event_publication_commit_latency_milliseconds{quantile=\"p95\"} 0"
+        ));
         assert_eq!(router_thread.join().unwrap(), 1);
     }
 
