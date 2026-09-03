@@ -20,6 +20,7 @@ use std::{
 
 const MAXIMUM_ACTIVE_PUBLICATIONS: usize = 64;
 const MAXIMUM_PUBLICATION_IDS: usize = 256;
+const MAXIMUM_PUBLICATION_IDS_PER_SESSION: usize = 64;
 const MAXIMUM_PUBLICATIONS_PER_SESSION: usize = 4;
 pub(super) const MAXIMUM_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 const MAXIMUM_EVENT_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
@@ -173,20 +174,7 @@ impl Registry {
         if let Some(existing) = publications.get(&key) {
             return retry_start(&request.publication_id, &event, channel as i32, existing);
         }
-        let session_count = publications
-            .iter()
-            .filter(|((owner, _), publication)| {
-                *owner == session_id && publication.status.is_active()
-            })
-            .count();
-        let active_count = publications
-            .values()
-            .filter(|publication| publication.status.is_active())
-            .count();
-        if publications.len() >= MAXIMUM_PUBLICATION_IDS
-            || active_count >= MAXIMUM_ACTIVE_PUBLICATIONS
-            || session_count >= MAXIMUM_PUBLICATIONS_PER_SESSION
-        {
+        if publication_limit_reached(&publications, session_id) {
             return Err(publication_error(
                 &request.publication_id,
                 &event.event_id,
@@ -795,6 +783,28 @@ impl PublicationStatus {
     const fn is_active(self) -> bool {
         matches!(self, Self::Accepting | Self::Waiting | Self::Committing)
     }
+}
+
+fn publication_limit_reached(
+    publications: &HashMap<(SessionId, String), StagedPublication>,
+    session_id: SessionId,
+) -> bool {
+    let session_ids = publications
+        .keys()
+        .filter(|(owner, _)| *owner == session_id)
+        .count();
+    let active = publications
+        .values()
+        .filter(|publication| publication.status.is_active())
+        .count();
+    let session_active = publications
+        .iter()
+        .filter(|((owner, _), publication)| *owner == session_id && publication.status.is_active())
+        .count();
+    publications.len() >= MAXIMUM_PUBLICATION_IDS
+        || session_ids >= MAXIMUM_PUBLICATION_IDS_PER_SESSION
+        || active >= MAXIMUM_ACTIVE_PUBLICATIONS
+        || session_active >= MAXIMUM_PUBLICATIONS_PER_SESSION
 }
 
 impl PublicationMetrics {
@@ -1992,5 +2002,43 @@ mod tests {
         assert_eq!(samples.len(), MAXIMUM_COMMIT_LATENCY_SAMPLES);
         assert_eq!(latency_percentile(&samples, 50), 172);
         assert_eq!(latency_percentile(&samples, 95), 288);
+    }
+
+    #[test]
+    fn publication_id_tombstones_are_bounded_per_session_and_globally() {
+        let mut publications = HashMap::new();
+        for index in 0..MAXIMUM_PUBLICATION_IDS_PER_SESSION {
+            let mut publication = staged_publication();
+            publication.status = PublicationStatus::Aborted;
+            publications.insert(
+                (SessionId::from_u64(7), format!("publication-{index}")),
+                publication,
+            );
+        }
+
+        assert!(publication_limit_reached(
+            &publications,
+            SessionId::from_u64(7)
+        ));
+        assert!(!publication_limit_reached(
+            &publications,
+            SessionId::from_u64(8)
+        ));
+
+        for index in publications.len()..MAXIMUM_PUBLICATION_IDS {
+            let mut publication = staged_publication();
+            publication.status = PublicationStatus::Committed;
+            publications.insert(
+                (
+                    SessionId::from_u64(8 + index as u64),
+                    format!("publication-{index}"),
+                ),
+                publication,
+            );
+        }
+        assert!(publication_limit_reached(
+            &publications,
+            SessionId::from_u64(u64::MAX)
+        ));
     }
 }

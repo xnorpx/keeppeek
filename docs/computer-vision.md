@@ -326,6 +326,13 @@ bounding-box values, descriptor counts, content types, per-file bytes, aggregate
 chunk counts, and publication expiry. Filenames and paths are server-generated from safe IDs;
 model text and payload values never become paths.
 
+Atomic attachment publication admits at most four active publications and 64 distinct publication
+IDs per API session, with 64 active publications and 256 retained IDs across the server. Committed,
+aborted, and expired IDs remain terminal tombstones until their API session closes, so an ID cannot
+be reused with different content. A client that reaches its connection's ID quota closes that
+session and reconnects before it starts another atomic publication. Envelope-only `PublishEvent`
+does not use this attachment-publication registry.
+
 The vision service enforces its own decode dimensions, model input limits, JPEG dimensions and
 quality, GPU memory budget, and per-source frame rate. It does not log frame pixels, JPEG bytes,
 access keys, or unrestricted model descriptions.
