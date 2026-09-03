@@ -148,6 +148,10 @@ class LiveEventAssembler:
         self._attachment_bytes = 0
         self._future: asyncio.Future[LiveEventDelivery] = asyncio.get_running_loop().create_future()
 
+    @property
+    def subscription_id(self) -> str:
+        return self._subscription_id
+
     def receive_event(self, event: pb.Event) -> None:
         if event.subscription_id != self._subscription_id or self._future.done():
             return
@@ -581,9 +585,13 @@ class KeepPeekClient:
             raise
 
     async def wait_for_live_event(self, timeout_seconds: float) -> LiveEventDelivery:
-        if self._live_events is None:
+        assembler = self._live_events
+        if assembler is None:
             raise RuntimeError("KeepPeek event subscription is not active")
-        return await self._live_events.wait(timeout_seconds)
+        delivery = await assembler.wait(timeout_seconds)
+        if self._live_events is assembler:
+            self._live_events = LiveEventAssembler(assembler.subscription_id)
+        return delivery
 
     async def publish_event(self, event: pb.Event, generation: int) -> None:
         subscription = self.subscription

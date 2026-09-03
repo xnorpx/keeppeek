@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import platform
 import queue
 import signal
 import socket
@@ -22,9 +23,15 @@ from typing import IO, cast
 import pytest
 
 from conformance_client import (
+    BENCHMARK_RUNS,
+    COMMIT_LATENCY_P95_BUDGET_MS,
     DIAGNOSTIC_ACCESS_KEY_SENTINEL,
     DIAGNOSTIC_ATTACHMENT_SENTINEL,
     DIAGNOSTIC_PAYLOAD_SENTINEL,
+    FANOUT_LATENCY_P95_BUDGET_MS,
+    PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES,
+    QUEUE_DEPTH_BUDGET,
+    QUEUE_PENDING_BYTES_BUDGET,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -153,28 +160,30 @@ long_term_max_gb = 0
 
         client_environment = os.environ.copy()
         client_environment["KEEPPEEK_ACCESS_KEY"] = DIAGNOSTIC_ACCESS_KEY_SENTINEL
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(EXAMPLE_ROOT / "conformance_client.py"),
-                "--url",
-                f"http://127.0.0.1:{port}",
-                "--source-id",
-                CONFORMANCE_SOURCE_IDS[0],
-                "--source-id",
-                CONFORMANCE_SOURCE_IDS[1],
-            ],
-            cwd=EXAMPLE_ROOT,
-            env=client_environment,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=90,
+        command = [
+            sys.executable,
+            str(EXAMPLE_ROOT / "conformance_client.py"),
+            "--url",
+            f"http://127.0.0.1:{port}",
+            "--source-id",
+            CONFORMANCE_SOURCE_IDS[0],
+            "--source-id",
+            CONFORMANCE_SOURCE_IDS[1],
+        ]
+        resident_memory_baseline = int(
+            required_metric(metrics_url, "keeppeek_process_resident_memory_bytes")
+        )
+        completed, resident_memory_samples = run_monitored_client(
+            command,
+            EXAMPLE_ROOT,
+            client_environment,
+            metrics_url,
+            300,
         )
         assert completed.returncode == 0, completed.stderr
         summary = json.loads(completed.stdout)
         assert summary["source_id"] == CONFORMANCE_SOURCE_IDS[0]
-        assert summary["revision"] == 1
+        assert summary["revision"] == BENCHMARK_RUNS
         assert summary["live_event_id"] == summary["event_id"]
         assert summary["live_revision"] == summary["revision"]
         assert summary["live_source_id"] == summary["source_id"]
@@ -188,6 +197,29 @@ long_term_max_gb = 0
             (640, 360),
         ]
         assert {item["codec"] for item in summary["low_streams"]} == {"h264", "h265"}
+        performance = summary["performance"]
+        for phase in ("baseline", "commit", "fanout"):
+            assert performance[phase]["samples"] == BENCHMARK_RUNS
+            assert 0 <= performance[phase]["p50_ms"] <= performance[phase]["p95_ms"]
+            assert performance[phase]["p95_ms"] <= performance[phase]["max_ms"]
+        assert performance["commit"]["p95_ms"] <= COMMIT_LATENCY_P95_BUDGET_MS
+        assert performance["fanout"]["p95_ms"] <= FANOUT_LATENCY_P95_BUDGET_MS
+        assert performance["commit_p95_budget_ms"] == COMMIT_LATENCY_P95_BUDGET_MS
+        assert performance["fanout_p95_budget_ms"] == FANOUT_LATENCY_P95_BUDGET_MS
+        assert len(resident_memory_samples) >= 20
+        resident_memory_p50 = nearest_rank_value(resident_memory_samples, 50)
+        resident_memory_p95 = nearest_rank_value(resident_memory_samples, 95)
+        resident_memory_delta_p95 = max(0, resident_memory_p95 - resident_memory_baseline)
+        assert resident_memory_delta_p95 <= PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES
+        performance["resident_memory"] = {
+            "samples": len(resident_memory_samples),
+            "baseline_bytes": resident_memory_baseline,
+            "p50_bytes": resident_memory_p50,
+            "p95_bytes": resident_memory_p95,
+            "max_bytes": max(resident_memory_samples),
+            "p95_delta_bytes": resident_memory_delta_p95,
+            "p95_delta_budget_bytes": PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES,
+        }
 
         withheld, withheld_ready = start_withheld_client(
             port,
@@ -212,11 +244,53 @@ long_term_max_gb = 0
             required_metric(
                 metrics_url, "keeppeek_external_analysis_event_publication_commits_total"
             )
-            == 1
+            == BENCHMARK_RUNS
         )
         assert (
             required_metric(metrics_url, "keeppeek_external_analysis_event_deliveries_queued_total")
-            >= 1
+            >= BENCHMARK_RUNS
+        )
+        server_commit_p50_ms = required_metric(
+            metrics_url,
+            "keeppeek_external_analysis_event_publication_commit_latency_milliseconds",
+            '{quantile="p50"}',
+        )
+        server_commit_p95_ms = required_metric(
+            metrics_url,
+            "keeppeek_external_analysis_event_publication_commit_latency_milliseconds",
+            '{quantile="p95"}',
+        )
+        assert server_commit_p50_ms <= server_commit_p95_ms
+        assert server_commit_p95_ms <= COMMIT_LATENCY_P95_BUDGET_MS
+        queue_depth_high_water = required_metric(
+            metrics_url, "keeppeek_external_analysis_event_delivery_queue_depth_high_water"
+        )
+        queue_pending_bytes_high_water = required_metric(
+            metrics_url,
+            "keeppeek_external_analysis_event_delivery_pending_bytes_high_water",
+        )
+        assert queue_depth_high_water <= QUEUE_DEPTH_BUDGET
+        assert queue_pending_bytes_high_water <= QUEUE_PENDING_BYTES_BUDGET
+        assert performance["queue_depth_budget"] == QUEUE_DEPTH_BUDGET
+        assert performance["queue_pending_bytes_budget"] == QUEUE_PENDING_BYTES_BUDGET
+        performance["server_commit"] = {
+            "samples": BENCHMARK_RUNS,
+            "p50_ms": server_commit_p50_ms,
+            "p95_ms": server_commit_p95_ms,
+            "p95_budget_ms": COMMIT_LATENCY_P95_BUDGET_MS,
+        }
+        performance["queue"] = {
+            "depth_high_water": queue_depth_high_water,
+            "depth_budget": QUEUE_DEPTH_BUDGET,
+            "pending_bytes_high_water": queue_pending_bytes_high_water,
+            "pending_bytes_budget": QUEUE_PENDING_BYTES_BUDGET,
+        }
+        summary["environment"] = {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+        }
+        (tmp_path / "external-analysis-report.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
 
         browser_environment = os.environ.copy()
@@ -225,6 +299,7 @@ long_term_max_gb = 0
                 "KEEPPEEK_CONFORMANCE_BACKEND_URL": f"http://127.0.0.1:{port}",
                 "KEEPPEEK_CONFORMANCE_EVENT_ID": str(summary["event_id"]),
                 "KEEPPEEK_CONFORMANCE_EVENT_DATE": str(summary["event_date"]),
+                "KEEPPEEK_CONFORMANCE_EVENT_REVISION": str(summary["revision"]),
                 "KEEPPEEK_CONFORMANCE_EVENT_TIMESTAMP": str(summary["event_timestamp"]),
                 "KEEPPEEK_CONFORMANCE_SOURCE_ID": str(summary["source_id"]),
             }
@@ -294,7 +369,7 @@ long_term_max_gb = 0
         assert event_id == summary["event_id"]
         assert source_id == CONFORMANCE_SOURCE_IDS[0]
         assert stream_id == summary["stream_id"] == "main"
-        assert revision == 1
+        assert revision == summary["revision"]
         attachments = json.loads(attachments_json)
         assert attachments[0]["id"] == summary["attachment_id"]
         jpeg = (thumbnail_path / filename).read_bytes()
@@ -584,6 +659,40 @@ def read_process_line(
     return line
 
 
+def run_monitored_client(
+    command: list[str],
+    working_directory: Path,
+    environment: dict[str, str],
+    metrics_url: str,
+    timeout: float,
+) -> tuple[subprocess.CompletedProcess[str], list[int]]:
+    process = subprocess.Popen(
+        command,
+        cwd=working_directory,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    samples: list[int] = []
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        if time.monotonic() >= deadline:
+            process.kill()
+            stdout, stderr = process.communicate(timeout=10)
+            raise AssertionError(f"conformance client timed out\n{stdout}\n{stderr}")
+        try:
+            samples.append(
+                int(required_metric(metrics_url, "keeppeek_process_resident_memory_bytes"))
+            )
+        except (OSError, urllib.error.URLError):
+            if process.poll() is None:
+                raise
+        time.sleep(0.25)
+    stdout, stderr = process.communicate(timeout=10)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr), samples
+
+
 def unused_loopback_port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -662,13 +771,21 @@ def metric_value(line: str) -> float:
         return 0.0
 
 
-def required_metric(url: str, name: str) -> float:
+def required_metric(url: str, name: str, labels: str = "") -> float:
     metrics = fetch_metrics(url)
-    prefix = f"{name} "
+    prefix = f"{name}{labels} "
     for line in metrics.splitlines():
         if line.startswith(prefix):
             return metric_value(line)
     raise AssertionError(f"missing Prometheus metric {name}")
+
+
+def nearest_rank_value(samples: list[int], percentile: int) -> int:
+    if not samples or percentile < 1 or percentile > 100:
+        raise AssertionError("nearest-rank samples and percentile must be valid")
+    ordered = sorted(samples)
+    rank = (len(ordered) * percentile + 99) // 100
+    return ordered[rank - 1]
 
 
 def fetch_metrics(url: str) -> str:

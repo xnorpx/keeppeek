@@ -7,18 +7,24 @@ import hashlib
 import json
 import math
 import os
+import sys
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TypedDict
 
 from google.protobuf import struct_pb2, timestamp_pb2
 
 from detection_pipeline import (
     CodecName,
     DecodedFrame,
+    Detection,
     EncodedFrame,
     FrameAssembler,
+    JpegEvidence,
     decode_access_unit,
     encode_jpeg_evidence,
     fake_detection,
@@ -26,6 +32,7 @@ from detection_pipeline import (
 )
 from generated import webrtc_pb2 as pb
 from keeppeek_client import (
+    ActiveSubscription,
     EventAttachment,
     KeepPeekClient,
     LiteralStream,
@@ -33,11 +40,25 @@ from keeppeek_client import (
     ProtocolError,
 )
 
-MAXIMUM_CONFORMANCE_SECONDS = 60.0
+MAXIMUM_CONFORMANCE_SECONDS = 240.0
 MAXIMUM_WITHHOLD_SECONDS = 60.0
 DIAGNOSTIC_PAYLOAD_SENTINEL = "keeppeek-private-payload-67-4f1c"
 DIAGNOSTIC_ATTACHMENT_SENTINEL = b"keeppeek-private-jpeg-67-9d2a"
 DIAGNOSTIC_ACCESS_KEY_SENTINEL = "67a14f1c-9d2a-4e5b-8c3d-0123456789ab"
+BENCHMARK_RUNS = 20
+COMMIT_LATENCY_P95_BUDGET_MS = 2_000
+FANOUT_LATENCY_P95_BUDGET_MS = 2_500
+QUEUE_DEPTH_BUDGET = 64
+QUEUE_PENDING_BYTES_BUDGET = 8 * 1024 * 1024 + 64 * 1024
+PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES = 128 * 1024 * 1024
+BENCHMARK_SAMPLE_TIMEOUT_SECONDS = 15.0
+
+
+class LatencySummary(TypedDict):
+    samples: int
+    p50_ms: float
+    p95_ms: float
+    max_ms: float
 
 
 @dataclass(frozen=True)
@@ -62,6 +83,17 @@ class KeyFrameCapture:
         return await asyncio.wait_for(self._future, MAXIMUM_CONFORMANCE_SECONDS)
 
 
+CaptureConnection = tuple[KeepPeekClient, KeyFrameCapture]
+
+
+@dataclass(frozen=True)
+class LowAnalysis:
+    connections: list[CaptureConnection]
+    frames: list[EncodedFrame]
+    decoded: list[DecodedFrame]
+    detection: Detection
+
+
 async def connect_capture(
     url: str,
     access_key: str,
@@ -73,6 +105,27 @@ async def connect_capture(
     client = KeepPeekClient(url, access_key, source_id, stream, generation, capture.receive)
     await client.connect()
     return client, capture
+
+
+async def capture_low_analysis(
+    ffmpeg: Path,
+    config: ConformanceConfig,
+    access_key: str,
+) -> LowAnalysis:
+    connections = list(
+        await asyncio.gather(
+            *(
+                connect_capture(config.url, access_key, source_id, "sub", index + 1)
+                for index, source_id in enumerate(config.source_ids)
+            )
+        )
+    )
+    frames = list(await asyncio.gather(*(capture.wait() for _, capture in connections)))
+    decoded = list(await asyncio.gather(*(decode_access_unit(ffmpeg, frame) for frame in frames)))
+    detections = [fake_detection(frame.image, "person") for frame in decoded]
+    if any(len(result) != 1 for result in detections):
+        raise RuntimeError("deterministic low-stream analysis did not produce one detection")
+    return LowAnalysis(connections, frames, decoded, detections[0][0])
 
 
 def validate_live_delivery(
@@ -123,27 +176,227 @@ def add_jpeg_comment(payload: bytes, comment: bytes) -> bytes:
     return payload[:2] + b"\xff\xfe" + segment_length.to_bytes(2, "big") + comment + payload[2:]
 
 
+def nearest_rank_percentile_ms(samples_ns: Sequence[int], percentile: int) -> float:
+    if not samples_ns or percentile < 1 or percentile > 100:
+        raise ValueError("percentile samples and rank must be valid")
+    ordered = sorted(samples_ns)
+    rank = math.ceil(len(ordered) * percentile / 100)
+    return round(ordered[rank - 1] / 1_000_000, 3)
+
+
+def latency_summary(samples_ns: Sequence[int]) -> LatencySummary:
+    return {
+        "samples": len(samples_ns),
+        "p50_ms": nearest_rank_percentile_ms(samples_ns, 50),
+        "p95_ms": nearest_rank_percentile_ms(samples_ns, 95),
+        "max_ms": round(max(samples_ns) / 1_000_000, 3),
+    }
+
+
+def protobuf_timestamp(value: datetime) -> timestamp_pb2.Timestamp:
+    timestamp = timestamp_pb2.Timestamp()
+    timestamp.FromDatetime(value.astimezone(UTC))
+    return timestamp
+
+
+async def benchmark_envelope_publication(
+    client: KeepPeekClient,
+    timestamp: datetime,
+    detection: Detection,
+) -> LatencySummary:
+    subscription = client.subscription
+    samples_ns: list[int] = []
+    for index in range(BENCHMARK_RUNS):
+        event = pb.Event(
+            event_id=str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"keeppeek-conformance-baseline:{subscription.source_id}:{index}",
+                )
+            ),
+            revision=1,
+            source_id=subscription.source_id,
+            source_session_id=subscription.source_session_id,
+            media_kind=pb.MEDIA_KIND_VIDEO,
+            origin=pb.EVENT_ORIGIN_KEEPPEEK,
+            event_type=detection.object_class,
+            start_time=protobuf_timestamp(timestamp),
+            confidence=detection.confidence,
+            payload=struct_pb2.Struct(
+                fields={"stream_id": struct_pb2.Value(string_value=subscription.stream_id)}
+            ),
+        )
+        started_ns = time.perf_counter_ns()
+        await client.publish_event(event, client.generation)
+        samples_ns.append(time.perf_counter_ns() - started_ns)
+    return latency_summary(samples_ns)
+
+
+def conformance_event(
+    event_id: str,
+    revision: int,
+    subscription: ActiveSubscription,
+    analysis_stream_id: str,
+    timestamp: datetime,
+    detection: Detection,
+) -> pb.Event:
+    return pb.Event(
+        event_id=event_id,
+        revision=revision,
+        source_id=subscription.source_id,
+        media_kind=pb.MEDIA_KIND_VIDEO,
+        origin=pb.EVENT_ORIGIN_KEEPPEEK,
+        event_type=detection.object_class,
+        start_time=protobuf_timestamp(timestamp),
+        confidence=detection.confidence,
+        bounding_box=pb.EventBoundingBox(
+            x=detection.bounding_box[0],
+            y=detection.bounding_box[1],
+            width=detection.bounding_box[2],
+            height=detection.bounding_box[3],
+        ),
+        text="deterministic external conformance event",
+        payload=struct_pb2.Struct(
+            fields={
+                "analysis_stream_id": struct_pb2.Value(string_value=analysis_stream_id),
+                "diagnostic_probe": struct_pb2.Value(string_value=DIAGNOSTIC_PAYLOAD_SENTINEL),
+                "object_class": struct_pb2.Value(string_value=detection.object_class),
+                "stream_id": struct_pb2.Value(string_value=subscription.stream_id),
+                "model": struct_pb2.Value(string_value="deterministic-fake"),
+            }
+        ),
+        source_session_id=subscription.source_session_id,
+    )
+
+
+async def benchmark_atomic_publication(
+    publisher: KeepPeekClient,
+    subscriber: KeepPeekClient,
+    event_id: str,
+    analysis_stream_id: str,
+    timestamp: datetime,
+    detection: Detection,
+    attachment: EventAttachment,
+    subscription_id: str,
+    baseline: LatencySummary,
+) -> tuple[pb.Event, LiveEventDelivery, str, dict[str, object]]:
+    commit_samples_ns: list[int] = []
+    fanout_samples_ns: list[int] = []
+    final_event = pb.Event()
+    final_delivery: LiveEventDelivery | None = None
+    final_stream_id = ""
+    for revision in range(1, BENCHMARK_RUNS + 1):
+        print(f"benchmark revision {revision} started", file=sys.stderr, flush=True)
+        event = conformance_event(
+            event_id,
+            revision,
+            publisher.subscription,
+            analysis_stream_id,
+            timestamp,
+            detection,
+        )
+        started_ns = time.perf_counter_ns()
+        await publisher.publish_event_with_attachment(event, attachment, publisher.generation)
+        committed_ns = time.perf_counter_ns()
+        print(f"benchmark revision {revision} committed", file=sys.stderr, flush=True)
+        delivery = await subscriber.wait_for_live_event(BENCHMARK_SAMPLE_TIMEOUT_SECONDS)
+        delivered_ns = time.perf_counter_ns()
+        print(f"benchmark revision {revision} delivered", file=sys.stderr, flush=True)
+        stream_id = validate_live_delivery(delivery, event, attachment, subscription_id)
+        commit_samples_ns.append(committed_ns - started_ns)
+        fanout_samples_ns.append(delivered_ns - started_ns)
+        final_event, final_delivery, final_stream_id = event, delivery, stream_id
+    await publisher.publish_event_with_attachment(final_event, attachment, publisher.generation)
+    if final_delivery is None:
+        raise RuntimeError("atomic publication benchmark produced no live delivery")
+    commit = latency_summary(commit_samples_ns)
+    fanout = latency_summary(fanout_samples_ns)
+    if commit["p95_ms"] > COMMIT_LATENCY_P95_BUDGET_MS:
+        raise RuntimeError(
+            f"durable publication p95 {commit['p95_ms']:.3f} ms exceeds "
+            f"{COMMIT_LATENCY_P95_BUDGET_MS} ms"
+        )
+    if fanout["p95_ms"] > FANOUT_LATENCY_P95_BUDGET_MS:
+        raise RuntimeError(
+            f"live fanout p95 {fanout['p95_ms']:.3f} ms exceeds "
+            f"{FANOUT_LATENCY_P95_BUDGET_MS} ms"
+        )
+    return (
+        final_event,
+        final_delivery,
+        final_stream_id,
+        {
+            "baseline": baseline,
+            "commit": commit,
+            "fanout": fanout,
+            "commit_p95_delta_ms": round(commit["p95_ms"] - baseline["p95_ms"], 3),
+            "commit_p95_budget_ms": COMMIT_LATENCY_P95_BUDGET_MS,
+            "fanout_p95_budget_ms": FANOUT_LATENCY_P95_BUDGET_MS,
+            "queue_depth_budget": QUEUE_DEPTH_BUDGET,
+            "queue_pending_bytes_budget": QUEUE_PENDING_BYTES_BUDGET,
+        },
+    )
+
+
+def conformance_summary(
+    event: pb.Event,
+    delivery: LiveEventDelivery,
+    live_stream_id: str,
+    attachment: EventAttachment,
+    evidence: JpegEvidence,
+    low: LowAnalysis,
+    performance: dict[str, object],
+) -> dict[str, object]:
+    timestamp = low.frames[0].timestamp
+    return {
+        "event_id": event.event_id,
+        "revision": event.revision,
+        "source_id": event.source_id,
+        "source_session_id": event.source_session_id,
+        "stream_id": live_stream_id,
+        "event_timestamp": timestamp.isoformat(),
+        "event_date": timestamp.date().isoformat(),
+        "attachment_timestamp": evidence.timestamp.isoformat(),
+        "attachment_id": attachment.attachment_id,
+        "attachment_bytes": len(attachment.payload),
+        "attachment_sha256": hashlib.sha256(attachment.payload).hexdigest(),
+        "live_event_id": delivery.event.event_id,
+        "live_revision": delivery.event.revision,
+        "live_source_id": delivery.event.source_id,
+        "live_stream_id": live_stream_id,
+        "live_attachment_bytes": len(delivery.attachment),
+        "live_attachment_sha256": hashlib.sha256(delivery.attachment).hexdigest(),
+        "evidence_width": evidence.width,
+        "evidence_height": evidence.height,
+        "performance": performance,
+        "low_streams": [
+            {
+                "source_id": client.subscription.source_id,
+                "stream_id": client.subscription.stream_id,
+                "codec": encoded.codec,
+                "width": int(frame.image.shape[1]),
+                "height": int(frame.image.shape[0]),
+            }
+            for (client, _), frame, encoded in zip(
+                low.connections, low.decoded, low.frames, strict=True
+            )
+        ],
+    }
+
+
 async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
     ffmpeg = verify_ffmpeg()
     access_key = os.environ.get("KEEPPEEK_ACCESS_KEY", "")
     clients: list[KeepPeekClient] = []
     try:
-        low_connections = await asyncio.gather(
-            *(
-                connect_capture(config.url, access_key, source_id, "sub", index + 1)
-                for index, source_id in enumerate(config.source_ids)
-            )
+        low = await capture_low_analysis(ffmpeg, config, access_key)
+        clients.extend(client for client, _ in low.connections)
+        low_client = low.connections[0][0]
+        baseline = await benchmark_envelope_publication(
+            low_client, low.frames[0].timestamp, low.detection
         )
-        clients.extend(client for client, _ in low_connections)
-        low_frames = await asyncio.gather(*(capture.wait() for _, capture in low_connections))
-        low_decoded = await asyncio.gather(
-            *(decode_access_unit(ffmpeg, frame) for frame in low_frames)
-        )
-        detections = [fake_detection(frame.image, "person") for frame in low_decoded]
-        if any(len(result) != 1 for result in detections):
-            raise RuntimeError("deterministic low-stream analysis did not produce one detection")
         live_subscription_id = "conformance-events"
-        await low_connections[0][0].subscribe_events(live_subscription_id)
+        await low_client.subscribe_events(live_subscription_id)
 
         high_client, high_capture = await connect_capture(
             config.url,
@@ -158,44 +411,12 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
         evidence = await encode_jpeg_evidence(ffmpeg, high_decoded)
         evidence_payload = add_jpeg_comment(evidence.payload, DIAGNOSTIC_ATTACHMENT_SENTINEL)
 
-        low_client = low_connections[0][0]
         low_subscription = low_client.subscription
-        high_subscription = high_client.subscription
-        detection = detections[0][0]
-        event_timestamp = timestamp_pb2.Timestamp()
-        event_timestamp.FromDatetime(low_frames[0].timestamp.astimezone(UTC))
         event_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
-                f"keeppeek-conformance:{low_subscription.source_id}:{low_frames[0].timestamp.isoformat()}",
+                f"keeppeek-conformance:{low_subscription.source_id}:{low.frames[0].timestamp.isoformat()}",
             )
-        )
-        event = pb.Event(
-            event_id=event_id,
-            revision=1,
-            source_id=high_subscription.source_id,
-            media_kind=pb.MEDIA_KIND_VIDEO,
-            origin=pb.EVENT_ORIGIN_KEEPPEEK,
-            event_type=detection.object_class,
-            start_time=event_timestamp,
-            confidence=detection.confidence,
-            bounding_box=pb.EventBoundingBox(
-                x=detection.bounding_box[0],
-                y=detection.bounding_box[1],
-                width=detection.bounding_box[2],
-                height=detection.bounding_box[3],
-            ),
-            text="deterministic external conformance event",
-            payload=struct_pb2.Struct(
-                fields={
-                    "analysis_stream_id": struct_pb2.Value(string_value=low_subscription.stream_id),
-                    "diagnostic_probe": struct_pb2.Value(string_value=DIAGNOSTIC_PAYLOAD_SENTINEL),
-                    "object_class": struct_pb2.Value(string_value=detection.object_class),
-                    "stream_id": struct_pb2.Value(string_value=high_subscription.stream_id),
-                    "model": struct_pb2.Value(string_value="deterministic-fake"),
-                }
-            ),
-            source_session_id=high_subscription.source_session_id,
         )
         attachment = EventAttachment(
             attachment_id="high-quality-evidence",
@@ -204,48 +425,22 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
             timestamp=evidence.timestamp,
             payload=evidence_payload,
         )
-        await high_client.publish_event_with_attachment(event, attachment, high_client.generation)
-        await high_client.publish_event_with_attachment(event, attachment, high_client.generation)
-        live_delivery = await low_connections[0][0].wait_for_live_event(MAXIMUM_CONFORMANCE_SECONDS)
-        live_stream_id = validate_live_delivery(
-            live_delivery, event, attachment, live_subscription_id
+        event, live_delivery, live_stream_id, performance = await benchmark_atomic_publication(
+            high_client,
+            low_client,
+            event_id,
+            low_subscription.stream_id,
+            low.frames[0].timestamp,
+            low.detection,
+            attachment,
+            live_subscription_id,
+            baseline,
         )
         await high_client.close()
         clients.remove(high_client)
-
-        return {
-            "event_id": event_id,
-            "revision": 1,
-            "source_id": high_subscription.source_id,
-            "source_session_id": high_subscription.source_session_id,
-            "stream_id": high_subscription.stream_id,
-            "event_timestamp": low_frames[0].timestamp.isoformat(),
-            "event_date": low_frames[0].timestamp.date().isoformat(),
-            "attachment_timestamp": evidence.timestamp.isoformat(),
-            "attachment_id": attachment.attachment_id,
-            "attachment_bytes": len(attachment.payload),
-            "attachment_sha256": hashlib.sha256(attachment.payload).hexdigest(),
-            "live_event_id": live_delivery.event.event_id,
-            "live_revision": live_delivery.event.revision,
-            "live_source_id": live_delivery.event.source_id,
-            "live_stream_id": live_stream_id,
-            "live_attachment_bytes": len(live_delivery.attachment),
-            "live_attachment_sha256": hashlib.sha256(live_delivery.attachment).hexdigest(),
-            "evidence_width": evidence.width,
-            "evidence_height": evidence.height,
-            "low_streams": [
-                {
-                    "source_id": client.subscription.source_id,
-                    "stream_id": client.subscription.stream_id,
-                    "codec": encoded.codec,
-                    "width": int(frame.image.shape[1]),
-                    "height": int(frame.image.shape[0]),
-                }
-                for (client, _), frame, encoded in zip(
-                    low_connections, low_decoded, low_frames, strict=True
-                )
-            ],
-        }
+        return conformance_summary(
+            event, live_delivery, live_stream_id, attachment, evidence, low, performance
+        )
     finally:
         await asyncio.gather(*(client.close() for client in clients), return_exceptions=True)
 

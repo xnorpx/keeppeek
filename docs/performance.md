@@ -16,10 +16,59 @@ KeepPeek applies hard limits at untrusted network and session boundaries:
   and delivered-payload channels each retain at most 64 items.
 - One WebRTC session owns at most 16 stored-media cursors, and the server owns at most 1,024
   stored-media cursors across all sessions.
+- One API WebRTC session thread reserves a 4 MiB stack. Admission defaults to at most 64 sessions
+  per principal and 128 per client address.
 
 Requests that exceed a boundary fail instead of allocating or queueing without a limit. Operators
 must treat repeated limit failures as load or abuse evidence; increasing a limit requires a new
 memory and concurrency budget.
+
+## External analysis publication
+
+The deterministic external-analysis conformance test measures production HTTP, WebRTC, protobuf,
+catalog, JPEG, live-fanout, event-search, and browser paths. It first publishes 20 envelope-only
+events as the transport baseline. It then publishes 20 revisions of one event with a 447,204-byte
+3840x2160 JPEG, waits for each durable acknowledgment and matching live JPEG, verifies server
+metrics, and finishes through the production Events UI, live view, and stored playback.
+
+```sh
+cargo build --locked -p keeppeek -p test-camera \
+  --bin keeppeek --bin test_camera \
+  --features keeppeek/macos-test-aws-crypto
+cd examples/object_detection_service
+KEEPPEEK_RUN_EXTERNAL_CONFORMANCE=1 \
+  KEEPPEEK_CONFORMANCE_KEEPPEEK_BIN="$PWD/../../target/debug/keeppeek" \
+  KEEPPEEK_CONFORMANCE_CAMERA_BIN="$PWD/../../target/debug/test_camera" \
+  python3.12 -m pytest -q tests/test_e2e.py -k two_stream_no_model
+```
+
+Linux omits the final Cargo `--features` argument. The test writes
+`external-analysis-report.json` below its pytest temporary directory. Default CI writes it below
+`target/external-analysis-conformance` and uploads it with the sanitized process diagnostics.
+
+### Reference measurement
+
+Captured on 2026-09-03 with macOS 26.6.2 arm64 on an Apple M5 Max developer workstation with
+18 logical CPUs and 64 GiB RAM, Rust 1.97.1 and Python 3.12.14. The run used the debug binaries,
+one H.264 and one H.265 640x360 analysis stream, 20 measured samples per path, and nearest-rank
+percentiles.
+
+| Path                                       |  p50 ms |  p95 ms | p95 delta ms | p95 budget ms |
+| ------------------------------------------ | ------: | ------: | -----------: | ------------: |
+| Envelope-only publication baseline         |   1.496 |   2.196 |     baseline |           N/A |
+| Atomic JPEG publication through commit     | 322.991 | 329.056 |      326.860 |         2,000 |
+| Atomic commit through complete live fanout | 360.556 | 375.292 |      373.096 |         2,500 |
+| Server start through durable commit        | 321.000 | 327.000 |          N/A |         2,000 |
+
+Server resident memory was 111,247,360 bytes before the measured client. Across 23 samples during
+the workload, resident memory was 191,627,264 bytes at p50, 222,543,872 bytes at p95, and
+223,428,608 bytes maximum. The p95 delta was 111,296,512 bytes against a 134,217,728-byte budget.
+
+The event-delivery queue reached one command against its 64-command bound and 447,688 reserved
+bytes against its 8,454,144-byte bound. Before the explicit API-session stack bound, Rust's 2 MiB
+default stack aborted the server thread during revision 2. A 4 MiB per-session stack completed all
+20 revisions and the subsequent isolation scenario in 28.54 seconds; the session admission limits
+bound aggregate virtual stack reservation.
 
 ## Configuration planning
 

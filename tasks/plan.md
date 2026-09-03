@@ -73,7 +73,7 @@ of the recorder lifecycle.
 - [x] Add bounded health/metrics for sessions, subscriptions, publications, queues, drops, expiry,
       rejection, commit latency, and storage failure without payloads or credentials.
 - [x] Add secret/binary log scans and independent-client license/conformance documentation.
-- [ ] Measure publication/fanout latency and queue memory against explicit p50/p95 budgets.
+- [x] Measure publication/fanout latency and queue memory against explicit p50/p95 budgets.
 - [ ] Run fresh-context review, focused suites, `./check.sh`, and final-head CI.
 - [ ] Publish a PR with one evidence row for every issue criterion.
 

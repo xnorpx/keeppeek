@@ -41,6 +41,7 @@ mod session_registry;
 use session_registry::SessionRegistry;
 
 const FRAME_QUEUE_CAPACITY: usize = 1_000;
+const API_SESSION_THREAD_STACK_BYTES: usize = 4 * 1024 * 1024;
 const API_DATA_QUEUE_CAPACITY: usize = 64;
 const API_BACKGROUND_OUTBOUND_MAX_BYTES: usize = 8 * 1_024 * 1_024;
 const API_BACKGROUND_OUTBOUND_MAX_MESSAGES: usize = 512;
@@ -2494,6 +2495,7 @@ impl WebRtc {
         let thread_control = control.clone();
         let thread = match std::thread::Builder::new()
             .name(format!("webrtc-api-{session_id}"))
+            .stack_size(API_SESSION_THREAD_STACK_BYTES)
             .spawn(move || {
                 if let Err(error) = run_api_session(
                     rtc,
