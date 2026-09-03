@@ -10,8 +10,11 @@ use crate::{
 };
 use prost::Message as _;
 use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Condvar, Mutex},
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -31,6 +34,7 @@ const MAXIMUM_EVENT_PAYLOAD_COLLECTION_ITEMS: usize = 64;
 const MAXIMUM_EVENT_PAYLOAD_KEY_BYTES: usize = 128;
 const PUBLICATION_TTL_MS: u64 = 30_000;
 const DEFAULT_COMMIT_WAIT_MS: u64 = 1_000;
+const MAXIMUM_COMMIT_LATENCY_SAMPLES: usize = 256;
 
 #[derive(Clone, Default)]
 pub(super) struct Registry {
@@ -42,6 +46,18 @@ struct RegistryInner {
     publications: Mutex<HashMap<(SessionId, String), StagedPublication>>,
     changed: Condvar,
     commit: Mutex<()>,
+    metrics: PublicationMetrics,
+}
+
+#[derive(Default)]
+struct PublicationMetrics {
+    starts: AtomicU64,
+    commits: AtomicU64,
+    aborts: AtomicU64,
+    expirations: AtomicU64,
+    rejections: AtomicU64,
+    storage_failures: AtomicU64,
+    commit_latencies_ms: Mutex<VecDeque<u64>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +80,7 @@ struct StagedPublication {
     reserved_bytes: u64,
     chunk_count: Option<u32>,
     next_chunk_index: u32,
+    started_at: Instant,
 }
 
 struct PendingCommit {
@@ -71,6 +88,21 @@ struct PendingCommit {
     attachment_channel: proto::DataChannelKind,
     expires_at_ms: u64,
     attachment_bytes: Vec<u8>,
+    started_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct MetricsSnapshot {
+    pub(super) active: u64,
+    pub(super) staged_bytes: u64,
+    pub(super) starts: u64,
+    pub(super) commits: u64,
+    pub(super) aborts: u64,
+    pub(super) expirations: u64,
+    pub(super) rejections: u64,
+    pub(super) storage_failures: u64,
+    pub(super) commit_latency_ms_p50: u64,
+    pub(super) commit_latency_ms_p95: u64,
 }
 
 pub(super) struct CommittedPublication {
@@ -115,7 +147,7 @@ impl Registry {
                 .publications
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            expire_publications(&mut publications, now_ms);
+            self.record_expirations(expire_publications(&mut publications, now_ms));
             if let Some(existing) = publications.get(&key) {
                 return retry_start(
                     &request.publication_id,
@@ -137,7 +169,7 @@ impl Registry {
             .publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        expire_publications(&mut publications, now_ms);
+        self.record_expirations(expire_publications(&mut publications, now_ms));
         if let Some(existing) = publications.get(&key) {
             return retry_start(&request.publication_id, &event, channel as i32, existing);
         }
@@ -173,9 +205,11 @@ impl Registry {
             reserved_bytes: 0,
             chunk_count: None,
             next_chunk_index: 0,
+            started_at: Instant::now(),
         };
         let response = publication_state(&request.publication_id, &publication);
         publications.insert(key, publication);
+        self.inner.metrics.starts.fetch_add(1, Ordering::Relaxed);
         Ok(response)
     }
 
@@ -205,7 +239,7 @@ impl Registry {
             .publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        expire_publications(&mut publications, now_ms);
+        self.record_expirations(expire_publications(&mut publications, now_ms));
         let total_staged_bytes = publications
             .values()
             .try_fold(0_u64, |total, publication| {
@@ -312,6 +346,7 @@ impl Registry {
             attachment_channel,
             expires_at_ms,
             attachment_bytes,
+            started_at,
         } = pending;
         if super::unix_time_ms() >= expires_at_ms {
             self.finish_failed_commit(&key, attachment_bytes, false, super::unix_time_ms());
@@ -394,6 +429,7 @@ impl Registry {
             attachment_channel,
             expires_at_ms,
         );
+        self.inner.metrics.record_commit(started_at.elapsed());
         Ok((
             publication,
             Some(CommittedPublication {
@@ -422,7 +458,7 @@ impl Registry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut current_ms = now_ms;
         loop {
-            expire_publications(&mut publications, current_ms);
+            self.record_expirations(expire_publications(&mut publications, current_ms));
             let publication = publications.get_mut(key).ok_or_else(|| {
                 publication_error(
                     publication_id,
@@ -453,6 +489,7 @@ impl Registry {
                     attachment_channel: publication.attachment_channel,
                     expires_at_ms: publication.expires_at_ms,
                     attachment_bytes: std::mem::take(&mut publication.attachment_bytes),
+                    started_at: publication.started_at,
                 })));
             }
             let wait =
@@ -493,6 +530,8 @@ impl Registry {
             .publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut aborted = false;
+        let mut expired = false;
         if let Some(publication) = publications.get_mut(key)
             && publication.status == PublicationStatus::Committing
         {
@@ -500,14 +539,19 @@ impl Registry {
                 publication.status = PublicationStatus::Expired;
                 publication.expiry_notification_pending = true;
                 publication.reserved_bytes = 0;
+                expired = true;
             } else if retryable {
                 publication.status = PublicationStatus::Accepting;
                 publication.attachment_bytes = attachment_bytes;
             } else {
                 publication.status = PublicationStatus::Aborted;
                 publication.reserved_bytes = 0;
+                aborted = true;
             }
         }
+        drop(publications);
+        self.record_aborts(u64::from(aborted));
+        self.record_expirations(u64::from(expired));
         self.inner.changed.notify_all();
     }
 
@@ -541,6 +585,7 @@ impl Registry {
                     reserved_bytes: 0,
                     chunk_count: None,
                     next_chunk_index: 0,
+                    started_at: Instant::now(),
                 },
             )
         };
@@ -561,7 +606,7 @@ impl Registry {
             .publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        expire_publications(&mut publications, now_ms);
+        self.record_expirations(expire_publications(&mut publications, now_ms));
         let publication = publications.get_mut(&key).ok_or_else(|| {
             publication_error(
                 &request.publication_id,
@@ -580,19 +625,29 @@ impl Registry {
                 publication,
             ));
         }
+        let transitioned = publication.status != PublicationStatus::Aborted;
         publication.status = PublicationStatus::Aborted;
         publication.attachment_bytes.clear();
         publication.reserved_bytes = 0;
+        self.record_aborts(u64::from(transitioned));
         self.inner.changed.notify_all();
         Ok(publication_state(&request.publication_id, publication))
     }
 
     pub(super) fn close_session(&self, session_id: SessionId) {
+        let mut aborted = 0_u64;
         self.inner
             .publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(owner, _), _| *owner != session_id);
+            .retain(|(owner, _), publication| {
+                let remove = *owner == session_id;
+                if remove && publication.status.is_active() {
+                    aborted = aborted.saturating_add(1);
+                }
+                !remove
+            });
+        self.record_aborts(aborted);
         self.inner.changed.notify_all();
     }
 
@@ -602,13 +657,17 @@ impl Registry {
             .publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut aborted = 0_u64;
         for publication in publications.values_mut() {
             if publication.event.source_id == source_id && publication.status.is_active() {
                 publication.status = PublicationStatus::Aborted;
                 publication.attachment_bytes.clear();
                 publication.reserved_bytes = 0;
+                aborted = aborted.saturating_add(1);
             }
         }
+        drop(publications);
+        self.record_aborts(aborted);
         self.inner.changed.notify_all();
     }
 
@@ -618,7 +677,7 @@ impl Registry {
             .publications
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        expire_publications(&mut publications, now_ms);
+        self.record_expirations(expire_publications(&mut publications, now_ms));
         let mut expired = Vec::new();
         for ((session_id, publication_id), publication) in publications.iter_mut() {
             if publication.expiry_notification_pending {
@@ -630,6 +689,72 @@ impl Registry {
             self.inner.changed.notify_all();
         }
         expired
+    }
+
+    pub(super) fn metrics_snapshot(&self) -> MetricsSnapshot {
+        let publications = self
+            .inner
+            .publications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = publications
+            .values()
+            .filter(|publication| publication.status.is_active())
+            .count() as u64;
+        let staged_bytes = publications
+            .values()
+            .map(|publication| publication.reserved_bytes)
+            .sum();
+        let latencies = self
+            .inner
+            .metrics
+            .commit_latencies_ms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        MetricsSnapshot {
+            active,
+            staged_bytes,
+            starts: self.inner.metrics.starts.load(Ordering::Relaxed),
+            commits: self.inner.metrics.commits.load(Ordering::Relaxed),
+            aborts: self.inner.metrics.aborts.load(Ordering::Relaxed),
+            expirations: self.inner.metrics.expirations.load(Ordering::Relaxed),
+            rejections: self.inner.metrics.rejections.load(Ordering::Relaxed),
+            storage_failures: self.inner.metrics.storage_failures.load(Ordering::Relaxed),
+            commit_latency_ms_p50: latency_percentile(&latencies, 50),
+            commit_latency_ms_p95: latency_percentile(&latencies, 95),
+        }
+    }
+
+    fn record_error(&self, error: &ControlCommandError) {
+        self.inner
+            .metrics
+            .rejections
+            .fetch_add(1, Ordering::Relaxed);
+        let storage_failure = error.details.iter().any(|detail| {
+            proto::EventPublicationError::decode(detail.value.as_slice()).is_ok_and(|detail| {
+                detail.code == proto::EventPublicationErrorCode::StorageUnavailable as i32
+            })
+        });
+        if storage_failure {
+            self.inner
+                .metrics
+                .storage_failures
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_aborts(&self, count: u64) {
+        self.inner
+            .metrics
+            .aborts
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    fn record_expirations(&self, count: u64) {
+        self.inner
+            .metrics
+            .expirations
+            .fetch_add(count, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -662,6 +787,30 @@ impl PublicationStatus {
     }
 }
 
+impl PublicationMetrics {
+    fn record_commit(&self, elapsed: Duration) {
+        self.commits.fetch_add(1, Ordering::Relaxed);
+        let mut samples = self
+            .commit_latencies_ms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if samples.len() == MAXIMUM_COMMIT_LATENCY_SAMPLES {
+            samples.pop_front();
+        }
+        samples.push_back(elapsed.as_millis().try_into().unwrap_or(u64::MAX));
+    }
+}
+
+fn latency_percentile(samples: &VecDeque<u64>, percentile: usize) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut ordered = samples.iter().copied().collect::<Vec<_>>();
+    ordered.sort_unstable();
+    let rank = ordered.len().saturating_mul(percentile).div_ceil(100);
+    ordered[rank.saturating_sub(1).min(ordered.len() - 1)]
+}
+
 fn retry_start(
     publication_id: &str,
     event: &proto::Event,
@@ -682,6 +831,18 @@ fn retry_start(
 }
 
 pub(super) fn dispatch(
+    state: &ServerState,
+    session_id: SessionId,
+    command: proto::EventPublicationCommand,
+) -> Result<Dispatch, ControlCommandError> {
+    let result = dispatch_inner(state, session_id, command);
+    if let Err(error) = &result {
+        state.event_publications.record_error(error);
+    }
+    result
+}
+
+fn dispatch_inner(
     state: &ServerState,
     session_id: SessionId,
     command: proto::EventPublicationCommand,
@@ -723,6 +884,19 @@ pub(super) fn dispatch(
 }
 
 pub(super) fn ingest(
+    state: &ServerState,
+    session_id: SessionId,
+    channel: proto::DataChannelKind,
+    message: proto::Message,
+) -> Result<(), ControlCommandError> {
+    let result = ingest_inner(state, session_id, channel, message);
+    if let Err(error) = &result {
+        state.event_publications.record_error(error);
+    }
+    result
+}
+
+fn ingest_inner(
     state: &ServerState,
     session_id: SessionId,
     channel: proto::DataChannelKind,
@@ -896,7 +1070,8 @@ fn validate_chunk(
 fn expire_publications(
     publications: &mut HashMap<(SessionId, String), StagedPublication>,
     now_ms: u64,
-) {
+) -> u64 {
+    let mut expired = 0_u64;
     for publication in publications.values_mut() {
         if matches!(
             publication.status,
@@ -907,8 +1082,10 @@ fn expire_publications(
             publication.expiry_notification_pending = true;
             publication.attachment_bytes.clear();
             publication.reserved_bytes = 0;
+            expired = expired.saturating_add(1);
         }
     }
+    expired
 }
 
 fn publication_state_error(
@@ -1414,6 +1591,7 @@ mod tests {
             reserved_bytes: 0,
             chunk_count: None,
             next_chunk_index: 0,
+            started_at: Instant::now(),
         }
     }
 
@@ -1709,6 +1887,11 @@ mod tests {
             proto::EventPublicationStatus::Expired as i32
         );
         assert!(registry.expire(100).is_empty());
+        let metrics = registry.metrics_snapshot();
+        assert_eq!(metrics.active, 0);
+        assert_eq!(metrics.staged_bytes, 0);
+        assert_eq!(metrics.aborts, 1);
+        assert_eq!(metrics.expirations, 1);
         let publications = registry.inner.publications.lock().unwrap();
         assert!(publications.get(&key).unwrap().attachment_bytes.is_empty());
         drop(publications);
@@ -1744,5 +1927,22 @@ mod tests {
         assert_eq!(invalidated.status, PublicationStatus::Aborted);
         assert!(invalidated.attachment_bytes.is_empty());
         assert_eq!(invalidated.reserved_bytes, 0);
+        drop(publications);
+        assert_eq!(registry.metrics_snapshot().aborts, 1);
+    }
+
+    #[test]
+    fn commit_latency_metrics_retain_a_bounded_recent_window() {
+        let metrics = PublicationMetrics::default();
+        for latency_ms in 1..=300 {
+            metrics.record_commit(Duration::from_millis(latency_ms));
+        }
+
+        let samples = metrics.commit_latencies_ms.lock().unwrap();
+
+        assert_eq!(metrics.commits.load(Ordering::Relaxed), 300);
+        assert_eq!(samples.len(), MAXIMUM_COMMIT_LATENCY_SAMPLES);
+        assert_eq!(latency_percentile(&samples, 50), 172);
+        assert_eq!(latency_percentile(&samples, 95), 288);
     }
 }

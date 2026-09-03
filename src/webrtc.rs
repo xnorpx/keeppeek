@@ -1481,6 +1481,10 @@ struct Inner {
     queue_high_water: Arc<AtomicUsize>,
     queue_discarded_frames: AtomicU64,
     queue_recovery_drops: AtomicU64,
+    event_deliveries_queued: AtomicU64,
+    event_delivery_drops: AtomicU64,
+    event_delivery_queue_high_water: AtomicUsize,
+    event_delivery_pending_bytes_high_water: AtomicUsize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1512,6 +1516,17 @@ pub(crate) struct WebRtcHealth {
     pub queue_recovery_drops: u64,
     pub session_queues: Vec<WebRtcSessionQueueHealth>,
     pub sources: Vec<WebRtcSourceHealth>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ApiEventQueueMetricsSnapshot {
+    pub sessions_active: u64,
+    pub queue_depth: u64,
+    pub queue_depth_high_water: u64,
+    pub pending_bytes: u64,
+    pub pending_bytes_high_water: u64,
+    pub deliveries_queued: u64,
+    pub delivery_drops: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -2327,7 +2342,13 @@ impl WebRtc {
             .inner
             .sessions
             .api_control(session_id)
-            .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
+            .ok_or_else(|| {
+                self.live
+                    .inner
+                    .event_delivery_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                anyhow::anyhow!("API WebRTC session is unavailable")
+            })?;
         let reserved_bytes = delivery
             .event
             .encoded_len()
@@ -2337,14 +2358,31 @@ impl WebRtc {
                     .as_ref()
                     .map_or(0, |bytes| bytes.len()),
             )
-            .ok_or_else(|| anyhow::anyhow!("live event queue byte count overflowed"))?;
+            .ok_or_else(|| {
+                self.live
+                    .inner
+                    .event_delivery_drops
+                    .fetch_add(1, Ordering::Relaxed);
+                anyhow::anyhow!("live event queue byte count overflowed")
+            })?;
         if !try_reserve_bytes(
             &control.pending_event_bytes,
             reserved_bytes,
             API_PENDING_EVENT_MAX_BYTES,
         ) {
+            self.live
+                .inner
+                .event_delivery_drops
+                .fetch_add(1, Ordering::Relaxed);
             return Ok(false);
         }
+        self.live
+            .inner
+            .event_delivery_pending_bytes_high_water
+            .fetch_max(
+                control.pending_event_bytes.load(Ordering::Acquire),
+                Ordering::Relaxed,
+            );
         match control.data_tx.try_send(ApiSessionCommand::Event {
             delivery: Box::new(delivery),
             reservation: PendingEventReservation {
@@ -2353,7 +2391,19 @@ impl WebRtc {
             },
         }) {
             Ok(()) => {
+                self.live
+                    .inner
+                    .event_deliveries_queued
+                    .fetch_add(1, Ordering::Relaxed);
+                self.live
+                    .inner
+                    .event_delivery_queue_high_water
+                    .fetch_max(control.data_tx.len(), Ordering::Relaxed);
                 if let Err(error) = control.poller.notify() {
+                    self.live
+                        .inner
+                        .event_delivery_drops
+                        .fetch_add(1, Ordering::Relaxed);
                     control.close();
                     return Err(error.into());
                 }
@@ -2361,12 +2411,51 @@ impl WebRtc {
             }
             Err(TrySendError::Full(command)) => {
                 drop(command);
+                self.live
+                    .inner
+                    .event_delivery_drops
+                    .fetch_add(1, Ordering::Relaxed);
                 Ok(false)
             }
             Err(TrySendError::Disconnected(command)) => {
                 drop(command);
+                self.live
+                    .inner
+                    .event_delivery_drops
+                    .fetch_add(1, Ordering::Relaxed);
                 Err(anyhow::anyhow!("API WebRTC session data queue is closed"))
             }
+        }
+    }
+
+    pub(crate) fn api_event_queue_metrics_snapshot(&self) -> ApiEventQueueMetricsSnapshot {
+        let controls = self.live.inner.sessions.api_controls();
+        ApiEventQueueMetricsSnapshot {
+            sessions_active: controls.len() as u64,
+            queue_depth: controls
+                .iter()
+                .map(|control| control.data_tx.len() as u64)
+                .sum(),
+            queue_depth_high_water: self
+                .live
+                .inner
+                .event_delivery_queue_high_water
+                .load(Ordering::Relaxed) as u64,
+            pending_bytes: controls
+                .iter()
+                .map(|control| control.pending_event_bytes.load(Ordering::Relaxed) as u64)
+                .sum(),
+            pending_bytes_high_water: self
+                .live
+                .inner
+                .event_delivery_pending_bytes_high_water
+                .load(Ordering::Relaxed) as u64,
+            deliveries_queued: self
+                .live
+                .inner
+                .event_deliveries_queued
+                .load(Ordering::Relaxed),
+            delivery_drops: self.live.inner.event_delivery_drops.load(Ordering::Relaxed),
         }
     }
 
@@ -5596,9 +5685,18 @@ mod tests {
                 .unwrap()
         );
         assert!(control.pending_event_bytes.load(Ordering::Acquire) > 0);
+        let queued = webrtc.api_event_queue_metrics_snapshot();
+        assert_eq!(queued.sessions_active, 1);
+        assert_eq!(queued.queue_depth, 1);
+        assert_eq!(queued.queue_depth_high_water, 1);
+        assert!(queued.pending_bytes > 0);
+        assert_eq!(queued.pending_bytes, queued.pending_bytes_high_water);
+        assert_eq!(queued.deliveries_queued, 1);
+        assert_eq!(queued.delivery_drops, 0);
         let mut media = ApiMediaRuntime::default();
         drain_api_session_commands(&data_rx, &mut media);
         assert_eq!(control.pending_event_bytes.load(Ordering::Acquire), 0);
+        assert_eq!(webrtc.api_event_queue_metrics_snapshot().pending_bytes, 0);
         control
             .data_tx
             .send(ApiSessionCommand::Notification(Box::default()))
@@ -5608,6 +5706,10 @@ mod tests {
                 .try_enqueue_api_event(session_id, delivery())
                 .unwrap()
         );
+        let full = webrtc.api_event_queue_metrics_snapshot();
+        assert_eq!(full.deliveries_queued, 1);
+        assert_eq!(full.delivery_drops, 1);
+        assert_eq!(full.pending_bytes, 0);
     }
 
     #[test]
