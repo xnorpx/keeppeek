@@ -65,7 +65,7 @@ of the recorder lifecycle.
 - [x] Add a no-model external client that consumes two low-bandwidth streams and publishes a person
       or vehicle event with deterministic evidence.
 - [x] Obtain one timestamp-correct high-quality image without continuously decoding the main stream.
-- [ ] Prove rejected credentials, unknown/stale sources, unsupported types/transports, disconnect,
+- [x] Prove rejected credentials, unknown/stale sources, unsupported types/transports, disconnect,
       crash, reconnect, and withheld-client isolation.
 
 ### Phase 4: Operations and Publication
