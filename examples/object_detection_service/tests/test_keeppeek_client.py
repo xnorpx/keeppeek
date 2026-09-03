@@ -5,7 +5,7 @@ import gzip
 from datetime import UTC, datetime
 
 import pytest
-from google.protobuf import timestamp_pb2
+from google.protobuf import any_pb2, timestamp_pb2
 
 from generated import webrtc_pb2 as pb
 from keeppeek_client import (
@@ -16,6 +16,7 @@ from keeppeek_client import (
     LiveEventDelivery,
     MediaConfigurationTracker,
     ProtocolError,
+    RequestRejectedError,
     decode_session_body,
     read_stream_limited,
 )
@@ -131,9 +132,10 @@ def test_atomic_event_publisher_chunks_once_and_retries_the_durable_commit() -> 
         requests: list[pb.Request] = []
         messages: list[pb.Message] = []
         committed = False
+        commit_attempts = 0
 
         async def request(value: pb.Request) -> pb.Response:
-            nonlocal committed
+            nonlocal commit_attempts, committed
             copy = pb.Request()
             copy.CopyFrom(value)
             requests.append(copy)
@@ -146,6 +148,30 @@ def test_atomic_event_publisher_chunks_once_and_retries_the_durable_commit() -> 
                 )
             else:
                 assert action == "commit"
+                commit_attempts += 1
+                if commit_attempts == 1:
+                    raise TimeoutError("commit response was lost")
+                if commit_attempts == 2:
+                    detail = pb.EventPublicationError(
+                        publication_id="publication-1",
+                        event_id="event-1",
+                        code=pb.EVENT_PUBLICATION_ERROR_CODE_STORAGE_UNAVAILABLE,
+                    )
+                    raise RequestRejectedError(
+                        3,
+                        pb.Error(
+                            message="event publication could not be stored",
+                            details=[
+                                any_pb2.Any(
+                                    type_url=(
+                                        "type.googleapis.com/keeppeek.webrtc.v1."
+                                        "EventPublicationError"
+                                    ),
+                                    value=detail.SerializeToString(),
+                                )
+                            ],
+                        ),
+                    )
                 committed = True
                 status = pb.EVENT_PUBLICATION_STATUS_COMMITTED
             command = value.event_publication_command
@@ -198,6 +224,8 @@ def test_atomic_event_publisher_chunks_once_and_retries_the_durable_commit() -> 
 
         assert [request.event_publication_command.WhichOneof("action") for request in requests] == [
             "start",
+            "commit",
+            "commit",
             "commit",
             "start",
         ]

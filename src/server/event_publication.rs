@@ -635,6 +635,11 @@ impl Registry {
     }
 
     pub(super) fn close_session(&self, session_id: SessionId) {
+        let _commit_guard = self
+            .inner
+            .commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut aborted = 0_u64;
         self.inner
             .publications
@@ -652,6 +657,11 @@ impl Registry {
     }
 
     pub(super) fn invalidate_source(&self, source_id: &str) {
+        let _commit_guard = self
+            .inner
+            .commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut publications = self
             .inner
             .publications
@@ -1929,6 +1939,44 @@ mod tests {
         assert_eq!(invalidated.reserved_bytes, 0);
         drop(publications);
         assert_eq!(registry.metrics_snapshot().aborts, 1);
+    }
+
+    #[test]
+    fn source_invalidation_waits_for_the_durable_commit_boundary() {
+        let registry = Registry::default();
+        let key = (SessionId::from_u64(7), "publication-1".to_owned());
+        let mut publication = staged_publication();
+        publication.status = PublicationStatus::Committing;
+        registry
+            .inner
+            .publications
+            .lock()
+            .unwrap()
+            .insert(key.clone(), publication);
+        let commit_guard = registry.inner.commit.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker_registry = registry.clone();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            worker_registry.invalidate_source("front-door");
+            finished_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(commit_guard);
+        finished_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+
+        let publications = registry.inner.publications.lock().unwrap();
+        assert_eq!(
+            publications.get(&key).unwrap().status,
+            PublicationStatus::Aborted
+        );
     }
 
     #[test]

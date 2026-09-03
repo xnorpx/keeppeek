@@ -477,6 +477,7 @@ enum ApiSessionCommand {
 struct PendingEventReservation {
     bytes: usize,
     pending_bytes: Arc<AtomicUsize>,
+    pending_count: Arc<AtomicUsize>,
 }
 
 impl Drop for PendingEventReservation {
@@ -486,6 +487,11 @@ impl Drop for PendingEventReservation {
                 current.checked_sub(self.bytes)
             })
             .expect("pending event byte reservation must balance exactly");
+        self.pending_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current.checked_sub(1)
+            })
+            .expect("pending event count reservation must balance exactly");
     }
 }
 
@@ -653,6 +659,7 @@ struct ApiSessionControl {
     control_handler: Arc<RwLock<Option<Weak<dyn ControlRequestHandler>>>>,
     data_tx: Sender<ApiSessionCommand>,
     pending_event_bytes: Arc<AtomicUsize>,
+    pending_event_count: Arc<AtomicUsize>,
     media_camera_ips: Mutex<HashSet<IpAddr>>,
     background_operation_in_flight: Arc<AtomicBool>,
 }
@@ -2377,6 +2384,16 @@ impl WebRtc {
                 .fetch_add(1, Ordering::Relaxed);
             return Ok(false);
         }
+        if !try_reserve_bytes(&control.pending_event_count, 1, API_DATA_QUEUE_CAPACITY) {
+            control
+                .pending_event_bytes
+                .fetch_sub(reserved_bytes, Ordering::AcqRel);
+            self.live
+                .inner
+                .event_delivery_drops
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(false);
+        }
         self.live
             .inner
             .event_delivery_pending_bytes_high_water
@@ -2384,11 +2401,13 @@ impl WebRtc {
                 control.pending_event_bytes.load(Ordering::Acquire),
                 Ordering::Relaxed,
             );
+        let pending_count = control.pending_event_count.load(Ordering::Acquire);
         match control.data_tx.try_send(ApiSessionCommand::Event {
             delivery: Box::new(delivery),
             reservation: PendingEventReservation {
                 bytes: reserved_bytes,
                 pending_bytes: control.pending_event_bytes.clone(),
+                pending_count: control.pending_event_count.clone(),
             },
         }) {
             Ok(()) => {
@@ -2399,7 +2418,7 @@ impl WebRtc {
                 self.live
                     .inner
                     .event_delivery_queue_high_water
-                    .fetch_max(control.data_tx.len(), Ordering::Relaxed);
+                    .fetch_max(pending_count, Ordering::Relaxed);
                 if let Err(error) = control.poller.notify() {
                     self.live
                         .inner
@@ -2435,7 +2454,7 @@ impl WebRtc {
             sessions_active: controls.len() as u64,
             queue_depth: controls
                 .iter()
-                .map(|control| control.data_tx.len() as u64)
+                .map(|control| control.pending_event_count.load(Ordering::Relaxed) as u64)
                 .sum(),
             queue_depth_high_water: self
                 .live
@@ -2484,6 +2503,7 @@ impl WebRtc {
             control_handler: self.live.inner.control_handler.clone(),
             data_tx,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         });
@@ -5651,7 +5671,7 @@ mod tests {
         let webrtc = WebRtc::new();
         let session_id = SessionId::from_u64(7);
         let poller = Arc::new(Poller::new().unwrap());
-        let (data_tx, data_rx) = bounded(1);
+        let (data_tx, data_rx) = bounded(2);
         let control = Arc::new(ApiSessionControl {
             session_id,
             inner: webrtc.live.inner.clone(),
@@ -5662,6 +5682,7 @@ mod tests {
             control_handler: Arc::new(RwLock::new(None)),
             data_tx,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         });
@@ -5670,6 +5691,10 @@ mod tests {
             .inner
             .sessions
             .insert_api(session_id, control.clone());
+        control
+            .data_tx
+            .send(ApiSessionCommand::Notification(Box::default()))
+            .unwrap();
         let delivery = || OutboundEventDelivery {
             event: crate::api::proto::Event {
                 event_id: "event-1".to_owned(),
@@ -5699,10 +5724,12 @@ mod tests {
         drain_api_session_commands(&data_rx, &mut media);
         assert_eq!(control.pending_event_bytes.load(Ordering::Acquire), 0);
         assert_eq!(webrtc.api_event_queue_metrics_snapshot().pending_bytes, 0);
-        control
-            .data_tx
-            .send(ApiSessionCommand::Notification(Box::default()))
-            .unwrap();
+        for _ in 0..2 {
+            control
+                .data_tx
+                .send(ApiSessionCommand::Notification(Box::default()))
+                .unwrap();
+        }
         assert!(
             !webrtc
                 .try_enqueue_api_event(session_id, delivery())
@@ -5717,6 +5744,7 @@ mod tests {
     #[test]
     fn pending_event_reservation_releases_when_the_session_queue_closes() {
         let pending_bytes = Arc::new(AtomicUsize::new(7));
+        let pending_count = Arc::new(AtomicUsize::new(1));
         let (sender, receiver) = bounded(1);
         sender
             .send(ApiSessionCommand::Event {
@@ -5728,6 +5756,7 @@ mod tests {
                 reservation: PendingEventReservation {
                     bytes: 7,
                     pending_bytes: pending_bytes.clone(),
+                    pending_count: pending_count.clone(),
                 },
             })
             .unwrap();
@@ -5735,6 +5764,7 @@ mod tests {
         discard_api_session_commands(&receiver);
 
         assert_eq!(pending_bytes.load(Ordering::Acquire), 0);
+        assert_eq!(pending_count.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -5775,6 +5805,7 @@ mod tests {
                 control_handler: Arc::new(RwLock::new(None)),
                 data_tx: bounded(1).0,
                 pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+                pending_event_count: Arc::new(AtomicUsize::new(0)),
                 media_camera_ips: Mutex::new(media_camera_ips),
                 background_operation_in_flight: Arc::new(AtomicBool::new(false)),
             })
@@ -5843,6 +5874,7 @@ mod tests {
             control_handler: Arc::new(RwLock::new(None)),
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: discovery_in_flight.clone(),
         };
@@ -6070,6 +6102,7 @@ mod tests {
             control_handler: Arc::new(RwLock::new(None)),
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         };
@@ -6223,6 +6256,7 @@ mod tests {
             control_handler: Arc::new(RwLock::new(None)),
             data_tx: bounded(1).0,
             pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
             media_camera_ips: Mutex::new(HashSet::new()),
             background_operation_in_flight: Arc::new(AtomicBool::new(false)),
         };

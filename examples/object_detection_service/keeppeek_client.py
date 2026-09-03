@@ -27,6 +27,7 @@ EVENT_PUBLICATION_CAPABILITY = "keeppeek.event-publication.v1"
 CONTROL_TIMEOUT_SECONDS = 10.0
 CONNECT_TIMEOUT_SECONDS = 15.0
 EVENT_COMMIT_WAIT_SECONDS = 5
+EVENT_COMMIT_ATTEMPTS = 3
 MAX_SESSION_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_LIVE_EVENT_ATTACHMENT_BYTES = 8 * 1024 * 1024
 MAX_LIVE_EVENT_ATTACHMENT_CHUNKS = 256
@@ -35,6 +36,14 @@ LiteralStream = Literal["auto", "main", "sub"]
 
 class ProtocolError(ServiceError):
     """KeepPeek rejected or violated the documented protocol."""
+
+
+class RequestRejectedError(ProtocolError):
+    def __init__(self, request_id: int, error: pb.Error) -> None:
+        message = error.message or "unknown error"
+        super().__init__(f"KeepPeek rejected request {request_id}: {message}")
+        self.error = pb.Error()
+        self.error.CopyFrom(error)
 
 
 class SessionLostError(ServiceError):
@@ -329,19 +338,40 @@ class AtomicEventPublisher:
                     )
                 )
             )
-        response = await self._request(
-            pb.Request(
-                event_publication_command=pb.EventPublicationCommand(
-                    commit=pb.CommitEventPublication(
-                        publication_id=publication_id,
-                        wait_timeout=duration_pb2.Duration(seconds=EVENT_COMMIT_WAIT_SECONDS),
+        await self._commit(publication_id, event)
+
+    async def _commit(self, publication_id: str, event: pb.Event) -> None:
+        last_error: Exception | None = None
+        for attempt in range(EVENT_COMMIT_ATTEMPTS):
+            try:
+                response = await self._request(
+                    pb.Request(
+                        event_publication_command=pb.EventPublicationCommand(
+                            commit=pb.CommitEventPublication(
+                                publication_id=publication_id,
+                                wait_timeout=duration_pb2.Duration(
+                                    seconds=EVENT_COMMIT_WAIT_SECONDS
+                                ),
+                            )
+                        )
                     )
                 )
-            )
-        )
-        state = publication_state(response, publication_id, event)
-        if state.status != pb.EVENT_PUBLICATION_STATUS_COMMITTED:
-            raise ProtocolError("KeepPeek did not confirm durable event publication")
+                state = publication_state(response, publication_id, event)
+                if state.status != pb.EVENT_PUBLICATION_STATUS_COMMITTED:
+                    raise ProtocolError("KeepPeek did not confirm durable event publication")
+                return
+            except TimeoutError as error:
+                last_error = error
+            except RequestRejectedError as error:
+                if event_publication_error_code(error) not in {
+                    pb.EVENT_PUBLICATION_ERROR_CODE_ATTACHMENTS_INCOMPLETE,
+                    pb.EVENT_PUBLICATION_ERROR_CODE_STORAGE_UNAVAILABLE,
+                }:
+                    raise
+                last_error = error
+            if attempt + 1 < EVENT_COMMIT_ATTEMPTS:
+                await asyncio.sleep(0.2 * (attempt + 1))
+        raise ProtocolError("KeepPeek did not confirm durable event publication") from last_error
 
 
 def publication_identity(event: pb.Event) -> str:
@@ -388,6 +418,19 @@ def publication_state(
     ):
         raise ProtocolError("KeepPeek changed the event publication identity")
     return state
+
+
+def event_publication_error_code(error: RequestRejectedError) -> int | None:
+    for detail in error.error.details:
+        if detail.type_url != "type.googleapis.com/keeppeek.webrtc.v1.EventPublicationError":
+            continue
+        publication_error = pb.EventPublicationError()
+        try:
+            publication_error.ParseFromString(detail.value)
+        except ProtobufDecodeError:
+            return None
+        return int(publication_error.code)
+    return None
 
 
 class AsyncReader(Protocol):
@@ -797,8 +840,7 @@ class KeepPeekClient:
         finally:
             self._pending.pop(request_id, None)
         if response.WhichOneof("result") == "error":
-            message = response.error.message or "unknown error"
-            raise ProtocolError(f"KeepPeek rejected request {request_id}: {message}")
+            raise RequestRejectedError(request_id, response.error)
         if response.WhichOneof("result") != "ok":
             raise ProtocolError(f"KeepPeek returned an invalid response for request {request_id}")
         return response
