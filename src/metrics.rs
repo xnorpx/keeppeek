@@ -710,7 +710,7 @@ fn register_external_analysis_gauges(
         ),
         (
             "external_analysis_event_delivery_queue_depth",
-            "Current API background commands queued across external analysis sessions",
+            "Current event deliveries queued across external analysis sessions",
             snapshot.event_delivery_queue_depth,
         ),
         (

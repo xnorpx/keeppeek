@@ -55,19 +55,19 @@ percentiles.
 
 | Path                                       |  p50 ms |  p95 ms | p95 delta ms | p95 budget ms |
 | ------------------------------------------ | ------: | ------: | -----------: | ------------: |
-| Envelope-only publication baseline         |   1.496 |   2.196 |     baseline |           N/A |
-| Atomic JPEG publication through commit     | 322.991 | 329.056 |      326.860 |         2,000 |
-| Atomic commit through complete live fanout | 360.556 | 375.292 |      373.096 |         2,500 |
-| Server start through durable commit        | 321.000 | 327.000 |          N/A |         2,000 |
+| Envelope-only publication baseline         |   1.602 |   3.132 |     baseline |           N/A |
+| Atomic JPEG publication through commit     | 315.479 | 317.232 |      314.100 |         2,000 |
+| Atomic commit through complete live fanout | 353.865 | 364.321 |      361.189 |         2,500 |
+| Server start through durable commit        | 314.000 | 315.000 |          N/A |         2,000 |
 
-Server resident memory was 111,247,360 bytes before the measured client. Across 23 samples during
-the workload, resident memory was 191,627,264 bytes at p50, 222,543,872 bytes at p95, and
-223,428,608 bytes maximum. The p95 delta was 111,296,512 bytes against a 134,217,728-byte budget.
+Server resident memory was 110,821,376 bytes before the measured client. Across 23 samples during
+the workload, resident memory was 162,480,128 bytes at p50, 189,923,328 bytes at p95, and
+190,939,136 bytes maximum. The p95 delta was 79,101,952 bytes against a 134,217,728-byte budget.
 
 The event-delivery queue reached one command against its 64-command bound and 447,688 reserved
 bytes against its 8,454,144-byte bound. Before the explicit API-session stack bound, Rust's 2 MiB
 default stack aborted the server thread during revision 2. A 4 MiB per-session stack completed all
-20 revisions and the subsequent isolation scenario in 28.54 seconds; the session admission limits
+20 revisions and the subsequent isolation scenario in 28.14 seconds; the session admission limits
 bound aggregate virtual stack reservation.
 
 ## Configuration planning
