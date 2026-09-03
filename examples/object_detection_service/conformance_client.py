@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import uuid
 from collections.abc import Sequence
@@ -33,12 +34,14 @@ from keeppeek_client import (
 )
 
 MAXIMUM_CONFORMANCE_SECONDS = 60.0
+MAXIMUM_WITHHOLD_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
 class ConformanceConfig:
     url: str
     source_ids: tuple[str, str]
+    withhold_seconds: float | None
 
 
 class KeyFrameCapture:
@@ -235,19 +238,60 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
         await asyncio.gather(*(client.close() for client in clients), return_exceptions=True)
 
 
+async def run_withheld_client(config: ConformanceConfig) -> None:
+    clients: list[KeepPeekClient] = []
+    try:
+        connections = await asyncio.gather(
+            *(
+                connect_capture(config.url, "", source_id, "sub", index + 1)
+                for index, source_id in enumerate(config.source_ids)
+            )
+        )
+        clients.extend(client for client, _ in connections)
+        frames = await asyncio.gather(*(capture.wait() for _, capture in connections))
+        print(
+            json.dumps(
+                {
+                    "status": "withheld",
+                    "codecs": [frame.codec for frame in frames],
+                    "source_ids": list(config.source_ids),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        if config.withhold_seconds is None:
+            raise RuntimeError("withheld client duration is missing")
+        await asyncio.sleep(config.withhold_seconds)
+    finally:
+        await asyncio.gather(*(client.close() for client in clients), return_exceptions=True)
+
+
 def parse_args(arguments: Sequence[str] | None = None) -> ConformanceConfig:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
     parser.add_argument("--source-id", action="append", required=True)
+    parser.add_argument("--withhold-seconds", type=float)
     namespace = parser.parse_args(arguments)
     source_ids = tuple(str(source_id) for source_id in namespace.source_id)
     if len(source_ids) != 2 or len(set(source_ids)) != 2 or any(not value for value in source_ids):
         parser.error("--source-id must be provided exactly twice with distinct values")
-    return ConformanceConfig(str(namespace.url), (source_ids[0], source_ids[1]))
+    withhold_seconds = namespace.withhold_seconds
+    if withhold_seconds is not None and (
+        not math.isfinite(withhold_seconds)
+        or withhold_seconds < 1
+        or withhold_seconds > MAXIMUM_WITHHOLD_SECONDS
+    ):
+        parser.error(f"--withhold-seconds must be from 1 through {MAXIMUM_WITHHOLD_SECONDS:g}")
+    return ConformanceConfig(str(namespace.url), (source_ids[0], source_ids[1]), withhold_seconds)
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
     config = parse_args(arguments)
+    if config.withhold_seconds is not None:
+        asyncio.run(run_withheld_client(config))
+        return 0
     result = asyncio.run(asyncio.wait_for(run_conformance(config), MAXIMUM_CONFORMANCE_SECONDS))
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0

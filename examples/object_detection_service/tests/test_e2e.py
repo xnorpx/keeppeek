@@ -172,12 +172,43 @@ long_term_max_gb = 0
         ]
         assert {item["codec"] for item in summary["low_streams"]} == {"h264", "h265"}
 
+        withheld, withheld_ready = start_withheld_client(
+            port,
+            tmp_path / "withheld-client.log",
+            processes,
+            handles,
+        )
+        assert withheld_ready["codecs"] == ["h264", "h265"]
+        recording_bytes_before = wait_for(
+            lambda: current_recording_bytes(storage_path) or None,
+            timeout=15,
+            description="recording bytes before withholding the client",
+            failed_process=server,
+            log_path=server_log_path,
+        )
+        assert required_metric(metrics_url, "keeppeek_external_analysis_sessions_active") >= 2
+        assert (
+            required_metric(metrics_url, "keeppeek_external_analysis_media_subscriptions_active")
+            >= 2
+        )
+        assert (
+            required_metric(
+                metrics_url, "keeppeek_external_analysis_event_publication_commits_total"
+            )
+            == 1
+        )
+        assert (
+            required_metric(metrics_url, "keeppeek_external_analysis_event_deliveries_queued_total")
+            >= 1
+        )
+
         browser_environment = os.environ.copy()
         browser_environment.update(
             {
                 "KEEPPEEK_CONFORMANCE_BACKEND_URL": f"http://127.0.0.1:{port}",
                 "KEEPPEEK_CONFORMANCE_EVENT_ID": str(summary["event_id"]),
                 "KEEPPEEK_CONFORMANCE_EVENT_DATE": str(summary["event_date"]),
+                "KEEPPEEK_CONFORMANCE_EVENT_TIMESTAMP": str(summary["event_timestamp"]),
                 "KEEPPEEK_CONFORMANCE_SOURCE_ID": str(summary["source_id"]),
             }
         )
@@ -197,9 +228,34 @@ long_term_max_gb = 0
             timeout=120,
         )
         assert browser.returncode == 0, f"{browser.stdout}\n{browser.stderr}"
+        recording_bytes_after = wait_for(
+            lambda: (
+                current
+                if (current := current_recording_bytes(storage_path)) > recording_bytes_before
+                else None
+            ),
+            timeout=15,
+            description="recording progress while withholding the client",
+            failed_process=server,
+            log_path=server_log_path,
+        )
+        assert recording_bytes_after > recording_bytes_before
+        crash_process(withheld)
+        processes.remove(withheld)
         assert server.poll() is None
         for source_id in CONFORMANCE_SOURCE_IDS:
             assert camera_ingress_metrics(metrics_url, source_id)
+
+        reconnected, reconnect_ready = start_withheld_client(
+            port,
+            tmp_path / "reconnected-client.log",
+            processes,
+            handles,
+        )
+        assert reconnect_ready["codecs"] == ["h264", "h265"]
+        crash_process(reconnected)
+        processes.remove(reconnected)
+        assert server.poll() is None
 
         stop_process(server)
         processes.remove(server)
@@ -441,6 +497,65 @@ def read_camera_config(camera: subprocess.Popen[str]) -> str:
     raise AssertionError("timed out waiting for test camera configuration")
 
 
+def start_withheld_client(
+    port: int,
+    log_path: Path,
+    processes: list[subprocess.Popen[str]],
+    handles: list[IO[str]],
+) -> tuple[subprocess.Popen[str], dict[str, object]]:
+    log = log_path.open("w", encoding="utf-8")
+    handles.append(log)
+    environment = os.environ.copy()
+    environment.pop("KEEPPEEK_ACCESS_KEY", None)
+    client = subprocess.Popen(
+        [
+            sys.executable,
+            str(EXAMPLE_ROOT / "conformance_client.py"),
+            "--url",
+            f"http://127.0.0.1:{port}",
+            "--source-id",
+            CONFORMANCE_SOURCE_IDS[0],
+            "--source-id",
+            CONFORMANCE_SOURCE_IDS[1],
+            "--withhold-seconds",
+            "60",
+        ],
+        cwd=EXAMPLE_ROOT,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=log,
+        text=True,
+    )
+    processes.append(client)
+    ready = json.loads(read_process_line(client, 30, "withheld client readiness", log_path))
+    if not isinstance(ready, dict) or ready.get("status") != "withheld":
+        raise AssertionError(f"invalid withheld client readiness: {ready!r}")
+    return client, cast(dict[str, object], ready)
+
+
+def read_process_line(
+    process: subprocess.Popen[str], timeout: float, description: str, log_path: Path
+) -> str:
+    stdout = process.stdout
+    if stdout is None:
+        raise AssertionError(f"{description} stdout was not captured")
+    output: queue.Queue[str] = queue.Queue(maxsize=1)
+    threading.Thread(target=lambda: output.put(stdout.readline()), daemon=True).start()
+    try:
+        line = output.get(timeout=timeout)
+    except queue.Empty as error:
+        raise AssertionError(
+            f"timed out waiting for {description}\n{read_log(log_path)}"
+        ) from error
+    if not line:
+        exit_code = process.poll()
+        raise AssertionError(
+            f"process exited with {exit_code} while waiting for {description}\n"
+            f"{read_log(log_path)}"
+        )
+    return line
+
+
 def unused_loopback_port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -517,6 +632,24 @@ def metric_value(line: str) -> float:
         return float(line.rsplit(" ", 1)[1])
     except (IndexError, ValueError):
         return 0.0
+
+
+def required_metric(url: str, name: str) -> float:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        metrics = response.read().decode("utf-8")
+    prefix = f"{name} "
+    for line in metrics.splitlines():
+        if line.startswith(prefix):
+            return metric_value(line)
+    raise AssertionError(f"missing Prometheus metric {name}")
+
+
+def current_recording_bytes(storage_path: Path) -> int:
+    return sum(
+        file_path.stat().st_size
+        for file_path in storage_path.rglob("*.mp4*")
+        if file_path.is_file()
+    )
 
 
 def detector_published(log_path: Path) -> bool:
@@ -623,3 +756,10 @@ def stop_process(process: subprocess.Popen[str]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=10)
+
+
+def crash_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        raise AssertionError(f"client exited before forced crash with {process.returncode}")
+    process.kill()
+    process.wait(timeout=10)
