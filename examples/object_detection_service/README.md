@@ -229,6 +229,47 @@ The default tests use repository H.264 and H.265 fixtures, the external `ffmpeg`
 deterministic fake detector. They require no camera, GPU, cloud service, model download, access
 key, or other secret.
 
+### Vendor-neutral conformance
+
+The finite conformance client uses only the public HTTP, SDP, and protobuf contracts. It consumes
+two 640x360 low-bandwidth streams, one H.264 and one H.265, and decodes one keyframe from each. A
+deterministic fake detection then opens one bounded main-stream subscription, captures one
+timestamped 3840x2160 JPEG, and closes that high-quality path after atomic publication.
+
+The process test verifies the same source, stream, timestamp, class, confidence, bounding box,
+revision, structured payload, attachment descriptor, and exact JPEG bytes through live fanout,
+stored search, and the production Events UI. It also verifies advancing live video, decoded stored
+playback, recording growth while another client withholds events, force-kill isolation, and a fresh
+two-codec reconnect. The run inspects fixed-cardinality operational metrics and scans runtime
+diagnostics and generated bindings for test access-key, metadata, JPEG, source-frame, and full-SDP
+credential disclosure.
+
+Build the two local binaries from the repository root. On macOS, use the same AWS-LC test provider
+as the browser suite:
+
+```sh
+cargo build --locked -p keeppeek -p test-camera \
+  --bin keeppeek --bin test_camera \
+  --features keeppeek/macos-test-aws-crypto
+```
+
+Linux does not need the final `--features` argument. Then run:
+
+```sh
+cd examples/object_detection_service
+KEEPPEEK_RUN_EXTERNAL_CONFORMANCE=1 \
+  KEEPPEEK_CONFORMANCE_KEEPPEEK_BIN="$PWD/../../target/debug/keeppeek" \
+  KEEPPEEK_CONFORMANCE_CAMERA_BIN="$PWD/../../target/debug/test_camera" \
+  python3.12 -m pytest -q tests/test_e2e.py -k two_stream_no_model
+```
+
+This command needs no physical camera, GPU, model, cloud service, or user credential. The fixed UUID
+used by the leak scanner is synthetic test data created inside the isolated process run.
+
+The conformance implementation in this directory is an AGPL-3.0-only reference, not a client SDK.
+Independent implementations can generate their own bindings solely from the MIT-licensed files in
+[`api`](../../api/README.md); doing so does not apply the example or server AGPL license to them.
+
 The real-process integration uses Intel's CC-BY-4.0
 `person-bicycle-car-detection.mp4`, the repository fixture-camera server, KeepPeek, aiortc, FFmpeg,
 actual Ultralytics inference, and an isolated catalog. Keep the upstream dataset `LICENSE` and
