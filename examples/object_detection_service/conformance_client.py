@@ -35,6 +35,9 @@ from keeppeek_client import (
 
 MAXIMUM_CONFORMANCE_SECONDS = 60.0
 MAXIMUM_WITHHOLD_SECONDS = 60.0
+DIAGNOSTIC_PAYLOAD_SENTINEL = "keeppeek-private-payload-67-4f1c"
+DIAGNOSTIC_ATTACHMENT_SENTINEL = b"keeppeek-private-jpeg-67-9d2a"
+DIAGNOSTIC_ACCESS_KEY_SENTINEL = "67a14f1c-9d2a-4e5b-8c3d-0123456789ab"
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,13 @@ def validate_live_delivery(
     return stream.string_value
 
 
+def add_jpeg_comment(payload: bytes, comment: bytes) -> bytes:
+    if not payload.startswith(b"\xff\xd8") or not comment or len(comment) > 65_533:
+        raise ProtocolError("JPEG diagnostic comment is invalid")
+    segment_length = len(comment) + 2
+    return payload[:2] + b"\xff\xfe" + segment_length.to_bytes(2, "big") + comment + payload[2:]
+
+
 async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
     ffmpeg = verify_ffmpeg()
     access_key = os.environ.get("KEEPPEEK_ACCESS_KEY", "")
@@ -146,6 +156,7 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
         high_frame = await high_capture.wait()
         high_decoded: DecodedFrame = await decode_access_unit(ffmpeg, high_frame)
         evidence = await encode_jpeg_evidence(ffmpeg, high_decoded)
+        evidence_payload = add_jpeg_comment(evidence.payload, DIAGNOSTIC_ATTACHMENT_SENTINEL)
 
         low_client = low_connections[0][0]
         low_subscription = low_client.subscription
@@ -178,6 +189,7 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
             payload=struct_pb2.Struct(
                 fields={
                     "analysis_stream_id": struct_pb2.Value(string_value=low_subscription.stream_id),
+                    "diagnostic_probe": struct_pb2.Value(string_value=DIAGNOSTIC_PAYLOAD_SENTINEL),
                     "object_class": struct_pb2.Value(string_value=detection.object_class),
                     "stream_id": struct_pb2.Value(string_value=high_subscription.stream_id),
                     "model": struct_pb2.Value(string_value="deterministic-fake"),
@@ -190,7 +202,7 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
             attachment_type="snapshot",
             content_type="image/jpeg",
             timestamp=evidence.timestamp,
-            payload=evidence.payload,
+            payload=evidence_payload,
         )
         await high_client.publish_event_with_attachment(event, attachment, high_client.generation)
         await high_client.publish_event_with_attachment(event, attachment, high_client.generation)

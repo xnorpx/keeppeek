@@ -583,6 +583,70 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  external-analysis-conformance:
+    name: External Analysis Conformance
+    needs: ui-e2e-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version-file: examples/object_detection_service/.python-version
+          cache: pip
+          cache-dependency-path: examples/object_detection_service/requirements.txt
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install Chromium
+        working-directory: ui
+        run: bunx playwright install --with-deps chromium
+      - name: Install FFmpeg
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes ffmpeg
+          fi
+          ffmpeg -version
+      - name: Install latest Python dependencies
+        working-directory: examples/object_detection_service
+        run: python -m pip install --upgrade -r requirements.txt
+      - name: Generate MIT protobuf bindings
+        working-directory: examples/object_detection_service
+        run: python generate_protos.py
+      - name: Download shared Playwright binaries and fixtures
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ui-e2e-linux
+          path: target
+      - name: Restore executable permissions
+        run: chmod +x target/release/keeppeek target/release/test_camera
+      - name: Run external analysis conformance
+        working-directory: examples/object_detection_service
+        env:
+          KEEPPEEK_RUN_EXTERNAL_CONFORMANCE: "1"
+          KEEPPEEK_CONFORMANCE_KEEPPEEK_BIN: ${{ github.workspace }}/target/release/keeppeek
+          KEEPPEEK_CONFORMANCE_CAMERA_BIN: ${{ github.workspace }}/target/release/test_camera
+        run: >-
+          python -m pytest -q tests/test_e2e.py -k two_stream_no_model
+          --basetemp=${{ github.workspace }}/target/external-analysis-conformance
+      - name: Upload conformance diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: external-analysis-conformance
+          path: |
+            target/external-analysis-conformance
+            ui/test-results/external-analysis-conformance
+          if-no-files-found: ignore
+          retention-days: 14
+
   ui-windows-build:
     name: UI Windows Build
     runs-on: windows-latest
@@ -765,6 +829,7 @@ jobs:
         ui-static,
         ui-unit-bun,
         ui-gate,
+        external-analysis-conformance,
         coverage,
         dependency-audit,
         container,
@@ -791,6 +856,7 @@ jobs:
         ui-e2e,
         ui-windows-build,
         ui-gate,
+        external-analysis-conformance,
         coverage,
         dependency-audit,
         container,
@@ -842,6 +908,7 @@ jobs:
               'UI E2E (4/4)',
               'UI Windows Build',
               'UI (windows-latest)',
+              'External Analysis Conformance',
               'Coverage (Rust + UI)',
               'Dependency Audit',
               'Container Build & Smoke Test'

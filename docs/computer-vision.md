@@ -337,12 +337,21 @@ dropped frames, decode resets, inference batch size and latency, per-source proc
 detections by type, active trackers, JPEG encode time and bytes, publication stage/commit latency,
 commit retries, and model failures.
 
-Server metrics include staged event publications and bytes, expired or aborted publications,
-revision conflicts, storage commit latency and failures, router match count, queue depth and drops
-per subscriber, attachment fanout bytes, subscriber disconnects, and backfill query lag.
+Server Prometheus metrics use the `keeppeek_external_analysis_` prefix. Gauges report active API
+sessions, media subscriptions, event subscriptions, staged publications and bytes, and current
+event-delivery queue depth and reserved bytes. Lifetime counters report subscription admissions,
+rejections, matches and sheds; publication starts, durable commits, aborts, expiry, rejections and
+storage failures; and delivery queue admissions and drops. Queue depth and reserved bytes also have
+lifetime high-water gauges. Durable publication latency is retained in a bounded 256-sample window
+and exported in milliseconds with only `quantile="p50"` and `quantile="p95"` labels. Metrics never
+use source, event, publication, subscription, credential, or payload values as labels.
 
 Logs correlate source ID, stream ID, event ID, revision, and publication ID without dumping image
 or model payload contents.
+
+The deterministic conformance test also scans server, camera, client, browser, and metrics output.
+It rejects raw, hexadecimal, base64, or decimal disclosure of fixed access-key, structured-payload,
+JPEG-comment, and source-frame probes. It also rejects complete ICE password or username lines.
 
 ## Acceptance scenarios
 

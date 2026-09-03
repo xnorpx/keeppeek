@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import base64
 import hashlib
 import json
 import os
@@ -20,6 +21,12 @@ from typing import IO, cast
 
 import pytest
 
+from conformance_client import (
+    DIAGNOSTIC_ACCESS_KEY_SENTINEL,
+    DIAGNOSTIC_ATTACHMENT_SENTINEL,
+    DIAGNOSTIC_PAYLOAD_SENTINEL,
+)
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_VIDEO_ROOT = REPOSITORY_ROOT / "data" / "sample-videos"
@@ -37,8 +44,18 @@ TEST_CAMERA_FIXTURES = REPOSITORY_ROOT / "crates" / "test-camera" / "testdata"
 )
 def test_two_stream_no_model_client_publishes_high_quality_evidence(tmp_path: Path) -> None:
     executable_suffix = ".exe" if os.name == "nt" else ""
-    keeppeek_binary = REPOSITORY_ROOT / "target" / "debug" / f"keeppeek{executable_suffix}"
-    camera_binary = REPOSITORY_ROOT / "target" / "debug" / f"test_camera{executable_suffix}"
+    keeppeek_binary = Path(
+        os.environ.get(
+            "KEEPPEEK_CONFORMANCE_KEEPPEEK_BIN",
+            REPOSITORY_ROOT / "target" / "debug" / f"keeppeek{executable_suffix}",
+        )
+    )
+    camera_binary = Path(
+        os.environ.get(
+            "KEEPPEEK_CONFORMANCE_CAMERA_BIN",
+            REPOSITORY_ROOT / "target" / "debug" / f"test_camera{executable_suffix}",
+        )
+    )
     h264_main = TEST_CAMERA_FIXTURES / "cc-4k-3840x2160-h264.mp4"
     h264_sub = TEST_CAMERA_FIXTURES / "cc-4k-640x360-h264.mp4"
     h265_sub = TEST_CAMERA_FIXTURES / "cc-4k-640x360-h265.mp4"
@@ -113,7 +130,7 @@ long_term_max_gb = 0
         handles.append(server_log)
         server_environment = os.environ.copy()
         server_environment.pop("KEEPPEEK_ACCESS_KEY", None)
-        server_environment.pop("KEEPPEEK_SECRET_KEEPPEEK_ACCESS_KEY", None)
+        server_environment["KEEPPEEK_SECRET_KEEPPEEK_ACCESS_KEY"] = DIAGNOSTIC_ACCESS_KEY_SENTINEL
         server_environment["RUST_LOG"] = "info,keeppeek=debug"
         server = subprocess.Popen(
             [str(keeppeek_binary), f"--config={config_path}"],
@@ -135,7 +152,7 @@ long_term_max_gb = 0
             )
 
         client_environment = os.environ.copy()
-        client_environment.pop("KEEPPEEK_ACCESS_KEY", None)
+        client_environment["KEEPPEEK_ACCESS_KEY"] = DIAGNOSTIC_ACCESS_KEY_SENTINEL
         completed = subprocess.run(
             [
                 sys.executable,
@@ -256,6 +273,17 @@ long_term_max_gb = 0
         crash_process(reconnected)
         processes.remove(reconnected)
         assert server.poll() is None
+        for handle in handles:
+            handle.flush()
+        assert_diagnostic_hygiene(
+            tmp_path,
+            fetch_metrics(metrics_url),
+            completed.stdout,
+            completed.stderr,
+            browser.stdout,
+            browser.stderr,
+            source_frame_probe(h264_sub),
+        )
 
         stop_process(server)
         processes.remove(server)
@@ -506,7 +534,7 @@ def start_withheld_client(
     log = log_path.open("w", encoding="utf-8")
     handles.append(log)
     environment = os.environ.copy()
-    environment.pop("KEEPPEEK_ACCESS_KEY", None)
+    environment["KEEPPEEK_ACCESS_KEY"] = DIAGNOSTIC_ACCESS_KEY_SENTINEL
     client = subprocess.Popen(
         [
             sys.executable,
@@ -635,13 +663,68 @@ def metric_value(line: str) -> float:
 
 
 def required_metric(url: str, name: str) -> float:
-    with urllib.request.urlopen(url, timeout=2) as response:
-        metrics = response.read().decode("utf-8")
+    metrics = fetch_metrics(url)
     prefix = f"{name} "
     for line in metrics.splitlines():
         if line.startswith(prefix):
             return metric_value(line)
     raise AssertionError(f"missing Prometheus metric {name}")
+
+
+def fetch_metrics(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=2) as response:
+        return cast(str, response.read().decode("utf-8"))
+
+
+def source_frame_probe(video_path: Path) -> bytes:
+    payload = video_path.read_bytes()
+    start = len(payload) // 2
+    probe = payload[start : start + 24]
+    if len(probe) != 24 or len(set(probe)) < 8:
+        raise AssertionError("source frame diagnostic probe lacks entropy")
+    return probe
+
+
+def assert_diagnostic_hygiene(
+    tmp_path: Path,
+    metrics: str,
+    *diagnostics: str | bytes,
+) -> None:
+    generated = [
+        EXAMPLE_ROOT / "generated" / "webrtc_pb2.py",
+        EXAMPLE_ROOT / "generated" / "webrtc_pb2.pyi",
+    ]
+    diagnostic_bytes = b"\n".join(
+        [path.read_bytes() for path in sorted(tmp_path.glob("*.log"))]
+        + [metrics.encode()]
+        + [value.encode() if isinstance(value, str) else value for value in diagnostics[:-1]]
+    )
+    frame_probe = diagnostics[-1]
+    if not isinstance(frame_probe, bytes):
+        raise AssertionError("source frame diagnostic probe must contain bytes")
+    binding_bytes = b"\n".join(path.read_bytes() for path in generated)
+    probes = {
+        "access key": DIAGNOSTIC_ACCESS_KEY_SENTINEL.encode(),
+        "structured payload": DIAGNOSTIC_PAYLOAD_SENTINEL.encode(),
+        "attachment payload": DIAGNOSTIC_ATTACHMENT_SENTINEL,
+        "source frame": frame_probe,
+    }
+    for name, probe in probes.items():
+        variants = (
+            probe,
+            probe.hex().encode(),
+            base64.b64encode(probe),
+            b" ".join(f"{byte:02x}".encode() for byte in probe),
+            str(list(probe)).encode(),
+        )
+        if any(variant in diagnostic_bytes for variant in variants):
+            raise AssertionError(f"runtime diagnostics exposed the {name} probe")
+        if any(variant in binding_bytes for variant in variants):
+            raise AssertionError(f"generated bindings exposed the {name} probe")
+    lowered = diagnostic_bytes.lower()
+    for marker in (b"a=ice-pwd:", b"a=ice-ufrag:"):
+        if marker in lowered:
+            raise AssertionError("runtime diagnostics exposed full SDP credentials")
 
 
 def current_recording_bytes(storage_path: Path) -> int:
