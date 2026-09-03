@@ -1763,6 +1763,50 @@ mod tests {
             publication_code(&error),
             proto::EventPublicationErrorCode::EventInvalid
         );
+
+        let mut nested = prost_types::Value {
+            kind: Some(prost_types::value::Kind::StringValue("leaf".to_owned())),
+        };
+        for _ in 0..MAXIMUM_EVENT_PAYLOAD_DEPTH {
+            nested = prost_types::Value {
+                kind: Some(prost_types::value::Kind::StructValue(prost_types::Struct {
+                    fields: std::collections::BTreeMap::from([("nested".to_owned(), nested)]),
+                })),
+            };
+        }
+        event.payload = Some(prost_types::Struct {
+            fields: std::collections::BTreeMap::from([("nested".to_owned(), nested)]),
+        });
+        let error = validate_event_values("publication-1", &event).unwrap_err();
+        assert_eq!(
+            publication_code(&error),
+            proto::EventPublicationErrorCode::EventInvalid
+        );
+
+        let inner = prost_types::Value {
+            kind: Some(prost_types::value::Kind::ListValue(
+                prost_types::ListValue {
+                    values: vec![prost_types::Value::default(); 4],
+                },
+            )),
+        };
+        event.payload = Some(prost_types::Struct {
+            fields: std::collections::BTreeMap::from([(
+                "nodes".to_owned(),
+                prost_types::Value {
+                    kind: Some(prost_types::value::Kind::ListValue(
+                        prost_types::ListValue {
+                            values: vec![inner; MAXIMUM_EVENT_PAYLOAD_COLLECTION_ITEMS],
+                        },
+                    )),
+                },
+            )]),
+        });
+        let error = validate_event_values("publication-1", &event).unwrap_err();
+        assert_eq!(
+            publication_code(&error),
+            proto::EventPublicationErrorCode::EventInvalid
+        );
     }
 
     #[test]
