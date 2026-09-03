@@ -3,16 +3,19 @@
 
 import asyncio
 import gzip
+import hashlib
 import io
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 import aiohttp
 from aiortc import RTCPeerConnection, RTCSessionDescription
+from google.protobuf import timestamp_pb2
 from google.protobuf.message import DecodeError as ProtobufDecodeError
 
 from detection_pipeline import CodecName, ServiceError
@@ -111,6 +114,145 @@ def parse_media_configuration(
 
 
 FrameHandler = Callable[[pb.VideoDataFrame, CodecName, int], None]
+RequestSender = Callable[[pb.Request], Awaitable[pb.Response]]
+
+
+@dataclass(frozen=True)
+class EventAttachment:
+    attachment_id: str
+    attachment_type: str
+    content_type: str
+    timestamp: datetime
+    payload: bytes
+
+
+class AtomicEventPublisher:
+    """Publishes one deterministic event revision and attachment atomically."""
+
+    CHUNK_BYTES = 64 * 1024
+    MAXIMUM_CHUNKS = 256
+
+    def __init__(
+        self,
+        request: RequestSender,
+        send: Callable[[pb.Message], None],
+    ) -> None:
+        self._request = request
+        self._send = send
+
+    async def publish(self, event: pb.Event, attachment: EventAttachment) -> None:
+        if event.attachments:
+            raise ProtocolError("event already contains attachment descriptors")
+        if not attachment.payload:
+            raise ProtocolError("event attachment is empty")
+        if attachment.timestamp.tzinfo is None:
+            raise ProtocolError("event attachment timestamp must include a timezone")
+        chunk_count = (len(attachment.payload) + self.CHUNK_BYTES - 1) // self.CHUNK_BYTES
+        if chunk_count > self.MAXIMUM_CHUNKS:
+            raise ProtocolError("event attachment requires too many chunks")
+        publication_id = publication_identity(event)
+        publication_event = event_with_attachment(event, attachment)
+        response = await self._request(
+            pb.Request(
+                event_publication_command=pb.EventPublicationCommand(
+                    start=pb.StartEventPublication(
+                        publication_id=publication_id,
+                        event=publication_event,
+                        attachment_channel=pb.DATA_CHANNEL_KIND_RELIABLE_DATA,
+                    )
+                )
+            )
+        )
+        state = publication_state(response, publication_id, event)
+        if state.status == pb.EVENT_PUBLICATION_STATUS_COMMITTED:
+            return
+        if state.status != pb.EVENT_PUBLICATION_STATUS_ACCEPTING_ATTACHMENTS:
+            raise ProtocolError("KeepPeek returned an invalid event publication state")
+        if (
+            len(attachment.payload) > state.max_attachment_bytes
+            or len(attachment.payload) > state.max_event_attachment_bytes
+        ):
+            raise ProtocolError("event attachment exceeds the server publication limit")
+        timestamp = timestamp_pb2.Timestamp()
+        timestamp.FromDatetime(attachment.timestamp.astimezone(UTC))
+        for chunk_index in range(chunk_count):
+            start = chunk_index * self.CHUNK_BYTES
+            payload = attachment.payload[start : start + self.CHUNK_BYTES]
+            self._send(
+                pb.Message(
+                    event=pb.EventMessage(
+                        attachment=pb.EventAttachmentChunk(
+                            publication_id=publication_id,
+                            event_id=event.event_id,
+                            revision=event.revision,
+                            attachment_id=attachment.attachment_id,
+                            attachment_type=attachment.attachment_type,
+                            content_type=attachment.content_type,
+                            ordinal=0,
+                            timestamp=timestamp,
+                            sequence=1,
+                            chunk_index=chunk_index,
+                            chunk_count=chunk_count,
+                            payload=payload,
+                        )
+                    )
+                )
+            )
+        response = await self._request(
+            pb.Request(
+                event_publication_command=pb.EventPublicationCommand(
+                    commit=pb.CommitEventPublication(publication_id=publication_id)
+                )
+            )
+        )
+        state = publication_state(response, publication_id, event)
+        if state.status != pb.EVENT_PUBLICATION_STATUS_COMMITTED:
+            raise ProtocolError("KeepPeek did not confirm durable event publication")
+
+
+def publication_identity(event: pb.Event) -> str:
+    if not event.event_id or event.revision < 1:
+        raise ProtocolError("event publication identity is invalid")
+    digest = hashlib.sha256(f"{event.event_id}\0{event.revision}".encode()).hexdigest()
+    return f"event-{digest}"
+
+
+def event_with_attachment(event: pb.Event, attachment: EventAttachment) -> pb.Event:
+    timestamp = timestamp_pb2.Timestamp()
+    timestamp.FromDatetime(attachment.timestamp.astimezone(UTC))
+    result = pb.Event()
+    result.CopyFrom(event)
+    result.attachments.append(
+        pb.EventAttachmentDescriptor(
+            attachment_id=attachment.attachment_id,
+            attachment_type=attachment.attachment_type,
+            content_type=attachment.content_type,
+            byte_len=len(attachment.payload),
+            ordinal=0,
+            timestamp=timestamp,
+        )
+    )
+    result.canonical_attachment_id = attachment.attachment_id
+    result.bounding_box_attachment_id = attachment.attachment_id
+    return result
+
+
+def publication_state(
+    response: object, publication_id: str, event: pb.Event
+) -> pb.EventPublicationState:
+    if not isinstance(response, pb.Response):
+        raise ProtocolError("KeepPeek returned an invalid publication response")
+    if response.ok.WhichOneof("result") != "event_publication_state":
+        raise ProtocolError("KeepPeek publication response omitted its state")
+    state = response.ok.event_publication_state
+    if (
+        state.publication_id != publication_id
+        or state.event_id != event.event_id
+        or state.revision != event.revision
+        or state.attachment_channel != pb.DATA_CHANNEL_KIND_RELIABLE_DATA
+    ):
+        raise ProtocolError("KeepPeek changed the event publication identity")
+    return state
 
 
 class AsyncReader(Protocol):
@@ -206,6 +348,7 @@ class KeepPeekClient:
         self._capabilities: pb.ServerCapabilities | None = None
         self._subscription: ActiveSubscription | None = None
         self._media_configuration = MediaConfigurationTracker()
+        self._event_publisher = AtomicEventPublisher(self._request, self._send_reliable_message)
         self._session_id: str | None = None
         self._closed = False
         self._control.on("open", self._control_open.set)
@@ -271,6 +414,24 @@ class KeepPeekClient:
                     break
                 await asyncio.sleep(0.2 * (attempt + 1))
         raise SessionLostError("unable to confirm detection publication") from last_error
+
+    async def publish_event_with_attachment(
+        self, event: pb.Event, attachment: EventAttachment, generation: int
+    ) -> None:
+        subscription = self.subscription
+        if generation != self._generation or self._lost.is_set():
+            raise SessionLostError("detection belongs to an inactive KeepPeek session")
+        if (
+            event.source_id != subscription.source_id
+            or event.source_session_id != subscription.source_session_id
+        ):
+            raise ProtocolError("detection identity does not match the active media subscription")
+        await self._event_publisher.publish(event, attachment)
+
+    def _send_reliable_message(self, message: pb.Message) -> None:
+        if self._lost.is_set() or self._reliable.readyState != "open":
+            raise SessionLostError("KeepPeek reliable data channel is unavailable")
+        self._reliable.send(message.SerializeToString())
 
     async def close(self) -> None:
         if self._closed:
