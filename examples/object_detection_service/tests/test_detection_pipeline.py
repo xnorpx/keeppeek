@@ -12,6 +12,7 @@ import pytest
 from google.protobuf import timestamp_pb2
 
 from detection_pipeline import (
+    MAX_JPEG_EVIDENCE_BYTES,
     BoundedLatestQueue,
     DecodedFrame,
     DecodeError,
@@ -20,6 +21,7 @@ from detection_pipeline import (
     FrameAssembler,
     UltralyticsDetector,
     avcc_to_annex_b,
+    encode_jpeg_evidence,
     fake_detection,
     normalize_bounding_box,
     normalize_object_class,
@@ -224,6 +226,21 @@ def test_fake_detector_runs_against_decoded_fixture() -> None:
             bounding_box=(0.2, 0.2, 0.5, 0.6),
         )
     ]
+
+
+def test_high_quality_frame_encodes_one_bounded_timestamped_jpeg() -> None:
+    ffmpeg = verify_ffmpeg()
+    image = decode_fixture_frame(ffmpeg, FIXTURE_DIRECTORY / "cc-4k-3840x2160-h264.mp4")
+    timestamp = datetime(2026, 9, 2, 12, 0, 0, 123_000, tzinfo=UTC)
+
+    evidence = asyncio.run(encode_jpeg_evidence(ffmpeg, DecodedFrame(timestamp, image, 7)))
+
+    assert evidence.timestamp == timestamp
+    assert evidence.width == 3840
+    assert evidence.height == 2160
+    assert 4 <= len(evidence.payload) <= MAX_JPEG_EVIDENCE_BYTES
+    assert evidence.payload.startswith(b"\xff\xd8")
+    assert evidence.payload.endswith(b"\xff\xd9")
 
 
 @pytest.mark.skipif(

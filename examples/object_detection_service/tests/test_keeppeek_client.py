@@ -11,6 +11,7 @@ from generated import webrtc_pb2 as pb
 from keeppeek_client import (
     AtomicEventPublisher,
     EventAttachment,
+    KeepPeekClient,
     MediaConfigurationTracker,
     ProtocolError,
     decode_session_body,
@@ -52,6 +53,17 @@ def test_session_response_gzip_expansion_is_bounded() -> None:
 def test_session_response_decoder_accepts_plain_and_bounded_gzip() -> None:
     assert decode_session_body(b"plain", 5) == b"plain"
     assert decode_session_body(gzip.compress(b"plain"), 5) == b"plain"
+
+
+def test_loopback_client_needs_no_secret_but_remote_clients_require_one() -> None:
+    async def scenario() -> None:
+        client = KeepPeekClient("http://127.0.0.1:3000", "", "camera-1", "sub", 1, lambda *_: None)
+        await client.close()
+
+    asyncio.run(scenario())
+
+    with pytest.raises(ValueError, match="access key"):
+        KeepPeekClient("https://keeppeek.example", "", "camera-1", "sub", 1, lambda *_: None)
 
 
 def test_media_configuration_tracker_applies_ordered_codec_updates() -> None:
