@@ -31,6 +31,7 @@ FFMPEG_INSTALL_HELP = (
     "Linux `apt install ffmpeg`, `dnf install ffmpeg`, or `pacman -S ffmpeg`."
 )
 MAX_DECODED_FRAME_BYTES = 24 * 1024 * 1024
+MAX_JPEG_EVIDENCE_BYTES = 8 * 1024 * 1024
 MAX_PPM_HEADER_BYTES = 1024
 MAX_FFMPEG_STDERR_BYTES = 300
 
@@ -103,6 +104,14 @@ class DecodedFrame:
     timestamp: datetime
     image: Image
     generation: int
+
+
+@dataclass(frozen=True)
+class JpegEvidence:
+    timestamp: datetime
+    width: int
+    height: int
+    payload: bytes
 
 
 @dataclass(frozen=True)
@@ -333,7 +342,10 @@ async def _read_stream_prefix(stream: asyncio.StreamReader, max_bytes: int) -> b
 
 
 async def _communicate_limited(
-    process: asyncio.subprocess.Process, payload: bytes
+    process: asyncio.subprocess.Process,
+    payload: bytes,
+    maximum_output_bytes: int,
+    output_description: str,
 ) -> tuple[bytes, bytes]:
     stdin = process.stdin
     stdout = process.stdout
@@ -341,11 +353,7 @@ async def _communicate_limited(
     if stdin is None or stdout is None or stderr is None:
         raise DecodeError("ffmpeg subprocess pipes are unavailable")
     stdout_task = asyncio.create_task(
-        read_stream_limited(
-            stdout,
-            MAX_DECODED_FRAME_BYTES + MAX_PPM_HEADER_BYTES,
-            "decoded frame",
-        )
+        read_stream_limited(stdout, maximum_output_bytes, output_description)
     )
     stderr_task = asyncio.create_task(_read_stream_prefix(stderr, MAX_FFMPEG_STDERR_BYTES))
     try:
@@ -392,7 +400,15 @@ async def decode_access_unit(ffmpeg: Path, frame: EncodedFrame) -> DecodedFrame:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(_communicate_limited(process, annex_b), timeout=10)
+        stdout, stderr = await asyncio.wait_for(
+            _communicate_limited(
+                process,
+                annex_b,
+                MAX_DECODED_FRAME_BYTES + MAX_PPM_HEADER_BYTES,
+                "decoded frame",
+            ),
+            timeout=10,
+        )
     except TimeoutError as error:
         raise DecodeError("ffmpeg timed out while decoding a camera keyframe") from error
     if process.returncode != 0:
@@ -403,6 +419,58 @@ async def decode_access_unit(ffmpeg: Path, frame: EncodedFrame) -> DecodedFrame:
         image=parse_ppm(stdout),
         generation=frame.generation,
     )
+
+
+async def encode_jpeg_evidence(ffmpeg: Path, frame: DecodedFrame) -> JpegEvidence:
+    if frame.image.ndim != 3 or frame.image.shape[2] != 3 or frame.image.dtype != np.uint8:
+        raise DecodeError("high-quality evidence frame must be an RGB image")
+    height, width, _ = frame.image.shape
+    if width < 1 or height < 1 or frame.image.nbytes > MAX_DECODED_FRAME_BYTES:
+        raise DecodeError("high-quality evidence frame has invalid dimensions")
+    process = await asyncio.create_subprocess_exec(
+        str(ffmpeg),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "rgb24",
+        "-video_size",
+        f"{width}x{height}",
+        "-i",
+        "pipe:0",
+        "-frames:v",
+        "1",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "mjpeg",
+        "-q:v",
+        "2",
+        "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        output, error_output = await asyncio.wait_for(
+            _communicate_limited(
+                process,
+                frame.image.tobytes(),
+                MAX_JPEG_EVIDENCE_BYTES,
+                "JPEG evidence",
+            ),
+            timeout=10,
+        )
+    except TimeoutError as error:
+        raise DecodeError("ffmpeg timed out while encoding JPEG evidence") from error
+    if process.returncode != 0:
+        detail = error_output.decode("utf-8", errors="replace")[:300].strip()
+        raise DecodeError(f"ffmpeg could not encode JPEG evidence: {detail or 'unknown error'}")
+    if not output.startswith(b"\xff\xd8") or not output.endswith(b"\xff\xd9"):
+        raise DecodeError("ffmpeg returned invalid JPEG evidence")
+    return JpegEvidence(frame.timestamp, width, height, output)
 
 
 def parse_ppm(payload: bytes) -> Image:

@@ -5,6 +5,7 @@ import asyncio
 import gzip
 import hashlib
 import io
+import ipaddress
 import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -298,6 +299,17 @@ def _required_string(mapping: Mapping[str, object], key: str) -> str:
     return value
 
 
+def loopback_hostname(hostname: str | None) -> bool:
+    if hostname == "localhost":
+        return True
+    if hostname is None:
+        return False
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 class KeepPeekClient:
     def __init__(
         self,
@@ -313,12 +325,12 @@ class KeepPeekClient:
             raise ValueError("KeepPeek URL must be an absolute HTTP or HTTPS URL")
         if parsed.username is not None or parsed.password is not None:
             raise ValueError("KeepPeek URL must not contain credentials")
-        if not access_key:
+        if not access_key and not loopback_hostname(parsed.hostname):
             raise ValueError("KeepPeek access key is required")
         if not source_id:
             raise ValueError("KeepPeek source ID is required")
         self._base_url = base_url.rstrip("/")
-        self._access_key = access_key
+        self._access_key = access_key or None
         self._source_id = source_id
         self._stream = stream
         self._generation = generation
@@ -452,10 +464,11 @@ class KeepPeekClient:
             json.dumps({"offer": {"type": offer.type, "sdp": offer.sdp}}).encode("utf-8")
         )
         headers = {
-            "Authorization": f"Bearer {self._access_key}",
             "Content-Encoding": "gzip",
             "Content-Type": "application/json",
         }
+        if self._access_key is not None:
+            headers["Authorization"] = f"Bearer {self._access_key}"
         timeout = aiohttp.ClientTimeout(total=CONNECT_TIMEOUT_SECONDS)
         try:
             async with (
@@ -487,10 +500,9 @@ class KeepPeekClient:
         return RTCSessionDescription(sdp=_required_string(answer, "sdp"), type="answer")
 
     async def _delete_session(self, session_id: str) -> None:
-        headers = {
-            "Authorization": f"Bearer {self._access_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._access_key is not None:
+            headers["Authorization"] = f"Bearer {self._access_key}"
         timeout = aiohttp.ClientTimeout(total=5)
         async with (
             aiohttp.ClientSession(timeout=timeout) as session,
