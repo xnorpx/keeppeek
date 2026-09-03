@@ -158,6 +158,12 @@ long_term_max_gb = 0
         summary = json.loads(completed.stdout)
         assert summary["source_id"] == CONFORMANCE_SOURCE_IDS[0]
         assert summary["revision"] == 1
+        assert summary["live_event_id"] == summary["event_id"]
+        assert summary["live_revision"] == summary["revision"]
+        assert summary["live_source_id"] == summary["source_id"]
+        assert summary["live_stream_id"] == summary["stream_id"]
+        assert summary["live_attachment_bytes"] == summary["attachment_bytes"]
+        assert summary["live_attachment_sha256"] == summary["attachment_sha256"]
         assert summary["evidence_width"] == 3840
         assert summary["evidence_height"] == 2160
         assert [(item["width"], item["height"]) for item in summary["low_streams"]] == [

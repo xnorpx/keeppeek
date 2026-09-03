@@ -28,6 +28,8 @@ CONTROL_TIMEOUT_SECONDS = 10.0
 CONNECT_TIMEOUT_SECONDS = 15.0
 EVENT_COMMIT_WAIT_SECONDS = 5
 MAX_SESSION_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_LIVE_EVENT_ATTACHMENT_BYTES = 8 * 1024 * 1024
+MAX_LIVE_EVENT_ATTACHMENT_CHUNKS = 256
 LiteralStream = Literal["auto", "main", "sub"]
 
 
@@ -126,6 +128,129 @@ class EventAttachment:
     content_type: str
     timestamp: datetime
     payload: bytes
+
+
+@dataclass(frozen=True)
+class LiveEventDelivery:
+    event: pb.Event
+    attachment: bytes
+
+
+class LiveEventAssembler:
+    def __init__(self, subscription_id: str) -> None:
+        if not subscription_id:
+            raise ValueError("event subscription ID is required")
+        self._subscription_id = subscription_id
+        self._event: pb.Event | None = None
+        self._chunk_identity: tuple[object, ...] | None = None
+        self._chunk_count: int | None = None
+        self._chunks: dict[int, bytes] = {}
+        self._attachment_bytes = 0
+        self._future: asyncio.Future[LiveEventDelivery] = asyncio.get_running_loop().create_future()
+
+    def receive_event(self, event: pb.Event) -> None:
+        if event.subscription_id != self._subscription_id or self._future.done():
+            return
+        try:
+            if self._event is not None:
+                raise ProtocolError("KeepPeek repeated a live event notification")
+            if not event.event_id or event.revision < 1:
+                raise ProtocolError("KeepPeek sent invalid live event identity")
+            descriptor = canonical_attachment(event)
+            if descriptor.byte_len < 1 or descriptor.byte_len > MAX_LIVE_EVENT_ATTACHMENT_BYTES:
+                raise ProtocolError("KeepPeek live event attachment exceeds bounds")
+            copied = pb.Event()
+            copied.CopyFrom(event)
+            self._event = copied
+            self._finish_if_complete()
+        except ProtocolError as error:
+            self._future.set_exception(error)
+
+    def receive_chunk(self, chunk: pb.EventAttachmentChunk) -> None:
+        if chunk.WhichOneof("context") != "subscription_id":
+            return
+        if chunk.subscription_id != self._subscription_id or self._future.done():
+            return
+        try:
+            identity = live_chunk_identity(chunk)
+            if self._chunk_identity is not None and identity != self._chunk_identity:
+                raise ProtocolError("KeepPeek changed live attachment identity")
+            if chunk.chunk_index in self._chunks:
+                raise ProtocolError("KeepPeek repeated a live attachment chunk")
+            next_bytes = self._attachment_bytes + len(chunk.payload)
+            if next_bytes > MAX_LIVE_EVENT_ATTACHMENT_BYTES:
+                raise ProtocolError("KeepPeek live event attachment exceeds bounds")
+            self._chunk_identity = identity
+            self._chunk_count = chunk.chunk_count
+            self._chunks[chunk.chunk_index] = bytes(chunk.payload)
+            self._attachment_bytes = next_bytes
+            self._finish_if_complete()
+        except ProtocolError as error:
+            self._future.set_exception(error)
+
+    async def wait(self, timeout_seconds: float) -> LiveEventDelivery:
+        return await asyncio.wait_for(asyncio.shield(self._future), timeout_seconds)
+
+    def _finish_if_complete(self) -> None:
+        event = self._event
+        chunk_count = self._chunk_count
+        if event is None or chunk_count is None or len(self._chunks) != chunk_count:
+            return
+        descriptor = canonical_attachment(event)
+        identity = self._chunk_identity
+        if identity is None or identity[:5] != (
+            event.event_id,
+            event.revision,
+            descriptor.attachment_id,
+            descriptor.attachment_type,
+            descriptor.content_type,
+        ):
+            raise ProtocolError("KeepPeek live event and attachment identities differ")
+        attachment = b"".join(self._chunks[index] for index in range(chunk_count))
+        if len(attachment) != descriptor.byte_len:
+            raise ProtocolError("KeepPeek live event descriptor length does not match its bytes")
+        self._future.set_result(LiveEventDelivery(event, attachment))
+
+
+def canonical_attachment(event: pb.Event) -> pb.EventAttachmentDescriptor:
+    matches = [
+        descriptor
+        for descriptor in event.attachments
+        if descriptor.attachment_id == event.canonical_attachment_id
+    ]
+    if len(matches) != 1:
+        raise ProtocolError("KeepPeek live event canonical attachment is invalid")
+    descriptor = matches[0]
+    if descriptor.attachment_type != "snapshot" or descriptor.content_type != "image/jpeg":
+        raise ProtocolError("KeepPeek live event attachment type is invalid")
+    return descriptor
+
+
+def live_chunk_identity(chunk: pb.EventAttachmentChunk) -> tuple[object, ...]:
+    if (
+        not chunk.event_id
+        or chunk.revision < 1
+        or not chunk.attachment_id
+        or chunk.attachment_type != "snapshot"
+        or chunk.content_type != "image/jpeg"
+        or chunk.sequence != 1
+        or chunk.chunk_count < 1
+        or chunk.chunk_count > MAX_LIVE_EVENT_ATTACHMENT_CHUNKS
+        or chunk.chunk_index >= chunk.chunk_count
+        or not chunk.payload
+    ):
+        raise ProtocolError("KeepPeek sent an invalid live attachment chunk")
+    return (
+        chunk.event_id,
+        chunk.revision,
+        chunk.attachment_id,
+        chunk.attachment_type,
+        chunk.content_type,
+        chunk.ordinal,
+        chunk.timestamp.seconds,
+        chunk.timestamp.nanos,
+        chunk.chunk_count,
+    )
 
 
 class AtomicEventPublisher:
@@ -364,6 +489,7 @@ class KeepPeekClient:
         self._next_request_id = 1
         self._capabilities: pb.ServerCapabilities | None = None
         self._subscription: ActiveSubscription | None = None
+        self._live_events: LiveEventAssembler | None = None
         self._media_configuration = MediaConfigurationTracker()
         self._event_publisher = AtomicEventPublisher(self._request, self._send_reliable_message)
         self._session_id: str | None = None
@@ -410,6 +536,54 @@ class KeepPeekClient:
 
     async def wait_until_lost(self) -> None:
         await self._lost.wait()
+
+    async def subscribe_events(self, subscription_id: str) -> None:
+        if self._live_events is not None:
+            raise RuntimeError("KeepPeek event subscription is already active")
+        subscription = self.subscription
+        assembler = LiveEventAssembler(subscription_id)
+        self._live_events = assembler
+        try:
+            response = await self._request(
+                pb.Request(
+                    subscribe_events=pb.SubscribeEvents(
+                        subscription_id=subscription_id,
+                        source_ids=[subscription.source_id],
+                        event_types=["person", "vehicle"],
+                        media_kinds=[pb.MEDIA_KIND_VIDEO],
+                        attachment_routes=[
+                            pb.EventAttachmentRoute(
+                                attachment_type="snapshot",
+                                content_type="image/jpeg",
+                                channel=pb.DATA_CHANNEL_KIND_RELIABLE_DATA,
+                            )
+                        ],
+                    )
+                )
+            )
+            if response.ok.WhichOneof("result") != "subscription_result":
+                raise ProtocolError("KeepPeek event subscription response omitted its result")
+            result = response.ok.subscription_result
+            if (
+                result.subscription_id != subscription_id
+                or result.WhichOneof("delivery") != "events"
+            ):
+                raise ProtocolError("KeepPeek changed the event subscription identity")
+            routes = result.events.attachment_routes
+            if len(routes) != 1 or routes[0] != pb.EventAttachmentRoute(
+                attachment_type="snapshot",
+                content_type="image/jpeg",
+                channel=pb.DATA_CHANNEL_KIND_RELIABLE_DATA,
+            ):
+                raise ProtocolError("KeepPeek changed the event attachment route")
+        except Exception:
+            self._live_events = None
+            raise
+
+    async def wait_for_live_event(self, timeout_seconds: float) -> LiveEventDelivery:
+        if self._live_events is None:
+            raise RuntimeError("KeepPeek event subscription is not active")
+        return await self._live_events.wait(timeout_seconds)
 
     async def publish_event(self, event: pb.Event, generation: int) -> None:
         subscription = self.subscription
@@ -665,6 +839,8 @@ class KeepPeekClient:
                     configuration.revision,
                     configuration.codec,
                 )
+            elif notification_kind == "live_event" and self._live_events is not None:
+                self._live_events.receive_event(envelope.notification.live_event)
 
     def _on_data_message(self, value: object) -> None:
         if not isinstance(value, bytes):
@@ -674,6 +850,13 @@ class KeepPeekClient:
             message.ParseFromString(value)
         except ProtobufDecodeError:
             LOGGER.warning("discarding malformed reliable-data protobuf")
+            return
+        if (
+            message.WhichOneof("message") == "event"
+            and message.event.WhichOneof("message") == "attachment"
+        ):
+            if self._live_events is not None:
+                self._live_events.receive_chunk(message.event.attachment)
             return
         subscription = self._subscription
         codec = (
