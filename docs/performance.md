@@ -16,7 +16,7 @@ KeepPeek applies hard limits at untrusted network and session boundaries:
   and delivered-payload channels each retain at most 64 items.
 - One WebRTC session owns at most 16 stored-media cursors, and the server owns at most 1,024
   stored-media cursors across all sessions.
-- One API WebRTC session thread reserves a 4 MiB stack. Admission defaults to at most 64 sessions
+- One API WebRTC session thread requests a 4 MiB stack from the operating system. Admission defaults to at most 64 sessions
   per principal and 128 per client address.
 
 Requests that exceed a boundary fail instead of allocating or queueing without a limit. Operators
@@ -66,7 +66,7 @@ the workload, resident memory was 162,480,128 bytes at p50, 189,923,328 bytes at
 
 The event-delivery queue reached one command against its 64-command bound and 447,688 reserved
 bytes against its 8,454,144-byte bound. Before the explicit API-session stack bound, Rust's 2 MiB
-default stack aborted the server thread during revision 2. A 4 MiB per-session stack completed all
+default stack aborted the server thread during revision 2. A 4 MiB per-session stack request completed all
 20 revisions and the subsequent isolation scenario in 28.14 seconds; the session admission limits
 bound aggregate virtual stack reservation.
 
