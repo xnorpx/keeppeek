@@ -3247,8 +3247,11 @@ password = "{{secret:MQTT_PASSWORD}}"
         let config = std::fs::read_to_string(&target.config).unwrap();
         assert!(config.contains("[cameras.front]"));
         assert!(config.contains("{secret:CAMERA_PASSWORD}"));
-        assert!(config.contains(target.media.to_string_lossy().as_ref()));
-        assert!(!config.contains("source/media"));
+        let config: toml::Table = toml::from_str(&config).unwrap();
+        assert_eq!(
+            config["storage"]["long_term_path"].as_str(),
+            Some(target.media.to_string_lossy().as_ref())
+        );
         let access = crate::access::AccessManager::open(
             &target.config,
             crate::access::AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap(),
