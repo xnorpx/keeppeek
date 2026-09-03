@@ -12,6 +12,7 @@ from keeppeek_client import (
     AtomicEventPublisher,
     EventAttachment,
     KeepPeekClient,
+    LiveEventAssembler,
     MediaConfigurationTracker,
     ProtocolError,
     decode_session_body,
@@ -214,5 +215,103 @@ def test_atomic_event_publisher_chunks_once_and_retries_the_durable_commit() -> 
         assert start.event.image_availability == pb.EVENT_IMAGE_AVAILABILITY_AVAILABLE
         assert chunks[0].publication_id == start.publication_id
         assert chunks[0].timestamp.ToDatetime(tzinfo=UTC) == timestamp
+
+    asyncio.run(scenario())
+
+
+def test_live_event_assembler_accepts_attachment_before_notification() -> None:
+    async def scenario() -> None:
+        assembler = LiveEventAssembler("events-1")
+        assembler.receive_chunk(
+            pb.EventAttachmentChunk(
+                subscription_id="events-1",
+                event_id="event-1",
+                revision=2,
+                attachment_id="evidence-1",
+                attachment_type="snapshot",
+                content_type="image/jpeg",
+                sequence=1,
+                chunk_index=1,
+                chunk_count=2,
+                payload=b"peg",
+            )
+        )
+        assembler.receive_chunk(
+            pb.EventAttachmentChunk(
+                subscription_id="events-1",
+                event_id="event-1",
+                revision=2,
+                attachment_id="evidence-1",
+                attachment_type="snapshot",
+                content_type="image/jpeg",
+                sequence=1,
+                chunk_index=0,
+                chunk_count=2,
+                payload=b"j",
+            )
+        )
+        assembler.receive_event(
+            pb.Event(
+                subscription_id="events-1",
+                event_id="event-1",
+                revision=2,
+                attachments=[
+                    pb.EventAttachmentDescriptor(
+                        attachment_id="evidence-1",
+                        attachment_type="snapshot",
+                        content_type="image/jpeg",
+                        byte_len=4,
+                    )
+                ],
+                canonical_attachment_id="evidence-1",
+                image_availability=pb.EVENT_IMAGE_AVAILABILITY_AVAILABLE,
+            )
+        )
+
+        delivered = await assembler.wait(0.1)
+
+        assert delivered.event.event_id == "event-1"
+        assert delivered.event.revision == 2
+        assert delivered.attachment == b"jpeg"
+
+    asyncio.run(scenario())
+
+
+def test_live_event_assembler_rejects_descriptor_length_mismatch() -> None:
+    async def scenario() -> None:
+        assembler = LiveEventAssembler("events-1")
+        assembler.receive_event(
+            pb.Event(
+                subscription_id="events-1",
+                event_id="event-1",
+                revision=1,
+                attachments=[
+                    pb.EventAttachmentDescriptor(
+                        attachment_id="evidence-1",
+                        attachment_type="snapshot",
+                        content_type="image/jpeg",
+                        byte_len=5,
+                    )
+                ],
+                canonical_attachment_id="evidence-1",
+            )
+        )
+        assembler.receive_chunk(
+            pb.EventAttachmentChunk(
+                subscription_id="events-1",
+                event_id="event-1",
+                revision=1,
+                attachment_id="evidence-1",
+                attachment_type="snapshot",
+                content_type="image/jpeg",
+                sequence=1,
+                chunk_index=0,
+                chunk_count=1,
+                payload=b"jpeg",
+            )
+        )
+
+        with pytest.raises(ProtocolError, match="descriptor length"):
+            await assembler.wait(0.1)
 
     asyncio.run(scenario())

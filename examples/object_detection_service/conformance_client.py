@@ -24,7 +24,13 @@ from detection_pipeline import (
     verify_ffmpeg,
 )
 from generated import webrtc_pb2 as pb
-from keeppeek_client import EventAttachment, KeepPeekClient, LiteralStream
+from keeppeek_client import (
+    EventAttachment,
+    KeepPeekClient,
+    LiteralStream,
+    LiveEventDelivery,
+    ProtocolError,
+)
 
 MAXIMUM_CONFORMANCE_SECONDS = 60.0
 
@@ -63,6 +69,47 @@ async def connect_capture(
     return client, capture
 
 
+def validate_live_delivery(
+    delivery: LiveEventDelivery,
+    expected: pb.Event,
+    attachment: EventAttachment,
+    subscription_id: str,
+) -> str:
+    event = delivery.event
+    if (
+        event.subscription_id != subscription_id
+        or event.event_id != expected.event_id
+        or event.revision != expected.revision
+        or event.source_id != expected.source_id
+        or event.source_session_id != expected.source_session_id
+        or event.media_kind != expected.media_kind
+        or event.event_type != expected.event_type
+        or event.start_time != expected.start_time
+        or event.confidence != expected.confidence
+        or event.bounding_box != expected.bounding_box
+        or event.text != expected.text
+        or event.payload != expected.payload
+    ):
+        raise ProtocolError("live event metadata does not match the publication")
+    if delivery.attachment != attachment.payload or len(event.attachments) != 1:
+        raise ProtocolError("live event attachment does not match the publication")
+    descriptor = event.attachments[0]
+    if (
+        event.canonical_attachment_id != attachment.attachment_id
+        or event.bounding_box_attachment_id != attachment.attachment_id
+        or descriptor.attachment_id != attachment.attachment_id
+        or descriptor.attachment_type != attachment.attachment_type
+        or descriptor.content_type != attachment.content_type
+        or descriptor.byte_len != len(attachment.payload)
+        or descriptor.timestamp.ToDatetime(tzinfo=UTC) != attachment.timestamp
+    ):
+        raise ProtocolError("live event descriptor does not match the publication")
+    stream = event.payload.fields.get("stream_id")
+    if stream is None or stream.WhichOneof("kind") != "string_value":
+        raise ProtocolError("live event omitted its stream identity")
+    return stream.string_value
+
+
 async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
     ffmpeg = verify_ffmpeg()
     access_key = os.environ.get("KEEPPEEK_ACCESS_KEY", "")
@@ -82,6 +129,8 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
         detections = [fake_detection(frame.image, "person") for frame in low_decoded]
         if any(len(result) != 1 for result in detections):
             raise RuntimeError("deterministic low-stream analysis did not produce one detection")
+        live_subscription_id = "conformance-events"
+        await low_connections[0][0].subscribe_events(live_subscription_id)
 
         high_client, high_capture = await connect_capture(
             config.url,
@@ -142,6 +191,10 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
         )
         await high_client.publish_event_with_attachment(event, attachment, high_client.generation)
         await high_client.publish_event_with_attachment(event, attachment, high_client.generation)
+        live_delivery = await low_connections[0][0].wait_for_live_event(MAXIMUM_CONFORMANCE_SECONDS)
+        live_stream_id = validate_live_delivery(
+            live_delivery, event, attachment, live_subscription_id
+        )
         await high_client.close()
         clients.remove(high_client)
 
@@ -157,6 +210,12 @@ async def run_conformance(config: ConformanceConfig) -> dict[str, object]:
             "attachment_id": attachment.attachment_id,
             "attachment_bytes": len(attachment.payload),
             "attachment_sha256": hashlib.sha256(attachment.payload).hexdigest(),
+            "live_event_id": live_delivery.event.event_id,
+            "live_revision": live_delivery.event.revision,
+            "live_source_id": live_delivery.event.source_id,
+            "live_stream_id": live_stream_id,
+            "live_attachment_bytes": len(live_delivery.attachment),
+            "live_attachment_sha256": hashlib.sha256(live_delivery.attachment).hexdigest(),
             "evidence_width": evidence.width,
             "evidence_height": evidence.height,
             "low_streams": [
