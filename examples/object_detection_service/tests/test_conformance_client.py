@@ -4,6 +4,9 @@ from conformance_client import (
     BENCHMARK_RUNS,
     COMMIT_LATENCY_P95_BUDGET_MS,
     FANOUT_LATENCY_P95_BUDGET_MS,
+    MEMORY_SAMPLE_INTERVAL_SECONDS,
+    MEMORY_SAMPLES_MAXIMUM,
+    MEMORY_SAMPLES_MINIMUM,
     PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES,
     QUEUE_DEPTH_BUDGET,
     QUEUE_PENDING_BYTES_BUDGET,
@@ -18,6 +21,9 @@ def test_conformance_performance_budgets_are_bounded() -> None:
     assert QUEUE_DEPTH_BUDGET == 64
     assert QUEUE_PENDING_BYTES_BUDGET == 8 * 1024 * 1024 + 64 * 1024
     assert PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES == 128 * 1024 * 1024
+    assert MEMORY_SAMPLE_INTERVAL_SECONDS == 0.05
+    assert MEMORY_SAMPLES_MINIMUM == 20
+    assert MEMORY_SAMPLES_MAXIMUM == 64
 
 
 def test_nearest_rank_percentile_reports_p50_and_p95_milliseconds() -> None:

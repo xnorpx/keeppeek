@@ -29,6 +29,9 @@ from conformance_client import (
     DIAGNOSTIC_ATTACHMENT_SENTINEL,
     DIAGNOSTIC_PAYLOAD_SENTINEL,
     FANOUT_LATENCY_P95_BUDGET_MS,
+    MEMORY_SAMPLE_INTERVAL_SECONDS,
+    MEMORY_SAMPLES_MAXIMUM,
+    MEMORY_SAMPLES_MINIMUM,
     PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES,
     QUEUE_DEPTH_BUDGET,
     QUEUE_PENDING_BYTES_BUDGET,
@@ -206,7 +209,7 @@ long_term_max_gb = 0
         assert performance["fanout"]["p95_ms"] <= FANOUT_LATENCY_P95_BUDGET_MS
         assert performance["commit_p95_budget_ms"] == COMMIT_LATENCY_P95_BUDGET_MS
         assert performance["fanout_p95_budget_ms"] == FANOUT_LATENCY_P95_BUDGET_MS
-        assert len(resident_memory_samples) >= 20
+        assert len(resident_memory_samples) >= MEMORY_SAMPLES_MINIMUM
         resident_memory_p50 = nearest_rank_value(resident_memory_samples, 50)
         resident_memory_p95 = nearest_rank_value(resident_memory_samples, 95)
         resident_memory_delta_p95 = max(0, resident_memory_p95 - resident_memory_baseline)
@@ -652,9 +655,9 @@ def read_process_line(
         ) from error
     if not line:
         exit_code = process.poll()
+        log = read_log(log_path)
         raise AssertionError(
-            f"process exited with {exit_code} while waiting for {description}\n"
-            f"{read_log(log_path)}"
+            f"process exited with {exit_code} while waiting for {description}\n{log}"
         )
     return line
 
@@ -676,19 +679,21 @@ def run_monitored_client(
     )
     samples: list[int] = []
     deadline = time.monotonic() + timeout
-    while process.poll() is None:
+    while process.poll() is None or len(samples) < MEMORY_SAMPLES_MINIMUM:
         if time.monotonic() >= deadline:
             process.kill()
             stdout, stderr = process.communicate(timeout=10)
             raise AssertionError(f"conformance client timed out\n{stdout}\n{stderr}")
-        try:
-            samples.append(
-                int(required_metric(metrics_url, "keeppeek_process_resident_memory_bytes"))
-            )
-        except (OSError, urllib.error.URLError):
-            if process.poll() is None:
-                raise
-        time.sleep(0.25)
+        if len(samples) < MEMORY_SAMPLES_MAXIMUM:
+            try:
+                samples.append(
+                    int(required_metric(metrics_url, "keeppeek_process_resident_memory_bytes"))
+                )
+            except (OSError, urllib.error.URLError):
+                if process.poll() is None:
+                    raise
+                break
+        time.sleep(MEMORY_SAMPLE_INTERVAL_SECONDS)
     stdout, stderr = process.communicate(timeout=10)
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr), samples
 
