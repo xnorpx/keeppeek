@@ -74,8 +74,9 @@ of the recorder lifecycle.
       rejection, commit latency, and storage failure without payloads or credentials.
 - [x] Add secret/binary log scans and independent-client license/conformance documentation.
 - [x] Measure publication/fanout latency and queue memory against explicit p50/p95 budgets.
-- [ ] Run fresh-context review, focused suites, `./check.sh`, and final-head CI.
-- [ ] Publish a PR with one evidence row for every issue criterion.
+- [x] Run fresh-context review, focused suites, and `./check.sh`.
+- [x] Publish a PR with one evidence row for every issue criterion.
+- [ ] Record successful final-head CI evidence in the PR and issue.
 
 ## Risks and Mitigations
 
