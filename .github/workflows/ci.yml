@@ -642,8 +642,8 @@ jobs:
         with:
           name: external-analysis-conformance
           path: |
-            target/external-analysis-conformance
-            ui/test-results/external-analysis-conformance
+            target/external-analysis-conformance/**/diagnostics/external-analysis-report.json
+            target/external-analysis-conformance/**/diagnostics/*.log
           if-no-files-found: ignore
           retention-days: 14
 
