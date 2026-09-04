@@ -322,6 +322,18 @@ long_term_max_gb = 0
             text=True,
             timeout=120,
         )
+        for handle in handles:
+            handle.flush()
+        assert_diagnostic_hygiene(
+            tmp_path,
+            "",
+            completed.stdout,
+            completed.stderr,
+            browser.stdout,
+            browser.stderr,
+            source_frame_probe(h264_sub),
+        )
+        stage_conformance_diagnostics(tmp_path)
         assert browser.returncode == 0, f"{browser.stdout}\n{browser.stderr}"
         recording_bytes_after = wait_for(
             lambda: (
@@ -362,6 +374,7 @@ long_term_max_gb = 0
             browser.stderr,
             source_frame_probe(h264_sub),
         )
+        stage_conformance_diagnostics(tmp_path)
 
         stop_process(server)
         processes.remove(server)
@@ -769,6 +782,21 @@ def test_camera_ingress_metrics_require_canonical_transport_evidence(
     assert camera_ingress_metrics_text(metrics) is expected
 
 
+def test_stage_conformance_diagnostics_excludes_private_and_binary_state(tmp_path: Path) -> None:
+    (tmp_path / "server.log").write_text("server diagnostics\n", encoding="utf-8")
+    (tmp_path / "external-analysis-report.json").write_text("{}\n", encoding="utf-8")
+    for filename in ("secrets.toml", "recordings.db", "recordings.db-wal", "event.jpg"):
+        (tmp_path / filename).write_bytes(b"private")
+
+    stage_conformance_diagnostics(tmp_path)
+
+    diagnostics_path = tmp_path / "diagnostics"
+    assert sorted(path.name for path in diagnostics_path.iterdir()) == [
+        "external-analysis-report.json",
+        "server.log",
+    ]
+
+
 def metric_value(line: str) -> float:
     try:
         return float(line.rsplit(" ", 1)[1])
@@ -847,6 +875,15 @@ def assert_diagnostic_hygiene(
     for marker in (b"a=ice-pwd:", b"a=ice-ufrag:"):
         if marker in lowered:
             raise AssertionError("runtime diagnostics exposed full SDP credentials")
+
+
+def stage_conformance_diagnostics(tmp_path: Path) -> None:
+    diagnostics_path = tmp_path / "diagnostics"
+    diagnostics_path.mkdir(exist_ok=True)
+    sources = [tmp_path / "external-analysis-report.json", *sorted(tmp_path.glob("*.log"))]
+    for source in sources:
+        if source.is_file():
+            (diagnostics_path / source.name).write_bytes(source.read_bytes())
 
 
 def current_recording_bytes(storage_path: Path) -> int:

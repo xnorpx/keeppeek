@@ -7,12 +7,12 @@ export default defineConfig({
 	testMatch: 'external-analysis-conformance.e2e.ts',
 	fullyParallel: false,
 	workers: 1,
-	retries: 0,
+	retries: process.env.CI ? 1 : 0,
 	reporter: [['list']],
 	outputDir: 'test-results/external-analysis-conformance',
 	timeout: 90_000,
 	expect: { timeout: 15_000 },
-	use: { baseURL: backendURL, headless: true }
+	use: { baseURL: backendURL, headless: true, screenshot: 'off', trace: 'off' }
 });
 
 function requiredEnvironment(name: string): string {
