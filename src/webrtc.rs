@@ -5933,8 +5933,10 @@ mod tests {
                 )
                 .unwrap()
         );
-        let mut media = ApiMediaRuntime::default();
-        media.control_notification_bytes = API_CONTROL_NOTIFICATION_MAX_BYTES - 1;
+        let mut media = ApiMediaRuntime {
+            control_notification_bytes: API_CONTROL_NOTIFICATION_MAX_BYTES - 1,
+            ..Default::default()
+        };
 
         drain_api_session_commands(&data_rx, &mut media);
 
