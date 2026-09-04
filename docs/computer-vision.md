@@ -203,6 +203,12 @@ The commit response is the service's durability boundary. Before `COMMITTED`, it
 same commit request after a timeout. After `COMMITTED`, repeating commit returns the same state.
 The service must not generate a new event ID merely because a response was lost.
 
+KeepPeek stores the publication ID and a versioned SHA-256 fingerprint of the canonical event
+metadata and JPEG bytes with the current event revision. An exact retry after an API reconnect or
+server restart returns `COMMITTED` without another catalog revision or live fanout. Reusing the
+same event revision with different metadata, attachment bytes, or publication ID returns a revision
+conflict.
+
 If inference is cancelled, the source disappears, or encoding fails before commit, the service
 sends `AbortEventPublication`. On process death, KeepPeek expires and removes staged bytes at the
 state's `expires_at_ms`. A revision conflict causes the service to reload or abandon its local
@@ -271,8 +277,14 @@ routes may drop replaceable images but never change the reliable event envelope.
 Each subscriber has a bounded queue and independent send budget. A slow viewer or disconnected
 forwarder cannot block event ingest, catalog commit, another subscriber, or the computer-vision
 publisher. If a reliable subscriber cannot keep up, KeepPeek closes that event subscription or
-session and records the last successfully enqueued boundary. The client reconnects and uses
+API session and records the failed delivery. The client reconnects and uses
 `QueryStoredMediaTimeline` to backfill persisted events and JPEGs.
+
+A successful event-subscription replacement invalidates deliveries selected by the previous
+filters and removes their queued envelopes and attachment chunks. A source-session replacement
+closes API sessions whose explicit event filters named that source; wildcard subscriptions remain
+eligible for the replacement source. Reconnected clients establish fresh subscriptions and use the
+returned backfill boundary to cover the transition.
 
 Subscriber acknowledgements confirm receipt of `Event`; they do not control event commit
 and cannot roll it back. Attachment delivery has no database side effects. Router queue contents

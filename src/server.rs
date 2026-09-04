@@ -1,8 +1,8 @@
 use crate::api::proto::{
-    self, camera_configuration_command, camera_control_command, event_search_command,
-    logging_command, notification_rule_command, notification_rule_result, ok as control_ok,
-    optional_string_update, request as control_request, response as control_response,
-    runtime_configuration_command, server_command,
+    self, camera_configuration_command, camera_control_command, event_publication_command,
+    event_search_command, logging_command, notification_rule_command, notification_rule_result,
+    ok as control_ok, optional_string_update, request as control_request,
+    response as control_response, runtime_configuration_command, server_command,
 };
 use crate::{
     access::{
@@ -490,6 +490,12 @@ fn sensitive_administrator_operation(
             _ => None,
         },
         Some(control_request::Command::PublishEvent(_)) => Some("event_publish"),
+        Some(control_request::Command::EventPublicationCommand(command)) => {
+            match command.action.as_ref() {
+                Some(event_publication_command::Action::Commit(_)) => Some("event_publish"),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -548,7 +554,9 @@ impl ControlRequestHandler for ServerControlHandler {
             });
         if let Some(source_id) = source_id {
             self.state.event_publications.invalidate_source(&source_id);
-            self.state.event_subscriptions.invalidate_source(&source_id);
+            for session_id in self.state.event_subscriptions.invalidate_source(&source_id) {
+                self.state.webrtc.request_api_session_close(session_id);
+            }
         }
     }
 
@@ -1551,6 +1559,7 @@ impl ServerControlHandler {
                     event: delivered_event,
                     attachment_target: delivery.attachment_target,
                     attachment_bytes,
+                    guard: delivery.guard,
                 },
             );
             if !matches!(queued, Ok(true)) {
@@ -15113,6 +15122,14 @@ mod tests {
             proto::EventPublicationStatus::Committed as i32
         );
         assert_eq!(handler.state.event_subscriptions.len(), 0);
+        assert!(
+            handler
+                .state
+                .access_manager
+                .list_audit(10)
+                .iter()
+                .any(|event| event.action == "event_publish" && event.result == "success")
+        );
 
         let dispatch = handler.handle_for_session(
             SessionId::from_u64(7),

@@ -244,6 +244,30 @@ pub(crate) struct OutboundEventDelivery {
     pub(crate) event: crate::api::proto::Event,
     pub(crate) attachment_target: Option<DataChannelTarget>,
     pub(crate) attachment_bytes: Option<Arc<[u8]>>,
+    pub(crate) guard: EventDeliveryGuard,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EventDeliveryGuard {
+    active: Arc<AtomicBool>,
+}
+
+impl Default for EventDeliveryGuard {
+    fn default() -> Self {
+        Self {
+            active: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl EventDeliveryGuard {
+    pub(crate) fn cancel(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
 }
 
 struct EnvelopeDispatch {
@@ -471,6 +495,7 @@ enum ApiSessionCommand {
     Event {
         delivery: Box<OutboundEventDelivery>,
         reservation: PendingEventReservation,
+        control: Weak<ApiSessionControl>,
     },
 }
 
@@ -980,6 +1005,7 @@ impl ApiMediaRuntime {
             event,
             attachment_target,
             attachment_bytes,
+            guard: _,
         } = delivery;
         let subscription_id = event
             .subscription_id
@@ -2345,6 +2371,9 @@ impl WebRtc {
         session_id: SessionId,
         delivery: OutboundEventDelivery,
     ) -> anyhow::Result<bool> {
+        if !delivery.guard.is_active() {
+            return Ok(true);
+        }
         let control = self
             .live
             .inner
@@ -2371,6 +2400,7 @@ impl WebRtc {
                     .inner
                     .event_delivery_drops
                     .fetch_add(1, Ordering::Relaxed);
+                control.close();
                 anyhow::anyhow!("live event queue byte count overflowed")
             })?;
         if !try_reserve_bytes(
@@ -2382,6 +2412,7 @@ impl WebRtc {
                 .inner
                 .event_delivery_drops
                 .fetch_add(1, Ordering::Relaxed);
+            control.close();
             return Ok(false);
         }
         if !try_reserve_bytes(&control.pending_event_count, 1, API_DATA_QUEUE_CAPACITY) {
@@ -2392,6 +2423,7 @@ impl WebRtc {
                 .inner
                 .event_delivery_drops
                 .fetch_add(1, Ordering::Relaxed);
+            control.close();
             return Ok(false);
         }
         self.live
@@ -2409,6 +2441,7 @@ impl WebRtc {
                 pending_bytes: control.pending_event_bytes.clone(),
                 pending_count: control.pending_event_count.clone(),
             },
+            control: Arc::downgrade(&control),
         }) {
             Ok(()) => {
                 self.live
@@ -2435,6 +2468,7 @@ impl WebRtc {
                     .inner
                     .event_delivery_drops
                     .fetch_add(1, Ordering::Relaxed);
+                control.close();
                 Ok(false)
             }
             Err(TrySendError::Disconnected(command)) => {
@@ -2443,6 +2477,7 @@ impl WebRtc {
                     .inner
                     .event_delivery_drops
                     .fetch_add(1, Ordering::Relaxed);
+                control.close();
                 Err(anyhow::anyhow!("API WebRTC session data queue is closed"))
             }
         }
@@ -3287,9 +3322,22 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
             ApiSessionCommand::Event {
                 delivery,
                 reservation,
+                control,
             } => {
+                let result = if delivery.guard.is_active() {
+                    media.enqueue_event(*delivery)
+                } else {
+                    Ok(())
+                };
                 drop(reservation);
-                if let Err(error) = media.enqueue_event(*delivery) {
+                if let Err(error) = result {
+                    if let Some(control) = control.upgrade() {
+                        control
+                            .inner
+                            .event_delivery_drops
+                            .fetch_add(1, Ordering::Relaxed);
+                        control.close();
+                    }
                     tracing::warn!(%error, "dropping invalid live event delivery");
                 }
             }
@@ -4212,14 +4260,24 @@ fn api_control_reply(
             }
         }
         _ => {
+            let event_subscription_id = match request.command.as_ref() {
+                Some(crate::api::proto::request::Command::SubscribeEvents(subscribe)) => {
+                    Some(subscribe.subscription_id.clone())
+                }
+                _ => None,
+            };
             let data_group = control_data_group(request.command.as_ref());
             let dispatch = handler.handle_for_session(control.session_id, request);
             if matches!(
                 dispatch.response.result,
                 Some(control_response::Result::Ok(_))
-            ) && let Some(data_group) = data_group
-            {
-                media.cancel_group(&data_group);
+            ) {
+                if let Some(subscription_id) = event_subscription_id {
+                    media.cancel_event_subscription(&subscription_id);
+                }
+                if let Some(data_group) = data_group {
+                    media.cancel_group(&data_group);
+                }
             }
             dispatch
         }
@@ -5593,6 +5651,7 @@ mod tests {
                 event: event.clone(),
                 attachment_target: Some(DataChannelTarget::Reliable),
                 attachment_bytes: Some(Arc::from(payload.clone())),
+                guard: EventDeliveryGuard::default(),
             })
             .unwrap();
 
@@ -5628,6 +5687,94 @@ mod tests {
         assert_eq!(reassembled, payload);
 
         media.cancel_event_subscription("events-1");
+        assert!(media.control_notifications.is_empty());
+        assert_eq!(media.control_notification_bytes, 0);
+        assert!(media.outbound.is_empty());
+        assert_eq!(media.outbound_bytes, 0);
+    }
+
+    #[test]
+    fn event_subscription_replacement_cancels_expanded_previous_delivery() {
+        struct EventSubscriptionHandler;
+
+        impl ControlRequestHandler for EventSubscriptionHandler {
+            fn handle(&self, request: crate::api::proto::Request) -> ControlDispatch {
+                ControlDispatch {
+                    response: ControlResponse {
+                        request_id: request.request_id,
+                        result: Some(control_response::Result::Ok(crate::api::proto::Ok {
+                            result: Some(crate::api::proto::ok::Result::SubscriptionResult(
+                                crate::api::proto::SubscriptionResult {
+                                    subscription_id: "events-1".to_owned(),
+                                    delivery: Some(
+                                        crate::api::proto::subscription_result::Delivery::Events(
+                                            crate::api::proto::EventSubscriptionDelivery::default(),
+                                        ),
+                                    ),
+                                    ..Default::default()
+                                },
+                            )),
+                        })),
+                    },
+                    after_send: None,
+                    data_messages: Vec::new(),
+                    notifications: Vec::new(),
+                }
+            }
+        }
+
+        let inner = Arc::new(Inner::default());
+        let control = ApiSessionControl {
+            session_id: SessionId::from_u64(7),
+            inner,
+            recording_demand: None,
+            poller: Arc::new(Poller::new().unwrap()),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            completion: SessionCompletion::default(),
+            control_handler: Arc::new(RwLock::new(None)),
+            data_tx: bounded(1).0,
+            pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
+            media_camera_ips: Mutex::new(HashSet::new()),
+            background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+        };
+        let mut media = ApiMediaRuntime::default();
+        media
+            .enqueue_event(OutboundEventDelivery {
+                event: crate::api::proto::Event {
+                    event_id: "event-1".to_owned(),
+                    revision: 1,
+                    subscription_id: Some("events-1".to_owned()),
+                    ..Default::default()
+                },
+                attachment_target: None,
+                attachment_bytes: None,
+                guard: EventDeliveryGuard::default(),
+            })
+            .unwrap();
+        assert_eq!(media.control_notifications.len(), 1);
+        let request = crate::api::proto::Request {
+            request_id: 41,
+            command: Some(crate::api::proto::request::Command::SubscribeEvents(
+                crate::api::proto::SubscribeEvents {
+                    subscription_id: "events-1".to_owned(),
+                    event_types: vec!["vehicle".to_owned()],
+                    ..Default::default()
+                },
+            )),
+        };
+        let envelope = ControlEnvelope {
+            message: Some(control_envelope::Message::Request(request)),
+        };
+
+        api_control_reply(
+            true,
+            &envelope.encode_to_vec(),
+            Some(&EventSubscriptionHandler),
+            &control,
+            &mut media,
+        );
+
         assert!(media.control_notifications.is_empty());
         assert_eq!(media.control_notification_bytes, 0);
         assert!(media.outbound.is_empty());
@@ -5704,6 +5851,7 @@ mod tests {
             },
             attachment_target: None,
             attachment_bytes: None,
+            guard: EventDeliveryGuard::default(),
         };
 
         assert!(
@@ -5739,6 +5887,61 @@ mod tests {
         assert_eq!(full.deliveries_queued, 1);
         assert_eq!(full.delivery_drops, 1);
         assert_eq!(full.pending_bytes, 0);
+        assert!(control.shutdown.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn accepted_live_event_output_failure_is_observable_and_closes_the_session() {
+        let webrtc = WebRtc::new();
+        let session_id = SessionId::from_u64(7);
+        let poller = Arc::new(Poller::new().unwrap());
+        let (data_tx, data_rx) = bounded(2);
+        let control = Arc::new(ApiSessionControl {
+            session_id,
+            inner: webrtc.live.inner.clone(),
+            recording_demand: None,
+            poller,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            completion: SessionCompletion::default(),
+            control_handler: Arc::new(RwLock::new(None)),
+            data_tx,
+            pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
+            media_camera_ips: Mutex::new(HashSet::new()),
+            background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        webrtc
+            .live
+            .inner
+            .sessions
+            .insert_api(session_id, control.clone());
+        assert!(
+            webrtc
+                .try_enqueue_api_event(
+                    session_id,
+                    OutboundEventDelivery {
+                        event: crate::api::proto::Event {
+                            event_id: "event-1".to_owned(),
+                            revision: 1,
+                            subscription_id: Some("events-1".to_owned()),
+                            ..Default::default()
+                        },
+                        attachment_target: None,
+                        attachment_bytes: None,
+                        guard: EventDeliveryGuard::default(),
+                    },
+                )
+                .unwrap()
+        );
+        let mut media = ApiMediaRuntime::default();
+        media.control_notification_bytes = API_CONTROL_NOTIFICATION_MAX_BYTES - 1;
+
+        drain_api_session_commands(&data_rx, &mut media);
+
+        let metrics = webrtc.api_event_queue_metrics_snapshot();
+        assert_eq!(metrics.pending_bytes, 0);
+        assert_eq!(metrics.delivery_drops, 1);
+        assert!(control.shutdown.load(Ordering::Acquire));
     }
 
     #[test]
@@ -5752,12 +5955,14 @@ mod tests {
                     event: crate::api::proto::Event::default(),
                     attachment_target: None,
                     attachment_bytes: None,
+                    guard: EventDeliveryGuard::default(),
                 }),
                 reservation: PendingEventReservation {
                     bytes: 7,
                     pending_bytes: pending_bytes.clone(),
                     pending_count: pending_count.clone(),
                 },
+                control: Weak::new(),
             })
             .unwrap();
 
