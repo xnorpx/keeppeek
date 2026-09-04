@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     api::proto::{self, event_publication_command},
-    storage::events::PublishedImageCommitError,
+    storage::events::{PublishedImageCommit, PublishedImageCommitError},
     storage::metadata::{EventAttachment, EventSource, TimelineEvent},
     webrtc::SessionId,
 };
@@ -346,65 +346,72 @@ impl Registry {
                 "event publication expired",
             ));
         }
-        let commit_result = (|| -> Result<TimelineEvent, (ControlCommandError, bool)> {
-            validate_event_identity(state, &request.publication_id, &event)
-                .map_err(|error| (error, false))?;
-            validate_revision(state, &request.publication_id, &event)
-                .map_err(|error| (error, false))?;
-            let timeline_event = timeline_event(&event).map_err(|error| (error, false))?;
-            let store = state.events.as_ref().ok_or_else(|| {
-                (
-                    publication_error(
-                        &request.publication_id,
-                        &event.event_id,
-                        proto::EventPublicationErrorCode::StorageUnavailable,
-                        None,
-                        "event storage is unavailable",
-                    ),
-                    true,
-                )
-            })?;
-            match store.commit_published_image(timeline_event.clone(), &attachment_bytes) {
-                Ok(()) => Ok(timeline_event),
-                Err(PublishedImageCommitError::Invalid(_)) => Err((
-                    publication_error(
-                        &request.publication_id,
-                        &event.event_id,
-                        proto::EventPublicationErrorCode::AttachmentInvalid,
-                        None,
-                        "event attachment is not a valid JPEG",
-                    ),
-                    false,
-                )),
-                Err(PublishedImageCommitError::Conflict(current_revision)) => Err((
-                    publication_error(
-                        &request.publication_id,
-                        &event.event_id,
-                        proto::EventPublicationErrorCode::RevisionConflict,
-                        current_revision,
-                        "event publication revision conflicts with durable state",
-                    ),
-                    false,
-                )),
-                Err(PublishedImageCommitError::Storage(_)) => {
-                    if let Err(error) = validate_revision(state, &request.publication_id, &event) {
-                        return Err((error, false));
-                    }
-                    Err((
+        let commit_result =
+            (|| -> Result<(TimelineEvent, PublishedImageCommit), (ControlCommandError, bool)> {
+                validate_event_identity(state, &request.publication_id, &event)
+                    .map_err(|error| (error, false))?;
+                validate_revision(state, &request.publication_id, &event)
+                    .map_err(|error| (error, false))?;
+                let timeline_event = timeline_event(&event).map_err(|error| (error, false))?;
+                let store = state.events.as_ref().ok_or_else(|| {
+                    (
                         publication_error(
                             &request.publication_id,
                             &event.event_id,
                             proto::EventPublicationErrorCode::StorageUnavailable,
                             None,
-                            "event publication could not be stored",
+                            "event storage is unavailable",
                         ),
                         true,
-                    ))
+                    )
+                })?;
+                match store.commit_published_image(
+                    &request.publication_id,
+                    timeline_event.clone(),
+                    &attachment_bytes,
+                ) {
+                    Ok(outcome) => Ok((timeline_event, outcome)),
+                    Err(PublishedImageCommitError::Invalid(_)) => Err((
+                        publication_error(
+                            &request.publication_id,
+                            &event.event_id,
+                            proto::EventPublicationErrorCode::AttachmentInvalid,
+                            None,
+                            "event attachment is not a valid JPEG",
+                        ),
+                        false,
+                    )),
+                    Err(PublishedImageCommitError::Conflict(current_revision)) => Err((
+                        publication_error(
+                            &request.publication_id,
+                            &event.event_id,
+                            proto::EventPublicationErrorCode::RevisionConflict,
+                            current_revision,
+                            "event publication revision conflicts with durable state",
+                        ),
+                        false,
+                    )),
+                    Err(PublishedImageCommitError::Storage(_)) => {
+                        if let Err(error) =
+                            validate_revision(state, &request.publication_id, &event)
+                        {
+                            return Err((error, false));
+                        }
+                        Err((
+                            publication_error(
+                                &request.publication_id,
+                                &event.event_id,
+                                proto::EventPublicationErrorCode::StorageUnavailable,
+                                None,
+                                "event publication could not be stored",
+                            ),
+                            true,
+                        ))
+                    }
                 }
-            }
-        })();
-        let timeline_event = match commit_result {
-            Ok(event) => event,
+            })();
+        let (timeline_event, outcome) = match commit_result {
+            Ok(result) => result,
             Err((error, retryable)) => {
                 self.finish_failed_commit(&key, attachment_bytes, retryable, super::unix_time_ms());
                 return Err(error);
@@ -417,16 +424,21 @@ impl Registry {
             attachment_channel,
             expires_at_ms,
         );
-        self.inner.metrics.record_commit(started_at.elapsed());
-        Ok((
-            publication,
-            Some(CommittedPublication {
-                event,
-                timeline_event,
-                attachment_bytes: Arc::from(attachment_bytes),
-            }),
-            None,
-        ))
+        let (committed, mqtt_retry) = match outcome {
+            PublishedImageCommit::Stored => {
+                self.inner.metrics.record_commit(started_at.elapsed());
+                (
+                    Some(CommittedPublication {
+                        event,
+                        timeline_event,
+                        attachment_bytes: Arc::from(attachment_bytes),
+                    }),
+                    None,
+                )
+            }
+            PublishedImageCommit::Existing => (None, Some(timeline_event)),
+        };
+        Ok((publication, committed, mqtt_retry))
     }
 
     fn prepare_commit(
@@ -1518,7 +1530,24 @@ fn validate_revision(
         Some(stored) => {
             let same_external_source =
                 event.source_id == stored.camera_id && stored.source == EventSource::KeepPeek;
-            event.revision > stored.revision && same_external_source
+            if event.revision > stored.revision {
+                same_external_source
+            } else if event.revision == stored.revision && same_external_source {
+                store
+                    .event_publication_identity(&event.event_id)
+                    .map_err(|_| {
+                        publication_error(
+                            publication_id,
+                            &event.event_id,
+                            proto::EventPublicationErrorCode::StorageUnavailable,
+                            current_revision,
+                            "event storage is unavailable",
+                        )
+                    })?
+                    .is_some_and(|identity| identity.publication_id == publication_id)
+            } else {
+                false
+            }
         }
         None => event.revision == 1,
     };

@@ -1,9 +1,10 @@
 use crate::{
     operational_events::OperationalEvent,
-    storage::{RecordingCatalogHandle, metadata::TimelineEvent},
+    storage::{RecordingCatalogHandle, catalog::EventPublicationIdentity, metadata::TimelineEvent},
 };
 use image::{DynamicImage, ImageFormat, codecs::jpeg::JpegEncoder};
 use reo_proto::MAX_SNAPSHOT_BYTES;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
@@ -30,6 +31,12 @@ pub(crate) enum PublishedImageCommitError {
     Invalid(anyhow::Error),
     Conflict(Option<u64>),
     Storage(anyhow::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublishedImageCommit {
+    Stored,
+    Existing,
 }
 
 impl std::fmt::Display for PublishedImageCommitError {
@@ -95,6 +102,13 @@ impl EventStore {
         self.catalog.event_by_id(id)
     }
 
+    pub(crate) fn event_publication_identity(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<EventPublicationIdentity>> {
+        self.catalog.event_publication_identity(id)
+    }
+
     pub(crate) fn upsert_operational_event(&self, event: OperationalEvent) -> anyhow::Result<()> {
         self.catalog.upsert_operational_event(event)
     }
@@ -155,13 +169,16 @@ impl EventStore {
 
     pub(crate) fn commit_published_image(
         &self,
+        publication_id: &str,
         mut event: TimelineEvent,
         jpeg: &[u8],
-    ) -> Result<(), PublishedImageCommitError> {
+    ) -> Result<PublishedImageCommit, PublishedImageCommitError> {
         use PublishedImageCommitError::{Invalid, Storage};
 
-        if !safe_event_id(&event.id) {
-            return Err(Invalid(anyhow::anyhow!("invalid event identifier")));
+        if !safe_event_id(&event.id) || !safe_event_id(publication_id) {
+            return Err(Invalid(anyhow::anyhow!(
+                "invalid event or publication identifier"
+            )));
         }
         let descriptor = event.canonical_attachment().ok_or_else(|| {
             Invalid(anyhow::anyhow!(
@@ -183,10 +200,32 @@ impl EventStore {
         }
         validate_published_jpeg(jpeg).map_err(Invalid)?;
 
+        let publication = EventPublicationIdentity {
+            publication_id: publication_id.to_owned(),
+            fingerprint: published_image_fingerprint(publication_id, &event, jpeg)
+                .map_err(Invalid)?,
+        };
         let previous = self.catalog.event_by_id(&event.id).map_err(Storage)?;
         match previous.as_ref() {
+            Some(stored) if event.revision == stored.revision => {
+                let stored_publication = self
+                    .catalog
+                    .event_publication_identity(&event.id)
+                    .map_err(Storage)?;
+                if stored_publication.as_ref() == Some(&publication) {
+                    let filename = stored.thumbnail_filename.as_deref().ok_or_else(|| {
+                        Storage(anyhow::anyhow!("published event image is missing"))
+                    })?;
+                    let stored_jpeg = fs::read(self.thumbnail_root.join(filename))
+                        .map_err(|error| Storage(error.into()))?;
+                    if stored_jpeg == jpeg {
+                        return Ok(PublishedImageCommit::Existing);
+                    }
+                }
+                return Err(PublishedImageCommitError::Conflict(Some(stored.revision)));
+            }
             Some(stored)
-                if event.revision <= stored.revision
+                if event.revision < stored.revision
                     || event.camera_id != stored.camera_id
                     || event.source != stored.source =>
             {
@@ -208,14 +247,18 @@ impl EventStore {
             if destination.exists() {
                 fs::remove_file(&destination)?;
             }
-            fs::rename(&temporary, &destination)
+            fs::rename(&temporary, &destination)?;
+            fs::File::open(&destination)?.sync_all()?;
+            #[cfg(unix)]
+            sync_directory(&self.thumbnail_root)?;
+            Ok(())
         })();
         if let Err(error) = promote {
             let _ = fs::remove_file(&temporary);
             return Err(Storage(error.into()));
         }
         event.thumbnail_filename = Some(filename.clone());
-        if let Err(error) = self.catalog.insert_event(event) {
+        if let Err(error) = self.catalog.insert_published_event(event, publication) {
             let _ = fs::remove_file(destination);
             return Err(Storage(error));
         }
@@ -228,7 +271,7 @@ impl EventStore {
         if let Err(error) = self.enforce_thumbnail_limit() {
             tracing::warn!(%error, "unable to enforce event image retention after commit");
         }
-        Ok(())
+        Ok(PublishedImageCommit::Stored)
     }
 
     pub fn thumbnail_path(
@@ -338,6 +381,36 @@ fn validate_published_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn published_image_fingerprint(
+    publication_id: &str,
+    event: &TimelineEvent,
+    jpeg: &[u8],
+) -> anyhow::Result<String> {
+    let metadata = serde_json::to_vec(&(1_u8, publication_id, event))?;
+    let mut hasher = Sha256::new();
+    hasher.update(u64::try_from(metadata.len())?.to_be_bytes());
+    hasher.update(metadata);
+    hasher.update(u64::try_from(jpeg.len())?.to_be_bytes());
+    hasher.update(jpeg);
+    Ok(encode_lower_hex(hasher.finalize()))
+}
+
+fn encode_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    use std::fmt::Write as _;
+
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    encoded
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    fs::File::open(path)?.sync_all()
+}
+
 fn safe_image_filename(filename: &str) -> bool {
     filename.ends_with(".jpg")
         && !matches!(filename, "." | "..")
@@ -401,6 +474,7 @@ mod tests {
         for (revision, jpeg) in [(1, &first), (2, &second)] {
             store
                 .commit_published_image(
+                    &format!("publication-{revision}"),
                     TimelineEvent {
                         id: "published-event".to_owned(),
                         revision,
@@ -441,7 +515,9 @@ mod tests {
         let mut stale = stored;
         stale.thumbnail_filename = None;
         stale.attachments[0].byte_len = Some(first.len() as u64);
-        store.commit_published_image(stale, &first).unwrap_err();
+        store
+            .commit_published_image("publication-2", stale, &first)
+            .unwrap_err();
         assert!(!thumbnail_root.join("published-event--r1.jpg").exists());
         assert_eq!(
             fs::read(thumbnail_root.join("published-event--r2.jpg")).unwrap(),
@@ -622,6 +698,7 @@ mod tests {
         for (id, start_time_ms) in [("published-1", 1_000), ("published-2", 2_000)] {
             store
                 .commit_published_image(
+                    &format!("publication-{id}"),
                     TimelineEvent {
                         id: id.to_owned(),
                         revision: 1,
@@ -702,6 +779,7 @@ mod tests {
         };
         store
             .commit_published_image(
+                "publication-retained",
                 TimelineEvent {
                     id: "retained".to_owned(),
                     revision: 1,

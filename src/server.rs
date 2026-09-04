@@ -15141,6 +15141,76 @@ mod tests {
             proto::EventPublicationStatus::Committed as i32
         );
 
+        handler
+            .state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .insert(SessionId::from_u64(8), local_test_session());
+        let reconnect_start = handler.handle_for_session(
+            SessionId::from_u64(8),
+            proto::Request {
+                request_id: 56,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Start(
+                            start.clone(),
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            reconnect_start.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::EventPublicationState(
+                    proto::EventPublicationState { status, revision: 1, .. }
+                ))
+            })) if status == proto::EventPublicationStatus::AcceptingAttachments as i32
+        ));
+        handler
+            .handle_data_for_session(
+                SessionId::from_u64(8),
+                proto::DataChannelKind::ReliableData,
+                attachment_message(0, &jpeg[..split]),
+            )
+            .unwrap();
+        handler
+            .handle_data_for_session(
+                SessionId::from_u64(8),
+                proto::DataChannelKind::ReliableData,
+                attachment_message(1, &jpeg[split..]),
+            )
+            .unwrap();
+        let reconnect_commit = handler.handle_for_session(
+            SessionId::from_u64(8),
+            proto::Request {
+                request_id: 58,
+                command: Some(control_request::Command::EventPublicationCommand(
+                    proto::EventPublicationCommand {
+                        action: Some(proto::event_publication_command::Action::Commit(
+                            proto::CommitEventPublication {
+                                publication_id: "publication-1".to_owned(),
+                                wait_timeout: None,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            reconnect_commit.response.result,
+            Some(control_response::Result::Ok(proto::Ok {
+                result: Some(control_ok::Result::EventPublicationState(
+                    proto::EventPublicationState { status, revision: 1, .. }
+                ))
+            })) if status == proto::EventPublicationStatus::Committed as i32
+        ));
+        assert_eq!(
+            handler.state.event_publications.metrics_snapshot().commits,
+            1
+        );
+
         let stored = handle
             .event_by_id("detector-event-attachment-1")
             .unwrap()
