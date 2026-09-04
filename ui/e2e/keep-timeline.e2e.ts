@@ -312,9 +312,9 @@ test('aborts and closes a stored open when the route changes', async ({ page }) 
 	const storedMediaId = requests.storedOpens[0]!.storedMediaId;
 
 	await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
+	await expect(page).toHaveURL(/\/$/);
 	releaseOpen();
 	await expect.poll(() => requests.storedCloses).toContain(storedMediaId);
-	await expect(page).toHaveURL(/\/$/);
 });
 
 test('loads timeline metadata as soon as the primary frame is ready', async ({ page }) => {
