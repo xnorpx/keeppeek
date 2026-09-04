@@ -435,7 +435,7 @@ mod tests {
         let stale_delivery = registry.deliveries(&proto::Event::default()).remove(0);
 
         let replacement = registry
-            .subscribe_with_clock(&state, SessionId::from_u64(7), request.clone(), || 2_000)
+            .subscribe_with_clock(&state, SessionId::from_u64(7), request, || 2_000)
             .unwrap();
         let Some(proto::subscription_result::Delivery::Events(replacement_delivery)) =
             replacement.delivery
