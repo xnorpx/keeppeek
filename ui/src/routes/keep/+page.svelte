@@ -332,6 +332,7 @@
 			clearPlaybackStartupTimer();
 			detachPlaybackObservers();
 			timelineRepository.dispose();
+			loadVersion += 1;
 			playbackVersion += 1;
 			void closeStoredPlayback();
 		};
@@ -517,6 +518,7 @@
 			} else {
 				await selectSegment(candidates.at(-1) ?? null, 0, play);
 			}
+			if (version !== loadVersion || controller.signal.aborted) return;
 			emitKeepFirstSegment();
 			updateUrl();
 		} catch (cause) {
