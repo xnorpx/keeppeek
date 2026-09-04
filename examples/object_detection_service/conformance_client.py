@@ -52,6 +52,9 @@ QUEUE_DEPTH_BUDGET = 64
 QUEUE_PENDING_BYTES_BUDGET = 8 * 1024 * 1024 + 64 * 1024
 PROCESS_MEMORY_DELTA_P95_BUDGET_BYTES = 128 * 1024 * 1024
 BENCHMARK_SAMPLE_TIMEOUT_SECONDS = 15.0
+MEMORY_SAMPLE_INTERVAL_SECONDS = 0.05
+MEMORY_SAMPLES_MINIMUM = 20
+MEMORY_SAMPLES_MAXIMUM = 64
 
 
 class LatencySummary(TypedDict):
@@ -311,16 +314,14 @@ async def benchmark_atomic_publication(
         raise RuntimeError("atomic publication benchmark produced no live delivery")
     commit = latency_summary(commit_samples_ns)
     fanout = latency_summary(fanout_samples_ns)
-    if commit["p95_ms"] > COMMIT_LATENCY_P95_BUDGET_MS:
-        raise RuntimeError(
-            f"durable publication p95 {commit['p95_ms']:.3f} ms exceeds "
-            f"{COMMIT_LATENCY_P95_BUDGET_MS} ms"
-        )
-    if fanout["p95_ms"] > FANOUT_LATENCY_P95_BUDGET_MS:
-        raise RuntimeError(
-            f"live fanout p95 {fanout['p95_ms']:.3f} ms exceeds "
-            f"{FANOUT_LATENCY_P95_BUDGET_MS} ms"
-        )
+    p95_ms = commit["p95_ms"]
+    budget_ms = COMMIT_LATENCY_P95_BUDGET_MS
+    if p95_ms > budget_ms:
+        raise RuntimeError(f"durable publication p95 {p95_ms:.3f} ms exceeds {budget_ms} ms")
+    p95_ms = fanout["p95_ms"]
+    budget_ms = FANOUT_LATENCY_P95_BUDGET_MS
+    if p95_ms > budget_ms:
+        raise RuntimeError(f"live fanout p95 {p95_ms:.3f} ms exceeds {budget_ms} ms")
     return (
         final_event,
         final_delivery,

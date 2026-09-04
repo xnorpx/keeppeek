@@ -48,26 +48,27 @@ Linux omits the final Cargo `--features` argument. The test writes
 
 ### Reference measurement
 
-Captured on 2026-09-03 with macOS 26.6.2 arm64 on an Apple M5 Max developer workstation with
-18 logical CPUs and 64 GiB RAM, Rust 1.97.1 and Python 3.12.14. The run used the debug binaries,
+Captured on 2026-09-04 with macOS 26.6.2 arm64 on an Apple M5 Max developer workstation with
+18 logical CPUs and 64 GiB RAM, Rust 1.97.1 and Python 3.12.14. The run used release binaries,
 one H.264 and one H.265 640x360 analysis stream, 20 measured samples per path, and nearest-rank
-percentiles.
+percentiles. The memory monitor samples every 50 ms until it has at least 20 observations and
+retains at most 64 observations, so faster release builds do not weaken the memory evidence.
 
-| Path                                       |  p50 ms |  p95 ms | p95 delta ms | p95 budget ms |
-| ------------------------------------------ | ------: | ------: | -----------: | ------------: |
-| Envelope-only publication baseline         |   1.602 |   3.132 |     baseline |           N/A |
-| Atomic JPEG publication through commit     | 315.479 | 317.232 |      314.100 |         2,000 |
-| Atomic commit through complete live fanout | 353.865 | 364.321 |      361.189 |         2,500 |
-| Server start through durable commit        | 314.000 | 315.000 |          N/A |         2,000 |
+| Path                                       | p50 ms | p95 ms | p95 delta ms | p95 budget ms |
+| ------------------------------------------ | -----: | -----: | -----------: | ------------: |
+| Envelope-only publication baseline         |  0.416 |  1.249 |     baseline |           N/A |
+| Atomic JPEG publication through commit     | 32.524 | 34.728 |       33.479 |         2,000 |
+| Atomic commit through complete live fanout | 63.502 | 66.751 |       65.502 |         2,500 |
+| Server start through durable commit        | 31.000 | 34.000 |          N/A |         2,000 |
 
-Server resident memory was 110,821,376 bytes before the measured client. Across 23 samples during
-the workload, resident memory was 162,480,128 bytes at p50, 189,923,328 bytes at p95, and
-190,939,136 bytes maximum. The p95 delta was 79,101,952 bytes against a 134,217,728-byte budget.
+Server resident memory was 68,075,520 bytes before the measured client. Across 20 samples during
+the workload, resident memory was 111,509,504 bytes at p50, 117,260,288 bytes at p95, and
+117,293,056 bytes maximum. The p95 delta was 49,184,768 bytes against a 134,217,728-byte budget.
 
-The event-delivery queue reached one command against its 64-command bound and 447,688 reserved
+The event-delivery queue reached one command against its 64-command bound and 447,690 reserved
 bytes against its 8,454,144-byte bound. Before the explicit API-session stack bound, Rust's 2 MiB
-default stack aborted the server thread during revision 2. A 4 MiB per-session stack request completed all
-20 revisions and the subsequent isolation scenario in 28.14 seconds; the session admission limits
+default stack aborted the server thread during revision 2. A 4 MiB per-session stack request
+completed all 20 revisions and the subsequent isolation scenario; the session admission limits
 bound aggregate virtual stack reservation.
 
 ## Configuration planning
