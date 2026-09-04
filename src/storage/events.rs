@@ -243,12 +243,19 @@ impl EventStore {
             .join(format!(".publication-{}.tmp", uuid::Uuid::new_v4()));
         let promote = (|| -> std::io::Result<()> {
             crate::config::write_private_file(&temporary, jpeg)?;
-            fs::File::open(&temporary)?.sync_all()?;
+            // Windows requires write access for FlushFileBuffers.
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&temporary)?
+                .sync_all()?;
             if destination.exists() {
                 fs::remove_file(&destination)?;
             }
             fs::rename(&temporary, &destination)?;
-            fs::File::open(&destination)?.sync_all()?;
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&destination)?
+                .sync_all()?;
             #[cfg(unix)]
             sync_directory(&self.thumbnail_root)?;
             Ok(())
