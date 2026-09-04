@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     api::proto,
-    webrtc::{DataChannelTarget, SessionId},
+    webrtc::{DataChannelTarget, EventDeliveryGuard, SessionId},
 };
 use prost::Message as _;
 use std::{
@@ -45,12 +45,14 @@ struct Subscription {
     event_types: HashSet<String>,
     media_kinds: HashSet<proto::MediaKind>,
     attachment_routes: Vec<proto::EventAttachmentRoute>,
+    guard: EventDeliveryGuard,
 }
 
 pub(super) struct Delivery {
     pub(super) session_id: SessionId,
     pub(super) subscription_id: String,
     pub(super) attachment_target: Option<DataChannelTarget>,
+    pub(super) guard: EventDeliveryGuard,
 }
 
 impl Registry {
@@ -98,7 +100,9 @@ impl Registry {
             }
         }
         let attachment_routes = subscription.attachment_routes.clone();
-        subscriptions.insert(key, subscription);
+        if let Some(replaced) = subscriptions.insert(key, subscription) {
+            replaced.guard.cancel();
+        }
         drop(subscriptions);
         if is_new {
             self.starts.fetch_add(1, Ordering::Relaxed);
@@ -124,8 +128,12 @@ impl Registry {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(owner, subscription_id), _| {
-                *owner != session_id || !subscription_ids.contains(subscription_id)
+            .retain(|(owner, subscription_id), subscription| {
+                let remove = *owner == session_id && subscription_ids.contains(subscription_id);
+                if remove {
+                    subscription.guard.cancel();
+                }
+                !remove
             });
     }
 
@@ -133,16 +141,31 @@ impl Registry {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|(owner, _), _| *owner != session_id);
+            .retain(|(owner, _), subscription| {
+                let remove = *owner == session_id;
+                if remove {
+                    subscription.guard.cancel();
+                }
+                !remove
+            });
     }
 
-    pub(super) fn invalidate_source(&self, source_id: &str) {
+    pub(super) fn invalidate_source(&self, source_id: &str) -> Vec<SessionId> {
+        let mut affected_sessions = HashSet::new();
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|_, subscription| {
-                subscription.source_ids.is_empty() || !subscription.source_ids.contains(source_id)
+            .retain(|(session_id, _), subscription| {
+                let remove = subscription.source_ids.contains(source_id);
+                if remove {
+                    subscription.guard.cancel();
+                    affected_sessions.insert(*session_id);
+                }
+                !remove
             });
+        let mut affected_sessions = affected_sessions.into_iter().collect::<Vec<_>>();
+        affected_sessions.sort_unstable_by_key(|session_id| session_id.as_u64());
+        affected_sessions
     }
 
     pub(super) fn deliveries(&self, event: &proto::Event) -> Vec<Delivery> {
@@ -195,6 +218,7 @@ impl Registry {
                     session_id: *session_id,
                     subscription_id: subscription_id.clone(),
                     attachment_target,
+                    guard: subscription.guard.clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -214,9 +238,9 @@ impl Registry {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&(session_id, subscription_id.to_owned()))
-            .is_some();
-        if removed {
+            .remove(&(session_id, subscription_id.to_owned()));
+        if let Some(removed) = removed {
+            removed.guard.cancel();
             self.sheds.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -342,6 +366,7 @@ fn validate_subscription(
         event_types,
         media_kinds,
         attachment_routes: request.attachment_routes.clone(),
+        guard: EventDeliveryGuard::default(),
     })
 }
 
@@ -396,19 +421,32 @@ mod tests {
             ..Default::default()
         };
 
-        for now_ms in [1_000, 2_000] {
-            let result = registry
-                .subscribe_with_clock(&state, SessionId::from_u64(7), request.clone(), || now_ms)
-                .unwrap();
-            let Some(proto::subscription_result::Delivery::Events(delivery)) = result.delivery
-            else {
-                panic!("event subscription must return event delivery");
-            };
-            assert_eq!(
-                delivery.backfill_end_time,
-                Some(millis_timestamp(i64::try_from(now_ms).unwrap()))
-            );
-        }
+        let first = registry
+            .subscribe_with_clock(&state, SessionId::from_u64(7), request.clone(), || 1_000)
+            .unwrap();
+        let Some(proto::subscription_result::Delivery::Events(first_delivery)) = first.delivery
+        else {
+            panic!("event subscription must return event delivery");
+        };
+        assert_eq!(
+            first_delivery.backfill_end_time,
+            Some(millis_timestamp(1_000))
+        );
+        let stale_delivery = registry.deliveries(&proto::Event::default()).remove(0);
+
+        let replacement = registry
+            .subscribe_with_clock(&state, SessionId::from_u64(7), request.clone(), || 2_000)
+            .unwrap();
+        let Some(proto::subscription_result::Delivery::Events(replacement_delivery)) =
+            replacement.delivery
+        else {
+            panic!("event subscription replacement must return event delivery");
+        };
+        assert_eq!(
+            replacement_delivery.backfill_end_time,
+            Some(millis_timestamp(2_000))
+        );
+        assert!(!stale_delivery.guard.is_active());
         assert_eq!(registry.inner.lock().unwrap().len(), 1);
         assert_eq!(registry.metrics_snapshot().starts, 1);
 
@@ -570,6 +608,7 @@ mod tests {
                     event_types: HashSet::new(),
                     media_kinds: HashSet::new(),
                     attachment_routes: Vec::new(),
+                    guard: EventDeliveryGuard::default(),
                 },
             ),
             (
@@ -583,6 +622,7 @@ mod tests {
                         content_type: "image/jpeg".to_owned(),
                         channel: proto::DataChannelKind::UnreliableData as i32,
                     }],
+                    guard: EventDeliveryGuard::default(),
                 },
             ),
             (
@@ -592,6 +632,7 @@ mod tests {
                     event_types: HashSet::from(["vehicle".to_owned()]),
                     media_kinds: HashSet::new(),
                     attachment_routes: Vec::new(),
+                    guard: EventDeliveryGuard::default(),
                 },
             ),
         ]);
@@ -622,7 +663,12 @@ mod tests {
         assert_eq!(deliveries[1].subscription_id, "all");
         assert_eq!(deliveries[1].attachment_target, None);
 
-        registry.invalidate_source("front-door");
+        let explicit_guard = deliveries[0].guard.clone();
+        assert_eq!(
+            registry.invalidate_source("front-door"),
+            vec![SessionId::from_u64(7)]
+        );
+        assert!(!explicit_guard.is_active());
         assert_eq!(registry.deliveries(&event).len(), 1);
         registry.shed(SessionId::from_u64(8), "all");
         assert!(registry.deliveries(&event).is_empty());
