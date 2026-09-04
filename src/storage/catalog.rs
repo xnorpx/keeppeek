@@ -63,6 +63,13 @@ const RESOLVE_EVENT_KEYFRAME_SQL: &str = "SELECT l.event_id, l.stream_id, e.star
             AND f.sequence = l.fragment_sequence
          JOIN recording_files AS r ON r.id = l.recording_id
          WHERE l.event_id = ?1 AND l.stream_id = ?2";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EventPublicationIdentity {
+    pub(crate) publication_id: String,
+    pub(crate) fingerprint: String,
+}
+
 const EVENT_SEARCH_COLUMNS: &str = "e.id, e.camera_id, e.stream, e.source, e.kind,
          e.start_time_ms, e.end_time_ms, e.confidence, e.bbox_json, e.zone,
          e.thumbnail_filename, e.revision, e.bbox_attachment_id, e.attachments_json,
@@ -364,6 +371,7 @@ enum Command {
     },
     InsertEvent {
         event: TimelineEvent,
+        publication: Option<EventPublicationIdentity>,
         reply: SyncSender<anyhow::Result<()>>,
     },
     CloseEvent {
@@ -397,6 +405,10 @@ enum Command {
     EventById {
         id: String,
         reply: SyncSender<anyhow::Result<Option<TimelineEvent>>>,
+    },
+    EventPublicationIdentity {
+        id: String,
+        reply: SyncSender<anyhow::Result<Option<EventPublicationIdentity>>>,
     },
     UpsertOperationalEvent {
         event: OperationalEvent,
@@ -850,7 +862,29 @@ impl RecordingCatalogHandle {
     pub fn insert_event(&self, event: TimelineEvent) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
-            .send(Command::InsertEvent { event, reply })
+            .send(Command::InsertEvent {
+                event,
+                publication: None,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn insert_published_event(
+        &self,
+        event: TimelineEvent,
+        publication: EventPublicationIdentity,
+    ) -> anyhow::Result<()> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::InsertEvent {
+                event,
+                publication: Some(publication),
+                reply,
+            })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
         response
             .recv()
@@ -957,6 +991,22 @@ impl RecordingCatalogHandle {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .send(Command::EventById {
+                id: id.to_owned(),
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn event_publication_identity(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<EventPublicationIdentity>> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::EventPublicationIdentity {
                 id: id.to_owned(),
                 reply,
             })
@@ -1358,8 +1408,16 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     end_ms,
                 )));
             }
-            Command::InsertEvent { event, reply } => {
-                let _ = reply.send(pollster::block_on(insert_event(&connection, event)));
+            Command::InsertEvent {
+                event,
+                publication,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(insert_event(
+                    &connection,
+                    event,
+                    publication,
+                )));
             }
             Command::CloseEvent {
                 id,
@@ -1415,6 +1473,12 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             }
             Command::EventById { id, reply } => {
                 let _ = reply.send(pollster::block_on(event_by_id(&connection, &id)));
+            }
+            Command::EventPublicationIdentity { id, reply } => {
+                let _ = reply.send(pollster::block_on(event_publication_identity(
+                    &connection,
+                    &id,
+                )));
             }
             Command::UpsertOperationalEvent { event, reply } => {
                 let _ = reply.send(pollster::block_on(upsert_operational_event(
@@ -2312,6 +2376,8 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
              CREATE TABLE IF NOT EXISTS recording_events (
                  id TEXT PRIMARY KEY,
                  revision INTEGER NOT NULL DEFAULT 1,
+                 publication_id TEXT,
+                 publication_fingerprint TEXT,
                  camera_id TEXT NOT NULL,
                  stream TEXT,
                  source TEXT NOT NULL,
@@ -2429,6 +2495,14 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
         "recording_events",
         "revision",
         "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
+    ensure_column(connection, "recording_events", "publication_id", "TEXT").await?;
+    ensure_column(
+        connection,
+        "recording_events",
+        "publication_fingerprint",
+        "TEXT",
     )
     .await?;
     ensure_column(connection, "recording_events", "bbox_attachment_id", "TEXT").await?;
@@ -3860,7 +3934,11 @@ mod coverage_tests {
     }
 }
 
-async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> anyhow::Result<()> {
+async fn insert_event(
+    connection: &turso::Connection,
+    event: TimelineEvent,
+    publication: Option<EventPublicationIdentity>,
+) -> anyhow::Result<()> {
     let mut event = event;
     normalize_event_presentation(&mut event)?;
     if event.kind.is_empty() {
@@ -3885,6 +3963,10 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
+    let publication_id = publication
+        .as_ref()
+        .map(|identity| identity.publication_id.clone());
+    let publication_fingerprint = publication.map(|identity| identity.fingerprint);
     connection.execute_batch("BEGIN IMMEDIATE").await?;
     let result = async {
         let existing = event_by_id(connection, &event.id).await?;
@@ -3908,7 +3990,8 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                          revision = ?12, bbox_attachment_id = ?13,
                          attachments_json = ?14, canonical_attachment_id = ?15,
                          icon_key = ?16, rejected_icon_key = ?17,
-                         text = ?18, payload_json = ?19
+                         text = ?18, payload_json = ?19,
+                         publication_id = ?20, publication_fingerprint = ?21
                      WHERE id = ?1",
                     turso::params![
                         event.id.clone(),
@@ -3930,6 +4013,8 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                         event.rejected_icon_key.clone(),
                         event.text.clone(),
                         payload_json.clone(),
+                        publication_id.clone(),
+                        publication_fingerprint.clone(),
                     ],
                 )
                 .await?;
@@ -3952,10 +4037,10 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                      end_time_ms, confidence, bbox_json, zone, thumbnail_filename,
                      revision, bbox_attachment_id, attachments_json,
                      canonical_attachment_id, icon_key, rejected_icon_key,
-                     text, payload_json
+                     text, payload_json, publication_id, publication_fingerprint
                  ) VALUES (
                      ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                     ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
                  )",
                     turso::params![
                         event.id.clone(),
@@ -3977,6 +4062,8 @@ async fn insert_event(connection: &turso::Connection, event: TimelineEvent) -> a
                         event.rejected_icon_key.clone(),
                         event.text.clone(),
                         payload_json,
+                        publication_id,
+                        publication_fingerprint,
                     ],
                 )
                 .await?;
@@ -4455,6 +4542,31 @@ async fn event_by_id(
         .await?
         .map(|row| event_from_row(&row, true))
         .transpose()
+}
+
+async fn event_publication_identity(
+    connection: &turso::Connection,
+    id: &str,
+) -> anyhow::Result<Option<EventPublicationIdentity>> {
+    let mut rows = connection
+        .query(
+            "SELECT publication_id, publication_fingerprint
+             FROM recording_events
+             WHERE id = ?1",
+            turso::params![id],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        return Ok(None);
+    };
+    match (row.get::<Option<String>>(0)?, row.get::<Option<String>>(1)?) {
+        (Some(publication_id), Some(fingerprint)) => Ok(Some(EventPublicationIdentity {
+            publication_id,
+            fingerprint,
+        })),
+        (None, None) => Ok(None),
+        _ => anyhow::bail!("event publication identity is incomplete"),
+    }
 }
 
 async fn upsert_operational_event(
