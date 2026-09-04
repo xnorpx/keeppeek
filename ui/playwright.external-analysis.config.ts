@@ -10,8 +10,14 @@ export default defineConfig({
 	retries: 0,
 	reporter: [['list']],
 	outputDir: 'test-results/external-analysis-conformance',
+	timeout: 90_000,
 	expect: { timeout: 15_000 },
-	use: { baseURL: backendURL, headless: true }
+	use: {
+		baseURL: backendURL,
+		headless: true,
+		screenshot: 'only-on-failure',
+		trace: 'retain-on-failure'
+	}
 });
 
 function requiredEnvironment(name: string): string {

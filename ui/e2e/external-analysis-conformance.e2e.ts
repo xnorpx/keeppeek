@@ -5,10 +5,44 @@ const eventDate = requiredEnvironment('KEEPPEEK_CONFORMANCE_EVENT_DATE');
 const eventRevision = requiredEnvironment('KEEPPEEK_CONFORMANCE_EVENT_REVISION');
 const eventTimestamp = requiredEnvironment('KEEPPEEK_CONFORMANCE_EVENT_TIMESTAMP');
 const sourceId = requiredEnvironment('KEEPPEEK_CONFORMANCE_SOURCE_ID');
+const diagnosticEntryLimit = 16;
+const diagnosticTextLimit = 1_000;
 
 test('external conformance event is visible through normal query and UI', async ({ page }) => {
+	const browserErrors: string[] = [];
+	const requestFailures: string[] = [];
+	page.on('console', (message) => {
+		if (message.type() === 'error') appendDiagnostic(browserErrors, message.text());
+	});
+	page.on('pageerror', (error) => appendDiagnostic(browserErrors, error.message));
+	page.on('requestfailed', (request) => {
+		appendDiagnostic(
+			requestFailures,
+			`${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText ?? 'unknown error'}`
+		);
+	});
+	const createResponse = page
+		.waitForResponse(
+			(response) => response.url().endsWith('/create') && response.request().method() === 'POST',
+			{ timeout: 15_000 }
+		)
+		.catch(() => null);
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await page.goto(`/events?date=${eventDate}`);
+	const response = await page.goto(`/events?date=${eventDate}`);
+	expect(response?.status()).toBe(200);
+	const created = await createResponse;
+	if (created === null) {
+		throw new Error(
+			`Browser did not create a WebRTC control session: ${JSON.stringify({
+				title: await page.title(),
+				body: (await page.locator('body').innerText()).slice(0, diagnosticTextLimit),
+				browserErrors,
+				requestFailures
+			})}`
+		);
+	}
+	expect(created.status()).toBe(201);
+	await expect(page).toHaveTitle('Events - KeepPeek');
 
 	const card = page.locator(`[data-event-card="${sourceId}:${eventId}"]`);
 	await expect(card).toBeVisible();
@@ -49,7 +83,13 @@ test('external conformance event is visible through normal query and UI', async 
 	const recordedVideo = player.locator('video');
 	await expect(recordedVideo).toBeVisible();
 	await expect.poll(() => decodedFrames(recordedVideo), { timeout: 15_000 }).toBeGreaterThan(0);
+	expect(browserErrors).toEqual([]);
+	expect(requestFailures).toEqual([]);
 });
+
+function appendDiagnostic(entries: string[], value: string): void {
+	if (entries.length < diagnosticEntryLimit) entries.push(value.slice(0, diagnosticTextLimit));
+}
 
 async function decodedFrames(locator: import('@playwright/test').Locator): Promise<number> {
 	return locator.evaluate(
