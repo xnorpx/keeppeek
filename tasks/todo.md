@@ -31,5 +31,6 @@
 - [x] Keep API definitions/docs/generated bindings MIT-compatible for independent clients.
 - [x] Run every conformance test in default CI with no camera, GPU, model, cloud service, or secret.
 - [x] Record reproducible performance and memory evidence with p50/p95 budgets.
-- [ ] Complete fresh-context review and `./check.sh`.
-- [ ] Publish the criterion-by-criterion PR and final-head CI evidence.
+- [x] Complete fresh-context review and `./check.sh`.
+- [x] Publish the criterion-by-criterion PR.
+- [ ] Record successful final-head CI evidence in the PR and issue.
