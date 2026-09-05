@@ -1,0 +1,1027 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Configuration reference - The KeepPeek Book</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-844f867d.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-36020d8d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">The KeepPeek Book</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="configuration-reference"><a class="header" href="#configuration-reference">Configuration reference</a></h1>
+<p>KeepPeek stores settings in one application configuration file, named <code>config.toml</code> by default.
+The existing companion <code>secrets.toml</code> holds reusable private strings. Layouts, notification rules,
+credential metadata, and camera templates belong in the application configuration, not in separate
+settings files. Media files and recording catalogs are data, not additional settings stores.</p>
+<p>This chapter describes the supported on-disk sections and their serialized Rust types. It is not
+a list of every API response or runtime struct. Use <a href="./configuration-management.html">visual configuration</a>
+for normal administration and <a href="./configuration-export-import.html">configuration exchange</a> for
+validated export and import.</p>
+<h2 id="location-and-editing"><a class="header" href="#location-and-editing">Location and editing</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Environment</th><th>Default application configuration</th></tr>
+</thead>
+<tbody>
+<tr><td>macOS</td><td><code>~/Library/Application Support/keeppeek/config.toml</code></td></tr>
+<tr><td>Linux</td><td><code>${XDG_CONFIG_HOME:-$HOME/.config}/keeppeek/config.toml</code></td></tr>
+<tr><td>Windows</td><td><code>%APPDATA%\keeppeek\config.toml</code></td></tr>
+<tr><td>Docker</td><td><code>/config/keeppeek/config.toml</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>--config &lt;path&gt;</code>, <code>--config=&lt;path&gt;</code>, or <code>-c &lt;path&gt;</code> selects another file. Its companion secrets
+file is always named <code>secrets.toml</code> in the same directory. These flags do not create a second
+settings store.</p>
+<p>Use the UI and typed configuration operations while KeepPeek runs. Stop the server before manual
+edits so a concurrent settings update cannot overwrite them. Server writers validate candidates,
+preserve unrelated sections and secret references, and replace the file atomically under the shared
+configuration-update lock. Some changes apply live; listener or storage changes can require the
+restart or migration reported by the configuration plan.</p>
+<p>On Unix, KeepPeek creates its default private directory with mode <code>0700</code> and private files with
+mode <code>0600</code>. Restrict the directory to the service account on every platform. Secret values are
+plaintext at rest, not encrypted by TOML.</p>
+<p>In the tables below, <code>optional</code> means omit the field when unset: TOML has no <code>null</code>. Integer types
+refer to the Rust model; values must also fit TOML’s integer representation. <code>Vec&lt;T&gt;</code> is an array,
+and a map is a table keyed by the indicated identity. Byte limits and character limits are different.
+Root fields must appear before a table header or they belong to that table.</p>
+<h2 id="section-index"><a class="header" href="#section-index">Section index</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>TOML section</th><th>Owning type</th><th>Ownership</th></tr>
+</thead>
+<tbody>
+<tr><td>Root fields</td><td><code>Config</code></td><td>Operator settings</td></tr>
+<tr><td><code>[access]</code></td><td><code>AccessConfig</code></td><td>Administrator security policy</td></tr>
+<tr><td><code>[direct_card]</code></td><td><code>DirectCardConfig</code></td><td>Exact browser-origin allowlist</td></tr>
+<tr><td><code>[storage]</code></td><td><code>StorageToml</code></td><td>Recording paths, retention, and safety</td></tr>
+<tr><td><code>[battery_wake]</code></td><td><code>BatteryWakeConfig</code></td><td>Reolink battery-camera wake service</td></tr>
+<tr><td><code>[logging]</code></td><td><code>LoggingConfig</code></td><td>Service log destination</td></tr>
+<tr><td><code>[operational_events]</code></td><td><code>OperationalEventsConfig</code></td><td>Health-event timing</td></tr>
+<tr><td><code>[operational_events.cameras."&lt;camera-id-or-ip&gt;"]</code></td><td><code>OperationalEventOverride</code></td><td>Per-camera timing overrides</td></tr>
+<tr><td><code>[event_forwarder.mqtt]</code></td><td><code>MqttForwarderConfig</code> inside <code>EventForwarderConfig</code></td><td>MQTT configuration; server-owned revision</td></tr>
+<tr><td><code>[camera_defaults]</code></td><td><code>CameraCredentialDefaults</code></td><td>Shared camera defaults</td></tr>
+<tr><td><code>[&lt;namespace&gt;.&lt;camera-key&gt;]</code></td><td><code>CameraConfig</code></td><td>Camera settings</td></tr>
+<tr><td><code>[access_credentials]</code></td><td><code>PersistedAccessCatalog</code></td><td>Server-managed credential records</td></tr>
+<tr><td><code>[peek_layouts]</code></td><td><code>StoredRegistry</code></td><td>Server-managed layouts and per-user selection</td></tr>
+<tr><td><code>[configuration_templates]</code></td><td><code>StoredTemplateDocument</code></td><td>Server-managed camera templates</td></tr>
+<tr><td><code>[notifications]</code></td><td><code>NotificationConfiguration</code></td><td>Server-managed rule drafts and active rules</td></tr>
+<tr><td><code>[storage_migration]</code></td><td><code>StorageMigration</code></td><td>Server-managed pending storage move</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>homekit</code> is a reserved root section, not an implemented HomeKit configuration schema. Do not use
+it as a camera namespace. Every other non-reserved root table is interpreted as a camera namespace;
+<code>cameras</code> is the conventional name, not the only allowed one. A typo in a section name can therefore
+be interpreted as camera configuration. Some structs ignore unknown fields, so successful TOML
+parsing alone does not prove a field has an effect.</p>
+<p>Sources: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">configuration</a>,
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs">cameras</a>, and the subsystem sources
+linked below. <code>Config.source</code> is an in-memory copy of the original TOML table, marked <code>serde(skip)</code>;
+there is no writable <code>source</code> field in the file.</p>
+<h2 id="passwords-and-secret-references"><a class="header" href="#passwords-and-secret-references">Passwords and secret references</a></h2>
+<p><code>Secrets</code> is a flat <code>BTreeMap&lt;String, String&gt;</code>. Its keys must match <code>[A-Z_][A-Z0-9_]*</code>.
+Nested tables, arrays, numbers, and booleans are not secret values. Enter real values directly on
+the server; do not put them in source control, screenshots, logs, or shell arguments.</p>
+<p>Example companion secrets file, with placeholders that must be replaced locally:</p>
+<pre><code class="language-toml">CAMERA_USERNAME = "replace-with-camera-user"
+CAMERA_PASSWORD = "replace-with-camera-password"
+FRONT_CAMERA_PASSWORD = "replace-with-front-camera-password"
+MQTT_PASSWORD = "replace-with-broker-password"
+</code></pre>
+<p>The application configuration refers to those keys:</p>
+<pre><code class="language-toml">host = "0.0.0.0"
+port = 8081
+
+[camera_defaults]
+username = "{secret:CAMERA_USERNAME}"
+password = "{secret:CAMERA_PASSWORD}"
+
+[cameras.front_door]
+ip = "192.0.2.10"
+password = "{secret:FRONT_CAMERA_PASSWORD}"
+main_rtsp_url = "rtsp://{secret:CAMERA_USERNAME|url}:{secret:FRONT_CAMERA_PASSWORD|url}@192.0.2.10:554/stream1"
+
+[cameras.back_door]
+ip = "192.0.2.11"
+
+[event_forwarder.mqtt]
+username = "keeppeek"
+password = "{secret:MQTT_PASSWORD}"
+</code></pre>
+<ul>
+<li><code>{secret:KEY}</code> substitutes the string directly. It can occupy the entire value or part of it.</li>
+<li><code>{secret:KEY|url}</code> percent-encodes a URL component. Use it for a password, username, or query
+value embedded in a URL, not for an entire URL. Bytes other than RFC 3986 unreserved characters
+are encoded, including <code>@</code>, <code>:</code>, <code>/</code>, spaces, and non-ASCII UTF-8 bytes.</li>
+<li><code>KEEPPEEK_SECRET_&lt;KEY&gt;</code> in the server process environment overrides the same key in the file.
+A literal value does not consult either source.</li>
+<li>A missing referenced key, malformed reference, unsupported modifier, or invalid secrets file
+fails loading or the corresponding settings operation. Diagnostics identify the key without
+including its value.</li>
+<li>Resolution substitutes strings, not TOML syntax. It does not convert a quoted numeric secret
+into an integer or expand table keys. Inserted secret values are not recursively expanded.</li>
+<li>Reusing a key gives several cameras the same credential. A per-camera key overrides the shared
+default. Rotate an ordinary secret in the companion file and restart KeepPeek to reconnect with
+the new value.</li>
+</ul>
+<h3 id="reference-boundaries"><a class="header" href="#reference-boundaries">Reference boundaries</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>Supported resolution</th></tr>
+</thead>
+<tbody>
+<tr><td>Root settings, camera defaults, camera entries, and ordinary settings sections</td><td>String values and strings inside arrays/tables are resolved before typed deserialization. The resolved string must still satisfy the field’s type and validation.</td></tr>
+<tr><td><code>[event_forwarder.mqtt].password</code></td><td>Direct or referenced string. The MQTT settings writer stores a supplied password in the companion file under <code>MQTT_PASSWORD</code>.</td></tr>
+<tr><td>Notification <code>active.actions[].destination</code> and <code>draft.actions[].destination</code></td><td>The notification loader explicitly resolves destination references. Non-browser destinations saved through the rule store use managed <code>KEEPPEEK_NOTIFICATION_...</code> secret keys.</td></tr>
+<tr><td>Camera-template <code>username_secret_reference</code> and <code>password_secret_reference</code></td><td>Complete reference tokens only, not inline credentials or interpolated surrounding text. Values are resolved when applying camera configuration.</td></tr>
+<tr><td><code>[access_credentials]</code>, <code>[peek_layouts]</code>, other notification fields, and other template fields</td><td>Not blanket-expanded as secret templates. These sections have dedicated loaders.</td></tr>
+<tr><td><code>[storage_migration]</code></td><td>Concrete paths written by the server, not a secret-template interface.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Configuration responses and unrelated settings updates preserve existing reference tokens instead
+of returning or persisting resolved credentials. Inline camera credentials remain supported but
+are not automatically moved to the secret file. Intentionally replacing a camera credential in
+the editor can replace its reference with an inline value. Ordinary layout exchange must not
+include credentials, verifiers, or unrelated user state. Full recovery archives have a different
+security contract; see <a href="./backup-and-restore.html">backup and restore</a>.</p>
+<p>The first-run access key is generated as <code>KEEPPEEK_ACCESS_KEY</code> in the companion file and referenced
+from the root <code>access_key</code> field. Named credentials created later retain only verifiers in the
+application configuration and return their raw keys once. See
+<a href="./authentication.html">authentication</a> and the
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/secrets.md">secret lifecycle guide</a>.</p>
+<h2 id="root-settings"><a class="header" href="#root-settings">Root settings</a></h2>
+<p>Type: <code>Config</code>. Nested section fields are listed in the section index.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>host</code></td><td><code>String</code></td><td><code>"0.0.0.0"</code></td><td>HTTP listener bind address.</td></tr>
+<tr><td><code>port</code></td><td><code>u16</code></td><td><code>8081</code></td><td>HTTP listener port.</td></tr>
+<tr><td><code>access_key</code></td><td><code>AccessKey</code></td><td>Unset in the model; generated on startup</td><td>Compatibility initial Administrator key: a UUID string, a reference resolving to a UUID, or integer <code>0</code> as the unset marker. <code>0</code> is not a switch that disables authentication.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="access-policy"><a class="header" href="#access-policy">Access policy</a></h2>
+<p>Type: <code>AccessConfig</code>, section <code>[access]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>local_networks</code></td><td><code>Vec&lt;IpNet&gt;</code></td><td>Networks below</td><td>At most 64 CIDRs. Matches become trusted-local Administrators without sign-in. Setting the array replaces the defaults.</td></tr>
+<tr><td><code>trusted_proxies</code></td><td><code>Vec&lt;IpNet&gt;</code></td><td><code>[]</code></td><td>At most 64 CIDRs, checked separately from <code>local_networks</code>. Only these peers can supply the supported forwarded-client header contract.</td></tr>
+<tr><td><code>require_secure_remote</code></td><td><code>bool</code></td><td><code>true</code></td><td>Require the declared secure boundary for remote traffic.</td></tr>
+<tr><td><code>failed_authentication_limit</code></td><td><code>u32</code></td><td><code>5</code></td><td>Nonzero failed-attempt limit per address/window.</td></tr>
+<tr><td><code>failed_authentication_window_secs</code></td><td><code>u64</code></td><td><code>60</code></td><td>Nonzero authentication-rate window, in seconds.</td></tr>
+<tr><td><code>session_idle_timeout_secs</code></td><td><code>u64</code></td><td><code>1800</code></td><td>Nonzero; cannot exceed the absolute timeout.</td></tr>
+<tr><td><code>session_absolute_timeout_secs</code></td><td><code>u64</code></td><td><code>86400</code></td><td>Nonzero maximum session lifetime.</td></tr>
+<tr><td><code>max_sessions_per_principal</code></td><td><code>u32</code></td><td><code>64</code></td><td>Nonzero concurrent-session limit per identity.</td></tr>
+<tr><td><code>max_sessions_per_address</code></td><td><code>u32</code></td><td><code>128</code></td><td>Nonzero concurrent-session limit per address.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Default local networks are <code>127.0.0.0/8</code>, <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code>,
+<code>169.254.0.0/16</code>, <code>::1/128</code>, <code>fc00::/7</code>, and <code>fe80::/10</code>. A container bridge or VPN within those
+ranges is trusted unless the operator narrows the list. Forwarding headers and CORS do not replace
+authentication. Review <a href="./authentication.html">authentication and access control</a> before exposing the
+listener.</p>
+<h3 id="direct-card-origins"><a class="header" href="#direct-card-origins">Direct card origins</a></h3>
+<p>Type: <code>DirectCardConfig</code>, section <code>[direct_card]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>allowed_origins</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td><td>Unique canonical exact HTTP(S) origins, such as <code>"https://ha.example"</code>. No credentials, path, query, fragment, wildcard, or trailing slash.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="camera-defaults-and-camera-entries"><a class="header" href="#camera-defaults-and-camera-entries">Camera defaults and camera entries</a></h2>
+<p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/mod.rs">camera types</a> and
+the camera loader in <a href="https://github.com/xnorpx/keeppeek/blob/main/src/config.rs">configuration</a>.</p>
+<p>Type: <code>CameraCredentialDefaults</code>, section <code>[camera_defaults]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default or inheritance</th></tr>
+</thead>
+<tbody>
+<tr><td><code>username</code></td><td><code>String</code></td><td>Empty string; accepts secret references.</td></tr>
+<tr><td><code>password</code></td><td><code>String</code></td><td>Empty string; accepts secret references.</td></tr>
+<tr><td><code>backend</code></td><td>Optional <code>CameraBackend</code></td><td>No shared override; camera model defaults to <code>"auto"</code>.</td></tr>
+<tr><td><code>transport</code></td><td>Optional <code>CameraTransport</code></td><td>No shared override; camera model defaults to <code>"tcp"</code>.</td></tr>
+<tr><td><code>record_generic_motion_events</code></td><td>Optional <code>bool</code></td><td>No shared override; camera model defaults to <code>false</code>.</td></tr>
+<tr><td><code>recording_mode</code></td><td>Optional <code>CameraRecordingMode</code></td><td>No shared override; camera model defaults to <code>"event-boost"</code>.</td></tr>
+<tr><td><code>event_recording_duration_secs</code></td><td>Optional <code>u64</code></td><td>No shared override; camera model defaults to <code>60</code> seconds.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Username and password fall back to their shared defaults when the per-camera resolved value is
+empty, including when the field is omitted. The other shared defaults apply only when the
+per-camera field is absent. Ports and RTSP URLs are not fields of <code>CameraCredentialDefaults</code>.</p>
+<p>Type: <code>CameraConfig</code>, section <code>[&lt;namespace&gt;.&lt;camera-key&gt;]</code>, usually <code>[cameras.front_door]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ip</code></td><td><code>IpAddr</code></td><td>Required</td><td>Camera IP address, not a DNS hostname.</td></tr>
+<tr><td><code>name</code></td><td>Optional <code>String</code></td><td>Camera table key</td><td>The loader replaces this value with the table key. Use <code>display_name</code> to change the UI label without changing storage identity.</td></tr>
+<tr><td><code>display_name</code></td><td>Optional <code>String</code></td><td>Falls back to <code>name</code></td><td>Human-readable camera label.</td></tr>
+<tr><td><code>manufacturer</code></td><td>Optional <code>String</code></td><td>No override</td><td>Nonempty trimmed value takes precedence over discovery.</td></tr>
+<tr><td><code>username</code></td><td><code>String</code></td><td>Shared default or empty</td><td>Camera username; literal or secret reference.</td></tr>
+<tr><td><code>password</code></td><td><code>String</code></td><td>Shared default or empty</td><td>Camera password; literal or secret reference.</td></tr>
+<tr><td><code>onvif_port</code></td><td>Optional <code>u16</code></td><td><code>8000</code> when unset</td><td>ONVIF service port. Typed configuration operations require <code>1..65535</code>.</td></tr>
+<tr><td><code>http_port</code></td><td>Optional <code>u16</code></td><td><code>80</code> when unset</td><td>Direct camera HTTP control port; typed operations require <code>1..65535</code>.</td></tr>
+<tr><td><code>main_rtsp_url</code></td><td>Optional <code>String</code></td><td>Discover stream</td><td>Explicit main-stream RTSP URL takes precedence over ONVIF discovery. Blank values are not explicit URLs.</td></tr>
+<tr><td><code>sub_rtsp_url</code></td><td>Optional <code>String</code></td><td>Discover stream</td><td>Explicit sub-stream RTSP URL. Use URL-escaped references in credential components.</td></tr>
+<tr><td><code>uid</code></td><td>Optional <code>String</code></td><td>None</td><td>Reolink P2P UID for direct BCUDP discovery.</td></tr>
+<tr><td><code>backend</code></td><td><code>CameraBackend</code></td><td>Shared default or <code>"auto"</code></td><td><code>"auto"</code>, <code>"retina"</code>, or <code>"reo-proto"</code>.</td></tr>
+<tr><td><code>transport</code></td><td><code>CameraTransport</code></td><td>Shared default or <code>"tcp"</code></td><td><code>"tcp"</code> or <code>"udp"</code>.</td></tr>
+<tr><td><code>record_generic_motion_events</code></td><td><code>bool</code></td><td>Shared default or <code>false</code></td><td>Opt in to supported generic motion events.</td></tr>
+<tr><td><code>recording_mode</code></td><td><code>CameraRecordingMode</code></td><td>Shared default or <code>"event-boost"</code></td><td><code>"off"</code>, <code>"sub"</code>, <code>"main"</code>, <code>"both"</code>, or <code>"event-boost"</code>.</td></tr>
+<tr><td><code>event_recording_duration_secs</code></td><td><code>u64</code></td><td>Shared default or <code>60</code></td><td>Event-triggered recording duration; typed configuration operations use <code>1..3600</code> seconds.</td></tr>
+</tbody>
+</table>
+</div>
+<p>These are stored configuration types, not promises that every camera supports every backend,
+transport, or recording capability. Discovery results such as <code>CameraCapabilities</code>, <code>CameraPorts</code>,
+<code>MediaProfile</code>, <code>VideoConfig</code>, and <code>AudioConfig</code> are not additional editable camera tables.</p>
+<h2 id="recording-storage"><a class="header" href="#recording-storage">Recording storage</a></h2>
+<p>Type: <code>StorageToml</code>, section <code>[storage]</code>. Optional paths are resolved by the runtime when absent;
+inspect the effective settings instead of assuming an omitted path is the current directory.</p>
+<p>Both recording directories default to <code>recordings/</code> under the default OS KeepPeek configuration
+directory, even when <code>--config</code> selects a configuration file elsewhere. An omitted catalog path
+becomes <code>recordings.db</code> under the effective long-term directory; the thumbnail directory defaults
+to <code>.event-thumbnails</code> under that same directory. See
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/storage/engine.rs">StorageConfig::from_toml</a>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>medium_term_path</code></td><td>Optional <code>String</code></td><td>Runtime-selected</td><td>Medium-term recording directory.</td></tr>
+<tr><td><code>long_term_path</code></td><td>Optional <code>String</code></td><td>Runtime-selected</td><td>Long-term recording directory.</td></tr>
+<tr><td><code>recording_catalog_path</code></td><td>Optional <code>String</code></td><td>Runtime-selected</td><td>Recording catalog path.</td></tr>
+<tr><td><code>event_thumbnail_path</code></td><td>Optional <code>String</code></td><td>Runtime-selected</td><td>Event-thumbnail directory.</td></tr>
+<tr><td><code>event_thumbnail_max_mb</code></td><td><code>u64</code></td><td><code>1024</code></td><td>Thumbnail storage budget, in MiB.</td></tr>
+<tr><td><code>short_term_secs</code></td><td><code>u64</code></td><td><code>120</code></td><td>Short-term retention, in seconds.</td></tr>
+<tr><td><code>medium_term_secs</code></td><td><code>u64</code></td><td><code>1800</code></td><td>Medium-term retention, in seconds.</td></tr>
+<tr><td><code>flush_interval_secs</code></td><td><code>u64</code></td><td><code>60</code></td><td>Recording flush interval, in seconds.</td></tr>
+<tr><td><code>write_buffer_bytes</code></td><td><code>usize</code></td><td><code>8192</code></td><td>Recording write-buffer size, in bytes.</td></tr>
+<tr><td><code>long_term_max_gb</code></td><td><code>u64</code></td><td><code>1024</code></td><td>Long-term storage budget, in GiB.</td></tr>
+<tr><td><code>minimum_free_gb</code></td><td><code>u64</code></td><td><code>10</code></td><td>Minimum-free-space safety threshold, in GiB.</td></tr>
+<tr><td><code>maximum_used_percent</code></td><td>Optional <code>u8</code></td><td>No percentage threshold</td><td>When set, <code>1..99</code>; filesystem-used percentage threshold.</td></tr>
+<tr><td><code>warning_free_gb</code></td><td><code>u64</code></td><td><code>20</code></td><td>Warning-free-space threshold, in GiB.</td></tr>
+<tr><td><code>critical_free_gb</code></td><td><code>u64</code></td><td><code>10</code></td><td>Critical-free-space threshold, in GiB.</td></tr>
+<tr><td><code>cleanup_hysteresis_gb</code></td><td><code>u64</code></td><td><code>5</code></td><td>Cleanup recovery margin, in GiB.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The effective critical threshold is the greater of <code>critical_free_gb</code> and <code>minimum_free_gb</code>.
+If <code>warning_free_gb</code> is zero while the effective critical threshold is nonzero, the warning
+threshold is derived as critical plus hysteresis. Otherwise, warning must be at least critical.
+Use the storage editor’s validated path-migration workflow for moves; do not repoint a live
+recording catalog by editing a path alone.</p>
+<h2 id="battery-wake"><a class="header" href="#battery-wake">Battery wake</a></h2>
+<p>Type: <code>BatteryWakeConfig</code>, section <code>[battery_wake]</code>. This is the Reolink wake middleman service,
+not a general Wake-on-LAN or scheduled privacy configuration.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable the wake service.</td></tr>
+<tr><td><code>bind</code></td><td>Optional <code>Ipv4Addr</code></td><td>Automatic</td><td>Local IPv4 binding selection.</td></tr>
+<tr><td><code>middleman_port</code></td><td><code>u16</code></td><td><code>9999</code></td><td>Nonzero middleman port.</td></tr>
+<tr><td><code>register_port</code></td><td><code>u16</code></td><td><code>58200</code></td><td>Nonzero registration port; must differ from the middleman port.</td></tr>
+<tr><td><code>heartbeat_secs</code></td><td><code>u64</code></td><td><code>20</code></td><td>Nonzero heartbeat interval.</td></tr>
+<tr><td><code>stale_after_secs</code></td><td><code>u64</code></td><td><code>80</code></td><td>Must cover at least one heartbeat interval.</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="logging"><a class="header" href="#logging">Logging</a></h2>
+<p>Type: <code>LoggingConfig</code>, section <code>[logging]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>service</code></td><td><code>ServiceLogDestination</code></td><td><code>"file"</code></td><td><code>"file"</code> or <code>"event_log"</code>; service logging destination, with Event Log relevant to Windows service operation.</td></tr>
+</tbody>
+</table>
+</div>
+<p>This section does not define arbitrary tracing filters, log payloads, or a diagnostics archive.</p>
+<h2 id="operational-events"><a class="header" href="#operational-events">Operational events</a></h2>
+<p>Type: <code>OperationalEventsConfig</code>, section <code>[operational_events]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>warning_hold_down_secs</code></td><td><code>u64</code></td><td><code>15</code></td><td>Delay before recording a warning transition.</td></tr>
+<tr><td><code>outage_hold_down_secs</code></td><td><code>u64</code></td><td><code>60</code></td><td>Delay before recording an outage.</td></tr>
+<tr><td><code>recovery_debounce_secs</code></td><td><code>u64</code></td><td><code>10</code></td><td>Stable-recovery debounce period.</td></tr>
+<tr><td><code>record_short_flaps</code></td><td><code>bool</code></td><td><code>false</code></td><td>Retain supported brief-flap transitions.</td></tr>
+<tr><td><code>cameras</code></td><td>Map of <code>OperationalEventOverride</code></td><td>Empty</td><td>Overrides keyed by stable camera ID, with camera IP as fallback.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>OperationalEventOverride</code>, section <code>[operational_events.cameras."&lt;camera-id-or-ip&gt;"]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>When absent</th></tr>
+</thead>
+<tbody>
+<tr><td><code>warning_hold_down_secs</code></td><td>Optional <code>u64</code></td><td>Inherit global warning hold-down.</td></tr>
+<tr><td><code>outage_hold_down_secs</code></td><td>Optional <code>u64</code></td><td>Inherit global outage hold-down.</td></tr>
+<tr><td><code>recovery_debounce_secs</code></td><td>Optional <code>u64</code></td><td>Inherit global recovery debounce.</td></tr>
+<tr><td><code>record_short_flaps</code></td><td>Optional <code>bool</code></td><td>Inherit the global flag.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each effective policy requires warning hold-down no greater than outage hold-down. Outage and
+recovery durations cannot exceed <code>86400</code> seconds. Override keys contain 1 to 256 bytes after the
+nonempty check. The stable camera ID takes precedence over an IP-keyed override.</p>
+<h2 id="mqtt-event-forwarding"><a class="header" href="#mqtt-event-forwarding">MQTT event forwarding</a></h2>
+<p>Types: <code>EventForwarderConfig</code> has one field, <code>mqtt: MqttForwarderConfig</code>. Section:
+<code>[event_forwarder.mqtt]</code>. Source:
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/event_forwarder/config.rs">MQTT configuration</a>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td><code>1</code></td><td>Server-managed settings revision.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>false</code></td><td>Enable forwarding.</td></tr>
+<tr><td><code>broker_url</code></td><td><code>String</code></td><td><code>"mqtt://127.0.0.1:1883"</code></td><td><code>mqtt</code> or <code>mqtts</code> URL with host; no user-info, non-root path, query, or fragment.</td></tr>
+<tr><td><code>client_id</code></td><td><code>String</code></td><td><code>"keeppeek"</code></td><td>Broker client ID.</td></tr>
+<tr><td><code>instance_id</code></td><td><code>String</code></td><td><code>"home-nvr"</code></td><td>KeepPeek instance identity.</td></tr>
+<tr><td><code>forwarder_id</code></td><td><code>String</code></td><td><code>"mqtt"</code></td><td>Forwarder identity.</td></tr>
+<tr><td><code>topic_prefix</code></td><td><code>String</code></td><td><code>"keeppeek"</code></td><td>1 to 512 bytes; no leading/trailing slash, NUL, <code>+</code>, or <code>#</code>. Interior slashes are allowed.</td></tr>
+<tr><td><code>username</code></td><td>Optional <code>String</code></td><td>None</td><td>Broker username, including supported references.</td></tr>
+<tr><td><code>password</code></td><td>Optional <code>String</code></td><td>None</td><td>Requires <code>username</code>; prefer a reference to the companion secret file.</td></tr>
+<tr><td><code>tls_ca_path</code></td><td>Optional <code>PathBuf</code></td><td>System trust</td><td>Custom CA path; only valid with <code>mqtts</code>.</td></tr>
+<tr><td><code>qos</code></td><td><code>u8</code></td><td><code>1</code></td><td><code>0</code>, <code>1</code>, or <code>2</code>.</td></tr>
+<tr><td><code>retain_events</code></td><td><code>bool</code></td><td><code>false</code></td><td>Retain event publications.</td></tr>
+<tr><td><code>retain_health</code></td><td><code>bool</code></td><td><code>true</code></td><td>Retain health publications.</td></tr>
+<tr><td><code>outbox_max_mb</code></td><td><code>u64</code></td><td><code>64</code></td><td>1 to 65536 MiB of bounded outbox storage.</td></tr>
+<tr><td><code>retry_min_ms</code></td><td><code>u64</code></td><td><code>250</code></td><td>Nonzero retry minimum, no greater than maximum.</td></tr>
+<tr><td><code>retry_max_ms</code></td><td><code>u64</code></td><td><code>30000</code></td><td>Retry maximum, at most <code>3600000</code> ms.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Client, instance, and forwarder IDs each contain 1 to 128 bytes without NUL, <code>/</code>, <code>+</code>, or <code>#</code>.
+Do not embed credentials in <code>broker_url</code>; use the dedicated fields. MQTT’s durable outbox is
+runtime delivery data, not another settings file.</p>
+<h2 id="credential-records"><a class="header" href="#credential-records">Credential records</a></h2>
+<p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/access.rs">access persistence</a>.
+Use the Administrator credential controls, not hand-written verifiers or revision changes.</p>
+<p>Type: <code>PersistedAccessCatalog</code>, section <code>[access_credentials]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>version</code></td><td><code>u32</code></td><td>Required; supported value is <code>1</code>.</td></tr>
+<tr><td><code>credentials</code></td><td><code>Vec&lt;StoredCredential&gt;</code></td><td>Required array, at most 128 records with unique IDs.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>StoredCredential</code>, array <code>[[access_credentials.credentials]]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>Uuid</code></td><td>Stable named-credential identity.</td></tr>
+<tr><td><code>name</code></td><td><code>String</code></td><td>1 to 64 printable bytes after trimming.</td></tr>
+<tr><td><code>description</code></td><td>Optional <code>String</code></td><td>At most 256 printable bytes; empty descriptions normalize to absent.</td></tr>
+<tr><td><code>role</code></td><td><code>AccessRole</code></td><td><code>"administrator"</code> or <code>"user"</code>.</td></tr>
+<tr><td><code>camera_access</code></td><td>Optional <code>CameraAccess</code></td><td>Per-user group and camera policy. Absent is unrestricted; new credentials explicitly default to everything.</td></tr>
+<tr><td><code>verifier</code></td><td><code>AccessKeyFingerprint</code></td><td>SHA-256 fingerprint serialized as 32 byte-valued integers, not the raw access key. Treat it as sensitive authentication material.</td></tr>
+<tr><td><code>created_at_ms</code></td><td><code>i64</code></td><td>Creation time, Unix milliseconds.</td></tr>
+<tr><td><code>rotated_at_ms</code></td><td>Optional <code>i64</code></td><td>Last rotation time; absent if never rotated.</td></tr>
+<tr><td><code>last_used_at_ms</code></td><td>Optional <code>i64</code></td><td>Accepted by the stored record type for compatibility, but cleared on load and omitted by the canonical writer. Activity is runtime state.</td></tr>
+<tr><td><code>expires_at_ms</code></td><td>Optional <code>i64</code></td><td>Expiry time; expired credentials are denied.</td></tr>
+<tr><td><code>disabled</code></td><td><code>bool</code></td><td>Disabled credentials cannot authenticate.</td></tr>
+<tr><td><code>revoked_at_ms</code></td><td>Optional <code>i64</code></td><td>Permanent revocation time.</td></tr>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td>Nonzero credential revision used to invalidate stale sessions.</td></tr>
+<tr><td><code>legacy</code></td><td><code>bool</code></td><td>Compatibility initial-credential marker.</td></tr>
+<tr><td><code>initial_secret_pending</code></td><td><code>bool</code></td><td>Initial-key retrieval is still pending.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The runtime <code>AccessCatalog.audit</code> array is not part of <code>PersistedAccessCatalog</code>. Audit history,
+session state, and credential last-use activity reset on restart; credential identities, verifiers,
+roles, revisions, and lifecycle metadata persist. The legacy <code>access.toml</code> is a migration input,
+not an additional active settings file.</p>
+<p>Type: <code>CameraAccess</code>, nested table belonging to the credential record, not to a camera. The
+<code>all_cameras</code> and <code>camera_ids</code> fields are required when the policy is present; <code>group_ids</code> defaults
+to an empty list for compatibility. Unknown fields are rejected.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>all_cameras</code></td><td><code>bool</code></td><td>Explicitly grant all current and future cameras. Must not be combined with a nonempty ID list.</td></tr>
+<tr><td><code>group_ids</code></td><td><code>Vec&lt;String&gt;</code></td><td>Camera configuration namespaces, such as <code>outdoor</code> for <code>[outdoor.front_door]</code>. Defaults to empty. At most 128 unique, nonblank names of at most 256 UTF-8 bytes without control characters.</td></tr>
+<tr><td><code>camera_ids</code></td><td><code>Vec&lt;String&gt;</code></td><td>At most 128 unique, nonblank IDs of at most 256 UTF-8 bytes without control characters. Use server-advertised camera IDs, not names.</td></tr>
+</tbody>
+</table>
+</div>
+<p>With <code>all_cameras = false</code>, access is the union of cameras in <code>group_ids</code> and explicit <code>camera_ids</code>;
+both lists empty grants nothing. <code>all_cameras = true</code> requires both lists empty and includes future
+groups and cameras. New credentials and absent policies default to everything. Existing explicit
+restrictions are not broadened on upgrade. Administrators always have full access and cannot be
+restricted through this policy. There is no secret substitution inside grant records.</p>
+<p>The Administrator’s user-access editor validates camera and group IDs against the current fleet and
+saves under the shared configuration lock. Each save increments the credential revision, rejects
+stale writes, and invalidates existing sessions. Grants survive configuration reload and export/import.
+Group grants are saved as group names, not expanded camera lists; effective access is resolved from
+the server’s camera group membership. <code>available_group_ids</code> in management responses is bounded
+discovery metadata for the editor, not a persisted field. The editor supports up to 128 available
+groups using the same ID limits; an invalid or oversized inventory rejects management requests
+before any policy mutation. Runtime group-membership changes close affected group-scoped sessions
+and cancel their queued work so playback and event subscriptions cannot retain an obsolete grant.
+Grid audiences do not grant camera permissions. Custom roles remain unsupported, and trusted-local
+clients still follow the Administrator policy described above.</p>
+<h2 id="peek-layout-registry"><a class="header" href="#peek-layout-registry">Peek layout registry</a></h2>
+<p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/peek_layouts.rs">layout persistence</a>.
+Layouts use the existing main configuration file and the <code>keeppeek.peek-layouts.v1</code> capability.
+Use the layout controls and revision-checked operations rather than manually constructing this
+server-managed section.</p>
+<p>Type: <code>StoredRegistry</code>, section <code>[peek_layouts]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>schema_version</code></td><td><code>u32</code></td><td>Required; supported value is <code>1</code>.</td></tr>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td>Nonzero registry revision. Stale writes conflict.</td></tr>
+<tr><td><code>shared_layouts</code></td><td><code>Vec&lt;Layout&gt;</code></td><td>Nonempty server-owned layout array.</td></tr>
+<tr><td><code>users</code></td><td>Map of <code>StoredUserRegistry</code></td><td>Keyed by principal ID; holds per-user active selection and legacy private layouts.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>StoredUserRegistry</code>, section <code>[peek_layouts.users."&lt;principal-id&gt;"]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>active_layout_id</code></td><td><code>String</code></td><td>Selected layout identity. Missing selections are repaired by the registry.</td></tr>
+<tr><td><code>layouts</code></td><td><code>Vec&lt;Layout&gt;</code></td><td>Legacy private layout records; migrated to server-owned shared layouts with restricted audiences when opened.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>Layout</code>, under <code>shared_layouts[]</code> or legacy <code>users.&lt;principal-id&gt;.layouts[]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>String</code></td><td>Unique within the registry view; nonblank, at most 128 characters.</td></tr>
+<tr><td><code>name</code></td><td><code>String</code></td><td>Nonblank, at most 80 characters.</td></tr>
+<tr><td><code>scope</code></td><td><code>LayoutScope</code></td><td><code>"shared"</code> for canonical layouts; <code>"private"</code> is retained for migration.</td></tr>
+<tr><td><code>owner_id</code></td><td><code>String</code></td><td><code>"server"</code> for shared layouts; private records must match their principal.</td></tr>
+<tr><td><code>audience</code></td><td><code>LayoutAudience</code></td><td>Defaults to everyone with an empty credential list when the entire field is absent.</td></tr>
+<tr><td><code>activity_focus</code></td><td><code>bool</code></td><td>Whether activity can affect layout focus.</td></tr>
+<tr><td><code>tiles</code></td><td><code>Vec&lt;LayoutTile&gt;</code></td><td>Ordered tiles, at most 64 per layout; no duplicate camera IDs or overlaps.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>LayoutAudience</code>, nested <code>audience</code> table.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>everyone</code></td><td><code>bool</code></td><td>When true, <code>credential_ids</code> must be empty.</td></tr>
+<tr><td><code>credential_ids</code></td><td><code>Vec&lt;String&gt;</code></td><td>At most 128 unique canonical UUID strings. Save operations check that viewer identities exist. Empty with <code>everyone = false</code> gives no ordinary user access; Administrators retain management access.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>LayoutTile</code>, nested <code>tiles[]</code> array.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>camera_id</code></td><td><code>String</code></td><td>Stable camera identity, not display name.</td></tr>
+<tr><td><code>column</code></td><td><code>u32</code></td><td>One-based grid column.</td></tr>
+<tr><td><code>row</code></td><td><code>u32</code></td><td>One-based grid row.</td></tr>
+<tr><td><code>column_span</code></td><td><code>u32</code></td><td>Positive horizontal span; tile must fit the 12-column grid.</td></tr>
+<tr><td><code>row_span</code></td><td><code>u32</code></td><td>Positive vertical span; tile must fit the 12-row grid.</td></tr>
+<tr><td><code>pinned</code></td><td><code>bool</code></td><td>Tile pinning state.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The registry has a 256 KiB serialized bound and at most 32 layouts per validated view. Stored
+camera references are retained when a camera disappears; additions are validated against known
+cameras. The initial registry has revision <code>1</code> and an <code>All cameras</code> shared layout with ID
+<code>default</code>, activity focus enabled, and up to 64 configured cameras. Opening the store also migrates
+the legacy <code>peek-layouts.json</code>; that file is not an active persistence target.</p>
+<p>The client-facing <code>LayoutRegistry</code> contains <code>schema_version</code>, <code>active_layout_id</code>, and <code>layouts</code>.
+It is not the on-disk <code>StoredRegistry</code>; do not paste a client exchange document over the main
+configuration. Grid audiences control grid visibility only. They must not be treated as permission
+to view, export, or control an otherwise restricted camera.</p>
+<p>The server intersects a User’s returned tiles with their camera grants. Selecting a dashboard from
+that filtered view updates only the principal’s active selection; it does not remove other cameras
+from the canonical layout. Unknown or no-longer-visible dashboard selections are rejected.</p>
+<h2 id="camera-templates"><a class="header" href="#camera-templates">Camera templates</a></h2>
+<p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/server/configuration.rs">configuration templates</a>.
+Templates are versioned, server-managed configuration records, not another settings file.</p>
+<p>Type: <code>StoredTemplateDocument</code>, section <code>[configuration_templates]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>document_version</code></td><td><code>u32</code></td><td>Required; supported value is <code>1</code>.</td></tr>
+<tr><td><code>templates</code></td><td><code>Vec&lt;StoredTemplate&gt;</code></td><td>Required array, at most 64 templates. Missing section means an empty document.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>StoredTemplate</code>, array <code>[[configuration_templates.templates]]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>template_id</code></td><td><code>String</code></td><td>Unique ID, 1 to 64 ASCII letters, digits, hyphens, or underscores.</td></tr>
+<tr><td><code>version</code></td><td><code>u64</code></td><td>Server-managed template version.</td></tr>
+<tr><td><code>name</code></td><td><code>String</code></td><td>Nonblank, at most 128 bytes, no control characters; names are unique ignoring case.</td></tr>
+<tr><td><code>description</code></td><td><code>String</code></td><td>Defaults to empty and is omitted when empty; at most 1024 bytes, no control characters.</td></tr>
+<tr><td><code>values</code></td><td><code>StoredTemplateValues</code></td><td>At least one supported setting must be present.</td></tr>
+<tr><td><code>created_at_ms</code></td><td><code>i64</code></td><td>Creation time, Unix milliseconds.</td></tr>
+<tr><td><code>updated_at_ms</code></td><td><code>i64</code></td><td>Last update time, Unix milliseconds.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>StoredTemplateValues</code>, nested <code>values</code> table. Every field is optional and omitted when unset.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>username_secret_reference</code></td><td><code>String</code></td><td>A complete valid secret reference, not an inline username.</td></tr>
+<tr><td><code>password_secret_reference</code></td><td><code>String</code></td><td>A complete valid secret reference, not an inline password.</td></tr>
+<tr><td><code>onvif_port</code></td><td><code>u16</code></td><td><code>1..65535</code>.</td></tr>
+<tr><td><code>http_port</code></td><td><code>u16</code></td><td><code>1..65535</code>.</td></tr>
+<tr><td><code>backend</code></td><td><code>CameraBackend</code></td><td><code>"auto"</code>, <code>"retina"</code>, or <code>"reo-proto"</code>.</td></tr>
+<tr><td><code>transport</code></td><td><code>CameraTransport</code></td><td><code>"tcp"</code> or <code>"udp"</code>.</td></tr>
+<tr><td><code>record_generic_motion_events</code></td><td><code>bool</code></td><td>Generic motion-event preference.</td></tr>
+<tr><td><code>recording_mode</code></td><td><code>CameraRecordingMode</code></td><td><code>"off"</code>, <code>"sub"</code>, <code>"main"</code>, <code>"both"</code>, or <code>"event-boost"</code>.</td></tr>
+<tr><td><code>event_recording_duration_secs</code></td><td><code>u32</code></td><td><code>1..3600</code> seconds.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The template writer enforces a 16 KiB serialized document limit. The legacy
+<code>configuration-templates.json</code> is imported into this section and removed. Template references stay
+as tokens in the stored template; applying a template must validate the resulting camera settings.</p>
+<h2 id="notification-rules"><a class="header" href="#notification-rules">Notification rules</a></h2>
+<p>Sources: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/notifications/store.rs">rule persistence</a>,
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/notifications/model.rs">rule model</a>, and
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/notifications.rs">cooldowns</a>.</p>
+<p>Type: <code>NotificationConfiguration</code>, section <code>[notifications]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default and bound</th></tr>
+</thead>
+<tbody>
+<tr><td><code>rules</code></td><td><code>Vec&lt;PersistedRuleRecord&gt;</code></td><td><code>[]</code>; at most 128 rules, with unique rule IDs.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>PersistedRuleRecord</code>, array <code>[[notifications.rules]]</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>String</code></td><td>Stable rule ID.</td></tr>
+<tr><td><code>owner_id</code></td><td><code>String</code></td><td>Owning principal ID.</td></tr>
+<tr><td><code>active</code></td><td>Optional <code>Rule</code></td><td>Published rule; absent before first activation.</td></tr>
+<tr><td><code>active_revision</code></td><td><code>u64</code></td><td>Active revision used for conflict checks.</td></tr>
+<tr><td><code>draft</code></td><td><code>Rule</code></td><td>Saved draft, which may be incomplete before activation.</td></tr>
+<tr><td><code>draft_revision</code></td><td><code>u64</code></td><td>Draft revision used for conflict checks.</td></tr>
+<tr><td><code>created_at_ms</code></td><td><code>i64</code></td><td>Creation time, Unix milliseconds.</td></tr>
+<tr><td><code>updated_at_ms</code></td><td><code>i64</code></td><td>Last update time, Unix milliseconds.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Rule identity, owner, and revisions must agree with the containing record. A draft is bounded
+to 64 KiB in its JSON representation. Activating it requires complete rule validation. Runtime
+<code>RuleRecord.last_match_at_ms</code> and <code>last_delivery_at_ms</code> are not persisted fields.</p>
+<p>Type: <code>Rule</code>, under each record’s <code>draft</code> and optional <code>active</code> tables.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Validation or default</th></tr>
+</thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>String</code></td><td>1 to 128 ASCII letters, digits, <code>.</code>, <code>-</code>, or <code>_</code>.</td></tr>
+<tr><td><code>name</code></td><td><code>String</code></td><td>Nonblank, at most 128 characters.</td></tr>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td>Required; disabled rules do not match events.</td></tr>
+<tr><td><code>revision</code></td><td><code>u64</code></td><td>Corresponding draft or active revision.</td></tr>
+<tr><td><code>owner_id</code></td><td><code>String</code></td><td>Same ID character and byte limits as <code>id</code>.</td></tr>
+<tr><td><code>triggers</code></td><td><code>Vec&lt;Trigger&gt;</code></td><td>Nonempty and unique; values below.</td></tr>
+<tr><td><code>filter</code></td><td><code>Filter</code></td><td>Defaults to an empty filter.</td></tr>
+<tr><td><code>schedule</code></td><td><code>Schedule</code></td><td>Required.</td></tr>
+<tr><td><code>cooldowns</code></td><td><code>Vec&lt;Cooldown&gt;</code></td><td>Defaults to <code>[]</code>; scopes must be unique.</td></tr>
+<tr><td><code>rate_limits</code></td><td><code>Vec&lt;RateLimit&gt;</code></td><td>Defaults to <code>[]</code>; scopes must be unique.</td></tr>
+<tr><td><code>critical_bypass</code></td><td>Optional <code>CriticalBypass</code></td><td>Bounded critical-event quiet-hours bypass.</td></tr>
+<tr><td><code>enrichment</code></td><td><code>EnrichmentPolicy</code></td><td>Required.</td></tr>
+<tr><td><code>actions</code></td><td><code>Vec&lt;Action&gt;</code></td><td>1 to 8 actions.</td></tr>
+<tr><td><code>failure</code></td><td><code>FailurePolicy</code></td><td>Required.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>Trigger</code> values are <code>"event_created"</code>, <code>"event_updated"</code>, <code>"event_ended"</code>, <code>"outage_started"</code>,
+<code>"recovery"</code>, <code>"storage_health"</code>, <code>"recording_health"</code>, and <code>"test"</code>.</p>
+<h3 id="filters-and-schedules"><a class="header" href="#filters-and-schedules">Filters and schedules</a></h3>
+<p>Type: <code>Filter</code>, nested <code>filter</code> table.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default and rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>source_ids</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code>; at most 128 nonblank values.</td></tr>
+<tr><td><code>group_ids</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code>; at most 128 nonblank values.</td></tr>
+<tr><td><code>event_kinds</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code>; at most 128 nonblank values.</td></tr>
+<tr><td><code>zones</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code>; at most 128 nonblank values.</td></tr>
+<tr><td><code>minimum_confidence</code></td><td>Optional <code>f64</code></td><td>Finite value in <code>0..1</code>, inclusive.</td></tr>
+<tr><td><code>attachment_required</code></td><td>Optional <code>bool</code></td><td>Require or exclude an available non-private attachment.</td></tr>
+<tr><td><code>minimum_duration_ms</code></td><td>Optional <code>u64</code></td><td>Minimum matching event duration.</td></tr>
+<tr><td><code>severities</code></td><td><code>Vec&lt;Severity&gt;</code></td><td><code>[]</code>; values <code>"info"</code>, <code>"warning"</code>, <code>"critical"</code>.</td></tr>
+<tr><td><code>reviewed</code></td><td>Optional <code>bool</code></td><td>Match the supplied review state.</td></tr>
+<tr><td><code>bookmarked</code></td><td>Optional <code>bool</code></td><td>Match the supplied bookmark state.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Empty filter arrays do not restrict that dimension. Filter fields describe matching inputs;
+their presence does not mean every camera or event producer supplies them.</p>
+<p>Type: <code>Schedule</code>, nested <code>schedule</code> table.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default and rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>timezone</code></td><td><code>String</code></td><td>Required recognized IANA timezone, such as <code>"UTC"</code>.</td></tr>
+<tr><td><code>active_windows</code></td><td><code>Vec&lt;WeeklyWindow&gt;</code></td><td><code>[]</code>, meaning no active-window restriction.</td></tr>
+<tr><td><code>quiet_hours</code></td><td>Optional <code>QuietHours</code></td><td>No quiet-hours suppression when absent.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>QuietHours</code> has one required field, <code>windows: Vec&lt;WeeklyWindow&gt;</code>. <code>WeeklyWindow</code> fields are:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>weekdays</code></td><td><code>Vec&lt;Weekday&gt;</code></td><td>Nonempty and unique; <code>"monday"</code> through <code>"sunday"</code>.</td></tr>
+<tr><td><code>start_minute</code></td><td><code>u16</code></td><td><code>0..1439</code>, local minutes after midnight.</td></tr>
+<tr><td><code>end_minute</code></td><td><code>u16</code></td><td><code>0..1439</code>, exclusive end; must differ from start.</td></tr>
+</tbody>
+</table>
+</div>
+<p>An end earlier than the start describes an overnight window.</p>
+<h3 id="cooldowns-limits-and-delivery"><a class="header" href="#cooldowns-limits-and-delivery">Cooldowns, limits, and delivery</a></h3>
+<p>All policy durations below are in milliseconds and must be between <code>1</code> and <code>2592000000</code>
+(30 days), inclusive, unless a tighter rule is stated.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Fields</th><th>Validation</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Cooldown</code></td><td><code>scope: CooldownScope</code>, <code>duration_ms: u64</code></td><td>Scopes: <code>"event"</code>, <code>"camera_event_kind"</code>, <code>"group"</code>, <code>"rule"</code>, <code>"outage"</code>.</td></tr>
+<tr><td><code>RateLimit</code></td><td><code>scope: RateLimitScope</code>, <code>maximum: u32</code>, <code>window_ms: u64</code></td><td>Maximum <code>1..10000</code>; scopes <code>"rule"</code>, <code>"channel"</code>, <code>"principal"</code>, <code>"global"</code>.</td></tr>
+<tr><td><code>CriticalBypass</code></td><td><code>maximum: u32</code>, <code>window_ms: u64</code></td><td>Maximum <code>1..10</code>.</td></tr>
+<tr><td><code>EnrichmentPolicy</code></td><td><code>deadline_ms: u64</code>, <code>maximum_revisions: u32</code>, <code>maximum_attempts: u32</code>, <code>maximum_attachment_bytes: u64</code>, <code>wake_after_deadline: bool</code></td><td>Revisions <code>1..32</code>, attempts <code>1..8</code>, attachment bytes <code>1..4194304</code> (4 MiB). All fields required.</td></tr>
+<tr><td><code>FailurePolicy</code></td><td><code>maximum_attempts: u32</code>, <code>maximum_retry_interval_ms: u64</code>, <code>expiry_ms: u64</code></td><td>Attempts <code>1..10</code>. An enabled push action requires retry interval at least <code>5000</code> ms. All fields required.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Type: <code>Action</code>, nested <code>actions[]</code> array.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default and rule</th></tr>
+</thead>
+<tbody>
+<tr><td><code>enabled</code></td><td><code>bool</code></td><td><code>true</code>.</td></tr>
+<tr><td><code>channel</code></td><td><code>Channel</code></td><td><code>"browser"</code>, <code>"push"</code>, <code>"webhook"</code>, or <code>"forwarder"</code>. Use channels advertised as available by the server.</td></tr>
+<tr><td><code>destination</code></td><td><code>String</code></td><td>At most 2048 bytes after resolution. Browser actions use the owner and require an empty destination. Push uses the Pushover destination format; webhook requires an HTTP(S) URL without user-info; forwarder requires a nonblank destination.</td></tr>
+<tr><td><code>template</code></td><td><code>Template</code></td><td>Required <code>title: String</code> and <code>body: String</code>.</td></tr>
+<tr><td><code>attachment</code></td><td><code>AttachmentPolicy</code></td><td><code>"never"</code>, <code>"when_available"</code>, or <code>"required"</code>.</td></tr>
+<tr><td><code>allow_second_delivery</code></td><td><code>bool</code></td><td>Required flag for staged delivery.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Template title and body limits are 256 and 4096 characters respectively; provider-specific limits
+can be tighter. Allowed <code>{{field}}</code> substitutions are <code>source.id</code>, <code>source.name</code>, <code>event.id</code>,
+<code>event.kind</code>, <code>event.zone</code>, <code>event.confidence</code>, <code>event.duration</code>, <code>health.state</code>,
+<code>notification.stage</code>, and <code>notification.deep_link</code>. These are notification template substitutions,
+not secret references.</p>
+<p>Provider destinations can contain credentials, so the rule writer moves non-browser destination
+strings into the companion secret file and stores references. It keeps active and draft secret
+versions separate. Do not inline tokens into a book example or export them with a layout.</p>
+<p>The legacy <code>notifications.db</code> is a rule-migration input. Delivery jobs, retry state, evaluation
+history, and counters are runtime state, not extra <code>[notifications]</code> settings. See
+<a href="./notifications-and-integrations.html">notifications and integrations</a> for provider setup.</p>
+<h2 id="pending-storage-migration"><a class="header" href="#pending-storage-migration">Pending storage migration</a></h2>
+<p>Type: <code>StorageMigration</code>, section <code>[storage_migration]</code>. The server creates this journal for a
+validated move and consumes it during migration. Do not use it as an alternative storage editor.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>medium_term</code></td><td>Optional <code>StoragePathMigration</code></td><td>Medium-term recording move.</td></tr>
+<tr><td><code>long_term</code></td><td>Optional <code>StoragePathMigration</code></td><td>Long-term recording move.</td></tr>
+<tr><td><code>recording_catalog</code></td><td>Optional <code>StoragePathMigration</code></td><td>Explicit catalog move when not covered by a recording-root move.</td></tr>
+<tr><td><code>event_thumbnails</code></td><td>Optional <code>StoragePathMigration</code></td><td>Explicit thumbnail move when not covered by a recording-root move.</td></tr>
+<tr><td><code>recording_catalog_after_move</code></td><td>Optional <code>PathBuf</code></td><td>Catalog whose stored recording paths must be rewritten after moving roots.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Each <code>StoragePathMigration</code> has two required <code>PathBuf</code> fields: <code>from</code> and <code>to</code>. Paths must be
+nonempty, must not contain one another, and must satisfy the migration overlap checks. A single
+source cannot be split into conflicting destinations. <code>StorageMigrationPaths</code> is a runtime helper
+of borrowed paths, not another TOML section.</p>
+<h2 id="compatibility-and-completeness"><a class="header" href="#compatibility-and-completeness">Compatibility and completeness</a></h2>
+<ul>
+<li>Preserve server-managed sections when editing ordinary settings. Serializing only <code>Config</code>
+would omit the separate credential, layout, template, and notification records.</li>
+<li>The legacy access, layout, template, and notification files are migration inputs only. Do not
+create new instances of them for new settings.</li>
+<li>There is no generic <code>[users]</code>, <code>[permissions]</code>, <code>[groups]</code>, or persistent runtime-profile schema
+in this configuration. Do not invent those sections or assume a grid’s audience restricts camera
+access elsewhere.</li>
+<li>Future layout and permission settings must extend the existing application configuration and
+its validation, atomic writes, and recovery coverage. Secret values remain in the existing
+companion secret store.</li>
+<li>When a serialized struct, section name, default, limit, enum, or migration changes, update this
+reference in the same change and verify both load and write paths with synthetic fixtures.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="configuration-management.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="configuration-export-import.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="configuration-management.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="configuration-export-import.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="mermaid-eefea253.min.js"></script>
+        <script src="mermaid-init-53b67c53.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

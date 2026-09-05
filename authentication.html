@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-038c8a66.js";
+            window.path_to_searchindex_js = "searchindex-844f867d.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-c48abb98.js"></script>
+        <script src="toc-36020d8d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -249,7 +249,30 @@ customize it.</p>
 </div>
 <p>The server enforces this policy for HTTP and every WebRTC control operation. Hidden navigation and
 controls make the User interface clearer, but they are not the security boundary.</p>
-<p>Custom roles and per-camera permissions are not currently available.</p>
+<p>The User operations above are limited to that credential’s allowed cameras. Custom roles are not
+currently available.</p>
+<h2 id="camera-and-dashboard-access"><a class="header" href="#camera-and-dashboard-access">Camera and dashboard access</a></h2>
+<p>In <strong>Settings &gt; Access &amp; roles</strong>, choose the person icon beside a User credential to set <strong>User
+access</strong>. The default is <strong>Everything</strong>, including current and future groups and cameras. To
+restrict that user, choose <strong>Selected groups and cameras</strong>. Select camera groups, individual cameras,
+or both: either a matching group or an explicit camera selection grants access. Selecting neither
+grants no cameras. Existing explicit restrictions remain unchanged.</p>
+<p>Camera groups use configuration namespaces. For example, <code>[outdoor.front_door]</code> puts the camera in
+the <code>outdoor</code> group. These groups are separate from saved dashboards and live-sharing rooms.</p>
+<p>Camera grants are enforced by the server for live and recorded media, event previews, notification
+inbox/history, recording coverage, and camera controls. A grant does not permit Administrator-only
+operations such as export or camera configuration. Saving permissions closes that User’s existing
+sessions; they sign in again with the same key. Stale saves return a conflict without discarding the
+draft.</p>
+<p>Use the dashboard’s access controls to select its viewers separately. Sharing a dashboard does not
+grant its cameras. A User sees only allowed camera tiles and can select visible dashboards, but
+cannot modify or share the server-owned layouts. The complete layout remains intact for its
+Administrator even when a User’s view has fewer tiles.</p>
+<p>Both settings live in the existing configuration: camera grants in each
+<code>access_credentials.credentials[].camera_access</code> record and dashboards in <code>peek_layouts</code>. See the
+<a href="./configuration-reference.html#credential-records">configuration reference</a> for field names and limits.</p>
+<p>Trusted-local clients still receive Administrator access. To restrict someone on your LAN or VPN,
+ensure their address is not in <code>access.local_networks</code> and have them sign in with a User credential.</p>
 <h2 id="remote-sign-in"><a class="header" href="#remote-sign-in">Remote sign-in</a></h2>
 <p>Open the recorder through HTTPS and enter the issued UUID in the <strong>Remote sign-in</strong> form. The
 browser keeps the key only in memory for the current page session. It is not placed in the URL,
@@ -278,8 +301,8 @@ active sessions. Enabling it increments the revision; clients must establish new
 <h3 id="revoke"><a class="header" href="#revoke">Revoke</a></h3>
 <p>Revocation is permanent. It closes active sessions and prevents reconnecting with that credential.
 A revoked credential cannot be enabled or rotated; create a replacement identity instead.</p>
-<p>Credential metadata and SHA-256 verifiers are stored under <code>[access_credentials]</code> in <code>config.toml</code> beside
-<code>config.toml</code>. Raw keys are not stored there. The compatibility Initial Administrator key remains
+<p>Credential metadata, camera grants, and SHA-256 verifiers are stored under <code>[access_credentials]</code>
+in <code>config.toml</code>. Raw keys are not stored there. The compatibility Initial Administrator key remains
 protected in owner-only <code>secrets.toml</code>.</p>
 <h2 id="sessions-and-revocation"><a class="header" href="#sessions-and-revocation">Sessions and revocation</a></h2>
 <p>Each WebRTC session has a random opaque ID and is bound to its principal, role, effective client
