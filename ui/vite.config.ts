@@ -53,6 +53,7 @@ export default defineConfig({
 		},
 		proxy: {
 			'/create': apiTarget,
+			'/config/': apiTarget,
 			'/delete': apiTarget,
 			'/logs': apiTarget,
 			'/metrics': apiTarget,

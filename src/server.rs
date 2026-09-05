@@ -64,7 +64,6 @@ use hmac::{Hmac, KeyInit, Mac};
 use include_dir::{Dir, File as EmbeddedFile, include_dir};
 use prost::Message as _;
 use rouille::{Request, Response, ResponseBody, Server, router};
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -95,6 +94,25 @@ mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod runtime_configuration;
 mod stored_media;
+
+pub(crate) fn migrate_peek_layout_configuration(
+    config_path: &Path,
+    camera_ids: &[String],
+) -> anyhow::Result<()> {
+    peek_layouts::migrate_configuration(config_path, camera_ids)
+}
+
+pub(crate) fn validate_peek_layout_configuration(root: &toml::Table) -> anyhow::Result<()> {
+    peek_layouts::validate_configuration(root)
+}
+
+pub(crate) fn migrate_template_store(config_path: &Path) -> anyhow::Result<()> {
+    configuration::migrate_template_store(config_path)
+}
+
+pub(crate) fn validate_template_configuration(root: &toml::Table) -> anyhow::Result<()> {
+    configuration::validate_configuration(root)
+}
 
 pub(crate) fn validate_backup_layout_document(bytes: &[u8]) -> anyhow::Result<()> {
     peek_layouts::validate_backup_document(bytes)
@@ -160,7 +178,6 @@ const CONFIGURATION_CAPABILITY_ID: &str = "keeppeek.configuration.v1";
 // Limits user-provided search text before it becomes part of in-memory matching work.
 const MAX_CAMERA_CATALOG_QUERY_CHARS: usize = 128;
 const MAX_NOTIFICATION_RULE_JSON_BYTES: usize = 64 * 1_024;
-const MAX_BACKUP_JSON_BYTES: u64 = 64 * 1_024;
 
 static UI_ASSETS: Dir<'static> = include_dir!("$KEEPPEEK_UI_BUILD_DIR");
 
@@ -8891,6 +8908,10 @@ impl ServerState {
         self
     }
 
+    pub(crate) fn configuration_update_lock(&self) -> Arc<Mutex<()>> {
+        self.config_update.clone()
+    }
+
     pub(crate) fn with_event_forwarder(mut self, event_forwarder: EventForwarderHandle) -> Self {
         self.event_forwarder = Some(event_forwarder);
         self
@@ -9641,8 +9662,14 @@ fn handle_request(
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
 ) -> Response {
-    if request.method() == "OPTIONS" && request.url().starts_with("/api/backups") {
-        return backup_api_preflight(request, state);
+    let request_path = request.url();
+    if request_path == "/api/backups" || request_path.starts_with("/api/backups/") {
+        return service_error(404, "not found");
+    }
+    if request.method() == "OPTIONS"
+        && matches!(request_path.as_str(), "/config/apply" | "/config/export")
+    {
+        return config_api_preflight(request, state);
     }
     router!(request,
         (POST) (/create) => {
@@ -9681,222 +9708,59 @@ fn handle_request(
                 recording_coverage::get(request, router_tx, state)
             })
         },
-        (GET) (/api/backups) => {
+        (GET) (/config/export) => {
             authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_list(state, &identity)
+                config_export(state, &identity)
             })
         },
-        (GET) (/api/backups/capabilities) => {
+        (POST) (/config/apply) => {
             authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_json_result(state, &identity, "backup_capabilities", None, 200, || {
-                    backup_manager(state)?.capabilities(unix_time_ms())
-                })
-            })
-        },
-        (POST) (/api/backups) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_create(request, state, &identity)
-            })
-        },
-        (GET) (/api/backups/download) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_download(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/downloads) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_download_begin(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/uploads) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_upload_begin(request, state, &identity)
-            })
-        },
-        (PUT) (/api/backups/transfers) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_upload_accept(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/inspect) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_inspect(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/restore-plans) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_restore_plan(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/restores) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_restore_activate(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/restores/get) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_restore_get(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/rollbacks) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_restore_rollback(request, state, &identity)
-            })
-        },
-        (POST) (/api/backups/delete) => {
-            authenticated_api_request(request, state, true, AccessRole::Administrator, |identity| {
-                backup_delete(request, state, &identity)
+                config_apply(request, state, &identity)
             })
         },
         _ => serve_ui(request)
     )
 }
 
-fn backup_api_preflight(request: &Request, state: &ServerState) -> Response {
-    let response = api_preflight(request, state);
-    response.with_additional_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+fn config_export(state: &ServerState, identity: &AuthenticatedApiRequest) -> Response {
+    let result =
+        backup_manager(state).and_then(|manager| manager.export_configuration(unix_time_ms()));
+    match result {
+        Ok((file_name, bytes)) => {
+            record_backup_http_audit(state, identity, "config_export", None, "success");
+            Response::from_data("application/zip", bytes)
+                .with_additional_header("Cache-Control", "no-store")
+                .with_additional_header(
+                    "Content-Disposition",
+                    format!("attachment; filename=\"{file_name}\""),
+                )
+        }
+        Err(error) => {
+            record_backup_http_audit(state, identity, "config_export", None, "failed");
+            backup_error_from_anyhow(error)
+        }
+    }
 }
 
-fn backup_list(state: &ServerState, identity: &AuthenticatedApiRequest) -> Response {
-    backup_json_result(state, identity, "backup_list", None, 200, || {
-        backup_manager(state)?.list()
-    })
-}
-
-fn backup_create(
+fn config_apply(
     request: &Request,
     state: &ServerState,
     identity: &AuthenticatedApiRequest,
 ) -> Response {
-    let request = match backup_json_body(request, state, identity, "backup_create") {
-        Ok(request) => request,
-        Err(response) => return response,
-    };
-    backup_json_result(state, identity, "backup_create", None, 201, || {
-        backup_manager(state)?.create(&request, unix_time_ms())
-    })
-}
-
-fn backup_download(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let Some(backup_id) = request.get_param("backup_id") else {
+    if request
+        .header("Content-Type")
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        != Some("application/zip")
+    {
         return backup_rejected_response(
             state,
             identity,
-            "backup_download",
-            400,
-            "backup_id query parameter is required",
-        );
-    };
-    let manager = match backup_manager(state) {
-        Ok(manager) => manager,
-        Err(error) => return backup_download_error(state, identity, &backup_id, error),
-    };
-    let record = match manager.inspect(&backup_id) {
-        Ok(record) => record,
-        Err(error) => return backup_download_error(state, identity, &backup_id, error),
-    };
-    let path = match manager.artifact_path(&backup_id) {
-        Ok(path) => path,
-        Err(error) => return backup_download_error(state, identity, &backup_id, error),
-    };
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) => return backup_download_error(state, identity, &backup_id, error.into()),
-    };
-    record_backup_http_audit(
-        state,
-        identity,
-        "backup_download",
-        Some(&backup_id),
-        "success",
-    );
-    Response::from_file("application/zip", file)
-        .with_additional_header("Cache-Control", "no-store")
-        .with_additional_header(
-            "Content-Disposition",
-            format!("attachment; filename=\"{}\"", record.file_name),
-        )
-}
-
-fn backup_download_error(
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-    backup_id: &str,
-    error: anyhow::Error,
-) -> Response {
-    record_backup_http_audit(
-        state,
-        identity,
-        "backup_download",
-        Some(backup_id),
-        "failed",
-    );
-    backup_error_from_anyhow(error)
-}
-
-fn backup_download_begin(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::BeginBackupDownloadRequest =
-        match backup_json_body(request, state, identity, "backup_download_begin") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    let target = request.backup_id.clone();
-    backup_json_result(
-        state,
-        identity,
-        "backup_download_begin",
-        Some(&target),
-        200,
-        || backup_manager(state)?.begin_download(&request, unix_time_ms()),
-    )
-}
-
-fn backup_upload_begin(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::BeginBackupUploadRequest =
-        match backup_json_body(request, state, identity, "backup_upload_begin") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    backup_json_result(state, identity, "backup_upload_begin", None, 201, || {
-        backup_manager(state)?.begin_upload(&request, unix_time_ms())
-    })
-}
-
-fn backup_upload_accept(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    if request.header("Content-Type") != Some("application/zip") {
-        return backup_rejected_response(
-            state,
-            identity,
-            "backup_upload",
+            "config_apply",
             415,
-            "backup upload must use application/zip",
+            "configuration apply requires application/zip",
         );
     }
-    let Some(transfer_id) = request.get_param("transfer_id") else {
-        return backup_rejected_response(
-            state,
-            identity,
-            "backup_upload",
-            400,
-            "transfer_id query parameter is required",
-        );
-    };
     let Some(content_length) = request
         .header("Content-Length")
         .and_then(|value| value.parse::<u64>().ok())
@@ -9904,157 +9768,28 @@ fn backup_upload_accept(
         return backup_rejected_response(
             state,
             identity,
-            "backup_upload",
+            "config_apply",
             411,
-            "backup upload requires Content-Length",
+            "configuration apply requires Content-Length",
         );
     };
     let Some(body) = request.data() else {
         return backup_rejected_response(
             state,
             identity,
-            "backup_upload",
+            "config_apply",
             400,
-            "backup upload body is required",
+            "configuration archive body is required",
         );
     };
-    backup_json_result(
-        state,
-        identity,
-        "backup_upload",
-        Some(&transfer_id),
-        201,
-        || backup_manager(state)?.accept_upload(&transfer_id, body, content_length, unix_time_ms()),
-    )
-}
-
-fn backup_inspect(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::InspectBackupRequest =
-        match backup_json_body(request, state, identity, "backup_inspect") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    let target = request.backup_id.clone();
-    backup_json_result(
-        state,
-        identity,
-        "backup_inspect",
-        Some(&target),
-        200,
-        || backup_manager(state)?.inspect(&request.backup_id),
-    )
-}
-
-fn backup_restore_plan(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::CreateRestorePlanRequest =
-        match backup_json_body(request, state, identity, "backup_restore_plan") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    let target = request.backup_id.clone();
-    backup_json_result(
-        state,
-        identity,
-        "backup_restore_plan",
-        Some(&target),
-        201,
-        || backup_manager(state)?.create_restore_plan(&request, unix_time_ms()),
-    )
-}
-
-fn backup_restore_activate(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::ActivateRestoreRequest =
-        match backup_json_body(request, state, identity, "backup_restore_activate") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    let target = request.plan_id.clone();
-    backup_json_result(
-        state,
-        identity,
-        "backup_restore_activate",
-        Some(&target),
-        202,
-        || backup_manager(state)?.activate_restore(&request, unix_time_ms()),
-    )
-}
-
-fn backup_restore_get(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::GetRestoreRequest =
-        match backup_json_body(request, state, identity, "backup_restore_get") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    let target = request.restore_id.clone();
-    backup_json_result(
-        state,
-        identity,
-        "backup_restore_get",
-        Some(&target),
-        200,
-        || backup_manager(state)?.get_restore(&request, unix_time_ms()),
-    )
-}
-
-fn backup_restore_rollback(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::RollbackRestoreRequest =
-        match backup_json_body(request, state, identity, "backup_restore_rollback") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    let target = request.restore_id.clone();
-    backup_json_result(
-        state,
-        identity,
-        "backup_restore_rollback",
-        Some(&target),
-        202,
-        || backup_manager(state)?.rollback_restore(&request, unix_time_ms()),
-    )
-}
-
-fn backup_delete(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let request: crate::api::backup_proto::DeleteBackupRequest =
-        match backup_json_body(request, state, identity, "backup_delete") {
-            Ok(request) => request,
-            Err(response) => return response,
-        };
-    validate_backup_delete(request, state, identity)
-}
-
-fn validate_backup_delete(
-    request: crate::api::backup_proto::DeleteBackupRequest,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-) -> Response {
-    let target = request.backup_id;
-    backup_json_result(state, identity, "backup_delete", Some(&target), 200, || {
-        backup_manager(state)?.delete(&target)
+    backup_json_result(state, identity, "config_apply", None, 202, || {
+        backup_manager(state)?.apply_configuration(body, content_length, unix_time_ms())
     })
+}
+
+fn config_api_preflight(request: &Request, state: &ServerState) -> Response {
+    let response = api_preflight(request, state);
+    response.with_additional_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 }
 
 fn backup_manager(state: &ServerState) -> anyhow::Result<&BackupManager> {
@@ -10062,67 +9797,6 @@ fn backup_manager(state: &ServerState) -> anyhow::Result<&BackupManager> {
         .backup_manager
         .as_deref()
         .ok_or_else(|| crate::backup::ServiceError::busy("backup service is unavailable").into())
-}
-
-fn backup_json_body<T: DeserializeOwned>(
-    request: &Request,
-    state: &ServerState,
-    identity: &AuthenticatedApiRequest,
-    action: &str,
-) -> Result<T, Response> {
-    if request
-        .header("Content-Type")
-        .and_then(|value| value.split(';').next())
-        .map(str::trim)
-        != Some("application/json")
-    {
-        return Err(backup_rejected_response(
-            state,
-            identity,
-            action,
-            415,
-            "backup requests must use application/json",
-        ));
-    }
-    let Some(body) = request.data() else {
-        return Err(backup_rejected_response(
-            state,
-            identity,
-            action,
-            400,
-            "backup request body is required",
-        ));
-    };
-    let mut bytes = Vec::new();
-    body.take(MAX_BACKUP_JSON_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| {
-            backup_rejected_response(
-                state,
-                identity,
-                action,
-                400,
-                "backup request body could not be read",
-            )
-        })?;
-    if bytes.len() as u64 > MAX_BACKUP_JSON_BYTES {
-        return Err(backup_rejected_response(
-            state,
-            identity,
-            action,
-            413,
-            "backup request body is too large",
-        ));
-    }
-    serde_json::from_slice(&bytes).map_err(|_| {
-        backup_rejected_response(
-            state,
-            identity,
-            action,
-            400,
-            "backup request contains invalid ProtoJSON",
-        )
-    })
 }
 
 fn backup_rejected_response(
@@ -11599,11 +11273,16 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
             .map_err(|error| tracing::warn!(%error, "backup metrics are unavailable"))
             .ok()
     });
+    let notifications = state
+        .notifications
+        .as_ref()
+        .map(NotificationHandle::metric_snapshot);
     match crate::metrics::encode_health_metrics(
         &health,
         Some(access_metrics_snapshot(state)),
         recording.as_ref().ok(),
         backup,
+        notifications,
         mqtt.as_ref(),
         Some(external_analysis),
     ) {
@@ -13764,6 +13443,19 @@ mod tests {
                 retained_archive_bytes: 14_595,
                 active_restore: 1,
             }),
+            Some(crate::metrics::NotificationMetricsSnapshot {
+                configured_rules: 2,
+                pending_deliveries: 3,
+                candidates_accepted: 11,
+                candidates_dropped: 1,
+                notifications_created: 5,
+                notifications_replaced: 2,
+                notifications_suppressed: 4,
+                delivery_attempts: 7,
+                delivery_retries: 2,
+                delivery_successes: 4,
+                delivery_failures: 1,
+            }),
             Some(&mqtt),
             None,
         )
@@ -13785,6 +13477,17 @@ mod tests {
         assert!(metrics.contains("keeppeek_backup_artifacts_retained 3"));
         assert!(metrics.contains("keeppeek_backup_artifacts_retained_bytes 14595"));
         assert!(metrics.contains("keeppeek_backup_restore_active 1"));
+        assert!(metrics.contains("keeppeek_notification_rules_configured 2"));
+        assert!(metrics.contains("keeppeek_notification_deliveries_pending 3"));
+        assert!(metrics.contains("keeppeek_notification_candidates_accepted_total 11"));
+        assert!(metrics.contains("keeppeek_notification_candidates_dropped_total 1"));
+        assert!(metrics.contains("keeppeek_notifications_created_total 5"));
+        assert!(metrics.contains("keeppeek_notifications_replaced_total 2"));
+        assert!(metrics.contains("keeppeek_notifications_suppressed_total 4"));
+        assert!(metrics.contains("keeppeek_notification_delivery_attempts_total 7"));
+        assert!(metrics.contains("keeppeek_notification_delivery_retries_total 2"));
+        assert!(metrics.contains("keeppeek_notification_delivery_successes_total 4"));
+        assert!(metrics.contains("keeppeek_notification_delivery_failures_total 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_track_sessions 1"));
         assert!(metrics.contains("keeppeek_webrtc_multi_tracks 3"));
         let proto = health_snapshot::proto_health_snapshot(health);
@@ -14784,8 +14487,7 @@ mod tests {
         let config_path = directory.join("config.toml");
         std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
         let capabilities = test_control_handler(
-            ServerState::empty()
-                .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap()),
+            ServerState::empty().with_backup_manager(BackupManager::open(config_path).unwrap()),
         )
         .initial_capabilities(SessionId::from_u64(0))
         .unwrap();
@@ -14806,8 +14508,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let runtime =
-            crate::notifications::Runtime::open(&directory.join("notifications.db")).unwrap();
+        let runtime = crate::notifications::Runtime::open(&directory.join("config.toml")).unwrap();
         let session_id = SessionId::from_u64(501);
         let state = ServerState::empty().with_notifications(runtime.handle());
         state
@@ -20087,228 +19788,49 @@ mod tests {
     }
 
     #[test]
-    fn backup_http_create_list_and_download_use_protojson_and_zip() {
-        let directory =
-            std::env::temp_dir().join(format!("keeppeek-backup-http-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let config_path = directory.join("config.toml");
-        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        let manager = BackupManager::open(config_path, None, None, None).unwrap();
-        let state = ServerState::empty().with_backup_manager(manager);
-        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
-        let request = crate::api::backup_proto::CreateBackupRequest {
-            client_request_id: "http-create-1".to_owned(),
-            sections: vec![
-                crate::api::backup_proto::BackupSection::RuntimeConfig as i32,
-                crate::api::backup_proto::BackupSection::CameraDatabase as i32,
-            ],
-            expected_archive_bytes: 1024 * 1024,
-        };
-
-        let create = handle_request(
-            &Request::fake_http(
-                "POST",
-                "/api/backups",
-                vec![("Content-Type".to_owned(), "application/json".to_owned())],
-                serde_json::to_vec(&request).unwrap(),
-            ),
-            &router_tx,
-            &state,
-        );
-
-        assert_eq!(create.status_code, 201);
-        let created: crate::api::backup_proto::BackupRecord =
-            serde_json::from_slice(&response_data(create)).unwrap();
-        let list = handle_request(
-            &Request::fake_http("GET", "/api/backups", Vec::new(), Vec::new()),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(list.status_code, 200);
-        let listed: crate::api::backup_proto::ListBackupsResponse =
-            serde_json::from_slice(&response_data(list)).unwrap();
-        assert_eq!(listed.backups[0].backup_id, created.backup_id);
-        let download = handle_request(
-            &Request::fake_http(
-                "GET",
-                format!("/api/backups/download?backup_id={}", created.backup_id),
-                Vec::new(),
-                Vec::new(),
-            ),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(download.status_code, 200);
-        assert!(download.headers.iter().any(|(name, value)| {
-            name.eq_ignore_ascii_case("Content-Type") && value == "application/zip"
-        }));
-        crate::backup::inspect_bundle(Cursor::new(response_data(download))).unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn backup_http_upload_inspect_plan_and_activate_use_protojson() {
+    fn config_export_http_returns_only_the_two_toml_files_without_retention() {
         let directory = std::env::temp_dir().join(format!(
-            "keeppeek-backup-http-restore-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let source = directory.join("source");
-        let target = directory.join("target");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-        let source_config = source.join("config.toml");
-        let target_config = target.join("config.toml");
-        std::fs::write(&source_config, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
-        let (bundle, source_manifest) = crate::backup::create_bundle(
-            Cursor::new(Vec::new()),
-            crate::backup::CreateBundleOptions {
-                config_path: &source_config,
-                sections: &[
-                    crate::backup::BackupSection::RuntimeConfig,
-                    crate::backup::BackupSection::CameraDatabase,
-                ],
-                created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
-            },
-        )
-        .unwrap();
-        let bytes = bundle.into_inner();
-        let manager = BackupManager::open(target_config.clone(), None, None, None).unwrap();
-        let state = ServerState::empty().with_backup_manager(manager);
-        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
-        let upload_request = crate::api::backup_proto::BeginBackupUploadRequest {
-            client_request_id: "http-upload-1".to_owned(),
-            file_name: "restore.zip".to_owned(),
-            content_length: u64::try_from(bytes.len()).unwrap(),
-            archive_sha256: Some(encode_lower_hex(Sha256::digest(&bytes))),
-        };
-        let upload = handle_request(
-            &backup_json_request("POST", "/api/backups/uploads", &upload_request),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(upload.status_code, 201);
-        let transfer: crate::api::backup_proto::BackupTransfer =
-            serde_json::from_slice(&response_data(upload)).unwrap();
-
-        let accepted = handle_request(
-            &Request::fake_http(
-                "PUT",
-                format!(
-                    "/api/backups/transfers?transfer_id={}",
-                    transfer.transfer_id
-                ),
-                vec![
-                    ("Content-Type".to_owned(), "application/zip".to_owned()),
-                    ("Content-Length".to_owned(), bytes.len().to_string()),
-                ],
-                bytes,
-            ),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(accepted.status_code, 201);
-        let uploaded: crate::api::backup_proto::BackupRecord =
-            serde_json::from_slice(&response_data(accepted)).unwrap();
-        let inspected = handle_request(
-            &backup_json_request(
-                "POST",
-                "/api/backups/inspect",
-                &crate::api::backup_proto::InspectBackupRequest {
-                    backup_id: uploaded.backup_id.clone(),
-                },
-            ),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(inspected.status_code, 200);
-        let plan_request = crate::api::backup_proto::CreateRestorePlanRequest {
-            client_request_id: "http-plan-1".to_owned(),
-            backup_id: uploaded.backup_id,
-            sections: Vec::new(),
-            path_mappings: vec![crate::api::backup_proto::RestorePathMapping {
-                kind: crate::api::backup_proto::BackupPathKind::ConfigDirectory as i32,
-                source_path: source_manifest.source_paths[0].path.clone(),
-                target_path: target.to_string_lossy().into_owned(),
-            }],
-            expected_target_revision: crate::backup::target_revision(&target_config).unwrap(),
-        };
-        let planned = handle_request(
-            &backup_json_request("POST", "/api/backups/restore-plans", &plan_request),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(planned.status_code, 201);
-        let plan: crate::api::backup_proto::RestorePlan =
-            serde_json::from_slice(&response_data(planned)).unwrap();
-        assert!(plan.can_activate);
-        let activated = handle_request(
-            &backup_json_request(
-                "POST",
-                "/api/backups/restores",
-                &crate::api::backup_proto::ActivateRestoreRequest {
-                    client_request_id: "http-activate-1".to_owned(),
-                    plan_id: plan.plan_id,
-                    archive_sha256: plan.archive_sha256,
-                    confirm: true,
-                },
-            ),
-            &router_tx,
-            &state,
-        );
-        assert_eq!(activated.status_code, 202);
-        assert!(state.access_manager.list_audit(20).iter().any(|event| {
-            event.action == "backup_restore_activate" && event.result == "success"
-        }));
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn backup_http_rejects_remote_user_role() {
-        let directory = std::env::temp_dir().join(format!(
-            "keeppeek-backup-http-user-{}",
+            "keeppeek-config-export-http-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir(&directory).unwrap();
         let config_path = directory.join("config.toml");
-        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        let mut state = ServerState::empty()
-            .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap());
-        state.require_secure_remote = false;
-        let issued = state
-            .access_manager
-            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
-            .unwrap();
+        let config = "[storage]\nlong_term_max_gb = 10\n";
+        let secrets = "CAMERA_PASSWORD = \"private\"\n";
+        std::fs::write(&config_path, config).unwrap();
+        std::fs::write(crate::config::secrets_path(&config_path), secrets).unwrap();
+        std::fs::write(directory.join("recordings.db"), "not configuration").unwrap();
+        let state =
+            ServerState::empty().with_backup_manager(BackupManager::open(config_path).unwrap());
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
-        let remote = SocketAddr::from(([203, 0, 113, 8], 42_000));
-        let request = crate::api::backup_proto::CreateBackupRequest {
-            client_request_id: "denied".to_owned(),
-            sections: Vec::new(),
-            expected_archive_bytes: 0,
-        };
 
         let response = handle_request(
-            &Request::fake_http_from(
-                remote,
-                "POST",
-                "/api/backups",
-                vec![
-                    (
-                        "Authorization".to_owned(),
-                        format!("Bearer {}", issued.access_key.canonical()),
-                    ),
-                    ("Content-Type".to_owned(), "application/json".to_owned()),
-                ],
-                serde_json::to_vec(&request).unwrap(),
-            ),
+            &Request::fake_http("GET", "/config/export", Vec::new(), Vec::new()),
             &router_tx,
             &state,
         );
 
-        assert_eq!(response.status_code, 403);
+        assert_eq!(response.status_code, 200);
+        assert!(response.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("Content-Type") && value == "application/zip"
+        }));
+        let mut archive = zip::ZipArchive::new(Cursor::new(response_data(response))).unwrap();
+        assert_eq!(archive.len(), 2);
+        let mut archived_config = String::new();
+        archive
+            .by_name("config.toml")
+            .unwrap()
+            .read_to_string(&mut archived_config)
+            .unwrap();
+        let mut archived_secrets = String::new();
+        archive
+            .by_name("secrets.toml")
+            .unwrap()
+            .read_to_string(&mut archived_secrets)
+            .unwrap();
+        assert_eq!(archived_config, config);
+        assert_eq!(archived_secrets, secrets);
+        assert!(archive.by_name("recordings.db").is_err());
         assert!(
             state
                 .backup_manager
@@ -20323,13 +19845,266 @@ mod tests {
     }
 
     #[test]
-    fn backup_http_preflight_advertises_one_complete_method_set() {
+    fn config_apply_http_stages_both_toml_files_and_preserves_recording_storage() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-config-apply-http-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let source = directory.join("source");
+        let target = directory.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let source_config = source.join("config.toml");
+        let target_config = target.join("config.toml");
+        let target_recordings = target.join("recordings");
+        let source_contents = format!(
+            "host = \"source.example\"\n[storage]\nlong_term_path = {:?}\n",
+            source.join("recordings")
+        );
+        let target_contents = format!(
+            "host = \"target.example\"\n[storage]\nlong_term_path = {target_recordings:?}\n"
+        );
+        std::fs::write(&source_config, source_contents).unwrap();
+        std::fs::write(source.join("secrets.toml"), "TOKEN = \"source-secret\"\n").unwrap();
+        std::fs::write(&target_config, &target_contents).unwrap();
+        std::fs::write(target.join("secrets.toml"), "TOKEN = \"target-secret\"\n").unwrap();
+        std::fs::write(target.join("recordings.db"), "catalog-must-remain").unwrap();
+        let (bundle, _) = crate::backup::create_bundle(
+            Cursor::new(Vec::new()),
+            crate::backup::CreateBundleOptions {
+                config_path: &source_config,
+                sections: &[],
+                created_at_unix_ms: 1_788_000_000_000,
+            },
+        )
+        .unwrap();
+        let bytes = bundle.into_inner();
+        let state = ServerState::empty()
+            .with_backup_manager(BackupManager::open(target_config.clone()).unwrap());
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+
+        let response = handle_request(
+            &Request::fake_http(
+                "POST",
+                "/config/apply",
+                vec![
+                    ("Content-Type".to_owned(), "application/zip".to_owned()),
+                    ("Content-Length".to_owned(), bytes.len().to_string()),
+                ],
+                bytes,
+            ),
+            &router_tx,
+            &state,
+        );
+
+        assert_eq!(response.status_code, 202);
+        let staged: crate::api::backup_proto::RestoreRecord =
+            serde_json::from_slice(&response_data(response)).unwrap();
+        assert_eq!(
+            staged.state,
+            crate::api::backup_proto::RestoreState::AwaitingRestart as i32
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target_config).unwrap(),
+            target_contents
+        );
+        assert!(
+            state
+                .backup_manager
+                .as_ref()
+                .unwrap()
+                .list()
+                .unwrap()
+                .backups
+                .is_empty()
+        );
+
+        crate::backup::recover_pending_restore(&target_config, 1_788_000_000_001).unwrap();
+        let applied = std::fs::read_to_string(&target_config).unwrap();
+        assert!(applied.contains("host = \"source.example\""));
+        assert!(applied.contains(&format!("long_term_path = {target_recordings:?}")));
+        assert_eq!(
+            std::fs::read_to_string(target.join("secrets.toml")).unwrap(),
+            "TOKEN = \"source-secret\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("recordings.db")).unwrap(),
+            "catalog-must-remain"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_backup_http_routes_are_not_exposed() {
+        let state = ServerState::empty();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+
+        for (method, path) in [
+            ("GET", "/api/backups"),
+            ("POST", "/api/backups"),
+            ("GET", "/api/backups/capabilities"),
+            ("POST", "/api/backups/uploads"),
+            ("POST", "/api/backups/restores"),
+        ] {
+            let response = handle_request(
+                &Request::fake_http(method, path, Vec::new(), Vec::new()),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(response.status_code, 404, "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn config_http_rejects_invalid_archives_without_mutating_live_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-config-http-invalid-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        let original_config = "host = \"localhost\"\n";
+        let original_secrets = "TOKEN = \"original\"\n";
+        std::fs::write(&config_path, original_config).unwrap();
+        std::fs::write(directory.join("secrets.toml"), original_secrets).unwrap();
+        let state = ServerState::empty()
+            .with_backup_manager(BackupManager::open(config_path.clone()).unwrap());
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let bytes = b"provider-token at /private/path is not a ZIP";
+
+        let response = handle_request(
+            &Request::fake_http(
+                "POST",
+                "/config/apply",
+                vec![
+                    ("Content-Type".to_owned(), "application/zip".to_owned()),
+                    ("Content-Length".to_owned(), bytes.len().to_string()),
+                ],
+                bytes.to_vec(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(response.status_code, 400);
+        let error: crate::api::backup_proto::BackupError =
+            serde_json::from_slice(&response_data(response)).unwrap();
+        assert_eq!(
+            error.code,
+            crate::api::backup_proto::BackupErrorCode::InvalidRequest as i32
+        );
+        assert_eq!(error.field, "archive");
+        assert!(!error.message.contains("provider-token"));
+        assert!(!error.message.contains("/private/path"));
+        assert_eq!(
+            std::fs::read_to_string(config_path).unwrap(),
+            original_config
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.join("secrets.toml")).unwrap(),
+            original_secrets
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.join(".backups"))
+                .unwrap()
+                .count(),
+            0
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn config_http_rejects_empty_oversized_and_truncated_uploads() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-config-http-length-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "host = \"localhost\"\n").unwrap();
+        let state =
+            ServerState::empty().with_backup_manager(BackupManager::open(config_path).unwrap());
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        for (length, expected_status) in [(0, 400), (1_073_741_825, 413), (10, 400), (1, 400)] {
+            let response = handle_request(
+                &Request::fake_http(
+                    "POST",
+                    "/config/apply",
+                    vec![
+                        ("Content-Type".to_owned(), "application/zip".to_owned()),
+                        ("Content-Length".to_owned(), length.to_string()),
+                    ],
+                    b"no".to_vec(),
+                ),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(response.status_code, expected_status, "length {length}");
+        }
+        assert_eq!(
+            std::fs::read_dir(directory.join(".backups"))
+                .unwrap()
+                .count(),
+            0
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn config_http_rejects_remote_user_role() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-backup-http-user-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let mut state =
+            ServerState::empty().with_backup_manager(BackupManager::open(config_path).unwrap());
+        state.require_secure_remote = false;
+        let issued = state
+            .access_manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let remote = SocketAddr::from(([203, 0, 113, 8], 42_000));
+        for (method, path) in [("GET", "/config/export"), ("POST", "/config/apply")] {
+            let response = handle_request(
+                &Request::fake_http_from(
+                    remote,
+                    method,
+                    path,
+                    vec![(
+                        "Authorization".to_owned(),
+                        format!("Bearer {}", issued.access_key.canonical()),
+                    )],
+                    Vec::new(),
+                ),
+                &router_tx,
+                &state,
+            );
+            assert_eq!(response.status_code, 403, "{method} {path}");
+        }
+        assert!(
+            state
+                .backup_manager
+                .as_ref()
+                .unwrap()
+                .list()
+                .unwrap()
+                .backups
+                .is_empty()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn config_http_preflight_advertises_one_complete_method_set() {
         let state = ServerState::empty();
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
         let response = handle_request(
             &Request::fake_http(
                 "OPTIONS",
-                "/api/backups/uploads",
+                "/config/apply",
                 vec![("Origin".to_owned(), "http://localhost".to_owned())],
                 Vec::new(),
             ),
@@ -20343,11 +20118,11 @@ mod tests {
             .filter(|(name, _)| name.eq_ignore_ascii_case("Access-Control-Allow-Methods"))
             .map(|(_, value)| value.as_ref())
             .collect::<Vec<_>>();
-        assert_eq!(methods, ["GET, POST, PUT, OPTIONS"]);
+        assert_eq!(methods, ["GET, POST, OPTIONS"]);
     }
 
     #[test]
-    fn backup_http_audits_rejected_protojson_requests() {
+    fn config_http_audits_rejected_zip_requests() {
         let directory = std::env::temp_dir().join(format!(
             "keeppeek-backup-http-audit-{}",
             uuid::Uuid::new_v4()
@@ -20355,46 +20130,46 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let config_path = directory.join("config.toml");
         std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        let state = ServerState::empty()
-            .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap());
+        let state =
+            ServerState::empty().with_backup_manager(BackupManager::open(config_path).unwrap());
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
 
         let response = handle_request(
             &Request::fake_http(
                 "POST",
-                "/api/backups",
-                vec![("Content-Type".to_owned(), "text/plain".to_owned())],
-                b"not ProtoJSON".to_vec(),
-            ),
-            &router_tx,
-            &state,
-        );
-
-        assert_eq!(response.status_code, 415);
-        assert!(
-            state
-                .access_manager
-                .list_audit(10)
-                .iter()
-                .any(|event| { event.action == "backup_create" && event.result == "failed" })
-        );
-        let response = handle_request(
-            &Request::fake_http(
-                "PUT",
-                "/api/backups/transfers",
+                "/config/apply",
                 vec![("Content-Type".to_owned(), "text/plain".to_owned())],
                 b"not a ZIP".to_vec(),
             ),
             &router_tx,
             &state,
         );
+
         assert_eq!(response.status_code, 415);
         assert!(
             state
                 .access_manager
                 .list_audit(10)
                 .iter()
-                .any(|event| { event.action == "backup_upload" && event.result == "failed" })
+                .any(|event| { event.action == "config_apply" && event.result == "failed" })
+        );
+        let response = handle_request(
+            &Request::fake_http(
+                "POST",
+                "/config/apply",
+                vec![("Content-Type".to_owned(), "application/zip".to_owned())],
+                b"not a ZIP".to_vec(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(response.status_code, 411);
+        assert!(
+            state
+                .access_manager
+                .list_audit(10)
+                .iter()
+                .any(|event| { event.action == "config_apply" && event.result == "failed" })
         );
         let metrics = state
             .backup_manager
@@ -20408,7 +20183,7 @@ mod tests {
     }
 
     #[test]
-    fn backup_http_errors_are_typed_and_hide_internal_details() {
+    fn config_http_errors_are_typed_and_hide_internal_details() {
         let directory = std::env::temp_dir().join(format!(
             "keeppeek-backup-http-errors-{}",
             uuid::Uuid::new_v4()
@@ -20416,28 +20191,27 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let config_path = directory.join("config.toml");
         std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        let state = ServerState::empty()
-            .with_backup_manager(BackupManager::open(config_path, None, None, None).unwrap());
+        let state =
+            ServerState::empty().with_backup_manager(BackupManager::open(config_path).unwrap());
         let (_router, router_tx) = crate::runtime::Router::new().unwrap();
         let response = handle_request(
-            &backup_json_request(
+            &Request::fake_http(
                 "POST",
-                "/api/backups/inspect",
-                &crate::api::backup_proto::InspectBackupRequest {
-                    backup_id: "private/path/token".to_owned(),
-                },
+                "/config/apply",
+                vec![("Content-Type".to_owned(), "text/plain".to_owned())],
+                b"private/path/token".to_vec(),
             ),
             &router_tx,
             &state,
         );
-        assert_eq!(response.status_code, 400);
+        assert_eq!(response.status_code, 415);
         let error: crate::api::backup_proto::BackupError =
             serde_json::from_slice(&response_data(response)).unwrap();
         assert_eq!(
             error.code,
             crate::api::backup_proto::BackupErrorCode::InvalidRequest as i32
         );
-        assert_eq!(error.field, "backupId");
+        assert!(error.field.is_empty());
         assert!(!error.message.contains("private"));
 
         let response = backup_error_from_anyhow(anyhow::anyhow!(
@@ -20448,15 +20222,6 @@ mod tests {
         assert!(!body.contains("/private/path"));
         assert!(!body.contains("provider-token"));
         std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    fn backup_json_request(value: &str, path: &str, body: &impl Serialize) -> Request {
-        Request::fake_http(
-            value,
-            path,
-            vec![("Content-Type".to_owned(), "application/json".to_owned())],
-            serde_json::to_vec(body).unwrap(),
-        )
     }
 
     #[test]

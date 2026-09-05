@@ -1532,15 +1532,81 @@ pub(crate) fn write_configuration_table(path: &Path, root: &toml::Table) -> anyh
     Ok(())
 }
 
+pub(crate) fn write_configuration_table_with_managed_secrets(
+    path: &Path,
+    root: &toml::Table,
+    managed_prefix: &str,
+    values: &BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    if values.keys().any(|key| !key.starts_with(managed_prefix)) {
+        anyhow::bail!("managed secret key does not use the required prefix");
+    }
+    let original = load_secrets(path)?;
+    let mut staged = original.clone();
+    staged.0.extend(values.clone());
+    validate_secret_keys(&staged)?;
+    let mut current = original;
+    current.0.retain(|key, _| !key.starts_with(managed_prefix));
+    current.0.extend(values.clone());
+    validate_secret_keys(&current)?;
+
+    let serialized_staged = toml::to_string_pretty(&staged)?;
+    let serialized_current = toml::to_string_pretty(&current)?;
+    let secret_path = secrets_path(path);
+    let original_file = match std::fs::read(&secret_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    write_private_file_atomically(&secret_path, serialized_staged.as_bytes())?;
+    if let Err(error) = write_configuration_table(path, root) {
+        let rollback = original_file.map_or_else(
+            || remove_file_if_exists(&secret_path),
+            |original_file| write_private_file_atomically(&secret_path, &original_file),
+        );
+        if let Err(rollback_error) = rollback {
+            tracing::error!(
+                event = "managed_secret_rollback_failed",
+                error = %rollback_error,
+                "unable to restore managed secrets after a configuration write failure"
+            );
+        }
+        return Err(error);
+    }
+    if staged.0 != current.0
+        && let Err(error) =
+            write_private_file_atomically(&secret_path, serialized_current.as_bytes())
+    {
+        tracing::warn!(
+            event = "managed_secret_cleanup_failed",
+            error = %error,
+            "configuration committed with obsolete managed secrets retained"
+        );
+    }
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 pub(crate) fn validate_configuration_table(path: &Path, root: &toml::Table) -> anyhow::Result<()> {
     let secrets = load_secrets(path)?;
     let config = config_from_table(root, &secrets)?;
     config.access.validate()?;
+    crate::access::validate_configuration(root)?;
     config.direct_card.validate()?;
     config.battery_wake.validate()?;
     config.operational_events.validate()?;
     config.event_forwarder.mqtt.validate()?;
     config.storage.validate_safety_thresholds()?;
+    crate::notifications::validate_configuration(path, root)?;
+    crate::server::validate_peek_layout_configuration(root)?;
+    crate::server::validate_template_configuration(root)?;
     cameras_from_table(root, &secrets)?;
     Ok(())
 }
@@ -1554,7 +1620,16 @@ pub(crate) fn cameras_from_configuration_table(
 }
 
 fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Config> {
-    let mut resolved = toml::Value::Table(root.clone());
+    let mut runtime = root.clone();
+    for section in [
+        "access_credentials",
+        "notifications",
+        "peek_layouts",
+        "configuration_templates",
+    ] {
+        runtime.remove(section);
+    }
+    let mut resolved = toml::Value::Table(runtime);
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
     config.source = root.clone();
@@ -1698,6 +1773,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
     matches!(
         namespace,
         "access"
+            | "access_credentials"
             | "storage"
             | "battery_wake"
             | "direct_card"
@@ -1705,6 +1781,9 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "logging"
             | "operational_events"
             | "event_forwarder"
+            | "notifications"
+            | "peek_layouts"
+            | "configuration_templates"
             | "camera_defaults"
             | STORAGE_MIGRATION_SECTION
     )

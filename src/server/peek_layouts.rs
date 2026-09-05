@@ -17,6 +17,8 @@ pub(super) const CAPABILITY_ID: &str = "keeppeek.peek-layouts.v1";
 pub(super) const NAMESPACE: &str = "keeppeek.peek-layouts";
 const REGISTRY_KEY: &str = "registry";
 const REGISTRY_SCHEMA: &str = "keeppeek.peek-layout-registry.v1";
+const CONFIG_SECTION: &str = "peek_layouts";
+const LEGACY_FILE_NAME: &str = "peek-layouts.json";
 const SCHEMA_VERSION: u32 = 1;
 const GRID_COLUMNS: u32 = 12;
 const GRID_ROWS: u32 = 12;
@@ -303,16 +305,12 @@ fn open_store(state: &ServerState) -> Result<RegistryStore, ControlCommandError>
             "Peek layout persistence is unavailable",
         )
     })?;
-    let path = config_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("peek-layouts.json");
     let camera_ids = state
         .camera_entries()
         .into_iter()
         .map(|camera| camera.info.id)
         .collect::<Vec<_>>();
-    RegistryStore::open(path, &camera_ids).map_err(|error| {
+    RegistryStore::open(config_path.clone(), &camera_ids).map_err(|error| {
         ControlCommandError::new(
             proto::ErrorCode::Internal,
             500,
@@ -471,18 +469,28 @@ impl RegistryStore {
         let mut canonical_camera_ids = camera_ids.to_vec();
         canonical_camera_ids.sort_unstable();
         canonical_camera_ids.dedup();
-        let stored = path.exists();
-        let registry = if stored {
-            let size = std::fs::metadata(&path)
+        let root = if path.exists() {
+            crate::config::load_configuration_table(&path)
                 .map_err(|error| RegistryError::storage(error.to_string()))?
-                .len();
-            if size > MAX_REGISTRY_BYTES as u64 {
+        } else {
+            toml::Table::new()
+        };
+        let legacy_path = path.with_file_name(LEGACY_FILE_NAME);
+        let configured = root.get(CONFIG_SECTION);
+        let migrate_legacy = configured.is_none() && legacy_path.is_file();
+        let registry = if let Some(value) = configured {
+            value
+                .clone()
+                .try_into()
+                .map_err(|_| RegistryError::storage("stored layout registry is invalid"))?
+        } else if migrate_legacy {
+            let bytes = std::fs::read(&legacy_path)
+                .map_err(|error| RegistryError::storage(error.to_string()))?;
+            if bytes.len() > MAX_REGISTRY_BYTES {
                 return Err(RegistryError::storage(
                     "stored layout registry is too large",
                 ));
             }
-            let bytes =
-                std::fs::read(&path).map_err(|error| RegistryError::storage(error.to_string()))?;
             serde_json::from_slice(&bytes)
                 .map_err(|_| RegistryError::storage("stored layout registry is invalid"))?
         } else {
@@ -497,8 +505,12 @@ impl RegistryStore {
         let migrated = store.migrate_private_layouts();
         let synchronized = store.synchronize_default(&canonical_camera_ids);
         store.validate_stored()?;
-        if !stored || migrated || synchronized {
+        if configured.is_none() || migrated || synchronized {
             store.persist(&store.registry)?;
+        }
+        if legacy_path.exists() {
+            std::fs::remove_file(&legacy_path)
+                .map_err(|error| RegistryError::storage(error.to_string()))?;
         }
         Ok(store)
     }
@@ -744,14 +756,48 @@ impl RegistryStore {
     }
 
     fn persist(&self, registry: &StoredRegistry) -> Result<(), RegistryError> {
-        let bytes = serde_json::to_vec_pretty(registry)
+        let encoded = toml::to_string(registry)
             .map_err(|_| RegistryError::storage("layout registry could not be encoded"))?;
-        if bytes.len() > MAX_REGISTRY_BYTES {
+        if encoded.len() > MAX_REGISTRY_BYTES {
             return Err(RegistryError::storage("layout registry is too large"));
         }
-        crate::config::write_private_file_atomically(&self.path, &bytes)
+        let mut root = if self.path.exists() {
+            crate::config::load_configuration_table(&self.path)
+                .map_err(|error| RegistryError::storage(error.to_string()))?
+        } else {
+            toml::Table::new()
+        };
+        root.insert(
+            CONFIG_SECTION.to_owned(),
+            toml::Value::try_from(registry)
+                .map_err(|_| RegistryError::storage("layout registry could not be encoded"))?,
+        );
+        crate::config::write_configuration_table(&self.path, &root)
             .map_err(|error| RegistryError::storage(error.to_string()))
     }
+}
+
+pub(super) fn validate_configuration(root: &toml::Table) -> anyhow::Result<()> {
+    let Some(value) = root.get(CONFIG_SECTION) else {
+        return Ok(());
+    };
+    let registry: StoredRegistry = value.clone().try_into()?;
+    RegistryStore {
+        path: PathBuf::new(),
+        camera_ids: HashSet::new(),
+        registry,
+    }
+    .validate_stored()
+    .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+pub(super) fn migrate_configuration(
+    config_path: &std::path::Path,
+    camera_ids: &[String],
+) -> anyhow::Result<()> {
+    RegistryStore::open(config_path.to_path_buf(), camera_ids)
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 impl StoredRegistry {
@@ -1228,7 +1274,10 @@ mod tests {
             "keeppeek-peek-layout-shared-validation-{}",
             uuid::Uuid::new_v4()
         ));
-        let path = directory.join("peek-layouts.json");
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let legacy_path = directory.join(LEGACY_FILE_NAME);
         let registry = StoredRegistry {
             schema_version: SCHEMA_VERSION,
             revision: 1,
@@ -1261,14 +1310,17 @@ mod tests {
             users: BTreeMap::new(),
         };
         crate::config::write_private_file_atomically(
-            &path,
+            &legacy_path,
             &serde_json::to_vec_pretty(&registry).unwrap(),
         )
         .unwrap();
 
-        let error = RegistryStore::open(path, &["front-door".to_owned(), "driveway".to_owned()])
-            .err()
-            .expect("overlapping stored shared tiles must be rejected");
+        let error = RegistryStore::open(
+            config_path,
+            &["front-door".to_owned(), "driveway".to_owned()],
+        )
+        .err()
+        .expect("overlapping stored shared tiles must be rejected");
 
         assert_eq!(error.to_string(), "layout tiles must not overlap");
         std::fs::remove_dir_all(directory).unwrap();
@@ -1280,7 +1332,10 @@ mod tests {
             "keeppeek-peek-layout-default-upgrade-{}",
             uuid::Uuid::new_v4()
         ));
-        let path = directory.join("peek-layouts.json");
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let legacy_path = directory.join(LEGACY_FILE_NAME);
         let mut legacy_default = default_layout(&["front-door".to_owned()]);
         legacy_default.name = "Front of house".to_owned();
         let registry = StoredRegistry {
@@ -1290,13 +1345,13 @@ mod tests {
             users: BTreeMap::new(),
         };
         crate::config::write_private_file_atomically(
-            &path,
+            &legacy_path,
             &serde_json::to_vec_pretty(&registry).unwrap(),
         )
         .unwrap();
 
         let store = RegistryStore::open(
-            path.clone(),
+            config_path.clone(),
             &["driveway".to_owned(), "front-door".to_owned()],
         )
         .unwrap();
@@ -1314,10 +1369,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["driveway", "front-door"]
         );
-        let persisted: StoredRegistry =
-            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let root = crate::config::load_configuration_table(&config_path).unwrap();
+        let persisted: StoredRegistry = root[CONFIG_SECTION].clone().try_into().unwrap();
         assert_eq!(persisted.revision, 8);
         assert_eq!(persisted.shared_layouts[0].name, "All cameras");
+        assert!(!legacy_path.exists());
 
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -1328,7 +1384,10 @@ mod tests {
             "keeppeek-peek-layout-private-upgrade-{}",
             uuid::Uuid::new_v4()
         ));
-        let path = directory.join("peek-layouts.json");
+        std::fs::create_dir_all(&directory).unwrap();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let legacy_path = directory.join(LEGACY_FILE_NAME);
         let viewer_id = uuid::Uuid::new_v4().to_string();
         let mut private = default_layout(&["front-door".to_owned()]);
         private.id = "night".to_owned();
@@ -1348,12 +1407,12 @@ mod tests {
             )]),
         };
         crate::config::write_private_file_atomically(
-            &path,
+            &legacy_path,
             &serde_json::to_vec_pretty(&registry).unwrap(),
         )
         .unwrap();
 
-        let store = RegistryStore::open(path, &["front-door".to_owned()]).unwrap();
+        let store = RegistryStore::open(config_path, &["front-door".to_owned()]).unwrap();
         let administrator = store.registry_for_principal("local-administrator", true);
         let viewer = store.registry_for(&viewer_id);
         let other = store.registry_for(&uuid::Uuid::new_v4().to_string());
@@ -1377,6 +1436,7 @@ mod tests {
         assert!(viewer.layouts.iter().any(|layout| layout.id == "night"));
         assert!(!other.layouts.iter().any(|layout| layout.id == "night"));
         assert!(store.registry.users[&viewer_id].layouts.is_empty());
+        assert!(!legacy_path.exists());
 
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -1385,7 +1445,9 @@ mod tests {
     fn registry_persists_active_dashboard_per_principal_and_rejects_stale_writes() {
         let directory =
             std::env::temp_dir().join(format!("keeppeek-peek-layouts-{}", uuid::Uuid::new_v4()));
-        let path = directory.join("peek-layouts.json");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.toml");
+        std::fs::write(&path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
         let camera_ids = vec!["front-door".to_owned(), "driveway".to_owned()];
         let mut store = RegistryStore::open(path.clone(), &camera_ids).unwrap();
         let alice_id = uuid::Uuid::new_v4().to_string();
@@ -1408,6 +1470,10 @@ mod tests {
             .replace_for(&alice_id, false, 2, alice_registry.clone())
             .unwrap();
         drop(store);
+
+        let config = std::fs::read_to_string(&path).unwrap();
+        assert!(config.contains("peek_layouts"));
+        assert!(!directory.join("peek-layouts.json").exists());
 
         let mut reopened = RegistryStore::open(path, &camera_ids).unwrap();
         assert_eq!(reopened.revision(), 3);
@@ -1532,7 +1598,9 @@ mod tests {
         assert_eq!(entry.schema, REGISTRY_SCHEMA);
         assert_eq!(entry.revision, 1);
         assert_eq!(entry.owner_id, "local-administrator");
-        assert!(directory.join("peek-layouts.json").is_file());
+        let root = crate::config::load_configuration_table(&directory.join("config.toml")).unwrap();
+        assert!(root.contains_key(CONFIG_SECTION));
+        assert!(!directory.join(LEGACY_FILE_NAME).exists());
 
         std::fs::remove_dir_all(directory).unwrap();
     }

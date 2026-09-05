@@ -14,7 +14,8 @@ use std::{
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-const ACCESS_CATALOG_NAME: &str = "access.toml";
+const LEGACY_ACCESS_CATALOG_NAME: &str = "access.toml";
+const ACCESS_CATALOG_SECTION: &str = "access_credentials";
 const ACCESS_CATALOG_VERSION: u32 = 1;
 const MAX_CREDENTIALS: usize = 128;
 const MAX_AUDIT_EVENTS: usize = 1_024;
@@ -24,7 +25,6 @@ const MAX_CREDENTIAL_NAME_BYTES: usize = 64;
 const MAX_CREDENTIAL_DESCRIPTION_BYTES: usize = 256;
 const MAX_AUDIT_FIELD_BYTES: usize = 128;
 const LAST_USED_WRITE_INTERVAL_MS: i64 = 60_000;
-const AUDIT_PERSIST_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct AccessKey(u128);
@@ -468,6 +468,12 @@ struct AccessCatalog {
     audit: Vec<AccessAuditEvent>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct PersistedAccessCatalog {
+    version: u32,
+    credentials: Vec<StoredCredential>,
+}
+
 impl Default for AccessCatalog {
     fn default() -> Self {
         Self {
@@ -476,26 +482,6 @@ impl Default for AccessCatalog {
             audit: Vec::new(),
         }
     }
-}
-
-pub fn backup_catalog_document(config_path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-    let path = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(ACCESS_CATALOG_NAME);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let mut catalog = toml::from_str::<AccessCatalog>(&text)
-        .with_context(|| format!("unable to parse {}", path.display()))?;
-    validate_catalog(&catalog)?;
-    catalog.audit.clear();
-    for credential in &mut catalog.credentials {
-        credential.last_used_at_ms = None;
-    }
-    Ok(Some(toml::to_string(&catalog)?.into_bytes()))
 }
 
 pub fn validate_backup_catalog_document(bytes: &[u8]) -> anyhow::Result<()> {
@@ -518,13 +504,12 @@ struct FailedAuthenticationWindow {
 }
 
 struct AccessState {
-    path: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+    config_update: Arc<Mutex<()>>,
     catalog: AccessCatalog,
     failed_authentication: HashMap<IpAddr, FailedAuthenticationWindow>,
     failed_authentication_limit: u32,
     failed_authentication_window: Duration,
-    audit_dirty: bool,
-    last_audit_persist: Instant,
 }
 
 #[derive(Clone)]
@@ -540,28 +525,38 @@ impl AccessManager {
                 .credentials
                 .push(legacy_credential(access_key, now_ms()));
         }
-        Self::from_catalog(None, catalog)
+        Self::from_catalog(None, catalog, Arc::new(Mutex::new(())))
     }
 
+    #[cfg(test)]
     pub(crate) fn open(config_path: &Path, access_key: AccessKey) -> anyhow::Result<Self> {
-        let path = config_path
+        Self::open_with_config_update(config_path, access_key, Arc::new(Mutex::new(())))
+    }
+
+    pub(crate) fn open_with_config_update(
+        config_path: &Path,
+        access_key: AccessKey,
+        config_update: Arc<Mutex<()>>,
+    ) -> anyhow::Result<Self> {
+        let legacy_path = config_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
-            .join(ACCESS_CATALOG_NAME);
-        let (mut catalog, existed) = if path.exists() {
-            make_file_owner_only(&path)?;
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("unable to read {}", path.display()))?;
-            (
-                toml::from_str::<AccessCatalog>(&text)
-                    .with_context(|| format!("unable to parse {}", path.display()))?,
-                true,
-            )
+            .join(LEGACY_ACCESS_CATALOG_NAME);
+        let configured = load_configured_catalog(config_path)?;
+        let migrate_legacy = configured.is_none() && legacy_path.is_file();
+        let mut catalog = if let Some(catalog) = configured {
+            catalog
+        } else if migrate_legacy {
+            load_legacy_catalog(&legacy_path)?
         } else {
-            (AccessCatalog::default(), false)
+            AccessCatalog::default()
         };
         validate_catalog(&catalog)?;
-        let mut changed = !existed;
+        catalog.audit.clear();
+        for credential in &mut catalog.credentials {
+            credential.last_used_at_ms = None;
+        }
+        let mut changed = migrate_legacy || catalog.credentials.is_empty();
         if !access_key.is_unset() {
             if let Some(credential) = catalog
                 .credentials
@@ -582,9 +577,13 @@ impl AccessManager {
                 changed = true;
             }
         }
-        let manager = Self::from_catalog(Some(path), catalog);
+        let manager = Self::from_catalog(Some(config_path.to_owned()), catalog, config_update);
         if changed {
             manager.persist()?;
+        }
+        if legacy_path.exists() {
+            std::fs::remove_file(&legacy_path)
+                .with_context(|| format!("unable to remove {}", legacy_path.display()))?;
         }
         Ok(manager)
     }
@@ -665,7 +664,6 @@ impl AccessManager {
         }
         state.failed_authentication.remove(&address);
         let index = matched_index.expect("successful authentication must match a credential");
-        let previous_catalog = state.catalog.clone();
         let credential = &mut state.catalog.credentials[index];
         let authenticated = AuthenticatedCredential {
             id: credential.id,
@@ -679,12 +677,6 @@ impl AccessManager {
             .is_none_or(|last_used| now.saturating_sub(last_used) >= LAST_USED_WRITE_INTERVAL_MS)
         {
             credential.last_used_at_ms = Some(now);
-            if persist_state(&state).is_err() {
-                state.catalog = previous_catalog;
-            } else {
-                state.audit_dirty = false;
-                state.last_audit_persist = Instant::now();
-            }
         }
         Ok(authenticated)
     }
@@ -899,7 +891,14 @@ impl AccessManager {
             state.catalog.audit.remove(0);
         }
         state.catalog.audit.push(event);
-        state.audit_dirty = state.path.is_some();
+        tracing::info!(
+            event = "access_audit",
+            action = record.action,
+            result = record.result,
+            principal_id = record.principal_id.unwrap_or(""),
+            target_id = record.target_id.unwrap_or(""),
+            client_classification = record.client_classification.as_str(),
+        );
     }
 
     pub(crate) fn list_audit(&self, limit: usize) -> Vec<AccessAuditEvent> {
@@ -915,32 +914,23 @@ impl AccessManager {
         state.catalog.audit[start..].to_vec()
     }
 
-    pub(crate) fn flush_audit(&self, force: bool) -> anyhow::Result<()> {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.audit_dirty
-            || (!force && state.last_audit_persist.elapsed() < AUDIT_PERSIST_INTERVAL)
-        {
-            return Ok(());
-        }
-        persist_state(&state)?;
-        state.audit_dirty = false;
-        state.last_audit_persist = Instant::now();
+    pub(crate) const fn flush_audit(&self, _force: bool) -> anyhow::Result<()> {
         Ok(())
     }
 
-    fn from_catalog(path: Option<PathBuf>, catalog: AccessCatalog) -> Self {
+    fn from_catalog(
+        config_path: Option<PathBuf>,
+        catalog: AccessCatalog,
+        config_update: Arc<Mutex<()>>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(AccessState {
-                path,
+                config_path,
+                config_update,
                 catalog,
                 failed_authentication: HashMap::new(),
                 failed_authentication_limit: 5,
                 failed_authentication_window: Duration::from_secs(60),
-                audit_dirty: false,
-                last_audit_persist: Instant::now(),
             })),
         }
     }
@@ -949,6 +939,15 @@ impl AccessManager {
         &self,
         mutate: impl FnOnce(&mut AccessCatalog) -> anyhow::Result<T>,
     ) -> anyhow::Result<T> {
+        let config_update = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .config_update
+            .clone();
+        let _config_update = config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut state = self
             .state
             .lock()
@@ -961,21 +960,28 @@ impl AccessManager {
                 return Err(error);
             }
         };
-        if let Err(error) = persist_state(&state) {
+        if let Err(error) = persist_catalog(&state) {
             state.catalog = previous;
             return Err(error);
         }
-        state.audit_dirty = false;
-        state.last_audit_persist = Instant::now();
         Ok(result)
     }
 
     fn persist(&self) -> anyhow::Result<()> {
+        let config_update = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .config_update
+            .clone();
+        let _config_update = config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        persist_state(&state)
+        persist_catalog(&state)
     }
 }
 
@@ -1086,13 +1092,59 @@ fn register_authentication_failure(state: &mut AccessState, address: IpAddr, now
     window.attempts = window.attempts.saturating_add(1);
 }
 
-fn persist_state(state: &AccessState) -> anyhow::Result<()> {
-    let Some(path) = &state.path else {
+fn persist_catalog(state: &AccessState) -> anyhow::Result<()> {
+    let Some(config_path) = &state.config_path else {
         return Ok(());
     };
-    let serialized = toml::to_string_pretty(&state.catalog)?;
-    crate::config::write_private_file_atomically(path, serialized.as_bytes())
-        .with_context(|| format!("unable to persist {}", path.display()))
+    let mut root = crate::config::load_configuration_table(config_path)?;
+    let mut credentials = state.catalog.credentials.clone();
+    for credential in &mut credentials {
+        credential.last_used_at_ms = None;
+    }
+    let persisted = PersistedAccessCatalog {
+        version: state.catalog.version,
+        credentials,
+    };
+    root.insert(
+        ACCESS_CATALOG_SECTION.to_owned(),
+        toml::Value::try_from(persisted)?,
+    );
+    crate::config::write_configuration_table(config_path, &root)
+        .with_context(|| format!("unable to persist {}", config_path.display()))
+}
+
+fn load_configured_catalog(config_path: &Path) -> anyhow::Result<Option<AccessCatalog>> {
+    let root = crate::config::load_configuration_table(config_path)?;
+    let Some(value) = root.get(ACCESS_CATALOG_SECTION) else {
+        return Ok(None);
+    };
+    let persisted = value.clone().try_into::<PersistedAccessCatalog>()?;
+    let catalog = AccessCatalog {
+        version: persisted.version,
+        credentials: persisted.credentials,
+        audit: Vec::new(),
+    };
+    validate_catalog(&catalog)?;
+    Ok(Some(catalog))
+}
+
+fn load_legacy_catalog(path: &Path) -> anyhow::Result<AccessCatalog> {
+    make_file_owner_only(path)?;
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("unable to read {}", path.display()))?;
+    toml::from_str(&text).with_context(|| format!("unable to parse {}", path.display()))
+}
+
+pub fn validate_configuration(root: &toml::Table) -> anyhow::Result<()> {
+    let Some(value) = root.get(ACCESS_CATALOG_SECTION) else {
+        return Ok(());
+    };
+    let persisted = value.clone().try_into::<PersistedAccessCatalog>()?;
+    validate_catalog(&AccessCatalog {
+        version: persisted.version,
+        credentials: persisted.credentials,
+        audit: Vec::new(),
+    })
 }
 
 #[cfg(unix)]
@@ -1224,10 +1276,11 @@ mod tests {
     }
 
     #[test]
-    fn credential_lifecycle_is_durable_and_secret_safe() {
+    fn credential_lifecycle_persists_in_config_and_audit_resets_on_reopen() {
         let directory = std::env::temp_dir().join(format!("keeppeek-access-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
         let initial = AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let manager = AccessManager::open(&config_path, initial).unwrap();
         let issued = manager
@@ -1239,9 +1292,11 @@ mod tests {
                 10_000,
             )
             .unwrap();
-        let catalog = std::fs::read_to_string(directory.join(ACCESS_CATALOG_NAME)).unwrap();
-        assert!(!catalog.contains(&issued.access_key.canonical()));
-        assert!(catalog.contains("Viewer"));
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!config.contains(&issued.access_key.canonical()));
+        assert!(config.contains("access_credentials"));
+        assert!(config.contains("Viewer"));
+        assert!(!directory.join(LEGACY_ACCESS_CATALOG_NAME).exists());
 
         let authorization = format!("Bearer {}", issued.access_key.canonical());
         let authenticated = manager
@@ -1259,6 +1314,11 @@ mod tests {
             .set_credential_enabled(issued.metadata.id, false)
             .unwrap();
         assert!(disabled.disabled);
+        assert!(
+            !std::fs::read_to_string(&config_path)
+                .unwrap()
+                .contains("last_used_at_ms")
+        );
         assert_eq!(
             manager.authenticate(
                 "203.0.113.7".parse().unwrap(),
@@ -1286,11 +1346,7 @@ mod tests {
         });
         reopened.flush_audit(true).unwrap();
         let reopened = AccessManager::open(&config_path, initial).unwrap();
-        assert!(
-            reopened.list_audit(10).iter().any(|event| {
-                event.action == "credential_disable" && event.timestamp_ms == 13_000
-            })
-        );
+        assert!(reopened.list_audit(10).is_empty());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

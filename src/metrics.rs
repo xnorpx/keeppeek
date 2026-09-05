@@ -132,11 +132,27 @@ pub struct BackupMetricsSnapshot {
     pub(crate) active_restore: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NotificationMetricsSnapshot {
+    pub(crate) configured_rules: u64,
+    pub(crate) pending_deliveries: u64,
+    pub(crate) candidates_accepted: u64,
+    pub(crate) candidates_dropped: u64,
+    pub(crate) notifications_created: u64,
+    pub(crate) notifications_replaced: u64,
+    pub(crate) notifications_suppressed: u64,
+    pub(crate) delivery_attempts: u64,
+    pub(crate) delivery_retries: u64,
+    pub(crate) delivery_successes: u64,
+    pub(crate) delivery_failures: u64,
+}
+
 pub fn encode_health_metrics(
     health: &ServerHealthResponse,
     access: Option<AccessMetricsSnapshot>,
     recording: Option<&RecordingCoverageMetricSnapshot>,
     backup: Option<BackupMetricsSnapshot>,
+    notifications: Option<NotificationMetricsSnapshot>,
     mqtt: Option<&MqttStatus>,
     external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
 ) -> Result<String, std::fmt::Error> {
@@ -653,6 +669,70 @@ pub fn encode_health_metrics(
         );
     }
 
+    if let Some(notifications) = notifications {
+        register_gauge(
+            &mut registry,
+            "notification_rules_configured",
+            "Notification rules loaded from configuration",
+            notifications.configured_rules,
+        );
+        register_gauge(
+            &mut registry,
+            "notification_deliveries_pending",
+            "Notification deliveries waiting in process memory",
+            notifications.pending_deliveries,
+        );
+        for (name, help, value) in [
+            (
+                "notification_candidates_accepted",
+                "Notification candidates accepted by the in-memory evaluation queue",
+                notifications.candidates_accepted,
+            ),
+            (
+                "notification_candidates_dropped",
+                "Notification candidates dropped because the in-memory queue was unavailable",
+                notifications.candidates_dropped,
+            ),
+            (
+                "notifications_created",
+                "Logical notifications created in process memory",
+                notifications.notifications_created,
+            ),
+            (
+                "notifications_replaced",
+                "Logical notifications replaced by a later event revision",
+                notifications.notifications_replaced,
+            ),
+            (
+                "notifications_suppressed",
+                "Notification candidates suppressed or collapsed by policy",
+                notifications.notifications_suppressed,
+            ),
+            (
+                "notification_delivery_attempts",
+                "Notification provider delivery attempts",
+                notifications.delivery_attempts,
+            ),
+            (
+                "notification_delivery_retries",
+                "Notification provider retries scheduled in process memory",
+                notifications.delivery_retries,
+            ),
+            (
+                "notification_delivery_successes",
+                "Successful notification provider deliveries",
+                notifications.delivery_successes,
+            ),
+            (
+                "notification_delivery_failures",
+                "Permanently failed or expired notification provider deliveries",
+                notifications.delivery_failures,
+            ),
+        ] {
+            register_counter(&mut registry, name, help, value);
+        }
+    }
+
     if let Some(mqtt) = mqtt {
         register_gauge(
             &mut registry,
@@ -669,19 +749,19 @@ pub fn encode_health_metrics(
         register_gauge(
             &mut registry,
             "mqtt_forwarder_outbox_items",
-            "Durable MQTT publications awaiting broker acknowledgement",
+            "In-memory MQTT publications awaiting broker acknowledgement",
             mqtt.pending_items,
         );
         register_gauge(
             &mut registry,
             "mqtt_forwarder_outbox_bytes",
-            "Bytes held by durable MQTT publications awaiting acknowledgement",
+            "Bytes held by in-memory MQTT publications awaiting acknowledgement",
             mqtt.pending_bytes,
         );
         register_gauge(
             &mut registry,
             "mqtt_forwarder_outbox_limit_bytes",
-            "Configured MQTT durable outbox byte limit",
+            "Configured MQTT in-memory outbox byte limit",
             mqtt.outbox_limit_bytes,
         );
         register_counter(

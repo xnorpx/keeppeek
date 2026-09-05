@@ -1,13 +1,13 @@
-use super::{BackupSection, BackupStoragePaths, CreateBundleOptions};
-use crate::{api::backup_proto, notifications, storage::RecordingCatalogHandle};
+use super::{BackupSection, CreateBundleOptions};
+use crate::api::backup_proto;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Mutex, MutexGuard, TryLockError,
+        Arc, Mutex, MutexGuard, TryLockError,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -50,9 +50,7 @@ struct RetainedRestorePlan {
 pub struct BackupManager {
     config_path: PathBuf,
     root: PathBuf,
-    recording_catalog: Option<RecordingCatalogHandle>,
-    notifications: Option<notifications::Handle>,
-    storage_paths: Option<BackupStoragePaths>,
+    config_update: Arc<Mutex<()>>,
     operation: Mutex<()>,
     uploads: Mutex<HashMap<String, PendingUpload>>,
     restore_plans: Mutex<HashMap<String, RetainedRestorePlan>>,
@@ -61,47 +59,163 @@ pub struct BackupManager {
 }
 
 impl BackupManager {
+    pub(crate) fn export_configuration(
+        &self,
+        now_unix_ms: u64,
+    ) -> anyhow::Result<(String, Vec<u8>)> {
+        if now_unix_ms == 0 {
+            anyhow::bail!("configuration export time must be nonzero");
+        }
+        let _operation = self.try_operation()?;
+        let _config_update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (archive, _) = super::create_bundle(
+            Cursor::new(Vec::new()),
+            CreateBundleOptions {
+                config_path: &self.config_path,
+                sections: &[],
+                created_at_unix_ms: now_unix_ms,
+            },
+        )?;
+        let bytes = archive.into_inner();
+        if u64::try_from(bytes.len())? > super::DEFAULT_INSPECTION_LIMITS.maximum_archive_bytes {
+            return Err(super::ServiceError::capacity(
+                "configuration export exceeds the archive limit",
+            )
+            .into());
+        }
+        Ok((format!("keeppeek-config-{now_unix_ms}.zip"), bytes))
+    }
+
+    pub(crate) fn apply_configuration(
+        &self,
+        reader: impl Read,
+        content_length: u64,
+        now_unix_ms: u64,
+    ) -> anyhow::Result<backup_proto::RestoreRecord> {
+        if now_unix_ms == 0 || content_length == 0 {
+            return Err(super::ServiceError::invalid(
+                "Content-Length",
+                "configuration archive length is outside the supported range",
+            )
+            .into());
+        }
+        if content_length > super::DEFAULT_INSPECTION_LIMITS.maximum_archive_bytes {
+            return Err(super::ServiceError::capacity(
+                "configuration archive exceeds the upload limit",
+            )
+            .into());
+        }
+        let _operation = self.try_operation()?;
+        let archive_id = uuid::Uuid::new_v4().to_string();
+        let temporary = self.root.join(".configuration-apply.tmp");
+        remove_if_exists(&temporary)?;
+        let result = (|| {
+            let mut file = create_private_file(&temporary)?;
+            stream_upload(reader, &mut file, content_length).map_err(|error| {
+                if error.is::<std::io::Error>() {
+                    error
+                } else {
+                    super::ServiceError::invalid(
+                        "Content-Length",
+                        "configuration archive does not match Content-Length",
+                    )
+                    .into()
+                }
+            })?;
+            file.sync_all()?;
+            drop(file);
+            self.stage_configuration_archive(&temporary, archive_id, now_unix_ms)
+        })();
+        if let Err(error) = remove_if_exists(&temporary) {
+            tracing::warn!(error_kind = ?error.kind(), "configuration upload cleanup failed");
+        }
+        result
+    }
+
+    fn stage_configuration_archive(
+        &self,
+        archive_path: &Path,
+        archive_id: String,
+        now_unix_ms: u64,
+    ) -> anyhow::Result<backup_proto::RestoreRecord> {
+        let manifest = super::inspect_bundle(std::fs::File::open(archive_path)?).map_err(|_| {
+            super::ServiceError::invalid("archive", "configuration archive failed validation")
+        })?;
+        if manifest.format_version() != super::FORMAT_VERSION {
+            return Err(super::ServiceError::invalid(
+                "archive",
+                "configuration apply requires a current two-file archive",
+            )
+            .into());
+        }
+        let source_directory = manifest
+            .to_proto()
+            .source_paths
+            .into_iter()
+            .find(|path| path.kind == backup_proto::BackupPathKind::ConfigDirectory as i32)
+            .ok_or_else(|| anyhow::anyhow!("configuration archive source path is missing"))?;
+        let target_directory = self.config_path.parent().unwrap_or_else(|| Path::new("."));
+        let _config_update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request = backup_proto::CreateRestorePlanRequest {
+            client_request_id: archive_id.clone(),
+            backup_id: archive_id,
+            sections: Vec::new(),
+            path_mappings: vec![backup_proto::RestorePathMapping {
+                kind: source_directory.kind,
+                source_path: source_directory.path,
+                target_path: target_directory
+                    .canonicalize()?
+                    .to_string_lossy()
+                    .into_owned(),
+            }],
+            expected_target_revision: super::target_revision(&self.config_path)?,
+        };
+        let plan = super::plan_restore(super::RestorePlanOptions {
+            bundle_path: archive_path,
+            target_config_path: &self.config_path,
+            request: &request,
+            now_unix_ms,
+        })?;
+        if !plan.can_activate {
+            return Err(super::ServiceError::invalid(
+                "archive",
+                "configuration archive cannot be applied to this recorder",
+            )
+            .into());
+        }
+        super::restore::prepare_configuration_apply(&self.config_path)?;
+        super::stage_restore(super::StageRestoreOptions {
+            bundle_path: archive_path,
+            target_config_path: &self.config_path,
+            plan: &plan,
+            now_unix_ms,
+        })
+    }
+
     /// Returns fixed limits and sections supported by this server build.
     pub fn capabilities(
         &self,
         now_unix_ms: u64,
     ) -> anyhow::Result<backup_proto::BackupCapabilities> {
+        let _config_update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let config_directory = self
             .config_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .canonicalize()?;
-        let mut target_paths = vec![backup_proto::BackupPath {
+        let target_paths = vec![backup_proto::BackupPath {
             kind: backup_proto::BackupPathKind::ConfigDirectory as i32,
             path: config_directory.to_string_lossy().into_owned(),
         }];
-        if let Some(catalog) = &self.recording_catalog {
-            target_paths.push(backup_proto::BackupPath {
-                kind: backup_proto::BackupPathKind::RecordingCatalog as i32,
-                path: catalog.database_path().to_string_lossy().into_owned(),
-            });
-        }
-        if let Some(notifications) = &self.notifications {
-            target_paths.push(backup_proto::BackupPath {
-                kind: backup_proto::BackupPathKind::NotificationDatabase as i32,
-                path: notifications.database_path().to_string_lossy().into_owned(),
-            });
-        }
-        if let Some(storage_paths) = &self.storage_paths {
-            for kind in [
-                super::BackupPathKind::LongTermMedia,
-                super::BackupPathKind::EventThumbnails,
-            ] {
-                target_paths.push(backup_proto::BackupPath {
-                    kind: kind.to_proto() as i32,
-                    path: storage_paths
-                        .path(kind)?
-                        .canonicalize()?
-                        .to_string_lossy()
-                        .into_owned(),
-                });
-            }
-        }
         Ok(backup_proto::BackupCapabilities {
             contract_id: "keeppeek.backup.v1".to_owned(),
             current_bundle_format: super::FORMAT_VERSION,
@@ -130,37 +244,7 @@ impl BackupManager {
     }
 
     fn supported_sections(&self) -> Vec<BackupSection> {
-        let mut sections = vec![
-            BackupSection::RuntimeConfig,
-            BackupSection::CameraDatabase,
-            BackupSection::Integrations,
-        ];
-        for (section, file_name) in [
-            (BackupSection::Access, "access.toml"),
-            (BackupSection::Layouts, "peek-layouts.json"),
-            (
-                BackupSection::ConfigurationTemplates,
-                "configuration-templates.json",
-            ),
-        ] {
-            if self.config_path.with_file_name(file_name).is_file() {
-                sections.push(section);
-            }
-        }
-        if self.recording_catalog.is_some() {
-            sections.extend([
-                BackupSection::RecordingCatalog,
-                BackupSection::EventMetadata,
-            ]);
-            if self.storage_paths.is_some() {
-                sections.push(BackupSection::EventThumbnails);
-            }
-        }
-        if self.notifications.is_some() {
-            sections.push(BackupSection::Notifications);
-        }
-        sections.sort_unstable();
-        sections
+        vec![BackupSection::RuntimeConfig]
     }
 
     /// Opens the managed backup directory beside `config.toml`.
@@ -168,11 +252,14 @@ impl BackupManager {
     /// # Errors
     ///
     /// Returns an error when the directory cannot be created or secured.
-    pub fn open(
+    #[cfg(test)]
+    pub fn open(config_path: PathBuf) -> anyhow::Result<Self> {
+        Self::open_with_config_update(config_path, Arc::new(Mutex::new(())))
+    }
+
+    pub fn open_with_config_update(
         config_path: PathBuf,
-        recording_catalog: Option<RecordingCatalogHandle>,
-        notifications: Option<notifications::Handle>,
-        storage_paths: Option<BackupStoragePaths>,
+        config_update: Arc<Mutex<()>>,
     ) -> anyhow::Result<Self> {
         let root = config_path
             .parent()
@@ -187,9 +274,7 @@ impl BackupManager {
         Ok(Self {
             config_path,
             root,
-            recording_catalog,
-            notifications,
-            storage_paths,
+            config_update,
             operation: Mutex::new(()),
             uploads: Mutex::new(HashMap::new()),
             restore_plans: Mutex::new(HashMap::new()),
@@ -261,6 +346,10 @@ impl BackupManager {
             .map(|section| BackupSection::from_proto(*section))
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(|_| super::ServiceError::invalid("sections", "backup sections are invalid"))?;
+        let _config_update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.create_new(request, sections, now_unix_ms)
     }
 
@@ -458,6 +547,10 @@ impl BackupManager {
         if plans.len() >= MAXIMUM_RETAINED_RESTORE_PLANS {
             return Err(super::ServiceError::busy("restore plan retention limit reached").into());
         }
+        let _config_update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let plan = super::plan_restore(super::RestorePlanOptions {
             bundle_path: &self.artifact_path(&request.backup_id)?,
             target_config_path: &self.config_path,
@@ -503,6 +596,10 @@ impl BackupManager {
             )
             .into());
         }
+        let _config_update = self
+            .config_update
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let record = super::stage_restore(super::StageRestoreOptions {
             bundle_path: &self.artifact_path(&plan.backup_id)?,
             target_config_path: &self.config_path,
@@ -559,9 +656,6 @@ impl BackupManager {
                     config_path: &self.config_path,
                     sections: &sections,
                     created_at_unix_ms: now_unix_ms,
-                    recording_catalog: self.recording_catalog.as_ref(),
-                    notifications: self.notifications.as_ref(),
-                    storage_paths: self.storage_paths.as_ref(),
                 },
             )?;
             file.sync_all()?;
@@ -879,17 +973,111 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configuration_apply_preserves_secret_backed_target_storage_paths() {
+        let directory = test_directory();
+        let source = directory.join("source");
+        let target = directory.join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        let config = "[storage]\nlong_term_path = \"{secret:RESTORE_TEST_STORAGE_DIRECTORY}\"\n";
+        let source_secrets = format!(
+            "RESTORE_TEST_STORAGE_DIRECTORY = {:?}\n",
+            source.join("recordings")
+        );
+        let target_recordings = target.join("recordings");
+        std::fs::write(source.join("config.toml"), config).unwrap();
+        std::fs::write(source.join("secrets.toml"), &source_secrets).unwrap();
+        std::fs::write(target.join("config.toml"), config).unwrap();
+        std::fs::write(
+            target.join("secrets.toml"),
+            format!("RESTORE_TEST_STORAGE_DIRECTORY = {target_recordings:?}\n"),
+        )
+        .unwrap();
+        let source_manager = BackupManager::open(source.join("config.toml")).unwrap();
+        let target_config = target.join("config.toml");
+        let target_manager = BackupManager::open(target_config.clone()).unwrap();
+        let (_, archive) = source_manager
+            .export_configuration(1_788_000_000_000)
+            .unwrap();
+        let length = u64::try_from(archive.len()).unwrap();
+
+        target_manager
+            .apply_configuration(Cursor::new(archive), length, 1_788_000_000_001)
+            .unwrap();
+        super::super::recover_pending_restore(&target_config, 1_788_000_000_002).unwrap();
+
+        let applied = crate::config::load_config(&target_config).unwrap();
+        let storage = crate::storage::StorageConfig::from_toml(&applied.storage);
+        assert_eq!(storage.long_term_path, target_recordings);
+        assert_eq!(
+            storage.recording_catalog_path,
+            target_recordings.join("recordings.db")
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("secrets.toml")).unwrap(),
+            source_secrets
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn configuration_apply_preserves_pending_and_supersedes_completed_restores() {
+        let directory = test_directory();
+        let config_path = directory.join("config.toml");
+        std::fs::write(&config_path, "host = \"localhost\"\n").unwrap();
+        std::fs::write(crate::config::secrets_path(&config_path), "").unwrap();
+        let manager = BackupManager::open(config_path.clone()).unwrap();
+        let temporary = directory.join(".backups/.configuration-apply.tmp");
+        std::fs::write(&temporary, b"interrupted upload").unwrap();
+        let (_, bytes) = manager.export_configuration(1_788_000_000_000).unwrap();
+        let length = u64::try_from(bytes.len()).unwrap();
+        let staged = manager
+            .apply_configuration(Cursor::new(&bytes), length, 1_788_000_000_001)
+            .unwrap();
+        assert!(
+            !temporary.exists(),
+            "the interrupted upload must be removed"
+        );
+        let journal_path = directory.join(".backups/restore-journal.json");
+        let journal = std::fs::read(&journal_path).unwrap();
+
+        let rejected = manager
+            .apply_configuration(Cursor::new(&bytes), length, 1_788_000_000_002)
+            .unwrap_err();
+
+        assert_eq!(
+            rejected
+                .downcast_ref::<super::super::ServiceError>()
+                .map(|error| error.response().0),
+            Some(409)
+        );
+        assert_eq!(std::fs::read(&journal_path).unwrap(), journal);
+        super::super::recover_pending_restore(&config_path, 1_788_000_000_003).unwrap();
+        super::super::mark_restore_healthy(&config_path, 1_788_000_000_004).unwrap();
+
+        let next = manager
+            .apply_configuration(Cursor::new(&bytes), length, 1_788_000_000_005)
+            .unwrap();
+
+        assert_ne!(next.restore_id, staged.restore_id);
+        assert_eq!(
+            next.state,
+            backup_proto::RestoreState::AwaitingRestart as i32
+        );
+        assert!(manager.list().unwrap().backups.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn managed_backup_create_list_inspect_download_and_delete_round_trip() {
         let directory = test_directory();
         let config_path = directory.join("config.toml");
         std::fs::write(&config_path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
-        let manager = BackupManager::open(config_path, None, None, None).unwrap();
+        std::fs::write(crate::config::secrets_path(&config_path), "").unwrap();
+        let manager = BackupManager::open(config_path).unwrap();
         let request = backup_proto::CreateBackupRequest {
             client_request_id: "request-1".to_owned(),
-            sections: vec![
-                backup_proto::BackupSection::RuntimeConfig as i32,
-                backup_proto::BackupSection::CameraDatabase as i32,
-            ],
+            sections: Vec::new(),
             expected_archive_bytes: 1024 * 1024,
         };
 
@@ -911,26 +1099,82 @@ mod tests {
     }
 
     #[test]
+    fn backup_creation_captures_one_serialized_configuration_pair() {
+        let directory = test_directory();
+        let config_path = directory.join("config.toml");
+        let secrets_path = crate::config::secrets_path(&config_path);
+        std::fs::write(&config_path, "host = \"old\"\n").unwrap();
+        std::fs::write(&secrets_path, "PAIR = \"old\"\n").unwrap();
+        let config_update = Arc::new(Mutex::new(()));
+        let manager = Arc::new(
+            BackupManager::open_with_config_update(config_path.clone(), config_update.clone())
+                .unwrap(),
+        );
+        let guard = config_update.lock().unwrap();
+        let worker_manager = manager.clone();
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            result_tx
+                .send(worker_manager.create(
+                    &backup_proto::CreateBackupRequest {
+                        client_request_id: "serialized-pair".to_owned(),
+                        sections: Vec::new(),
+                        expected_archive_bytes: 0,
+                    },
+                    1_788_000_000_000,
+                ))
+                .unwrap();
+        });
+        assert!(result_rx.try_recv().is_err());
+        std::fs::write(&config_path, "host = \"new\"\n").unwrap();
+        std::fs::write(&secrets_path, "PAIR = \"new\"\n").unwrap();
+        drop(guard);
+
+        let record = result_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        worker.join().unwrap();
+        let mut archive = zip::ZipArchive::new(
+            std::fs::File::open(manager.artifact_path(&record.backup_id).unwrap()).unwrap(),
+        )
+        .unwrap();
+        let mut config = String::new();
+        archive
+            .by_name(super::super::create::CONFIG_MEMBER_PATH)
+            .unwrap()
+            .read_to_string(&mut config)
+            .unwrap();
+        let mut secrets = String::new();
+        archive
+            .by_name(super::super::create::SECRETS_MEMBER_PATH)
+            .unwrap()
+            .read_to_string(&mut secrets)
+            .unwrap();
+        assert_eq!(config, "host = \"new\"\n");
+        assert_eq!(secrets, "PAIR = \"new\"\n");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn managed_upload_streams_validates_and_promotes_one_archive() {
         let directory = test_directory();
         let source_config = directory.join("source.toml");
         let target_config = directory.join("target.toml");
         std::fs::write(&source_config, "[storage]\nlong_term_max_gb = 10\n").unwrap();
         std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
+        std::fs::write(crate::config::secrets_path(&source_config), "").unwrap();
         let (bundle, _) = super::super::create_bundle(
             std::io::Cursor::new(Vec::new()),
             super::super::CreateBundleOptions {
                 config_path: &source_config,
                 sections: &[super::super::BackupSection::RuntimeConfig],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
         let bytes = bundle.into_inner();
-        let manager = BackupManager::open(target_config, None, None, None).unwrap();
+        let manager = BackupManager::open(target_config).unwrap();
         let request = backup_proto::BeginBackupUploadRequest {
             client_request_id: "upload-1".to_owned(),
             file_name: "portable-backup.zip".to_owned(),
@@ -971,19 +1215,18 @@ mod tests {
         let target_config = target.join("config.toml");
         std::fs::write(&source_config, "[storage]\nlong_term_max_gb = 10\n").unwrap();
         std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
-        let manager = BackupManager::open(target_config.clone(), None, None, None).unwrap();
+        std::fs::write(crate::config::secrets_path(&source_config), "").unwrap();
+        let config_update = Arc::new(Mutex::new(()));
+        let manager = Arc::new(
+            BackupManager::open_with_config_update(target_config.clone(), config_update.clone())
+                .unwrap(),
+        );
         let (bundle, source_manifest) = super::super::create_bundle(
             std::io::Cursor::new(Vec::new()),
             super::super::CreateBundleOptions {
                 config_path: &source_config,
-                sections: &[
-                    super::super::BackupSection::RuntimeConfig,
-                    super::super::BackupSection::CameraDatabase,
-                ],
+                sections: &[],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
@@ -1008,23 +1251,35 @@ mod tests {
                 1_788_000_001_001,
             )
             .unwrap();
-        let plan = manager
-            .create_restore_plan(
-                &backup_proto::CreateRestorePlanRequest {
-                    client_request_id: "plan-1".to_owned(),
-                    backup_id: uploaded.backup_id,
-                    sections: Vec::new(),
-                    path_mappings: vec![backup_proto::RestorePathMapping {
-                        kind: backup_proto::BackupPathKind::ConfigDirectory as i32,
-                        source_path: source_manifest.source_paths[0].path.clone(),
-                        target_path: target.to_string_lossy().into_owned(),
-                    }],
-                    expected_target_revision: super::super::target_revision(&target_config)
-                        .unwrap(),
-                },
-                1_788_000_001_002,
-            )
+        let plan_request = backup_proto::CreateRestorePlanRequest {
+            client_request_id: "plan-1".to_owned(),
+            backup_id: uploaded.backup_id,
+            sections: Vec::new(),
+            path_mappings: vec![backup_proto::RestorePathMapping {
+                kind: backup_proto::BackupPathKind::ConfigDirectory as i32,
+                source_path: source_manifest.source_paths[0].path.clone(),
+                target_path: target.to_string_lossy().into_owned(),
+            }],
+            expected_target_revision: super::super::target_revision(&target_config).unwrap(),
+        };
+        let guard = config_update.lock().unwrap();
+        let worker_manager = manager.clone();
+        let (plan_tx, plan_rx) = std::sync::mpsc::sync_channel(1);
+        let plan_worker = std::thread::spawn(move || {
+            plan_tx
+                .send(worker_manager.create_restore_plan(&plan_request, 1_788_000_001_002))
+                .unwrap();
+        });
+        assert!(matches!(
+            plan_rx.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(guard);
+        let plan = plan_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
             .unwrap();
+        plan_worker.join().unwrap();
 
         let unconfirmed = manager.activate_restore(
             &backup_proto::ActivateRestoreRequest {
@@ -1041,17 +1296,30 @@ mod tests {
                 .to_string()
                 .contains("confirmation")
         );
-        let staged = manager
-            .activate_restore(
-                &backup_proto::ActivateRestoreRequest {
-                    client_request_id: "activate-1".to_owned(),
-                    plan_id: plan.plan_id,
-                    archive_sha256: plan.archive_sha256,
-                    confirm: true,
-                },
-                1_788_000_001_004,
-            )
+        let activate_request = backup_proto::ActivateRestoreRequest {
+            client_request_id: "activate-1".to_owned(),
+            plan_id: plan.plan_id,
+            archive_sha256: plan.archive_sha256,
+            confirm: true,
+        };
+        let guard = config_update.lock().unwrap();
+        let worker_manager = manager;
+        let (activate_tx, activate_rx) = std::sync::mpsc::sync_channel(1);
+        let activate_worker = std::thread::spawn(move || {
+            activate_tx
+                .send(worker_manager.activate_restore(&activate_request, 1_788_000_001_004))
+                .unwrap();
+        });
+        assert!(matches!(
+            activate_rx.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(guard);
+        let staged = activate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap()
             .unwrap();
+        activate_worker.join().unwrap();
         assert_eq!(
             staged.state,
             backup_proto::RestoreState::AwaitingRestart as i32

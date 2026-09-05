@@ -5,7 +5,7 @@ use std::{path::Path, sync::Arc};
 use crate::{
     access::AccessManager,
     api::{CameraId, CameraLifecycle, CameraStatus},
-    backup::{self, BackupManager, BackupStoragePaths},
+    backup::{self, BackupManager},
     battery_wake::BatteryWakeService,
     camera_database::CameraDatabase,
     cameras,
@@ -64,6 +64,8 @@ pub fn run(
     shutdown: Shutdown,
     restart: Restart,
 ) -> anyhow::Result<bool> {
+    crate::server::migrate_template_store(config_path)?;
+    crate::event_forwarder::remove_legacy_outbox(config_path)?;
     #[cfg(windows)]
     let _timer_resolution = WindowsTimerResolution::request(1);
 
@@ -86,6 +88,9 @@ pub fn run(
 
     let cameras = cameras::configured_cameras(&camera_configs);
     tracing::info!("initialized {} camera(s) from configuration", cameras.len());
+    let mut layout_camera_ids = cameras.keys().map(ToString::to_string).collect::<Vec<_>>();
+    layout_camera_ids.sort_unstable();
+    crate::server::migrate_peek_layout_configuration(config_path, &layout_camera_ids)?;
 
     for cam in cameras.values() {
         tracing::info!(
@@ -146,38 +151,11 @@ pub fn run(
         storage_config.event_thumbnail_max_bytes,
     )?;
     let operational_event_store = event_store.clone();
-    let event_forwarder_path = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("mqtt-forwarder.db");
-    let event_forwarder = EventForwarderRuntime::open(
-        cfg.event_forwarder.mqtt.clone(),
-        &event_forwarder_path,
-        shutdown.clone(),
-    )?;
+    let event_forwarder =
+        EventForwarderRuntime::open(cfg.event_forwarder.mqtt.clone(), shutdown.clone())?;
     let event_forwarder_handle = event_forwarder.handle();
-    let notification_path = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("notifications.db");
-    let notification_runtime = NotificationRuntime::open(&notification_path)?;
-    let notification_handle = notification_runtime.handle();
-    let backup_manager = BackupManager::open(
-        config_path.to_path_buf(),
-        Some(recording_catalog.handle()),
-        Some(notification_handle.clone()),
-        Some(BackupStoragePaths::new(
-            storage_config.long_term_path.clone(),
-            storage_config.event_thumbnail_path.clone(),
-        )),
-    )?;
     let recording_demand = storage_engine.demand();
     let recording_health = storage_engine.health();
-    let notification_health = NotificationHealthMonitor::start(
-        recording_health.clone(),
-        notification_handle.clone(),
-        shutdown.clone(),
-    )?;
     let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
     let health_registry = HealthRegistry::new();
     let server_state = ServerState::new(
@@ -187,18 +165,38 @@ pub fn run(
         &storage_config,
         recording_demand,
         webrtc.clone(),
-    )
-    .with_access_manager(AccessManager::open(config_path, cfg.access_key)?)
-    .with_camera_config_path(config_path.to_path_buf())
-    .with_camera_database(camera_database)
-    .with_logging(logging)
-    .with_restart_control(shutdown.clone(), restart.clone())
-    .with_event_store(event_store.clone())
-    .with_health_registry(health_registry.clone())
-    .with_recording_catalog(recording_catalog.handle())
-    .with_backup_manager(backup_manager)
-    .with_recording_health(recording_health)
-    .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
+    );
+    let backup_manager = BackupManager::open_with_config_update(
+        config_path.to_path_buf(),
+        server_state.configuration_update_lock(),
+    )?;
+    let access_manager = AccessManager::open_with_config_update(
+        config_path,
+        cfg.access_key,
+        server_state.configuration_update_lock(),
+    )?;
+    let server_state = server_state
+        .with_access_manager(access_manager)
+        .with_camera_config_path(config_path.to_path_buf())
+        .with_camera_database(camera_database)
+        .with_logging(logging)
+        .with_restart_control(shutdown.clone(), restart.clone())
+        .with_event_store(event_store.clone())
+        .with_health_registry(health_registry.clone())
+        .with_recording_catalog(recording_catalog.handle())
+        .with_backup_manager(backup_manager)
+        .with_recording_health(recording_health.clone())
+        .with_battery_wake(battery_wake.as_ref().map(BatteryWakeService::handle));
+    let notification_runtime = NotificationRuntime::open_with_config_update(
+        config_path,
+        server_state.configuration_update_lock(),
+    )?;
+    let notification_handle = notification_runtime.handle();
+    let notification_health = NotificationHealthMonitor::start(
+        recording_health,
+        notification_handle.clone(),
+        shutdown.clone(),
+    )?;
     let server_state = server_state
         .with_notifications(notification_handle.clone())
         .with_event_forwarder(event_forwarder_handle.clone());

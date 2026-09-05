@@ -10,8 +10,8 @@ export const serverCapabilityCatalog = {
 	'keeppeek.backup.v1': {
 		delivery: 'ships',
 		serverOwns:
-			'Versioned reference-only bundles, validation, dry-run plans, staged activation, health evidence, and bounded rollback',
-		unlocks: 'Administrator backup creation, inspection, migration, restore, and rollback',
+			'Direct config.toml and secrets.toml ZIP export and application, validation, restart activation, and startup recovery',
+		unlocks: 'Administrator configuration ZIP export and apply',
 		whenMissing: 'Backup and restore controls remain hidden',
 		failureGuarantee:
 			'Invalid, stale, unsupported, or incomplete restores leave live state unchanged or restore retained before-images'
@@ -72,12 +72,12 @@ export const serverCapabilityCatalog = {
 	'keeppeek.mqtt-forwarder.v1': {
 		delivery: 'ships',
 		serverOwns:
-			'MQTT 5 configuration, write-only credentials, broker tests, bounded durable delivery, retries, and health',
+			'MQTT 5 configuration, write-only credentials, broker tests, bounded in-memory delivery, retries, and health',
 		unlocks: 'MQTT 5 event forwarding configuration and delivery status',
 		whenMissing:
 			'The integration remains read-only and no broker connection state is inferred from generated types',
 		failureGuarantee:
-			'Camera ingest remains independent; failed delivery stays visible and bounded in the durable outbox'
+			'Camera ingest remains independent; pending delivery stays visible and bounded until restart'
 	},
 	'keeppeek.peek-layouts.v1': {
 		delivery: 'ships',

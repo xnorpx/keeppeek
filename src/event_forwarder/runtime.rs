@@ -13,7 +13,6 @@ use crate::{
 };
 use serde::Serialize;
 use std::{
-    path::Path,
     sync::{
         Arc, RwLock,
         atomic::{AtomicU64, Ordering},
@@ -181,7 +180,7 @@ impl Handle {
             })?;
         result
             .recv_timeout(INGEST_REPLY_TIMEOUT)
-            .map_err(|_| anyhow::anyhow!("MQTT forwarder did not persist the event in time"))?
+            .map_err(|_| anyhow::anyhow!("MQTT forwarder did not queue the event in time"))?
             .map_err(anyhow::Error::msg)
     }
 }
@@ -193,15 +192,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn open(
-        config: MqttForwarderConfig,
-        outbox_path: &Path,
-        shutdown: Shutdown,
-    ) -> anyhow::Result<Self> {
+    pub fn open(config: MqttForwarderConfig, shutdown: Shutdown) -> anyhow::Result<Self> {
         config.validate()?;
-        let initial_outbox = Outbox::open(outbox_path)?;
-        let stats = initial_outbox.stats()?;
-        drop(initial_outbox);
+        let outbox = Outbox::new();
+        let stats = outbox.stats()?;
 
         let configuration_revision = config.revision;
         let config = Arc::new(RwLock::new(config));
@@ -219,7 +213,7 @@ impl Runtime {
             generation: generation.clone(),
             status: status.clone(),
         };
-        let writer_outbox = outbox_path.to_path_buf();
+        let writer_outbox = outbox.clone();
         let writer_config = config.clone();
         let writer_status = status.clone();
         let writer_shutdown = shutdown.clone();
@@ -228,21 +222,21 @@ impl Runtime {
             .spawn(move || {
                 writer_loop(
                     receiver,
-                    &writer_outbox,
+                    writer_outbox,
                     &writer_config,
                     &writer_status,
                     &writer_shutdown,
                 );
             })?;
 
-        let publisher_outbox = outbox_path.to_path_buf();
+        let publisher_outbox = outbox;
         let publisher_config = config;
         let publisher_status = status;
         let publisher = std::thread::Builder::new()
             .name("mqtt-publisher".to_owned())
             .spawn(move || {
                 publisher_loop(
-                    &publisher_outbox,
+                    publisher_outbox,
                     &publisher_config,
                     &generation,
                     &publisher_status,
@@ -277,23 +271,11 @@ impl Runtime {
 
 fn writer_loop(
     receiver: Receiver<Command>,
-    outbox_path: &Path,
+    outbox: Outbox,
     config: &RwLock<MqttForwarderConfig>,
     status: &RwLock<MqttStatus>,
     shutdown: &Shutdown,
 ) {
-    let outbox = match Outbox::open(outbox_path) {
-        Ok(outbox) => outbox,
-        Err(error) => {
-            set_failure(
-                status,
-                MqttConnectionState::Degraded,
-                "MQTT outbox could not be opened.",
-            );
-            tracing::error!(%error, "unable to open MQTT outbox");
-            return;
-        }
-    };
     while !shutdown.is_cancelled() {
         let command = match receiver.recv_timeout(IDLE_POLL) {
             Ok(command) => command,
@@ -342,24 +324,12 @@ fn writer_loop(
 }
 
 fn publisher_loop(
-    outbox_path: &Path,
+    outbox: Outbox,
     config: &RwLock<MqttForwarderConfig>,
     generation: &AtomicU64,
     status: &RwLock<MqttStatus>,
     shutdown: &Shutdown,
 ) {
-    let outbox = match Outbox::open(outbox_path) {
-        Ok(outbox) => outbox,
-        Err(error) => {
-            set_failure(
-                status,
-                MqttConnectionState::Degraded,
-                "MQTT outbox could not be opened.",
-            );
-            tracing::error!(%error, "unable to open MQTT outbox for delivery");
-            return;
-        }
-    };
     let mut applied_generation = 0;
     let mut session: Option<BrokerSession> = None;
     let mut retry_delay = Duration::ZERO;
@@ -444,7 +414,7 @@ fn publisher_loop(
                     set_failure(
                         status,
                         MqttConnectionState::Degraded,
-                        "MQTT delivery was acknowledged but its outbox receipt could not be saved.",
+                        "MQTT delivery was acknowledged but its queue state could not be updated.",
                     );
                 } else {
                     let mut health = status
@@ -588,7 +558,7 @@ mod tests {
     use super::*;
     use crate::storage::metadata::EventSource;
     use std::{
-        io::{self, Read, Write},
+        io::{self, Read},
         net::{TcpListener, TcpStream},
         time::Instant,
     };
@@ -628,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn broker_outage_replays_normalized_motion_event_after_restart() {
+    fn broker_outage_pending_event_is_discarded_after_restart() {
         let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
         let unavailable_address = unavailable.local_addr().unwrap();
         let (attempted, attempt) = mpsc::channel();
@@ -638,8 +608,6 @@ mod tests {
             assert_eq!(connect[6], 5);
             attempted.send(()).unwrap();
         });
-        let recovery_listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let recovery_address = recovery_listener.local_addr().unwrap();
         let mut config = MqttForwarderConfig {
             enabled: true,
             broker_url: format!("mqtt://{unavailable_address}"),
@@ -648,12 +616,8 @@ mod tests {
             retry_max_ms: 40,
             ..MqttForwarderConfig::default()
         };
-        let outbox_path = std::env::temp_dir().join(format!(
-            "keeppeek-mqtt-recovery-{}.db",
-            uuid::Uuid::new_v4()
-        ));
         let shutdown = Shutdown::new();
-        let runtime = Runtime::open(config.clone(), &outbox_path, shutdown.clone()).unwrap();
+        let runtime = Runtime::open(config.clone(), shutdown.clone()).unwrap();
         let handle = runtime.handle();
         handle
             .publish_timeline(&motion_event(), EventTransition::Created, 1_786_800_000_000)
@@ -665,31 +629,15 @@ mod tests {
         runtime.join();
         assert!(handle.status().retry_count > 0);
 
-        let (published, received) = mpsc::channel();
-        let broker = std::thread::spawn(move || serve_broker(recovery_listener, &published));
-        config.broker_url = format!("mqtt://{recovery_address}");
+        config.enabled = false;
         let recovery_shutdown = Shutdown::new();
-        let recovered = Runtime::open(config, &outbox_path, recovery_shutdown.clone()).unwrap();
+        let recovered = Runtime::open(config, recovery_shutdown.clone()).unwrap();
         let recovered_handle = recovered.handle();
-        let (topic, payload) = received.recv_timeout(BROKER_OPERATION_TIMEOUT).unwrap();
-        assert_eq!(topic, "keeppeek/home-nvr/sources/front-door/events/motion");
-        let payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-        assert_eq!(payload["schema_version"], 1);
-        assert_eq!(payload["event_id"], "motion-42");
-        assert_eq!(payload["revision"], 1);
-        assert_eq!(payload["transition"], "created");
-        wait_until(Duration::from_secs(10), || {
-            recovered_handle.status().pending_items == 0
-        });
-        assert_eq!(
-            recovered_handle.status().state,
-            MqttConnectionState::Connected
-        );
+        assert_eq!(recovered_handle.status().pending_items, 0);
+        assert_eq!(recovered_handle.status().pending_bytes, 0);
 
         recovery_shutdown.cancel();
         recovered.join();
-        broker.join().unwrap();
-        let _ = std::fs::remove_file(outbox_path);
     }
 
     #[test]
@@ -698,15 +646,8 @@ mod tests {
         const RUNS: u64 = 128;
         const P95_BUDGET_NS: u64 = 50_000_000;
 
-        let outbox_path =
-            std::env::temp_dir().join(format!("keeppeek-mqtt-latency-{}.db", uuid::Uuid::new_v4()));
         let shutdown = Shutdown::new();
-        let runtime = Runtime::open(
-            MqttForwarderConfig::default(),
-            &outbox_path,
-            shutdown.clone(),
-        )
-        .unwrap();
+        let runtime = Runtime::open(MqttForwarderConfig::default(), shutdown.clone()).unwrap();
         let handle = runtime.handle();
         let mut baseline = hdrhistogram::Histogram::<u64>::new(3).unwrap();
         for index in 0..RUNS {
@@ -756,7 +697,6 @@ mod tests {
 
         shutdown.cancel();
         runtime.join();
-        let _ = std::fs::remove_file(outbox_path);
     }
 
     fn motion_event() -> TimelineEvent {
@@ -783,49 +723,6 @@ mod tests {
         }
     }
 
-    fn serve_broker(listener: TcpListener, published: &mpsc::Sender<(String, Vec<u8>)>) {
-        let (mut stream, _) = listener.accept().unwrap();
-        let (_, connect) = read_frame(&mut stream).unwrap().unwrap();
-        assert_eq!(connect[6], 5);
-        stream.write_all(&[0x20, 0x03, 0x00, 0x00, 0x00]).unwrap();
-        while let Some((header, body)) = read_frame(&mut stream).unwrap() {
-            match header >> 4 {
-                3 => {
-                    let (topic, payload, packet_id) = published_message(header, &body);
-                    if topic.contains("/events/") {
-                        published.send((topic, payload)).unwrap();
-                    }
-                    if let Some(packet_id) = packet_id {
-                        let packet_id = packet_id.to_be_bytes();
-                        stream
-                            .write_all(&[0x40, 0x02, packet_id[0], packet_id[1]])
-                            .unwrap();
-                    }
-                }
-                14 => break,
-                _ => {}
-            }
-        }
-    }
-
-    fn published_message(header: u8, body: &[u8]) -> (String, Vec<u8>, Option<u16>) {
-        let topic_length = usize::from(u16::from_be_bytes([body[0], body[1]]));
-        let topic_end = 2 + topic_length;
-        let topic = std::str::from_utf8(&body[2..topic_end]).unwrap().to_owned();
-        let qos = (header >> 1) & 0x03;
-        let mut cursor = topic_end;
-        let packet_id = if qos == 0 {
-            None
-        } else {
-            let id = u16::from_be_bytes([body[cursor], body[cursor + 1]]);
-            cursor += 2;
-            Some(id)
-        };
-        let (properties_length, properties_prefix) = variable_integer(&body[cursor..]);
-        cursor += properties_prefix + properties_length;
-        (topic, body[cursor..].to_vec(), packet_id)
-    }
-
     fn read_frame(stream: &mut TcpStream) -> io::Result<Option<(u8, Vec<u8>)>> {
         let mut header = [0_u8; 1];
         match stream.read_exact(&mut header) {
@@ -847,29 +744,5 @@ mod tests {
         let mut body = vec![0_u8; remaining];
         stream.read_exact(&mut body)?;
         Ok(Some((header[0], body)))
-    }
-
-    fn variable_integer(bytes: &[u8]) -> (usize, usize) {
-        let mut value = 0_usize;
-        let mut multiplier = 1_usize;
-        for (index, byte) in bytes.iter().copied().enumerate() {
-            value += usize::from(byte & 0x7f) * multiplier;
-            if byte & 0x80 == 0 {
-                return (value, index + 1);
-            }
-            multiplier *= 128;
-        }
-        panic!("MQTT variable integer is incomplete");
-    }
-
-    fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) {
-        let deadline = Instant::now() + timeout;
-        while !predicate() {
-            assert!(
-                Instant::now() < deadline,
-                "condition did not become true in time"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 }

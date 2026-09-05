@@ -32,7 +32,8 @@ into the camera. A later default change therefore continues to flow to that came
 ## Templates
 
 Camera templates are versioned human-readable JSON documents stored in
-`configuration-templates.json` beside `config.toml`. They can include camera connection and
+`[configuration_templates]` in `config.toml`. A legacy `configuration-templates.json` is imported
+once on upgrade and removed after a successful write. Templates can include camera connection and
 recording-policy values that the current runtime supports. Notification rules remain in the
 notification editor and are not duplicated in camera templates.
 

@@ -11,7 +11,8 @@ const MAXIMUM_SNAPSHOT_PAGE_SIZE: usize = 64;
 const MAXIMUM_RETAINED_PLANS: usize = 128;
 const PLAN_TTL: Duration = Duration::from_secs(10 * 60);
 const TEMPLATE_DOCUMENT_VERSION: u32 = 1;
-const TEMPLATE_STORE_FILE: &str = "configuration-templates.json";
+const TEMPLATE_CONFIG_SECTION: &str = "configuration_templates";
+const LEGACY_TEMPLATE_STORE_FILE: &str = "configuration-templates.json";
 
 #[derive(Clone, Default)]
 pub(super) struct Registry {
@@ -2024,16 +2025,49 @@ impl StoredTemplate {
 }
 
 fn template_store_path(config_path: &Path) -> PathBuf {
-    config_path.with_file_name(TEMPLATE_STORE_FILE)
+    config_path.with_file_name(LEGACY_TEMPLATE_STORE_FILE)
 }
 
 fn load_templates(config_path: &Path) -> anyhow::Result<StoredTemplateDocument> {
-    let path = template_store_path(config_path);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(StoredTemplateDocument::default());
+    let root = config::load_configuration_table(config_path)?;
+    let document = root
+        .get(TEMPLATE_CONFIG_SECTION)
+        .cloned()
+        .map(toml::Value::try_into)
+        .transpose()?
+        .unwrap_or_default();
+    validate_stored_templates(&document)?;
+    Ok(document)
+}
+
+fn persist_templates(config_path: &Path, document: &StoredTemplateDocument) -> anyhow::Result<()> {
+    validate_stored_templates(document)?;
+    let encoded = toml::to_string(document)?;
+    if encoded.len() > MAXIMUM_TEMPLATE_DOCUMENT_BYTES {
+        anyhow::bail!(
+            "configuration template document exceeds {MAXIMUM_TEMPLATE_DOCUMENT_BYTES} bytes"
+        );
+    }
+    let mut root = config::load_configuration_table(config_path)?;
+    root.insert(
+        TEMPLATE_CONFIG_SECTION.to_owned(),
+        toml::Value::try_from(document)?,
+    );
+    config::write_configuration_table(config_path, &root)
+}
+
+pub(super) fn migrate_template_store(config_path: &Path) -> anyhow::Result<()> {
+    let root = config::load_configuration_table(config_path)?;
+    let legacy_path = template_store_path(config_path);
+    if root.contains_key(TEMPLATE_CONFIG_SECTION) {
+        if legacy_path.exists() {
+            std::fs::remove_file(legacy_path)?;
         }
+        return Ok(());
+    }
+    let bytes = match std::fs::read(&legacy_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     if bytes.len() > MAXIMUM_TEMPLATE_DOCUMENT_BYTES {
@@ -2042,20 +2076,17 @@ fn load_templates(config_path: &Path) -> anyhow::Result<StoredTemplateDocument> 
         );
     }
     let document: StoredTemplateDocument = serde_json::from_slice(&bytes)?;
-    validate_stored_templates(&document)?;
-    Ok(document)
+    persist_templates(config_path, &document)?;
+    std::fs::remove_file(legacy_path)?;
+    Ok(())
 }
 
-fn persist_templates(config_path: &Path, document: &StoredTemplateDocument) -> anyhow::Result<()> {
-    validate_stored_templates(document)?;
-    let bytes = serde_json::to_vec_pretty(document)?;
-    if bytes.len() > MAXIMUM_TEMPLATE_DOCUMENT_BYTES {
-        anyhow::bail!(
-            "configuration template document exceeds {MAXIMUM_TEMPLATE_DOCUMENT_BYTES} bytes"
-        );
-    }
-    config::write_private_file_atomically(&template_store_path(config_path), &bytes)?;
-    Ok(())
+pub(super) fn validate_configuration(root: &toml::Table) -> anyhow::Result<()> {
+    let Some(value) = root.get(TEMPLATE_CONFIG_SECTION) else {
+        return Ok(());
+    };
+    let document: StoredTemplateDocument = value.clone().try_into()?;
+    validate_stored_templates(&document)
 }
 
 fn validate_stored_templates(document: &StoredTemplateDocument) -> anyhow::Result<()> {
@@ -2895,6 +2926,11 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let config_path = directory.join("config.toml");
         std::fs::write(&config_path, "host = \"127.0.0.1\"\n").unwrap();
+        std::fs::write(
+            directory.join("secrets.toml"),
+            "OUTDOOR_USERNAME = \"operator\"\n",
+        )
+        .unwrap();
         let stored = StoredTemplate::from_proto(
             validate_template(template("{secret:OUTDOOR_USERNAME}", "Outdoor")).unwrap(),
             "outdoor".to_owned(),
@@ -2920,10 +2956,12 @@ mod tests {
             Some(CameraBackend::ReoProto)
         );
 
-        let serialized = std::fs::read_to_string(template_store_path(&config_path)).unwrap();
+        let serialized = std::fs::read_to_string(&config_path).unwrap();
+        assert!(serialized.contains("configuration_templates"));
         assert!(serialized.contains("\"reo-proto\""));
         assert!(serialized.contains("{secret:OUTDOOR_USERNAME}"));
         assert!(!serialized.contains("resolved-password"));
+        assert!(!directory.join("configuration-templates.json").exists());
 
         std::fs::remove_dir_all(directory).unwrap();
     }

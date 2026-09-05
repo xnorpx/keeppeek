@@ -16,7 +16,8 @@ recording, event storage, or browser delivery.
    request ID and status without returning either credential.
 
 Application tokens and user or group keys are write-only. KeepPeek accepts them over the
-authenticated control connection, stores them in the server-owned notification database, and
+authenticated control connection, stores secret references with notification rules in
+`config.toml`, and
 replaces them in every API response with a configured marker and an opaque reference. They are not
 included in health snapshots, delivery reasons, logs, or browser-readable responses. Changing only
 non-secret settings preserves the stored credentials; replacing credentials requires entering both

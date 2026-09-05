@@ -66,15 +66,15 @@ precedence, and migration behavior.
 
 ## Create a recovery backup
 
-Open **Settings → Backup and restore** as an Administrator and create a validated reference-only
+Open **Settings → Backup and restore** as an Administrator and create a validated configuration
 bundle before relying on the recorder. Download the ZIP and retain it separately from the recorder.
-The bundle includes configuration and critical metadata but intentionally omits resolved secrets,
-sessions, MP4 recordings, and thumbnail JPEG bytes.
+The ZIP contains exactly `config.toml` and plaintext `secrets.toml`, so handle it as sensitive data.
+It intentionally omits `recordings.db`, sessions, MP4 recordings, and thumbnail JPEG bytes.
 
-Test recovery on an isolated installation. Inspection and dry run do not change live state. Dry run
-requires explicit target path mappings and reports required external secrets, capacity, conflicts,
-migrations, and restart consequences. Activation and rollback require confirmation and a controlled
-restart. See [Backup and restore](./backup-and-restore.md) for the complete workflow and limits.
+Test recovery on an isolated installation. Export uses `GET /config/export`; apply uses
+`POST /config/apply` with the ZIP body. Apply validates both files, capacity, and target paths before
+staging. Live files change only after a controlled restart. See
+[Backup and restore](./backup-and-restore.md) for the complete workflow and limits.
 
 ## Add the first camera
 

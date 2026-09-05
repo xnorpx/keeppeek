@@ -1,5 +1,14 @@
 # Implementation Plan: Validated Backup, Restore, and Migration
 
+## Superseding contract
+
+The plan below records the original issue #128 implementation, not the current HTTP interface.
+The accepted replacement is `GET /config/export` and `POST /config/apply`, transferring a ZIP with
+exactly `config.toml` and plaintext `secrets.toml`. It excludes every database and recording file,
+retains no managed backup, and uses the existing crash-safe restart journal for application.
+The CLI is `keeppeek config export` / `keeppeek config apply`. The protected `api/` sources remain
+unchanged. See [the current operator contract](../docs/backup-and-restore.md).
+
 ## Overview
 
 Implement issue #128 as an Administrator-only recovery workflow with a protobuf-defined ProtoJSON
@@ -16,7 +25,7 @@ health; and retains a bounded rollback point.
 - Keep format 1 inspection compatible and make format 2 the current manifest. Reject future formats
   and unsupported section schemas before extraction.
 - Sanitize raw configuration before secret resolution. Preserve exact references; replace inline or
-  unknown private strings with deterministic external references. Sanitize notification databases
+  unknown private strings with deterministic external references. Sanitize notification rules
   offline and reject uploaded snapshots that retain resolved destinations or operational state.
 - Snapshot live Turso databases through native `VACUUM INTO` commands on their owning serialized
   threads. Do not copy live database files.
@@ -46,7 +55,7 @@ health; and retains a bounded rollback point.
 
 ### Phase 2: Consistent State and Secret Safety
 
-- [x] Snapshot recording and notification databases through their owning threads.
+- [x] Snapshot the recording database through its owning thread; keep notification rules in sanitized runtime configuration.
 - [x] Sanitize configuration, access activity, notification destinations, and provider state.
 - [x] Validate access, layout, template, event, thumbnail, and notification section semantics.
 - [x] Inventory external thumbnails without copying media bytes.

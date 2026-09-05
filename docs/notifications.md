@@ -2,31 +2,35 @@
 
 KeepPeek owns notification policy and delivery state on the server. Camera and storage workers
 publish normalized lifecycle transitions after their primary state mutation succeeds; they do not
-perform provider I/O. The notification runtime evaluates rules on its own bounded worker, persists
-the resulting logical notification and outbox work, and uses one isolated delivery worker per
-channel.
+perform provider I/O. The notification runtime evaluates rules on its own bounded worker and uses
+one isolated delivery worker per channel.
 
 The runtime is advertised as `keeppeek.rules.v1`. Clients must keep notification controls disabled
 when that capability is absent.
 
-## Durable state
+## Configuration and runtime state
 
-`notifications.db` is stored beside `config.toml`. It is independent of the recording catalog so
-notification rules and unread state remain available when recording is disabled or recording paths
-move.
+Notification rules, drafts, and active revisions are stored under `[notifications]` in
+`config.toml`. Rule updates atomically replace that file and use expected revisions to reject stale
+edits. A failed activation preserves the previous active rule and the current draft.
 
-Each rule has two revisions: the active revision used for evaluation and the user's current draft.
-Draft writes, activation, and deletion require expected revisions. A conflict returns both current
-revisions in a `google.protobuf.Any` detail with type URL
+Pending deliveries, retries, deduplication records, cooldowns, rate windows, inbox receipts, and
+history exist only in bounded process memory. Rule match and delivery timestamps are also
+process-local. Restarting KeepPeek clears them. A restart can lose a pending delivery, allow a
+replayed event to notify again, reset a cooldown or rate window, and clear the browser inbox.
+KeepPeek does not promise durable or exactly-once notification delivery.
+
+On the first start after upgrading, KeepPeek imports rule drafts and active revisions from a legacy
+`notifications.db` when `[notifications]` is absent. It writes the rules and managed secret
+references to `config.toml` and `secrets.toml`, discards legacy operational state, and then removes
+the database and its sidecars. A failed migration leaves the legacy database intact.
+
+A conflict returns both current rule revisions in a `google.protobuf.Any` detail with type URL
 `type.keeppeek.dev/notification-rule-conflict.v1`.
-
-Activation validates the complete draft and commits the immutable active version, audit record, and
-active pointer in one transaction. A failed activation leaves the previous active version and the
-current draft unchanged, including a draft that fails validation.
 
 ## Inputs and identity
 
-Rules can match event create, enrichment, and end revisions; durable `camera_offline`,
+Rules can match event create, enrichment, and end revisions; `camera_offline`,
 `stream_stale`, `decode_unavailable`, and `recording_interrupted` start, update, and recovery
 revisions; global storage write failure and recovery; and explicit test sends. Event filters include
 source, group, event kind, zone, confidence, attachment availability, duration, severity, reviewed
@@ -34,19 +38,19 @@ state, and bookmarked state.
 
 A logical notification ID is the SHA-256 digest of length-delimited rule ID, source ID, source event
 or outage identity, and lifecycle. Text is not part of the identity. Revisions, retries, preliminary
-delivery, enrichment, service restart, and recovery retain one collapse key, while different rules,
-cameras, events, and lifecycles cannot collapse based on equal text.
+delivery, and enrichment retain one collapse key while the process remains running. Different
+rules, cameras, events, and lifecycles cannot collapse based on equal text.
 
 ## Schedules and suppression
 
 Schedules use an IANA timezone and weekly local-time windows. Quiet-hour evaluation converts each
 transition instant through that timezone, including daylight-saving gaps and repeated hours.
-Critical bypass is opt-in and has its own persisted maximum and time window.
+Critical bypass is opt-in and has its own in-memory maximum and time window.
 
 Cooldown scopes are event family, camera and event kind, group, whole rule, and outage interval.
-The documented default is **logical notification creation time**. Cooldown rows are committed with
-logical creation, so restart does not reopen a cooldown. Recovery of an existing outage updates the
-original logical notification before new-notification cooldown checks.
+The documented default is **logical notification creation time**. Recovery of an existing outage
+updates the original logical notification before new-notification cooldown checks while the process
+remains running.
 
 Fixed-window rate limits can apply to the rule, channel, principal, or server-wide delivery. Test
 sends use separate rate keys but still validate and execute the saved channel actions.
@@ -68,8 +72,8 @@ an attachment. Privacy-active candidates treat imagery as unavailable.
 Operational event revisions are lifecycle evidence, not image enrichment. Meaningful cause or
 severity updates and recovery can replace the original logical notification after the enrichment
 deadline and beyond the image-revision limit. Replaying an already processed event ID and revision
-after restart is collapsed without creating another action. Duration filters use elapsed interval
-time on starts and updates and total interval duration on recovery. Webhook payloads include nested
+in the same process is collapsed without creating another action. Duration filters use elapsed
+interval time on starts and updates and total interval duration on recovery. Webhook payloads include nested
 source and event records with the stable event ID, revision, kind, lifecycle, stage, duration,
 severity, recovery state, and bounded operational evidence.
 
@@ -84,21 +88,19 @@ Channel behavior is explicit:
 
 Webhook requests have a five-second global timeout, no redirects, no arbitrary headers, and no URL
 credentials. Provider payloads may contain bounded base64 JPEG bytes; local paths are never sent.
-Delivery history stores a SHA-256 target hash rather than the destination.
+Structured delivery logs store a SHA-256 target hash rather than the destination.
 
 ## Outbox and retries
 
-Logical creation and outbox enqueue happen in one database transaction. The pending/retrying outbox
-is bounded to 10,000 entries. Full queues record `expired` with reason `outbox_full` rather than
-allocating an unbounded in-memory queue.
+The pending and retrying in-memory outbox is bounded to 10,000 entries. Full queues record `expired`
+with reason `outbox_full` rather than allocating unbounded memory.
 
-Each action persists maximum attempts, maximum retry interval, expiry, priority, and replacement
-key. Retryable HTTP status codes are 408, 425, 429, and 5xx. `Retry-After` seconds are respected but
+Each queued action carries maximum attempts, maximum retry interval, expiry, priority, and a
+replacement key. Retryable HTTP status codes are 408, 425, 429, and 5xx. `Retry-After` seconds are respected but
 clamped to the rule maximum; other transient failures use bounded exponential backoff. Work that
-cannot retry before expiry becomes `expired`. A process restart returns an interrupted `delivering`
-row to `retrying`.
+cannot retry before expiry becomes `expired`. A process restart discards queued work.
 
-Provider workers have separate database connections and queues. A slow or unavailable channel does
+Provider workers have separate in-memory queues. A slow or unavailable channel does
 not block camera ingest, event storage, recording, health projection, or another channel.
 
 See [Pushover notifications](pushover.md) for provider setup, supported fields, write-only secret
@@ -112,9 +114,12 @@ notification seen through the authenticated control channel, then follows the no
 route. Clearing one receipt cannot affect another. Bulk clear requires an explicit all, rule, or
 before-time scope and writes an audit record.
 
-The server returns the principal's authoritative unread count with every inbox query. Connected
-browser clients refresh it and grouped delivery history every five seconds. Provider emergency
+The server returns the principal's process-local unread count with every inbox query. Connected
+browser clients refresh it and grouped in-memory delivery history every five seconds. Provider emergency
 acknowledgement is not inferred from KeepPeek review acknowledgement.
+
+KeepPeek emits structured outcome logs and Prometheus counters for candidate acceptance and drops,
+logical notification outcomes, pending work, delivery attempts, retries, successes, and failures.
 
 ## Control API
 

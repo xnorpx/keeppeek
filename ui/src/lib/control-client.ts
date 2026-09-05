@@ -26,13 +26,6 @@ import { NotificationControlClient } from './control-client-notifications';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
 import { BackupHttpClient } from './backup-http-client';
-import type {
-	ActivateRestoreRequest,
-	CreateBackupRequest,
-	CreateRestorePlanRequest,
-	DeleteBackupRequest,
-	RollbackRestoreRequest
-} from './proto/backup_pb';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import { decodeStateStoreRequestError } from './state-store-error';
 import { decodeConfigurationRequestError } from './configuration-error';
@@ -570,51 +563,15 @@ export class ControlClient {
 		);
 	}
 
-	async getBackupCapabilities() {
-		return this.authenticatedHttp(() => this.#backups.capabilities(), [400, 409, 410, 413, 415]);
+	async exportConfiguration(signal?: AbortSignal) {
+		return this.authenticatedHttp(() => this.#backups.export(signal), [400, 409, 413, 503]);
 	}
 
-	async listBackups() {
-		return this.authenticatedHttp(() => this.#backups.list(), [400, 409, 410, 413, 415]);
-	}
-
-	async createBackup(request: CreateBackupRequest) {
-		return this.authenticatedHttp(() => this.#backups.create(request), [400, 409, 410, 413, 415]);
-	}
-
-	async uploadBackup(file: File) {
-		return this.authenticatedHttp(() => this.#backups.upload(file), [400, 409, 410, 411, 413, 415]);
-	}
-
-	async inspectBackup(backupId: string) {
-		return this.authenticatedHttp(() => this.#backups.inspect(backupId), [400, 404, 409, 410]);
-	}
-
-	async createBackupRestorePlan(request: CreateRestorePlanRequest) {
+	async applyConfiguration(file: File, signal?: AbortSignal) {
 		return this.authenticatedHttp(
-			() => this.#backups.createRestorePlan(request),
-			[400, 409, 410, 413, 415]
+			() => this.#backups.apply(file, signal),
+			[400, 409, 410, 411, 413, 415, 503]
 		);
-	}
-
-	async activateBackupRestore(request: ActivateRestoreRequest) {
-		return this.authenticatedHttp(() => this.#backups.activate(request), [400, 409, 410, 413, 415]);
-	}
-
-	async getBackupRestore(restoreId: string) {
-		return this.authenticatedHttp(() => this.#backups.getRestore(restoreId), [400, 404, 409, 410]);
-	}
-
-	async rollbackBackupRestore(request: RollbackRestoreRequest) {
-		return this.authenticatedHttp(() => this.#backups.rollback(request), [400, 404, 409, 410]);
-	}
-
-	async deleteBackup(request: DeleteBackupRequest) {
-		return this.authenticatedHttp(() => this.#backups.delete(request), [400, 404, 409]);
-	}
-
-	async downloadBackup(backupId: string) {
-		return this.authenticatedHttp(() => this.#backups.download(backupId), [400, 404, 409]);
 	}
 
 	async openLogStream(url: string, signal: AbortSignal): Promise<Response> {

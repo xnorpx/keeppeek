@@ -2,7 +2,7 @@
 
 KeepPeek can publish committed event revisions and selected operational health transitions to an
 MQTT 5 broker. The forwarder is a supervised integration runtime with its own bounded ingestion
-queue, durable outbox, broker connection, and health state. Camera ingest and recording never
+queue, in-memory outbox, broker connection, and health state. Camera ingest and recording never
 perform broker I/O.
 
 MQTT 5 is required. MQTT 3.1 and 3.1.1 are not negotiated, accepted as fallbacks, or supported.
@@ -13,19 +13,19 @@ error.
 
 The event producer first commits its event revision to KeepPeek storage. It then hands a normalized
 snapshot to the forwarder through a bounded local channel. A dedicated outbox worker persists the
-publication in `mqtt-forwarder.db`; a separate publisher worker owns MQTT connection, retry, and
+publication in bounded process memory; a separate publisher worker owns MQTT connection, retry, and
 acknowledgement processing.
 
 ```mermaid
 flowchart LR
     C[Camera and operational events] -->|committed revision| F[Forwarder boundary]
-    F -->|bounded channel| O[(Durable MQTT outbox)]
+    F -->|bounded channel| O[In-memory MQTT outbox]
     O -->|MQTT 5 publish| B[(Broker)]
     B -->|PUBACK or PUBCOMP| O
     F --> H[Settings and Prometheus health]
 ```
 
-The publisher sends one durable item at a time. Network stalls cannot consume unbounded memory or
+The publisher sends one pending item at a time. Network stalls cannot consume unbounded memory or
 block camera workers on broker I/O. Configuration changes replace only the broker session; camera
 workers continue unchanged.
 
@@ -55,7 +55,7 @@ retry_max_ms = 30000
 
 | Setting                         | Meaning                                                                 | Default                 |
 | ------------------------------- | ----------------------------------------------------------------------- | ----------------------- |
-| `enabled`                       | Starts broker delivery while retaining queued work when disabled        | `false`                 |
+| `enabled`                       | Starts broker delivery; queued work remains only until process exit     | `false`                 |
 | `broker_url`                    | `mqtt://` or `mqtts://` authority; URL credentials are rejected         | `mqtt://127.0.0.1:1883` |
 | `client_id`                     | Stable MQTT 5 client identity                                           | `keeppeek`              |
 | `instance_id`                   | Stable KeepPeek identity used in topics and payloads                    | `home-nvr`              |
@@ -66,7 +66,7 @@ retry_max_ms = 30000
 | `qos`                           | MQTT 5 QoS `0`, `1`, or `2`                                             | `1`                     |
 | `retain_events`                 | Retain event snapshots on their event-type topic                        | `false`                 |
 | `retain_health`                 | Retain forwarder connection/delivery status                             | `true`                  |
-| `outbox_max_mb`                 | Maximum durable pending publication bytes                               | `64`                    |
+| `outbox_max_mb`                 | Maximum in-memory pending publication bytes                             | `64`                    |
 | `retry_min_ms` / `retry_max_ms` | Bounded exponential reconnect delay                                     | `250` / `30000`         |
 
 The Settings UI sends management operations over the authenticated WebRTC control channel using
@@ -188,19 +188,19 @@ because process crashes can occur around receipt persistence.
 ## Delivery and recovery
 
 The outbox key is `event:{instance_id}:{event_id}:{revision}`. An event revision remains pending
-until the matching MQTT 5 acknowledgement is observed. A bounded receipt ledger retains the most
-recent 100,000 delivered keys so reconnect overlap and producer retries remain duplicate-safe after
-outbox deletion and process restart.
+until the matching MQTT 5 acknowledgement is observed. A bounded receipt set retains the most
+recent 100,000 delivered keys so reconnect overlap and producer retries remain duplicate-safe while
+the process is running.
 
 The default outbox limit is 64 MiB. Capacity is checked in the same immediate transaction that
 inserts a publication. The in-memory ingestion channel holds at most 256 commands. If the limit is
 reached, the forwarder enters `outbox_full`, refuses additional forwarding work visibly, and leaves
 camera/event persistence operating independently.
 
-Connection retries start at 250 ms and double to a 30-second ceiling. After the broker restarts,
-the publisher reconnects and drains the same durable rows in sequence. The default QoS 1 path is
-at least once: a crash after broker acknowledgement but before the local receipt commit can publish
-the same `(event_id, revision)` again.
+Connection retries start at 250 ms and double to a 30-second ceiling. After the broker restarts, the
+publisher reconnects and drains the same in-memory queue in sequence. Restarting KeepPeek discards
+pending publications and delivered-key history; events are not replayed from `recordings.db`. MQTT
+forwarding is therefore best effort across process restarts, even when QoS 1 or 2 is selected.
 
 ## Security
 

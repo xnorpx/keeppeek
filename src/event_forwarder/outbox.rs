@@ -1,8 +1,12 @@
 use super::model::Publication;
-use std::{fmt, path::Path, time::Duration};
+use std::{
+    collections::{HashSet, VecDeque},
+    fmt,
+    sync::{Arc, Mutex},
+};
 
-const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_DELIVERY_RECEIPTS: i64 = 100_000;
+const MAX_PENDING_ITEMS: usize = 10_000;
+const MAX_DELIVERY_RECEIPTS: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct OutboxItem {
@@ -42,262 +46,129 @@ impl fmt::Display for OutboxFull {
 
 impl std::error::Error for OutboxFull {}
 
+#[derive(Default)]
+struct OutboxState {
+    next_sequence: i64,
+    pending: VecDeque<(OutboxItem, u64)>,
+    pending_bytes: u64,
+    seen_keys: HashSet<String>,
+    delivered_keys: VecDeque<String>,
+}
+
+#[derive(Clone, Default)]
 pub(super) struct Outbox {
-    connection: turso::Connection,
+    state: Arc<Mutex<OutboxState>>,
 }
 
 impl Outbox {
-    pub(super) fn open(path: &Path) -> anyhow::Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let path = path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("MQTT outbox path is not valid UTF-8"))?;
-        let database = pollster::block_on(turso::Builder::new_local(path).build())?;
-        let connection = database.connect()?;
-        connection.busy_timeout(BUSY_TIMEOUT)?;
-        pollster::block_on(initialize_schema(&connection))?;
-        Ok(Self { connection })
+    pub(super) fn new() -> Self {
+        Self::default()
     }
 
     pub(super) fn enqueue(
         &self,
         publication: &Publication,
         limit_bytes: u64,
-        now_ms: i64,
+        _now_ms: i64,
     ) -> anyhow::Result<EnqueueResult> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = async {
-                if contains_key(&self.connection, &publication.dedup_key).await? {
-                    return Ok(EnqueueResult::Duplicate);
-                }
-                let stats = stats(&self.connection).await?;
-                let item_bytes = publication_size(publication)?;
-                let attempted_bytes = stats.pending_bytes.saturating_add(item_bytes);
-                if attempted_bytes > limit_bytes {
-                    return Err(OutboxFull {
-                        limit_bytes,
-                        attempted_bytes,
-                    }
-                    .into());
-                }
-                self.connection
-                    .execute(
-                        "INSERT INTO mqtt_outbox (
-                             dedup_key, topic, payload, qos, retain, event_timestamp_ms,
-                             content_type, payload_format_indicator, correlation_data,
-                             created_at_ms, attempts
-                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)",
-                        turso::params![
-                            publication.dedup_key.clone(),
-                            publication.topic.clone(),
-                            publication.payload.clone(),
-                            i64::from(publication.qos),
-                            i64::from(publication.retain),
-                            publication.event_timestamp_ms,
-                            publication.content_type.clone(),
-                            publication.payload_format_indicator.map(i64::from),
-                            publication.correlation_data.clone(),
-                            now_ms,
-                        ],
-                    )
-                    .await?;
-                Ok(EnqueueResult::Inserted)
+        let mut state = self.state.lock().expect("MQTT outbox state lock poisoned");
+        if state.seen_keys.contains(&publication.dedup_key) {
+            return Ok(EnqueueResult::Duplicate);
+        }
+        if state.pending.len() == MAX_PENDING_ITEMS {
+            anyhow::bail!("MQTT outbox capacity exceeded: item limit reached");
+        }
+        let item_bytes = publication_size(publication)?;
+        let attempted_bytes = state.pending_bytes.saturating_add(item_bytes);
+        if attempted_bytes > limit_bytes {
+            return Err(OutboxFull {
+                limit_bytes,
+                attempted_bytes,
             }
-            .await;
-            finish_transaction(&self.connection, result).await
-        })
+            .into());
+        }
+        state.next_sequence = state
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("MQTT outbox sequence exhausted"))?;
+        let sequence = state.next_sequence;
+        state.seen_keys.insert(publication.dedup_key.clone());
+        state.pending_bytes = attempted_bytes;
+        state.pending.push_back((
+            OutboxItem {
+                sequence,
+                publication: publication.clone(),
+                attempts: 0,
+            },
+            item_bytes,
+        ));
+        Ok(EnqueueResult::Inserted)
     }
 
     pub(super) fn next(&self) -> anyhow::Result<Option<OutboxItem>> {
-        pollster::block_on(async {
-            let mut rows = self
-                .connection
-                .query(
-                    "SELECT sequence, dedup_key, topic, payload, qos, retain,
-                            event_timestamp_ms, attempts, content_type,
-                            payload_format_indicator, correlation_data
-                     FROM mqtt_outbox
-                     ORDER BY sequence
-                     LIMIT 1",
-                    (),
-                )
-                .await?;
-            rows.next().await?.map(outbox_item).transpose()
-        })
+        let state = self.state.lock().expect("MQTT outbox state lock poisoned");
+        Ok(state.pending.front().map(|(item, _)| item.clone()))
     }
 
     pub(super) fn mark_attempt(&self, sequence: i64, error: &str) -> anyhow::Result<()> {
-        pollster::block_on(self.connection.execute(
-            "UPDATE mqtt_outbox
-             SET attempts = attempts + 1, last_error = ?2
-             WHERE sequence = ?1",
-            turso::params![sequence, error],
-        ))?;
+        let mut state = self.state.lock().expect("MQTT outbox state lock poisoned");
+        let item = state
+            .pending
+            .iter_mut()
+            .find(|(item, _)| item.sequence == sequence)
+            .map(|(item, _)| item)
+            .ok_or_else(|| anyhow::anyhow!("MQTT outbox item was not found"))?;
+        item.attempts = item.attempts.saturating_add(1);
+        tracing::warn!(
+            event = "mqtt_delivery_retry",
+            dedup_key = %item.publication.dedup_key,
+            attempts = item.attempts,
+            reason = %error,
+        );
         Ok(())
     }
 
     pub(super) fn mark_delivered(&self, sequence: i64, delivered_at_ms: i64) -> anyhow::Result<()> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = async {
-                self.connection
-                    .execute(
-                        "INSERT OR IGNORE INTO mqtt_delivery_receipts (dedup_key, delivered_at_ms)
-                         SELECT dedup_key, ?2 FROM mqtt_outbox WHERE sequence = ?1",
-                        turso::params![sequence, delivered_at_ms],
-                    )
-                    .await?;
-                self.connection
-                    .execute(
-                        "DELETE FROM mqtt_outbox WHERE sequence = ?1",
-                        turso::params![sequence],
-                    )
-                    .await?;
-                self.connection
-                    .execute(
-                        "DELETE FROM mqtt_delivery_receipts
-                         WHERE rowid IN (
-                             SELECT rowid FROM mqtt_delivery_receipts
-                             ORDER BY delivered_at_ms DESC, rowid DESC
-                             LIMIT -1 OFFSET ?1
-                         )",
-                        [MAX_DELIVERY_RECEIPTS],
-                    )
-                    .await?;
-                Ok(())
-            }
-            .await;
-            finish_transaction(&self.connection, result).await
-        })
+        let mut state = self.state.lock().expect("MQTT outbox state lock poisoned");
+        let index = state
+            .pending
+            .iter()
+            .position(|(item, _)| item.sequence == sequence)
+            .ok_or_else(|| anyhow::anyhow!("MQTT outbox item was not found"))?;
+        let (item, item_bytes) = state
+            .pending
+            .remove(index)
+            .expect("MQTT outbox index must remain valid while locked");
+        state.pending_bytes = state.pending_bytes.saturating_sub(item_bytes);
+        state
+            .delivered_keys
+            .push_back(item.publication.dedup_key.clone());
+        if state.delivered_keys.len() > MAX_DELIVERY_RECEIPTS
+            && let Some(expired) = state.delivered_keys.pop_front()
+        {
+            state.seen_keys.remove(&expired);
+        }
+        tracing::info!(
+            event = "mqtt_delivery_succeeded",
+            dedup_key = %item.publication.dedup_key,
+            delivered_at_ms,
+            attempts = item.attempts,
+        );
+        Ok(())
     }
 
     pub(super) fn stats(&self) -> anyhow::Result<OutboxStats> {
-        pollster::block_on(stats(&self.connection))
+        let state = self.state.lock().expect("MQTT outbox state lock poisoned");
+        Ok(OutboxStats {
+            pending_items: u64::try_from(state.pending.len())?,
+            pending_bytes: state.pending_bytes,
+            oldest_event_timestamp_ms: state
+                .pending
+                .iter()
+                .map(|(item, _)| item.publication.event_timestamp_ms)
+                .min(),
+        })
     }
-}
-
-async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()> {
-    connection
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS mqtt_outbox (
-                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                 dedup_key TEXT NOT NULL UNIQUE,
-                 topic TEXT NOT NULL,
-                 payload BLOB NOT NULL,
-                 qos INTEGER NOT NULL,
-                 retain INTEGER NOT NULL,
-                 event_timestamp_ms INTEGER NOT NULL,
-                 content_type TEXT NOT NULL DEFAULT 'application/json',
-                 payload_format_indicator INTEGER,
-                 correlation_data BLOB NOT NULL DEFAULT X'',
-                 created_at_ms INTEGER NOT NULL,
-                 attempts INTEGER NOT NULL,
-                 last_error TEXT
-             );
-             CREATE INDEX IF NOT EXISTS mqtt_outbox_event_time
-                 ON mqtt_outbox(event_timestamp_ms, sequence);
-             CREATE TABLE IF NOT EXISTS mqtt_delivery_receipts (
-                 dedup_key TEXT PRIMARY KEY,
-                 delivered_at_ms INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS mqtt_delivery_receipts_time
-                 ON mqtt_delivery_receipts(delivered_at_ms);",
-        )
-        .await?;
-    ensure_column(
-        connection,
-        "content_type",
-        "ALTER TABLE mqtt_outbox ADD COLUMN content_type TEXT NOT NULL DEFAULT 'application/json'",
-    )
-    .await?;
-    ensure_column(
-        connection,
-        "payload_format_indicator",
-        "ALTER TABLE mqtt_outbox ADD COLUMN payload_format_indicator INTEGER",
-    )
-    .await?;
-    ensure_column(
-        connection,
-        "correlation_data",
-        "ALTER TABLE mqtt_outbox ADD COLUMN correlation_data BLOB NOT NULL DEFAULT X''",
-    )
-    .await?;
-    Ok(())
-}
-
-async fn ensure_column(
-    connection: &turso::Connection,
-    column: &str,
-    statement: &str,
-) -> anyhow::Result<()> {
-    let mut rows = connection
-        .query("PRAGMA table_info(mqtt_outbox)", ())
-        .await?;
-    while let Some(row) = rows.next().await? {
-        if row.get::<String>(1)? == column {
-            return Ok(());
-        }
-    }
-    connection.execute(statement, ()).await?;
-    Ok(())
-}
-
-async fn contains_key(connection: &turso::Connection, dedup_key: &str) -> anyhow::Result<bool> {
-    Ok(connection
-        .query(
-            "SELECT 1 FROM mqtt_outbox WHERE dedup_key = ?1
-             UNION ALL
-             SELECT 1 FROM mqtt_delivery_receipts WHERE dedup_key = ?1
-             LIMIT 1",
-            [dedup_key],
-        )
-        .await?
-        .next()
-        .await?
-        .is_some())
-}
-
-async fn stats(connection: &turso::Connection) -> anyhow::Result<OutboxStats> {
-    let mut rows = connection
-        .query(
-            "SELECT COUNT(*),
-                    COALESCE(SUM(length(dedup_key) + length(topic) + length(payload)), 0),
-                    MIN(event_timestamp_ms)
-             FROM mqtt_outbox",
-            (),
-        )
-        .await?;
-    let row = rows
-        .next()
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("MQTT outbox statistics query returned no row"))?;
-    Ok(OutboxStats {
-        pending_items: to_u64(row.get::<i64>(0)?, "MQTT pending item count")?,
-        pending_bytes: to_u64(row.get::<i64>(1)?, "MQTT pending byte count")?,
-        oldest_event_timestamp_ms: row.get(2)?,
-    })
-}
-
-fn outbox_item(row: turso::Row) -> anyhow::Result<OutboxItem> {
-    let qos = u8::try_from(row.get::<i64>(4)?)?;
-    Ok(OutboxItem {
-        sequence: row.get(0)?,
-        publication: Publication {
-            dedup_key: row.get(1)?,
-            topic: row.get(2)?,
-            payload: row.get(3)?,
-            qos,
-            retain: row.get::<i64>(5)? != 0,
-            event_timestamp_ms: row.get(6)?,
-            content_type: row.get(8)?,
-            payload_format_indicator: row.get::<Option<i64>>(9)?.map(u8::try_from).transpose()?,
-            correlation_data: row.get(10)?,
-        },
-        attempts: to_u64(row.get::<i64>(7)?, "MQTT delivery attempt count")?,
-    })
 }
 
 fn publication_size(publication: &Publication) -> anyhow::Result<u64> {
@@ -313,34 +184,9 @@ fn publication_size(publication: &Publication) -> anyhow::Result<u64> {
     .map_err(Into::into)
 }
 
-fn to_u64(value: i64, label: &str) -> anyhow::Result<u64> {
-    u64::try_from(value).map_err(|_| anyhow::anyhow!("{label} is negative or too large"))
-}
-
-async fn finish_transaction<T>(
-    connection: &turso::Connection,
-    result: anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    match result {
-        Ok(value) => {
-            connection.execute_batch("COMMIT").await?;
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK").await;
-            Err(error)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn test_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("keeppeek-{name}-{}.db", uuid::Uuid::new_v4()))
-    }
 
     fn publication(revision: u64) -> Publication {
         Publication {
@@ -357,54 +203,53 @@ mod tests {
     }
 
     #[test]
-    fn persists_and_deduplicates_event_revisions() {
-        let path = test_path("mqtt-outbox-dedup");
-        {
-            let outbox = Outbox::open(&path).unwrap();
-            assert_eq!(
-                outbox
-                    .enqueue(&publication(1), 1_024 * 1_024, 1_786_800_000_001)
-                    .unwrap(),
-                EnqueueResult::Inserted
-            );
-            assert_eq!(
-                outbox
-                    .enqueue(&publication(1), 1_024 * 1_024, 1_786_800_000_002)
-                    .unwrap(),
-                EnqueueResult::Duplicate
-            );
-            assert_eq!(
-                outbox
-                    .enqueue(&publication(2), 1_024 * 1_024, 1_786_800_000_003)
-                    .unwrap(),
-                EnqueueResult::Inserted
-            );
-        }
-        let reopened = Outbox::open(&path).unwrap();
-        let first = reopened.next().unwrap().unwrap();
+    fn deduplicates_event_revisions_until_process_state_resets() {
+        let outbox = Outbox::new();
+        assert_eq!(
+            outbox
+                .enqueue(&publication(1), 1_024 * 1_024, 1_786_800_000_001)
+                .unwrap(),
+            EnqueueResult::Inserted
+        );
+        assert_eq!(
+            outbox
+                .enqueue(&publication(1), 1_024 * 1_024, 1_786_800_000_002)
+                .unwrap(),
+            EnqueueResult::Duplicate
+        );
+        assert_eq!(
+            outbox
+                .enqueue(&publication(2), 1_024 * 1_024, 1_786_800_000_003)
+                .unwrap(),
+            EnqueueResult::Inserted
+        );
+        let first = outbox.next().unwrap().unwrap();
         assert_eq!(first.publication.dedup_key, "event:home-nvr:motion-42:1");
-        assert_eq!(reopened.stats().unwrap().pending_items, 2);
-        drop(reopened);
-        let _ = std::fs::remove_file(path);
+        assert_eq!(outbox.stats().unwrap().pending_items, 2);
+
+        let restarted = Outbox::new();
+        assert!(restarted.next().unwrap().is_none());
+        assert_eq!(
+            restarted
+                .enqueue(&publication(1), 1_024 * 1_024, 1_786_800_000_004)
+                .unwrap(),
+            EnqueueResult::Inserted
+        );
     }
 
     #[test]
-    fn rejects_insert_before_exceeding_disk_budget() {
-        let path = test_path("mqtt-outbox-bounded");
-        let outbox = Outbox::open(&path).unwrap();
+    fn rejects_insert_before_exceeding_memory_budget() {
+        let outbox = Outbox::new();
         let error = outbox
             .enqueue(&publication(1), 1, 1_786_800_000_001)
             .unwrap_err();
         assert!(error.downcast_ref::<OutboxFull>().is_some());
         assert_eq!(outbox.stats().unwrap().pending_items, 0);
-        drop(outbox);
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]
     fn failed_delivery_keeps_identity_until_acknowledged() {
-        let path = test_path("mqtt-outbox-redelivery");
-        let outbox = Outbox::open(&path).unwrap();
+        let outbox = Outbox::new();
         outbox
             .enqueue(&publication(7), 1_024 * 1_024, 1_786_800_000_001)
             .unwrap();
@@ -426,7 +271,5 @@ mod tests {
                 .unwrap(),
             EnqueueResult::Duplicate
         );
-        drop(outbox);
-        let _ = std::fs::remove_file(path);
     }
 }

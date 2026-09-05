@@ -1,7 +1,8 @@
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     time::Duration,
@@ -16,14 +17,58 @@ mod inbox;
 pub mod model;
 mod orchestrator;
 pub mod pushover;
+mod state;
 mod store;
 
 pub use health::HealthMonitor;
 pub use inbox::{AttemptRecord, ClearScope, HistoryEvent, HistoryGroup, Inbox, NotificationItem};
 pub use store::{RuleRecord, RuleStoreError};
 
+pub fn validate_configuration(path: &Path, root: &toml::Table) -> anyhow::Result<()> {
+    store::validate_configuration(path, root)
+}
+
 const COMMAND_CAPACITY: usize = 256;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Default)]
+struct NotificationMetrics {
+    pub(super) configured_rules: AtomicU64,
+    pub(super) pending_deliveries: AtomicU64,
+    pub(super) candidates_accepted: AtomicU64,
+    pub(super) candidates_dropped: AtomicU64,
+    pub(super) notifications_created: AtomicU64,
+    pub(super) notifications_replaced: AtomicU64,
+    pub(super) notifications_suppressed: AtomicU64,
+    pub(super) delivery_attempts: AtomicU64,
+    pub(super) delivery_retries: AtomicU64,
+    pub(super) delivery_successes: AtomicU64,
+    pub(super) delivery_failures: AtomicU64,
+}
+
+impl NotificationMetrics {
+    fn snapshot(&self) -> crate::metrics::NotificationMetricsSnapshot {
+        crate::metrics::NotificationMetricsSnapshot {
+            configured_rules: self.configured_rules.load(Ordering::Relaxed),
+            pending_deliveries: self.pending_deliveries.load(Ordering::Relaxed),
+            candidates_accepted: self.candidates_accepted.load(Ordering::Relaxed),
+            candidates_dropped: self.candidates_dropped.load(Ordering::Relaxed),
+            notifications_created: self.notifications_created.load(Ordering::Relaxed),
+            notifications_replaced: self.notifications_replaced.load(Ordering::Relaxed),
+            notifications_suppressed: self.notifications_suppressed.load(Ordering::Relaxed),
+            delivery_attempts: self.delivery_attempts.load(Ordering::Relaxed),
+            delivery_retries: self.delivery_retries.load(Ordering::Relaxed),
+            delivery_successes: self.delivery_successes.load(Ordering::Relaxed),
+            delivery_failures: self.delivery_failures.load(Ordering::Relaxed),
+        }
+    }
+}
+
+fn decrement_counter(counter: &AtomicU64, amount: u64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_sub(amount))
+    });
+}
 
 enum Command {
     SaveDraft {
@@ -95,30 +140,16 @@ enum Command {
         now_ms: i64,
         reply: SyncSender<anyhow::Result<u64>>,
     },
-    Snapshot {
-        destination: std::path::PathBuf,
-        maximum_bytes: u64,
-        reply: SyncSender<anyhow::Result<BackupSnapshot>>,
-    },
     Shutdown,
-}
-
-pub struct BackupSnapshot {
-    pub bytes: u64,
-    pub required_secret_references: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Handle {
     tx: SyncSender<Command>,
-    database_path: Arc<PathBuf>,
+    metrics: Arc<NotificationMetrics>,
 }
 
 impl Handle {
-    pub(crate) fn database_path(&self) -> &Path {
-        &self.database_path
-    }
-
     pub fn save_draft(
         &self,
         draft: model::Rule,
@@ -204,16 +235,36 @@ impl Handle {
         match self.tx.try_send(Command::Publish {
             candidate: Box::new(candidate),
         }) {
-            Ok(()) => {}
+            Ok(()) => {
+                self.metrics
+                    .candidates_accepted
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             Err(mpsc::TrySendError::Full(_)) => {
+                self.metrics
+                    .candidates_dropped
+                    .fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(
+                    event = "notification_candidate_dropped",
+                    reason = "queue_full",
                     "notification candidate dropped because the evaluation queue is full"
                 );
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
-                tracing::warn!("notification candidate dropped because the runtime stopped");
+                self.metrics
+                    .candidates_dropped
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::warn!(
+                    event = "notification_candidate_dropped",
+                    reason = "runtime_stopped",
+                    "notification candidate dropped because the runtime stopped"
+                );
             }
         }
+    }
+
+    pub(crate) fn metric_snapshot(&self) -> crate::metrics::NotificationMetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     pub fn test_rule(
@@ -334,24 +385,6 @@ impl Handle {
             .map_err(|error| anyhow::anyhow!("notification scoped clear timed out: {error}"))?
     }
 
-    pub(crate) fn snapshot_reference_only_to(
-        &self,
-        destination: &Path,
-        maximum_bytes: u64,
-    ) -> anyhow::Result<BackupSnapshot> {
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.tx
-            .send(Command::Snapshot {
-                destination: destination.to_owned(),
-                maximum_bytes,
-                reply: reply_tx,
-            })
-            .map_err(|_| anyhow::anyhow!("notification runtime is no longer running"))?;
-        reply_rx
-            .recv_timeout(crate::backup::database::DATABASE_SNAPSHOT_TIMEOUT)
-            .map_err(|error| anyhow::anyhow!("notification snapshot timed out: {error}"))?
-    }
-
     fn receipt_command(
         &self,
         logical_id: impl Into<String>,
@@ -390,14 +423,21 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    #[cfg(test)]
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let store = store::Store::open(path)?;
-        store.recover_interrupted_deliveries()?;
-        let deliveries = delivery::Workers::start(path)?;
+        Self::open_with_config_update(path, Arc::new(Mutex::new(())))
+    }
+
+    pub(crate) fn open_with_config_update(
+        path: &Path,
+        config_update: Arc<Mutex<()>>,
+    ) -> anyhow::Result<Self> {
+        let store = store::Store::open_with_config_update(path, config_update)?;
+        let deliveries = delivery::Workers::start(store.clone())?;
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let handle = Handle {
             tx,
-            database_path: Arc::new(std::fs::canonicalize(path)?),
+            metrics: store.metrics.clone(),
         };
         let thread = std::thread::Builder::new()
             .name("notifications".to_owned())
@@ -484,7 +524,11 @@ fn run(store: store::Store, rx: Receiver<Command>) {
             }
             Command::Publish { candidate } => {
                 if let Err(error) = store.process(*candidate) {
-                    tracing::warn!(error = %error, "notification candidate evaluation failed");
+                    tracing::warn!(
+                        event = "notification_candidate_evaluation_failed",
+                        error = %error,
+                        "notification candidate evaluation failed"
+                    );
                 }
             }
             Command::Test {
@@ -541,46 +585,9 @@ fn run(store: store::Store, rx: Receiver<Command>) {
             } => {
                 let _ = reply.send(store.clear_scope(&principal_id, &scope, now_ms));
             }
-            Command::Snapshot {
-                destination,
-                maximum_bytes,
-                reply,
-            } => {
-                let result = (|| {
-                    crate::backup::database::snapshot_turso_database(
-                        &store.connection,
-                        &destination,
-                        maximum_bytes,
-                    )?;
-                    let snapshot = store::Store::open(&destination)?;
-                    let required_secret_references = snapshot.sanitize_backup()?;
-                    drop(snapshot);
-                    let bytes = std::fs::metadata(&destination)?.len();
-                    if bytes == 0 || bytes > maximum_bytes {
-                        anyhow::bail!("notification snapshot exceeds its size limit");
-                    }
-                    Ok(BackupSnapshot {
-                        bytes,
-                        required_secret_references,
-                    })
-                })();
-                let _ = reply.send(result);
-            }
             Command::Shutdown => break,
         }
     }
-}
-
-pub fn resolve_backup_snapshot_references(
-    database_path: &Path,
-    config_path: &Path,
-) -> anyhow::Result<()> {
-    let snapshot = store::Store::open(database_path)?;
-    snapshot.resolve_backup_references(config_path)
-}
-
-pub fn validate_backup_snapshot(database_path: &Path) -> anyhow::Result<()> {
-    store::Store::open(database_path)?.validate_backup()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -639,18 +646,6 @@ pub enum CooldownScope {
     Group,
     Rule,
     Outage,
-}
-
-impl CooldownScope {
-    const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Event => "event",
-            Self::CameraEventKind => "camera_event_kind",
-            Self::Group => "group",
-            Self::Rule => "rule",
-            Self::Outage => "outage",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -753,36 +748,6 @@ fn cooldown_keys(rule: &RulePolicy, transition: &Transition) -> Vec<(CooldownKey
 }
 
 #[cfg(test)]
-mod snapshot_tests {
-    use super::*;
-
-    #[test]
-    fn notification_snapshot_is_readable_while_the_runtime_stays_available() {
-        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("test-output")
-            .join("notification-snapshot");
-        if directory.exists() {
-            std::fs::remove_dir_all(&directory).unwrap();
-        }
-        std::fs::create_dir_all(&directory).unwrap();
-        let runtime = Runtime::open(&directory.join("notifications.db")).unwrap();
-        let handle = runtime.handle();
-        let snapshot_path = directory.join("snapshot.db");
-
-        let result = handle
-            .snapshot_reference_only_to(&snapshot_path, 16 * 1024 * 1024)
-            .unwrap();
-
-        assert!(result.bytes > 0);
-        assert!(result.required_secret_references.is_empty());
-        let snapshot = store::Store::open(&snapshot_path).unwrap();
-        assert!(snapshot.rules("operator").unwrap().is_empty());
-        assert!(handle.rules("operator").unwrap().is_empty());
-    }
-}
-
-#[cfg(test)]
 mod performance {
     use std::{hint::black_box, time::Instant};
 
@@ -802,7 +767,7 @@ mod performance {
         let (tx, rx) = std::sync::mpsc::sync_channel(ITERATIONS);
         let handle = Handle {
             tx,
-            database_path: std::sync::Arc::new(std::path::PathBuf::new()),
+            metrics: std::sync::Arc::new(super::NotificationMetrics::default()),
         };
         let drain = std::thread::spawn(move || while rx.recv().is_ok() {});
         let candidate = Candidate {

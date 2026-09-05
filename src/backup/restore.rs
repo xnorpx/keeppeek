@@ -86,24 +86,15 @@ struct TargetPreparation {
     content: PreparedContent,
 }
 
-/// Returns the revision of file-backed state rooted beside `config.toml`.
+/// Returns the revision of `config.toml` and its adjacent `secrets.toml`.
 ///
 /// # Errors
 ///
-/// Returns an error when the configuration or a present sidecar cannot be read.
+/// Returns an error when either configuration file cannot be read.
 pub fn target_revision(config_path: &Path) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
     hash_revision_file(&mut hasher, config_path)?;
-    let access = crate::access::backup_catalog_document(config_path)?;
-    hash_revision_value(&mut hasher, "access.toml", access.as_deref());
-    hash_revision_file(
-        &mut hasher,
-        &config_path.with_file_name("peek-layouts.json"),
-    )?;
-    hash_revision_file(
-        &mut hasher,
-        &config_path.with_file_name("configuration-templates.json"),
-    )?;
+    hash_revision_file(&mut hasher, &config::secrets_path(config_path))?;
     Ok(super::encode_lower_hex(hasher.finalize()))
 }
 
@@ -117,13 +108,6 @@ fn hash_revision_file(hasher: &mut Sha256, path: &Path) -> anyhow::Result<()> {
     }
     hasher.update([0]);
     Ok(())
-}
-
-fn hash_revision_value(hasher: &mut Sha256, name: &str, value: Option<&[u8]>) {
-    hasher.update(name.as_bytes());
-    hasher.update([0]);
-    hasher.update(value.unwrap_or(b"missing"));
-    hasher.update([0]);
 }
 
 /// Validates a bundle and produces an immutable restore plan without changing live state.
@@ -188,7 +172,13 @@ pub fn plan_restore(options: RestorePlanOptions<'_>) -> anyhow::Result<backup_pr
         &selected,
         &mut issues,
     )?;
-    let capacity_checks = capacity_checks(&manifest, &selected, &mappings, &mut issues);
+    let capacity_checks = capacity_checks(
+        options.bundle_path,
+        &manifest,
+        &selected,
+        &mappings,
+        &mut issues,
+    )?;
     validate_event_thumbnails(
         options.bundle_path,
         &manifest,
@@ -268,7 +258,6 @@ pub fn stage_restore(
     persist_journal(&journal_path, &journal)?;
     if let Err(error) = write_preparations(
         options.bundle_path,
-        options.target_config_path,
         options.plan,
         &manifest,
         &journal_path,
@@ -285,6 +274,26 @@ pub fn stage_restore(
         &journal,
         backup_proto::RestoreState::AwaitingRestart,
     ))
+}
+
+pub(super) fn prepare_configuration_apply(config_path: &Path) -> anyhow::Result<()> {
+    let path = restore_journal_path(config_path);
+    if !path.exists() {
+        return Ok(());
+    }
+    let journal = load_journal(&path)?;
+    if !matches!(
+        journal.state,
+        RestoreJournalState::Complete | RestoreJournalState::RolledBack
+    ) {
+        return Err(super::ServiceError::conflict(
+            "configuration application is already pending; restart the recorder before applying another ZIP",
+        ).into());
+    }
+    cleanup_prepared_targets(&journal);
+    cleanup_rollback_targets(&journal);
+    std::fs::remove_file(path)?;
+    Ok(())
 }
 
 /// Applies or recovers the pending restore journal before application state opens.
@@ -508,6 +517,35 @@ fn prepare_targets(
     let mut archive = ZipArchive::new(std::fs::File::open(bundle_path)?)?;
     let mut targets = Vec::new();
     let mut preparations = Vec::new();
+    if manifest.format_version() == super::FORMAT_VERSION {
+        let config_directory = mapping_target(plan, BackupPathKind::ConfigDirectory)?;
+        let expected_config = config_directory.join(
+            target_config_path
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new(super::create::CONFIG_MEMBER_PATH)),
+        );
+        let canonical_config = canonical_target_path(target_config_path)?;
+        if expected_config != canonical_config {
+            anyhow::bail!("config directory mapping does not match the target configuration");
+        }
+        let (config, secrets) =
+            restored_native_configuration(&mut archive, manifest, target_config_path)?;
+        push_bytes_target(
+            &mut targets,
+            &mut preparations,
+            &canonical_config,
+            config,
+            restore_id,
+        )?;
+        push_bytes_target(
+            &mut targets,
+            &mut preparations,
+            &config::secrets_path(&canonical_config),
+            secrets,
+            restore_id,
+        )?;
+        return Ok((targets, preparations));
+    }
     if selected
         .iter()
         .any(|section| is_configuration_section(*section))
@@ -551,10 +589,6 @@ fn prepare_targets(
                 mapping_target(plan, BackupPathKind::RecordingCatalog)?,
                 PreparedContent::ArchiveSection(*section),
             ),
-            BackupSection::Notifications => (
-                mapping_target(plan, BackupPathKind::NotificationDatabase)?,
-                PreparedContent::ArchiveSection(*section),
-            ),
             BackupSection::RuntimeConfig
             | BackupSection::CameraDatabase
             | BackupSection::EventMetadata
@@ -583,6 +617,41 @@ fn prepare_targets(
         anyhow::bail!("restore plan maps multiple sections to one target");
     }
     Ok((targets, preparations))
+}
+
+fn restored_native_configuration<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    manifest: &BackupManifest,
+    target_config_path: &Path,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    let config = section_bytes(archive, manifest, BackupSection::RuntimeConfig)?;
+    let secrets = super::read_member(
+        archive,
+        super::create::SECRETS_MEMBER_PATH,
+        BackupSection::RuntimeConfig.maximum_document_bytes(),
+    )?;
+    let mut source = toml::from_str::<toml::Table>(std::str::from_utf8(&config)?)?;
+    let mut target = config::load_configuration_table(target_config_path)?;
+    let mut target_storage_paths = take_storage_paths(&mut target);
+    for value in target_storage_paths.values_mut() {
+        let path = value
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("target storage path must be a string"))?;
+        *value = toml::Value::String(config::resolve_secret_references(target_config_path, path)?);
+    }
+    take_storage_paths(&mut source);
+    if !target_storage_paths.is_empty() {
+        let storage = source
+            .entry("storage")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("restored storage configuration is not a table"))?;
+        storage.extend(target_storage_paths);
+    }
+    source.remove("storage_migration");
+    let config = toml::to_string_pretty(&source)?.into_bytes();
+    super::validate_native_configuration(&config, &secrets)?;
+    Ok((config, secrets))
 }
 
 const fn is_configuration_section(section: BackupSection) -> bool {
@@ -771,10 +840,7 @@ fn push_target(
             .map(|descriptor| descriptor.sha256().to_owned())
             .ok_or_else(|| anyhow::anyhow!("backup section descriptor is missing"))?,
     };
-    let database = matches!(
-        section,
-        BackupSection::RecordingCatalog | BackupSection::Notifications
-    );
+    let database = section == BackupSection::RecordingCatalog;
     targets.push(journal_target(
         &target,
         expected_sha256,
@@ -864,7 +930,6 @@ fn canonical_target_path(path: &Path) -> anyhow::Result<PathBuf> {
 
 fn write_preparations(
     bundle_path: &Path,
-    target_config_path: &Path,
     plan: &backup_proto::RestorePlan,
     manifest: &BackupManifest,
     journal_path: &Path,
@@ -891,12 +956,6 @@ fn write_preparations(
                     rewrite_recording_paths(
                         &target.staged,
                         &recording_path_routes(manifest, plan)?,
-                    )?;
-                }
-                if section == BackupSection::Notifications {
-                    crate::notifications::resolve_backup_snapshot_references(
-                        &target.staged,
-                        target_config_path,
                     )?;
                 }
                 if target.database {
@@ -1380,6 +1439,9 @@ fn selected_sections(
     if let Some(section) = selected.iter().find(|section| !available.contains(section)) {
         anyhow::bail!("backup does not contain {} section", section.as_str());
     }
+    if selected != [BackupSection::RuntimeConfig] {
+        anyhow::bail!("restore supports configuration bundles only");
+    }
     Ok(selected)
 }
 
@@ -1511,8 +1573,13 @@ fn validate_merged_configuration(
         path_mappings: path_mappings.to_vec(),
         ..Default::default()
     };
-    if restored_configuration(&mut archive, manifest, selected, target_config_path, &plan).is_err()
-    {
+    let result = if manifest.format_version() == super::FORMAT_VERSION {
+        restored_native_configuration(&mut archive, manifest, target_config_path).map(|_| ())
+    } else {
+        restored_configuration(&mut archive, manifest, selected, target_config_path, &plan)
+            .map(|_| ())
+    };
+    if result.is_err() {
         issues.push(issue(
             "configuration_invalid",
             "The selected configuration cannot load on this target.",
@@ -1620,14 +1687,27 @@ fn camera_identity(value: &toml::Value) -> Option<&str> {
 }
 
 fn capacity_checks(
+    bundle_path: &Path,
     manifest: &BackupManifest,
     selected: &[BackupSection],
     mappings: &HashMap<BackupPathKind, PathBuf>,
     issues: &mut Vec<backup_proto::RestoreIssue>,
-) -> Vec<backup_proto::RestoreCapacityCheck> {
+) -> anyhow::Result<Vec<backup_proto::RestoreCapacityCheck>> {
+    let native_secrets_bytes = if manifest.format_version() == super::FORMAT_VERSION {
+        let mut archive = ZipArchive::new(std::fs::File::open(bundle_path)?)?;
+        archive.by_name(super::create::SECRETS_MEMBER_PATH)?.size()
+    } else {
+        0
+    };
     let mut checks = Vec::with_capacity(mappings.len());
     for (kind, target) in mappings {
-        let required_bytes = required_bytes(manifest, selected, *kind);
+        let required_bytes = required_bytes(manifest, selected, *kind).saturating_add(
+            if *kind == BackupPathKind::ConfigDirectory {
+                native_secrets_bytes
+            } else {
+                0
+            },
+        );
         let capacity = filesystem_capacity(target, 0);
         let available_bytes = capacity.as_ref().map_or(0, |value| value.available_bytes);
         let writable = writable_probe_target(*kind, target).is_ok();
@@ -1654,7 +1734,7 @@ fn capacity_checks(
         });
     }
     checks.sort_unstable_by_key(|check| check.kind);
-    checks
+    Ok(checks)
 }
 
 fn validate_event_thumbnails(
@@ -1757,7 +1837,6 @@ const fn path_kind(section: BackupSection) -> BackupPathKind {
         BackupSection::RecordingCatalog | BackupSection::EventMetadata => {
             BackupPathKind::RecordingCatalog
         }
-        BackupSection::Notifications => BackupPathKind::NotificationDatabase,
         BackupSection::EventThumbnails => BackupPathKind::EventThumbnails,
         _ => BackupPathKind::ConfigDirectory,
     }
@@ -1765,9 +1844,7 @@ const fn path_kind(section: BackupSection) -> BackupPathKind {
 
 fn writable_probe_target(kind: BackupPathKind, target: &Path) -> anyhow::Result<()> {
     let directory = match kind {
-        BackupPathKind::RecordingCatalog | BackupPathKind::NotificationDatabase => {
-            target.parent().unwrap_or_else(|| Path::new("."))
-        }
+        BackupPathKind::RecordingCatalog => target.parent().unwrap_or_else(|| Path::new(".")),
         _ => target,
     };
     let existing = nearest_existing(directory)?;
@@ -1965,6 +2042,11 @@ mod tests {
             "access_key = \"{secret:KEEPPEEK_ACCESS_KEY}\"\n[storage]\nlong_term_max_gb = 10\n",
         )
         .unwrap();
+        std::fs::write(
+            source.join("secrets.toml"),
+            "KEEPPEEK_ACCESS_KEY = \"00000000-0000-4000-8000-000000000002\"\n",
+        )
+        .unwrap();
         let target_config = target.join("config.toml");
         std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
         std::fs::write(
@@ -1977,14 +2059,8 @@ mod tests {
             Cursor::new(Vec::new()),
             backup::CreateBundleOptions {
                 config_path: &source_config,
-                sections: &[
-                    backup::BackupSection::RuntimeConfig,
-                    backup::BackupSection::CameraDatabase,
-                ],
+                sections: &[],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
@@ -2017,19 +2093,31 @@ mod tests {
         assert_eq!(plan.capacity_checks.len(), 1);
         assert!(plan.capacity_checks[0].writable);
         assert!(plan.capacity_checks[0].sufficient);
+        assert_eq!(
+            plan.capacity_checks[0].required_bytes,
+            manifest.sections[0].bytes
+                + std::fs::metadata(source.join("secrets.toml"))
+                    .unwrap()
+                    .len()
+        );
         assert!(plan.restart_impact.unwrap().server_restart_required);
         assert!(plan.issues.is_empty());
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn dry_run_reports_missing_secrets_without_hiding_inspection() {
+    fn dry_run_uses_the_included_secrets_file() {
         let directory = test_directory("missing-secret");
         let source_config = directory.join("source.toml");
         let target_config = directory.join("target.toml");
         std::fs::write(
             &source_config,
             "access_key = \"{secret:KEEPPEEK_ACCESS_KEY}\"\n[storage]\nlong_term_max_gb = 10\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config::secrets_path(&source_config),
+            "KEEPPEEK_ACCESS_KEY = \"00000000-0000-4000-8000-000000000002\"\n",
         )
         .unwrap();
         std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
@@ -2040,9 +2128,6 @@ mod tests {
                 config_path: &source_config,
                 sections: &[backup::BackupSection::RuntimeConfig],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
@@ -2067,20 +2152,13 @@ mod tests {
         })
         .unwrap();
 
-        assert!(!plan.can_activate);
-        assert!(plan.issues.iter().any(|issue| {
-            issue.code == "missing_secret"
-                && issue.severity == backup_proto::RestoreIssueSeverity::Blocking as i32
-        }));
-        assert_eq!(
-            plan.required_secret_references,
-            ["{secret:KEEPPEEK_ACCESS_KEY}"]
-        );
+        assert!(plan.can_activate, "{:#?}", plan.issues);
+        assert!(plan.required_secret_references.is_empty());
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn dry_run_blocks_an_invalid_merged_configuration() {
+    fn dry_run_rejects_an_invalid_configuration_bundle() {
         let directory = test_directory("invalid-configuration");
         let source_config = directory.join("source.toml");
         let target_config = directory.join("target.toml");
@@ -2090,6 +2168,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
+        std::fs::write(config::secrets_path(&source_config), "").unwrap();
         let bundle_path = directory.join("backup.zip");
         let (bundle, manifest) = backup::create_bundle(
             Cursor::new(Vec::new()),
@@ -2097,9 +2176,6 @@ mod tests {
                 config_path: &source_config,
                 sections: &[backup::BackupSection::RuntimeConfig],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
@@ -2116,24 +2192,20 @@ mod tests {
             expected_target_revision: target_revision(&target_config).unwrap(),
         };
 
-        let plan = plan_restore(RestorePlanOptions {
+        let error = plan_restore(RestorePlanOptions {
             bundle_path: &bundle_path,
             target_config_path: &target_config,
             request: &request,
             now_unix_ms: 1_788_000_001_000,
         })
-        .unwrap();
+        .unwrap_err();
 
-        assert!(!plan.can_activate);
-        assert!(plan.issues.iter().any(|issue| {
-            issue.code == "configuration_invalid"
-                && issue.severity == backup_proto::RestoreIssueSeverity::Blocking as i32
-        }));
+        assert!(error.to_string().contains("warning free space"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn dry_run_blocks_a_stable_camera_id_collision() {
+    fn dry_run_replaces_camera_configuration_as_one_document() {
         let directory = test_directory("camera-id-conflict");
         let source = directory.join("source");
         let target = directory.join("target");
@@ -2143,16 +2215,14 @@ mod tests {
         let target_config = target.join("config.toml");
         std::fs::write(&source_config, "[cameras.front]\nip = \"192.0.2.10\"\n").unwrap();
         std::fs::write(&target_config, "[cameras.front]\nip = \"192.0.2.99\"\n").unwrap();
+        std::fs::write(source.join("secrets.toml"), "").unwrap();
         let bundle_path = directory.join("backup.zip");
         let (bundle, manifest) = backup::create_bundle(
             Cursor::new(Vec::new()),
             backup::CreateBundleOptions {
                 config_path: &source_config,
-                sections: &[backup::BackupSection::CameraDatabase],
+                sections: &[],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
@@ -2165,17 +2235,12 @@ mod tests {
         })
         .unwrap();
 
-        assert!(!plan.can_activate);
-        assert!(
-            plan.issues
-                .iter()
-                .any(|issue| issue.code == "camera_id_conflict")
-        );
+        assert!(plan.can_activate, "{:#?}", plan.issues);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn dry_run_reports_layout_camera_placeholders() {
+    fn dry_run_restores_layouts_as_part_of_configuration() {
         let directory = test_directory("layout-placeholders");
         let source = directory.join("source");
         let target = directory.join("target");
@@ -2185,9 +2250,15 @@ mod tests {
         let target_config = target.join("config.toml");
         std::fs::write(&source_config, "[cameras.front]\nip = \"192.0.2.10\"\n").unwrap();
         std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
+        std::fs::write(source.join("secrets.toml"), "").unwrap();
         std::fs::write(
             source.join("peek-layouts.json"),
             r#"{"schema_version":1,"revision":1,"shared_layouts":[{"id":"default","name":"All cameras","scope":"shared","owner_id":"server","audience":{"everyone":true,"credential_ids":[]},"activity_focus":true,"tiles":[{"camera_id":"retired-camera","column":1,"row":1,"column_span":6,"row_span":6,"pinned":false}]}],"users":{}}"#,
+        )
+        .unwrap();
+        crate::server::migrate_peek_layout_configuration(
+            &source_config,
+            &["192.0.2.10".to_owned()],
         )
         .unwrap();
         let bundle_path = directory.join("backup.zip");
@@ -2195,14 +2266,8 @@ mod tests {
             Cursor::new(Vec::new()),
             backup::CreateBundleOptions {
                 config_path: &source_config,
-                sections: &[
-                    backup::BackupSection::CameraDatabase,
-                    backup::BackupSection::Layouts,
-                ],
+                sections: &[],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
@@ -2216,10 +2281,11 @@ mod tests {
         .unwrap();
 
         assert!(plan.can_activate, "{:#?}", plan.issues);
-        assert!(plan.issues.iter().any(|issue| {
-            issue.code == "layout_cameras_missing"
-                && issue.severity == backup_proto::RestoreIssueSeverity::Warning as i32
-        }));
+        assert!(
+            plan.issues
+                .iter()
+                .all(|issue| issue.code != "layout_cameras_missing")
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2335,6 +2401,10 @@ mod tests {
     fn staged_restore_applies_after_restart_and_rolls_back_exactly() {
         let (directory, bundle_path, target_config, plan) = activatable_fixture("lifecycle");
         let original = std::fs::read(&target_config).unwrap();
+        let secrets_path = config::secrets_path(&target_config);
+        let original_secrets = std::fs::read(&secrets_path).unwrap();
+        let catalog_path = target_config.with_file_name("recordings.db");
+        let original_catalog = std::fs::read(&catalog_path).unwrap();
         let staged = stage_restore(StageRestoreOptions {
             bundle_path: &bundle_path,
             target_config_path: &target_config,
@@ -2343,6 +2413,8 @@ mod tests {
         })
         .unwrap();
         assert_eq!(std::fs::read(&target_config).unwrap(), original);
+        assert_eq!(std::fs::read(&secrets_path).unwrap(), original_secrets);
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), original_catalog);
         assert_eq!(
             staged.state,
             backup_proto::RestoreState::AwaitingRestart as i32
@@ -2357,6 +2429,12 @@ mod tests {
                 .unwrap()
                 .contains("long_term_max_gb = 10")
         );
+        assert!(
+            std::fs::read_to_string(&secrets_path)
+                .unwrap()
+                .contains("source-value")
+        );
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), original_catalog);
         let healthy = mark_restore_healthy(&target_config, plan.created_at_unix_ms + 3)
             .unwrap()
             .unwrap();
@@ -2388,6 +2466,8 @@ mod tests {
             backup_proto::RestoreState::RolledBack as i32
         );
         assert_eq!(std::fs::read(&target_config).unwrap(), original);
+        assert_eq!(std::fs::read(&secrets_path).unwrap(), original_secrets);
+        assert_eq!(std::fs::read(&catalog_path).unwrap(), original_catalog);
         assert!(
             recover_pending_restore(&target_config, plan.created_at_unix_ms + 6)
                 .unwrap()
@@ -2447,9 +2527,9 @@ mod tests {
     #[test]
     fn startup_recovery_rolls_back_a_partially_applied_restore() {
         let (directory, bundle_path, target_config, plan) = activatable_fixture("partial");
-        let target_access = target_config.with_file_name("access.toml");
+        let target_secrets = config::secrets_path(&target_config);
         let original_config = std::fs::read(&target_config).unwrap();
-        let original_access = std::fs::read(&target_access).unwrap();
+        let original_secrets = std::fs::read(&target_secrets).unwrap();
         stage_restore(StageRestoreOptions {
             bundle_path: &bundle_path,
             target_config_path: &target_config,
@@ -2473,7 +2553,7 @@ mod tests {
             backup_proto::RestoreState::RolledBack as i32
         );
         assert_eq!(std::fs::read(&target_config).unwrap(), original_config);
-        assert_eq!(std::fs::read(&target_access).unwrap(), original_access);
+        assert_eq!(std::fs::read(&target_secrets).unwrap(), original_secrets);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2641,14 +2721,15 @@ mod tests {
     fn full_supported_round_trip_preserves_ids_references_and_mapped_paths() {
         let directory = test_directory("full-round-trip");
         let source = create_full_source(&directory);
-        let target = create_full_target(&directory, &source.manifest);
+        let target = create_full_target(&directory);
         let bundle_path = directory.join("full-backup.zip");
         std::fs::write(&bundle_path, &source.bundle).unwrap();
+        let mappings = restore_mappings(&source.manifest, &target);
         let request = backup_proto::CreateRestorePlanRequest {
             client_request_id: "full-plan".to_owned(),
             backup_id: "full-backup".to_owned(),
             sections: Vec::new(),
-            path_mappings: restore_mappings(&source.manifest, &target),
+            path_mappings: mappings,
             expected_target_revision: target_revision(&target.config).unwrap(),
         };
         let plan = plan_restore(RestorePlanOptions {
@@ -2677,8 +2758,14 @@ mod tests {
             std::fs::read(&target.config).unwrap(),
             target.original_config
         );
-        assert!(!target.catalog.exists());
-        assert!(!target.notifications.exists());
+        assert_eq!(
+            std::fs::read(config::secrets_path(&target.config)).unwrap(),
+            target.original_secrets
+        );
+        assert_eq!(
+            std::fs::read(&target.catalog).unwrap(),
+            target.original_catalog
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2697,14 +2784,7 @@ mod tests {
         let directory = test_directory("performance");
         let source = create_full_source(&directory);
         let source_root = directory.join("source");
-        let source_files = [
-            "config.toml",
-            "access.toml",
-            "peek-layouts.json",
-            "configuration-templates.json",
-            "recordings.db",
-            "notifications.db",
-        ];
+        let source_files = ["config.toml", "secrets.toml"];
         let mut baseline_us = Vec::with_capacity(samples);
         for sample in 0..samples {
             let target = directory.join(format!("baseline-{sample}"));
@@ -2717,21 +2797,7 @@ mod tests {
             std::fs::remove_dir_all(target).unwrap();
         }
 
-        let catalog_path = source_root.join("recordings.db");
-        let catalog = crate::storage::RecordingCatalog::open(&catalog_path).unwrap();
-        let notifications_path = source_root.join("notifications.db");
-        let notifications = crate::notifications::Runtime::open(&notifications_path).unwrap();
-        let storage_paths = super::super::BackupStoragePaths::new(
-            source_root.join("media"),
-            source_root.join("thumbnails"),
-        );
-        let manager = super::super::BackupManager::open(
-            source_root.join("config.toml"),
-            Some(catalog.handle()),
-            Some(notifications.handle()),
-            Some(storage_paths),
-        )
-        .unwrap();
+        let manager = super::super::BackupManager::open(source_root.join("config.toml")).unwrap();
         let mut create_us = Vec::with_capacity(samples);
         for sample in 0..samples {
             let started = std::time::Instant::now();
@@ -2748,8 +2814,6 @@ mod tests {
             create_us.push(started.elapsed().as_micros());
         }
         drop(manager);
-        notifications.shutdown();
-        catalog.shutdown();
 
         let bundle_path = directory.join("benchmark.zip");
         std::fs::write(&bundle_path, &source.bundle).unwrap();
@@ -2757,7 +2821,7 @@ mod tests {
         let mut stage_us = Vec::with_capacity(samples);
         for sample in 0..samples {
             let sample_root = directory.join(format!("restore-{sample}"));
-            let target = create_full_target(&sample_root, &source.manifest);
+            let target = create_full_target(&sample_root);
             let request = backup_proto::CreateRestorePlanRequest {
                 client_request_id: format!("plan-{sample}"),
                 backup_id: "benchmark-backup".to_owned(),
@@ -2943,7 +3007,7 @@ mod tests {
         let contents = b"[storage]\nlong_term_max_gb = 10\n";
         let digest = super::super::encode_lower_hex(Sha256::digest(contents));
         let manifest = backup_proto::BackupManifest {
-            format_version: super::super::FORMAT_VERSION,
+            format_version: super::super::SECTIONED_FORMAT_VERSION,
             created_at_unix_ms: 1_788_000_000_000,
             keeppeek_version: "0.1.0".to_owned(),
             source: Some(backup_proto::BackupSource {
@@ -2994,10 +3058,11 @@ mod tests {
         root: PathBuf,
         config: PathBuf,
         catalog: PathBuf,
-        notifications: PathBuf,
         media: PathBuf,
         thumbnails: PathBuf,
         original_config: Vec<u8>,
+        original_secrets: Vec<u8>,
+        original_catalog: Vec<u8>,
     }
 
     fn create_full_source(directory: &Path) -> FullSource {
@@ -3008,6 +3073,11 @@ mod tests {
         std::fs::create_dir_all(&thumbnails).unwrap();
         let config = root.join("config.toml");
         std::fs::write(&config, full_source_config(&root, &media, &thumbnails)).unwrap();
+        std::fs::write(
+            root.join("secrets.toml"),
+            "CAMERA_USERNAME = \"operator\"\nCAMERA_PASSWORD = \"camera-password\"\nMQTT_USERNAME = \"mqtt-user\"\nMQTT_PASSWORD = \"mqtt-password\"\n",
+        )
+        .unwrap();
         std::fs::write(
             root.join("peek-layouts.json"),
             r#"{"schema_version":1,"revision":7,"shared_layouts":[{"id":"default","name":"All cameras","scope":"shared","owner_id":"server","audience":{"everyone":true,"credential_ids":[]},"activity_focus":true,"tiles":[]}],"users":{}}"#,
@@ -3034,22 +3104,19 @@ mod tests {
             .unwrap()
             .metadata
             .id;
+        crate::server::migrate_peek_layout_configuration(&config, &[]).unwrap();
+        crate::server::migrate_template_store(&config).unwrap();
         let catalog_path = root.join("recordings.db");
         let catalog = crate::storage::RecordingCatalog::open(&catalog_path).unwrap();
         seed_full_catalog(&catalog.handle(), &media, &thumbnails);
-        let notification_path = root.join("notifications.db");
-        let notifications = crate::notifications::Runtime::open(&notification_path).unwrap();
+        let notifications = crate::notifications::Runtime::open(&config).unwrap();
         let notification_destination = seed_notification_rule(&notifications.handle());
-        let storage_paths = super::super::BackupStoragePaths::new(media, thumbnails);
         let (bundle, manifest) = backup::create_bundle(
             Cursor::new(Vec::new()),
             backup::CreateBundleOptions {
                 config_path: &config,
                 sections: &[],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: Some(&catalog.handle()),
-                notifications: Some(&notifications.handle()),
-                storage_paths: Some(&storage_paths),
             },
         )
         .unwrap();
@@ -3063,7 +3130,7 @@ mod tests {
         }
     }
 
-    fn create_full_target(directory: &Path, manifest: &backup_proto::BackupManifest) -> FullTarget {
+    fn create_full_target(directory: &Path) -> FullTarget {
         let root = directory.join("target");
         let media = root.join("media");
         let thumbnails = root.join("thumbnails");
@@ -3072,17 +3139,27 @@ mod tests {
         std::fs::write(media.join("recording-1.mp4"), b"external recording bytes").unwrap();
         std::fs::write(thumbnails.join("event-1.jpg"), b"external thumbnail bytes").unwrap();
         let config = root.join("config.toml");
-        let original_config = b"[storage]\nlong_term_max_gb = 20\n".to_vec();
+        let original_config = format!(
+            "[storage]\nmedium_term_path = {media:?}\nlong_term_path = {media:?}\nrecording_catalog_path = {catalog:?}\nevent_thumbnail_path = {thumbnails:?}\nlong_term_max_gb = 20\n",
+            media = media.to_string_lossy(),
+            catalog = root.join("recordings.db").to_string_lossy(),
+            thumbnails = thumbnails.to_string_lossy(),
+        )
+        .into_bytes();
+        let original_secrets = b"TARGET_ONLY = \"preserved-on-rollback\"\n".to_vec();
+        let original_catalog = b"target-local-catalog".to_vec();
         std::fs::write(&config, &original_config).unwrap();
-        write_full_target_secrets(&root, manifest);
+        std::fs::write(config::secrets_path(&config), &original_secrets).unwrap();
+        std::fs::write(root.join("recordings.db"), &original_catalog).unwrap();
         FullTarget {
             catalog: root.join("recordings.db"),
-            notifications: root.join("notifications.db"),
             root,
             config,
             media,
             thumbnails,
             original_config,
+            original_secrets,
+            original_catalog,
         }
     }
 
@@ -3193,32 +3270,6 @@ password = "{{secret:MQTT_PASSWORD}}"
         destination
     }
 
-    fn write_full_target_secrets(root: &Path, manifest: &backup_proto::BackupManifest) {
-        let mut secrets = toml::Table::new();
-        for reference in &manifest.required_secret_references {
-            let key = reference
-                .strip_prefix("{secret:")
-                .and_then(|value| value.strip_suffix('}'))
-                .unwrap();
-            let value = match key {
-                "CAMERA_USERNAME" => "operator",
-                "CAMERA_PASSWORD" => "camera-password",
-                "MQTT_PASSWORD" => "mqtt-password",
-                "MQTT_USERNAME" => "mqtt-user",
-                _ if key.starts_with("BACKUP_NOTIFICATION_") => {
-                    r#"{"application_token":"a23456789012345678901234567890","user_key":"u23456789012345678901234567890","priority":0}"#
-                }
-                _ => panic!("unexpected secret reference {reference}"),
-            };
-            secrets.insert(key.to_owned(), toml::Value::String(value.to_owned()));
-        }
-        std::fs::write(
-            root.join("secrets.toml"),
-            toml::to_string(&secrets).unwrap(),
-        )
-        .unwrap();
-    }
-
     fn restore_mappings(
         manifest: &backup_proto::BackupManifest,
         target: &FullTarget,
@@ -3234,7 +3285,9 @@ password = "{{secret:MQTT_PASSWORD}}"
                     backup_proto::BackupPathKind::RecordingCatalog => &target.catalog,
                     backup_proto::BackupPathKind::LongTermMedia => &target.media,
                     backup_proto::BackupPathKind::EventThumbnails => &target.thumbnails,
-                    backup_proto::BackupPathKind::NotificationDatabase => &target.notifications,
+                    backup_proto::BackupPathKind::NotificationDatabase => {
+                        unreachable!("notification database mappings are unsupported")
+                    }
                     backup_proto::BackupPathKind::Unspecified => unreachable!(),
                 }
                 .to_string_lossy()
@@ -3250,8 +3303,11 @@ password = "{{secret:MQTT_PASSWORD}}"
         let config: toml::Table = toml::from_str(&config).unwrap();
         let canonical_media = target.media.canonicalize().unwrap();
         assert_eq!(
-            config["storage"]["long_term_path"].as_str().map(Path::new),
-            Some(canonical_media.as_path())
+            config["storage"]["long_term_path"]
+                .as_str()
+                .map(Path::new)
+                .map(|path| path.canonicalize().unwrap()),
+            Some(canonical_media)
         );
         let access = crate::access::AccessManager::open(
             &target.config,
@@ -3264,29 +3320,26 @@ password = "{{secret:MQTT_PASSWORD}}"
                 .iter()
                 .any(|credential| credential.id == source.credential_id)
         );
-        let catalog = crate::storage::RecordingCatalog::open(&target.catalog).unwrap();
-        let handle = catalog.handle();
-        assert_eq!(handle.stats().unwrap().recording_files, 1);
-        assert_eq!(handle.stats().unwrap().events, 1);
-        assert_eq!(handle.event_by_id("event-1").unwrap().unwrap().revision, 2);
-        drop(handle);
-        catalog.shutdown();
-        let notifications = crate::notifications::Runtime::open(&target.notifications).unwrap();
+        assert_eq!(
+            std::fs::read(&target.catalog).unwrap(),
+            target.original_catalog
+        );
+        let notifications = crate::notifications::Runtime::open(&target.config).unwrap();
         let rules = notifications.handle().rules("owner-1").unwrap();
         assert_eq!(rules[0].id, "rule-1");
+        let restored_destination = crate::config::resolve_secret_references(
+            &target.config,
+            &rules[0].active.as_ref().unwrap().actions[0].destination,
+        )
+        .unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                &rules[0].active.as_ref().unwrap().actions[0].destination
-            )
-            .unwrap(),
+            serde_json::from_str::<serde_json::Value>(&restored_destination).unwrap(),
             serde_json::from_str::<serde_json::Value>(&source.notification_destination).unwrap()
         );
         notifications.shutdown();
-        assert!(
-            std::fs::read_to_string(target.root.join("peek-layouts.json"))
-                .unwrap()
-                .contains("\"revision\": 7")
-        );
+        assert_eq!(config["peek_layouts"]["revision"].as_integer(), Some(7));
+        assert!(!target.root.join("peek-layouts.json").exists());
+        assert!(!target.root.join("configuration-templates.json").exists());
     }
 
     fn activatable_fixture(
@@ -3307,29 +3360,23 @@ password = "{{secret:MQTT_PASSWORD}}"
         std::fs::write(&source_config, "[storage]\nlong_term_max_gb = 10\n").unwrap();
         std::fs::write(&target_config, "[storage]\nlong_term_max_gb = 20\n").unwrap();
         std::fs::write(
-            source.join("access.toml"),
-            "version = 1\ncredentials = []\naudit = []\n",
+            source.join("secrets.toml"),
+            "FIXTURE_SECRET = \"source-value\"\n",
         )
         .unwrap();
         std::fs::write(
-            target.join("access.toml"),
-            "version = 1\ncredentials = []\naudit = [{ id = \"00000000-0000-4000-8000-000000000001\", timestamp_ms = 1, action = \"existing\", result = \"success\", client_classification = \"direct_local\" }]\n",
+            target.join("secrets.toml"),
+            "FIXTURE_SECRET = \"target-value\"\n",
         )
         .unwrap();
+        std::fs::write(target.join("recordings.db"), b"local-catalog").unwrap();
         let bundle_path = directory.join("backup.zip");
         let (bundle, manifest) = backup::create_bundle(
             Cursor::new(Vec::new()),
             backup::CreateBundleOptions {
                 config_path: &source_config,
-                sections: &[
-                    backup::BackupSection::RuntimeConfig,
-                    backup::BackupSection::CameraDatabase,
-                    backup::BackupSection::Access,
-                ],
+                sections: &[],
                 created_at_unix_ms: 1_788_000_000_000,
-                recording_catalog: None,
-                notifications: None,
-                storage_paths: None,
             },
         )
         .unwrap();
@@ -3353,6 +3400,10 @@ password = "{{secret:MQTT_PASSWORD}}"
         })
         .unwrap();
         assert!(plan.can_activate);
+        assert_eq!(
+            plan.selected_sections,
+            [backup_proto::BackupSection::RuntimeConfig as i32]
+        );
         (directory, bundle_path, target_config, plan)
     }
 
