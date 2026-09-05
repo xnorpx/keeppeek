@@ -22,7 +22,7 @@ const meta = {
 			referenceSha256: '0c672c70765094c6b4e02fdba147e3dd46eab18424774028908606104e76a467',
 			exceptions: [
 				'The server does not expose timezone, clock, week-start, update-channel, or config-path preferences.',
-				'Update check, config backup, recording erase, and full diagnostics-bundle commands remain unavailable.',
+				'Update check, recording erase, and full diagnostics-bundle commands remain unavailable; configuration ZIP export/apply has a separate Board 20 reference and Playwright owner.',
 				'The implemented redacted log viewer and health route replace Paper actions that imply a broader diagnostics bundle.'
 			]
 		}

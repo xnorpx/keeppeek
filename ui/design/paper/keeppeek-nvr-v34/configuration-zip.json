@@ -1,0 +1,73 @@
+{
+	"schemaVersion": 1,
+	"boardId": "39R-0",
+	"frameId": "ANO-0",
+	"exportedAt": "2026-09-04",
+	"sourceTokenHash": "b35ec365",
+	"baselineTokenHash": "cf3b1cd7",
+	"route": "/settings#backups",
+	"requiredCapability": "keeppeek.backup.v1",
+	"implementationOwner": "src/lib/components/BackupRestoreSection.svelte",
+	"playwrightOwner": "e2e/backup.e2e.ts",
+	"image": {
+		"source": "references/20-configuration-zip-states@2x.png",
+		"width": 2880,
+		"height": 1140,
+		"scale": 2,
+		"bytes": 298838,
+		"sha256": "79937c0e8d63c331b2f5aa1004a64a14642bbdec719bfaf664dbea241587cc7c"
+	},
+	"endpoints": {
+		"export": { "method": "GET", "path": "/config/export" },
+		"apply": { "method": "POST", "path": "/config/apply", "successStatus": 202 }
+	},
+	"archiveMembers": ["config.toml", "secrets.toml"],
+	"states": [
+		{
+			"id": "selected",
+			"frameId": "ANW-0",
+			"label": "01 / SELECTED - CONFIRMATION REQUIRED",
+			"width": 501,
+			"behavior": "The ZIP is selected. Apply remains disabled until replacement is confirmed."
+		},
+		{
+			"id": "staged",
+			"frameId": "AOX-0",
+			"label": "02 / STAGED - LIVE FILES UNCHANGED",
+			"width": 501,
+			"behavior": "Both files are staged, not active. Further apply is disabled; Restart to apply is available."
+		},
+		{
+			"id": "rejected",
+			"frameId": "APS-0",
+			"label": "03 / REJECTED - 390px",
+			"width": 390,
+			"behavior": "The validation error is visible. The selected ZIP and confirmation are retained for retry."
+		}
+	],
+	"visibleText": [
+		"Backup ZIPs contain plaintext secrets.",
+		"Export ZIP",
+		"Configuration ZIP",
+		"Apply configuration",
+		"Configuration staged. Restart required.",
+		"Restart to apply"
+	],
+	"playwrightTests": [
+		"Administrator exports and applies the two-file ZIP through the direct endpoints",
+		"configuration workflow fits mobile without horizontal overflow",
+		"invalid configuration ZIP keeps the selected file and exposes a retryable error",
+		"HTTP apply replaces both TOMLs only after an isolated recorder restart"
+	],
+	"constraints": [
+		"Only Administrators can export or apply configuration.",
+		"Export does not remove either live TOML file.",
+		"Both TOMLs are included; secrets.toml is plaintext.",
+		"Apply replaces live configuration only after a controlled restart.",
+		"The target recording paths, recording database, and media remain unchanged.",
+		"The old managed /api/backups workflow is retired."
+	],
+	"reviewStatus": "design-reference",
+	"lokiApproved": false,
+	"notes": "This supplementary Paper state strip is design and Playwright contract evidence, not an approved pixel baseline. All 25 tokens used by the refreshed board match the pinned NVR baseline; unrelated live Paper tokens are not imported."
+}
