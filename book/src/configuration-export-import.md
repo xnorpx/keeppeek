@@ -20,10 +20,10 @@ This is a configuration backup, not a backup of your recordings or database.
 
 Every export contains exactly two files at the root of the archive:
 
-| File | Contents |
-| --- | --- |
-| `config.toml` | Durable settings, including cameras, storage policy, access credential metadata, layouts, templates, notification rules, and MQTT settings. |
-| `secrets.toml` | The file-backed secret values used by the configuration. |
+| File           | Contents                                                                                                                                    |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.toml`  | Durable settings, including cameras, storage policy, access credential metadata, layouts, templates, notification rules, and MQTT settings. |
+| `secrets.toml` | The file-backed secret values used by the configuration.                                                                                    |
 
 **The ZIP contains plaintext secrets and is not encrypted.** Restrict access to it as you would to
 camera passwords or access keys. Do not attach it to a public issue or share it in logs, and delete
@@ -101,9 +101,9 @@ argument.
 
 ## Use HTTP
 
-| Request | Result |
-| --- | --- |
-| `GET /config/export` | A fresh `application/zip` download. |
+| Request              | Result                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `GET /config/export` | A fresh `application/zip` download.                                                   |
 | `POST /config/apply` | Validate and stage a raw ZIP body; return `202` and `RESTORE_STATE_AWAITING_RESTART`. |
 
 For a local recorder, a POSIX shell example is:
@@ -125,14 +125,14 @@ response. There is no separate public dry-run, section selection, or path-mappin
 
 ## If an import fails
 
-| Result | What to do |
-| --- | --- |
-| Invalid or unsupported ZIP (`400`) | Use an unmodified current KeepPeek export. A hand-made ZIP, missing comment, changed checksum, or invalid TOML is rejected. |
-| Authentication or permission denied (`401` / `403`) | Connect with Administrator access to the target recorder. |
-| Apply already pending (`409`) | Complete the staged apply and restart before submitting another. Do not delete its journal to bypass this check. |
-| Missing length or wrong media type (`411` / `415`) | Send a raw ZIP with `Content-Length` and `Content-Type: application/zip`. |
-| Upload too large (`413`) | Verify that you selected the configuration export, not a media archive. Each TOML is limited to 16 MiB; compressed and expanded ZIP totals are each limited to 1 GiB. |
-| Archive operation busy (`503`) | Let the active export or apply finish, then retry. |
+| Result                                              | What to do                                                                                                                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Invalid or unsupported ZIP (`400`)                  | Use an unmodified current KeepPeek export. A hand-made ZIP, missing comment, changed checksum, or invalid TOML is rejected.                                           |
+| Authentication or permission denied (`401` / `403`) | Connect with Administrator access to the target recorder.                                                                                                             |
+| Apply already pending (`409`)                       | Complete the staged apply and restart before submitting another. Do not delete its journal to bypass this check.                                                      |
+| Missing length or wrong media type (`411` / `415`)  | Send a raw ZIP with `Content-Length` and `Content-Type: application/zip`.                                                                                             |
+| Upload too large (`413`)                            | Verify that you selected the configuration export, not a media archive. Each TOML is limited to 16 MiB; compressed and expanded ZIP totals are each limited to 1 GiB. |
+| Archive operation busy (`503`)                      | Let the active export or apply finish, then retry.                                                                                                                    |
 
 A rejected upload does not replace the live configuration. In Settings, the selected filename remains
 available after a validation error so you can correct the selection and retry. Do not restart in
