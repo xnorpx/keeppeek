@@ -655,14 +655,15 @@
 			"index": 16,
 			"id": "2O3-0",
 			"name": "16 — Settings: access &amp; roles",
-			"childCount": 2,
+			"childCount": 3,
 			"width": 1600,
-			"height": 1605,
+			"height": 2763,
 			"worldX": 12350,
 			"worldY": 2320,
 			"source": "boards/16-settings-access-amp-roles.jsx.txt",
-			"bytes": 50405,
-			"sha256": "e0fcecc532ce3ab35331f9c9c5bd6637f4cd7d6529e0238eb34dae8144b19530",
+			"sourceTokenHash": "b35ec365",
+			"bytes": 87594,
+			"sha256": "6b5f6bcdcf3bec9ba7620c36d4ece0fe459da7dacedab52ec2ccf3aac8899ed9",
 			"references": [
 				{
 					"nodeId": "2OD-0",
@@ -684,9 +685,9 @@
 						"highContrastThreshold": 64,
 						"highContrastMismatchPixels": 54910,
 						"blockers": [
-							"The Administrator/User matrix is target policy; the current identity runtime neither enforces nor reports assigned roles.",
-							"People, invitations, current identity, sessions, last-seen values, and directory counts are unavailable.",
-							"Token listing, creation, rotation, revocation, scopes, owners, last use, and audit rows are unavailable; raw key material is never rendered."
+							"This historical unavailable-capability fixture does not demonstrate the shipped credential or camera authorization; see user-access.json for the current user-access reference.",
+							"Named credentials and sessions use AccessRuntime rather than this static fixture; invitations remain outside the user-access feature.",
+							"The legacy full-page image is not an approved pixel baseline for the current runtime."
 						]
 					}
 				}

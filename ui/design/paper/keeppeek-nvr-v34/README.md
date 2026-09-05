@@ -51,6 +51,24 @@ The checker verifies the board count, unique IDs and paths, token hash, token CS
 every board and reference SHA-256 hash, complete scenario coverage, and exact capability
 identifiers.
 
+## User Access Reference
+
+Board 16 now includes per-user access states: Everything by default, selected groups and
+individual cameras, and a 390px conflict state with the draft retained. Its introductory policy
+text now describes user-owned grants and the separation between camera access and grid audiences.
+
+![User access states](references/16-user-access-states@2x.png)
+
+`user-access.json` locks the Paper export, state labels, capability, grant fields, runtime component,
+and browser-test owners. `paper:check` verifies the export hashes and the design-to-test mapping.
+The real-server test exercises default access, restriction, group grants, revocation, grid
+projection, direct-request denial, and mobile/desktop geometry.
+
+The full Board 16 JSX was refreshed at Paper token revision `b35ec365`; shared tokens and unrelated
+boards remain unchanged. The original `AccessPaperFrame` and full-page image remain historical
+unavailable-capability fixtures. They do not describe the current runtime or approve the new form
+as a Loki pixel baseline. The supplementary states are the current User access design reference.
+
 ## Importing MCP Exports
 
 Paper MCP JSX responses and image exports are imported without hand-editing generated output:
