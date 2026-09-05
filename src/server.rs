@@ -19856,7 +19856,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         let source_config = source.join("config.toml");
         let target_config = target.join("config.toml");
-        let target_recordings = target.join("recordings");
+        let target_recordings = target.join(r"recordings\archive");
         let source_contents = format!(
             "host = \"source.example\"\n[storage]\nlong_term_path = {:?}\n",
             source.join("recordings")
@@ -19921,8 +19921,12 @@ mod tests {
 
         crate::backup::recover_pending_restore(&target_config, 1_788_000_000_001).unwrap();
         let applied = std::fs::read_to_string(&target_config).unwrap();
-        assert!(applied.contains("host = \"source.example\""));
-        assert!(applied.contains(&format!("long_term_path = {target_recordings:?}")));
+        let applied: toml::Value = toml::from_str(&applied).unwrap();
+        assert_eq!(applied["host"].as_str().unwrap(), "source.example");
+        assert_eq!(
+            applied["storage"]["long_term_path"].as_str().unwrap(),
+            target_recordings.to_str().unwrap()
+        );
         assert_eq!(
             std::fs::read_to_string(target.join("secrets.toml")).unwrap(),
             "TOKEN = \"source-secret\"\n"
