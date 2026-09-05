@@ -15,7 +15,8 @@ Enter real values directly on the machine running KeepPeek.
 ## Flat namespace
 
 The file is one flat TOML string-to-string table. Nested tables, arrays, numbers, and general
-templating are rejected. Keys use uppercase ASCII letters, digits, and underscores:
+templating are rejected. Keys start with an uppercase ASCII letter or underscore, followed by
+uppercase ASCII letters, digits, or underscores:
 
 ```toml
 CAMERA_USERNAME = "admin"
@@ -35,11 +36,11 @@ Use `{secret:KEY}` inside a quoted `config.toml` string. A reference may replace
 or appear inside a larger string:
 
 ```toml
+access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
+
 [camera_defaults]
 username = "{secret:CAMERA_USERNAME}"
 password = "{secret:CAMERA_PASSWORD}"
-
-access_key = "{secret:KEEPPEEK_ACCESS_KEY}"
 
 [cameras.front_door]
 ip = "192.0.2.10"
@@ -47,8 +48,9 @@ password = "{secret:FRONT_CAMERA_PASSWORD}"
 main_rtsp_url = "rtsp://{secret:CAMERA_HOST}/stream1"
 ```
 
-Camera defaults apply only when the camera does not define that field. A camera can use an inline
-literal or a different reference for either field.
+Camera username and password defaults apply when the corresponding per-camera resolved value is
+empty, including when the field is omitted. A camera can use an inline literal or a different
+reference for either field.
 
 Use `{secret:KEY|url}` when a value is inserted into a URL component that requires percent
 encoding. It encodes every byte except RFC 3986 unreserved characters:
@@ -71,9 +73,12 @@ reference, `KEEPPEEK_SECRET_<KEY>` from the process environment wins over the sa
 Configuration editors and API responses retain `{secret:...}` instead of returning resolved
 values. Saving an unrelated camera or runtime setting preserves unchanged references. Entering a
 new credential intentionally replaces that one reference with an inline literal; `secrets.toml` is
-not generally editable through the UI. The compatibility first-run KeepPeek access key is the sole
-exception: its dedicated local-only control can retrieve the generated value once or rotate it
-without exposing other secrets.
+not generally editable through the UI. Dedicated settings operations manage only their own secrets:
+the compatibility initial access key, MQTT passwords, and non-browser notification destinations.
+Notification destinations use managed `KEEPPEEK_NOTIFICATION_...` keys and keep active and draft
+values separate. The initial access-key control can retrieve its generated value once or rotate
+it without exposing other secrets. See the [configuration reference](../book/src/configuration-reference.md#reference-boundaries)
+for the fields that support reference resolution.
 
 On first start, KeepPeek generates `KEEPPEEK_ACCESS_KEY` in the owner-only secret file and writes
 only `{secret:KEEPPEEK_ACCESS_KEY}` to `config.toml`. It never prints the generated value. Existing

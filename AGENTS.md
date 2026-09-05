@@ -43,6 +43,16 @@ CI uses these same entry points. Individual UI commands may be used while diagno
 - Resolve Rust packages only from public crates.io using the repository `.cargo/config.toml`.
 - Do not replace either public registry with a private mirror or proxy.
 
+## Configuration State
+
+- Keep settings in the existing application configuration file, named `config.toml` by default.
+  Do not introduce separate settings files for layouts, permissions, or other features.
+- Keep reusable private strings in the existing companion `secrets.toml`; preserve supported
+  `{secret:KEY}` and `{secret:KEY|url}` references instead of writing resolved values into settings.
+- For configuration work, follow [the KeepPeek configuration skill](.agents/skills/keeppeek-configuration/SKILL.md).
+  Keep [the configuration reference](book/src/configuration-reference.md) synchronized with supported
+  sections, serialized fields, defaults, limits, and secret-reference behavior.
+
 ## Python Environment
 
 - Never create, activate, or rely on a Python virtual environment. Do not run `python -m venv`, `uv venv`, or `virtualenv`, and do not add `.venv` handling to any script or document.

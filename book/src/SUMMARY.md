@@ -7,6 +7,7 @@
 - [Authentication and access control](./authentication.md)
 - [Camera and stream health](./camera-health.md)
 - [Visual configuration management](./configuration-management.md)
+- [Configuration reference](./configuration-reference.md)
 - [Export and import configuration](./configuration-export-import.md)
 - [Backup and restore](./backup-and-restore.md)
 - [Recording and evidence](./recording-and-evidence.md)
