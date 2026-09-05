@@ -19,6 +19,9 @@
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { onMount } from 'svelte';
 	import InitialAccessKeyClaim from './InitialAccessKeyClaim.svelte';
+	import CameraAccessDialog from './CameraAccessDialog.svelte';
+	import UserRoundIcon from '@lucide/svelte/icons/user-round';
+	import { cameraAccessCapability } from '$lib/control-client-camera-access';
 
 	type Props = {
 		controller: ControlClient;
@@ -40,9 +43,14 @@
 	let issued = $state.raw<IssuedAccessCredential | null>(null);
 	let copied = $state(false);
 	let pendingRevoke = $state<string | null>(null);
+	let editingCameraAccess = $state.raw<AccessCredential | null>(null);
+	let cameraAccessAvailable = $state(false);
 
 	onMount(() => {
 		void refresh();
+		return controller.onCapabilities((ids) => {
+			cameraAccessAvailable = ids.includes(cameraAccessCapability);
+		});
 	});
 
 	async function refresh(): Promise<void> {
@@ -304,6 +312,16 @@
 						<td class="px-3 py-3 text-text-muted">{formatTimestamp(credential.expiresAtMs)}</td>
 						<td class="px-5 py-3">
 							<div class="flex justify-end gap-1">
+								{#if cameraAccessAvailable && credential.role === 'user'}
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										onclick={() => (editingCameraAccess = credential)}
+										disabled={busyId === credential.id || credential.revokedAtMs !== null}
+										aria-label={`User access for ${credential.name}`}
+										title="User access"><UserRoundIcon class="size-3.5" /></Button
+									>
+								{/if}
 								<Button
 									variant="ghost"
 									size="icon-sm"
@@ -405,4 +423,13 @@
 
 {#if error}
 	<p class="border-t border-hairline px-5 py-3 text-xs text-destructive" role="alert">{error}</p>
+{/if}
+
+{#if editingCameraAccess}
+	<CameraAccessDialog
+		credential={editingCameraAccess}
+		{controller}
+		onclose={() => (editingCameraAccess = null)}
+		onsaved={() => void refresh()}
+	/>
 {/if}

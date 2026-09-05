@@ -17,6 +17,7 @@ export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
 	optimizeDeps: {
 		include: [
+			'bits-ui',
 			'@lucide/svelte/icons/activity',
 			'@lucide/svelte/icons/arrow-up',
 			'@lucide/svelte/icons/audio-lines',

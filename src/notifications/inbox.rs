@@ -100,10 +100,24 @@ enum ReceiptUpdate {
 }
 
 impl Store {
+    #[cfg(test)]
     pub(super) fn inbox(&self, principal_id: &str, limit: usize) -> anyhow::Result<Inbox> {
+        self.inbox_with_access(
+            principal_id,
+            limit,
+            &crate::access::CameraAccess::unrestricted(),
+        )
+    }
+
+    pub(super) fn inbox_with_access(
+        &self,
+        principal_id: &str,
+        limit: usize,
+        access: &crate::access::CameraAccess,
+    ) -> anyhow::Result<Inbox> {
         let (records, unread_count) = {
             let state = self.lock_state();
-            let records = Self::notification_records(&state, principal_id, limit, false);
+            let records = Self::notification_records(&state, principal_id, limit, false, access);
             let unread_count = state
                 .receipts
                 .iter()
@@ -111,10 +125,9 @@ impl Store {
                     receipt_principal == principal_id
                         && receipt.seen_at_ms.is_none()
                         && receipt.cleared_at_ms.is_none()
-                        && state
-                            .logical
-                            .get(logical_id)
-                            .is_some_and(|logical| logical.owner_id == principal_id)
+                        && state.logical.get(logical_id).is_some_and(|logical| {
+                            logical.owner_id == principal_id && access.allows(&logical.source_id)
+                        })
                 })
                 .count();
             (records, unread_count)
@@ -126,14 +139,28 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn history(
         &self,
         principal_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<HistoryGroup>> {
+        self.history_with_access(
+            principal_id,
+            limit,
+            &crate::access::CameraAccess::unrestricted(),
+        )
+    }
+
+    pub(super) fn history_with_access(
+        &self,
+        principal_id: &str,
+        limit: usize,
+        access: &crate::access::CameraAccess,
+    ) -> anyhow::Result<Vec<HistoryGroup>> {
         let snapshots = {
             let state = self.lock_state();
-            let records = Self::notification_records(&state, principal_id, limit, true);
+            let records = Self::notification_records(&state, principal_id, limit, true, access);
             let logical_ids = records
                 .iter()
                 .map(|record| record.logical.id.clone())
@@ -289,6 +316,7 @@ impl Store {
         principal_id: &str,
         limit: usize,
         include_cleared: bool,
+        access: &crate::access::CameraAccess,
     ) -> Vec<InboxRecord> {
         let limit = limit.clamp(1, MAX_PAGE_ITEMS);
         let mut records = state
@@ -301,9 +329,11 @@ impl Store {
                     return None;
                 }
                 let logical = state.logical.get(logical_id)?;
-                (logical.owner_id == principal_id).then(|| InboxRecord {
-                    logical: logical.clone(),
-                    receipt: receipt.clone(),
+                (logical.owner_id == principal_id && access.allows(&logical.source_id)).then(|| {
+                    InboxRecord {
+                        logical: logical.clone(),
+                        receipt: receipt.clone(),
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -512,6 +542,39 @@ mod tests {
             occurred_at_ms: updated_at_ms,
             next_eligible_at_ms: None,
         });
+    }
+
+    #[test]
+    fn camera_access_filters_receipts_before_pagination_and_counts() {
+        let directory = test_dir("notification-camera-access");
+        let store = Store::open(&directory.join("config.toml")).unwrap();
+        seed_notification(&store, "allowed", "rule-1", 1_000);
+        seed_notification(&store, "hidden", "rule-2", 2_000);
+        store
+            .lock_state()
+            .logical
+            .get_mut("hidden")
+            .unwrap()
+            .source_id = "back-door".to_owned();
+        let access = crate::access::CameraAccess {
+            all_cameras: false,
+            group_ids: Vec::new(),
+            camera_ids: vec!["front-door".to_owned()],
+        };
+        let inbox = store.inbox_with_access("owner-1", 1, &access).unwrap();
+        assert_eq!(inbox.unread_count, 1);
+        assert_eq!(inbox.items.len(), 1);
+        assert_eq!(inbox.items[0].logical_id, "allowed");
+        let history = store.history_with_access("owner-1", 1, &access).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].notification.logical_id, "allowed");
+        let none = store
+            .inbox_with_access("owner-1", 100, &crate::access::CameraAccess::default())
+            .unwrap();
+        assert!(none.items.is_empty());
+        assert_eq!(none.unread_count, 0);
+        assert_eq!(store.inbox("owner-1", 100).unwrap().unread_count, 2);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

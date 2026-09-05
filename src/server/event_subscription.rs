@@ -3,6 +3,7 @@ use super::{
     proto_camera_source_session, validate_client_id,
 };
 use crate::{
+    access::CameraAccess,
     api::proto,
     webrtc::{DataChannelTarget, EventDeliveryGuard, SessionId},
 };
@@ -42,6 +43,7 @@ pub(super) struct MetricsSnapshot {
 #[derive(Clone, Debug)]
 struct Subscription {
     source_ids: HashSet<String>,
+    allowed_source_ids: Option<HashSet<String>>,
     event_types: HashSet<String>,
     media_kinds: HashSet<proto::MediaKind>,
     attachment_routes: Vec<proto::EventAttachmentRoute>,
@@ -62,22 +64,31 @@ impl Registry {
         session_id: SessionId,
         request: proto::SubscribeEvents,
     ) -> Result<proto::SubscriptionResult, ControlCommandError> {
-        let result = self.subscribe_with_clock(state, session_id, request, super::unix_time_ms);
+        let result = super::camera_access::for_session(state, session_id).and_then(|policy| {
+            self.subscribe_scoped_with_clock(
+                state,
+                session_id,
+                request,
+                &policy,
+                super::unix_time_ms,
+            )
+        });
         if result.is_err() {
             self.rejections.fetch_add(1, Ordering::Relaxed);
         }
         result
     }
 
-    fn subscribe_with_clock(
+    fn subscribe_scoped_with_clock(
         &self,
         state: &ServerState,
         session_id: SessionId,
         request: proto::SubscribeEvents,
+        policy: &CameraAccess,
         clock: impl FnOnce() -> u64,
     ) -> Result<proto::SubscriptionResult, ControlCommandError> {
         validate_client_id(&request.subscription_id, "event subscription ID")?;
-        let subscription = validate_subscription(state, &request)?;
+        let subscription = scoped_subscription(state, &request, policy)?;
         let key = (session_id, request.subscription_id.clone());
         let mut subscriptions = self
             .inner
@@ -185,8 +196,12 @@ impl Registry {
         let mut deliveries = subscriptions
             .iter()
             .filter(|(_, subscription)| {
-                (subscription.source_ids.is_empty()
-                    || subscription.source_ids.contains(&event.source_id))
+                subscription
+                    .allowed_source_ids
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(&event.source_id))
+                    && (subscription.source_ids.is_empty()
+                        || subscription.source_ids.contains(&event.source_id))
                     && (subscription.event_types.is_empty()
                         || subscription.event_types.contains(&event.event_type))
                     && (subscription.media_kinds.is_empty()
@@ -267,9 +282,38 @@ impl Registry {
     }
 
     #[cfg(test)]
+    fn subscribe_with_clock(
+        &self,
+        state: &ServerState,
+        session_id: SessionId,
+        request: proto::SubscribeEvents,
+        clock: impl FnOnce() -> u64,
+    ) -> Result<proto::SubscriptionResult, ControlCommandError> {
+        self.subscribe_scoped_with_clock(
+            state,
+            session_id,
+            request,
+            &CameraAccess::unrestricted(),
+            clock,
+        )
+    }
+
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.inner.lock().unwrap().len()
     }
+}
+
+fn scoped_subscription(
+    state: &ServerState,
+    request: &proto::SubscribeEvents,
+    policy: &CameraAccess,
+) -> Result<Subscription, ControlCommandError> {
+    super::camera_access::require_cameras(policy, &request.source_ids)?;
+    let mut subscription = validate_subscription(state, request)?;
+    subscription.allowed_source_ids =
+        (!policy.all_cameras).then(|| policy.camera_ids.iter().cloned().collect());
+    Ok(subscription)
 }
 
 fn validate_subscription(
@@ -363,6 +407,7 @@ fn validate_subscription(
     }
     Ok(Subscription {
         source_ids,
+        allowed_source_ids: None,
         event_types,
         media_kinds,
         attachment_routes: request.attachment_routes.clone(),
@@ -605,6 +650,7 @@ mod tests {
                 (SessionId::from_u64(8), "all".to_owned()),
                 Subscription {
                     source_ids: HashSet::new(),
+                    allowed_source_ids: None,
                     event_types: HashSet::new(),
                     media_kinds: HashSet::new(),
                     attachment_routes: Vec::new(),
@@ -615,6 +661,7 @@ mod tests {
                 (SessionId::from_u64(7), "person".to_owned()),
                 Subscription {
                     source_ids: HashSet::from(["front-door".to_owned()]),
+                    allowed_source_ids: None,
                     event_types: HashSet::from(["person".to_owned()]),
                     media_kinds: HashSet::from([proto::MediaKind::Video]),
                     attachment_routes: vec![proto::EventAttachmentRoute {
@@ -629,6 +676,7 @@ mod tests {
                 (SessionId::from_u64(9), "vehicle".to_owned()),
                 Subscription {
                     source_ids: HashSet::new(),
+                    allowed_source_ids: None,
                     event_types: HashSet::from(["vehicle".to_owned()]),
                     media_kinds: HashSet::new(),
                     attachment_routes: Vec::new(),

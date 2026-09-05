@@ -346,7 +346,19 @@ export class LivePeer {
 		replacement = false
 	): Promise<void> {
 		const sourceSessionId = this.#sourceSessionByCamera[cameraId];
-		if (!sourceSessionId) throw new Error(`Camera ${cameraId} has no live source session.`);
+		if (!sourceSessionId) {
+			if (this.#capabilities?.cameras.some((camera) => camera.sourceId === cameraId)) {
+				throw new Error(`Camera ${cameraId} has no live source session.`);
+			}
+			this.replaceTrack(cameraId, {
+				status: 'unavailable',
+				subscribed: false,
+				stream: null,
+				receiver: null,
+				pendingStream: null
+			});
+			return;
+		}
 		if (!replacement) this.replaceTrack(cameraId, { status: 'connecting' });
 		const subscribe = create(SubscribeMediaSchema, {
 			subscriptionId,

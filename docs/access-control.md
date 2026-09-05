@@ -89,8 +89,64 @@ group/publication operations, and maintain personal notification/review state. U
 camera or server configuration, identities, retention, archives, security, logs, or diagnostics.
 
 KeepPeek checks the role in one server command policy before dispatch. Hidden UI controls are only a
-usability measure and never replace server authorization. Custom roles and per-camera permissions
-are not implemented.
+usability measure and never replace server authorization. Custom roles are not implemented.
+
+## Camera and dashboard access
+
+Administrators manage **User access** from the person icon beside a User credential. Every new User
+defaults to **Everything**, including current and future camera groups and cameras. To restrict a
+user, choose **Selected groups and cameras** and select either or both lists. A camera is allowed
+when it belongs to a selected group or its ID is explicitly selected. There are no per-camera user
+lists. Existing explicit restrictions are preserved; an absent policy is unrestricted.
+Administrator and trusted-local access are unchanged.
+
+The policy is stored inside that credential's record in the existing `config.toml`:
+
+```toml
+[access_credentials.credentials.camera_access]
+all_cameras = false
+group_ids = ["outdoor"]
+camera_ids = ["192.0.2.10", "192.0.2.11"]
+```
+
+This nested table belongs immediately after the relevant `[[access_credentials.credentials]]`
+record, not in a new settings file. Camera IDs must match server-advertised identities, not display
+names. Group IDs are camera configuration namespaces: `[outdoor.front_door]` belongs to `outdoor`.
+These are not dashboard names or live-sharing rooms. Each list permits at most 128 unique IDs of
+at most 256 UTF-8 bytes each. With `all_cameras = false`, both lists empty grants nothing.
+`all_cameras = true` requires both lists empty. Omitted `group_ids` means no group grants.
+
+A camera grant covers its advertised live variants, stored recordings, event metadata and images,
+notification inbox/history, recording coverage, and User-level camera controls. It does not grant
+Administrator operations such as export, retention, or configuration changes. Direct protocol
+requests enforce the same rules as the UI. Broad metadata and timeline queries intersect the
+camera grants; broad text/semantic queries from restricted Users require an explicit allowed source.
+
+Dashboard audiences are independent. Administrators decide who can see each saved dashboard;
+Users may select visible dashboards but cannot edit or share them. Returned dashboard tiles omit
+unauthorized camera IDs without changing the saved layout. Sharing a dashboard never grants camera
+access. A dashboard with no permitted cameras can therefore be visible but empty.
+
+Camera permission saves require the current credential revision, increment it atomically, and
+invalidate that credential's existing sessions and queued work. The User signs in again with the
+same key. Failed or stale saves preserve the editor draft. Changes to one User's access do not
+restart camera ingest or recording. Dashboard selections are also revision-checked and cannot select
+a dashboard outside the caller's current audience.
+Runtime camera group changes also close sessions whose group grants are affected, including
+playback-only and event-only sessions. Their queued events, searches, and playback work are canceled.
+The editor's discovered group inventory uses the same 128-ID/256-byte limits; inventory validation
+fails before a permission write can change policy, revision, or sessions.
+
+The capability is `keeppeek.camera-access.v1`. Administrator clients use the existing StateStore
+envelope with namespace `keeppeek.camera-access`, key equal to the canonical credential UUID,
+schema `keeppeek.camera-access.v1`, and an `all_cameras`/`group_ids`/`camera_ids` object. Get and Put
+are supported; Put requires `expected_revision`, rejects TTLs and unknown cameras or groups, and
+returns typed revision conflicts. Responses also contain bounded `available_group_ids` for the
+editor; that discovery field is neither saved in the user policy nor accepted in Put. No protected
+protobuf files or new persistence files are needed.
+
+For restricted users on a LAN or VPN, remove their network from `access.local_networks`. A client
+still classified as trusted-local remains an Administrator, regardless of a supplied User key.
 
 ## Credentials
 
@@ -128,8 +184,9 @@ cursors, and queued transfers.
 The bounded access audit records authentication outcomes, credential changes, session lifecycle,
 denied commands, and classification failures. Records include non-secret principal, role, action,
 target, result, classification reason, and UTC timestamp. They exclude raw keys, verifiers,
-Authorization fields, cookies, SDP, logs, and media. New records are visible immediately and flush
-atomically to `config.toml` within one second and during graceful shutdown. On upgrade, a legacy
+Authorization fields, cookies, SDP, logs, and media. Audit history, sessions, and credential
+last-use activity stay in memory and reset on restart. Credential identities, verifiers, roles,
+revisions, and lifecycle metadata persist atomically in `config.toml`. On upgrade, a legacy
 `access.toml` is imported once and removed after the consolidated file is written successfully.
 
 `/metrics` exposes fixed label-free access counters and gauges for authentication, authorization,

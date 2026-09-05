@@ -82,7 +82,9 @@ use std::{
 use url::Url;
 use uuid::Uuid;
 
+mod camera_access;
 mod camera_discovery;
+mod camera_permissions;
 mod configuration;
 mod event_publication;
 mod event_search;
@@ -379,7 +381,10 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
                 Some(proto::state_store_command::Action::Watch(request)) => &request.namespace,
                 Some(proto::state_store_command::Action::Unwatch(_)) | None => "",
             };
-            if namespace == "keeppeek.integrations.mqtt" {
+            if matches!(
+                namespace,
+                "keeppeek.integrations.mqtt" | camera_permissions::NAMESPACE
+            ) {
                 AccessRole::Administrator
             } else {
                 AccessRole::User
@@ -474,6 +479,7 @@ fn sensitive_administrator_operation(
             Some(proto::state_store_command::Action::Put(request)) => {
                 match request.namespace.as_str() {
                     "keeppeek.integrations.mqtt" => Some("mqtt_configuration_update"),
+                    camera_permissions::NAMESPACE => Some("camera_access_update"),
                     peek_layouts::NAMESPACE => Some("peek_layout_registry_update"),
                     _ => None,
                 }
@@ -542,13 +548,9 @@ impl ControlRequestHandler for ServerControlHandler {
         session_id: SessionId,
         request: &proto::Request,
     ) -> Result<(), ControlHandlerError> {
-        self.authorize_api_session(
-            session_id,
-            required_access_role(request.command.as_ref()),
-            access_operation(request.command.as_ref()),
-        )
-        .map(|_| ())
-        .map_err(|(error, _)| ControlHandlerError::new(error.code, error.message))
+        self.authorize_request(session_id, request)
+            .map(|_| ())
+            .map_err(|(error, _)| ControlHandlerError::new(error.code, error.message))
     }
 
     fn handle_data_for_session(
@@ -601,10 +603,8 @@ impl ControlRequestHandler for ServerControlHandler {
         let mut after_send: Option<PostSendAction> = None;
         let mut data_messages = Vec::new();
         let mut notifications = Vec::new();
-        let required_role = required_access_role(request.command.as_ref());
-        let operation = access_operation(request.command.as_ref());
         let sensitive_operation = sensitive_administrator_operation(request.command.as_ref());
-        let result = match self.authorize_api_session(session_id, required_role, operation) {
+        let result = match self.authorize_request(session_id, &request) {
             Err((error, close_session)) => {
                 if close_session {
                     let webrtc = self.state.webrtc.clone();
@@ -640,6 +640,8 @@ impl ControlRequestHandler for ServerControlHandler {
                     Some(control_request::Command::StateStoreCommand(command)) => {
                         if peek_layouts::handles(&command) {
                             peek_layouts::dispatch(&self.state, &principal, command).map(Some)
+                        } else if camera_permissions::handles(&command) {
+                            camera_permissions::dispatch(self, &principal, command).map(Some)
                         } else {
                             mqtt_integration::dispatch(&self.state, command).map(Some)
                         }
@@ -761,57 +763,12 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 
     fn session_closed(&self, session_id: SessionId) {
-        let closed_session = self
-            .state
-            .api_session_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session_id);
-        if let Some(session) = closed_session {
-            record_access_audit(
-                &self.state,
-                i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
-                Some(&session.principal.id()),
-                Some(session.principal.role),
-                "session_closed",
-                Some(&session_id.to_string()),
-                "success",
-                session.classification.reason,
-            );
-        }
-        event_search::close_session(&self.state, session_id);
-        self.state.event_publications.close_session(session_id);
-        self.state.event_subscriptions.close_session(session_id);
-        self.state.camera_discovery_tasks.close_session(session_id);
-        stored_media::close_session(&self.state, session_id);
-        let source_ids = {
-            let mut owners = self
-                .state
-                .ptz_owners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let source_ids = owners
-                .iter()
-                .filter_map(|(source_id, owner)| {
-                    (*owner == session_id).then_some(source_id.clone())
-                })
-                .collect::<Vec<_>>();
-            owners.retain(|_, owner| *owner != session_id);
-            source_ids
-        };
-        for source_id in source_ids {
-            if let Some(camera) = self.state.camera(&source_id)
-                && let Some(control) = camera.control
-                && let Err(error) = reolink_ptz(&control, PtzOp::Stop, PTZ_STOP_SPEED)
-            {
-                tracing::warn!(%source_id, %error, "unable to stop session-owned PTZ movement");
-            }
-        }
+        close_api_session(&self.state, session_id);
     }
 
     fn initial_capabilities(&self, session_id: SessionId) -> Option<proto::ServerCapabilities> {
         let self_source_session_id = format!("webrtc-client-{session_id}");
-        let camera_entries = self.state.camera_entries();
+        let camera_entries = camera_access::visible_cameras(self, session_id)?;
         let camera_info = camera_entries
             .iter()
             .map(|camera| self.state.camera_info(camera))
@@ -860,6 +817,7 @@ impl ControlRequestHandler for ServerControlHandler {
             capability_ids.push("keeppeek.backup.v1".to_owned());
         }
         capability_ids.push("keeppeek.identity.v1".to_owned());
+        capability_ids.push(camera_permissions::CAPABILITY_ID.to_owned());
         let access_session = if session_id.as_u64() == 0 {
             Some(proto::AccessSession {
                 session_id: "0".to_owned(),
@@ -1214,6 +1172,37 @@ fn proto_camera_info(camera: &CameraInfo, control_available: bool) -> proto::Cam
 impl ServerControlHandler {
     const fn new(state: ServerState, router_tx: FacadeSender<RouterMessage>) -> Self {
         Self { state, router_tx }
+    }
+
+    fn authorize_request(
+        &self,
+        session_id: SessionId,
+        request: &proto::Request,
+    ) -> Result<ApiPrincipal, (ControlCommandError, bool)> {
+        let operation = access_operation(request.command.as_ref());
+        let principal = self.authorize_api_session(
+            session_id,
+            required_access_role(request.command.as_ref()),
+            operation,
+        )?;
+        camera_access::authorize_command(&self.state, &principal, request).map_err(|error| {
+            self.state
+                .access_metrics
+                .authorization_denials
+                .fetch_add(1, Ordering::Relaxed);
+            record_access_audit(
+                &self.state,
+                i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+                Some(&principal.id()),
+                Some(principal.role),
+                "command_denied",
+                Some(operation),
+                "camera_access_denied",
+                self.session_classification(session_id),
+            );
+            (error, false)
+        })?;
+        Ok(principal)
     }
 
     fn authorize_api_session(
@@ -1741,13 +1730,21 @@ impl ServerControlHandler {
             }
             Some(notification_rule_command::Action::GetInbox(request)) => {
                 let inbox = notifications
-                    .inbox(principal_id, notification_page_limit(request.limit))
+                    .inbox(
+                        principal_id,
+                        notification_page_limit(request.limit),
+                        camera_access::for_session(&self.state, session_id)?,
+                    )
                     .map_err(|error| notification_command_error("load inbox", error, false))?;
                 notification_rule_result::Result::Inbox(proto_notification_inbox(inbox))
             }
             Some(notification_rule_command::Action::GetHistory(request)) => {
                 let groups = notifications
-                    .history(principal_id, notification_page_limit(request.limit))
+                    .history(
+                        principal_id,
+                        notification_page_limit(request.limit),
+                        camera_access::for_session(&self.state, session_id)?,
+                    )
                     .map_err(|error| notification_command_error("load history", error, false))?;
                 notification_rule_result::Result::History(proto::NotificationHistory {
                     groups: groups
@@ -5425,6 +5422,7 @@ fn start_event_search_query(
     state: &ServerState,
     session_id: SessionId,
     request: proto::QueryEvents,
+    access: crate::access::CameraAccess,
 ) -> Result<proto::EventSearchDelivery, ControlCommandError> {
     validate_client_id(&request.query_id, "event search query ID")?;
     let (_, channel) = data_channel_target(request.channel)?;
@@ -5449,7 +5447,8 @@ fn start_event_search_query(
     let spawn = std::thread::Builder::new()
         .name("event-search-query".to_owned())
         .spawn(move || {
-            let result = query_events(&worker_state, request).map(|(_, messages)| messages);
+            let result =
+                query_events(&worker_state, request, &access).map(|(_, messages)| messages);
             deliver_event_search_task(
                 &worker_state,
                 session_id,
@@ -5737,7 +5736,9 @@ fn set_event_search_embedding(
 fn query_events(
     state: &ServerState,
     request: proto::QueryEvents,
+    access: &crate::access::CameraAccess,
 ) -> Result<(proto::EventSearchDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
+    camera_access::authorize_event_query(access, &request)?;
     validate_client_id(&request.query_id, "event search query ID")?;
     let (target, channel) = data_channel_target(request.channel)?;
     if target != DataChannelTarget::Reliable {
@@ -5809,8 +5810,7 @@ fn query_events(
                 ));
             }
             let source_ids = if metadata.source_ids.is_empty() {
-                state
-                    .camera_entries()
+                camera_access::query_cameras(state, access, &[])?
                     .into_iter()
                     .filter(|camera| {
                         camera
@@ -6988,6 +6988,7 @@ fn indexed_video_config_error(error: impl std::fmt::Display) -> ControlCommandEr
 fn query_stored_media_timeline(
     state: &ServerState,
     query: proto::QueryStoredMediaTimeline,
+    access: &crate::access::CameraAccess,
 ) -> Result<(proto::StoredMediaQueryDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
     validate_client_id(&query.query_id, "stored media query ID")?;
     if !query.payload_types.is_empty() {
@@ -7016,7 +7017,7 @@ fn query_stored_media_timeline(
         ));
     };
 
-    let mut cameras = state.camera_entries();
+    let mut cameras = camera_access::query_cameras(state, access, &query.source_ids)?;
     if !query.source_ids.is_empty() {
         let requested = query.source_ids.into_iter().collect::<HashSet<_>>();
         if requested.len() > cameras.len()
@@ -8726,6 +8727,7 @@ impl ServerState {
             .cameras
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let changed_groups;
         if let Some(existing) = cameras
             .iter_mut()
             .find(|camera| camera.info.id == entry.info.id)
@@ -8733,11 +8735,26 @@ impl ServerState {
             if entry.groups.is_empty() {
                 entry.groups.clone_from(&existing.groups);
             }
+            changed_groups = if entry.groups == existing.groups {
+                Vec::new()
+            } else {
+                entry
+                    .groups
+                    .iter()
+                    .chain(&existing.groups)
+                    .cloned()
+                    .collect()
+            };
             *existing = entry;
         } else {
+            changed_groups = entry.groups.clone();
             cameras.push(entry);
         }
         cameras.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
+        drop(cameras);
+        if !changed_groups.is_empty() {
+            camera_access::invalidate_group_sessions(self, &changed_groups);
+        }
     }
 
     fn camera_info(&self, camera: &CameraEntry) -> CameraInfo {
@@ -8969,6 +8986,51 @@ fn access_command_error(operation: &str, error: anyhow::Error) -> ControlCommand
         409,
         format!("unable to {operation}: {error}"),
     )
+}
+
+fn close_api_session(state: &ServerState, session_id: SessionId) {
+    let closed_session = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&session_id);
+    if let Some(session) = closed_session {
+        record_access_audit(
+            state,
+            i64::try_from(unix_time_ms()).unwrap_or(i64::MAX),
+            Some(&session.principal.id()),
+            Some(session.principal.role),
+            "session_closed",
+            Some(&session_id.to_string()),
+            "success",
+            session.classification.reason,
+        );
+    }
+    event_search::close_session(state, session_id);
+    state.event_publications.close_session(session_id);
+    state.event_subscriptions.close_session(session_id);
+    state.camera_discovery_tasks.close_session(session_id);
+    stored_media::close_session(state, session_id);
+    let source_ids = {
+        let mut owners = state
+            .ptz_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let source_ids = owners
+            .iter()
+            .filter_map(|(source_id, owner)| (*owner == session_id).then_some(source_id.clone()))
+            .collect::<Vec<_>>();
+        owners.retain(|_, owner| *owner != session_id);
+        source_ids
+    };
+    for source_id in source_ids {
+        if let Some(camera) = state.camera(&source_id)
+            && let Some(control) = camera.control
+            && let Err(error) = reolink_ptz(&control, PtzOp::Stop, PTZ_STOP_SPEED)
+        {
+            tracing::warn!(%source_id, %error, "unable to stop session-owned PTZ movement");
+        }
+    }
 }
 
 fn close_api_sessions_action(webrtc: WebRtc, sessions: Vec<SessionId>) -> PostSendAction {
@@ -9704,8 +9766,8 @@ fn handle_request(
             })
         },
         (GET) (/recording-coverage) => {
-            authenticated_api_request(request, state, false, AccessRole::User, |_| {
-                recording_coverage::get(request, router_tx, state)
+            authenticated_api_request(request, state, false, AccessRole::User, |identity| {
+                recording_coverage::get(request, router_tx, state, &identity.principal)
             })
         },
         (GET) (/config/export) => {
@@ -12258,6 +12320,7 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "discovered camera endpoints could not be persisted");
         return None;
     }
+    let groups = runtime_camera_groups(config_path, camera.config.ip)?;
     let runtime_result = if restart {
         runtime.restart_camera(camera.clone())
     } else {
@@ -12267,8 +12330,35 @@ fn start_runtime_camera(
         tracing::warn!(ip = %config.ip, %error, "camera configuration could not be applied live");
         return None;
     }
-    state.upsert_camera(camera_entry(&camera.config, Some(&camera)));
+    let mut entry = camera_entry(&camera.config, Some(&camera));
+    entry.groups = groups;
+    state.upsert_camera(entry);
     Some(camera.config)
+}
+
+fn runtime_camera_groups(config_path: &Path, camera_ip: IpAddr) -> Option<Vec<String>> {
+    let configured = match config::load_cameras(config_path) {
+        Ok(configured) => configured,
+        Err(_) => {
+            tracing::warn!("camera group membership could not be loaded for a live start");
+            return None;
+        }
+    };
+    let mut groups = configured
+        .into_iter()
+        .filter_map(|(group, cameras)| {
+            cameras
+                .iter()
+                .any(|camera| camera.ip == camera_ip)
+                .then_some(group)
+        })
+        .collect::<Vec<_>>();
+    if groups.is_empty() {
+        tracing::warn!("camera configuration has no group membership for a live start");
+        return None;
+    }
+    groups.sort_unstable();
+    Some(groups)
 }
 
 fn delete_camera_settings(
@@ -13109,6 +13199,39 @@ mod tests {
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             ClientClassificationReason::DirectLocal,
         )
+    }
+
+    fn restricted_test_user(state: &ServerState) -> IssuedCredential {
+        let mut issued = state
+            .access_manager
+            .create_credential("Restricted viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        issued.metadata = state
+            .access_manager
+            .set_camera_access(
+                issued.metadata.id,
+                issued.metadata.revision,
+                crate::access::CameraAccess::default(),
+            )
+            .unwrap();
+        issued
+    }
+
+    fn bind_credential_test_session(state: &ServerState, session_id: SessionId, key: AccessKey) {
+        let address = "203.0.113.7".parse().unwrap();
+        let authorization = format!("Bearer {}", key.canonical());
+        let authenticated = state
+            .access_manager
+            .authenticate(address, &[&authorization], 2_000, Instant::now())
+            .unwrap();
+        state.api_session_owners.lock().unwrap().insert(
+            session_id,
+            test_session_record(
+                ApiPrincipal::credential(authenticated),
+                address,
+                ClientClassificationReason::DirectRemote,
+            ),
+        );
     }
 
     fn bearer_header() -> (String, String) {
@@ -14269,7 +14392,7 @@ mod tests {
         ]);
         let handler = test_control_handler(state.clone());
         let capabilities = handler
-            .initial_capabilities(SessionId::from_u64(40))
+            .initial_capabilities(SessionId::from_u64(41))
             .unwrap();
         let ptz = capabilities.cameras[0].ptz.as_ref().unwrap();
         assert!(ptz.supported);
@@ -14445,7 +14568,8 @@ mod tests {
                 "keeppeek.event-search",
                 "keeppeek.event-publication.v1",
                 "stored-media-keyframe-preview.v1",
-                "keeppeek.identity.v1"
+                "keeppeek.identity.v1",
+                "keeppeek.camera-access.v1"
             ]
         );
         assert_eq!(
@@ -14798,6 +14922,610 @@ mod tests {
     }
 
     #[test]
+    fn camera_access_does_not_advertise_capabilities_for_unknown_sessions() {
+        let handler = test_control_handler(media_test_state());
+        assert!(
+            handler
+                .initial_capabilities(SessionId::from_u64(999))
+                .is_none()
+        );
+        assert!(
+            !handler
+                .initial_capabilities(SessionId::from_u64(0))
+                .unwrap()
+                .cameras
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn camera_access_filters_capabilities_and_guards_direct_subscriptions() {
+        let state = media_test_state();
+        state.webrtc.live().publish(
+            crate::webrtc::Source {
+                camera_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                stream: StreamKind::Sub,
+            },
+            crate::storage::VideoCodec::H264,
+            true,
+            Instant::now(),
+            None,
+            bytes::Bytes::from_static(&[0, 0, 0, 1]),
+        );
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(707);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let handler = test_control_handler(state.clone());
+        let request = proto::Request {
+            request_id: 1,
+            command: Some(control_request::Command::SubscribeMedia(media_request(
+                proto::MediaKind::Video,
+                proto::DeliveryTransport::Rtp,
+                proto::VideoQuality::Auto,
+                "",
+            ))),
+        };
+        let capabilities = handler.initial_capabilities(session_id).unwrap();
+        assert!(capabilities.cameras.is_empty());
+        assert!(capabilities.stored_media_sources.is_empty());
+        assert!(
+            capabilities
+                .source_sessions
+                .iter()
+                .all(|source| source.source_id.is_empty())
+        );
+        assert!(
+            handler
+                .authorize_session_command(session_id, &request)
+                .is_err()
+        );
+        state
+            .access_manager
+            .set_camera_access(
+                issued.metadata.id,
+                issued.metadata.revision,
+                crate::access::CameraAccess {
+                    all_cameras: false,
+                    group_ids: Vec::new(),
+                    camera_ids: vec!["127.0.0.1".to_owned()],
+                },
+            )
+            .unwrap();
+        assert!(
+            handler
+                .authorize_session_command(session_id, &request)
+                .is_err()
+        );
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        assert_eq!(
+            handler
+                .initial_capabilities(session_id)
+                .unwrap()
+                .cameras
+                .len(),
+            1
+        );
+        handler
+            .authorize_session_command(session_id, &request)
+            .unwrap();
+    }
+
+    #[test]
+    fn camera_access_state_store_is_admin_only_and_revokes_sessions() {
+        use prost_types::{ListValue, Struct, Value, value::Kind};
+        let state = media_test_state();
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(712);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let request = proto::Request {
+            request_id: 1,
+            command: Some(control_request::Command::StateStoreCommand(
+                proto::StateStoreCommand {
+                    action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                        namespace: "keeppeek.camera-access".to_owned(),
+                        key: issued.metadata.id.to_string(),
+                        schema: "keeppeek.camera-access.v1".to_owned(),
+                        expected_revision: Some(issued.metadata.revision),
+                        value: Some(Struct {
+                            fields: [
+                                (
+                                    "all_cameras".to_owned(),
+                                    Value {
+                                        kind: Some(Kind::BoolValue(false)),
+                                    },
+                                ),
+                                (
+                                    "camera_ids".to_owned(),
+                                    Value {
+                                        kind: Some(Kind::ListValue(ListValue {
+                                            values: vec![Value {
+                                                kind: Some(Kind::StringValue(
+                                                    "127.0.0.1".to_owned(),
+                                                )),
+                                            }],
+                                        })),
+                                    },
+                                ),
+                            ]
+                            .into_iter()
+                            .collect(),
+                        }),
+                        ..Default::default()
+                    })),
+                },
+            )),
+        };
+        let handler = test_control_handler(state.clone());
+        assert!(matches!(
+            handler
+                .handle_for_session(session_id, request.clone())
+                .response
+                .result,
+            Some(control_response::Result::Error(_))
+        ));
+        let saved = handler.handle_for_session(SessionId::from_u64(0), request.clone());
+        assert!(matches!(
+            saved.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        assert!(
+            !state
+                .api_session_owners
+                .lock()
+                .unwrap()
+                .contains_key(&session_id)
+        );
+        let updated = state
+            .access_manager
+            .list_credentials()
+            .into_iter()
+            .find(|credential| credential.id == issued.metadata.id)
+            .unwrap();
+        assert!(
+            state
+                .access_manager
+                .camera_access(updated.id, updated.revision, 2_000)
+                .unwrap()
+                .allows("127.0.0.1")
+        );
+        let stale = handler.handle_for_session(SessionId::from_u64(0), request);
+        let Some(control_response::Result::Error(error)) = stale.response.result else {
+            panic!("stale permission writes must fail");
+        };
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, proto::StateStoreErrorCode::Conflict as i32);
+        assert_eq!(detail.current_revision, Some(updated.revision));
+    }
+
+    #[test]
+    fn camera_access_inventory_failure_preserves_policy_and_sessions() {
+        let state = media_test_state();
+        state.cameras.write().unwrap()[0].groups =
+            (0..129).map(|index| format!("group-{index}")).collect();
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(719);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let before = state
+            .access_manager
+            .camera_access_settings(issued.metadata.id)
+            .unwrap();
+        let handler = test_control_handler(state.clone());
+        let response = handler.handle_for_session(
+            SessionId::from_u64(0),
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: "keeppeek.camera-access".to_owned(),
+                            key: issued.metadata.id.to_string(),
+                            schema: "keeppeek.camera-access.v1".to_owned(),
+                            expected_revision: Some(issued.metadata.revision),
+                            value: Some(prost_types::Struct {
+                                fields: [
+                                    (
+                                        "all_cameras".to_owned(),
+                                        prost_types::Value {
+                                            kind: Some(prost_types::value::Kind::BoolValue(true)),
+                                        },
+                                    ),
+                                    (
+                                        "camera_ids".to_owned(),
+                                        prost_types::Value {
+                                            kind: Some(prost_types::value::Kind::ListValue(
+                                                prost_types::ListValue::default(),
+                                            )),
+                                        },
+                                    ),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            }),
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            response.response.result,
+            Some(control_response::Result::Error(_))
+        ));
+        let after = state
+            .access_manager
+            .camera_access_settings(issued.metadata.id)
+            .unwrap();
+        assert_eq!(after.0, before.0);
+        assert_eq!(after.1.revision, before.1.revision);
+        assert!(
+            state
+                .api_session_owners
+                .lock()
+                .unwrap()
+                .contains_key(&session_id)
+        );
+    }
+
+    #[test]
+    fn camera_access_projects_grid_tiles_without_changing_saved_layouts() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-grid-access-{}", Uuid::new_v4()));
+        let config_path = directory.join("config.toml");
+        let state = media_test_state().with_camera_config_path(config_path.clone());
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(711);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let handler = test_control_handler(state);
+        let result = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Get(proto::GetState {
+                            namespace: peek_layouts::NAMESPACE.to_owned(),
+                            key: "registry".to_owned(),
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(proto::Ok {
+            result:
+                Some(control_ok::Result::StateStoreResult(proto::StateStoreResult {
+                    result: Some(proto::state_store_result::Result::Entry(entry)),
+                })),
+        })) = result.response.result
+        else {
+            panic!("grid access must return an entry");
+        };
+        let value = entry.value.as_ref().unwrap();
+        let serialized = format!("{value:?}");
+        assert!(
+            !serialized.contains("127.0.0.1"),
+            "grid must not reveal an unauthorized camera ID"
+        );
+        let selected = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 2,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: entry.namespace,
+                            key: entry.key,
+                            schema: entry.schema,
+                            value: entry.value,
+                            expected_revision: Some(entry.revision),
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            selected.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        let root = crate::config::load_configuration_table(&config_path).unwrap();
+        assert_eq!(
+            root["peek_layouts"]["shared_layouts"][0]["tiles"][0]["camera_id"].as_str(),
+            Some("127.0.0.1")
+        );
+        drop(handler);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_access_filters_recording_coverage_http() {
+        let state = media_test_state();
+        let issued = restricted_test_user(&state);
+        let (_router, router_tx) = crate::runtime::Router::new().unwrap();
+        let response = handle_request(
+            &Request::fake_https_from(
+                SocketAddr::from(([203, 0, 113, 7], 42000)),
+                "GET",
+                "/recording-coverage",
+                vec![(
+                    "Authorization".to_owned(),
+                    format!("Bearer {}", issued.access_key.canonical()),
+                )],
+                Vec::new(),
+            ),
+            &router_tx,
+            &state,
+        );
+        assert_eq!(response.status_code, 200);
+        let (reader, _) = response.data.into_reader_and_size();
+        let body: serde_json::Value = serde_json::from_reader(reader).unwrap();
+        assert!(body["cameras"].as_array().unwrap().is_empty());
+        assert!(body["findings"].as_array().unwrap().is_empty());
+        assert_eq!(body["totals"]["cameras"], 0);
+    }
+
+    #[test]
+    fn user_group_grants_combine_with_specific_camera_grants() {
+        let state = media_test_state();
+        {
+            let mut cameras = state.cameras.write().unwrap();
+            cameras[0].groups = vec!["outdoor".to_owned()];
+            let mut explicit = cameras[0].clone();
+            explicit.info.id = "127.0.0.2".to_owned();
+            explicit.groups = vec!["indoor".to_owned()];
+            let mut denied = explicit.clone();
+            denied.info.id = "127.0.0.3".to_owned();
+            cameras.extend([explicit, denied]);
+        }
+        let issued = state
+            .access_manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let policy = toml::from_str::<crate::access::CameraAccess>(
+            "all_cameras = false\ngroup_ids = ['outdoor']\ncamera_ids = ['127.0.0.2']\n",
+        )
+        .expect("a user policy must accept camera groups");
+        state
+            .access_manager
+            .set_camera_access(issued.metadata.id, issued.metadata.revision, policy)
+            .unwrap();
+        let session_id = SessionId::from_u64(715);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let resolved = camera_access::for_session(&state, session_id).unwrap();
+        assert!(resolved.allows("127.0.0.1"));
+        assert!(resolved.allows("127.0.0.2"));
+        assert!(!resolved.allows("127.0.0.3"));
+        let (saved, _) = state
+            .access_manager
+            .camera_access_settings(issued.metadata.id)
+            .unwrap();
+        let document = toml::Value::try_from(saved).unwrap();
+        assert_eq!(document["group_ids"][0].as_str(), Some("outdoor"));
+        assert_eq!(document["camera_ids"].as_array().unwrap().len(), 1);
+        state.cameras.write().unwrap()[0].groups = vec!["indoor".to_owned()];
+        let changed = camera_access::for_session(&state, session_id).unwrap();
+        assert!(!changed.allows("127.0.0.1"));
+        assert!(changed.allows("127.0.0.2"));
+    }
+
+    #[test]
+    fn camera_group_changes_cancel_existing_user_work() {
+        let state = media_test_state();
+        state.cameras.write().unwrap()[0].groups = vec!["outdoor".to_owned()];
+        let issued = restricted_test_user(&state);
+        state
+            .access_manager
+            .set_camera_access(
+                issued.metadata.id,
+                issued.metadata.revision,
+                crate::access::CameraAccess {
+                    all_cameras: false,
+                    group_ids: vec!["outdoor".to_owned()],
+                    camera_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+        let session_id = SessionId::from_u64(720);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        state
+            .event_subscriptions
+            .subscribe(
+                &state,
+                session_id,
+                proto::SubscribeEvents {
+                    subscription_id: "wildcard".to_owned(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let event = proto::Event {
+            source_id: "127.0.0.1".to_owned(),
+            ..Default::default()
+        };
+        let delivery = state.event_subscriptions.deliveries(&event).remove(0);
+        let pending_cursor = (session_id, "playback".to_owned());
+        state
+            .stored_media_cursor_reservations
+            .lock()
+            .unwrap()
+            .insert(pending_cursor.clone());
+        let mut camera = state.camera("127.0.0.1").unwrap();
+        camera.groups = vec!["indoor".to_owned()];
+        state.upsert_camera(camera);
+        assert!(camera_access::for_session(&state, session_id).is_err());
+        assert!(!delivery.guard.is_active());
+        assert!(state.event_subscriptions.deliveries(&event).is_empty());
+        assert!(
+            !state
+                .stored_media_cursor_reservations
+                .lock()
+                .unwrap()
+                .contains(&pending_cursor)
+        );
+    }
+
+    #[test]
+    fn camera_access_scopes_wildcard_camera_queries() {
+        let state = media_test_state();
+        let empty = crate::access::CameraAccess::default();
+        assert!(
+            camera_access::query_cameras(&state, &empty, &[])
+                .unwrap()
+                .is_empty()
+        );
+        let allowed = crate::access::CameraAccess {
+            all_cameras: false,
+            group_ids: Vec::new(),
+            camera_ids: vec!["127.0.0.1".to_owned()],
+        };
+        let selected = camera_access::query_cameras(&state, &allowed, &[]).unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].info.id, "127.0.0.1");
+        assert!(
+            camera_access::query_cameras(&state, &allowed, &["127.0.0.2".to_owned()],).is_err()
+        );
+        assert_eq!(state.camera_entries().len(), 1);
+    }
+
+    #[test]
+    fn camera_access_rejects_stored_media_and_camera_controls() {
+        let state = media_test_state();
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(708);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let commands = [
+            control_request::Command::CameraControlCommand(proto::CameraControlCommand {
+                action: Some(camera_control_command::Action::Ptz(proto::PtzCommand {
+                    source_id: "127.0.0.1".to_owned(),
+                    ..Default::default()
+                })),
+            }),
+            control_request::Command::StoredMediaCommand(proto::StoredMediaCommand {
+                action: Some(proto::stored_media_command::Action::Open(
+                    proto::OpenStoredMedia {
+                        source_id: "127.0.0.1".to_owned(),
+                        ..Default::default()
+                    },
+                )),
+            }),
+            control_request::Command::StoredMediaCommand(proto::StoredMediaCommand {
+                action: Some(proto::stored_media_command::Action::QueryTimeline(
+                    proto::QueryStoredMediaTimeline {
+                        source_ids: vec!["127.0.0.1".to_owned()],
+                        ..Default::default()
+                    },
+                )),
+            }),
+        ];
+        let handler = test_control_handler(state);
+        for command in commands {
+            let error = handler
+                .authorize_session_command(
+                    session_id,
+                    &proto::Request {
+                        request_id: 1,
+                        command: Some(command),
+                    },
+                )
+                .expect_err("an unassigned camera must be denied before device or storage access");
+            assert_eq!(error.code, proto::ErrorCode::Rejected);
+        }
+    }
+
+    #[test]
+    fn camera_access_rejects_event_media_and_unscoped_text_search() {
+        let state = media_test_state();
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(709);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let mut media = proto::FetchEventSearchMedia {
+            objects: vec![Default::default()],
+            ..Default::default()
+        };
+        media.objects[0].source_id = "127.0.0.1".to_owned();
+        let actions = [
+            event_search_command::Action::FetchMedia(media),
+            event_search_command::Action::Query(proto::QueryEvents {
+                search: Some(proto::query_events::Search::Text(Default::default())),
+                ..Default::default()
+            }),
+        ];
+        let handler = test_control_handler(state);
+        for action in actions {
+            let request = proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::EventSearchCommand(
+                    proto::EventSearchCommand {
+                        action: Some(action),
+                    },
+                )),
+            };
+            assert!(
+                handler
+                    .authorize_session_command(session_id, &request)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn camera_access_scopes_wildcard_event_subscriptions() {
+        let state = ServerState::empty();
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(710);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let request = proto::SubscribeEvents {
+            subscription_id: "events".to_owned(),
+            ..Default::default()
+        };
+        state
+            .event_subscriptions
+            .subscribe(&state, session_id, request.clone())
+            .unwrap();
+        let allowed_event = proto::Event {
+            source_id: "127.0.0.1".to_owned(),
+            ..Default::default()
+        };
+        assert!(
+            state
+                .event_subscriptions
+                .deliveries(&allowed_event)
+                .is_empty()
+        );
+        state
+            .access_manager
+            .set_camera_access(
+                issued.metadata.id,
+                issued.metadata.revision,
+                crate::access::CameraAccess {
+                    all_cameras: false,
+                    group_ids: Vec::new(),
+                    camera_ids: vec!["127.0.0.1".to_owned()],
+                },
+            )
+            .unwrap();
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        state
+            .event_subscriptions
+            .subscribe(&state, session_id, request)
+            .unwrap();
+        assert_eq!(
+            state.event_subscriptions.deliveries(&allowed_event).len(),
+            1
+        );
+        let denied_event = proto::Event {
+            source_id: "127.0.0.2".to_owned(),
+            ..Default::default()
+        };
+        assert!(
+            state
+                .event_subscriptions
+                .deliveries(&denied_event)
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn runtime_video_evidence_advertises_and_resolves_camera_media() {
         let state = media_test_state();
         for stream in [StreamKind::Main, StreamKind::Sub] {
@@ -14816,7 +15544,7 @@ mod tests {
         let handler = test_control_handler(state);
 
         let capabilities = handler
-            .initial_capabilities(SessionId::from_u64(23))
+            .initial_capabilities(SessionId::from_u64(0))
             .unwrap();
         let source = capabilities
             .source_sessions
@@ -14955,7 +15683,7 @@ mod tests {
         );
         let handler = test_control_handler(state);
         let source = handler
-            .initial_capabilities(SessionId::from_u64(7))
+            .initial_capabilities(SessionId::from_u64(0))
             .unwrap()
             .source_sessions
             .into_iter()
@@ -20604,7 +21332,7 @@ mod tests {
 
         let handler = ServerControlHandler::new(state, router_tx);
         let capabilities = handler
-            .initial_capabilities(SessionId::from_u64(31))
+            .initial_capabilities(SessionId::from_u64(0))
             .expect("server handler must provide initial capabilities");
         let camera = capabilities
             .cameras
@@ -20839,7 +21567,7 @@ mod tests {
         let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
         let handler = ServerControlHandler::new(state, router_tx);
         let capabilities = handler
-            .initial_capabilities(SessionId::from_u64(101))
+            .initial_capabilities(SessionId::from_u64(0))
             .expect("server handler must provide initial capabilities");
         let camera = capabilities
             .cameras
@@ -21361,6 +22089,7 @@ mod tests {
         let camera = state.camera("192.0.2.79").unwrap();
         assert_eq!(camera.recording_label, "front_gate");
         assert_eq!(camera.configuration.name.as_deref(), Some("front_gate"));
+        assert_eq!(camera.groups, ["cameras"]);
         assert_eq!(router_thread.join().unwrap(), 1);
 
         let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
@@ -21386,6 +22115,30 @@ mod tests {
             Some("Front Gate Updated")
         );
         assert_eq!(updated.camera.recording_mode, "main");
+
+        let issued = state
+            .access_manager
+            .create_credential("Group viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        state
+            .access_manager
+            .set_camera_access(
+                issued.metadata.id,
+                issued.metadata.revision,
+                crate::access::CameraAccess {
+                    all_cameras: false,
+                    group_ids: vec!["cameras".to_owned()],
+                    camera_ids: Vec::new(),
+                },
+            )
+            .unwrap();
+        let session_id = SessionId::from_u64(719);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        assert!(
+            camera_access::for_session(&state, session_id)
+                .unwrap()
+                .allows("192.0.2.79")
+        );
 
         shutdown.cancel();
         runtime_thread.join().unwrap();

@@ -8,6 +8,15 @@ export type AccessPermission = {
 
 export type AccessRole = 'administrator' | 'user';
 
+export type CameraAccessSettings = {
+	credentialId: string;
+	allCameras: boolean;
+	groupIds: string[];
+	cameraIds: string[];
+	availableGroupIds: string[];
+	revision: bigint;
+};
+
 export type AccessSession = {
 	id: string;
 	principalId: string;

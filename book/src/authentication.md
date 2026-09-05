@@ -83,7 +83,37 @@ KeepPeek has two fixed roles.
 The server enforces this policy for HTTP and every WebRTC control operation. Hidden navigation and
 controls make the User interface clearer, but they are not the security boundary.
 
-Custom roles and per-camera permissions are not currently available.
+The User operations above are limited to that credential's allowed cameras. Custom roles are not
+currently available.
+
+## Camera and dashboard access
+
+In **Settings > Access & roles**, choose the person icon beside a User credential to set **User
+access**. The default is **Everything**, including current and future groups and cameras. To
+restrict that user, choose **Selected groups and cameras**. Select camera groups, individual cameras,
+or both: either a matching group or an explicit camera selection grants access. Selecting neither
+grants no cameras. Existing explicit restrictions remain unchanged.
+
+Camera groups use configuration namespaces. For example, `[outdoor.front_door]` puts the camera in
+the `outdoor` group. These groups are separate from saved dashboards and live-sharing rooms.
+
+Camera grants are enforced by the server for live and recorded media, event previews, notification
+inbox/history, recording coverage, and camera controls. A grant does not permit Administrator-only
+operations such as export or camera configuration. Saving permissions closes that User's existing
+sessions; they sign in again with the same key. Stale saves return a conflict without discarding the
+draft.
+
+Use the dashboard's access controls to select its viewers separately. Sharing a dashboard does not
+grant its cameras. A User sees only allowed camera tiles and can select visible dashboards, but
+cannot modify or share the server-owned layouts. The complete layout remains intact for its
+Administrator even when a User's view has fewer tiles.
+
+Both settings live in the existing configuration: camera grants in each
+`access_credentials.credentials[].camera_access` record and dashboards in `peek_layouts`. See the
+[configuration reference](./configuration-reference.md#credential-records) for field names and limits.
+
+Trusted-local clients still receive Administrator access. To restrict someone on your LAN or VPN,
+ensure their address is not in `access.local_networks` and have them sign in with a User credential.
 
 ## Remote sign-in
 
@@ -131,8 +161,8 @@ active sessions. Enabling it increments the revision; clients must establish new
 Revocation is permanent. It closes active sessions and prevents reconnecting with that credential.
 A revoked credential cannot be enabled or rotated; create a replacement identity instead.
 
-Credential metadata and SHA-256 verifiers are stored under `[access_credentials]` in `config.toml` beside
-`config.toml`. Raw keys are not stored there. The compatibility Initial Administrator key remains
+Credential metadata, camera grants, and SHA-256 verifiers are stored under `[access_credentials]`
+in `config.toml`. Raw keys are not stored there. The compatibility Initial Administrator key remains
 protected in owner-only `secrets.toml`.
 
 ## Sessions and revocation
