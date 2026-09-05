@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-154bb687.js";
+            window.path_to_searchindex_js = "searchindex-f90f5cf2.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-68ecaa91.js"></script>
+        <script src="toc-d62204bb.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -229,19 +229,15 @@ arguments. Enter camera credentials and other private values directly on the mac
 KeepPeek. See the
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md">secrets guide</a> for references,
 precedence, and migration behavior.</p>
-<h2 id="back-up-before-relying-on-recordings"><a class="header" href="#back-up-before-relying-on-recordings">Back up before relying on recordings</a></h2>
-<p>KeepPeek does not yet provide a validated online backup or restore workflow. Before treating an
-installation as evidence storage, configure a host-level backup that includes the complete KeepPeek
-configuration directory and every configured recording, catalog, thumbnail, and export path.</p>
-<p>Stop the KeepPeek service before taking a file-level copy so the catalog, its write-ahead log, and
-recording files represent one point in time. Preserve file ownership and permissions, keep backup
-media encrypted, and test restoration on an isolated host before depending on it. A live copy can
-capture mismatched database and media state; an untested copy may not be recoverable when evidence
-is needed.</p>
-<p>Validated online backup, restore, migration checks, and guided recovery are owned by
-<a href="https://github.com/xnorpx/keeppeek/issues/128">issue #128</a> for the Alpha milestone. Until that work
-is complete, the supported workaround is a stopped-service copy managed and verified by the host
-administrator.</p>
+<h2 id="create-a-recovery-backup"><a class="header" href="#create-a-recovery-backup">Create a recovery backup</a></h2>
+<p>Open <strong>Settings → Backup and restore</strong> as an Administrator and create a validated configuration
+bundle before relying on the recorder. Download the ZIP and retain it separately from the recorder.
+The ZIP contains exactly <code>config.toml</code> and plaintext <code>secrets.toml</code>, so handle it as sensitive data.
+It intentionally omits <code>recordings.db</code>, sessions, MP4 recordings, and thumbnail JPEG bytes.</p>
+<p>Test recovery on an isolated installation. Export uses <code>GET /config/export</code>; apply uses
+<code>POST /config/apply</code> with the ZIP body. Apply validates both files, capacity, and target paths before
+staging. Live files change only after a controlled restart. See
+<a href="./backup-and-restore.html">Backup and restore</a> for the complete workflow and limits.</p>
 <h2 id="add-the-first-camera"><a class="header" href="#add-the-first-camera">Add the first camera</a></h2>
 <p>Open <strong>Cameras</strong> and use <strong>Add camera</strong>. KeepPeek discovers common cameras where possible and keeps
 manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or

@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-154bb687.js";
+            window.path_to_searchindex_js = "searchindex-f90f5cf2.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-68ecaa91.js"></script>
+        <script src="toc-d62204bb.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1049,19 +1049,15 @@ arguments. Enter camera credentials and other private values directly on the mac
 KeepPeek. See the
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md">secrets guide</a> for references,
 precedence, and migration behavior.</p>
-<h2 id="back-up-before-relying-on-recordings"><a class="header" href="#back-up-before-relying-on-recordings">Back up before relying on recordings</a></h2>
-<p>KeepPeek does not yet provide a validated online backup or restore workflow. Before treating an
-installation as evidence storage, configure a host-level backup that includes the complete KeepPeek
-configuration directory and every configured recording, catalog, thumbnail, and export path.</p>
-<p>Stop the KeepPeek service before taking a file-level copy so the catalog, its write-ahead log, and
-recording files represent one point in time. Preserve file ownership and permissions, keep backup
-media encrypted, and test restoration on an isolated host before depending on it. A live copy can
-capture mismatched database and media state; an untested copy may not be recoverable when evidence
-is needed.</p>
-<p>Validated online backup, restore, migration checks, and guided recovery are owned by
-<a href="https://github.com/xnorpx/keeppeek/issues/128">issue #128</a> for the Alpha milestone. Until that work
-is complete, the supported workaround is a stopped-service copy managed and verified by the host
-administrator.</p>
+<h2 id="create-a-recovery-backup"><a class="header" href="#create-a-recovery-backup">Create a recovery backup</a></h2>
+<p>Open <strong>Settings → Backup and restore</strong> as an Administrator and create a validated configuration
+bundle before relying on the recorder. Download the ZIP and retain it separately from the recorder.
+The ZIP contains exactly <code>config.toml</code> and plaintext <code>secrets.toml</code>, so handle it as sensitive data.
+It intentionally omits <code>recordings.db</code>, sessions, MP4 recordings, and thumbnail JPEG bytes.</p>
+<p>Test recovery on an isolated installation. Export uses <code>GET /config/export</code>; apply uses
+<code>POST /config/apply</code> with the ZIP body. Apply validates both files, capacity, and target paths before
+staging. Live files change only after a controlled restart. See
+<a href="#backup-and-restore">Backup and restore</a> for the complete workflow and limits.</p>
 <h2 id="add-the-first-camera"><a class="header" href="#add-the-first-camera">Add the first camera</a></h2>
 <p>Open <strong>Cameras</strong> and use <strong>Add camera</strong>. KeepPeek discovers common cameras where possible and keeps
 manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or
@@ -1179,7 +1175,7 @@ active sessions. Enabling it increments the revision; clients must establish new
 <h3 id="revoke"><a class="header" href="#revoke">Revoke</a></h3>
 <p>Revocation is permanent. It closes active sessions and prevents reconnecting with that credential.
 A revoked credential cannot be enabled or rotated; create a replacement identity instead.</p>
-<p>Credential metadata and SHA-256 verifiers are stored in the owner-only <code>access.toml</code> beside
+<p>Credential metadata and SHA-256 verifiers are stored under <code>[access_credentials]</code> in <code>config.toml</code> beside
 <code>config.toml</code>. Raw keys are not stored there. The compatibility Initial Administrator key remains
 protected in owner-only <code>secrets.toml</code>.</p>
 <h2 id="sessions-and-revocation"><a class="header" href="#sessions-and-revocation">Sessions and revocation</a></h2>
@@ -1232,7 +1228,7 @@ lifecycle, denied commands, sensitive Administrator operations, and proxy-classi
 Each record includes the principal, role, action, target, result, client classification, and UTC
 timestamp. It never contains a raw key, verifier, Authorization header, cookie, SDP, log payload, or
 media.</p>
-<p>New records appear in memory immediately and are written atomically to <code>access.toml</code> within one
+<p>New records appear in memory immediately and are written atomically to <code>config.toml</code> within one
 second and during graceful shutdown.</p>
 <p><code>GET /metrics</code> exposes label-free counters and gauges for authentication successes and failures,
 authorization denials, session creation and revocation, active sessions, and active credentials.
@@ -1502,6 +1498,43 @@ are not available.</p>
 <p>The detailed contract, limits, and ownership boundaries are in
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/configuration-management.md">Visual configuration management</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="backup-and-restore"><a class="header" href="#backup-and-restore">Backup and restore</a></h1>
+<p>KeepPeek can create and validate a configuration bundle while recording continues. A format-3 ZIP
+contains exactly <code>config.toml</code> and plaintext <code>secrets.toml</code>; it contains no database or media.</p>
+<p>Open <strong>Settings → Backup and restore</strong> as an Administrator. <strong>Export ZIP</strong> downloads the two files
+directly. Select a <strong>Configuration ZIP</strong>, confirm replacement, and choose <strong>Apply configuration</strong>.
+After the upload succeeds, choose <strong>Restart to apply</strong>.</p>
+<p>The HTTP surface is <code>GET /config/export</code> for download and <code>POST /config/apply</code> for a ZIP upload.
+There are no retained server backups, upload reservations, or separate dry-run requests. The old
+<code>/api/backups</code> routes are retired.</p>
+<h2 id="secrets-and-media"><a class="header" href="#secrets-and-media">Secrets and media</a></h2>
+<p>The ZIP includes the complete file-backed <code>secrets.toml</code> in plaintext. It may contain camera
+passwords, access keys, MQTT credentials, webhook URLs, and notification-provider destinations.
+Restrict the ZIP like the live secrets file and delete copies that are no longer needed. Environment
+secret overrides are not copied into the bundle.</p>
+<p><code>recordings.db</code>, MP4 recordings, thumbnail JPEGs, sessions, caches, audit activity, and in-memory
+notification/MQTT work are excluded. The target recorder keeps its local storage paths during
+restore. Protect the recording tree with a separate archive policy when it needs recovery.</p>
+<h2 id="safe-activation"><a class="header" href="#safe-activation">Safe activation</a></h2>
+<p>Apply accepts a current format-3 ZIP, including its manifest comment, and validates paths, checksums,
+both TOMLs, permissions, and capacity before staging. It returns <code>202</code> with
+<code>RESTORE_STATE_AWAITING_RESTART</code>; this is not an immediate replacement of the live files.</p>
+<p>Staging writes owner-only copies beside both target files. Recovery runs before configuration or
+databases open, and completion requires successful configuration, HTTP, and camera-worker startup.
+KeepPeek restores the prior pair automatically if startup health fails. A pending apply blocks a
+second upload from replacing it; a healthy completed restore can be superseded by the next apply.
+To return to an older configuration, apply a ZIP exported before the change.</p>
+<p>Do not edit <code>.backups/restore-journal.json</code> or its staging files manually. The detailed HTTP, limit,
+crash-recovery, and CLI contract is in the
+<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/backup-and-restore.md">backup and restore operator guide</a>.</p>
+<h2 id="automation"><a class="header" href="#automation">Automation</a></h2>
+<p>The <code>keeppeek config</code> commands call the same Administrator-only HTTP endpoints. Commands print
+machine-readable JSON to stdout. Supply remote authentication only through
+<code>KEEPPEEK_ACCESS_KEY</code>; never put it in a URL or command argument.</p>
+<pre><code class="language-sh">keeppeek config --server http://localhost:3000 export --output keeppeek-config.zip
+keeppeek config --server http://localhost:3000 apply keeppeek-config.zip --confirm
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="recording-and-evidence"><a class="header" href="#recording-and-evidence">Recording and evidence</a></h1>
 <p>KeepPeek treats a recording as evidence only when the media is finalized, indexed, and playable.
 A connected camera or an MP4 filename alone does not prove that the requested interval can be
@@ -1623,20 +1656,20 @@ depending on a new destination. Test sends have separate rate accounting but sti
 credentials and provider configuration.</p>
 <h2 id="avoid-duplicate-and-noisy-alerts"><a class="header" href="#avoid-duplicate-and-noisy-alerts">Avoid duplicate and noisy alerts</a></h2>
 <p>KeepPeek gives one logical notification a stable identity derived from its rule, source, event or
-outage, and lifecycle. Event revisions, retries, enrichment, process restart, and recovery retain
-that identity. Equal message text never collapses unrelated cameras or events.</p>
+outage, and lifecycle. Event revisions, retries, enrichment, and recovery retain that identity while
+KeepPeek remains running. Equal message text never collapses unrelated cameras or events.</p>
 <p>Rules can apply cooldowns per event family, camera and event kind, group, whole rule, or outage
-interval. The cooldown starts when the logical notification is created and survives restart. Rate
-limits can apply to the rule, channel, principal, or whole server. Critical bypass is explicit,
-bounded, and audited.</p>
+interval. The cooldown starts when the logical notification is created and resets on restart. Rate
+limits can apply to the rule, channel, principal, or whole server and also reset on restart.
+Critical bypass is explicit, bounded, and logged.</p>
 <p>A preliminary alert may be replaced by an enriched revision when a canonical image or final
 duration becomes available within the configured deadline. Missing imagery does not suppress a
 metadata alert unless the action explicitly requires an attachment. Late enrichment stays in
 history without waking the user unless the rule permits it.</p>
-<p>The inbox keeps unread, seen, acknowledged, and cleared state per authenticated principal. Provider
+<p>The process-local inbox keeps unread, seen, acknowledged, and cleared state per authenticated principal. Provider
 delivery and acknowledgement remain separate from KeepPeek review state. Delivery history explains
 whether work was created, replaced, suppressed, collapsed, rate-limited, retried, expired,
-delivered, or failed.</p>
+delivered, or failed until the next restart.</p>
 <h2 id="deliver-through-pushover"><a class="header" href="#deliver-through-pushover">Deliver through Pushover</a></h2>
 <p>Pushover is the supported push channel. To configure it:</p>
 <ol>
@@ -1646,16 +1679,17 @@ delivered, or failed.</p>
 <li>Enter the token and key directly in <strong>Settings &gt; Notifications</strong>.</li>
 <li>Save, activate, and run the rule’s test action.</li>
 </ol>
-<p>The two credentials are write-only. KeepPeek stores them in server-owned notification state and
-never returns them to the browser, health snapshots, logs, or delivery reasons. Editing non-secret
-settings preserves the configured values; replacing credentials requires entering both again.</p>
+<p>The two credentials are write-only. KeepPeek stores owner-only values in <code>secrets.toml</code> and keeps
+references with the rules in <code>config.toml</code>. It never returns them to the browser, health snapshots,
+logs, or delivery reasons. Editing non-secret settings preserves the configured values; replacing
+credentials requires entering both again.</p>
 <p>Push actions support optional device names, sound, priorities <code>-2</code> through <code>2</code>, a public base URL
 for deep links, and one bounded JPEG attachment. Emergency priority <code>2</code> also requires retry and
 expiry values and records provider acknowledgement separately from KeepPeek acknowledgement.</p>
-<p>Timeouts, connection failures, HTTP 408, 425, 429, and 5xx responses use the rule’s bounded durable
-retry policy. Invalid credentials and other permanent provider failures do not retry indefinitely.
-Disabling a rule or Push action stops new work and expires its pending attempts without deleting
-delivery history.</p>
+<p>Timeouts, connection failures, HTTP 408, 425, 429, and 5xx responses use the rule’s bounded
+in-memory retry policy. Invalid credentials and other permanent provider failures do not retry
+indefinitely. Restarting KeepPeek discards pending attempts. Disabling a rule or Push action stops
+new work and expires its pending attempts.</p>
 <h2 id="forward-events-through-mqtt"><a class="header" href="#forward-events-through-mqtt">Forward events through MQTT</a></h2>
 <p>Open <strong>Settings &gt; Integrations</strong> to configure, test, observe, or disable the MQTT event forwarder.
 It requires an MQTT 5 broker; MQTT 3.1 and 3.1.1 are not fallback protocols.</p>
@@ -1670,12 +1704,14 @@ keeppeek/{instance_id}/forwarders/{forwarder_id}/status
 deduplicate with <code>(instance_id, event_id, revision)</code>. Camera outage and recovery records use the
 same envelope and carry bounded cause, affected streams, recording consequence, duration, and
 recovery evidence. This profile publishes attachment metadata, not image bytes.</p>
-<p>QoS 1 is the default and provides at-least-once delivery. A crash around broker acknowledgement can
-redeliver the same stable identity, so consumers must still deduplicate. QoS 0 has no broker
-acknowledgement; QoS 2 does not remove the need for application-level identity.</p>
-<p>The durable MQTT outbox defaults to 64 MiB and reconnect delay grows from 250 ms to a 30-second
-ceiling. Broker outage, restart, or configuration replacement does not reconnect camera streams.
-When the outbox is full, forwarding fails visibly while event persistence and recording continue.</p>
+<p>QoS 1 is the default and provides at-least-once transport while KeepPeek remains running. A broker
+reconnect around acknowledgement can redeliver the same stable identity, so consumers must still
+deduplicate. QoS 0 has no broker acknowledgement; QoS 2 does not make queued work durable across a
+KeepPeek restart.</p>
+<p>The bounded in-memory MQTT outbox defaults to 64 MiB and reconnect delay grows from 250 ms to a
+30-second ceiling. A broker outage or configuration replacement does not reconnect camera streams.
+Restarting KeepPeek discards pending publications and deduplication history. When the outbox is full,
+forwarding fails visibly while event persistence and recording continue.</p>
 <p>Settings and Prometheus expose connection state, bounded error detail, pending items and bytes,
 retry and duplicate counts, last received and delivered times, and oldest unacknowledged work.</p>
 <p>See the detailed <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/notifications.md">notification rule</a>,
@@ -1735,10 +1771,10 @@ camera reconnect, provider retry, and storage cleanup cycles. During the soak:</
 <ul>
 <li>account for every unexpected recording gap with camera, writer, storage, or catalog evidence;</li>
 <li>verify primary recorded playback remains at source rate while timelines refresh and exports run;</li>
-<li>monitor memory, database, thumbnails, export jobs, notification outbox, MQTT outbox, logs,
+<li>monitor memory, recording databases, thumbnails, export jobs, the in-memory notification outbox, MQTT outbox, logs,
 threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;</li>
-<li>restart and verify open operational events, cooldowns, outboxes, export jobs, coverage summaries,
-and sessions recover according to their documented contracts;</li>
+<li>restart and verify notification state resets while durable operational events, the MQTT outbox,
+export jobs, coverage summaries, and sessions recover according to their documented contracts;</li>
 <li>rerun the complete workflow without manual database or recording-file edits.</li>
 </ul>
 <p>Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
@@ -1754,12 +1790,12 @@ generic ONVIF camera unless measured evidence supports another transport.</p>
 stream that it cannot decode. Keep a broadly compatible H.264 substream for live view and review,
 and treat a truthful incompatibility message as different from missing footage. Automatic
 transcoding remains separate work.</p>
-<h3 id="backup-and-restore-are-not-automated"><a class="header" href="#backup-and-restore-are-not-automated">Backup and restore are not automated</a></h3>
-<p>Validated online backup and guided restore are owned by
-<a href="https://github.com/xnorpx/keeppeek/issues/128">issue #128</a> for Alpha. Until then, stop the service,
-copy the complete configuration and storage roots, preserve permissions, encrypt the backup, and
-test restoration on an isolated host. A live file copy can capture mismatched catalog and media
-state.</p>
+<h3 id="configuration-bundles-do-not-archive-recording-media"><a class="header" href="#configuration-bundles-do-not-archive-recording-media">Configuration bundles do not archive recording media</a></h3>
+<p>KeepPeek provides direct ZIP export and validated application of <code>config.toml</code> and plaintext
+<code>secrets.toml</code>, with restart activation and automatic startup recovery. <code>recordings.db</code>, recording MP4s, and thumbnail
+JPEGs remain a separate archive responsibility. A recovery rehearsal must test both the sensitive
+KeepPeek configuration bundle and the recording archive. See
+<a href="#backup-and-restore">Backup and restore</a>.</p>
 <h3 id="access-roles-are-intentionally-fixed"><a class="header" href="#access-roles-are-intentionally-fixed">Access roles are intentionally fixed</a></h3>
 <p>Remote access supports Administrator and User. Custom roles and per-camera permissions are not
 available. Use network separation or separate servers when a person must not see every configured

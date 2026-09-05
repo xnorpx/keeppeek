@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-154bb687.js";
+            window.path_to_searchindex_js = "searchindex-f90f5cf2.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-68ecaa91.js"></script>
+        <script src="toc-d62204bb.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -226,10 +226,10 @@ camera reconnect, provider retry, and storage cleanup cycles. During the soak:</
 <ul>
 <li>account for every unexpected recording gap with camera, writer, storage, or catalog evidence;</li>
 <li>verify primary recorded playback remains at source rate while timelines refresh and exports run;</li>
-<li>monitor memory, database, thumbnails, export jobs, notification outbox, MQTT outbox, logs,
+<li>monitor memory, recording databases, thumbnails, export jobs, the in-memory notification outbox, MQTT outbox, logs,
 threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;</li>
-<li>restart and verify open operational events, cooldowns, outboxes, export jobs, coverage summaries,
-and sessions recover according to their documented contracts;</li>
+<li>restart and verify notification state resets while durable operational events, the MQTT outbox,
+export jobs, coverage summaries, and sessions recover according to their documented contracts;</li>
 <li>rerun the complete workflow without manual database or recording-file edits.</li>
 </ul>
 <p>Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
@@ -245,12 +245,12 @@ generic ONVIF camera unless measured evidence supports another transport.</p>
 stream that it cannot decode. Keep a broadly compatible H.264 substream for live view and review,
 and treat a truthful incompatibility message as different from missing footage. Automatic
 transcoding remains separate work.</p>
-<h3 id="backup-and-restore-are-not-automated"><a class="header" href="#backup-and-restore-are-not-automated">Backup and restore are not automated</a></h3>
-<p>Validated online backup and guided restore are owned by
-<a href="https://github.com/xnorpx/keeppeek/issues/128">issue #128</a> for Alpha. Until then, stop the service,
-copy the complete configuration and storage roots, preserve permissions, encrypt the backup, and
-test restoration on an isolated host. A live file copy can capture mismatched catalog and media
-state.</p>
+<h3 id="configuration-bundles-do-not-archive-recording-media"><a class="header" href="#configuration-bundles-do-not-archive-recording-media">Configuration bundles do not archive recording media</a></h3>
+<p>KeepPeek provides direct ZIP export and validated application of <code>config.toml</code> and plaintext
+<code>secrets.toml</code>, with restart activation and automatic startup recovery. <code>recordings.db</code>, recording MP4s, and thumbnail
+JPEGs remain a separate archive responsibility. A recovery rehearsal must test both the sensitive
+KeepPeek configuration bundle and the recording archive. See
+<a href="./backup-and-restore.html">Backup and restore</a>.</p>
 <h3 id="access-roles-are-intentionally-fixed"><a class="header" href="#access-roles-are-intentionally-fixed">Access roles are intentionally fixed</a></h3>
 <p>Remote access supports Administrator and User. Custom roles and per-camera permissions are not
 available. Use network separation or separate servers when a person must not see every configured
