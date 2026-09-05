@@ -59,6 +59,15 @@ export const serverCapabilityCatalog = {
 		whenMissing: 'Existing access evidence remains visible; people and roles stay read-only',
 		failureGuarantee: 'Failed writes cannot revoke local LAN administration'
 	},
+	'keeppeek.camera-access.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Per-user camera and namespace grants, default-everything access, revisioned writes, and session revocation',
+		unlocks: 'Administrator User access editor with group and individual camera selections',
+		whenMissing: 'User access controls remain hidden; existing camera permissions are not changed',
+		failureGuarantee:
+			'Failed or stale saves preserve the draft and stored policy; grid sharing never grants camera access'
+	},
 	'keeppeek.rules.v1': {
 		delivery: 'target',
 		serverOwns:

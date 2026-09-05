@@ -183,6 +183,28 @@ type ConfigurationZipReference = {
 	lokiApproved: boolean;
 };
 
+type UserAccessReference = {
+	schemaVersion: number;
+	boardId: string;
+	frameId: string;
+	sourceTokenHash: string;
+	baselineTokenHash: string;
+	image: { source: string; bytes: number; sha256: string; width: number; height: number };
+	implementationOwner: string;
+	playwrightOwner: string;
+	browserTestOwner: string;
+	requiredCapability: string;
+	defaultAccess: string;
+	policyOwner: string;
+	grantFields: string[];
+	states: Array<{ id: string; frameId: string; label: string }>;
+	visibleText: string[];
+	playwrightTests: string[];
+	browserTests: string[];
+	reviewStatus: string;
+	lokiApproved: boolean;
+};
+
 const root = resolve('design/paper/keeppeek-nvr-v34');
 
 async function readJson<T>(filePath: string): Promise<T> {
@@ -289,6 +311,68 @@ async function verifyConfigurationZipReference(
 	for (const name of reference.playwrightTests) {
 		if (!tests.includes(name))
 			throw new Error(`Missing configuration ZIP Playwright test: ${name}`);
+	}
+}
+
+function userAccessBoard(reference: UserAccessReference, storyboard: Storyboard): StoryboardBoard {
+	const board = storyboard.boards.find((candidate) => candidate.id === reference.boardId);
+	if (
+		reference.schemaVersion !== 1 ||
+		!board ||
+		reference.sourceTokenHash !== board.sourceTokenHash ||
+		reference.baselineTokenHash !== storyboard.source.tokenHash ||
+		reference.requiredCapability !== 'keeppeek.camera-access.v1' ||
+		!isServerCapabilityId(reference.requiredCapability) ||
+		reference.reviewStatus !== 'design-reference' ||
+		reference.lokiApproved
+	) {
+		throw new Error('Invalid user access design reference');
+	}
+	if (
+		reference.defaultAccess !== 'everything' ||
+		reference.policyOwner !== 'user-credential' ||
+		reference.grantFields.join('|') !== 'all_cameras|group_ids|camera_ids' ||
+		reference.states.map((state) => state.id).join('|') !== 'everything|selected|conflict-mobile'
+	) {
+		throw new Error('User access design policy or state contract drifted');
+	}
+	return board;
+}
+
+async function verifyUserAccessReference(storyboard: Storyboard): Promise<void> {
+	const reference = await readJson<UserAccessReference>(resolve(root, 'user-access.json'));
+	const board = userAccessBoard(reference, storyboard);
+	const [jsx, image, component, tests, browserTests] = await Promise.all([
+		readFile(resolveInsideRoot(board.source), 'utf8'),
+		readFile(resolveInsideRoot(reference.image.source)),
+		readFile(resolve(reference.implementationOwner), 'utf8'),
+		readFile(resolve(reference.playwrightOwner), 'utf8'),
+		readFile(resolve(reference.browserTestOwner), 'utf8')
+	]);
+	if (
+		image.byteLength !== reference.image.bytes ||
+		sha256(image) !== reference.image.sha256 ||
+		image.readUInt32BE(16) !== reference.image.width ||
+		image.readUInt32BE(20) !== reference.image.height
+	) {
+		throw new Error('User access reference image drifted');
+	}
+	const frameIds = [reference.frameId, ...reference.states.map((state) => state.frameId)];
+	if (frameIds.some((id) => !id.trim()) || new Set(frameIds).size !== frameIds.length) {
+		throw new Error('User access reference has missing or duplicate Paper frame IDs');
+	}
+	for (const state of reference.states) {
+		if (!jsx.includes(state.label)) throw new Error(`Missing user access Paper state: ${state.id}`);
+	}
+	for (const text of reference.visibleText) {
+		if (!jsx.includes(text) || !component.includes(text))
+			throw new Error(`User access design copy drifted: ${text}`);
+	}
+	for (const name of reference.playwrightTests) {
+		if (!tests.includes(name)) throw new Error(`Missing user access Playwright test: ${name}`);
+	}
+	for (const name of reference.browserTests) {
+		if (!browserTests.includes(name)) throw new Error(`Missing user access browser test: ${name}`);
 	}
 }
 
@@ -786,6 +870,7 @@ const runtimeThemeCss = await readFile(resolve('src/styles/paper-theme.css'), 'u
 verifyTokenValues('paper-theme.css', parseCustomProperties(runtimeThemeCss), tokenSnapshot.tokens);
 
 await verifyConfigurationZipReference(storyboard, expectedBackupHttpPaths);
+await verifyUserAccessReference(storyboard);
 
 const committedCoverageReport = await readFile(resolve(root, 'COVERAGE.md'), 'utf8');
 const expectedCoverageReport = await renderPaperCoverageReport(resolve('.'));

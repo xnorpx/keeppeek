@@ -184,9 +184,9 @@ Scenario capability IDs: None
 Scenario capability IDs: `keeppeek.identity.v1`<br>`keeppeek.media-export.v1`
 
 - `settings.desktop.access`
-  - The Administrator/User matrix is target policy; the current identity runtime neither enforces nor reports assigned roles.
-  - People, invitations, current identity, sessions, last-seen values, and directory counts are unavailable.
-  - Token listing, creation, rotation, revocation, scopes, owners, last use, and audit rows are unavailable; raw key material is never rendered.
+  - This historical unavailable-capability fixture does not demonstrate the shipped credential or camera authorization; see user-access.json for the current user-access reference.
+  - Named credentials and sessions use AccessRuntime rather than this static fixture; invitations remain outside the user-access feature.
+  - The legacy full-page image is not an approved pixel baseline for the current runtime.
 
 ### 17 Settings: integrations
 

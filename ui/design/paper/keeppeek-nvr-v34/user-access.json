@@ -1,0 +1,57 @@
+{
+	"schemaVersion": 1,
+	"boardId": "2O3-0",
+	"frameId": "AR2-0",
+	"exportedAt": "2026-09-05",
+	"sourceTokenHash": "b35ec365",
+	"baselineTokenHash": "cf3b1cd7",
+	"route": "/settings#access",
+	"requiredCapability": "keeppeek.camera-access.v1",
+	"implementationOwner": "src/lib/components/CameraAccessDialog.svelte",
+	"playwrightOwner": "e2e/camera-access.e2e.ts",
+	"browserTestOwner": "src/lib/components/CameraAccessDialog.svelte.spec.ts",
+	"image": {
+		"source": "references/16-user-access-states@2x.png",
+		"width": 2880,
+		"height": 2220,
+		"scale": 2,
+		"bytes": 477100,
+		"sha256": "ddfb343830b45c422546f093afce2b2d93baceb1ab74abbcef90a4dfb1501bb4"
+	},
+	"defaultAccess": "everything",
+	"policyOwner": "user-credential",
+	"grantFields": ["all_cameras", "group_ids", "camera_ids"],
+	"states": [
+		{ "id": "everything", "frameId": "AR9-0", "label": "01 / EVERYTHING - DEFAULT" },
+		{ "id": "selected", "frameId": "AT2-0", "label": "02 / SELECTED GROUPS AND CAMERAS" },
+		{ "id": "conflict-mobile", "frameId": "AUD-0", "label": "03 / CONFLICT - 390px" }
+	],
+	"visibleText": [
+		"User access",
+		"Everything",
+		"Selected groups and cameras",
+		"GROUPS",
+		"CAMERAS",
+		"All groups and cameras",
+		"Reload permissions",
+		"Save access"
+	],
+	"playwrightTests": ["enforces per-user group and camera access with Paper-grounded controls"],
+	"browserTests": [
+		"defaults to everything and edits group and camera grants on the selected user",
+		"preserves selected cameras after a failed save and offers an explicit reload",
+		"disables writes when the capability disappears without losing the draft"
+	],
+	"constraints": [
+		"Administrators manage grants on a named User credential and always retain unrestricted camera access.",
+		"New credentials and absent policies default to everything; explicit restrictions remain unchanged.",
+		"Selected access is the union of camera namespace groups and explicit camera IDs; an empty selection grants none.",
+		"Each group and camera list allows at most 128 IDs of at most 256 UTF-8 bytes.",
+		"Camera grants remain separate from grid audiences and never change canonical grid tiles.",
+		"Saves use credential revisions and close existing sessions; failures retain drafts.",
+		"All settings remain in config.toml with private strings in its companion secrets.toml."
+	],
+	"reviewStatus": "design-reference",
+	"lokiApproved": false,
+	"notes": "Supplementary Paper states are design and runtime-test evidence, not an approved pixel baseline. Desktop panels use 645px width, 18px padding and 44px rows; the mobile state uses 16px padding and 52px rows. Runtime icon actions and viewport containment are verified by browser tests. Historical unavailable-capability snapshots remain separate."
+}
