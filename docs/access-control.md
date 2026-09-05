@@ -96,7 +96,7 @@ are not implemented.
 
 First start creates an Initial Administrator credential. Local setup must retrieve its value once
 before reporting remote access ready. The compatibility value is protected in owner-only
-`secrets.toml`; `access.toml` stores its verifier and metadata. New named credentials store only a
+`secrets.toml`; `[access_credentials]` in `config.toml` stores its verifier and metadata. New named credentials store only a
 SHA-256 verifier. A successful create or rotate operation returns the raw key once.
 
 Credential metadata includes stable identity, name, optional bounded description, role,
@@ -129,7 +129,8 @@ The bounded access audit records authentication outcomes, credential changes, se
 denied commands, and classification failures. Records include non-secret principal, role, action,
 target, result, classification reason, and UTC timestamp. They exclude raw keys, verifiers,
 Authorization fields, cookies, SDP, logs, and media. New records are visible immediately and flush
-atomically to `access.toml` within one second and during graceful shutdown.
+atomically to `config.toml` within one second and during graceful shutdown. On upgrade, a legacy
+`access.toml` is imported once and removed after the consolidated file is written successfully.
 
 `/metrics` exposes fixed label-free access counters and gauges for authentication, authorization,
 session creation/revocation, active sessions, and active credentials. `/logs`, `/logs/snapshot`,

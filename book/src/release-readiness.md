@@ -63,10 +63,10 @@ camera reconnect, provider retry, and storage cleanup cycles. During the soak:
 
 - account for every unexpected recording gap with camera, writer, storage, or catalog evidence;
 - verify primary recorded playback remains at source rate while timelines refresh and exports run;
-- monitor memory, database, thumbnails, export jobs, notification outbox, MQTT outbox, logs,
+- monitor memory, recording databases, thumbnails, export jobs, the in-memory notification outbox, MQTT outbox, logs,
   threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;
-- restart and verify open operational events, cooldowns, outboxes, export jobs, coverage summaries,
-  and sessions recover according to their documented contracts;
+- restart and verify notification state resets while durable operational events, the MQTT outbox,
+  export jobs, coverage summaries, and sessions recover according to their documented contracts;
 - rerun the complete workflow without manual database or recording-file edits.
 
 Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
@@ -90,10 +90,11 @@ transcoding remains separate work.
 
 ### Configuration bundles do not archive recording media
 
-KeepPeek provides validated reference-only configuration and metadata backups, dry-run restore,
-staged activation, and bounded rollback. Recording MP4s and thumbnail JPEGs remain a separate
-archive responsibility. A recovery rehearsal must test both the KeepPeek bundle and the mapped
-media archive. See [Backup and restore](./backup-and-restore.md).
+KeepPeek provides direct ZIP export and validated application of `config.toml` and plaintext
+`secrets.toml`, with restart activation and automatic startup recovery. `recordings.db`, recording MP4s, and thumbnail
+JPEGs remain a separate archive responsibility. A recovery rehearsal must test both the sensitive
+KeepPeek configuration bundle and the recording archive. See
+[Backup and restore](./backup-and-restore.md).
 
 ### Access roles are intentionally fixed
 

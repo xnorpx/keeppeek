@@ -78,8 +78,8 @@ without exposing other secrets.
 On first start, KeepPeek generates `KEEPPEEK_ACCESS_KEY` in the owner-only secret file and writes
 only `{secret:KEEPPEEK_ACCESS_KEY}` to `config.toml`. It never prints the generated value. Existing
 inline access keys and non-zero `--access-key` values are migrated into `secrets.toml` on startup.
-The owner-only `access.toml` stores that credential's verifier and lifecycle metadata. Named
-credentials created later store only verifiers in `access.toml`; their raw values are returned once
+The `[access_credentials]` section of `config.toml` stores that credential's verifier and lifecycle
+metadata. Named credentials created later store only verifiers there; their raw values are returned once
 and are never added to `secrets.toml`.
 
 Existing inline camera credentials remain supported and are not moved automatically. To migrate

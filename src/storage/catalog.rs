@@ -33,8 +33,6 @@ const COMMAND_CAPACITY: usize = 256;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_SEARCH_PAGE_TOKEN_BYTES: usize = 4_096;
 const MAX_EVENT_ATTACHMENTS: usize = 32;
-const MAX_EVENT_BACKUP_THUMBNAILS: usize = 100_000;
-const MAX_EVENT_BACKUP_THUMBNAIL_BYTES: u64 = 4 * 1_024 * 1_024;
 const MAX_ATTACHMENT_ID_BYTES: usize = 64;
 const MAX_ATTACHMENT_TYPE_BYTES: usize = 64;
 const MAX_CONTENT_TYPE_BYTES: usize = 128;
@@ -238,16 +236,6 @@ pub struct CatalogStats {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CatalogEventBackupSummary {
-    pub events: u64,
-    pub operational_events: u64,
-    pub keyframe_links: u64,
-    pub search_terms: u64,
-    pub embeddings: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CatalogEventThumbnailBackupEntry {
     pub event_id: String,
     pub file_name: String,
@@ -340,7 +328,6 @@ pub(crate) struct CatalogStreamCoverage {
 pub struct RecordingCatalogHandle {
     tx: SyncSender<Command>,
     search_tx: SyncSender<SearchCommand>,
-    database_path: Arc<PathBuf>,
 }
 
 pub struct RecordingCatalog {
@@ -514,6 +501,7 @@ enum Command {
     Stats {
         reply: SyncSender<anyhow::Result<CatalogStats>>,
     },
+    #[cfg(test)]
     Snapshot {
         destination: PathBuf,
         maximum_bytes: u64,
@@ -577,11 +565,7 @@ impl RecordingCatalog {
 
         let (tx, rx) = mpsc::sync_channel(COMMAND_CAPACITY);
         let (search_tx, search_rx) = mpsc::sync_channel(COMMAND_CAPACITY);
-        let handle = RecordingCatalogHandle {
-            tx,
-            search_tx,
-            database_path: Arc::new(std::fs::canonicalize(path)?),
-        };
+        let handle = RecordingCatalogHandle { tx, search_tx };
         let thread = std::thread::Builder::new()
             .name("recording-catalog".to_owned())
             .spawn(move || run_catalog(connection, rx))?;
@@ -733,152 +717,7 @@ pub(crate) fn rewrite_recording_paths(
     })
 }
 
-pub(crate) fn strip_event_metadata(catalog_path: &Path) -> anyhow::Result<()> {
-    let connection = open_offline_catalog(catalog_path)?;
-    pollster::block_on(async {
-        connection
-            .execute_batch(
-                "PRAGMA foreign_keys = ON;
-                 BEGIN IMMEDIATE;
-                 DELETE FROM recording_event_keyframes;
-                 DELETE FROM recording_event_search_terms;
-                 DELETE FROM recording_event_embeddings;
-                 DELETE FROM recording_events;
-                 DELETE FROM operational_events;
-                 UPDATE recording_event_search_state SET revision = 0 WHERE id = 1;
-                 COMMIT;
-                 VACUUM;",
-            )
-            .await
-    })?;
-    Ok(())
-}
-
-pub(crate) fn event_backup_summary(
-    catalog_path: &Path,
-) -> anyhow::Result<CatalogEventBackupSummary> {
-    let connection = open_offline_catalog(catalog_path)?;
-    pollster::block_on(async {
-        let mut rows = connection
-            .query(
-                "SELECT
-                    (SELECT COUNT(*) FROM recording_events),
-                    (SELECT COUNT(*) FROM operational_events),
-                    (SELECT COUNT(*) FROM recording_event_keyframes),
-                    (SELECT COUNT(*) FROM recording_event_search_terms),
-                    (SELECT COUNT(*) FROM recording_event_embeddings)",
-                (),
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("event metadata summary returned no row"))?;
-        Ok(CatalogEventBackupSummary {
-            events: to_u64(row.get(0)?, "event count")?,
-            operational_events: to_u64(row.get(1)?, "operational event count")?,
-            keyframe_links: to_u64(row.get(2)?, "event keyframe link count")?,
-            search_terms: to_u64(row.get(3)?, "event search term count")?,
-            embeddings: to_u64(row.get(4)?, "event embedding count")?,
-        })
-    })
-}
-
-pub(crate) fn event_thumbnail_backup_entries(
-    catalog_path: &Path,
-    thumbnail_root: &Path,
-) -> anyhow::Result<Vec<CatalogEventThumbnailBackupEntry>> {
-    let root = thumbnail_root.canonicalize()?;
-    let connection = open_offline_catalog(catalog_path)?;
-    let entries = pollster::block_on(async {
-        let mut rows = connection
-            .query(
-                "SELECT id, thumbnail_filename FROM recording_events
-                 WHERE thumbnail_filename IS NOT NULL ORDER BY id",
-                (),
-            )
-            .await?;
-        let mut entries = Vec::new();
-        while let Some(row) = rows.next().await? {
-            if entries.len() == MAX_EVENT_BACKUP_THUMBNAILS {
-                anyhow::bail!("event thumbnail inventory exceeds its entry limit");
-            }
-            let event_id = row.get::<String>(0)?;
-            let file_name = row.get::<String>(1)?;
-            if !safe_backup_thumbnail(&event_id, &file_name) {
-                anyhow::bail!("event thumbnail inventory contains an unsafe file name");
-            }
-            let path = root.join(&file_name);
-            let metadata = std::fs::symlink_metadata(&path)?;
-            if !metadata.is_file()
-                || metadata.file_type().is_symlink()
-                || metadata.len() == 0
-                || metadata.len() > MAX_EVENT_BACKUP_THUMBNAIL_BYTES
-            {
-                anyhow::bail!("event thumbnail inventory contains an invalid file");
-            }
-            let canonical = path.canonicalize()?;
-            if !canonical.starts_with(&root) {
-                anyhow::bail!("event thumbnail path escapes its configured root");
-            }
-            let mut file = File::open(canonical)?;
-            let mut hasher = Sha256::new();
-            let copied = std::io::copy(&mut file, &mut HashWriter(&mut hasher))?;
-            if copied != metadata.len() {
-                anyhow::bail!("event thumbnail changed while its inventory was created");
-            }
-            entries.push(CatalogEventThumbnailBackupEntry {
-                event_id,
-                file_name,
-                bytes: metadata.len(),
-                sha256: encode_lower_hex(hasher.finalize()),
-            });
-        }
-        anyhow::Ok(entries)
-    })?;
-    Ok(entries)
-}
-
-struct HashWriter<'a>(&'a mut Sha256);
-
-impl std::io::Write for HashWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.update(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-fn safe_backup_thumbnail(event_id: &str, file_name: &str) -> bool {
-    !event_id.is_empty()
-        && event_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        && file_name == format!("{event_id}.jpg")
-}
-
-fn open_offline_catalog(path: &Path) -> anyhow::Result<turso::Connection> {
-    let path = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Turso catalog path is not valid UTF-8"))?;
-    let database = pollster::block_on(
-        turso::Builder::new_local(path)
-            .experimental_vacuum(true)
-            .build(),
-    )?;
-    let connection = database.connect()?;
-    connection.busy_timeout(BUSY_TIMEOUT)?;
-    Ok(connection)
-}
-
 impl RecordingCatalogHandle {
-    pub(crate) fn database_path(&self) -> &Path {
-        &self.database_path
-    }
-
     pub fn upsert_recording(&self, recording: CatalogRecording) -> anyhow::Result<()> {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
@@ -1528,6 +1367,7 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
+    #[cfg(test)]
     pub(crate) fn snapshot_to(
         &self,
         destination: &Path,
@@ -1832,6 +1672,7 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             Command::Stats { reply } => {
                 let _ = reply.send(pollster::block_on(catalog_stats(&connection)));
             }
+            #[cfg(test)]
             Command::Snapshot {
                 destination,
                 maximum_bytes,

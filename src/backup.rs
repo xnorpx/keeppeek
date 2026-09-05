@@ -8,9 +8,8 @@ use crate::api::backup_proto;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     io::{Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
 };
 use zip::ZipArchive;
 
@@ -28,12 +27,6 @@ pub use restore::{
     plan_restore, recover_pending_restore, request_restore_rollback, stage_restore,
     target_revision,
 };
-
-#[derive(Clone)]
-pub struct BackupStoragePaths {
-    long_term_media: PathBuf,
-    event_thumbnails: PathBuf,
-}
 
 #[derive(Debug)]
 pub(crate) struct ServiceError {
@@ -136,30 +129,13 @@ impl std::fmt::Display for ServiceError {
 
 impl std::error::Error for ServiceError {}
 
-impl BackupStoragePaths {
-    #[must_use]
-    pub const fn new(long_term_media: PathBuf, event_thumbnails: PathBuf) -> Self {
-        Self {
-            long_term_media,
-            event_thumbnails,
-        }
-    }
-
-    fn path(&self, kind: BackupPathKind) -> anyhow::Result<&Path> {
-        match kind {
-            BackupPathKind::LongTermMedia => Ok(&self.long_term_media),
-            BackupPathKind::EventThumbnails => Ok(&self.event_thumbnails),
-            _ => anyhow::bail!("backup storage path kind is not a directory root"),
-        }
-    }
-}
-
-/// The ZIP member that describes every section in a backup bundle.
+/// The legacy ZIP member that describes every section in a backup bundle.
 pub const MANIFEST_PATH: &str = "manifest.json";
 const LEGACY_CONFIG_SOURCE_PATH: &str = "legacy://config-directory";
 
 const LEGACY_FORMAT_VERSION: u32 = 1;
-const FORMAT_VERSION: u32 = 2;
+const SECTIONED_FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 
 #[derive(Clone, Copy)]
 struct InspectionLimits {
@@ -184,6 +160,18 @@ const MAX_REQUIRED_SECRET_REFERENCES: usize = 512;
 const MAX_SOURCE_PATHS: usize = 16;
 const MAX_SOURCE_PATH_BYTES: usize = 4 * 1024;
 
+fn native_configuration_revision(config: &[u8], secrets: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(create::CONFIG_MEMBER_PATH.as_bytes());
+    hasher.update([0]);
+    hasher.update(config);
+    hasher.update([0]);
+    hasher.update(create::SECRETS_MEMBER_PATH.as_bytes());
+    hasher.update([0]);
+    hasher.update(secrets);
+    encode_lower_hex(hasher.finalize())
+}
+
 /// A section that can be carried by a KeepPeek configuration backup.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -196,7 +184,6 @@ pub enum BackupSection {
     EventThumbnails,
     Groups,
     Layouts,
-    Notifications,
     Integrations,
     Access,
     StateStore,
@@ -215,7 +202,6 @@ impl BackupSection {
             Self::EventThumbnails => "event_thumbnails",
             Self::Groups => "groups",
             Self::Layouts => "layouts",
-            Self::Notifications => "notifications",
             Self::Integrations => "integrations",
             Self::Access => "access",
             Self::StateStore => "state_store",
@@ -232,7 +218,6 @@ impl BackupSection {
             Self::EventThumbnails => backup_proto::BackupSection::EventThumbnails,
             Self::Groups => backup_proto::BackupSection::Groups,
             Self::Layouts => backup_proto::BackupSection::Layouts,
-            Self::Notifications => backup_proto::BackupSection::Notifications,
             Self::Integrations => backup_proto::BackupSection::Integrations,
             Self::Access => backup_proto::BackupSection::Access,
             Self::StateStore => backup_proto::BackupSection::StateStore,
@@ -249,7 +234,9 @@ impl BackupSection {
             Ok(backup_proto::BackupSection::EventThumbnails) => Ok(Self::EventThumbnails),
             Ok(backup_proto::BackupSection::Groups) => Ok(Self::Groups),
             Ok(backup_proto::BackupSection::Layouts) => Ok(Self::Layouts),
-            Ok(backup_proto::BackupSection::Notifications) => Ok(Self::Notifications),
+            Ok(backup_proto::BackupSection::Notifications) => {
+                anyhow::bail!("notification settings are part of runtime configuration")
+            }
             Ok(backup_proto::BackupSection::Integrations) => Ok(Self::Integrations),
             Ok(backup_proto::BackupSection::Access) => Ok(Self::Access),
             Ok(backup_proto::BackupSection::StateStore) => Ok(Self::StateStore),
@@ -271,11 +258,17 @@ impl BackupSection {
             Self::EventThumbnails => "events/thumbnails.json",
             Self::Groups => "config/groups.json",
             Self::Layouts => "state/peek-layouts.json",
-            Self::Notifications => "notifications/notifications.db",
             Self::Integrations => "config/integrations.json",
             Self::Access => "access/access.toml",
             Self::StateStore => "state/state-store.json",
             Self::ConfigurationTemplates => "config/configuration-templates.json",
+        }
+    }
+
+    const fn current_path(self) -> &'static str {
+        match self {
+            Self::RuntimeConfig => create::CONFIG_MEMBER_PATH,
+            _ => self.canonical_path(),
         }
     }
 
@@ -292,7 +285,7 @@ impl BackupSection {
     const fn encoding(self) -> SectionEncoding {
         match self {
             Self::RuntimeConfig | Self::Access => SectionEncoding::Toml,
-            Self::RecordingCatalog | Self::Notifications => SectionEncoding::Sqlite,
+            Self::RecordingCatalog => SectionEncoding::Sqlite,
             _ => SectionEncoding::Json,
         }
     }
@@ -319,6 +312,8 @@ enum SectionEncoding {
 pub enum BackupSecretPolicy {
     /// Resolved secrets are omitted while their external references remain intact.
     ReferencesOnly,
+    /// The bundle contains the owner-only secrets file needed for an exact restore.
+    Included,
 }
 
 /// The operating-system and architecture provenance of a backup bundle.
@@ -336,7 +331,6 @@ pub enum BackupPathKind {
     RecordingCatalog,
     LongTermMedia,
     EventThumbnails,
-    NotificationDatabase,
 }
 
 impl BackupPathKind {
@@ -347,7 +341,7 @@ impl BackupPathKind {
             Ok(backup_proto::BackupPathKind::LongTermMedia) => Ok(Self::LongTermMedia),
             Ok(backup_proto::BackupPathKind::EventThumbnails) => Ok(Self::EventThumbnails),
             Ok(backup_proto::BackupPathKind::NotificationDatabase) => {
-                Ok(Self::NotificationDatabase)
+                anyhow::bail!("notification settings use the configuration directory")
             }
             Ok(backup_proto::BackupPathKind::Unspecified) | Err(_) => {
                 anyhow::bail!("backup manifest contains an unspecified source path")
@@ -361,7 +355,6 @@ impl BackupPathKind {
             Self::RecordingCatalog => backup_proto::BackupPathKind::RecordingCatalog,
             Self::LongTermMedia => backup_proto::BackupPathKind::LongTermMedia,
             Self::EventThumbnails => backup_proto::BackupPathKind::EventThumbnails,
-            Self::NotificationDatabase => backup_proto::BackupPathKind::NotificationDatabase,
         }
     }
 }
@@ -548,11 +541,18 @@ impl TryFrom<backup_proto::BackupManifest> for BackupManifest {
         let source = manifest
             .source
             .ok_or_else(|| anyhow::anyhow!("backup manifest source is required"))?;
-        if backup_proto::BackupSecretPolicy::try_from(manifest.secret_policy)
-            != Ok(backup_proto::BackupSecretPolicy::ReferencesOnly)
+        let secret_policy = match backup_proto::BackupSecretPolicy::try_from(manifest.secret_policy)
         {
-            anyhow::bail!("backup manifest secret policy must be references only");
-        }
+            Ok(backup_proto::BackupSecretPolicy::ReferencesOnly) => {
+                BackupSecretPolicy::ReferencesOnly
+            }
+            Ok(backup_proto::BackupSecretPolicy::Unspecified)
+                if manifest.format_version == FORMAT_VERSION =>
+            {
+                BackupSecretPolicy::Included
+            }
+            _ => anyhow::bail!("backup manifest secret policy is unsupported"),
+        };
         let sections = manifest
             .sections
             .into_iter()
@@ -592,7 +592,7 @@ impl TryFrom<backup_proto::BackupManifest> for BackupManifest {
                 arch: source.architecture,
             },
             feature_capabilities: manifest.feature_capabilities,
-            secret_policy: BackupSecretPolicy::ReferencesOnly,
+            secret_policy,
             sections,
             omitted_data: manifest.omitted_data,
             required_secret_references: manifest.required_secret_references,
@@ -681,7 +681,14 @@ impl BackupManifest {
                 architecture: self.source.arch.clone(),
             }),
             feature_capabilities: self.feature_capabilities.clone(),
-            secret_policy: backup_proto::BackupSecretPolicy::ReferencesOnly as i32,
+            secret_policy: match self.secret_policy {
+                BackupSecretPolicy::ReferencesOnly => {
+                    backup_proto::BackupSecretPolicy::ReferencesOnly as i32
+                }
+                BackupSecretPolicy::Included => {
+                    backup_proto::BackupSecretPolicy::Unspecified as i32
+                }
+            },
             sections: self
                 .sections
                 .iter()
@@ -741,21 +748,33 @@ fn inspect_bundle_with_limits<R: Read + Seek>(
         .map_err(|error| anyhow::anyhow!("invalid KeepPeek backup ZIP: {error}"))?;
     let archive_paths = validate_archive_entries(&mut archive, limits)?;
 
-    let manifest_bytes = read_member(&mut archive, MANIFEST_PATH, limits.maximum_manifest_bytes)?;
+    let manifest_bytes = if archive.by_name(MANIFEST_PATH).is_ok() {
+        read_member(&mut archive, MANIFEST_PATH, limits.maximum_manifest_bytes)?
+    } else {
+        let comment = archive.comment();
+        if comment.is_empty() || u64::try_from(comment.len())? > limits.maximum_manifest_bytes {
+            anyhow::bail!("KeepPeek backup manifest is missing or too large");
+        }
+        comment.to_vec()
+    };
     let manifest = decode_manifest(&manifest_bytes)?;
     validate_manifest_metadata(&manifest)?;
 
     let section_paths = validate_sections(&manifest, limits)?;
     for section in &manifest.sections {
         verify_section(&mut archive, section)?;
-        if manifest.format_version == FORMAT_VERSION {
+        if manifest.format_version >= SECTIONED_FORMAT_VERSION {
             validate_section_content(&mut archive, section, &manifest)?;
         }
     }
-    if let Some(path) = archive_paths
-        .iter()
-        .find(|path| path.as_str() != MANIFEST_PATH && !section_paths.contains(path.as_str()))
-    {
+    if manifest.format_version == FORMAT_VERSION {
+        validate_native_configuration_bundle(&mut archive, &manifest)?;
+    }
+    if let Some(path) = archive_paths.iter().find(|path| {
+        path.as_str() != MANIFEST_PATH
+            && path.as_str() != create::SECRETS_MEMBER_PATH
+            && !section_paths.contains(path.as_str())
+    }) {
         anyhow::bail!("KeepPeek backup member {path:?} is not listed in the manifest");
     }
 
@@ -779,14 +798,14 @@ fn validate_sections(
                 section.schema_version
             );
         }
-        if manifest.format_version == FORMAT_VERSION && section.schema_version != 1 {
+        if manifest.format_version >= SECTIONED_FORMAT_VERSION && section.schema_version != 1 {
             anyhow::bail!(
                 "backup {} section uses unsupported schema {}",
                 section.kind.as_str(),
                 section.schema_version
             );
         }
-        if manifest.format_version == FORMAT_VERSION {
+        if manifest.format_version >= SECTIONED_FORMAT_VERSION {
             validate_metadata_value("section revision", &section.revision)?;
         }
         if !section_kinds.insert(section.kind) {
@@ -801,13 +820,16 @@ fn validate_sections(
                 section.path
             );
         }
-        if manifest.format_version == FORMAT_VERSION
-            && section.path != section.kind.canonical_path()
-        {
+        let expected_path = if manifest.format_version == FORMAT_VERSION {
+            section.kind.current_path()
+        } else {
+            section.kind.canonical_path()
+        };
+        if manifest.format_version >= SECTIONED_FORMAT_VERSION && section.path != expected_path {
             anyhow::bail!(
                 "backup {} section must use canonical path {:?}",
                 section.kind.as_str(),
-                section.kind.canonical_path()
+                expected_path
             );
         }
         if section.bytes > limits.maximum_section_bytes
@@ -816,7 +838,7 @@ fn validate_sections(
             anyhow::bail!("backup section {:?} exceeds the size limit", section.path);
         }
     }
-    if manifest.format_version == FORMAT_VERSION {
+    if manifest.format_version >= SECTIONED_FORMAT_VERSION {
         for section in &manifest.sections {
             let mut declared_dependencies = HashSet::with_capacity(section.dependencies.len());
             for dependency in &section.dependencies {
@@ -862,9 +884,11 @@ fn decode_manifest(bytes: &[u8]) -> anyhow::Result<BackupManifest> {
         LEGACY_FORMAT_VERSION => serde_json::from_slice::<UnvalidatedBackupManifest>(bytes)
             .map(BackupManifest::from)
             .map_err(|error| anyhow::anyhow!("invalid KeepPeek backup manifest: {error}")),
-        FORMAT_VERSION => serde_json::from_slice::<backup_proto::BackupManifest>(bytes)
-            .map_err(|error| anyhow::anyhow!("invalid KeepPeek backup manifest: {error}"))?
-            .try_into(),
+        SECTIONED_FORMAT_VERSION | FORMAT_VERSION => {
+            serde_json::from_slice::<backup_proto::BackupManifest>(bytes)
+                .map_err(|error| anyhow::anyhow!("invalid KeepPeek backup manifest: {error}"))?
+                .try_into()
+        }
         unsupported => anyhow::bail!("unsupported KeepPeek backup format {unsupported}"),
     }
 }
@@ -924,6 +948,18 @@ fn validate_section_content<R: Read + Seek>(
     section: &BackupManifestSection,
     manifest: &BackupManifest,
 ) -> anyhow::Result<()> {
+    if manifest.format_version == FORMAT_VERSION {
+        let bytes = read_member(
+            archive,
+            &section.path,
+            section.kind.maximum_document_bytes(),
+        )?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|error| anyhow::anyhow!("invalid configuration section: {error}"))?;
+        toml::from_str::<toml::Table>(text)
+            .map_err(|error| anyhow::anyhow!("invalid configuration section: {error}"))?;
+        return Ok(());
+    }
     match section.kind.encoding() {
         SectionEncoding::Toml => {
             let bytes = read_member(
@@ -990,6 +1026,54 @@ fn validate_section_content<R: Read + Seek>(
         }
     }
     Ok(())
+}
+
+fn validate_native_configuration_bundle<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    manifest: &BackupManifest,
+) -> anyhow::Result<()> {
+    let [section] = manifest.sections.as_slice() else {
+        anyhow::bail!("configuration backup must contain one logical section");
+    };
+    if section.kind != BackupSection::RuntimeConfig
+        || section.path != create::CONFIG_MEMBER_PATH
+        || !section.dependencies.is_empty()
+        || !manifest.required_secret_references.is_empty()
+    {
+        anyhow::bail!("configuration backup manifest is invalid");
+    }
+    let config = read_member(
+        archive,
+        create::CONFIG_MEMBER_PATH,
+        BackupSection::RuntimeConfig.maximum_document_bytes(),
+    )?;
+    let secrets = read_member(
+        archive,
+        create::SECRETS_MEMBER_PATH,
+        BackupSection::RuntimeConfig.maximum_document_bytes(),
+    )?;
+    toml::from_str::<BTreeMap<String, String>>(std::str::from_utf8(&secrets)?)?;
+    if manifest.snapshot_revision != native_configuration_revision(&config, &secrets) {
+        anyhow::bail!("configuration backup revision does not match its files");
+    }
+    validate_native_configuration(&config, &secrets)
+}
+
+fn validate_native_configuration(config: &[u8], secrets: &[u8]) -> anyhow::Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "keeppeek-config-inspection-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir(&directory)?;
+    let config_path = directory.join(create::CONFIG_MEMBER_PATH);
+    let result = (|| {
+        crate::config::write_private_file(&config_path, config)?;
+        crate::config::write_private_file(&directory.join(create::SECRETS_MEMBER_PATH), secrets)?;
+        let root = toml::from_str::<toml::Table>(std::str::from_utf8(config)?)?;
+        crate::config::validate_configuration_table(&config_path, &root)
+    })();
+    let _ = std::fs::remove_dir_all(directory);
+    result
 }
 
 fn validate_json_section(
@@ -1096,9 +1180,6 @@ fn validate_sqlite_section<R: Read + Seek>(
             );
         }
         database::validate_backup_database(&path, section.kind)?;
-        if section.kind == BackupSection::Notifications {
-            crate::notifications::validate_backup_snapshot(&path)?;
-        }
         Ok(())
     })();
     database::remove_database_family(&path);
@@ -1109,8 +1190,13 @@ fn validate_manifest_metadata(manifest: &BackupManifest) -> anyhow::Result<()> {
     if manifest.created_at_ms == 0 {
         anyhow::bail!("backup manifest created_at_ms must be nonzero");
     }
-    if manifest.secret_policy != BackupSecretPolicy::ReferencesOnly {
-        anyhow::bail!("backup manifest secret_policy must be references_only");
+    let expected_secret_policy = if manifest.format_version == FORMAT_VERSION {
+        BackupSecretPolicy::Included
+    } else {
+        BackupSecretPolicy::ReferencesOnly
+    };
+    if manifest.secret_policy != expected_secret_policy {
+        anyhow::bail!("backup manifest secret policy does not match its format");
     }
     if manifest.sections.is_empty() {
         anyhow::bail!("backup manifest must contain at least one section");
@@ -1128,7 +1214,7 @@ fn validate_manifest_metadata(manifest: &BackupManifest) -> anyhow::Result<()> {
             anyhow::bail!("backup manifest contains duplicate feature capability {capability:?}");
         }
     }
-    if manifest.format_version == FORMAT_VERSION {
+    if manifest.format_version >= SECTIONED_FORMAT_VERSION {
         validate_current_manifest_metadata(manifest)?;
     }
     Ok(())
@@ -1800,7 +1886,7 @@ mod tests {
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&manifest_with(RUNTIME_CONFIG_PATH, b"[storage]\n", None))
                 .unwrap();
-        manifest["format_version"] = json!(3);
+        manifest["format_version"] = json!(4);
         let manifest = serde_json::to_vec(&manifest).unwrap();
         let bundle = archive_with_manifest(
             &manifest,
@@ -1812,7 +1898,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("unsupported KeepPeek backup format 3")
+                .contains("unsupported KeepPeek backup format 4")
         );
     }
 

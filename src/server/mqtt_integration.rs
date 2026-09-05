@@ -424,12 +424,7 @@ mod tests {
         let config_path = directory.join("config.toml");
         config::write_private_file(&config_path, b"host = \"127.0.0.1\"\n").unwrap();
         let shutdown = Shutdown::new();
-        let runtime = Runtime::open(
-            MqttForwarderConfig::default(),
-            &directory.join("mqtt-forwarder.db"),
-            shutdown.clone(),
-        )
-        .unwrap();
+        let runtime = Runtime::open(MqttForwarderConfig::default(), shutdown.clone()).unwrap();
         let handle = runtime.handle();
         let state = ServerState::empty()
             .with_camera_config_path(config_path.clone())

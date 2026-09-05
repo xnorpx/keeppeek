@@ -424,20 +424,7 @@ if (
 	throw new Error('Board 01 stored-event limitations are missing');
 }
 const expectedHttpPaths = ['/create', '/delete', '/logs', '/logs/snapshot', '/metrics'];
-const expectedBackupHttpPaths = [
-	'/api/backups',
-	'/api/backups/capabilities',
-	'/api/backups/download',
-	'/api/backups/downloads',
-	'/api/backups/uploads',
-	'/api/backups/transfers',
-	'/api/backups/inspect',
-	'/api/backups/restore-plans',
-	'/api/backups/restores',
-	'/api/backups/restores/get',
-	'/api/backups/rollbacks',
-	'/api/backups/delete'
-];
+const expectedBackupHttpPaths = ['/config/export', '/config/apply'];
 const expectedInternalHttpPaths = ['/recording-coverage'];
 if (positioningContract.httpPaths.join('|') !== expectedHttpPaths.join('|')) {
 	throw new Error('Board 01 HTTP boundary changed');

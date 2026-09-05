@@ -23,8 +23,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Manage reference-only configuration backups through the HTTP API.
-    Backup(keeppeek_backup::BackupArgs),
+    /// Export or apply configuration and secrets through the HTTP API.
+    Config(keeppeek_backup::BackupArgs),
 }
 
 fn main() -> std::process::ExitCode {
@@ -62,7 +62,7 @@ impl std::fmt::Display for MainError {
 
 fn run() -> Result<(), MainError> {
     let cli = Cli::parse();
-    if let Some(Command::Backup(args)) = cli.command {
+    if let Some(Command::Config(args)) = cli.command {
         return keeppeek_backup::run(args).map_err(MainError::Backup);
     }
     let _ = cli.config;
@@ -90,4 +90,40 @@ fn run_server() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_cli_accepts_export_and_apply() {
+        assert!(
+            Cli::try_parse_from([
+                "keeppeek",
+                "config",
+                "export",
+                "--output",
+                "configuration.zip",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "keeppeek",
+                "config",
+                "apply",
+                "configuration.zip",
+                "--confirm",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn config_cli_requires_export_destination_and_retires_managed_commands() {
+        assert!(Cli::try_parse_from(["keeppeek", "config", "export"]).is_err());
+        assert!(Cli::try_parse_from(["keeppeek", "backup", "list"]).is_err());
+        assert!(Cli::try_parse_from(["keeppeek", "config", "create"]).is_err());
+    }
 }

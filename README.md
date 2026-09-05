@@ -17,8 +17,8 @@ The [evidence export lifecycle](docs/evidence-exports.md) documents durable hist
 handling, deadlines, retention, authorization, and download integrity.
 The [recording integrity guide](docs/recording-integrity.md) documents coverage, retention,
 gap evidence, pagination, metrics, and alert inputs.
-The [backup and restore guide](docs/backup-and-restore.md) documents reference-only bundles,
-dry-run planning, path mapping, staged activation, and rollback.
+The [backup and restore guide](docs/backup-and-restore.md) documents sensitive two-TOML bundles,
+`GET /config/export`, `POST /config/apply`, and crash-safe activation on restart.
 
 ## Stop KeepPeek
 

@@ -1,5 +1,9 @@
 # Issue #128 Tasks
 
+This completed checklist records the original implementation. The managed HTTP lifecycle and CLI
+below are superseded by `GET /config/export`, `POST /config/apply`, and `keeppeek config`. The
+current two-TOML contract is documented in [backup and restore](../docs/backup-and-restore.md).
+
 ## Contract and bundle
 
 - [x] Define `keeppeek.backup.v1` and generate Rust/TypeScript ProtoJSON bindings.
@@ -10,7 +14,7 @@
 
 ## Durable state and secrets
 
-- [x] Snapshot recording and notification databases through their owning serialized threads.
+- [x] Snapshot the recording database through its owning thread and include notification rules in runtime configuration.
 - [x] Preserve camera, event, credential, layout, template, notification, and integration identities.
 - [x] Remove resolved secrets, sessions, access activity, delivery history, and provider state.
 - [x] Declare required target secret references and omitted media/cache data.

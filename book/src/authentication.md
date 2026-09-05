@@ -131,7 +131,7 @@ active sessions. Enabling it increments the revision; clients must establish new
 Revocation is permanent. It closes active sessions and prevents reconnecting with that credential.
 A revoked credential cannot be enabled or rotated; create a replacement identity instead.
 
-Credential metadata and SHA-256 verifiers are stored in the owner-only `access.toml` beside
+Credential metadata and SHA-256 verifiers are stored under `[access_credentials]` in `config.toml` beside
 `config.toml`. Raw keys are not stored there. The compatibility Initial Administrator key remains
 protected in owner-only `secrets.toml`.
 
@@ -204,7 +204,7 @@ Each record includes the principal, role, action, target, result, client classif
 timestamp. It never contains a raw key, verifier, Authorization header, cookie, SDP, log payload, or
 media.
 
-New records appear in memory immediately and are written atomically to `access.toml` within one
+New records appear in memory immediately and are written atomically to `config.toml` within one
 second and during graceful shutdown.
 
 `GET /metrics` exposes label-free counters and gauges for authentication successes and failures,

@@ -4,6 +4,7 @@ use anyhow::Context as _;
 
 use super::BackupSection;
 
+#[cfg(test)]
 pub const DATABASE_SNAPSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Creates a durable point-in-time database copy through Turso's native `VACUUM INTO` path.
@@ -142,7 +143,6 @@ pub(super) fn validate_backup_database(path: &Path, section: BackupSection) -> a
 const fn required_tables(section: BackupSection) -> &'static [&'static str] {
     match section {
         BackupSection::RecordingCatalog => &["recording_files", "recording_events"],
-        BackupSection::Notifications => &["notification_rules", "notification_rule_versions"],
         _ => &[],
     }
 }

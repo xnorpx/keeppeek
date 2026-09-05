@@ -1,6 +1,14 @@
-use std::path::Path;
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
-use super::{RuleStoreError, Stage, model::Severity, store::Store};
+use super::{
+    RuleStoreError, Stage,
+    model::Severity,
+    state::{DeliveryAttempt, InboxReceipt, LogicalNotification, RuntimeState},
+    store::Store,
+};
 use crate::storage::metadata::EventAttachment;
 
 const MAX_PAGE_ITEMS: usize = 200;
@@ -78,30 +86,43 @@ pub enum ClearScope {
     Before(i64),
 }
 
+#[derive(Clone)]
+struct InboxRecord {
+    logical: LogicalNotification,
+    receipt: InboxReceipt,
+}
+
+#[derive(Clone, Copy)]
+enum ReceiptUpdate {
+    Seen,
+    Acknowledged,
+    Cleared,
+}
+
 impl Store {
     pub(super) fn inbox(&self, principal_id: &str, limit: usize) -> anyhow::Result<Inbox> {
-        pollster::block_on(async {
-            let items = self.notification_items(principal_id, limit, false).await?;
-            let mut rows = self
-                .connection
-                .query(
-                    "SELECT COUNT(*)
-                     FROM logical_notifications AS l
-                     JOIN notification_receipts AS r ON r.logical_id = l.id
-                     WHERE l.owner_id = ?1 AND r.principal_id = ?1
-                       AND r.seen_at_ms IS NULL AND r.cleared_at_ms IS NULL",
-                    turso::params![principal_id],
-                )
-                .await?;
-            let unread_count = rows
-                .next()
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("notification unread query returned no row"))?
-                .get::<i64>(0)?;
-            Ok(Inbox {
-                items,
-                unread_count: from_i64(unread_count, "unread count")?,
-            })
+        let (records, unread_count) = {
+            let state = self.lock_state();
+            let records = Self::notification_records(&state, principal_id, limit, false);
+            let unread_count = state
+                .receipts
+                .iter()
+                .filter(|((logical_id, receipt_principal), receipt)| {
+                    receipt_principal == principal_id
+                        && receipt.seen_at_ms.is_none()
+                        && receipt.cleared_at_ms.is_none()
+                        && state
+                            .logical
+                            .get(logical_id)
+                            .is_some_and(|logical| logical.owner_id == principal_id)
+                })
+                .count();
+            (records, unread_count)
+        };
+        Ok(Inbox {
+            items: records.iter().map(Self::notification_item).collect(),
+            unread_count: u64::try_from(unread_count)
+                .expect("bounded notification count must fit in u64"),
         })
     }
 
@@ -110,20 +131,71 @@ impl Store {
         principal_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<HistoryGroup>> {
-        pollster::block_on(async {
-            let items = self.notification_items(principal_id, limit, true).await?;
-            let mut groups = Vec::with_capacity(items.len());
-            for notification in items {
-                let events = self.history_events(&notification.logical_id).await?;
-                let attempts = self.delivery_attempts(&notification.logical_id).await?;
-                groups.push(HistoryGroup {
-                    notification,
-                    events,
-                    attempts,
-                });
+        let snapshots = {
+            let state = self.lock_state();
+            let records = Self::notification_records(&state, principal_id, limit, true);
+            let logical_ids = records
+                .iter()
+                .map(|record| record.logical.id.clone())
+                .collect::<HashSet<_>>();
+            let mut events = HashMap::<String, Vec<HistoryEvent>>::new();
+            for entry in state
+                .history
+                .iter()
+                .filter(|entry| logical_ids.contains(&entry.logical_id))
+            {
+                let logical = state
+                    .logical
+                    .get(&entry.logical_id)
+                    .expect("notification history must reference a logical notification");
+                assert_eq!(
+                    entry.rule_id, logical.rule_id,
+                    "notification history must reference the logical notification rule"
+                );
+                events
+                    .entry(entry.logical_id.clone())
+                    .or_default()
+                    .push(HistoryEvent {
+                        sequence: entry.sequence,
+                        revision: entry.revision,
+                        stage: entry.stage,
+                        outcome: entry.outcome.clone(),
+                        reason: entry.reason.clone(),
+                        occurred_at_ms: entry.occurred_at_ms,
+                        next_eligible_at_ms: entry.next_eligible_at_ms,
+                    });
             }
-            Ok(groups)
-        })
+            let mut attempts = HashMap::<String, Vec<AttemptRecord>>::new();
+            for attempt in state
+                .attempts
+                .iter()
+                .filter(|attempt| logical_ids.contains(&attempt.logical_id))
+            {
+                attempts
+                    .entry(attempt.logical_id.clone())
+                    .or_default()
+                    .push(Self::attempt_record(&state, attempt));
+            }
+            records
+                .into_iter()
+                .map(|record| {
+                    let logical_id = record.logical.id.clone();
+                    (
+                        record,
+                        events.remove(&logical_id).unwrap_or_default(),
+                        attempts.remove(&logical_id).unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        Ok(snapshots
+            .iter()
+            .map(|(record, events, attempts)| HistoryGroup {
+                notification: Self::notification_item(record),
+                events: events.clone(),
+                attempts: attempts.clone(),
+            })
+            .collect())
     }
 
     pub(super) fn mark_seen(
@@ -135,7 +207,7 @@ impl Store {
         self.update_receipt(
             logical_id,
             principal_id,
-            "seen_at_ms",
+            ReceiptUpdate::Seen,
             now_ms,
             "notification_seen",
         )
@@ -150,7 +222,7 @@ impl Store {
         self.update_receipt(
             logical_id,
             principal_id,
-            "acknowledged_at_ms",
+            ReceiptUpdate::Acknowledged,
             now_ms,
             "notification_acknowledged",
         )
@@ -165,7 +237,7 @@ impl Store {
         self.update_receipt(
             logical_id,
             principal_id,
-            "cleared_at_ms",
+            ReceiptUpdate::Cleared,
             now_ms,
             "notification_cleared",
         )
@@ -177,318 +249,213 @@ impl Store {
         scope: &ClearScope,
         now_ms: i64,
     ) -> anyhow::Result<u64> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = async {
-                let (changed, detail) = match scope {
-                    ClearScope::All => (
-                        self.connection
-                            .execute(
-                                "UPDATE notification_receipts
-                                 SET cleared_at_ms = ?2
-                                 WHERE principal_id = ?1 AND cleared_at_ms IS NULL",
-                                turso::params![principal_id, now_ms],
-                            )
-                            .await?,
-                        "all".to_owned(),
-                    ),
-                    ClearScope::Rule(rule_id) => (
-                        self.connection
-                            .execute(
-                                "UPDATE notification_receipts
-                                 SET cleared_at_ms = ?3
-                                 WHERE principal_id = ?1 AND cleared_at_ms IS NULL
-                                   AND logical_id IN (
-                                       SELECT id FROM logical_notifications
-                                       WHERE owner_id = ?1 AND rule_id = ?2
-                                   )",
-                                turso::params![principal_id, rule_id.clone(), now_ms],
-                            )
-                            .await?,
-                        format!("rule:{rule_id}"),
-                    ),
-                    ClearScope::Before(before_ms) => (
-                        self.connection
-                            .execute(
-                                "UPDATE notification_receipts
-                                 SET cleared_at_ms = ?3
-                                 WHERE principal_id = ?1 AND cleared_at_ms IS NULL
-                                   AND logical_id IN (
-                                       SELECT id FROM logical_notifications
-                                       WHERE owner_id = ?1 AND updated_at_ms < ?2
-                                   )",
-                                turso::params![principal_id, before_ms, now_ms],
-                            )
-                            .await?,
-                        format!("before:{before_ms}"),
-                    ),
-                };
-                self.record_inbox_audit(
-                    principal_id,
-                    "notifications_cleared",
-                    "notifications",
-                    Some(&detail),
-                    now_ms,
-                )
-                .await?;
-                Ok(changed)
+        let detail = match scope {
+            ClearScope::All => "all".to_owned(),
+            ClearScope::Rule(rule_id) => format!("rule:{rule_id}"),
+            ClearScope::Before(before_ms) => format!("before:{before_ms}"),
+        };
+        let changed = {
+            let mut state = self.lock_state();
+            let keys = state
+                .receipts
+                .iter()
+                .filter(|((logical_id, receipt_principal), receipt)| {
+                    receipt_principal == principal_id
+                        && receipt.cleared_at_ms.is_none()
+                        && Self::clear_scope_matches(&state, logical_id, principal_id, scope)
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            for key in &keys {
+                if let Some(receipt) = state.receipts.get_mut(key) {
+                    receipt.cleared_at_ms = Some(now_ms);
+                }
             }
-            .await;
-            finish_transaction(&self.connection, result).await
-        })
+            state.prune(now_ms)?;
+            u64::try_from(keys.len()).expect("bounded notification count must fit in u64")
+        };
+        self.record_inbox_audit(
+            principal_id,
+            "notifications_cleared",
+            "notifications",
+            Some(&detail),
+            now_ms,
+        );
+        Ok(changed)
     }
 
-    async fn notification_items(
-        &self,
+    fn notification_records(
+        state: &RuntimeState,
         principal_id: &str,
         limit: usize,
         include_cleared: bool,
-    ) -> anyhow::Result<Vec<NotificationItem>> {
+    ) -> Vec<InboxRecord> {
         let limit = limit.clamp(1, MAX_PAGE_ITEMS);
-        let cleared = if include_cleared {
-            ""
-        } else {
-            "AND r.cleared_at_ms IS NULL"
-        };
-        let mut rows = self
-            .connection
-            .query(
-                format!(
-                    "SELECT l.id, l.rule_id, l.source_id, l.source_identity,
-                            l.lifecycle, l.stage,
-                            l.highest_revision, l.title, l.body, l.deep_link,
-                            l.attachment_path, l.severity,
-                            l.created_at_ms, l.updated_at_ms,
-                            r.seen_at_ms, r.acknowledged_at_ms,
-                            l.canonical_attachment_json, l.icon_key, l.image_available
-                     FROM logical_notifications AS l
-                     JOIN notification_receipts AS r ON r.logical_id = l.id
-                     WHERE l.owner_id = ?1 AND r.principal_id = ?1 {cleared}
-                     ORDER BY l.updated_at_ms DESC, l.id
-                     LIMIT ?2"
-                ),
-                turso::params![principal_id, i64::try_from(limit)?],
-            )
-            .await?;
-        let mut items = Vec::new();
-        while let Some(row) = rows.next().await? {
-            let attachment_path = row.get::<Option<String>>(10)?;
-            let attachment_available = attachment_path
-                .as_deref()
-                .is_some_and(|path| Path::new(path).is_file());
-            let canonical_attachment = row
-                .get::<Option<String>>(16)?
-                .as_deref()
-                .map(serde_json::from_str)
-                .transpose()?;
-            items.push(NotificationItem {
-                logical_id: row.get(0)?,
-                rule_id: row.get(1)?,
-                source_id: row.get(2)?,
-                source_identity: row.get(3)?,
-                lifecycle: row.get(4)?,
-                stage: parse_stage(&row.get::<String>(5)?)?,
-                revision: from_i64(row.get(6)?, "notification revision")?,
-                title: row.get(7)?,
-                body: row.get(8)?,
-                deep_link: row.get(9)?,
-                attachment_available,
-                severity: parse_severity(&row.get::<String>(11)?)?,
-                created_at_ms: row.get(12)?,
-                updated_at_ms: row.get(13)?,
-                seen_at_ms: row.get(14)?,
-                acknowledged_at_ms: row.get(15)?,
-                image_available: canonical_attachment.is_some()
-                    && row.get::<i64>(18)? != 0
-                    && attachment_available,
-                canonical_attachment,
-                icon_key: row.get(17)?,
-            });
-        }
-        Ok(items)
+        let mut records = state
+            .receipts
+            .iter()
+            .filter_map(|((logical_id, receipt_principal), receipt)| {
+                if receipt_principal != principal_id
+                    || (!include_cleared && receipt.cleared_at_ms.is_some())
+                {
+                    return None;
+                }
+                let logical = state.logical.get(logical_id)?;
+                (logical.owner_id == principal_id).then(|| InboxRecord {
+                    logical: logical.clone(),
+                    receipt: receipt.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        records.sort_unstable_by(|left, right| {
+            right
+                .logical
+                .updated_at_ms
+                .cmp(&left.logical.updated_at_ms)
+                .then_with(|| left.logical.id.cmp(&right.logical.id))
+        });
+        records.truncate(limit);
+        records
     }
 
-    async fn history_events(&self, logical_id: &str) -> anyhow::Result<Vec<HistoryEvent>> {
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT sequence, transition_revision, stage, outcome, reason,
-                        occurred_at_ms, next_eligible_at_ms
-                 FROM notification_history WHERE logical_id = ?1 ORDER BY sequence",
-                turso::params![logical_id],
-            )
-            .await?;
-        let mut events = Vec::new();
-        while let Some(row) = rows.next().await? {
-            events.push(HistoryEvent {
-                sequence: from_i64(row.get(0)?, "history sequence")?,
-                revision: from_i64(row.get(1)?, "history revision")?,
-                stage: parse_stage(&row.get::<String>(2)?)?,
-                outcome: row.get(3)?,
-                reason: row.get(4)?,
-                occurred_at_ms: row.get(5)?,
-                next_eligible_at_ms: row.get(6)?,
-            });
+    fn notification_item(record: &InboxRecord) -> NotificationItem {
+        let logical = &record.logical;
+        let attachment_available = logical
+            .attachment_path
+            .as_deref()
+            .is_some_and(|path| Path::new(path).is_file());
+        NotificationItem {
+            logical_id: logical.id.clone(),
+            rule_id: logical.rule_id.clone(),
+            source_id: logical.source_id.clone(),
+            source_identity: logical.source_identity.clone(),
+            lifecycle: logical.lifecycle.as_str().to_owned(),
+            stage: logical.stage,
+            revision: logical.highest_revision,
+            title: logical.title.clone(),
+            body: logical.body.clone(),
+            deep_link: logical.deep_link.clone(),
+            attachment_available,
+            canonical_attachment: logical.canonical_attachment.clone(),
+            icon_key: logical.icon_key.clone(),
+            image_available: logical.canonical_attachment.is_some()
+                && logical.image_available
+                && attachment_available,
+            severity: logical.severity,
+            created_at_ms: logical.created_at_ms,
+            updated_at_ms: logical.updated_at_ms,
+            seen_at_ms: record.receipt.seen_at_ms,
+            acknowledged_at_ms: record.receipt.acknowledged_at_ms,
         }
-        Ok(events)
     }
 
-    async fn delivery_attempts(&self, logical_id: &str) -> anyhow::Result<Vec<AttemptRecord>> {
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT a.sequence, a.channel, a.stage, a.attempt, a.outcome, a.target_hash,
-                        a.provider_status, a.reason, a.attempted_at_ms, a.retry_at_ms,
-                        a.provider_request_id,
-                        CASE WHEN a.outcome = 'delivered' THEN o.provider_acknowledged_at_ms END,
-                        CASE WHEN a.outcome = 'delivered' THEN o.provider_expired_at_ms END,
-                        CASE WHEN a.outcome = 'delivered' THEN o.provider_acknowledged_by_hash END,
-                        CASE
-                            WHEN a.outcome != 'delivered' OR o.provider_receipt IS NULL THEN NULL
-                            WHEN o.provider_acknowledged_at_ms IS NOT NULL THEN 'acknowledged'
-                            WHEN o.provider_expired_at_ms IS NOT NULL THEN 'expired'
-                            WHEN o.next_receipt_check_at_ms IS NULL THEN 'failed'
-                            ELSE 'pending'
-                        END
-                 FROM notification_attempts AS a
-                 LEFT JOIN notification_outbox AS o ON o.id = a.outbox_id
-                 WHERE a.logical_id = ?1 ORDER BY a.sequence",
-                turso::params![logical_id],
+    fn attempt_record(state: &RuntimeState, attempt: &DeliveryAttempt) -> AttemptRecord {
+        let delivered_outbox = (attempt.outcome == "delivered")
+            .then(|| state.outbox.get(&attempt.outbox_id))
+            .flatten();
+        let provider_acknowledgement_state = delivered_outbox.and_then(|outbox| {
+            outbox.provider_receipt.as_ref()?;
+            Some(
+                if outbox.provider_acknowledged_at_ms.is_some() {
+                    "acknowledged"
+                } else if outbox.provider_expired_at_ms.is_some() {
+                    "expired"
+                } else if outbox.next_receipt_check_at_ms.is_none() {
+                    "failed"
+                } else {
+                    "pending"
+                }
+                .to_owned(),
             )
-            .await?;
-        let mut attempts = Vec::new();
-        while let Some(row) = rows.next().await? {
-            attempts.push(AttemptRecord {
-                sequence: from_i64(row.get(0)?, "attempt sequence")?,
-                channel: row.get(1)?,
-                stage: parse_stage(&row.get::<String>(2)?)?,
-                attempt: u32::try_from(row.get::<i64>(3)?)?,
-                outcome: row.get(4)?,
-                target_hash: row.get(5)?,
-                provider_status: row.get::<Option<i64>>(6)?.map(u16::try_from).transpose()?,
-                reason: row.get(7)?,
-                attempted_at_ms: row.get(8)?,
-                retry_at_ms: row.get(9)?,
-                provider_request_id: row.get(10)?,
-                provider_acknowledged_at_ms: row.get(11)?,
-                provider_expired_at_ms: row.get(12)?,
-                provider_acknowledged_by_hash: row.get(13)?,
-                provider_acknowledgement_state: row.get(14)?,
-            });
+        });
+        AttemptRecord {
+            sequence: attempt.sequence,
+            channel: attempt.channel.as_str().to_owned(),
+            stage: attempt.stage,
+            attempt: attempt.attempt,
+            outcome: attempt.outcome.clone(),
+            target_hash: attempt.target_hash.clone(),
+            provider_status: attempt.provider_status,
+            provider_request_id: attempt.provider_request_id.clone(),
+            provider_acknowledged_at_ms: delivered_outbox
+                .and_then(|outbox| outbox.provider_acknowledged_at_ms),
+            provider_expired_at_ms: delivered_outbox
+                .and_then(|outbox| outbox.provider_expired_at_ms),
+            provider_acknowledged_by_hash: delivered_outbox
+                .and_then(|outbox| outbox.provider_acknowledged_by_hash.clone()),
+            provider_acknowledgement_state,
+            reason: attempt.reason.clone(),
+            attempted_at_ms: attempt.attempted_at_ms,
+            retry_at_ms: attempt.retry_at_ms,
         }
-        Ok(attempts)
     }
 
     fn update_receipt(
         &self,
         logical_id: &str,
         principal_id: &str,
-        column: &str,
+        update: ReceiptUpdate,
         now_ms: i64,
         audit_action: &str,
     ) -> anyhow::Result<()> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = async {
-                let sql = match column {
-                    "seen_at_ms" => {
-                        "UPDATE notification_receipts SET seen_at_ms = COALESCE(seen_at_ms, ?3)
-                         WHERE logical_id = ?1 AND principal_id = ?2
-                           AND EXISTS (
-                               SELECT 1 FROM logical_notifications
-                               WHERE id = ?1 AND owner_id = ?2
-                           )"
-                    }
-                    "acknowledged_at_ms" => {
-                        "UPDATE notification_receipts
-                         SET acknowledged_at_ms = COALESCE(acknowledged_at_ms, ?3)
-                         WHERE logical_id = ?1 AND principal_id = ?2
-                           AND EXISTS (
-                               SELECT 1 FROM logical_notifications
-                               WHERE id = ?1 AND owner_id = ?2
-                           )"
-                    }
-                    "cleared_at_ms" => {
-                        "UPDATE notification_receipts SET cleared_at_ms = ?3
-                         WHERE logical_id = ?1 AND principal_id = ?2
-                           AND EXISTS (
-                               SELECT 1 FROM logical_notifications
-                               WHERE id = ?1 AND owner_id = ?2
-                           )"
-                    }
-                    _ => anyhow::bail!("unsupported notification receipt column"),
-                };
-                let changed = self
-                    .connection
-                    .execute(sql, turso::params![logical_id, principal_id, now_ms])
-                    .await?;
-                if changed == 0 {
-                    return Err(RuleStoreError::NotAuthorized.into());
-                }
-                self.record_inbox_audit(principal_id, audit_action, logical_id, None, now_ms)
-                    .await
+        {
+            let mut state = self.lock_state();
+            let authorized = state
+                .logical
+                .get(logical_id)
+                .is_some_and(|logical| logical.owner_id == principal_id);
+            if !authorized {
+                return Err(RuleStoreError::NotAuthorized.into());
             }
-            .await;
-            finish_transaction(&self.connection, result).await
-        })
+            let receipt = state
+                .receipts
+                .get_mut(&(logical_id.to_owned(), principal_id.to_owned()))
+                .ok_or(RuleStoreError::NotAuthorized)?;
+            match update {
+                ReceiptUpdate::Seen => receipt.seen_at_ms.get_or_insert(now_ms),
+                ReceiptUpdate::Acknowledged => receipt.acknowledged_at_ms.get_or_insert(now_ms),
+                ReceiptUpdate::Cleared => receipt.cleared_at_ms.insert(now_ms),
+            };
+            state.prune(now_ms)?;
+        }
+        self.record_inbox_audit(principal_id, audit_action, logical_id, None, now_ms);
+        Ok(())
     }
 
-    async fn record_inbox_audit(
+    fn clear_scope_matches(
+        state: &RuntimeState,
+        logical_id: &str,
+        principal_id: &str,
+        scope: &ClearScope,
+    ) -> bool {
+        match scope {
+            ClearScope::All => true,
+            ClearScope::Rule(rule_id) => state.logical.get(logical_id).is_some_and(|logical| {
+                logical.owner_id == principal_id && logical.rule_id == *rule_id
+            }),
+            ClearScope::Before(before_ms) => state.logical.get(logical_id).is_some_and(|logical| {
+                logical.owner_id == principal_id && logical.updated_at_ms < *before_ms
+            }),
+        }
+    }
+
+    fn record_inbox_audit(
         &self,
         principal_id: &str,
         action: &str,
         subject_id: &str,
         detail: Option<&str>,
         now_ms: i64,
-    ) -> anyhow::Result<()> {
-        self.connection
-            .execute(
-                "INSERT INTO notification_audit (
-                     principal_id, action, subject_id, detail, occurred_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
-                turso::params![principal_id, action, subject_id, detail, now_ms],
-            )
-            .await?;
-        Ok(())
+    ) {
+        tracing::info!(
+            event = "notification_audit",
+            principal_id,
+            action,
+            subject_id,
+            detail = detail.unwrap_or(""),
+            occurred_at_ms = now_ms
+        );
     }
-}
-
-async fn finish_transaction<T>(
-    connection: &turso::Connection,
-    result: anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    match result {
-        Ok(value) => {
-            connection.execute_batch("COMMIT").await?;
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK").await;
-            Err(error)
-        }
-    }
-}
-
-fn parse_stage(value: &str) -> anyhow::Result<Stage> {
-    match value {
-        "preliminary" => Ok(Stage::Preliminary),
-        "enriched" => Ok(Stage::Enriched),
-        "recovery" => Ok(Stage::Recovery),
-        _ => anyhow::bail!("stored notification stage is invalid"),
-    }
-}
-
-fn parse_severity(value: &str) -> anyhow::Result<Severity> {
-    match value {
-        "info" => Ok(Severity::Info),
-        "warning" => Ok(Severity::Warning),
-        "critical" => Ok(Severity::Critical),
-        _ => anyhow::bail!("stored notification severity is invalid"),
-    }
-}
-
-fn from_i64(value: i64, name: &str) -> anyhow::Result<u64> {
-    u64::try_from(value).map_err(|_| anyhow::anyhow!("stored {name} is negative"))
 }
 
 #[cfg(test)]
@@ -496,6 +463,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::notifications::{Lifecycle, state::PendingHistoryEntry};
 
     fn test_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("keeppeek-{name}-{}", uuid::Uuid::new_v4()));
@@ -504,56 +472,52 @@ mod tests {
     }
 
     fn seed_notification(store: &Store, logical_id: &str, rule_id: &str, updated_at_ms: i64) {
-        pollster::block_on(async {
-            store
-                .connection
-                .execute(
-                    "INSERT INTO logical_notifications (
-                         id, rule_id, owner_id, source_id, source_identity, lifecycle,
-                         stage, highest_revision, created_at_ms, updated_at_ms,
-                         enrichment_deadline_at_ms, title, body, deep_link, severity
-                     ) VALUES (?1, ?2, 'owner-1', 'front-door', ?1, 'event',
-                               'preliminary', 1, ?3, ?3, ?3 + 10000,
-                               'Person', 'Detected', '/events/test', 'info')",
-                    turso::params![logical_id, rule_id, updated_at_ms],
-                )
-                .await
-                .unwrap();
-            store
-                .connection
-                .execute(
-                    "INSERT INTO notification_receipts (logical_id, principal_id)
-                     VALUES (?1, 'owner-1')",
-                    turso::params![logical_id],
-                )
-                .await
-                .unwrap();
-            store
-                .connection
-                .execute(
-                    "INSERT INTO notification_history (
-                         logical_id, rule_id, transition_revision, stage, outcome,
-                         occurred_at_ms
-                     ) VALUES (?1, ?2, 1, 'preliminary', 'created', ?3)",
-                    turso::params![logical_id, rule_id, updated_at_ms],
-                )
-                .await
-                .unwrap();
+        let mut state = store.lock_state();
+        state.logical.insert(
+            logical_id.to_owned(),
+            LogicalNotification {
+                id: logical_id.to_owned(),
+                rule_id: rule_id.to_owned(),
+                owner_id: "owner-1".to_owned(),
+                source_id: "front-door".to_owned(),
+                source_identity: logical_id.to_owned(),
+                lifecycle: Lifecycle::Event,
+                stage: Stage::Preliminary,
+                highest_revision: 1,
+                enrichment_attempts: 0,
+                created_at_ms: updated_at_ms,
+                updated_at_ms,
+                enrichment_deadline_at_ms: updated_at_ms.saturating_add(10_000),
+                title: "Person".to_owned(),
+                body: "Detected".to_owned(),
+                deep_link: "/events/test".to_owned(),
+                attachment_path: None,
+                severity: Severity::Info,
+                canonical_attachment: None,
+                icon_key: None,
+                image_available: false,
+            },
+        );
+        state.receipts.insert(
+            (logical_id.to_owned(), "owner-1".to_owned()),
+            InboxReceipt::default(),
+        );
+        state.push_history(PendingHistoryEntry {
+            logical_id,
+            rule_id,
+            revision: 1,
+            stage: Stage::Preliminary,
+            outcome: "created",
+            reason: None,
+            occurred_at_ms: updated_at_ms,
+            next_eligible_at_ms: None,
         });
-    }
-
-    fn count(store: &Store, sql: &str) -> u64 {
-        pollster::block_on(async {
-            let mut rows = store.connection.query(sql, ()).await.unwrap();
-            let value = rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap();
-            u64::try_from(value).unwrap()
-        })
     }
 
     #[test]
     fn receipts_are_principal_scoped_and_independent() {
         let directory = test_dir("notification-inbox-receipts");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_notification(&store, "logical-1", "rule-1", 1_000);
         seed_notification(&store, "logical-2", "rule-2", 2_000);
 
@@ -587,13 +551,6 @@ mod tests {
         let history = store.history("owner-1", 100).unwrap();
         assert_eq!(history.len(), 2);
         assert!(history.iter().all(|group| group.events.len() == 1));
-        assert_eq!(
-            count(
-                &store,
-                "SELECT COUNT(*) FROM notification_audit WHERE principal_id = 'owner-1'"
-            ),
-            4
-        );
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -601,7 +558,7 @@ mod tests {
     #[test]
     fn scoped_clear_only_changes_the_selected_rule() {
         let directory = test_dir("notification-inbox-scope");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_notification(&store, "logical-1", "rule-1", 1_000);
         seed_notification(&store, "logical-2", "rule-2", 2_000);
 

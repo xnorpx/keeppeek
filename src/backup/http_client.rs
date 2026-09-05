@@ -1,6 +1,6 @@
 use crate::api::backup_proto;
-use serde::{Serialize, de::DeserializeOwned};
-use std::{fmt, fs::File, io::Write as _, path::Path, time::Duration};
+use serde::de::DeserializeOwned;
+use std::{fmt, fs::File, path::Path, time::Duration};
 use ureq::{Agent, Body, http::Response};
 use url::{Host, Url};
 
@@ -75,6 +75,7 @@ impl BackupHttpClient {
         base_url.set_path(&base_path);
         let agent = Agent::config_builder()
             .http_status_as_error(false)
+            .max_redirects(0)
             .timeout_global(Some(REQUEST_TIMEOUT))
             .build()
             .into();
@@ -85,117 +86,44 @@ impl BackupHttpClient {
         })
     }
 
-    pub fn capabilities(&self) -> Result<backup_proto::BackupCapabilities, BackupClientError> {
-        self.get_json("/api/backups/capabilities")
-    }
-
-    pub fn list(&self) -> Result<backup_proto::ListBackupsResponse, BackupClientError> {
-        self.get_json("/api/backups")
-    }
-
-    pub fn create(
-        &self,
-        request: &backup_proto::CreateBackupRequest,
-    ) -> Result<backup_proto::BackupRecord, BackupClientError> {
-        self.post_json("/api/backups", request)
-    }
-
-    pub fn inspect(
-        &self,
-        backup_id: &str,
-    ) -> Result<backup_proto::BackupRecord, BackupClientError> {
-        self.post_json(
-            "/api/backups/inspect",
-            &backup_proto::InspectBackupRequest {
-                backup_id: backup_id.to_owned(),
-            },
-        )
-    }
-
-    pub fn create_restore_plan(
-        &self,
-        request: &backup_proto::CreateRestorePlanRequest,
-    ) -> Result<backup_proto::RestorePlan, BackupClientError> {
-        self.post_json("/api/backups/restore-plans", request)
-    }
-
-    pub fn activate(
-        &self,
-        request: &backup_proto::ActivateRestoreRequest,
-    ) -> Result<backup_proto::RestoreRecord, BackupClientError> {
-        self.post_json("/api/backups/restores", request)
-    }
-
-    pub fn get_restore(
-        &self,
-        restore_id: &str,
-    ) -> Result<backup_proto::RestoreRecord, BackupClientError> {
-        self.post_json(
-            "/api/backups/restores/get",
-            &backup_proto::GetRestoreRequest {
-                restore_id: restore_id.to_owned(),
-            },
-        )
-    }
-
-    pub fn rollback(
-        &self,
-        request: &backup_proto::RollbackRestoreRequest,
-    ) -> Result<backup_proto::RestoreRecord, BackupClientError> {
-        self.post_json("/api/backups/rollbacks", request)
-    }
-
-    pub fn delete(
-        &self,
-        request: &backup_proto::DeleteBackupRequest,
-    ) -> Result<backup_proto::DeleteBackupResponse, BackupClientError> {
-        self.post_json("/api/backups/delete", request)
-    }
-
-    pub fn upload(&self, path: &Path) -> Result<backup_proto::BackupRecord, BackupClientError> {
-        let file_name = path.file_name().and_then(|value| value.to_str()).ok_or(
-            BackupClientError::Protocol("backup upload file name is invalid"),
-        )?;
-        let content_length = std::fs::metadata(path)
-            .map_err(|_| BackupClientError::Protocol("backup upload file is unavailable"))?
+    pub fn apply(&self, path: &Path) -> Result<backup_proto::RestoreRecord, BackupClientError> {
+        let file = File::open(path)
+            .map_err(|_| BackupClientError::Protocol("configuration archive is unavailable"))?;
+        let content_length = file
+            .metadata()
+            .map_err(|_| BackupClientError::Protocol("configuration archive is unavailable"))?
             .len();
-        let transfer: backup_proto::BackupTransfer = self.post_json(
-            "/api/backups/uploads",
-            &backup_proto::BeginBackupUploadRequest {
-                client_request_id: uuid::Uuid::new_v4().to_string(),
-                file_name: file_name.to_owned(),
-                content_length,
-                archive_sha256: None,
-            },
-        )?;
-        if transfer.uri != "/api/backups/transfers" || content_length > transfer.maximum_bytes {
+        if content_length == 0
+            || content_length > super::DEFAULT_INSPECTION_LIMITS.maximum_archive_bytes
+        {
             return Err(BackupClientError::Protocol(
-                "backup server returned an invalid upload transfer",
+                "configuration archive is outside the supported size limit",
             ));
         }
-        let mut url = self.url(&transfer.uri)?;
-        url.query_pairs_mut()
-            .append_pair("transfer_id", &transfer.transfer_id);
-        let file = File::open(path)
-            .map_err(|_| BackupClientError::Protocol("backup upload file is unavailable"))?;
-        let mut request = self.agent.put(url.as_str()).content_type("application/zip");
+        let url = self.url("/config/apply")?;
+        let mut request = self
+            .agent
+            .post(url.as_str())
+            .content_type("application/zip")
+            .header("Accept", "application/json")
+            .header("Content-Length", content_length.to_string());
         if let Some(authorization) = &self.authorization {
             request = request.header("Authorization", authorization);
         }
         let response = request
             .send(file)
             .map_err(|_| BackupClientError::Transport)?;
-        decode_json_response(response)
+        let record: backup_proto::RestoreRecord = decode_json_response(response)?;
+        if record.state != backup_proto::RestoreState::AwaitingRestart as i32 {
+            return Err(BackupClientError::Protocol(
+                "configuration apply did not return a staged restore",
+            ));
+        }
+        Ok(record)
     }
 
-    pub fn download(
-        &self,
-        backup_id: &str,
-        destination: &Path,
-        maximum_bytes: u64,
-    ) -> Result<u64, BackupClientError> {
-        let mut url = self.url("/api/backups/download")?;
-        url.query_pairs_mut().append_pair("backup_id", backup_id);
+    pub fn export(&self, destination: &Path) -> Result<u64, BackupClientError> {
+        let url = self.url("/config/export")?;
         let mut request = self
             .agent
             .get(url.as_str())
@@ -207,62 +135,25 @@ impl BackupHttpClient {
         if !response.status().is_success() {
             return Err(decode_api_error(response));
         }
-        let mut output = create_private_file(destination)?;
-        let copied = std::io::copy(
-            &mut response
-                .into_body()
-                .into_with_config()
-                .limit(maximum_bytes.saturating_add(1))
-                .reader(),
-            &mut output,
-        )
-        .map_err(|_| BackupClientError::Transport)?;
-        if copied == 0 || copied > maximum_bytes {
-            drop(output);
-            let _ = std::fs::remove_file(destination);
+        if response
+            .headers()
+            .get("Content-Type")
+            .and_then(|value| value.to_str().ok())
+            != Some("application/zip")
+        {
             return Err(BackupClientError::Protocol(
-                "backup download is outside the declared size limit",
+                "configuration export did not return a ZIP archive",
             ));
         }
-        output
-            .flush()
-            .map_err(|_| BackupClientError::Protocol("backup download could not be saved"))?;
-        Ok(copied)
-    }
-
-    fn get_json<Output: DeserializeOwned>(&self, path: &str) -> Result<Output, BackupClientError> {
-        let url = self.url(path)?;
-        let mut request = self
-            .agent
-            .get(url.as_str())
-            .header("Accept", "application/json");
-        if let Some(authorization) = &self.authorization {
-            request = request.header("Authorization", authorization);
+        let mut output = create_private_file(destination)?;
+        let result = save_export(response, &mut output);
+        drop(output);
+        if result.is_err() && std::fs::remove_file(destination).is_err() {
+            return Err(BackupClientError::Protocol(
+                "incomplete configuration export could not be removed",
+            ));
         }
-        let response = request.call().map_err(|_| BackupClientError::Transport)?;
-        decode_json_response(response)
-    }
-
-    fn post_json<Input: Serialize, Output: DeserializeOwned>(
-        &self,
-        path: &str,
-        input: &Input,
-    ) -> Result<Output, BackupClientError> {
-        let url = self.url(path)?;
-        let body = serde_json::to_vec(input)
-            .map_err(|_| BackupClientError::Protocol("backup request could not be encoded"))?;
-        let mut request = self
-            .agent
-            .post(url.as_str())
-            .content_type("application/json")
-            .header("Accept", "application/json");
-        if let Some(authorization) = &self.authorization {
-            request = request.header("Authorization", authorization);
-        }
-        let response = request
-            .send(body)
-            .map_err(|_| BackupClientError::Transport)?;
-        decode_json_response(response)
+        result
     }
 
     fn url(&self, path: &str) -> Result<Url, BackupClientError> {
@@ -270,6 +161,28 @@ impl BackupHttpClient {
             .join(path)
             .map_err(|_| BackupClientError::Protocol("backup endpoint URL is invalid"))
     }
+}
+
+fn save_export(response: Response<Body>, output: &mut File) -> Result<u64, BackupClientError> {
+    let maximum_bytes = super::DEFAULT_INSPECTION_LIMITS.maximum_archive_bytes;
+    let copied = std::io::copy(
+        &mut response
+            .into_body()
+            .into_with_config()
+            .limit(maximum_bytes + 1)
+            .reader(),
+        output,
+    )
+    .map_err(|_| BackupClientError::Transport)?;
+    if copied == 0 || copied > maximum_bytes {
+        return Err(BackupClientError::Protocol(
+            "configuration export is outside the supported size limit",
+        ));
+    }
+    output
+        .sync_all()
+        .map_err(|_| BackupClientError::Protocol("configuration export could not be saved"))?;
+    Ok(copied)
 }
 
 fn decode_json_response<Output: DeserializeOwned>(

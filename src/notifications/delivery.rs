@@ -1,7 +1,6 @@
 use std::{
     fs::File,
     io::Read,
-    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,7 +12,13 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{Stage, model::Channel, pushover, store::Store};
+use super::{
+    Stage, decrement_counter,
+    model::Channel,
+    pushover,
+    state::{DeliveryAttempt, OutboxStatus, PendingHistoryEntry, RuntimeState},
+    store::Store,
+};
 use crate::storage::metadata::EventAttachment;
 
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,7 +33,7 @@ const MAX_PROVIDER_RESPONSE_BYTES: u64 = 64 * 1_024;
 
 #[derive(Debug, Clone)]
 pub(super) struct Delivery {
-    id: i64,
+    id: u64,
     logical_id: String,
     rule_id: String,
     stage: Stage,
@@ -77,7 +82,7 @@ struct ProviderReceipt {
 
 #[derive(Debug, Clone)]
 struct ReceiptCheck {
-    outbox_id: i64,
+    outbox_id: u64,
     logical_id: String,
     rule_id: String,
     stage: Stage,
@@ -106,6 +111,18 @@ enum ReceiptOutcome {
     Permanent {
         reason: String,
     },
+}
+
+struct DeliveryTransition {
+    status: OutboxStatus,
+    history_outcome: &'static str,
+    reason: Option<String>,
+    provider_status: Option<u16>,
+    retry_at_ms: Option<i64>,
+    provider_request_id: Option<String>,
+    provider_receipt: Option<String>,
+    next_receipt_check_at_ms: Option<i64>,
+    provider_receipt_expires_at_ms: Option<i64>,
 }
 
 impl From<DeliveryOutcome> for ProviderResult {
@@ -569,7 +586,7 @@ pub(super) struct Workers {
 }
 
 impl Workers {
-    pub(super) fn start(path: &Path) -> anyhow::Result<Self> {
+    pub(super) fn start(store: Store) -> anyhow::Result<Self> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::with_capacity(4);
         let channels = [
@@ -578,11 +595,8 @@ impl Workers {
             Channel::Webhook,
             Channel::Forwarder,
         ];
-        let stores = channels
-            .iter()
-            .map(|_| Store::open(path))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        for (channel, store) in channels.into_iter().zip(stores) {
+        for channel in channels {
+            let store = store.clone();
             let worker_shutdown = shutdown.clone();
             let provider: Box<dyn Provider> = match channel {
                 Channel::Browser => Box::new(BrowserProvider),
@@ -607,7 +621,10 @@ impl Workers {
         self.shutdown.store(true, Ordering::Release);
         for thread in self.threads.drain(..) {
             if thread.join().is_err() {
-                tracing::error!("notification delivery worker panicked");
+                tracing::error!(
+                    event = "notification_delivery_worker_panicked",
+                    "notification delivery worker panicked"
+                );
             }
         }
     }
@@ -634,15 +651,17 @@ fn run_worker(
                 let outcome = provider.deliver(&delivery);
                 if let Err(error) = store.finish_delivery(&delivery, outcome, unix_time_ms()) {
                     tracing::warn!(
+                        event = "notification_delivery_record_failed",
                         channel = channel.as_str(),
                         error = %error,
-                        "unable to persist notification delivery result"
+                        "unable to record notification delivery result"
                     );
                 }
             }
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(
+                    event = "notification_delivery_claim_failed",
                     channel = channel.as_str(),
                     error = %error,
                     "notification delivery worker could not claim an outbox item"
@@ -656,15 +675,17 @@ fn run_worker(
                     let outcome = provider.check_receipt(&receipt);
                     if let Err(error) = store.finish_receipt(&receipt, outcome, unix_time_ms()) {
                         tracing::warn!(
+                            event = "notification_receipt_record_failed",
                             channel = channel.as_str(),
                             error = %error,
-                            "unable to persist notification receipt result"
+                            "unable to record notification receipt result"
                         );
                     }
                 }
                 Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(
+                        event = "notification_receipt_claim_failed",
                         channel = channel.as_str(),
                         error = %error,
                         "notification delivery worker could not claim a receipt check"
@@ -679,168 +700,168 @@ fn run_worker(
 }
 
 impl Store {
-    pub(super) fn recover_interrupted_deliveries(&self) -> anyhow::Result<()> {
-        pollster::block_on(async {
-            self.connection
-                .execute(
-                    "UPDATE notification_outbox SET status = 'retrying'
-                     WHERE status = 'delivering'",
-                    (),
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
     pub(super) fn claim_due(
         &self,
         channel: Channel,
         now_ms: i64,
     ) -> anyhow::Result<Option<Delivery>> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = self.claim_due_in_transaction(channel, now_ms).await;
-            finish_transaction(&self.connection, result).await
-        })
-    }
-
-    async fn claim_due_in_transaction(
-        &self,
-        channel: Channel,
-        now_ms: i64,
-    ) -> anyhow::Result<Option<Delivery>> {
-        loop {
-            let mut rows = self
-                .connection
-                .query(
-                    "SELECT o.id, o.logical_id, l.rule_id, o.stage, o.destination_json,
-                            o.payload_json, o.replacement_key, o.attempt_count,
-                            o.max_attempts, o.max_retry_interval_ms, l.attachment_path,
-                            o.attachment_enabled, o.attachment_required,
-                            o.max_attachment_bytes, o.expires_at_ms
-                     FROM notification_outbox AS o
-                     JOIN logical_notifications AS l ON l.id = o.logical_id
-                     WHERE o.channel = ?1 AND o.status IN ('pending', 'retrying')
-                       AND o.next_attempt_at_ms <= ?2
-                     ORDER BY o.priority DESC, o.id
-                     LIMIT 1",
-                    turso::params![channel.as_str(), now_ms],
-                )
-                .await?;
-            let Some(row) = rows.next().await? else {
-                return Ok(None);
+        let (delivery, expired_count) = {
+            let mut state = self.lock_state();
+            let mut expired_count = 0_u64;
+            let delivery = loop {
+                let Some(id) = Self::next_due_outbox_id(&state, channel, now_ms) else {
+                    break None;
+                };
+                let item = state
+                    .outbox
+                    .get(&id)
+                    .cloned()
+                    .expect("a selected outbox item must exist");
+                let logical = state
+                    .logical
+                    .get(&item.logical_id)
+                    .cloned()
+                    .expect("a selected outbox item must reference a logical notification");
+                if now_ms >= item.expires_at_ms {
+                    Self::expire_due_outbox(&mut state, id, now_ms);
+                    expired_count = expired_count.saturating_add(1);
+                    continue;
+                }
+                let attempt = item
+                    .attempt_count
+                    .checked_add(1)
+                    .expect("a bounded outbox attempt count must not overflow");
+                let claimed = state
+                    .outbox
+                    .get_mut(&id)
+                    .expect("a selected outbox item must exist");
+                claimed.status = OutboxStatus::Delivering;
+                claimed.attempt_count = attempt;
+                claimed.updated_at_ms = now_ms;
+                break Some(Delivery {
+                    id,
+                    logical_id: item.logical_id,
+                    rule_id: logical.rule_id,
+                    stage: item.stage,
+                    channel,
+                    destination_json: item.destination_json,
+                    payload_json: item.payload_json,
+                    replacement_key: item.replacement_key,
+                    attempt,
+                    max_attempts: item.max_attempts,
+                    max_retry_interval_ms: item.max_retry_interval_ms,
+                    attachment_path: logical.attachment_path,
+                    attachment_enabled: item.attachment_enabled,
+                    attachment_required: item.attachment_required,
+                    max_attachment_bytes: item.max_attachment_bytes,
+                    expires_at_ms: item.expires_at_ms,
+                });
             };
-            let id = row.get::<i64>(0)?;
-            let logical_id = row.get::<String>(1)?;
-            let rule_id = row.get::<String>(2)?;
-            let stage = parse_stage(&row.get::<String>(3)?)?;
-            let destination_json = row.get::<String>(4)?;
-            let payload_json = row.get::<String>(5)?;
-            let replacement_key = row.get::<String>(6)?;
-            let attempt_count = from_i64(row.get(7)?, "outbox attempt count")?;
-            let max_attempts = to_u32(row.get(8)?, "maximum attempts")?;
-            let max_retry_interval_ms = from_i64(row.get(9)?, "maximum retry interval")?;
-            let attachment_path = row.get::<Option<String>>(10)?;
-            let attachment_enabled = row.get::<i64>(11)? != 0;
-            let attachment_required = row.get::<i64>(12)? != 0;
-            let max_attachment_bytes = from_i64(row.get(13)?, "maximum attachment bytes")?;
-            let expires_at_ms = row.get::<i64>(14)?;
-            drop(rows);
-            if now_ms >= expires_at_ms {
-                self.expire_outbox(id, &logical_id, &rule_id, stage, now_ms, "outbox_expired")
-                    .await?;
-                continue;
-            }
-            let attempt = u32::try_from(attempt_count.saturating_add(1))
-                .map_err(|_| anyhow::anyhow!("outbox attempt count exceeds u32"))?;
-            self.connection
-                .execute(
-                    "UPDATE notification_outbox
-                     SET status = 'delivering', attempt_count = ?2, updated_at_ms = ?3
-                     WHERE id = ?1",
-                    turso::params![id, i64::from(attempt), now_ms],
-                )
-                .await?;
-            return Ok(Some(Delivery {
-                id,
-                logical_id,
-                rule_id,
-                stage,
-                channel,
-                destination_json,
-                payload_json,
-                replacement_key,
-                attempt,
-                max_attempts,
-                max_retry_interval_ms,
-                attachment_path,
-                attachment_enabled,
-                attachment_required,
-                max_attachment_bytes,
-                expires_at_ms,
-            }));
+            (delivery, expired_count)
+        };
+        if expired_count != 0 {
+            decrement_counter(&self.metrics.pending_deliveries, expired_count);
+            self.metrics
+                .delivery_failures
+                .fetch_add(expired_count, Ordering::Relaxed);
         }
+        Ok(delivery)
     }
 
     fn claim_due_receipt(&self, now_ms: i64) -> anyhow::Result<Option<ReceiptCheck>> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = self.claim_due_receipt_in_transaction(now_ms).await;
-            finish_transaction(&self.connection, result).await
-        })
-    }
-
-    async fn claim_due_receipt_in_transaction(
-        &self,
-        now_ms: i64,
-    ) -> anyhow::Result<Option<ReceiptCheck>> {
-        let mut rows = self
-            .connection
-            .query(
-                "SELECT o.id, o.logical_id, l.rule_id, o.stage, o.destination_json,
-                        o.provider_receipt, o.provider_receipt_expires_at_ms,
-                        o.max_retry_interval_ms
-                 FROM notification_outbox AS o
-                 JOIN logical_notifications AS l ON l.id = o.logical_id
-                 WHERE o.channel = 'push' AND o.status = 'delivered'
-                   AND o.provider_receipt IS NOT NULL
-                   AND o.provider_acknowledged_at_ms IS NULL
-                   AND o.provider_expired_at_ms IS NULL
-                   AND o.next_receipt_check_at_ms <= ?1
-                 ORDER BY o.next_receipt_check_at_ms, o.id
-                 LIMIT 1",
-                turso::params![now_ms],
-            )
-            .await?;
-        let Some(row) = rows.next().await? else {
+        let mut state = self.lock_state();
+        let Some(id) = state
+            .outbox
+            .values()
+            .filter(|item| {
+                item.channel == Channel::Push
+                    && item.receipt_pending()
+                    && item
+                        .next_receipt_check_at_ms
+                        .is_some_and(|next_check_at_ms| next_check_at_ms <= now_ms)
+                    && state.logical.contains_key(&item.logical_id)
+            })
+            .min_by_key(|item| (item.next_receipt_check_at_ms, item.id))
+            .map(|item| item.id)
+        else {
             return Ok(None);
         };
+        let item = state
+            .outbox
+            .get(&id)
+            .cloned()
+            .expect("a selected receipt outbox item must exist");
+        let logical = state
+            .logical
+            .get(&item.logical_id)
+            .expect("a selected receipt must reference a logical notification");
         let receipt = ReceiptCheck {
-            outbox_id: row.get(0)?,
-            logical_id: row.get(1)?,
-            rule_id: row.get(2)?,
-            stage: parse_stage(&row.get::<String>(3)?)?,
-            destination_json: row.get(4)?,
-            receipt: row.get(5)?,
-            receipt_expires_at_ms: row.get(6)?,
-            max_retry_interval_ms: from_i64(row.get(7)?, "maximum retry interval")?,
+            outbox_id: id,
+            logical_id: item.logical_id.clone(),
+            rule_id: logical.rule_id.clone(),
+            stage: item.stage,
+            destination_json: item.destination_json,
+            receipt: item
+                .provider_receipt
+                .expect("a receipt-pending outbox item must have a provider receipt"),
+            receipt_expires_at_ms: item
+                .provider_receipt_expires_at_ms
+                .expect("a receipt-pending outbox item must have a provider receipt expiration"),
+            max_retry_interval_ms: item.max_retry_interval_ms,
         };
-        drop(rows);
-        self.connection
-            .execute(
-                "UPDATE notification_outbox
-                 SET next_receipt_check_at_ms = ?2, updated_at_ms = ?1
-                                 WHERE id = ?3 AND next_receipt_check_at_ms <= ?1
-                                     AND provider_acknowledged_at_ms IS NULL
-                                     AND provider_expired_at_ms IS NULL",
-                turso::params![
-                    now_ms,
-                    add_millis(now_ms, PUSHOVER_MIN_RETRY_INTERVAL_MS),
-                    receipt.outbox_id,
-                ],
-            )
-            .await?;
+        let claimed = state
+            .outbox
+            .get_mut(&id)
+            .expect("a selected receipt outbox item must exist");
+        claimed.next_receipt_check_at_ms = Some(add_millis(now_ms, PUSHOVER_MIN_RETRY_INTERVAL_MS));
+        claimed.updated_at_ms = now_ms;
         Ok(Some(receipt))
+    }
+
+    fn next_due_outbox_id(state: &RuntimeState, channel: Channel, now_ms: i64) -> Option<u64> {
+        state
+            .outbox
+            .values()
+            .filter(|item| {
+                item.channel == channel
+                    && item.status.pending()
+                    && item.next_attempt_at_ms <= now_ms
+                    && state.logical.contains_key(&item.logical_id)
+            })
+            .max_by(|left, right| {
+                left.priority
+                    .cmp(&right.priority)
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .map(|item| item.id)
+    }
+
+    fn expire_due_outbox(state: &mut RuntimeState, id: u64, now_ms: i64) {
+        let item = state
+            .outbox
+            .get_mut(&id)
+            .expect("a selected outbox item must exist");
+        item.status = OutboxStatus::Expired;
+        item.updated_at_ms = now_ms;
+        item.last_reason = Some("outbox_expired".to_owned());
+        let logical_id = item.logical_id.clone();
+        let stage = item.stage;
+        let logical = state
+            .logical
+            .get(&logical_id)
+            .expect("an outbox item must reference a logical notification");
+        let rule_id = logical.rule_id.clone();
+        let revision = logical.highest_revision;
+        state.push_history(PendingHistoryEntry {
+            logical_id: &logical_id,
+            rule_id: &rule_id,
+            revision,
+            stage,
+            outcome: "expired",
+            reason: Some("outbox_expired"),
+            occurred_at_ms: now_ms,
+            next_eligible_at_ms: None,
+        });
     }
 
     pub(super) fn finish_delivery(
@@ -849,36 +870,125 @@ impl Store {
         result: impl Into<ProviderResult>,
         now_ms: i64,
     ) -> anyhow::Result<()> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = self
-                .finish_delivery_in_transaction(delivery, result.into(), now_ms)
-                .await;
-            finish_transaction(&self.connection, result).await
-        })
+        let target_hash = target_hash(&delivery.destination_json);
+        let transition = Self::delivery_transition(delivery, result.into(), now_ms);
+        {
+            let mut state = self.lock_state();
+            Self::validate_delivery_claim(&state, delivery)?;
+            Self::apply_delivery_transition(
+                &mut state,
+                delivery,
+                &transition,
+                &target_hash,
+                now_ms,
+            );
+            state.prune(now_ms)?;
+        }
+        self.record_delivery_metrics(transition.status);
+        tracing::info!(
+            event = "notification_delivery_finished",
+            logical_id = %delivery.logical_id,
+            rule_id = %delivery.rule_id,
+            channel = delivery.channel.as_str(),
+            target_hash,
+            attempt = delivery.attempt,
+            outcome = transition.history_outcome,
+            reason = transition.reason.as_deref().unwrap_or(""),
+            provider_status = transition.provider_status
+        );
+        Ok(())
     }
 
-    async fn finish_delivery_in_transaction(
-        &self,
+    fn validate_delivery_claim(state: &RuntimeState, delivery: &Delivery) -> anyhow::Result<()> {
+        let item = state
+            .outbox
+            .get(&delivery.id)
+            .ok_or_else(|| anyhow::anyhow!("claimed notification delivery no longer exists"))?;
+        let valid_item = item.status == OutboxStatus::Delivering
+            && item.attempt_count == delivery.attempt
+            && item.logical_id == delivery.logical_id
+            && item.channel == delivery.channel
+            && item.stage == delivery.stage;
+        let valid_logical = state
+            .logical
+            .get(&delivery.logical_id)
+            .is_some_and(|logical| logical.rule_id == delivery.rule_id);
+        if !valid_item {
+            anyhow::bail!("notification delivery claim is stale");
+        }
+        if !valid_logical {
+            anyhow::bail!("notification delivery references invalid logical state");
+        }
+        Ok(())
+    }
+
+    fn apply_delivery_transition(
+        state: &mut RuntimeState,
+        delivery: &Delivery,
+        transition: &DeliveryTransition,
+        target_hash: &str,
+        now_ms: i64,
+    ) {
+        let item = state
+            .outbox
+            .get_mut(&delivery.id)
+            .expect("a validated outbox item must exist");
+        item.status = transition.status;
+        if let Some(retry_at_ms) = transition.retry_at_ms {
+            item.next_attempt_at_ms = retry_at_ms;
+        }
+        item.updated_at_ms = now_ms;
+        item.last_reason = transition.reason.clone();
+        item.provider_request_id = transition.provider_request_id.clone();
+        item.provider_receipt = transition.provider_receipt.clone();
+        item.next_receipt_check_at_ms = transition.next_receipt_check_at_ms;
+        item.provider_receipt_expires_at_ms = transition.provider_receipt_expires_at_ms;
+        state.push_attempt(DeliveryAttempt {
+            sequence: 0,
+            outbox_id: delivery.id,
+            logical_id: delivery.logical_id.clone(),
+            channel: delivery.channel,
+            stage: delivery.stage,
+            attempt: delivery.attempt,
+            outcome: transition.history_outcome.to_owned(),
+            target_hash: target_hash.to_owned(),
+            provider_status: transition.provider_status,
+            provider_request_id: transition.provider_request_id.clone(),
+            reason: transition.reason.clone(),
+            attempted_at_ms: now_ms,
+            retry_at_ms: transition.retry_at_ms,
+        });
+        Self::push_delivery_history(state, delivery, transition, now_ms);
+        if transition.status == OutboxStatus::Delivered
+            && let Some(record) = state.rules.get_mut(&delivery.rule_id)
+        {
+            record.last_delivery_at_ms = Some(now_ms);
+        }
+    }
+
+    fn delivery_transition(
         delivery: &Delivery,
         result: ProviderResult,
         now_ms: i64,
-    ) -> anyhow::Result<()> {
-        let target_hash = target_hash(&delivery.destination_json);
+    ) -> DeliveryTransition {
         let ProviderResult {
             outcome,
             request_id,
             receipt,
         } = result;
-        let (status, history_outcome, reason, provider_status, retry_at_ms) = match outcome {
-            DeliveryOutcome::Delivered { provider_status } => {
-                ("delivered", "delivered", None, provider_status, None)
-            }
+        let mut transition = match outcome {
+            DeliveryOutcome::Delivered { provider_status } => Self::new_delivery_transition(
+                OutboxStatus::Delivered,
+                "delivered",
+                None,
+                provider_status,
+                None,
+            ),
             DeliveryOutcome::Permanent {
                 reason,
                 provider_status,
-            } => (
-                "failed",
+            } => Self::new_delivery_transition(
+                OutboxStatus::Failed,
                 "failed",
                 Some(redact_reason(reason)),
                 provider_status,
@@ -888,115 +998,137 @@ impl Store {
                 reason,
                 provider_status,
                 retry_after_ms,
-            } => {
-                let retry_interval_ms = retry_after_ms
-                    .unwrap_or_else(|| retry_interval(delivery.attempt))
-                    .max(MIN_RETRY_INTERVAL_MS)
-                    .min(delivery.max_retry_interval_ms);
-                let retry_at_ms = add_millis(now_ms, retry_interval_ms);
-                if delivery.attempt >= delivery.max_attempts {
-                    (
-                        "failed",
-                        "failed",
-                        Some(redact_reason(reason)),
-                        provider_status,
-                        None,
-                    )
-                } else if retry_at_ms >= delivery.expires_at_ms {
-                    (
-                        "expired",
-                        "expired",
-                        Some("retry_exceeds_expiry".to_owned()),
-                        provider_status,
-                        None,
-                    )
-                } else {
-                    (
-                        "retrying",
-                        "retried",
-                        Some(redact_reason(reason)),
-                        provider_status,
-                        Some(retry_at_ms),
-                    )
-                }
-            }
+            } => Self::transient_delivery_transition(
+                delivery,
+                reason,
+                provider_status,
+                retry_after_ms,
+                now_ms,
+            ),
         };
-        let (receipt_id, next_receipt_check_at_ms, receipt_expires_at_ms) = if status == "delivered"
+        transition.provider_request_id = request_id;
+        if transition.status == OutboxStatus::Delivered
+            && let Some(receipt) = receipt
         {
-            receipt.map_or((None, None, None), |receipt| {
-                (
-                    Some(receipt.id),
-                    Some(add_millis(now_ms, PUSHOVER_MIN_RETRY_INTERVAL_MS)),
-                    Some(add_millis(
-                        now_ms,
-                        u64::from(receipt.expire_seconds).saturating_mul(1_000),
-                    )),
-                )
-            })
-        } else {
-            (None, None, None)
-        };
-        self.connection
-            .execute(
-                "UPDATE notification_outbox
-                 SET status = ?2, next_attempt_at_ms = COALESCE(?3, next_attempt_at_ms),
-                     updated_at_ms = ?4, last_reason = ?5, provider_request_id = ?6,
-                     provider_receipt = ?7, next_receipt_check_at_ms = ?8,
-                     provider_receipt_expires_at_ms = ?9
-                 WHERE id = ?1 AND status = 'delivering'",
-                turso::params![
-                    delivery.id,
-                    status,
-                    retry_at_ms,
-                    now_ms,
-                    reason.clone(),
-                    request_id.clone(),
-                    receipt_id,
-                    next_receipt_check_at_ms,
-                    receipt_expires_at_ms,
-                ],
-            )
-            .await?;
-        self.connection
-            .execute(
-                "INSERT INTO notification_attempts (
-                     outbox_id, logical_id, channel, stage, attempt, outcome,
-                     target_hash, provider_status, provider_request_id, reason,
-                     attempted_at_ms, retry_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                turso::params![
-                    delivery.id,
-                    delivery.logical_id.clone(),
-                    delivery.channel.as_str(),
-                    stage_str(delivery.stage),
-                    i64::from(delivery.attempt),
-                    history_outcome,
-                    target_hash,
-                    provider_status.map(i64::from),
-                    request_id,
-                    reason.clone(),
-                    now_ms,
-                    retry_at_ms,
-                ],
-            )
-            .await?;
-        self.record_delivery_history(
-            delivery,
-            history_outcome,
-            reason.as_deref(),
-            now_ms,
-            retry_at_ms,
-        )
-        .await?;
-        if status == "delivered" {
-            self.connection
-                .execute(
-                    "UPDATE notification_rules SET last_delivery_at_ms = ?2 WHERE id = ?1",
-                    turso::params![delivery.rule_id.clone(), now_ms],
-                )
-                .await?;
+            transition.provider_receipt = Some(receipt.id);
+            transition.next_receipt_check_at_ms =
+                Some(add_millis(now_ms, PUSHOVER_MIN_RETRY_INTERVAL_MS));
+            transition.provider_receipt_expires_at_ms = Some(add_millis(
+                now_ms,
+                u64::from(receipt.expire_seconds).saturating_mul(1_000),
+            ));
         }
-        Ok(())
+        transition
+    }
+
+    fn transient_delivery_transition(
+        delivery: &Delivery,
+        reason: String,
+        provider_status: Option<u16>,
+        retry_after_ms: Option<u64>,
+        now_ms: i64,
+    ) -> DeliveryTransition {
+        let retry_interval_ms = retry_after_ms
+            .unwrap_or_else(|| retry_interval(delivery.attempt))
+            .max(MIN_RETRY_INTERVAL_MS)
+            .min(delivery.max_retry_interval_ms);
+        let retry_at_ms = add_millis(now_ms, retry_interval_ms);
+        if delivery.attempt >= delivery.max_attempts {
+            return Self::new_delivery_transition(
+                OutboxStatus::Failed,
+                "failed",
+                Some(redact_reason(reason)),
+                provider_status,
+                None,
+            );
+        }
+        if retry_at_ms >= delivery.expires_at_ms {
+            return Self::new_delivery_transition(
+                OutboxStatus::Expired,
+                "expired",
+                Some("retry_exceeds_expiry".to_owned()),
+                provider_status,
+                None,
+            );
+        }
+        Self::new_delivery_transition(
+            OutboxStatus::Retrying,
+            "retried",
+            Some(redact_reason(reason)),
+            provider_status,
+            Some(retry_at_ms),
+        )
+    }
+
+    const fn new_delivery_transition(
+        status: OutboxStatus,
+        history_outcome: &'static str,
+        reason: Option<String>,
+        provider_status: Option<u16>,
+        retry_at_ms: Option<i64>,
+    ) -> DeliveryTransition {
+        DeliveryTransition {
+            status,
+            history_outcome,
+            reason,
+            provider_status,
+            retry_at_ms,
+            provider_request_id: None,
+            provider_receipt: None,
+            next_receipt_check_at_ms: None,
+            provider_receipt_expires_at_ms: None,
+        }
+    }
+
+    fn push_delivery_history(
+        state: &mut RuntimeState,
+        delivery: &Delivery,
+        transition: &DeliveryTransition,
+        now_ms: i64,
+    ) {
+        let logical = state
+            .logical
+            .get(&delivery.logical_id)
+            .expect("a validated delivery must reference a logical notification");
+        let revision = logical.highest_revision;
+        state.push_history(PendingHistoryEntry {
+            logical_id: &delivery.logical_id,
+            rule_id: &delivery.rule_id,
+            revision,
+            stage: delivery.stage,
+            outcome: transition.history_outcome,
+            reason: transition.reason.as_deref(),
+            occurred_at_ms: now_ms,
+            next_eligible_at_ms: transition.retry_at_ms,
+        });
+    }
+
+    fn record_delivery_metrics(&self, status: OutboxStatus) {
+        self.metrics
+            .delivery_attempts
+            .fetch_add(1, Ordering::Relaxed);
+        match status {
+            OutboxStatus::Delivered => {
+                decrement_counter(&self.metrics.pending_deliveries, 1);
+                self.metrics
+                    .delivery_successes
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            OutboxStatus::Retrying => {
+                self.metrics
+                    .delivery_retries
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            OutboxStatus::Failed | OutboxStatus::Expired => {
+                decrement_counter(&self.metrics.pending_deliveries, 1);
+                self.metrics
+                    .delivery_failures
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            OutboxStatus::Pending | OutboxStatus::Delivering => {
+                unreachable!("delivery outcome produced a non-terminal transition: {status:?}")
+            }
+        }
     }
 
     fn finish_receipt(
@@ -1005,262 +1137,209 @@ impl Store {
         outcome: ReceiptOutcome,
         now_ms: i64,
     ) -> anyhow::Result<()> {
-        pollster::block_on(async {
-            self.connection.execute_batch("BEGIN IMMEDIATE").await?;
-            let result = self
-                .finish_receipt_in_transaction(receipt, outcome, now_ms)
-                .await;
-            finish_transaction(&self.connection, result).await
-        })
+        let mut state = self.lock_state();
+        Self::validate_receipt_claim(&state, receipt)?;
+        Self::apply_receipt_outcome(&mut state, receipt, outcome, now_ms);
+        state.prune(now_ms)
     }
 
-    async fn finish_receipt_in_transaction(
-        &self,
+    fn validate_receipt_claim(state: &RuntimeState, receipt: &ReceiptCheck) -> anyhow::Result<()> {
+        let item = state
+            .outbox
+            .get(&receipt.outbox_id)
+            .ok_or_else(|| anyhow::anyhow!("claimed notification receipt no longer exists"))?;
+        let valid_item = item.status == OutboxStatus::Delivered
+            && item.channel == Channel::Push
+            && item.logical_id == receipt.logical_id
+            && item.stage == receipt.stage
+            && item.provider_receipt.as_deref() == Some(receipt.receipt.as_str())
+            && item.provider_acknowledged_at_ms.is_none()
+            && item.provider_expired_at_ms.is_none();
+        let valid_logical = state
+            .logical
+            .get(&receipt.logical_id)
+            .is_some_and(|logical| logical.rule_id == receipt.rule_id);
+        if !valid_item || !valid_logical {
+            anyhow::bail!("notification receipt claim is stale");
+        }
+        Ok(())
+    }
+
+    fn apply_receipt_outcome(
+        state: &mut RuntimeState,
         receipt: &ReceiptCheck,
         outcome: ReceiptOutcome,
         now_ms: i64,
-    ) -> anyhow::Result<()> {
+    ) {
         match outcome {
             ReceiptOutcome::Pending { expires_at_ms } => {
-                let expires_at_ms = expires_at_ms.unwrap_or(receipt.receipt_expires_at_ms);
-                if now_ms >= expires_at_ms {
-                    self.finish_expired_receipt(
-                        receipt,
-                        expires_at_ms,
-                        now_ms,
-                        "provider_unacknowledged",
-                    )
-                    .await?;
-                } else {
-                    self.connection
-                        .execute(
-                            "UPDATE notification_outbox
-                             SET next_receipt_check_at_ms = ?2,
-                                 provider_receipt_expires_at_ms = ?3, updated_at_ms = ?1,
-                                 last_reason = NULL
-                             WHERE id = ?4 AND provider_acknowledged_at_ms IS NULL
-                               AND provider_expired_at_ms IS NULL",
-                            turso::params![
-                                now_ms,
-                                add_millis(now_ms, PUSHOVER_MIN_RETRY_INTERVAL_MS),
-                                expires_at_ms,
-                                receipt.outbox_id,
-                            ],
-                        )
-                        .await?;
-                }
+                Self::finish_pending_receipt(state, receipt, expires_at_ms, now_ms);
             }
             ReceiptOutcome::Acknowledged {
                 acknowledged_at_ms,
                 acknowledged_by_hash,
             } => {
-                self.connection
-                    .execute(
-                        "UPDATE notification_outbox
-                         SET provider_acknowledged_at_ms = ?2,
-                             provider_acknowledged_by_hash = ?3,
-                             next_receipt_check_at_ms = NULL, updated_at_ms = ?4,
-                             last_reason = NULL
-                         WHERE id = ?1 AND provider_acknowledged_at_ms IS NULL
-                           AND provider_expired_at_ms IS NULL",
-                        turso::params![
-                            receipt.outbox_id,
-                            acknowledged_at_ms,
-                            acknowledged_by_hash,
-                            now_ms,
-                        ],
-                    )
-                    .await?;
-                self.record_receipt_history(receipt, "acknowledged", Some("pushover"), now_ms)
-                    .await?;
+                Self::acknowledge_receipt(
+                    state,
+                    receipt,
+                    acknowledged_at_ms,
+                    acknowledged_by_hash,
+                    now_ms,
+                );
             }
             ReceiptOutcome::Expired { expired_at_ms } => {
-                self.finish_expired_receipt(
+                Self::expire_receipt(
+                    state,
                     receipt,
                     expired_at_ms.unwrap_or(now_ms),
                     now_ms,
                     "provider_unacknowledged",
-                )
-                .await?;
+                );
             }
             ReceiptOutcome::Transient {
                 reason,
                 retry_after_ms,
             } => {
-                if now_ms >= receipt.receipt_expires_at_ms {
-                    self.finish_expired_receipt(
-                        receipt,
-                        receipt.receipt_expires_at_ms,
-                        now_ms,
-                        "provider_unacknowledged",
-                    )
-                    .await?;
-                } else {
-                    let retry_interval_ms = retry_after_ms
-                        .unwrap_or(PUSHOVER_MIN_RETRY_INTERVAL_MS)
-                        .clamp(
-                            PUSHOVER_MIN_RETRY_INTERVAL_MS,
-                            receipt
-                                .max_retry_interval_ms
-                                .max(PUSHOVER_MIN_RETRY_INTERVAL_MS),
-                        );
-                    self.connection
-                        .execute(
-                            "UPDATE notification_outbox
-                             SET next_receipt_check_at_ms = ?2, updated_at_ms = ?1,
-                                 last_reason = ?3
-                             WHERE id = ?4 AND provider_acknowledged_at_ms IS NULL
-                               AND provider_expired_at_ms IS NULL",
-                            turso::params![
-                                now_ms,
-                                add_millis(now_ms, retry_interval_ms),
-                                redact_reason(reason),
-                                receipt.outbox_id,
-                            ],
-                        )
-                        .await?;
-                }
+                Self::retry_receipt(state, receipt, reason, retry_after_ms, now_ms);
             }
             ReceiptOutcome::Permanent { reason } => {
-                let reason = redact_reason(reason);
-                self.connection
-                    .execute(
-                        "UPDATE notification_outbox
-                         SET next_receipt_check_at_ms = NULL, updated_at_ms = ?2,
-                             last_reason = ?3
-                         WHERE id = ?1 AND provider_acknowledged_at_ms IS NULL
-                           AND provider_expired_at_ms IS NULL",
-                        turso::params![receipt.outbox_id, now_ms, reason.clone()],
-                    )
-                    .await?;
-                self.record_receipt_history(receipt, "failed", Some(&reason), now_ms)
-                    .await?;
+                Self::fail_receipt(state, receipt, reason, now_ms);
             }
         }
-        Ok(())
     }
 
-    async fn finish_expired_receipt(
-        &self,
+    fn finish_pending_receipt(
+        state: &mut RuntimeState,
+        receipt: &ReceiptCheck,
+        expires_at_ms: Option<i64>,
+        now_ms: i64,
+    ) {
+        let expires_at_ms = expires_at_ms.unwrap_or(receipt.receipt_expires_at_ms);
+        if now_ms >= expires_at_ms {
+            Self::expire_receipt(
+                state,
+                receipt,
+                expires_at_ms,
+                now_ms,
+                "provider_unacknowledged",
+            );
+            return;
+        }
+        let item = state
+            .outbox
+            .get_mut(&receipt.outbox_id)
+            .expect("a validated receipt outbox item must exist");
+        item.next_receipt_check_at_ms = Some(add_millis(now_ms, PUSHOVER_MIN_RETRY_INTERVAL_MS));
+        item.provider_receipt_expires_at_ms = Some(expires_at_ms);
+        item.updated_at_ms = now_ms;
+        item.last_reason = None;
+    }
+
+    fn acknowledge_receipt(
+        state: &mut RuntimeState,
+        receipt: &ReceiptCheck,
+        acknowledged_at_ms: i64,
+        acknowledged_by_hash: Option<String>,
+        now_ms: i64,
+    ) {
+        let item = state
+            .outbox
+            .get_mut(&receipt.outbox_id)
+            .expect("a validated receipt outbox item must exist");
+        item.provider_acknowledged_at_ms = Some(acknowledged_at_ms);
+        item.provider_acknowledged_by_hash = acknowledged_by_hash;
+        item.next_receipt_check_at_ms = None;
+        item.updated_at_ms = now_ms;
+        item.last_reason = None;
+        Self::push_receipt_history(state, receipt, "acknowledged", Some("pushover"), now_ms);
+    }
+
+    fn retry_receipt(
+        state: &mut RuntimeState,
+        receipt: &ReceiptCheck,
+        reason: String,
+        retry_after_ms: Option<u64>,
+        now_ms: i64,
+    ) {
+        if now_ms >= receipt.receipt_expires_at_ms {
+            Self::expire_receipt(
+                state,
+                receipt,
+                receipt.receipt_expires_at_ms,
+                now_ms,
+                "provider_unacknowledged",
+            );
+            return;
+        }
+        let retry_interval_ms = retry_after_ms
+            .unwrap_or(PUSHOVER_MIN_RETRY_INTERVAL_MS)
+            .clamp(
+                PUSHOVER_MIN_RETRY_INTERVAL_MS,
+                receipt
+                    .max_retry_interval_ms
+                    .max(PUSHOVER_MIN_RETRY_INTERVAL_MS),
+            );
+        let item = state
+            .outbox
+            .get_mut(&receipt.outbox_id)
+            .expect("a validated receipt outbox item must exist");
+        item.next_receipt_check_at_ms = Some(add_millis(now_ms, retry_interval_ms));
+        item.updated_at_ms = now_ms;
+        item.last_reason = Some(redact_reason(reason));
+    }
+
+    fn fail_receipt(state: &mut RuntimeState, receipt: &ReceiptCheck, reason: String, now_ms: i64) {
+        let reason = redact_reason(reason);
+        let item = state
+            .outbox
+            .get_mut(&receipt.outbox_id)
+            .expect("a validated receipt outbox item must exist");
+        item.next_receipt_check_at_ms = None;
+        item.updated_at_ms = now_ms;
+        item.last_reason = Some(reason.clone());
+        Self::push_receipt_history(state, receipt, "failed", Some(&reason), now_ms);
+    }
+
+    fn expire_receipt(
+        state: &mut RuntimeState,
         receipt: &ReceiptCheck,
         expired_at_ms: i64,
         now_ms: i64,
         reason: &str,
-    ) -> anyhow::Result<()> {
-        self.connection
-            .execute(
-                "UPDATE notification_outbox
-                 SET provider_expired_at_ms = ?2, next_receipt_check_at_ms = NULL,
-                     updated_at_ms = ?3, last_reason = ?4
-                 WHERE id = ?1 AND provider_acknowledged_at_ms IS NULL
-                   AND provider_expired_at_ms IS NULL",
-                turso::params![receipt.outbox_id, expired_at_ms, now_ms, reason],
-            )
-            .await?;
-        self.record_receipt_history(receipt, "expired", Some(reason), now_ms)
-            .await
+    ) {
+        let item = state
+            .outbox
+            .get_mut(&receipt.outbox_id)
+            .expect("a validated receipt outbox item must exist");
+        item.provider_expired_at_ms = Some(expired_at_ms);
+        item.next_receipt_check_at_ms = None;
+        item.updated_at_ms = now_ms;
+        item.last_reason = Some(reason.to_owned());
+        Self::push_receipt_history(state, receipt, "expired", Some(reason), now_ms);
     }
 
-    async fn record_receipt_history(
-        &self,
+    fn push_receipt_history(
+        state: &mut RuntimeState,
         receipt: &ReceiptCheck,
         outcome: &str,
         reason: Option<&str>,
         now_ms: i64,
-    ) -> anyhow::Result<()> {
-        self.connection
-            .execute(
-                "INSERT INTO notification_history (
-                     logical_id, rule_id, transition_revision, stage, outcome,
-                     reason, occurred_at_ms
-                 ) SELECT id, rule_id, highest_revision, ?3, ?4, ?5, ?6
-                   FROM logical_notifications WHERE id = ?1 AND rule_id = ?2",
-                turso::params![
-                    receipt.logical_id.clone(),
-                    receipt.rule_id.clone(),
-                    stage_str(receipt.stage),
-                    outcome,
-                    reason,
-                    now_ms,
-                ],
-            )
-            .await?;
-        Ok(())
-    }
-
-    async fn expire_outbox(
-        &self,
-        id: i64,
-        logical_id: &str,
-        rule_id: &str,
-        stage: Stage,
-        now_ms: i64,
-        reason: &str,
-    ) -> anyhow::Result<()> {
-        self.connection
-            .execute(
-                "UPDATE notification_outbox
-                 SET status = 'expired', updated_at_ms = ?2, last_reason = ?3
-                 WHERE id = ?1",
-                turso::params![id, now_ms, reason],
-            )
-            .await?;
-        self.connection
-            .execute(
-                "INSERT INTO notification_history (
-                     logical_id, rule_id, transition_revision, stage, outcome,
-                     reason, occurred_at_ms
-                 ) SELECT id, rule_id, highest_revision, ?3, 'expired', ?4, ?5
-                   FROM logical_notifications WHERE id = ?1 AND rule_id = ?2",
-                turso::params![logical_id, rule_id, stage_str(stage), reason, now_ms],
-            )
-            .await?;
-        Ok(())
-    }
-
-    async fn record_delivery_history(
-        &self,
-        delivery: &Delivery,
-        outcome: &str,
-        reason: Option<&str>,
-        now_ms: i64,
-        retry_at_ms: Option<i64>,
-    ) -> anyhow::Result<()> {
-        self.connection
-            .execute(
-                "INSERT INTO notification_history (
-                     logical_id, rule_id, transition_revision, stage, outcome,
-                     reason, occurred_at_ms, next_eligible_at_ms
-                 ) SELECT id, rule_id, highest_revision, ?3, ?4, ?5, ?6, ?7
-                   FROM logical_notifications WHERE id = ?1 AND rule_id = ?2",
-                turso::params![
-                    delivery.logical_id.clone(),
-                    delivery.rule_id.clone(),
-                    stage_str(delivery.stage),
-                    outcome,
-                    reason,
-                    now_ms,
-                    retry_at_ms,
-                ],
-            )
-            .await?;
-        Ok(())
-    }
-}
-
-async fn finish_transaction<T>(
-    connection: &turso::Connection,
-    result: anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    match result {
-        Ok(value) => {
-            connection.execute_batch("COMMIT").await?;
-            Ok(value)
-        }
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK").await;
-            Err(error)
-        }
+    ) {
+        let logical = state
+            .logical
+            .get(&receipt.logical_id)
+            .expect("a validated receipt must reference a logical notification");
+        let revision = logical.highest_revision;
+        state.push_history(PendingHistoryEntry {
+            logical_id: &receipt.logical_id,
+            rule_id: &receipt.rule_id,
+            revision,
+            stage: receipt.stage,
+            outcome,
+            reason,
+            occurred_at_ms: now_ms,
+            next_eligible_at_ms: None,
+        });
     }
 }
 
@@ -1442,25 +1521,8 @@ const fn stage_str(stage: Stage) -> &'static str {
     }
 }
 
-fn parse_stage(value: &str) -> anyhow::Result<Stage> {
-    match value {
-        "preliminary" => Ok(Stage::Preliminary),
-        "enriched" => Ok(Stage::Enriched),
-        "recovery" => Ok(Stage::Recovery),
-        _ => anyhow::bail!("stored notification stage is invalid"),
-    }
-}
-
 fn add_millis(timestamp_ms: i64, duration_ms: u64) -> i64 {
     timestamp_ms.saturating_add(i64::try_from(duration_ms).unwrap_or(i64::MAX))
-}
-
-fn from_i64(value: i64, name: &str) -> anyhow::Result<u64> {
-    u64::try_from(value).map_err(|_| anyhow::anyhow!("stored {name} is negative"))
-}
-
-fn to_u32(value: i64, name: &str) -> anyhow::Result<u32> {
-    u32::try_from(value).map_err(|_| anyhow::anyhow!("stored {name} is out of range"))
 }
 
 #[cfg(test)]
@@ -1474,6 +1536,7 @@ mod tests {
             Action, AttachmentPolicy, Candidate, EnrichmentPolicy, FailurePolicy, Filter, Rule,
             Schedule, Severity, Template, Trigger,
         },
+        state::{InboxReceipt, LogicalNotification, OutboxItem},
     };
 
     struct CapturedRequest {
@@ -1574,68 +1637,106 @@ mod tests {
         max_retry_interval_ms: u64,
         expires_at_ms: i64,
     ) {
-        pollster::block_on(async {
-            store
-                .connection
-                .execute(
-                    "INSERT INTO logical_notifications (
-                         id, rule_id, owner_id, source_id, source_identity, lifecycle,
-                         stage, highest_revision, created_at_ms, updated_at_ms,
-                         enrichment_deadline_at_ms, title, body, deep_link, severity
-                     ) VALUES (?1, 'rule-1', 'owner-1', 'front-door', 'event-1',
-                               'event', 'preliminary', 1, 1000, 1000, 11000,
-                               'Person', 'Detected', '/events/event-1', 'info')",
-                    turso::params![logical_id],
-                )
-                .await
-                .unwrap();
-            store
-                .connection
-                .execute(
-                    "INSERT INTO notification_receipts (logical_id, principal_id)
-                     VALUES (?1, 'owner-1')",
-                    turso::params![logical_id],
-                )
-                .await
-                .unwrap();
-            store
-                .connection
-                .execute(
-                    "INSERT INTO notification_outbox (
-                         logical_id, action_index, stage, channel, destination_json,
-                         payload_json, replacement_key, priority, status, attempt_count,
-                         max_attempts, max_retry_interval_ms, next_attempt_at_ms,
-                         expires_at_ms, created_at_ms, updated_at_ms
-                     ) VALUES (?1, 0, 'preliminary', ?2,
-                               '{\"value\":\"https://secret.example/target\"}',
-                               '{\"title\":\"Person\"}', ?1, 0, 'pending', 0,
-                               ?3, ?4, 1000, ?5, 1000, 1000)",
-                    turso::params![
-                        logical_id,
-                        channel.as_str(),
-                        i64::from(max_attempts),
-                        i64::try_from(max_retry_interval_ms).unwrap(),
-                        expires_at_ms,
-                    ],
-                )
-                .await
-                .unwrap();
-        });
+        let mut state = store.lock_state();
+        state.logical.insert(
+            logical_id.to_owned(),
+            LogicalNotification {
+                id: logical_id.to_owned(),
+                rule_id: "rule-1".to_owned(),
+                owner_id: "owner-1".to_owned(),
+                source_id: "front-door".to_owned(),
+                source_identity: "event-1".to_owned(),
+                lifecycle: Lifecycle::Event,
+                stage: Stage::Preliminary,
+                highest_revision: 1,
+                enrichment_attempts: 0,
+                created_at_ms: 1_000,
+                updated_at_ms: 1_000,
+                enrichment_deadline_at_ms: 11_000,
+                title: "Person".to_owned(),
+                body: "Detected".to_owned(),
+                deep_link: "/events/event-1".to_owned(),
+                attachment_path: None,
+                severity: Severity::Info,
+                canonical_attachment: None,
+                icon_key: None,
+                image_available: false,
+            },
+        );
+        state.receipts.insert(
+            (logical_id.to_owned(), "owner-1".to_owned()),
+            InboxReceipt::default(),
+        );
+        let id = state.next_outbox_id();
+        state.outbox.insert(
+            id,
+            OutboxItem {
+                id,
+                logical_id: logical_id.to_owned(),
+                action_index: 0,
+                stage: Stage::Preliminary,
+                channel,
+                destination_json: r#"{"value":"https://secret.example/target"}"#.to_owned(),
+                payload_json: r#"{"title":"Person"}"#.to_owned(),
+                replacement_key: logical_id.to_owned(),
+                priority: 0,
+                status: OutboxStatus::Pending,
+                attempt_count: 0,
+                max_attempts,
+                max_retry_interval_ms,
+                attachment_enabled: false,
+                attachment_required: false,
+                max_attachment_bytes: 4_194_304,
+                next_attempt_at_ms: 1_000,
+                expires_at_ms,
+                updated_at_ms: 1_000,
+                last_reason: None,
+                provider_request_id: None,
+                provider_receipt: None,
+                next_receipt_check_at_ms: None,
+                provider_receipt_expires_at_ms: None,
+                provider_acknowledged_at_ms: None,
+                provider_expired_at_ms: None,
+                provider_acknowledged_by_hash: None,
+            },
+        );
+        drop(state);
+        store
+            .metrics
+            .pending_deliveries
+            .fetch_add(1, Ordering::Relaxed);
     }
 
-    fn text_value(store: &Store, sql: &str) -> String {
-        pollster::block_on(async {
-            let mut rows = store.connection.query(sql, ()).await.unwrap();
-            rows.next().await.unwrap().unwrap().get(0).unwrap()
-        })
+    fn outbox(store: &Store, logical_id: &str) -> OutboxItem {
+        store
+            .lock_state()
+            .outbox
+            .values()
+            .find(|item| item.logical_id == logical_id)
+            .cloned()
+            .unwrap()
     }
 
-    fn count(store: &Store, sql: &str) -> u64 {
-        pollster::block_on(async {
-            let mut rows = store.connection.query(sql, ()).await.unwrap();
-            let value = rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap();
-            u64::try_from(value).unwrap()
-        })
+    fn attempt(store: &Store, logical_id: &str) -> DeliveryAttempt {
+        store
+            .lock_state()
+            .attempts
+            .iter()
+            .find(|attempt| attempt.logical_id == logical_id)
+            .cloned()
+            .unwrap()
+    }
+
+    fn history_count(store: &Store, outcome: &str, reason: Option<&str>) -> usize {
+        store
+            .lock_state()
+            .history
+            .iter()
+            .filter(|entry| {
+                entry.outcome == outcome
+                    && reason.is_none_or(|reason| entry.reason.as_deref() == Some(reason))
+            })
+            .count()
     }
 
     fn pushover_delivery() -> Delivery {
@@ -1679,9 +1780,9 @@ mod tests {
     }
 
     #[test]
-    fn successful_delivery_is_durable_and_target_is_hashed() {
+    fn successful_delivery_is_recorded_and_target_is_hashed() {
         let directory = test_dir("notification-delivery-success");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_outbox(&store, "logical-1", Channel::Browser, 3, 5_000, 10_000);
 
         let delivery = store.claim_due(Channel::Browser, 1_000).unwrap().unwrap();
@@ -1696,23 +1797,50 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(
-            text_value(
-                &store,
-                "SELECT status FROM notification_outbox WHERE logical_id = 'logical-1'"
-            ),
-            "delivered"
-        );
-        assert_eq!(
-            count(
-                &store,
-                "SELECT COUNT(*) FROM notification_history WHERE outcome = 'delivered'"
-            ),
-            1
-        );
-        let target_hash = text_value(&store, "SELECT target_hash FROM notification_attempts");
+        assert_eq!(outbox(&store, "logical-1").status, OutboxStatus::Delivered);
+        assert_eq!(history_count(&store, "delivered", None), 1);
+        let target_hash = attempt(&store, "logical-1").target_hash;
         assert_eq!(target_hash.len(), 64);
         assert!(!target_hash.contains("secret.example"));
+        let metrics = store.metrics.snapshot();
+        assert_eq!(metrics.pending_deliveries, 0);
+        assert_eq!(metrics.delivery_attempts, 1);
+        assert_eq!(metrics.delivery_successes, 1);
+        assert_eq!(metrics.delivery_failures, 0);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn duplicate_delivery_completion_does_not_drift_state_or_metrics() {
+        let directory = test_dir("notification-delivery-duplicate-finish");
+        let store = Store::open(&directory.join("config.toml")).unwrap();
+        seed_outbox(&store, "logical-1", Channel::Browser, 3, 5_000, 10_000);
+        let delivery = store.claim_due(Channel::Browser, 1_000).unwrap().unwrap();
+        let outcome = DeliveryOutcome::Delivered {
+            provider_status: None,
+        };
+
+        store
+            .finish_delivery(&delivery, outcome.clone(), 1_100)
+            .unwrap();
+        let metrics = store.metrics.snapshot();
+        let attempt_count = store.lock_state().attempts.len();
+        let delivered_history_count = history_count(&store, "delivered", None);
+
+        assert!(
+            store
+                .finish_delivery(&delivery, outcome, 1_200)
+                .unwrap_err()
+                .to_string()
+                .contains("stale")
+        );
+        assert_eq!(store.metrics.snapshot(), metrics);
+        assert_eq!(store.lock_state().attempts.len(), attempt_count);
+        assert_eq!(
+            history_count(&store, "delivered", None),
+            delivered_history_count
+        );
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -1720,7 +1848,7 @@ mod tests {
     #[test]
     fn transient_delivery_respects_retry_after_and_max_attempts() {
         let directory = test_dir("notification-delivery-retry");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_outbox(&store, "logical-1", Channel::Webhook, 2, 5_000, 20_000);
 
         let first = store.claim_due(Channel::Webhook, 1_000).unwrap().unwrap();
@@ -1750,17 +1878,13 @@ mod tests {
                 3_000,
             )
             .unwrap();
-        assert_eq!(
-            text_value(&store, "SELECT status FROM notification_outbox"),
-            "failed"
-        );
-        assert_eq!(
-            count(
-                &store,
-                "SELECT COUNT(*) FROM notification_attempts WHERE outcome IN ('retried', 'failed')"
-            ),
-            2
-        );
+        assert_eq!(outbox(&store, "logical-1").status, OutboxStatus::Failed);
+        assert_eq!(store.lock_state().attempts.len(), 2);
+        let metrics = store.metrics.snapshot();
+        assert_eq!(metrics.pending_deliveries, 0);
+        assert_eq!(metrics.delivery_attempts, 2);
+        assert_eq!(metrics.delivery_retries, 1);
+        assert_eq!(metrics.delivery_failures, 1);
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
     }
@@ -1768,7 +1892,7 @@ mod tests {
     #[test]
     fn expired_and_unrelated_channel_items_do_not_block_claiming() {
         let directory = test_dir("notification-delivery-expiry");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_outbox(&store, "logical-webhook", Channel::Webhook, 2, 5_000, 1_500);
         seed_outbox(
             &store,
@@ -1781,11 +1905,8 @@ mod tests {
 
         assert!(store.claim_due(Channel::Webhook, 1_500).unwrap().is_none());
         assert_eq!(
-            text_value(
-                &store,
-                "SELECT status FROM notification_outbox WHERE logical_id = 'logical-webhook'"
-            ),
-            "expired"
+            outbox(&store, "logical-webhook").status,
+            OutboxStatus::Expired
         );
         let browser = store.claim_due(Channel::Browser, 1_500).unwrap().unwrap();
         assert_eq!(browser.logical_id, "logical-browser");
@@ -1796,7 +1917,7 @@ mod tests {
     #[test]
     fn permanent_provider_failure_is_not_retried() {
         let directory = test_dir("notification-delivery-permanent");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_outbox(&store, "logical-1", Channel::Push, 4, 5_000, 20_000);
 
         let delivery = store.claim_due(Channel::Push, 1_000).unwrap().unwrap();
@@ -1810,14 +1931,11 @@ mod tests {
                 1_100,
             )
             .unwrap();
-        assert_eq!(
-            text_value(&store, "SELECT status FROM notification_outbox"),
-            "failed"
-        );
+        assert_eq!(outbox(&store, "logical-1").status, OutboxStatus::Failed);
         assert!(store.claim_due(Channel::Push, 10_000).unwrap().is_none());
         assert_eq!(
-            text_value(&store, "SELECT reason FROM notification_attempts"),
-            "channel_unavailable"
+            attempt(&store, "logical-1").reason.as_deref(),
+            Some("channel_unavailable")
         );
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
@@ -1901,7 +2019,7 @@ mod tests {
             deep_link_base_url: Some("https://keeppeek.example/".to_owned()),
         })
         .unwrap();
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         let rule = Rule {
             id: "front-door-motion".to_owned(),
             name: "Front Door Motion".to_owned(),
@@ -2031,11 +2149,10 @@ mod tests {
             .finish_delivery(&delivery, result, occurred_at_ms.saturating_add(1))
             .unwrap();
         assert_eq!(
-            text_value(
-                &store,
-                "SELECT provider_request_id FROM notification_attempts"
-            ),
-            "647d2300-702c-4b38-8b2f-d56326ae460b"
+            attempt(&store, &delivery.logical_id)
+                .provider_request_id
+                .as_deref(),
+            Some("647d2300-702c-4b38-8b2f-d56326ae460b")
         );
         drop(store);
         std::fs::remove_dir_all(directory).unwrap();
@@ -2155,9 +2272,9 @@ mod tests {
     }
 
     #[test]
-    fn emergency_receipt_is_private_and_acknowledgement_is_durable() {
+    fn emergency_receipt_is_private_and_acknowledgement_is_recorded() {
         let directory = test_dir("notification-pushover-receipt");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_outbox(&store, "logical-1", Channel::Push, 3, 30_000, 600_000);
         let delivery = store.claim_due(Channel::Push, 1_000).unwrap().unwrap();
         store
@@ -2192,26 +2309,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            text_value(
-                &store,
-                "SELECT provider_request_id FROM notification_attempts"
-            ),
-            "647d2300-702c-4b38-8b2f-d56326ae460b"
+            attempt(&store, "logical-1").provider_request_id.as_deref(),
+            Some("647d2300-702c-4b38-8b2f-d56326ae460b")
         );
         assert_eq!(
-            text_value(
-                &store,
-                "SELECT provider_acknowledged_by_hash FROM notification_outbox"
-            ),
-            target_hash("user-key")
+            outbox(&store, "logical-1")
+                .provider_acknowledged_by_hash
+                .as_deref(),
+            Some(target_hash("user-key").as_str())
         );
-        assert_eq!(
-            count(
-                &store,
-                "SELECT COUNT(*) FROM notification_history WHERE outcome = 'acknowledged'"
-            ),
-            1
-        );
+        assert_eq!(history_count(&store, "acknowledged", None), 1);
         let history = store.history("owner-1", 10).unwrap();
         let attempt = &history[0].attempts[0];
         assert_eq!(
@@ -2235,7 +2342,7 @@ mod tests {
     #[test]
     fn unacknowledged_emergency_receipt_expires_once_and_stops_polling() {
         let directory = test_dir("notification-pushover-receipt-expiry");
-        let store = Store::open(&directory.join("notifications.db")).unwrap();
+        let store = Store::open(&directory.join("config.toml")).unwrap();
         seed_outbox(&store, "logical-1", Channel::Push, 3, 30_000, 600_000);
         let delivery = store.claim_due(Channel::Push, 1_000).unwrap().unwrap();
         store
@@ -2266,16 +2373,9 @@ mod tests {
             )
             .unwrap();
 
+        assert_eq!(outbox(&store, "logical-1").status, OutboxStatus::Delivered);
         assert_eq!(
-            text_value(&store, "SELECT status FROM notification_outbox"),
-            "delivered"
-        );
-        assert_eq!(
-            count(
-                &store,
-                "SELECT COUNT(*) FROM notification_history
-                 WHERE outcome = 'expired' AND reason = 'provider_unacknowledged'"
-            ),
+            history_count(&store, "expired", Some("provider_unacknowledged")),
             1
         );
         assert!(store.claim_due_receipt(100_000).unwrap().is_none());

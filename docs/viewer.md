@@ -81,7 +81,8 @@ principal. `All cameras` is an immutable dashboard that tracks the configured ca
 Administrators create, rename, duplicate, update, import, export, and delete custom dashboards in
 Settings. Each custom dashboard grants viewing to everyone or to selected named User credentials;
 Administrators always retain access. A User receives only authorized dashboards and can replace
-only their active selection. The server stores the registry in `peek-layouts.json` beside
+only their active selection. The server stores the registry under `[peek_layouts]` in `config.toml`.
+A legacy `peek-layouts.json` is imported once on upgrade and removed after a successful write. The
 `config.toml` and restores it after restart.
 
 Every replacement includes the current StateStore revision. A stale replacement returns a typed

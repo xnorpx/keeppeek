@@ -29,23 +29,23 @@ credentials and provider configuration.
 ## Avoid duplicate and noisy alerts
 
 KeepPeek gives one logical notification a stable identity derived from its rule, source, event or
-outage, and lifecycle. Event revisions, retries, enrichment, process restart, and recovery retain
-that identity. Equal message text never collapses unrelated cameras or events.
+outage, and lifecycle. Event revisions, retries, enrichment, and recovery retain that identity while
+KeepPeek remains running. Equal message text never collapses unrelated cameras or events.
 
 Rules can apply cooldowns per event family, camera and event kind, group, whole rule, or outage
-interval. The cooldown starts when the logical notification is created and survives restart. Rate
-limits can apply to the rule, channel, principal, or whole server. Critical bypass is explicit,
-bounded, and audited.
+interval. The cooldown starts when the logical notification is created and resets on restart. Rate
+limits can apply to the rule, channel, principal, or whole server and also reset on restart.
+Critical bypass is explicit, bounded, and logged.
 
 A preliminary alert may be replaced by an enriched revision when a canonical image or final
 duration becomes available within the configured deadline. Missing imagery does not suppress a
 metadata alert unless the action explicitly requires an attachment. Late enrichment stays in
 history without waking the user unless the rule permits it.
 
-The inbox keeps unread, seen, acknowledged, and cleared state per authenticated principal. Provider
+The process-local inbox keeps unread, seen, acknowledged, and cleared state per authenticated principal. Provider
 delivery and acknowledgement remain separate from KeepPeek review state. Delivery history explains
 whether work was created, replaced, suppressed, collapsed, rate-limited, retried, expired,
-delivered, or failed.
+delivered, or failed until the next restart.
 
 ## Deliver through Pushover
 
@@ -57,18 +57,19 @@ Pushover is the supported push channel. To configure it:
 4. Enter the token and key directly in **Settings > Notifications**.
 5. Save, activate, and run the rule's test action.
 
-The two credentials are write-only. KeepPeek stores them in server-owned notification state and
-never returns them to the browser, health snapshots, logs, or delivery reasons. Editing non-secret
-settings preserves the configured values; replacing credentials requires entering both again.
+The two credentials are write-only. KeepPeek stores owner-only values in `secrets.toml` and keeps
+references with the rules in `config.toml`. It never returns them to the browser, health snapshots,
+logs, or delivery reasons. Editing non-secret settings preserves the configured values; replacing
+credentials requires entering both again.
 
 Push actions support optional device names, sound, priorities `-2` through `2`, a public base URL
 for deep links, and one bounded JPEG attachment. Emergency priority `2` also requires retry and
 expiry values and records provider acknowledgement separately from KeepPeek acknowledgement.
 
-Timeouts, connection failures, HTTP 408, 425, 429, and 5xx responses use the rule's bounded durable
-retry policy. Invalid credentials and other permanent provider failures do not retry indefinitely.
-Disabling a rule or Push action stops new work and expires its pending attempts without deleting
-delivery history.
+Timeouts, connection failures, HTTP 408, 425, 429, and 5xx responses use the rule's bounded
+in-memory retry policy. Invalid credentials and other permanent provider failures do not retry
+indefinitely. Restarting KeepPeek discards pending attempts. Disabling a rule or Push action stops
+new work and expires its pending attempts.
 
 ## Forward events through MQTT
 
@@ -91,13 +92,15 @@ deduplicate with `(instance_id, event_id, revision)`. Camera outage and recovery
 same envelope and carry bounded cause, affected streams, recording consequence, duration, and
 recovery evidence. This profile publishes attachment metadata, not image bytes.
 
-QoS 1 is the default and provides at-least-once delivery. A crash around broker acknowledgement can
-redeliver the same stable identity, so consumers must still deduplicate. QoS 0 has no broker
-acknowledgement; QoS 2 does not remove the need for application-level identity.
+QoS 1 is the default and provides at-least-once transport while KeepPeek remains running. A broker
+reconnect around acknowledgement can redeliver the same stable identity, so consumers must still
+deduplicate. QoS 0 has no broker acknowledgement; QoS 2 does not make queued work durable across a
+KeepPeek restart.
 
-The durable MQTT outbox defaults to 64 MiB and reconnect delay grows from 250 ms to a 30-second
-ceiling. Broker outage, restart, or configuration replacement does not reconnect camera streams.
-When the outbox is full, forwarding fails visibly while event persistence and recording continue.
+The bounded in-memory MQTT outbox defaults to 64 MiB and reconnect delay grows from 250 ms to a
+30-second ceiling. A broker outage or configuration replacement does not reconnect camera streams.
+Restarting KeepPeek discards pending publications and deduplication history. When the outbox is full,
+forwarding fails visibly while event persistence and recording continue.
 
 Settings and Prometheus expose connection state, bounded error detail, pending items and bytes,
 retry and duplicate counts, last received and delivered times, and oldest unacknowledged work.

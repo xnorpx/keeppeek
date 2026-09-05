@@ -57,20 +57,7 @@
 		]
 	},
 	"httpPaths": ["/create", "/delete", "/logs", "/logs/snapshot", "/metrics"],
-	"backupHttpPaths": [
-		"/api/backups",
-		"/api/backups/capabilities",
-		"/api/backups/download",
-		"/api/backups/downloads",
-		"/api/backups/uploads",
-		"/api/backups/transfers",
-		"/api/backups/inspect",
-		"/api/backups/restore-plans",
-		"/api/backups/restores",
-		"/api/backups/restores/get",
-		"/api/backups/rollbacks",
-		"/api/backups/delete"
-	],
+	"backupHttpPaths": ["/config/export", "/config/apply"],
 	"internalHttpPaths": ["/recording-coverage"],
 	"principles": [
 		{
@@ -131,7 +118,7 @@
 	"constraints": [
 		"Core NVR operation has no vendor-cloud or relay dependency.",
 		"Application controls use binary protobuf over negotiated WebRTC data channels.",
-		"HTTP is limited to session create/delete, logs, metrics, and the protobuf-defined backup recovery API.",
+		"HTTP is limited to session create/delete, logs, metrics, and direct configuration ZIP export and apply.",
 		"Missing event evidence is labelled unavailable and is never synthesized.",
 		"No product surface may imply production readiness, customers, benchmarks, pricing, or uptime claims."
 	]

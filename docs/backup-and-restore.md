@@ -1,161 +1,114 @@
 # Backup and restore
 
-KeepPeek creates versioned, checksummed recovery bundles while recording continues. The bundle is a
-configuration and metadata artifact, not a recording-media archive. Operators can create, upload,
-inspect, dry-run, stage, activate, verify, roll back, download, and delete bundles from Settings or
-the HTTP JSON CLI.
+KeepPeek transfers configuration through two Administrator-only HTTP endpoints:
+
+| Method | Endpoint         | Result                                                                              |
+| ------ | ---------------- | ----------------------------------------------------------------------------------- |
+| `GET`  | `/config/export` | Download a fresh configuration ZIP as `application/zip`.                            |
+| `POST` | `/config/apply`  | Upload the ZIP as `application/zip`, validate it, and stage both TOMLs for restart. |
+
+Export never removes the live files and creates no retained server backup. Apply extracts and
+validates the uploaded configuration; it does not delete files from the caller's ZIP. There are no
+backup IDs, upload reservations, section selectors, path-mapping requests, or separate dry-run
+requests. The retired `/api/backups` routes return `404`.
 
 ## What a bundle contains
 
-Format 2 stores `manifest.json` plus independently described sections. Every descriptor carries a
-canonical relative path, schema version, byte length, SHA-256 digest, revision, and dependencies.
-The manifest also records KeepPeek version, source platform, creation time, snapshot revision,
-source paths, omitted data, capabilities, and required external secret references.
+Format 3 is a ZIP with exactly two ordinary files:
 
-Sections are capability-gated:
+- `config.toml` contains all durable settings, including cameras, storage paths, access credential
+  verifiers, layouts, configuration templates, notification rules, and MQTT settings.
+- `secrets.toml` contains the secret values used by those settings.
 
-| Section                 | Availability and contents                                                         |
-| ----------------------- | --------------------------------------------------------------------------------- |
-| Runtime configuration   | Sanitized server and storage policy from `config.toml`                            |
-| Camera database         | Camera/default definitions and stable configured camera IDs                       |
-| Integrations            | Sanitized MQTT and integration definitions                                        |
-| Access                  | Credential identity, role, revision, enablement, expiry, and revocation metadata  |
-| Layouts                 | The versioned `peek-layouts.json` registry when present                           |
-| Configuration templates | The versioned template document when present                                      |
-| Recording catalog       | A database-native point-in-time snapshot without MP4 bytes                        |
-| Event metadata          | Event/workflow/search state bound to the catalog snapshot                         |
-| Event thumbnails        | A filename, size, and SHA-256 inventory; JPEG bytes stay outside the bundle       |
-| Notifications           | A database-native snapshot of rules and versions without delivery/runtime history |
+The versioned manifest is stored in the ZIP comment, so the archive has no third manifest member.
+The configuration digest and a snapshot revision covering both TOMLs detect changed archive
+contents. Apply accepts current format-3 archives, including the ZIP comment produced by export.
 
-Generic shared StateStore entries and server-defined groups are not advertised because KeepPeek does
-not yet have durable owners for those domains. They become eligible sections when their owning
-features provide a recovery contract. A request for an unsupported or unavailable section fails
-instead of creating an empty claim.
-
-The default artifact omits recording media, resolved secrets, sessions, derived caches, access audit
-history, credential last-use activity, notification outbox/attempt/receipt/history state, and
-provider receipts. Recording media and JPEG files need a separate filesystem or archive policy.
+The bundle deliberately excludes `recordings.db`, recording media, event thumbnails, sessions,
+derived caches, access audit history, credential last-use activity, and all notification and MQTT
+runtime work. Protect the recording tree separately when database or media recovery is required.
 
 ## Secret policy
 
-Format 2 supports `references_only`. Existing exact `{secret:KEY}` and `{secret:KEY|url}` references
-remain references. Inline camera, access, MQTT, notification, URL-userinfo, and unknown string values
-are replaced with deterministic `BACKUP_...` references. Notification destinations are sanitized in
-an offline database snapshot and resolved only in the staged target database.
+Format 3 includes `secrets.toml` in plaintext. A backup can contain camera passwords, access keys,
+MQTT credentials, webhook URLs, and notification-provider destinations. Treat the ZIP like the live
+owner-only secrets file: restrict access, avoid untrusted storage and messaging systems, and delete
+unneeded copies. KeepPeek does not encrypt configuration bundles.
 
-The manifest lists every required reference. Put those values in the target's owner-only
-`secrets.toml` or `KEEPPEEK_SECRET_<KEY>` environment before dry run. Missing references are blocking
-plan issues but do not prevent inspection. KeepPeek never accepts a secret or passphrase in a CLI
-argument, URL, query parameter, diagnostic, browser storage, or bundle.
+Environment overrides are not copied into `secrets.toml`; only values stored in the file are backed
+up. KeepPeek never accepts a secret or passphrase in a CLI argument, URL, query parameter,
+diagnostic, or browser storage.
 
-Secrets-inclusive encrypted bundles are not implemented. Do not add `secrets.toml` to a recovery
-ZIP manually.
+## Apply and restart
 
-## Limits
+Open **Settings → Backup and restore** as an Administrator. **Export ZIP** downloads both TOMLs.
+Select a **Configuration ZIP**, confirm replacement of both files, and choose **Apply configuration**.
+The same operation is available as one HTTP POST with the ZIP body and a `Content-Length` header.
 
-- Compressed archive: 1 GiB.
-- Expanded archive: 1 GiB.
-- One section: 512 MiB.
-- Manifest: 1 MiB.
-- Archive members: 64.
-- Retained managed backups: 16.
-- Retained in-memory restore plans: 128.
-- Restore plan lifetime: 10 minutes.
-- Rollback retention after activation: 30 minutes.
-- Native database snapshot wait: 120 seconds.
-
-The server reports these values through `GET /api/backups/capabilities`. Work is serialized so one
-backup lifecycle operation cannot race another. Uploads and database sections stream through bounded
-buffers rather than loading the archive into memory.
-
-## Create and inspect
-
-Open **Settings → Backup and restore** as an Administrator. **Create backup** snapshots every
-currently supported section. The retained list shows timestamp, size, validated checksum, and
-section status. **Upload ZIP** reserves a bounded transfer, streams the artifact, and promotes it only
-after inspection succeeds.
-
-Inspection rejects unsupported formats or schemas, traversal and absolute archive members,
+Validation rejects unsupported formats or schemas, traversal and absolute archive members,
 backslashes and drive prefixes, symlinks, directories, encrypted members, duplicate/case-colliding
-members, undeclared files, malformed manifests, invalid section schemas, bad checksums, oversized
-content, malformed databases, resolved notification destinations, and retained provider/runtime
-state.
+members, any member other than the two required TOML files, malformed manifests, invalid schemas,
+bad checksums, oversized content, and invalid merged configuration.
 
-Format 1 runtime-configuration bundles from the original inspector are supported through an explicit
-format-1-to-format-2 migration plan. Newer formats and unsupported section schemas fail without
-changing live state. KeepPeek never downgrades a bundle.
+Apply also checks target permissions and space for both files. The shared settings lock protects
+export snapshots and apply planning/staging against concurrent configuration writes. The recorder
+keeps its current recording, catalog, and thumbnail paths; neither database contents nor media are
+restored or moved.
 
-## Dry run
+Success returns HTTP `202` and a ProtoJSON `RestoreRecord` whose state is
+`RESTORE_STATE_AWAITING_RESTART`. This means staged, not already active. Live TOMLs remain unchanged
+until a controlled restart. In Settings, choose **Restart to apply**; automation must restart the
+service after receiving the successful response.
 
-Select a validated backup and map every source path to an explicit target. KeepPeek canonicalizes the
-mapping and binds the immutable plan to it. The dry run does not extract or replace live state. It
-reports:
+Startup replaces the pair before configuration and database owners open. Both files have exact
+before-image digests and a crash-recovery journal. Startup refuses stale targets, reconciles partial
+application, and restores the prior pair if configuration loading or startup health fails. Restored
+access credentials and secrets take effect on restart.
 
-- source version, platform, sections, sizes, checksums, omissions, and capabilities;
-- selected-section dependencies and migrations;
-- target revision conflicts and artifact digest;
-- missing external secrets;
-- canonical target paths, writability, available capacity, and required bytes;
-- merged target-configuration validity;
-- external recording and thumbnail path consequences;
-- missing, changed, or unverified external thumbnail files;
-- server restart impact and plan expiry.
-
-Any blocking issue sets `canActivate` to false. Warnings remain visible and require operator review.
-A stale target revision, changed bundle digest, expired plan, changed canonical path, or changed
-ordinary target file is checked again during staging.
-
-## Stage, activate, and verify
-
-Activation requires explicit confirmation. KeepPeek writes every selected target to an owner-only
-same-filesystem staging name, verifies its digest and schema, transforms mapped catalog paths,
-resolves notification references against target secrets, compacts databases into self-contained
-snapshots, and persists a versioned restart journal. Live files remain unchanged while staging.
-
-Restart KeepPeek after the record reaches `AWAITING_RESTART`. Recovery runs before configuration and
-database owners open. Ordinary files use exact before-image digests. Mutable databases receive a
-native point-in-time before-image after the prior process has stopped, so normal writes between
-staging and restart are retained for rollback. The journal records each transition before the next
-unsafe step and reverses partially applied targets in reverse order.
-
-The restore is complete only after the HTTP server and camera workers start and the restored
-configuration loads with target secrets. Settings retains and displays those health checks. If
-configuration loading or startup health fails, KeepPeek restores the previous state during the same
-failed launch. A crash while preparing or applying is reconciled on the next start before restored
-state can open.
-
-## Rollback
-
-A completed restore retains owner-only before-images for 30 minutes. Select **Stage rollback**, then
-restart. Rollback removes the activated targets and restores the prior files and database snapshots
-in reverse order. The request is idempotent and requires the active restore ID plus explicit
-confirmation. After expiry, KeepPeek deletes the rollback files and journal.
+An unfinished apply blocks another with HTTP `409`. After a restore is healthy, a new validated
+apply supersedes its recovery point. To return to an earlier configuration, apply a previously
+exported ZIP. There is no separate HTTP rollback operation.
 
 Do not manually edit, move, or delete `.backups/restore-journal.json` or its sibling `.staged` and
 `.rollback` files. If startup reports that both activation and rollback failed, preserve the complete
 configuration directory and logs before manual recovery.
 
-## CLI automation
+## Limits and errors
 
-The CLI uses the same Administrator-only ProtoJSON HTTP API as Settings. It prints one machine-readable
-ProtoJSON object to stdout and diagnostics to stderr. Remote credentials come only from
-`KEEPPEEK_ACCESS_KEY` and require HTTPS unless the server is loopback.
+- Compressed and expanded archive: at most 1 GiB each.
+- Each TOML document: at most 16 MiB.
+- Exactly two archive members, with a manifest bounded by the ZIP comment size.
+- One configuration archive operation at a time; another active operation returns `503`.
+- `400`: empty, malformed, truncated, unsupported, or invalid configuration archive.
+- `401` / `403`: authentication or Administrator authorization required.
+- `409`: a configuration apply is already pending.
+- `411`: missing or invalid `Content-Length`.
+- `413`: upload exceeds the archive limit.
+- `415`: request is not `application/zip`.
+
+Responses use `Cache-Control: no-store`. Errors are typed JSON without configuration values,
+credentials, or internal paths. Apply uploads use bounded buffers and are removed after processing;
+only the staged pair and restart journal remain.
+
+## Automation
+
+The CLI uses the same endpoints as Settings. Export requires a destination and writes an owner-only
+file; apply requires `--confirm`. Commands print one machine-readable JSON result to stdout and
+diagnostics to stderr. Remote credentials come only from `KEEPPEEK_ACCESS_KEY` and require HTTPS
+unless the server is loopback.
 
 ```sh
-keeppeek backup --server http://localhost:3000 capabilities
-keeppeek backup --server http://localhost:3000 create --output keeppeek-backup.zip
-keeppeek backup --server http://localhost:3000 list
-keeppeek backup --server http://localhost:3000 inspect <backup-id>
-keeppeek backup --server http://localhost:3000 dry-run <backup-id> \
-  --map config-directory=/target/config \
-  --map recording-catalog=/target/recordings.db \
-  --map long-term-media=/archive/recordings \
-  --map event-thumbnails=/archive/event-thumbnails \
-  --map notification-database=/target/notifications.db
-keeppeek backup --server http://localhost:3000 restore <plan-id> <archive-sha256> --confirm
-keeppeek backup --server http://localhost:3000 status <restore-id>
-keeppeek backup --server http://localhost:3000 rollback <restore-id> --confirm
-keeppeek backup --server http://localhost:3000 delete <backup-id>
+keeppeek config --server http://localhost:3000 export --output keeppeek-config.zip
+keeppeek config --server http://localhost:3000 apply keeppeek-config.zip --confirm
+```
+
+For direct loopback HTTP use:
+
+```sh
+umask 077
+curl --fail http://localhost:3000/config/export --output keeppeek-config.zip
+curl --fail -H 'Content-Type: application/zip' \
+  --data-binary @keeppeek-config.zip http://localhost:3000/config/apply
 ```
 
 Exit code `2` means CLI usage failed, `3` means the server rejected the request with a stable 4xx
@@ -172,10 +125,6 @@ cargo test --release --locked --lib \
   -- --ignored --exact --nocapture
 ```
 
-On macOS 26.6.2 arm64, Apple M5 Max, Rust 1.97.1, 10 runs, and a 14,595-byte bundle containing every
-currently supported domain, the stopped-service raw-copy baseline measured p50/p95 `4.794/22.918 ms`.
-The validated online bundle measured p50/p95 `187.041/583.204 ms` against a `2,000 ms` p95 budget.
-Its p95 cost increased by `560.286 ms` (`2444.7%`) relative to raw copying. Dry run measured
-`76.984/162.267 ms` against `500 ms`; staging measured `449.072/677.259 ms` against `2,000 ms`.
-The raw copy is faster but does not provide a consistent live snapshot, sanitization, validation,
-migration planning, or rollback.
+The ignored benchmark reports create, dry-run, and staging latency against their budgets. Refresh
+published measurements after the format-3 workload has been measured on the release platform; old
+format-2 section and database results are not comparable.
