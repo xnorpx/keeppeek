@@ -12,6 +12,7 @@ import {
 import type { MqttSettingsUpdate } from './integrations';
 import { MqttControlClient } from './control-client-mqtt';
 import { PeekLayoutControlClient } from './control-client-peek-layouts';
+import { CameraAccessControlClient } from './control-client-camera-access';
 import type { PeekLayoutRegistry } from './peek-layout';
 import type {
 	AccessAuditEvent,
@@ -20,6 +21,7 @@ import type {
 	AccessCredentialInput,
 	AccessRole,
 	AccessSession,
+	CameraAccessSettings,
 	IssuedAccessCredential
 } from './access';
 import { NotificationControlClient } from './control-client-notifications';
@@ -456,6 +458,7 @@ export class ControlClient {
 	#notifications = new NotificationControlClient((command) => this.request(command));
 	#mqtt = new MqttControlClient((command) => this.request(command));
 	#peekLayouts = new PeekLayoutControlClient((command) => this.request(command));
+	#cameraAccess = new CameraAccessControlClient((command) => this.request(command));
 	#configuration = new ConfigurationControlClient((command) => this.request(command));
 	#backups = new BackupHttpClient(() => this.#accessKey);
 	#system = new SystemControlClient(
@@ -547,6 +550,14 @@ export class ControlClient {
 
 	async getPeekLayoutRegistry(): Promise<PeekLayoutRegistry> {
 		return this.#peekLayouts.get();
+	}
+
+	async getCameraAccess(credentialId: string): Promise<CameraAccessSettings> {
+		return this.#cameraAccess.get(credentialId);
+	}
+
+	async saveCameraAccess(settings: CameraAccessSettings): Promise<CameraAccessSettings> {
+		return this.#cameraAccess.save(settings);
 	}
 
 	async savePeekLayoutRegistry(registry: PeekLayoutRegistry): Promise<PeekLayoutRegistry> {
@@ -2150,18 +2161,19 @@ export class ControlClient {
 		this.#reliableChannel = reliable;
 		this.#unreliableChannel = unreliable;
 
-		const opened = new Promise<void>((resolve, reject) => {
-			const timeout = setTimeout(
-				() => reject(new Error('WebRTC control channel did not open.')),
+		let openingTimeout: ReturnType<typeof setTimeout> | undefined;
+		const opened = new Promise<Error | null>((resolve) => {
+			openingTimeout = setTimeout(
+				() => resolve(new Error('WebRTC control channel did not open.')),
 				controlTimeoutMs
 			);
 			control.onopen = () => {
-				clearTimeout(timeout);
-				resolve();
+				clearTimeout(openingTimeout);
+				resolve(null);
 			};
 			control.onerror = () => {
-				clearTimeout(timeout);
-				reject(new Error('WebRTC control channel failed.'));
+				clearTimeout(openingTimeout);
+				resolve(new Error('WebRTC control channel failed.'));
 			};
 		});
 		control.onmessage = (event) => this.receive(event);
@@ -2204,7 +2216,10 @@ export class ControlClient {
 				type: session.answer.type as RTCSdpType,
 				sdp: session.answer.sdp
 			});
-			if (control.readyState !== 'open') await opened;
+			if (control.readyState !== 'open') {
+				const openingError = await opened;
+				if (openingError) throw openingError;
+			}
 		} catch (error) {
 			const sessionId = this.release();
 			if (sessionId !== null) {
@@ -2212,6 +2227,10 @@ export class ControlClient {
 			}
 			this.publishConnectionError(error);
 			throw error;
+		} finally {
+			clearTimeout(openingTimeout);
+			control.onopen = null;
+			control.onerror = null;
 		}
 	}
 

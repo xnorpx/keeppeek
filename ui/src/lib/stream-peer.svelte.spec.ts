@@ -1,6 +1,7 @@
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+	CameraInfoSchema,
 	ControlEnvelopeSchema,
 	MediaStreamCapabilitySchema,
 	NotificationSchema,
@@ -23,6 +24,7 @@ import { LivePeer } from './stream-peer.svelte';
 
 class FakeDataChannel {
 	static suppressCapabilities = false;
+	static offlineCamera: string | null = null;
 
 	readyState: RTCDataChannelState = 'connecting';
 	binaryType: BinaryType = 'blob';
@@ -93,6 +95,9 @@ class FakeDataChannel {
 						case: 'initialCapabilities',
 						value: create(ServerCapabilitiesSchema, {
 							revision: 1n,
+							cameras: FakeDataChannel.offlineCamera
+								? [create(CameraInfoSchema, { sourceId: FakeDataChannel.offlineCamera })]
+								: [],
 							sourceSessions: ['front-door', 'garage'].map((cameraId) =>
 								create(SourceSessionSchema, {
 									sourceSessionId: `camera:${cameraId}`,
@@ -177,11 +182,48 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.clearAllMocks();
 	FakeDataChannel.suppressCapabilities = false;
+	FakeDataChannel.offlineCamera = null;
 	FakePeerConnection.failRemoteDescription = false;
 	FakePeerConnection.latest = null;
 });
 
 describe('LivePeer', () => {
+	it('retains recovery errors for an authorized camera with no live source yet', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		FakeDataChannel.offlineCamera = 'offline-camera';
+		api.createSession.mockResolvedValue({
+			session_id: 'offline',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await expect(peer.configure([{ cameraId: 'offline-camera', quality: 'low' }])).rejects.toThrow(
+			'no live source'
+		);
+		expect(api.deleteSession).toHaveBeenCalledWith('offline', null, undefined);
+	});
+
+	it('keeps an unadvertised camera unavailable without subscribing or failing other tracks', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'restricted',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await expect(
+			peer.configure([
+				{ cameraId: 'front-door', quality: 'low' },
+				{ cameraId: 'hidden-camera', quality: 'low' }
+			])
+		).resolves.toBeUndefined();
+		expect(peer.track('front-door')?.subscribed).toBe(true);
+		expect(peer.track('hidden-camera')).toMatchObject({ status: 'unavailable', subscribed: false });
+		expect(peer.error).toBeNull();
+		expect(FakePeerConnection.latest?.channels[0].commands).toEqual(['subscribeMedia']);
+		await peer.close();
+	});
+
 	it('shares one negotiated session and tears it down after unsubscribe', async () => {
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		api.createSession.mockResolvedValue({

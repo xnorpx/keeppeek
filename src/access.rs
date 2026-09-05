@@ -25,6 +25,8 @@ const MAX_CREDENTIAL_NAME_BYTES: usize = 64;
 const MAX_CREDENTIAL_DESCRIPTION_BYTES: usize = 256;
 const MAX_AUDIT_FIELD_BYTES: usize = 128;
 const LAST_USED_WRITE_INTERVAL_MS: i64 = 60_000;
+pub const MAX_CAMERA_ACCESS_IDS: usize = 128;
+const MAX_CAMERA_ACCESS_ID_BYTES: usize = 256;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct AccessKey(u128);
@@ -151,6 +153,70 @@ impl AccessRole {
         matches!(self, Self::Administrator) || matches!(required, Self::User)
     }
 }
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CameraAccess {
+    pub(crate) all_cameras: bool,
+    #[serde(default)]
+    pub(crate) group_ids: Vec<String>,
+    pub(crate) camera_ids: Vec<String>,
+}
+
+impl CameraAccess {
+    pub(crate) const fn unrestricted() -> Self {
+        Self {
+            all_cameras: true,
+            group_ids: Vec::new(),
+            camera_ids: Vec::new(),
+        }
+    }
+
+    pub(crate) fn allows(&self, camera_id: &str) -> bool {
+        self.all_cameras || self.camera_ids.iter().any(|allowed| allowed == camera_id)
+    }
+
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if self.camera_ids.len() > MAX_CAMERA_ACCESS_IDS
+            || self.group_ids.len() > MAX_CAMERA_ACCESS_IDS
+            || (self.all_cameras && (!self.camera_ids.is_empty() || !self.group_ids.is_empty()))
+        {
+            anyhow::bail!(
+                "user access policy exceeds its limits or combines everything with selected IDs"
+            );
+        }
+        for ids in [&self.group_ids, &self.camera_ids] {
+            let mut seen = std::collections::HashSet::with_capacity(ids.len());
+            for id in ids {
+                if id.trim().is_empty()
+                    || id.len() > MAX_CAMERA_ACCESS_ID_BYTES
+                    || id.chars().any(char::is_control)
+                    || !seen.insert(id)
+                {
+                    anyhow::bail!("user access IDs must be nonempty, bounded, and unique");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct CameraAccessConflict {
+    pub(crate) current_revision: u64,
+}
+
+impl fmt::Display for CameraAccessConflict {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "camera access revision conflict (current {})",
+            self.current_revision
+        )
+    }
+}
+
+impl std::error::Error for CameraAccessConflict {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientClassificationReason {
@@ -429,6 +495,8 @@ struct StoredCredential {
     name: String,
     description: Option<String>,
     role: AccessRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    camera_access: Option<CameraAccess>,
     verifier: AccessKeyFingerprint,
     created_at_ms: i64,
     #[serde(default)]
@@ -443,6 +511,22 @@ struct StoredCredential {
 }
 
 impl StoredCredential {
+    fn effective_camera_access(&self) -> CameraAccess {
+        if self.role == AccessRole::Administrator {
+            return CameraAccess::unrestricted();
+        }
+        self.camera_access
+            .clone()
+            .unwrap_or_else(CameraAccess::unrestricted)
+    }
+
+    fn is_active(&self, revision: u64, now: i64) -> bool {
+        self.revision == revision
+            && !self.disabled
+            && self.revoked_at_ms.is_none()
+            && self.expires_at_ms.is_none_or(|expires_at| expires_at > now)
+    }
+
     fn metadata(&self) -> CredentialMetadata {
         CredentialMetadata {
             id: self.id,
@@ -686,14 +770,72 @@ impl AccessManager {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.catalog.credentials.iter().any(|credential| {
-            credential.id == id
-                && credential.revision == revision
-                && !credential.disabled
-                && credential.revoked_at_ms.is_none()
-                && credential
-                    .expires_at_ms
-                    .is_none_or(|expires_at| expires_at > now)
+        state
+            .catalog
+            .credentials
+            .iter()
+            .any(|credential| credential.id == id && credential.is_active(revision, now))
+    }
+
+    pub(crate) fn camera_access(&self, id: Uuid, revision: u64, now: i64) -> Option<CameraAccess> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let credential = state
+            .catalog
+            .credentials
+            .iter()
+            .find(|credential| credential.id == id && credential.is_active(revision, now))?;
+        Some(credential.effective_camera_access())
+    }
+
+    pub(crate) fn camera_access_settings(
+        &self,
+        id: Uuid,
+    ) -> Option<(CameraAccess, CredentialMetadata)> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let credential = state
+            .catalog
+            .credentials
+            .iter()
+            .find(|credential| credential.id == id)?;
+        Some((credential.effective_camera_access(), credential.metadata()))
+    }
+
+    pub(crate) fn set_camera_access(
+        &self,
+        id: Uuid,
+        expected_revision: u64,
+        mut policy: CameraAccess,
+    ) -> anyhow::Result<CredentialMetadata> {
+        policy.validate()?;
+        policy.group_ids.sort_unstable();
+        policy.camera_ids.sort_unstable();
+        self.mutate_catalog(|catalog| {
+            let credential = credential_mut(catalog, id)?;
+            if credential.revision != expected_revision {
+                return Err(CameraAccessConflict {
+                    current_revision: credential.revision,
+                }
+                .into());
+            }
+            if credential.role == AccessRole::Administrator {
+                anyhow::bail!("Administrator credentials always have full camera access");
+            }
+            if credential.revoked_at_ms.is_some() {
+                anyhow::bail!("revoked credentials cannot be changed");
+            }
+            let revision = credential
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("credential revision is exhausted"))?;
+            credential.camera_access = Some(policy);
+            credential.revision = revision;
+            Ok(credential.metadata())
         })
     }
 
@@ -727,6 +869,7 @@ impl AccessManager {
             name,
             description,
             role,
+            camera_access: Some(CameraAccess::unrestricted()),
             verifier: access_key.fingerprint(),
             created_at_ms: now,
             rotated_at_ms: None,
@@ -991,6 +1134,7 @@ fn legacy_credential(access_key: AccessKey, created_at_ms: i64) -> StoredCredent
         name: "Initial Administrator".to_owned(),
         description: Some("First-run remote Administrator credential".to_owned()),
         role: AccessRole::Administrator,
+        camera_access: None,
         verifier: access_key.fingerprint(),
         created_at_ms,
         rotated_at_ms: None,
@@ -1051,6 +1195,9 @@ fn validate_catalog(catalog: &AccessCatalog) -> anyhow::Result<()> {
     for credential in &catalog.credentials {
         validated_name(&credential.name)?;
         validated_description(credential.description.as_deref())?;
+        if let Some(camera_access) = &credential.camera_access {
+            camera_access.validate()?;
+        }
         if !ids.insert(credential.id) {
             anyhow::bail!("access catalog contains duplicate credential IDs");
         }
@@ -1347,6 +1494,152 @@ mod tests {
         reopened.flush_audit(true).unwrap();
         let reopened = AccessManager::open(&config_path, initial).unwrap();
         assert!(reopened.list_audit(10).is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_camera_access_and_rotation_preserve_the_effective_policy() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-legacy-grants-{}", Uuid::new_v4()));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(&config_path, b"port = 8081\n").unwrap();
+        let manager = AccessManager::open(&config_path, AccessKey::unset()).unwrap();
+        let issued = manager
+            .create_credential("Legacy User", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        manager
+            .mutate_catalog(|catalog| {
+                credential_mut(catalog, issued.metadata.id)?.camera_access = None;
+                Ok(())
+            })
+            .unwrap();
+        let reopened = AccessManager::open(&config_path, AccessKey::unset()).unwrap();
+        assert!(
+            reopened
+                .camera_access(issued.metadata.id, 1, 2_000)
+                .unwrap()
+                .allows("any-camera")
+        );
+        let granted = reopened
+            .set_camera_access(
+                issued.metadata.id,
+                1,
+                CameraAccess {
+                    all_cameras: false,
+                    group_ids: Vec::new(),
+                    camera_ids: vec!["front-door".to_owned()],
+                },
+            )
+            .unwrap();
+        let rotated = reopened.rotate_credential(granted.id, 3_000).unwrap();
+        let access = reopened
+            .camera_access(granted.id, rotated.metadata.revision, 3_000)
+            .unwrap();
+        assert!(access.allows("front-door"));
+        assert!(!access.allows("another-camera"));
+        let invalid = CameraAccess {
+            all_cameras: true,
+            group_ids: Vec::new(),
+            camera_ids: vec!["front-door".to_owned()],
+        };
+        assert!(
+            reopened
+                .set_camera_access(granted.id, rotated.metadata.revision, invalid)
+                .is_err()
+        );
+        assert_eq!(
+            reopened.camera_access(granted.id, rotated.metadata.revision, 3_000),
+            Some(access)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_access_changes_are_revision_bound_and_persistent() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-camera-grants-{}", Uuid::new_v4()));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(&config_path, b"port = 8081\n").unwrap();
+        let manager = AccessManager::open(&config_path, AccessKey::unset()).unwrap();
+        let issued = manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let policy = CameraAccess {
+            all_cameras: false,
+            group_ids: vec!["outdoor".to_owned()],
+            camera_ids: vec!["cameras.front".to_owned()],
+        };
+        let updated = manager
+            .set_camera_access(issued.metadata.id, issued.metadata.revision, policy.clone())
+            .unwrap();
+
+        assert!(!manager.credential_is_active(issued.metadata.id, issued.metadata.revision, 2_000));
+        assert!(
+            manager
+                .camera_access(issued.metadata.id, issued.metadata.revision, 2_000)
+                .is_none()
+        );
+        let grants = manager
+            .camera_access(updated.id, updated.revision, 2_000)
+            .unwrap();
+        assert!(grants.allows("cameras.front"));
+        assert!(!grants.allows("cameras.back"));
+        let stale = manager
+            .set_camera_access(
+                updated.id,
+                issued.metadata.revision,
+                CameraAccess::default(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            stale
+                .downcast_ref::<CameraAccessConflict>()
+                .unwrap()
+                .current_revision,
+            updated.revision
+        );
+
+        let reopened = AccessManager::open(&config_path, AccessKey::unset()).unwrap();
+        assert_eq!(
+            reopened.camera_access(updated.id, updated.revision, 2_000),
+            Some(policy)
+        );
+        reopened.set_credential_enabled(updated.id, false).unwrap();
+        assert!(
+            reopened
+                .camera_access(updated.id, updated.revision, 2_001)
+                .is_none()
+        );
+        let configured = crate::config::load_configuration_table(&config_path).unwrap();
+        assert_eq!(configured["port"].as_integer(), Some(8081));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn new_user_credentials_default_to_all_cameras() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-camera-access-{}", Uuid::new_v4()));
+        let config_path = directory.join("config.toml");
+        crate::config::write_private_file(&config_path, b"port = 8081\n").unwrap();
+        let manager = AccessManager::open(&config_path, AccessKey::unset()).unwrap();
+        let issued = manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+
+        let configured = crate::config::load_configuration_table(&config_path).unwrap();
+        let credentials = configured[ACCESS_CATALOG_SECTION]["credentials"]
+            .as_array()
+            .unwrap();
+        let credential = credentials
+            .iter()
+            .find(|credential| credential["id"].as_str() == Some(&issued.metadata.id.to_string()))
+            .unwrap();
+        let camera_access = credential
+            .get("camera_access")
+            .expect("new User credentials must persist an explicit camera grant policy");
+        assert_eq!(camera_access["all_cameras"].as_bool(), Some(true));
+        assert!(camera_access["camera_ids"].as_array().unwrap().is_empty());
+        assert!(!directory.join("permissions.toml").exists());
         std::fs::remove_dir_all(directory).unwrap();
     }
 

@@ -273,13 +273,18 @@ pub(super) fn get(
     request: &Request,
     router_tx: &FacadeSender<RouterMessage>,
     state: &ServerState,
+    principal: &super::ApiPrincipal,
 ) -> Response {
+    let access = match super::camera_access::for_principal(state, principal) {
+        Ok(access) => access,
+        Err(_) => return service_error(403, "camera access is not permitted"),
+    };
     let generated_at_ms = unix_time_ms();
     let (query, cursor) = match parse_query(request, generated_at_ms) {
         Ok(parsed) => parsed,
         Err((status, message)) => return service_error(status, &message),
     };
-    match build_response(router_tx, state, query, cursor, generated_at_ms) {
+    match build_response(router_tx, state, query, cursor, generated_at_ms, &access) {
         Ok(response) => Response::json(&response).with_no_cache(),
         Err((status, message)) => service_error(status, &message),
     }
@@ -457,6 +462,7 @@ fn build_response(
     query: CoverageQuery,
     cursor: Option<PageToken>,
     generated_at_ms: u64,
+    access: &crate::access::CameraAccess,
 ) -> Result<RecordingCoverageResponse, (u16, String)> {
     let health = server_health(router_tx, state);
     let catalog_snapshot = state.catalog.as_ref().map_or_else(
@@ -514,6 +520,7 @@ fn build_response(
     let mut cameras = state
         .camera_entries()
         .iter()
+        .filter(|camera| access.allows(&camera.info.id))
         .map(|camera| project_camera(camera, &context))
         .collect::<Vec<_>>();
     let mut groups = cameras

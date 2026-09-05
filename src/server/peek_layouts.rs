@@ -237,12 +237,13 @@ fn get(
     request: proto::GetState,
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     require_target(&request.namespace, &request.key)?;
+    let access = super::camera_access::for_principal(state, principal)?;
     let _update = state
         .config_update
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let store = open_store(state)?;
-    state_entry(&store, principal)
+    state_entry(&store, principal, &access)
 }
 
 fn put(
@@ -281,11 +282,15 @@ fn put(
         .validate_viewer_identities(&known_credential_ids)
         .map_err(|error| registry_command_error(error, &request.namespace, &request.key))?;
     let principal_id = principal.id();
+    let access = super::camera_access::for_principal(state, principal)?;
     let _update = state
         .config_update
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut store = open_store(state)?;
+    let candidate =
+        canonical_candidate(&store, principal, &access, expected_revision, candidate)
+            .map_err(|error| registry_command_error(error, &request.namespace, &request.key))?;
     store
         .replace_for(
             &principal_id,
@@ -294,7 +299,52 @@ fn put(
             candidate,
         )
         .map_err(|error| registry_command_error(error, &request.namespace, &request.key))?;
-    state_entry(&store, principal)
+    state_entry(&store, principal, &access)
+}
+
+fn projected_registry(
+    store: &RegistryStore,
+    principal: &ApiPrincipal,
+    access: &crate::access::CameraAccess,
+) -> LayoutRegistry {
+    let mut registry =
+        store.registry_for_principal(&principal.id(), principal.role == AccessRole::Administrator);
+    for layout in &mut registry.layouts {
+        layout.tiles.retain(|tile| access.allows(&tile.camera_id));
+    }
+    registry
+}
+
+fn canonical_candidate(
+    store: &RegistryStore,
+    principal: &ApiPrincipal,
+    access: &crate::access::CameraAccess,
+    expected_revision: u64,
+    candidate: LayoutRegistry,
+) -> Result<LayoutRegistry, RegistryError> {
+    if expected_revision != store.revision() {
+        return Err(RegistryError::Conflict {
+            current_revision: store.revision(),
+        });
+    }
+    if principal.role == AccessRole::Administrator {
+        return Ok(candidate);
+    }
+    let projected = projected_registry(store, principal, access);
+    if candidate.schema_version != projected.schema_version
+        || candidate.layouts != projected.layouts
+        || !projected
+            .layouts
+            .iter()
+            .any(|layout| layout.id == candidate.active_layout_id)
+    {
+        return Err(RegistryError::NotAuthorized {
+            current_revision: store.revision(),
+        });
+    }
+    let mut canonical = store.registry_for(&principal.id());
+    canonical.active_layout_id = candidate.active_layout_id;
+    Ok(canonical)
 }
 
 fn open_store(state: &ServerState) -> Result<RegistryStore, ControlCommandError> {
@@ -322,12 +372,11 @@ fn open_store(state: &ServerState) -> Result<RegistryStore, ControlCommandError>
 fn state_entry(
     store: &RegistryStore,
     principal: &ApiPrincipal,
+    access: &crate::access::CameraAccess,
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     let principal_id = principal.id();
-    let value = serde_json::to_value(
-        store.registry_for_principal(&principal_id, principal.role == AccessRole::Administrator),
-    )
-    .map_err(|_| internal("Peek layout registry could not be encoded"))?;
+    let value = serde_json::to_value(projected_registry(store, principal, access))
+        .map_err(|_| internal("Peek layout registry could not be encoded"))?;
     let value =
         json_to_struct(value).map_err(|_| internal("Peek layout registry could not be encoded"))?;
     Ok(proto::StateStoreResult {
@@ -1612,12 +1661,15 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let state = ServerState::empty().with_camera_config_path(directory.join("config.toml"));
-        let credential_id = uuid::Uuid::new_v4();
+        let issued = state
+            .access_manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
         let principal = ApiPrincipal::credential(AuthenticatedCredential {
-            id: credential_id,
+            id: issued.metadata.id,
             name: "Viewer".to_owned(),
             role: AccessRole::User,
-            revision: 1,
+            revision: issued.metadata.revision,
             expires_at_ms: None,
         });
         let get = proto::StateStoreCommand {
@@ -1661,6 +1713,54 @@ mod tests {
         assert_eq!(detail.namespace, NAMESPACE);
         assert_eq!(detail.key, REGISTRY_KEY);
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stale_filtered_grid_selection_returns_a_revision_conflict() {
+        let directory =
+            std::env::temp_dir().join(format!("keeppeek-grid-conflict-{}", uuid::Uuid::new_v4()));
+        let config_path = directory.join("config.toml");
+        let state = ServerState::empty().with_camera_config_path(config_path.clone());
+        let issued = state
+            .access_manager
+            .create_credential("Viewer", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let principal = ApiPrincipal::credential(AuthenticatedCredential {
+            id: issued.metadata.id,
+            name: "Viewer".to_owned(),
+            role: AccessRole::User,
+            revision: issued.metadata.revision,
+            expires_at_ms: None,
+        });
+        let mut store = RegistryStore::open(config_path, &[]).unwrap();
+        let stale = store.registry_for(&principal.id());
+        let mut changed = store.registry_for_principal("local-administrator", true);
+        let mut additional = changed.layouts[0].clone();
+        additional.id = "additional".to_owned();
+        additional.name = "Additional dashboard".to_owned();
+        changed.layouts.push(additional);
+        store
+            .replace_for("local-administrator", true, 1, changed)
+            .unwrap();
+        let error = dispatch(
+            &state,
+            &principal,
+            proto::StateStoreCommand {
+                action: Some(state_store_command::Action::Put(proto::PutState {
+                    namespace: NAMESPACE.to_owned(),
+                    key: REGISTRY_KEY.to_owned(),
+                    schema: REGISTRY_SCHEMA.to_owned(),
+                    value: Some(json_to_struct(serde_json::to_value(stale).unwrap()).unwrap()),
+                    expected_revision: Some(1),
+                    ttl: None,
+                })),
+            },
+        )
+        .unwrap_err();
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, proto::StateStoreErrorCode::Conflict as i32);
+        assert_eq!(detail.current_revision, Some(2));
         std::fs::remove_dir_all(directory).unwrap();
     }
 

@@ -1462,6 +1462,7 @@ describe('ControlClient', () => {
 	});
 
 	it('clears a rejected bearer and publishes token-free sign-in state', async () => {
+		vi.useFakeTimers();
 		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
 		const accessKey = '550e8400-e29b-41d4-a716-446655440000';
 		api.createSession.mockRejectedValue(new api.ApiRequestError(401, 'Unauthorized'));
@@ -1476,6 +1477,7 @@ describe('ControlClient', () => {
 		expect(api.createSession).toHaveBeenCalledWith(expect.any(Object), accessKey);
 		expect(serializedState).toContain('sign-in-required');
 		expect(serializedState).not.toContain(accessKey);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 
 	it('maps notification rules and decodes revision conflicts', async () => {

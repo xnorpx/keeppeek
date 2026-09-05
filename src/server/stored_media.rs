@@ -178,12 +178,7 @@ pub(super) fn dispatch(
             })
         }
         Some(stored_media_command::Action::QueryTimeline(query)) => {
-            let (delivery, messages) = query_stored_media_timeline(state, query)?;
-            Ok(StoredMediaDispatch {
-                result: Some(control_ok::Result::StoredMediaQueryDelivery(delivery)),
-                messages,
-                notifications: Vec::new(),
-            })
+            query_timeline(state, session_id, query)
         }
         Some(stored_media_command::Action::CancelTimelineQuery(_)) => Ok(StoredMediaDispatch {
             result: None,
@@ -196,6 +191,20 @@ pub(super) fn dispatch(
             "stored media command has no action",
         )),
     }
+}
+
+fn query_timeline(
+    state: &ServerState,
+    session_id: SessionId,
+    query: proto::QueryStoredMediaTimeline,
+) -> Result<StoredMediaDispatch, ControlCommandError> {
+    let access = super::camera_access::for_session(state, session_id)?;
+    let (delivery, messages) = query_stored_media_timeline(state, query, &access)?;
+    Ok(StoredMediaDispatch {
+        result: Some(control_ok::Result::StoredMediaQueryDelivery(delivery)),
+        messages,
+        notifications: Vec::new(),
+    })
 }
 
 pub(super) fn close_session(state: &ServerState, session_id: SessionId) {

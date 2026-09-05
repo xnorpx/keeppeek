@@ -109,11 +109,13 @@ enum Command {
     Inbox {
         principal_id: String,
         limit: usize,
+        access: crate::access::CameraAccess,
         reply: SyncSender<anyhow::Result<Inbox>>,
     },
     History {
         principal_id: String,
         limit: usize,
+        access: crate::access::CameraAccess,
         reply: SyncSender<anyhow::Result<Vec<HistoryGroup>>>,
     },
     MarkSeen {
@@ -287,12 +289,18 @@ impl Handle {
             .map_err(|error| anyhow::anyhow!("notification test timed out: {error}"))?
     }
 
-    pub fn inbox(&self, principal_id: impl Into<String>, limit: usize) -> anyhow::Result<Inbox> {
+    pub fn inbox(
+        &self,
+        principal_id: impl Into<String>,
+        limit: usize,
+        access: crate::access::CameraAccess,
+    ) -> anyhow::Result<Inbox> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
             .send(Command::Inbox {
                 principal_id: principal_id.into(),
                 limit,
+                access,
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("notification runtime is no longer running"))?;
@@ -305,12 +313,14 @@ impl Handle {
         &self,
         principal_id: impl Into<String>,
         limit: usize,
+        access: crate::access::CameraAccess,
     ) -> anyhow::Result<Vec<HistoryGroup>> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
             .send(Command::History {
                 principal_id: principal_id.into(),
                 limit,
+                access,
                 reply: reply_tx,
             })
             .map_err(|_| anyhow::anyhow!("notification runtime is no longer running"))?;
@@ -542,16 +552,18 @@ fn run(store: store::Store, rx: Receiver<Command>) {
             Command::Inbox {
                 principal_id,
                 limit,
+                access,
                 reply,
             } => {
-                let _ = reply.send(store.inbox(&principal_id, limit));
+                let _ = reply.send(store.inbox_with_access(&principal_id, limit, &access));
             }
             Command::History {
                 principal_id,
                 limit,
+                access,
                 reply,
             } => {
-                let _ = reply.send(store.history(&principal_id, limit));
+                let _ = reply.send(store.history_with_access(&principal_id, limit, &access));
             }
             Command::MarkSeen {
                 logical_id,

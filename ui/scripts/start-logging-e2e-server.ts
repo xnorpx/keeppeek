@@ -123,6 +123,9 @@ await writeFile(
 	`host = "127.0.0.1"
 port = ${backendPort}
 
+[access]
+require_secure_remote = false
+
 [direct_card]
 allowed_origins = ["http://127.0.0.1:${frontendPort}"]
 
