@@ -402,6 +402,21 @@
 			"status": "planned"
 		},
 		{
+			"id": "contract.configuration-zip",
+			"boardId": "39R-0",
+			"kind": "contract",
+			"route": null,
+			"state": "selected-staged-rejected",
+			"fixture": "configuration.two-toml-zip",
+			"theme": "n/a",
+			"viewport": "contract",
+			"requiredCapabilities": ["keeppeek.backup.v1"],
+			"storybookStoryId": null,
+			"playwrightOwner": "e2e/backup.e2e.ts",
+			"contractOwner": "design/paper/keeppeek-nvr-v34/configuration-zip.json",
+			"status": "contract"
+		},
+		{
 			"id": "setup.desktop.first-run",
 			"boardId": "3CX-0",
 			"kind": "screen",

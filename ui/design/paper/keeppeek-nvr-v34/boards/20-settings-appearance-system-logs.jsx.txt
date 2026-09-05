@@ -1,5 +1,5 @@
 (
-    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '48px', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSize: '12px', fontSynthesis: 'none', gap: '48px', lineHeight: '16px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', overflowWrap: 'anywhere', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
       <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', gap: '40px', justifyContent: 'space-between', width: '1440px' }}>
         <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '700px' }}>
           <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
@@ -9,7 +9,7 @@
             </div>
           </div>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '56px', fontWeight: 700, letterSpacing: 'var(--tracking-tight)', lineHeight: '105%' }}>
-            The last three sections.
+            System preferences.
           </div>
         </div>
         <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingTop: '44px', width: '700px' }}>
@@ -177,9 +177,9 @@
                 Update check unavailable
               </div>
             </div>
-            <div style={{ alignItems: 'center', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '205px' }}>
-              <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '16px' }}>
-                Config backup unavailable
+            <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '205px' }}>
+              <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '16px' }}>
+                Configuration ZIP
               </div>
             </div>
           </div>
@@ -277,6 +277,247 @@
           </div>
           <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: 'var(--text-xs-plus)', lineHeight: '150%' }}>
             Diagnostics bundle unavailable. The dedicated log viewer supports replay, streaming, filters, and redacted JSONL export.
+          </div>
+        </div>
+      </div>
+      <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans)', gap: '20px', width: '1440px' }}>
+        <div style={{ alignItems: 'center', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '44px', justifyContent: 'space-between', paddingTop: '16px', width: '1440px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '20px', fontWeight: 600, lineHeight: '24px' }}>
+            Configuration ZIP
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '18px' }}>
+            GET /config/export | POST /config/apply | Administrator
+          </div>
+        </div>
+        <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '24px', width: '1440px' }}>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-sans)', gap: '12px', width: '501px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+              01 / SELECTED - CONFIRMATION REQUIRED
+            </div>
+            <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', overflow: 'clip', width: '501px' }}>
+              <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', paddingBlock: '14px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '20px', fontWeight: 600, lineHeight: '24px' }}>
+                  Backup and restore
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '18px' }}>
+                  config.toml + secrets.toml
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', backgroundColor: '#E8A33D0D', borderBottomColor: '#E8A33D4D', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '12px', paddingInline: '20px', width: '100%' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M12 9v4M12 17h.01" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '18px' }}>
+                  Backup ZIPs contain plaintext secrets. Restrict access and delete copies you no longer need. Databases and recordings are not included.
+                </div>
+              </div>
+              <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', paddingBlock: '12px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '36px', justifyContent: 'center', paddingInline: '12px' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" fill="none" stroke="var(--color-text)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                    Export ZIP
+                  </div>
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans)', gap: '14px', paddingBlock: '18px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                    Configuration ZIP
+                  </div>
+                  <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '12px', height: '34px', width: '100%' }}>
+                    <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '101px' }}>
+                      <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '18px' }}>
+                        Choose file
+                      </div>
+                    </div>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '18px' }}>
+                      keeppeek-config.zip
+                    </div>
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '8px', width: '100%' }}>
+                  <div style={{ backgroundColor: 'var(--color-ground)', borderColor: 'var(--color-hairline-strong)', borderRadius: '2px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '14px', width: '14px' }} />
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '18px' }}>
+                    Replace config.toml and secrets.toml on restart.
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+                  <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '36px', justifyContent: 'center', opacity: '0.5', paddingInline: '12px' }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" fill="none" stroke="var(--color-on-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                      Apply configuration
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-sans)', gap: '12px', width: '501px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+              02 / STAGED - LIVE FILES UNCHANGED
+            </div>
+            <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', overflow: 'clip', width: '501px' }}>
+              <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', paddingBlock: '14px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '20px', fontWeight: 600, lineHeight: '24px' }}>
+                  Backup and restore
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '18px' }}>
+                  config.toml + secrets.toml
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', backgroundColor: '#E8A33D0D', borderBottomColor: '#E8A33D4D', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '12px', paddingInline: '20px', width: '100%' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M12 9v4M12 17h.01" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '18px' }}>
+                  Backup ZIPs contain plaintext secrets. Restrict access and delete copies you no longer need. Databases and recordings are not included.
+                </div>
+              </div>
+              <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', paddingBlock: '12px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '36px', justifyContent: 'center', paddingInline: '12px' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" fill="none" stroke="var(--color-text)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                    Export ZIP
+                  </div>
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans)', gap: '14px', paddingBlock: '18px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', opacity: '0.5', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                    Configuration ZIP
+                  </div>
+                  <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '12px', height: '34px', width: '100%' }}>
+                    <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '101px' }}>
+                      <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '18px' }}>
+                        Choose file
+                      </div>
+                    </div>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '18px' }}>
+                      keeppeek-config.zip
+                    </div>
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '8px', opacity: '0.5', width: '100%' }}>
+                  <div style={{ backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', borderRadius: '2px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '14px', width: '14px' }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path d="m20 6-11 11-5-5" fill="none" stroke="var(--color-on-primary)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '18px' }}>
+                    Replace config.toml and secrets.toml on restart.
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+                  <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '36px', justifyContent: 'center', opacity: '0.5', paddingInline: '12px' }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" fill="none" stroke="var(--color-on-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                      Apply configuration
+                    </div>
+                  </div>
+                </div>
+                <div style={{ borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '12px', paddingTop: '16px', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-healthy)', fontFamily: 'var(--font-sans)', fontSize: '14px', lineHeight: '20px' }}>
+                    Configuration staged. Restart required.
+                  </div>
+                  <div style={{ boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+                    <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '36px', paddingInline: '12px' }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                        <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5" fill="none" stroke="var(--color-on-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                        Restart to apply
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', fontFamily: 'var(--font-sans)', gap: '12px', width: '390px' }}>
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '16px' }}>
+              03 / REJECTED - 390px
+            </div>
+            <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', overflow: 'clip', width: '390px' }}>
+              <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '4px', paddingBlock: '14px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '20px', fontWeight: 600, lineHeight: '24px' }}>
+                  Backup and restore
+                </div>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '18px' }}>
+                  config.toml + secrets.toml
+                </div>
+              </div>
+              <div style={{ alignItems: 'start', backgroundColor: '#E8A33D0D', borderBottomColor: '#E8A33D4D', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', paddingBlock: '12px', paddingInline: '20px', width: '100%' }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M12 9v4M12 17h.01" fill="none" stroke="var(--color-activity)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '18px' }}>
+                  Backup ZIPs contain plaintext secrets. Restrict access and delete copies you no longer need. Databases and recordings are not included.
+                </div>
+              </div>
+              <div style={{ backgroundColor: '#C93B400D', borderBottomColor: '#C93B404D', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', paddingBlock: '12px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', color: 'var(--color-live-text)', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '20px' }}>
+                  configuration archive failed validation
+                </div>
+              </div>
+              <div style={{ borderBottomColor: 'var(--color-hairline)', borderBottomStyle: 'solid', borderBottomWidth: '1px', boxSizing: 'border-box', display: 'flex', paddingBlock: '12px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-sm)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '36px', justifyContent: 'center', paddingInline: '12px' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" fill="none" stroke="var(--color-text)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                    Export ZIP
+                  </div>
+                </div>
+              </div>
+              <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontFamily: 'var(--font-sans)', gap: '14px', paddingBlock: '18px', paddingInline: '20px', width: '100%' }}>
+                <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                    Configuration ZIP
+                  </div>
+                  <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '12px', height: '34px', width: '100%' }}>
+                    <div style={{ alignItems: 'center', backgroundColor: 'var(--color-raised)', borderColor: 'var(--color-hairline-strong)', borderRadius: 'var(--radius-xs)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '34px', justifyContent: 'center', width: '101px' }}>
+                      <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', display: 'flex', fontFamily: 'var(--font-sans)', fontSize: '13px', lineHeight: '18px' }}>
+                        Choose file
+                      </div>
+                    </div>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '18px' }}>
+                      invalid.zip
+                    </div>
+                  </div>
+                </div>
+                <div style={{ alignItems: 'start', boxSizing: 'border-box', display: 'flex', gap: '8px', width: '100%' }}>
+                  <div style={{ backgroundColor: 'var(--color-primary)', borderColor: 'var(--color-primary)', borderRadius: '2px', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', flexShrink: '0', height: '14px', width: '14px' }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path d="m20 6-11 11-5-5" fill="none" stroke="var(--color-on-primary)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', flexBasis: '0%', flexGrow: '1', fontFamily: 'var(--font-sans)', fontSize: '12px', lineHeight: '18px' }}>
+                    Replace config.toml and secrets.toml on restart.
+                  </div>
+                </div>
+                <div style={{ boxSizing: 'border-box', display: 'flex', width: '100%' }}>
+                  <div style={{ alignItems: 'center', backgroundColor: 'var(--color-primary)', borderRadius: 'var(--radius-sm)', boxSizing: 'border-box', display: 'flex', gap: '8px', height: '36px', justifyContent: 'center', paddingInline: '12px' }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: '0' }}>
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" fill="none" stroke="var(--color-on-primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <div style={{ boxSizing: 'border-box', color: 'var(--color-on-primary)', fontFamily: 'var(--font-sans)', fontSize: '14px', fontWeight: 500, lineHeight: '20px' }}>
+                      Apply configuration
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

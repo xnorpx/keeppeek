@@ -9,6 +9,7 @@ type StoryboardBoard = {
 	id: string;
 	name: string;
 	source: string;
+	sourceTokenHash?: string;
 	bytes: number;
 	sha256: string;
 	references?: StoryboardReference[];
@@ -160,6 +161,28 @@ type PositioningContract = {
 	constraints: string[];
 };
 
+type ConfigurationZipReference = {
+	schemaVersion: number;
+	boardId: string;
+	frameId: string;
+	sourceTokenHash: string;
+	baselineTokenHash: string;
+	image: { source: string; bytes: number; sha256: string; width: number; height: number };
+	endpoints: {
+		export: { method: string; path: string };
+		apply: { method: string; path: string; successStatus: number };
+	};
+	archiveMembers: string[];
+	implementationOwner: string;
+	playwrightOwner: string;
+	requiredCapability: string;
+	states: Array<{ id: string; frameId: string; label: string }>;
+	visibleText: string[];
+	playwrightTests: string[];
+	reviewStatus: string;
+	lokiApproved: boolean;
+};
+
 const root = resolve('design/paper/keeppeek-nvr-v34');
 
 async function readJson<T>(filePath: string): Promise<T> {
@@ -204,6 +227,68 @@ function verifyTokenValues(
 		if (value === undefined || normalizedTokenValue(value) !== normalizedTokenValue(token.value)) {
 			throw new Error(`${label} value does not match tokens.json for ${token.name}`);
 		}
+	}
+}
+
+async function verifyConfigurationZipReference(
+	storyboard: Storyboard,
+	httpPaths: string[]
+): Promise<void> {
+	const reference = await readJson<ConfigurationZipReference>(
+		resolve(root, 'configuration-zip.json')
+	);
+	const board = storyboard.boards.find((candidate) => candidate.id === reference.boardId);
+	if (
+		reference.schemaVersion !== 1 ||
+		!board ||
+		reference.sourceTokenHash !== board.sourceTokenHash ||
+		reference.baselineTokenHash !== storyboard.source.tokenHash ||
+		!isServerCapabilityId(reference.requiredCapability) ||
+		reference.reviewStatus !== 'design-reference' ||
+		reference.lokiApproved
+	)
+		throw new Error('Invalid configuration ZIP design reference');
+	if (
+		[reference.endpoints.export.path, reference.endpoints.apply.path].join('|') !==
+			httpPaths.join('|') ||
+		reference.endpoints.export.method !== 'GET' ||
+		reference.endpoints.apply.method !== 'POST' ||
+		reference.endpoints.apply.successStatus !== 202 ||
+		reference.archiveMembers.join('|') !== 'config.toml|secrets.toml'
+	)
+		throw new Error('Configuration ZIP HTTP or archive contract drifted');
+	const [jsx, image, component, tests] = await Promise.all([
+		readFile(resolveInsideRoot(board.source), 'utf8'),
+		readFile(resolveInsideRoot(reference.image.source)),
+		readFile(resolve(reference.implementationOwner), 'utf8'),
+		readFile(resolve(reference.playwrightOwner), 'utf8')
+	]);
+	if (
+		image.byteLength !== reference.image.bytes ||
+		sha256(image) !== reference.image.sha256 ||
+		image.readUInt32BE(16) !== reference.image.width ||
+		image.readUInt32BE(20) !== reference.image.height
+	)
+		throw new Error('Configuration ZIP reference image drifted');
+	if (reference.states.map((state) => state.id).join('|') !== 'selected|staged|rejected') {
+		throw new Error('Configuration ZIP reference must cover selection, staging, and rejection');
+	}
+	const frameIds = [reference.frameId, ...reference.states.map((state) => state.frameId)];
+	if (frameIds.some((id) => !id.trim()) || new Set(frameIds).size !== frameIds.length) {
+		throw new Error('Configuration ZIP reference has missing or duplicate Paper frame IDs');
+	}
+	for (const state of reference.states) {
+		if (!jsx.includes(state.label))
+			throw new Error(`Missing configuration ZIP Paper state: ${state.id}`);
+	}
+	for (const text of reference.visibleText) {
+		if (!jsx.includes(text) || !component.includes(text)) {
+			throw new Error(`Configuration ZIP design copy drifted: ${text}`);
+		}
+	}
+	for (const name of reference.playwrightTests) {
+		if (!tests.includes(name))
+			throw new Error(`Missing configuration ZIP Playwright test: ${name}`);
 	}
 }
 
@@ -699,6 +784,8 @@ verifyTokenValues('tokens.css', parseCustomProperties(actualCss), tokenSnapshot.
 
 const runtimeThemeCss = await readFile(resolve('src/styles/paper-theme.css'), 'utf8');
 verifyTokenValues('paper-theme.css', parseCustomProperties(runtimeThemeCss), tokenSnapshot.tokens);
+
+await verifyConfigurationZipReference(storyboard, expectedBackupHttpPaths);
 
 const committedCoverageReport = await readFile(resolve(root, 'COVERAGE.md'), 'utf8');
 const expectedCoverageReport = await renderPaperCoverageReport(resolve('.'));

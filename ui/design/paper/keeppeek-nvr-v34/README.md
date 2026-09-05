@@ -33,6 +33,20 @@ Run the integrity check from `ui/`:
 bun run paper:check
 ```
 
+## Configuration ZIP Reference
+
+Board 20 includes the configuration ZIP states: selected but unconfirmed, staged for restart,
+and rejected with the selected file retained at a 390px width.
+
+![Configuration ZIP states](references/20-configuration-zip-states@2x.png)
+
+`configuration-zip.json` records the exact Paper frames, export checksum, HTTP routes, runtime
+component, and Playwright tests. The checker validates this supplementary design-and-test contract
+alongside the board snapshot. It is not an approved Loki pixel baseline.
+
+The board was refreshed from Paper token revision `b35ec365`. Its 25 used tokens match the pinned
+NVR token values, so the shared token snapshot and unrelated boards are unchanged.
+
 The checker verifies the board count, unique IDs and paths, token hash, token CSS, byte counts,
 every board and reference SHA-256 hash, complete scenario coverage, and exact capability
 identifiers.

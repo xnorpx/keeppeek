@@ -842,15 +842,16 @@
 		{
 			"index": 20,
 			"id": "39R-0",
-			"name": "20 — Settings: appearance, system, logs",
-			"childCount": 2,
+			"name": "20 - Settings: system, logs & configuration ZIP",
+			"childCount": 3,
 			"width": 1600,
-			"height": 881,
+			"height": 1499,
 			"worldX": 4350,
 			"worldY": 5200,
 			"source": "boards/20-settings-appearance-system-logs.jsx.txt",
-			"bytes": 28006,
-			"sha256": "e3cdb98f0e01e0854dc9e0aeb0cc2aebb12a0652e39de54480bc1fa8a22101af",
+			"sourceTokenHash": "b35ec365",
+			"bytes": 53315,
+			"sha256": "54f99d00dff4daee9c8a42ed21d52e64f066ec171f0bd1cd10b7fae73cbc5524",
 			"references": [
 				{
 					"nodeId": "3A1-0",
@@ -873,7 +874,7 @@
 						"highContrastMismatchPixels": 30479,
 						"blockers": [
 							"The server does not report or update timezone, clock, or week-start preferences; the observed browser timezone is labeled browser-only.",
-							"Update channel, config path, update-check, and configuration-backup contracts are absent, so those values and controls remain unavailable.",
+							"Update channel, config path, and update-check remain unavailable. Configuration ZIP export and apply are covered by the separate configuration-zip.json reference.",
 							"Restart is implemented over WebRTC, but no erase-recordings command exists and the destructive action remains disabled.",
 							"The real log viewer exports redacted logs and metadata, not Paper's broader sanitized-config plus health diagnostics bundle."
 						]
