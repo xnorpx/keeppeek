@@ -3,6 +3,9 @@
 KeepPeek can create and validate a configuration bundle while recording continues. A format-3 ZIP
 contains exactly `config.toml` and plaintext `secrets.toml`; it contains no database or media.
 
+For a step-by-step walkthrough, see
+[Export and import configuration](./configuration-export-import.md).
+
 Open **Settings → Backup and restore** as an Administrator. **Export ZIP** downloads the two files
 directly. Select a **Configuration ZIP**, confirm replacement, and choose **Apply configuration**.
 After the upload succeeds, choose **Restart to apply**.
