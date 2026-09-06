@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1fb95020.js";
+            window.path_to_searchindex_js = "searchindex-3db6effe.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-0cad4f0f.js"></script>
@@ -450,7 +450,7 @@ streaming, controls, and events all work.</p>
 <tr><td><strong>Reolink</strong></td><td>Dedicated <code>reo-proto</code> backend for Baichuan over TCP or UDP, with ONVIF and RTSP fallback paths</td><td>First-class discovery, authentication, main/sub media, supported controls, and native camera events</td></tr>
 <tr><td><strong>Dahua and compatible OEM/rebrand models</strong></td><td>ONVIF discovery and profile queries with RTSP media through Retina or explicit stream URLs</td><td>A supported standards-based family with coverage for common H.264/AAC and H.265/G.711 stream patterns; each OEM model and firmware still requires validation</td></tr>
 <tr><td><strong>Tapo (supported models)</strong></td><td>ONVIF discovery and profile queries where available, with RTSP media through Retina or explicit stream URLs</td><td>A supported mainstream vendor through the standards path; exact capabilities still depend on model and firmware</td></tr>
-<tr><td><strong>Hikvision</strong></td><td>SADP discovery, followed by ONVIF and RTSP where the device exposes them</td><td>SADP identifies candidates; it is not a separate Hikvision media backend</td></tr>
+<tr><td><strong>Hikvision / Annke</strong></td><td>SADP discovery, ONVIF/RTSP media, and a plain-Rust ISAPI event worker</td><td>Native event support depends on model, firmware, channel mapping, and enabled camera rules; see the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/hikvision-isapi.md">ISAPI guide</a></td></tr>
 <tr><td><strong>Other ONVIF cameras</strong></td><td>ONVIF discovery and device/profile queries, then RTSP media</td><td>Support depends on the device’s implementation of the standards and must be validated per model</td></tr>
 <tr><td><strong>Generic or unknown cameras</strong></td><td>Explicit main and/or sub RTSP URLs</td><td>Recording can work without a recognized brand; metadata, controls, and native events may be limited</td></tr>
 </tbody>
@@ -491,7 +491,7 @@ while leaving an honest manual path for experienced users.</p>
 <tr><td><strong>Device queries and control</strong></td><td>ONVIF SOAP plus supported Reolink HTTP or Baichuan commands</td><td>Read device information, profiles, capabilities, imaging state, and supported PTZ controls</td></tr>
 <tr><td><strong>Generic media ingest</strong></td><td>RTSP/RTP through Retina over TCP or UDP</td><td>Receive standards-based camera media, including explicit main and sub URLs</td></tr>
 <tr><td><strong>Reolink media ingest</strong></td><td>Baichuan through <code>reo-proto</code> over TCP or UDP</td><td>Receive complete Reolink video and audio frames without requiring RTSP</td></tr>
-<tr><td><strong>Native camera events</strong></td><td>Currently the Reolink Baichuan alarm path</td><td>Normalize supported motion, person, animal, and vehicle events and attach camera snapshots when available</td></tr>
+<tr><td><strong>Native camera events</strong></td><td>Reolink Baichuan and compatible Hikvision/Annke ISAPI</td><td>Normalize supported alarms into stored/live events; classifications require event evidence, and image association is protocol-specific</td></tr>
 <tr><td><strong>Viewer and service delivery</strong></td><td>WebRTC with RTP and reliable/unreliable data channels</td><td>Forward live media, control, events, and publications without exposing camera credentials</td></tr>
 </tbody>
 </table>
