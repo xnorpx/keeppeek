@@ -143,9 +143,11 @@ fn final_native_shutdown_closes_all_retired_events_once() {
             lifetime.store(false, Ordering::Release);
         }
         recorder.shutdown.cancel();
+        let started = Instant::now();
         recorder.run();
+        let elapsed = started.elapsed();
         let endings: Vec<_> = published.try_iter().collect();
-        assert_eq!(endings.len(), 256);
+        assert_eq!(endings.len(), 256, "native shutdown elapsed: {elapsed:?}");
         for id in ids {
             let stored = store.event_by_id(&id).unwrap().unwrap();
             assert_eq!(stored.end_time_ms, Some(1000));
@@ -243,7 +245,14 @@ fn final_native_drain_stops_without_progress_and_retains_all_pending_ids() {
             );
         }
         recorder.set_event_store(available);
-        assert_eq!(recorder.drain_retired_native_events(), 0);
+        let started = Instant::now();
+        let remaining = recorder.drain_retired_native_events();
+        assert_eq!(
+            remaining,
+            0,
+            "recovered native drain elapsed: {:?}",
+            started.elapsed()
+        );
         for index in 0..128 {
             let stored = store
                 .event_by_id(&format!("pending-{index}"))
