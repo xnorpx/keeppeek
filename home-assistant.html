@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Open source and licensing - The KeepPeek Book</title>
+        <title>Home Assistant card - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -174,114 +174,226 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="open-source-and-licensing"><a class="header" href="#open-source-and-licensing">Open source and licensing</a></h1>
-<p>KeepPeek is built in an ecosystem shaped by other open-source camera projects and protocol
-libraries. This chapter gives those projects credit, explains where KeepPeek made different product
-choices, and documents the license boundary between the server and its public API.</p>
-<h2 id="different-products-different-strengths"><a class="header" href="#different-products-different-strengths">Different products, different strengths</a></h2>
-<p><a href="https://www.scrypted.app/">Scrypted</a> and <a href="https://frigate.video/">Frigate</a> are great products with
-strong, distinct designs. KeepPeek is not an argument that those designs are wrong. Their choices
-may fit another user, home, or business better.</p>
+                        <h1 id="home-assistant-card"><a class="header" href="#home-assistant-card">Home Assistant card</a></h1>
+<p>Use <code>custom:keeppeek-card</code> to put live KeepPeek cameras in a Home Assistant Lovelace dashboard.
+Home Assistant serves the card module and dashboard configuration, but the browser connects
+directly to KeepPeek for session creation and WebRTC video. No Home Assistant backend integration,
+media proxy, or embedded iframe is required.</p>
+<pre class="mermaid">flowchart LR
+    H[Home Assistant] --&gt;|Card module and configuration| B[Browser]
+    B --&gt;|Authenticated session requests| K[KeepPeek]
+    K --&gt;|Direct WebRTC video| B
+</pre>
+
+<p>The card supports live video, a visual editor, camera selection, grid and single-camera layouts,
+focus, and shared connections. It inherits Home Assistant theme colors and adapts to dashboard
+width. Audio, PTZ, event ribbons, timeline playback, and Home Assistant entity discovery are not
+implemented in this card. Use the KeepPeek application for the corresponding supported features.</p>
+<h2 id="prepare-keeppeek"><a class="header" href="#prepare-keeppeek">Prepare KeepPeek</a></h2>
+<ol>
+<li>Confirm that the selected cameras play in KeepPeek.</li>
+<li>Create a dedicated <strong>User</strong> credential with the intended camera access in KeepPeek’s access
+settings. See <a href="./authentication.html">Authentication and access control</a>.</li>
+<li>Make the KeepPeek endpoint and its advertised WebRTC addresses reachable from the browser
+that displays Home Assistant. Home Assistant Cloud does not relay the card’s media.</li>
+<li>Add the exact Home Assistant origin to the existing KeepPeek <code>config.toml</code>:</li>
+</ol>
+<pre><code class="language-toml">[direct_card]
+allowed_origins = [
+  "https://home.example.net",
+  "https://homeassistant.local:8123"
+]
+</code></pre>
+<p>An origin consists of the scheme, host, and port, without a path or trailing slash. Include each
+origin used to open the dashboard. Restart KeepPeek after editing this configuration. See the
+<a href="./configuration-reference.html">Configuration reference</a> for the server’s configuration contract.</p>
+<p>Use browser-trusted HTTPS for normal deployments. The card permits HTTP only for local development
+on <code>localhost</code>, <code>127.0.0.1</code>, or <code>[::1]</code>. Keep credentials out of the endpoint URL. A private VPN is
+preferable to exposing the recorder publicly.</p>
+<p>KeepPeek allows credentialless CORS on <code>/create</code> and <code>/delete</code> for configured origins. The card
+sends its Bearer key in the <code>Authorization</code> header and never uses browser cookies. Browser
+preflights must allow <code>POST</code>, <code>OPTIONS</code>, <code>Authorization</code>, <code>Content-Type</code>, and <code>Content-Encoding</code>;
+do not substitute a wildcard origin or a Home Assistant media proxy.</p>
+<h2 id="install-the-card"><a class="header" href="#install-the-card">Install the card</a></h2>
+<p>The distribution contains one self-contained JavaScript module, <code>keeppeek.js</code>, and a metadata
+file, <code>keeppeek-card.json</code>, with its version, SHA-256 checksum, and byte counts. The module bundles
+its runtime, icons, and CSS; it does not fetch third-party scripts or fonts.</p>
+<h3 id="hacs-installation"><a class="header" href="#hacs-installation">HACS installation</a></h3>
+<ol>
+<li>Choose a <a href="https://github.com/xnorpx/keeppeek/releases">KeepPeek release</a> containing the card
+artifacts. Earlier releases without <code>keeppeek.js</code> cannot install the card.</li>
+<li>In HACS, add <code>https://github.com/xnorpx/keeppeek</code> as a custom <strong>Dashboard</strong> repository.</li>
+<li>Download the selected release. If HACS does not register the resource automatically, add
+<code>/hacsfiles/keeppeek/keeppeek.js</code> as a <strong>JavaScript module</strong> dashboard resource.</li>
+<li>Reload the dashboard and select <strong>KeepPeek</strong> in the card picker.</li>
+</ol>
+<p>The HACS manifest selects the release artifact and hides default-branch downloads. A locally
+successful build does not make that artifact available through HACS. Custom-repository installation
+is separate from inclusion in the HACS default store.</p>
+<h3 id="manual-installation"><a class="header" href="#manual-installation">Manual installation</a></h3>
+<ol>
+<li>Obtain <code>keeppeek.js</code> and <code>keeppeek-card.json</code> from the intended release, or build them locally.</li>
+<li>Verify the module’s SHA-256 against the metadata file.</li>
+<li>Put <code>keeppeek.js</code> in the <code>www/</code> directory inside Home Assistant’s configuration directory.
+Restart Home Assistant if this is the first time you created <code>www/</code>.</li>
+<li>Register <code>/local/keeppeek.js?v=VERSION</code> as a <strong>JavaScript module</strong> resource, replacing <code>VERSION</code>
+with the artifact’s version.</li>
+<li>Reload the dashboard and add the card.</li>
+</ol>
+<p>From the KeepPeek repository root, build the artifacts with:</p>
+<pre><code class="language-sh">bun run --cwd ui build:home-assistant
+</code></pre>
+<p>The output directory is <code>target/home-assistant-card/dist/</code>. Building from the checkout allows
+testing in real Home Assistant before publishing a release.</p>
+<h2 id="configure-a-dashboard"><a class="header" href="#configure-a-dashboard">Configure a dashboard</a></h2>
+<p>For a YAML-mode dashboard, put the dedicated key under <code>keeppeek_lovelace_token</code> in Home
+Assistant’s <code>secrets.yaml</code>, then use this configuration:</p>
+<pre><code class="language-yaml">type: custom:keeppeek-card
+endpoint: https://keeppeek.example.net
+token: !secret keeppeek_lovelace_token
+title: Entrances
+sources:
+  - source_id: "192.168.1.20"
+    title: Front door
+    quality: auto
+  - source_id: "192.168.1.21"
+    title: Driveway
+    quality: low
+layout: grid
+columns: 2
+aspect_ratio: "16:9"
+show_name: true
+</code></pre>
+<p>Replace the example IDs with stable source IDs advertised by KeepPeek. Camera display names and
+Home Assistant entity IDs are not substitutes. Home Assistant resolves <code>!secret</code>; the card does
+not parse YAML or resolve secret references itself. Home Assistant’s <code>secrets.yaml</code> is distinct
+from KeepPeek’s companion <code>secrets.toml</code>.</p>
+<p>In the visual editor, enter the endpoint and access key, then select <strong>Load sources</strong> to discover
+available cameras. For storage-mode dashboards, enter the key through this editor instead of
+using a YAML secret tag. The existing key is never read back into the form: an empty password
+field with a configured placeholder preserves it. Enter a replacement or use the clear action
+to change it explicitly.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Project</th><th>Distinct design center</th><th>A strong fit when</th></tr>
+<tr><th>Option</th><th>Default</th><th>Behavior</th></tr>
 </thead>
 <tbody>
-<tr><td><strong><a href="https://www.scrypted.app/">Scrypted</a></strong></td><td>A high-performance video integration platform and NVR with a rich plugin model, smart detections, and low-latency connections to HomeKit, Google Home, and Alexa</td><td>Broad camera and smart-home integration, an extensible plugin ecosystem, and first-class consumer-platform bridges should live in one system</td></tr>
-<tr><td><strong><a href="https://frigate.video/">Frigate</a></strong></td><td>A local NVR built around real-time AI object detection, accelerator-aware processing, zones, focused event review, Home Assistant, and MQTT</td><td>Detection is a central NVR responsibility and the user wants an integrated, highly configurable local AI and home-automation experience</td></tr>
-<tr><td><strong>KeepPeek</strong></td><td>A focused recorder and WebRTC media gateway that accepts camera events and keeps optional inference, transcoding, and ecosystem bridges outside the core</td><td>Recording should remain independent from analytics, and viewers or services should compose through an open media and event boundary</td></tr>
+<tr><td><code>sources</code></td><td>Required</td><td>Between 1 and 16 unique source objects.</td></tr>
+<tr><td><code>sources[].quality</code></td><td><code>auto</code></td><td>Select <code>auto</code>, <code>low</code>, or <code>high</code> from the server’s available variants.</td></tr>
+<tr><td><code>sources[].title</code></td><td>Camera name or ID</td><td>Optional title below the video.</td></tr>
+<tr><td><code>title</code></td><td><code>KeepPeek</code></td><td>Optional card heading.</td></tr>
+<tr><td><code>layout</code></td><td><code>grid</code></td><td><code>grid</code> displays the selected sources; <code>single</code> provides a camera selector.</td></tr>
+<tr><td><code>columns</code></td><td><code>2</code></td><td>Integer from 1 to 4, limited to the visible camera count; the grid stacks below 440 pixels.</td></tr>
+<tr><td><code>aspect_ratio</code></td><td><code>16:9</code></td><td><code>16:9</code>, <code>4:3</code>, or <code>1:1</code>; video is contained rather than cropped.</td></tr>
+<tr><td><code>show_name</code></td><td><code>true</code></td><td>Show camera names below the video.</td></tr>
+<tr><td><code>view</code></td><td><code>live</code></td><td>Only live video is supported.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Thank you to the Scrypted and Frigate maintainers and communities. Their work has advanced local
-camera software, demonstrated what polished self-hosted systems can do, and made the trade-offs in
-this space much easier to understand.</p>
-<h2 id="code-foundations"><a class="header" href="#code-foundations">Code foundations</a></h2>
-<p>KeepPeek depends on substantial protocol work from other Rust projects. The local forks retain
-their upstream authorship and licenses; carrying a fork is a maintenance decision, not a claim that
-KeepPeek created the original work.</p>
-<ul>
-<li><strong><a href="https://github.com/scottlamb/retina">Retina</a></strong> by Scott Lamb and its contributors provides the
-high-level RTSP client, RTP depacketization, codec framing, and much of the interoperability
-groundwork used by KeepPeek. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/master/crates/retina">local Retina fork</a> for its camera,
-recording, and compatibility needs.</li>
-<li><strong><a href="https://github.com/lumeohq/onvif-rs">ONVIF-rs</a></strong> by Chris Bruce, Lumeo, and its contributors did
-the difficult work of making ONVIF discovery, schemas, authentication, and camera operations
-usable from Rust. KeepPeek carries a
-<a href="https://github.com/xnorpx/keeppeek/tree/master/crates/onvif">local ONVIF-rs fork</a> and continues
-that work for its supported camera surface.</li>
-<li><strong><a href="https://github.com/algesten/str0m">str0m</a></strong> by Martin Algesten and its contributors is the
-upstream WebRTC implementation used by KeepPeek. It is the best Rust WebRTC implementation: its
-Sans I/O design, explicit time and network inputs, RTP and frame APIs, data channels, and lack of
-a hidden async runtime fit a focused media service especially well.</li>
-</ul>
-<p>KeepPeek would be significantly harder to build without these projects. Thank you to every upstream
-author, maintainer, reviewer, and contributor whose work remains in the code.</p>
-<h2 id="licensing-model"><a class="header" href="#licensing-model">Licensing model</a></h2>
-<p>KeepPeek uses two licenses at a deliberate protocol boundary:</p>
+<p>Source IDs and titles must be nonblank and at most 160 characters. The editor preserves source
+titles, quality selections, and unrelated Home Assistant layout metadata across edits. The
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/home-assistant.md">detailed card reference</a>
+lists all validation limits and transport details.</p>
+<h2 id="understand-the-security-boundary"><a class="header" href="#understand-the-security-boundary">Understand the security boundary</a></h2>
+<p>The key necessarily reaches the browser. A YAML <code>!secret</code> reference keeps configuration organized,
+but does not conceal the resolved key from a person who can inspect Home Assistant’s dashboard
+configuration or runtime. Dashboard editors and installed third-party frontend modules are part
+of this trust boundary. Use a dedicated User key, not an Administrator key, unless every viewer
+should have that authority.</p>
+<p>The card keeps credentials in memory and does not put them in URLs, browser storage, rendered
+diagnostics, or console output. That does not prevent Home Assistant from storing its dashboard
+configuration or browser developer tools from showing the authenticated request header.</p>
+<p>The <code>sources</code> list is a display filter, not authorization. KeepPeek’s trusted-local policy still
+applies: a browser classified as local is an Administrator even when it sends a User key. Narrow
+<code>access.local_networks</code> when dashboard viewers must be authenticated and restricted. CORS neither
+changes that policy nor prevents a copied key from being used by another client.</p>
+<p>Rotating, disabling, revoking, or expiring the credential invalidates its sessions according to
+server policy. Authentication failure stops automatic card retries; update the key and reconnect.</p>
+<h2 id="connections-and-troubleshooting"><a class="header" href="#connections-and-troubleshooting">Connections and troubleshooting</a></h2>
+<p>Cards in the same browser document share a connection when their normalized endpoint and key
+match. Identical source and quality selections also share one subscription. Different credentials
+never share media. Limits are eight connection identities per dashboard, 64 consumers per
+identity, and 16 distinct source/quality subscriptions per connection.</p>
+<p>Hidden tabs, offscreen cards, removed cards, and changed selections release obsolete demand.
+Removing the final consumer closes the peer and calls <code>/delete</code>. Reconnects have bounded waits
+and at most eight automatic attempts, and restore only current subscriptions. Theme changes do
+not reconnect. Lovelace can temporarily detach cards while rebuilding its responsive columns;
+those moves may require a clean reconnect before video resumes.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Area</th><th>License</th><th>Purpose</th></tr>
+<tr><th>Symptom</th><th>Check</th></tr>
 </thead>
 <tbody>
-<tr><td>Server, first-party viewer, and most repository code</td><td><code>AGPL-3.0-only</code></td><td>Keep the shared NVR and media-gateway core open, including modified versions operated over a network</td></tr>
-<tr><td>Public definitions and documentation under <code>api/</code>, plus bindings generated solely from them</td><td>MIT</td><td>Let independent clients and services implement the protocol without adopting the server’s license</td></tr>
+<tr><td>The card is missing from the picker</td><td>Confirm the installed module and <strong>JavaScript module</strong> resource URL, then reload.</td></tr>
+<tr><td>Connection fails</td><td>Check the endpoint, certificate, exact allowed origin, and browser <strong>Local Network Access</strong> permission.</td></tr>
+<tr><td>Access denied</td><td>Check the dedicated key and its enabled/expiry state in KeepPeek.</td></tr>
+<tr><td>Unknown source ID</td><td>Use <strong>Load sources</strong> and select an ID visible to this credential.</td></tr>
+<tr><td>One camera is offline</td><td>Check that camera in KeepPeek; other cards and sources should continue.</td></tr>
+<tr><td>Video does not play</td><td>Check browser codec support and reachability of KeepPeek’s advertised WebRTC addresses.</td></tr>
 </tbody>
 </table>
 </div>
-<p>The repository root <a href="https://github.com/xnorpx/keeppeek/blob/master/LICENSE">license</a> contains the
-complete KeepPeek licensing notice and AGPL terms. The <code>api/</code> directory has its own
-<a href="https://github.com/xnorpx/keeppeek/blob/master/api/LICENSE">MIT license</a>.</p>
-<h3 id="why-the-server-uses-agpl"><a class="header" href="#why-the-server-uses-agpl">Why the server uses AGPL</a></h3>
-<p>The server is a network service, so the AGPL is the appropriate copyleft boundary for the shared
-core. The intent is that users can inspect, modify, self-host, and retain access to the source of
-the KeepPeek server they use, including modified versions offered over a network.</p>
-<p>KeepPeek’s NVR and first-party viewer remain open source and free to use without a camera-count
-limit. The license protects that common foundation from becoming a private server fork whose users
-cannot inspect the code serving them.</p>
-<h3 id="why-the-api-uses-mit"><a class="header" href="#why-the-api-uses-mit">Why the API uses MIT</a></h3>
-<p>An open server is most useful when other software can talk to it without inheriting the server’s
-implementation choices. The public HTTP, WebRTC, protobuf, and SDP contracts under <code>api/</code> therefore
-use MIT. Bindings generated solely from those definitions remain covered by that directory’s MIT
-license.</p>
-<p>Implementing or using the public protocol does not, by itself, impose KeepPeek’s repository-wide
-AGPL license on an independent client or service. A service can choose the language, WebRTC
-implementation, deployment model, and license appropriate to its users.</p>
-<h3 id="free-and-paid-protocol-services"><a class="header" href="#free-and-paid-protocol-services">Free and paid protocol services</a></h3>
-<p>This split creates a protocol-plugin model rather than an in-process plugin ABI. A free, community,
-or paid service can run as a separate process and subscribe or publish through the documented API.
-That service may be open or closed source without receiving a private extension point inside the
-KeepPeek server.</p>
-<p>The boundary allows commercial integrations to fund specialized inference, transcoding, business
-workflows, viewers, or support while the recorder and media gateway remain shared open-source
-infrastructure. Camera credentials, recording paths, and internal databases remain owned by
-KeepPeek rather than exposed to an in-process plugin.</p>
-<h3 id="what-the-split-means-for-users"><a class="header" href="#what-the-split-means-for-users">What the split means for users</a></h3>
-<ul>
-<li><strong>Software consumers</strong> retain a free recorder and first-party viewer, with optional services only
-when they add value.</li>
-<li><strong>Small businesses</strong> can buy tailored services at the API boundary without depending on a private
-recorder fork.</li>
-<li><strong>Open-source enthusiasts</strong> can audit the server, share core improvements, and build permissively
-licensed clients.</li>
-<li><strong>Home automation enthusiasts</strong> can choose community or commercial bridges.</li>
-<li><strong>Self-hosters</strong> retain control of the server running on their hardware.</li>
-<li><strong>Service authors</strong> can build sustainable offerings without closing the shared core.</li>
-</ul>
-<p>See <a href="./contributing.html">Contributing</a> for how licenses apply to submitted changes.</p>
+<p>Browsers can report CORS denial, an unreachable server, certificate failure, and denied Local
+Network Access as the same fetch error. The card lists the relevant checks without claiming to
+identify the exact cause. Do not disable browser security checks to work around it.</p>
+<h2 id="upgrade-or-roll-back"><a class="header" href="#upgrade-or-roll-back">Upgrade or roll back</a></h2>
+<p>Select the new version in HACS, or replace the manual module and update the resource’s <code>?v=</code>
+suffix. Reload all open dashboard tabs to release old module instances. Keep the card and server
+on compatible releases because the protocol is pre-1.0. For rollback, restore the previous HACS
+version or manual artifact and reload. Do not register multiple versions of the resource at once.</p>
+<h2 id="test-locally-and-in-ci"><a class="header" href="#test-locally-and-in-ci">Test locally and in CI</a></h2>
+<p>The lightweight preview uses the real KeepPeek server and synthetic cameras, but emulates the
+Home Assistant dashboard shell. From the repository root:</p>
+<pre><code class="language-sh">bun run --cwd ui test:e2e:prepare
+bun run --cwd ui demo:home-assistant
+</code></pre>
+<p>The demo prints its local URL. It does not use the operator’s configuration or cameras.</p>
+<h3 id="test-inside-real-home-assistant"><a class="header" href="#test-inside-real-home-assistant">Test inside real Home Assistant</a></h3>
+<p>With Docker running and the repository prerequisites, including Playwright Chromium, installed:</p>
+<pre><code class="language-sh">bun run --cwd ui test:home-assistant-container
+</code></pre>
+<p>This prepares the binaries and module, pulls the official Home Assistant <code>2026.9.1</code> image pinned
+by an immutable multi-architecture digest, and runs the tests. To reuse prepared artifacts:</p>
+<pre><code class="language-sh">bun run --cwd ui test:home-assistant-container:run
+</code></pre>
+<p>Each runtime scenario onboards a temporary user in actual Home Assistant. The container serves
+the built module and resolves YAML secret references. KeepPeek, the two synthetic RTSP cameras,
+and Chromium run on the host, so WebRTC media avoids Docker NAT. Tests cover fresh decoded frames
+on desktop and mobile, three cards sharing one session/subscription, reconnect, navigation cleanup,
+themes, source discovery, credential redaction, and saved changes in the real visual editor.</p>
+<p>The container uses two CPUs, 2 GiB of memory, a loopback-only HTTP port, and a Docker-managed
+configuration volume without privileged or device access. Tests remove their own containers,
+volumes, temporary files, and fixture processes. They never seed internal authentication storage.</p>
+<p>On macOS, this suite has been exercised with ARM64 Docker Desktop as a development test. That is
+not a supported Home Assistant production deployment recommendation. The
+<a href="https://www.home-assistant.io/installation/macos/">official macOS installation guide</a> describes
+Home Assistant OS in a VM; the
+<a href="https://www.home-assistant.io/installation/linux/#install-home-assistant-container">container installation guide</a>
+targets Docker Engine on Linux.</p>
+<h3 id="ci-and-release-verification"><a class="header" href="#ci-and-release-verification">CI and release verification</a></h3>
+<p>The <strong>Home Assistant Container</strong> Ubuntu job is required by the UI gate. It reuses the Linux
+KeepPeek and card build artifacts and the pinned Home Assistant image. Its evidence includes
+screenshots, sanitized server logs, onboarding notices, and JUnit results, but excludes raw
+configuration, authentication storage, and credential-bearing browser traces.</p>
+<p>The normal <code>./check.sh</code> remains Docker-free and typechecks the container suite. Run both it and
+the container command when changing the integration. The container tests record Home Assistant’s
+exact setup-only WebSocket close notice separately; other runtime errors fail the tests.</p>
+<p>Local real-Lovelace tests do not prove HACS delivery. A release check must still install the
+published module through HACS, exercise it in a disposable Home Assistant instance, and verify
+upgrade and rollback. A configured CI job is not evidence of a successful hosted run; check the
+workflow result for the commit being released.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="demo-videos.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="notifications-and-integrations.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="contributing.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="release-readiness.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -291,11 +403,11 @@ licensed clients.</li>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="demo-videos.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="notifications-and-integrations.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="contributing.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="release-readiness.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
