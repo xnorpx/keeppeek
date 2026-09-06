@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-188fa4a9.js";
+            window.path_to_searchindex_js = "searchindex-1fb95020.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-0cad4f0f.js"></script>
@@ -246,6 +246,48 @@ canonical image. Event type remains authoritative for filtering and automation; 
 presentation-only and come from a fixed allowlist.</p>
 <p><a href="./notifications-and-integrations.html">Notifications and integrations</a> explains how those same
 event and operational identities remain stable across delivery, retry, and broker recovery.</p>
+<h2 id="copy-a-recording-moment"><a class="header" href="#copy-a-recording-moment">Copy a recording moment</a></h2>
+<p>Use the link icon in Keep’s command bar to copy the current recording moment. The command reads
+the playback clock when invoked; it does not pause, seek, reload the video, or change browser
+history. Event detail has the same command beside <strong>Open at this moment</strong>, using the event’s
+start time. Both event actions retain the selected event and active filters. <strong>Back to event</strong>
+returns to that context from any Keep mode.</p>
+<p>These are authenticated navigation links, not public shares or exports. Recipients need access to
+the same KeepPeek server and camera, and remote recipients must sign in. A link does not contain an
+access key, session ID, temporary media URL, recording filename, or filesystem path. It does include
+the server-provided camera identifier and, for event links, event and filter context. Treat those
+details as private operational information. Changing camera identity or deleting footage can make
+an old link unavailable.</p>
+<p>Links use the existing <code>/keep</code> route, including any configured application base path:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Parameter</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>camera</code></td><td>Server-provided source identifier, encoded without changing its value.</td></tr>
+<tr><td><code>at</code></td><td>Absolute Unix timestamp in integer milliseconds.</td></tr>
+<tr><td><code>date</code></td><td>UTC date derived from <code>at</code>; the timestamp wins if an incoming date conflicts.</td></tr>
+<tr><td><code>stream</code></td><td>Requested <code>auto</code>, <code>high</code>, <code>low</code>, <code>main</code>, or <code>sub</code> preference.</td></tr>
+<tr><td><code>mode</code></td><td>Keep view; omitted for Timeline, otherwise <code>stories</code>, <code>swimlanes</code>, or <code>export</code>.</td></tr>
+<tr><td><code>event</code></td><td>Optional event identifier.</td></tr>
+<tr><td><code>returnTo</code></td><td>Optional local Events route with supported filters and selected event identity.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The timestamp remains the same across browser timezones. For retained, supported media, playback
+restoration is verified within one second or one source-frame duration, whichever is larger.
+Browser codec support still applies. KeepPeek explains a compatible stream fallback and preserves
+the requested preference in copied links.</p>
+<p>An exact link into a gap does not open nearby footage automatically. It keeps the requested UTC
+time visible and offers previous or next recordings found in the bounded five-minute window on
+each side, within that UTC day. Selecting one explicitly moves the playhead. If no retained
+footage is found, the view explains that it may have expired or never been recorded. Missing and
+inaccessible cameras share an unavailable-or-not-authorized message to avoid disclosing hidden
+sources. Malformed links fail visibly instead of selecting another camera.</p>
+<p>Successful copying shows a checkmark and announces confirmation. If browser clipboard access is
+denied, unsupported, or takes more than 2.5 seconds, a dialog presents the same link in a selected,
+read-only field for manual copying. Escape closes that dialog and returns focus to the command.</p>
 <h2 id="export-evidence"><a class="header" href="#export-evidence">Export evidence</a></h2>
 <p>An Administrator can select up to two minutes in Keep and create a standalone MP4. Event export
 opens the same editor with 15 seconds of context before and after the event while preserving the
