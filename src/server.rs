@@ -54,8 +54,8 @@ use crate::{
     },
     webrtc::{
         ControlDispatch, ControlHandlerError, ControlRequestHandler, DataChannelTarget,
-        MediaSubscriptionPlan, OutboundDataMessage, OutboundEventDelivery, PostSendAction,
-        SessionId, StreamQuality, WebRtc,
+        MediaSubscriptionPlan, OutboundDataMessage, PostSendAction, SessionId, StreamQuality,
+        WebRtc,
     },
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -67,7 +67,7 @@ use rouille::{Request, Response, ResponseBody, Server, router};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs::File,
     io::{Cursor, Read, Seek, SeekFrom, Write},
     net::{IpAddr, Ipv4Addr, TcpListener, ToSocketAddrs},
@@ -83,7 +83,9 @@ use url::Url;
 use uuid::Uuid;
 
 mod camera_access;
+mod camera_control;
 mod camera_discovery;
+mod camera_metadata;
 mod camera_permissions;
 mod configuration;
 mod event_publication;
@@ -92,6 +94,7 @@ mod event_subscription;
 mod health_snapshot;
 mod logging;
 mod mqtt_integration;
+mod native_events;
 mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod runtime_configuration;
@@ -301,6 +304,8 @@ struct CameraEntry {
     battery_uid: Option<String>,
     recording_label: String,
     control: Option<CameraControl>,
+    control_revision: Arc<()>,
+    hikvision: Option<camera_control::Report>,
 }
 
 #[derive(Clone)]
@@ -767,87 +772,14 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 
     fn initial_capabilities(&self, session_id: SessionId) -> Option<proto::ServerCapabilities> {
-        let self_source_session_id = format!("webrtc-client-{session_id}");
         let camera_entries = camera_access::visible_cameras(self, session_id)?;
-        let camera_info = camera_entries
-            .iter()
-            .map(|camera| self.state.camera_info(camera))
-            .collect::<Vec<_>>();
-        let cameras = camera_entries
-            .iter()
-            .zip(camera_info.iter())
-            .map(|(entry, info)| proto_camera_info(info, entry.control.is_some()))
-            .collect();
-        let mut source_sessions = vec![proto::SourceSession {
-            source_session_id: self_source_session_id.clone(),
-            source_id: String::new(),
-            display_name: "WebRTC client".to_owned(),
-            audio: None,
-            video: None,
-            data_payloads: Vec::new(),
-            event_types: Vec::new(),
-            publication_capabilities: Vec::new(),
-        }];
-        source_sessions.extend(
-            camera_info
-                .iter()
-                .filter_map(|camera| proto_camera_source_session(camera, &self.state.webrtc)),
-        );
-        let stored_media_sources = camera_info
-            .iter()
-            .filter_map(proto_camera_stored_media_source)
-            .collect();
-        let mut capability_ids = vec![
-            "keeppeek.media-export.v1".to_owned(),
-            "keeppeek.event-search".to_owned(),
-            "keeppeek.event-publication.v1".to_owned(),
-            "stored-media-keyframe-preview.v1".to_owned(),
-        ];
-        if self.state.notifications.is_some() {
-            capability_ids.push("keeppeek.rules.v1".to_owned());
-        }
-        if self.state.event_forwarder.is_some() {
-            capability_ids.push("keeppeek.mqtt-forwarder.v1".to_owned());
-        }
-        if self.state.camera_config_path.is_some() {
-            capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
-            capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
-        }
-        if self.state.backup_manager.is_some() {
-            capability_ids.push("keeppeek.backup.v1".to_owned());
-        }
-        capability_ids.push("keeppeek.identity.v1".to_owned());
-        capability_ids.push(camera_permissions::CAPABILITY_ID.to_owned());
-        let access_session = if session_id.as_u64() == 0 {
-            Some(proto::AccessSession {
-                session_id: "0".to_owned(),
-                principal_id: "local-administrator".to_owned(),
-                display_name: "Local Administrator".to_owned(),
-                role: proto::AccessRole::Administrator as i32,
-                local: true,
-                client_classification: ClientClassificationReason::DirectLocal.as_str().to_owned(),
-                created_at_ms: 0,
-                last_activity_at_ms: 0,
-                absolute_expires_at_ms: i64::MAX,
-                credential_expires_at_ms: None,
-            })
-        } else {
-            self.state
-                .api_session_owners
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(&session_id)
-                .map(|session| proto_access_session(session_id, session))
-        };
-        Some(proto::ServerCapabilities {
-            revision: 2,
-            cameras,
-            source_sessions,
-            stored_media_sources,
-            self_source_session_id,
-            capability_ids,
-            access_session,
-        })
+        Some(self.state.event_subscriptions.capabilities(session_id, || {
+            connection_capabilities(
+                server_capabilities(&self.state, &camera_entries),
+                session_id,
+                self.access_session_capability(session_id),
+            )
+        }))
     }
 
     fn resolve_media_subscription(
@@ -1009,6 +941,84 @@ impl ControlRequestHandler for ServerControlHandler {
     }
 }
 
+fn server_capabilities(
+    state: &ServerState,
+    camera_entries: &[CameraEntry],
+) -> proto::ServerCapabilities {
+    let camera_info = camera_entries
+        .iter()
+        .map(|camera| state.camera_info(camera))
+        .collect::<Vec<_>>();
+    let cameras = camera_entries
+        .iter()
+        .zip(camera_info.iter())
+        .map(|(entry, info)| proto_camera_info(info, camera_control::ptz_capability(entry)))
+        .collect();
+    let source_sessions = camera_info
+        .iter()
+        .filter_map(|camera| {
+            proto_camera_source_session(camera, &state.webrtc).map(|mut source| {
+                source.event_types = native_events::with_publication_types(
+                    native_events::reported_types(camera, &state.health.events),
+                );
+                source
+            })
+        })
+        .collect();
+    let stored_media_sources = camera_info
+        .iter()
+        .filter_map(proto_camera_stored_media_source)
+        .collect();
+    let mut capability_ids = vec![
+        "keeppeek.media-export.v1".to_owned(),
+        "keeppeek.event-search".to_owned(),
+        "keeppeek.event-publication.v1".to_owned(),
+        "stored-media-keyframe-preview.v1".to_owned(),
+    ];
+    if state.notifications.is_some() {
+        capability_ids.push("keeppeek.rules.v1".to_owned());
+    }
+    if state.event_forwarder.is_some() {
+        capability_ids.push("keeppeek.mqtt-forwarder.v1".to_owned());
+    }
+    if state.camera_config_path.is_some() {
+        capability_ids.push(peek_layouts::CAPABILITY_ID.to_owned());
+        capability_ids.push(CONFIGURATION_CAPABILITY_ID.to_owned());
+    }
+    if state.backup_manager.is_some() {
+        capability_ids.push("keeppeek.backup.v1".to_owned());
+    }
+    capability_ids.push("keeppeek.identity.v1".to_owned());
+    capability_ids.push(camera_permissions::CAPABILITY_ID.to_owned());
+    proto::ServerCapabilities {
+        revision: 2,
+        cameras,
+        source_sessions,
+        stored_media_sources,
+        self_source_session_id: String::new(),
+        capability_ids,
+        access_session: None,
+    }
+}
+
+fn connection_capabilities(
+    mut capabilities: proto::ServerCapabilities,
+    session_id: SessionId,
+    access_session: Option<proto::AccessSession>,
+) -> proto::ServerCapabilities {
+    capabilities.self_source_session_id = format!("webrtc-client-{session_id}");
+    capabilities.source_sessions.insert(
+        0,
+        proto::SourceSession {
+            source_session_id: capabilities.self_source_session_id.clone(),
+            display_name: "WebRTC client".to_owned(),
+            ..Default::default()
+        },
+    );
+    capabilities.access_session = access_session;
+    capabilities
+}
+
 fn camera_source_session_id(source_id: &str, generation: u64) -> String {
     format!("camera:{source_id}:{generation}")
 }
@@ -1081,14 +1091,7 @@ fn proto_camera_source_session(
         audio: None,
         video: Some(proto::MediaStreamCapability { variants }),
         data_payloads: Vec::new(),
-        event_types: PUBLISHED_DETECTION_EVENT_TYPES
-            .into_iter()
-            .map(|event_type| proto::EventType {
-                event_type: event_type.to_owned(),
-                metadata: None,
-                attachments: vec![published_snapshot_capability()],
-            })
-            .collect(),
+        event_types: native_events::with_publication_types(native_events::event_types(camera)),
         publication_capabilities: Vec::new(),
     })
 }
@@ -1132,8 +1135,7 @@ fn proto_camera_stored_media_source(
     })
 }
 
-fn proto_camera_info(camera: &CameraInfo, control_available: bool) -> proto::CameraInfo {
-    let ptz_supported = camera.capabilities.ptz && control_available;
+fn proto_camera_info(camera: &CameraInfo, ptz: proto::PtzCapability) -> proto::CameraInfo {
     proto::CameraInfo {
         source_id: camera.id.clone(),
         display_name: camera.name.clone().unwrap_or_else(|| camera.id.clone()),
@@ -1159,13 +1161,7 @@ fn proto_camera_info(camera: &CameraInfo, control_available: bool) -> proto::Cam
             imaging: camera.capabilities.imaging,
             two_way_audio: camera.capabilities.two_way_audio,
         }),
-        ptz: Some(proto::PtzCapability {
-            supported: ptz_supported,
-            continuous: ptz_supported,
-            relative: false,
-            presets: ptz_supported,
-            zoom: ptz_supported,
-        }),
+        ptz: Some(ptz),
     }
 }
 
@@ -1203,6 +1199,30 @@ impl ServerControlHandler {
             (error, false)
         })?;
         Ok(principal)
+    }
+
+    fn access_session_capability(&self, session_id: SessionId) -> Option<proto::AccessSession> {
+        if session_id.as_u64() == 0 {
+            Some(proto::AccessSession {
+                session_id: "0".to_owned(),
+                principal_id: "local-administrator".to_owned(),
+                display_name: "Local Administrator".to_owned(),
+                role: proto::AccessRole::Administrator as i32,
+                local: true,
+                client_classification: ClientClassificationReason::DirectLocal.as_str().to_owned(),
+                created_at_ms: 0,
+                last_activity_at_ms: 0,
+                absolute_expires_at_ms: i64::MAX,
+                credential_expires_at_ms: None,
+            })
+        } else {
+            self.state
+                .api_session_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&session_id)
+                .map(|session| proto_access_session(session_id, session))
+        }
     }
 
     fn authorize_api_session(
@@ -1571,32 +1591,7 @@ impl ServerControlHandler {
         {
             tracing::warn!(message = %error.message, "committed event MQTT fanout failed");
         }
-        for delivery in self.state.event_subscriptions.deliveries(&event) {
-            let mut delivered_event = event.clone();
-            delivered_event.subscription_id = Some(delivery.subscription_id.clone());
-            let attachment_bytes = delivery
-                .attachment_target
-                .and_then(|_| attachment_bytes.as_ref().map(Arc::clone));
-            let queued = self.state.webrtc.try_enqueue_api_event(
-                delivery.session_id,
-                OutboundEventDelivery {
-                    event: delivered_event,
-                    attachment_target: delivery.attachment_target,
-                    attachment_bytes,
-                    guard: delivery.guard,
-                },
-            );
-            if !matches!(queued, Ok(true)) {
-                self.state
-                    .event_subscriptions
-                    .shed(delivery.session_id, &delivery.subscription_id);
-                tracing::warn!(
-                    session_id = %delivery.session_id,
-                    subscription_id = %delivery.subscription_id,
-                    "shed event subscription after its delivery queue stopped accepting work"
-                );
-            }
-        }
+        event_subscription::publish(&self.state, &event, attachment_bytes);
     }
 
     fn camera_database(&self) -> Result<&CameraDatabase, ControlCommandError> {
@@ -1909,175 +1904,7 @@ impl ServerControlHandler {
         session_id: SessionId,
         command: proto::PtzCommand,
     ) -> Result<control_ok::Result, ControlCommandError> {
-        let camera = self.state.camera(&command.source_id).ok_or_else(|| {
-            ControlCommandError::new(proto::ErrorCode::NotFound, 404, "camera not found")
-        })?;
-        if !camera.info.capabilities.ptz {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::UnsupportedRequest,
-                501,
-                "camera does not report PTZ support",
-            ));
-        }
-        let control = camera.control.ok_or_else(|| {
-            ControlCommandError::new(
-                proto::ErrorCode::Unavailable,
-                409,
-                "PTZ command transport is unavailable for this camera",
-            )
-        })?;
-        let result = match command.action {
-            Some(proto::ptz_command::Action::Continuous(continuous)) => {
-                let (operation, speed) = ptz_continuous_operation(&continuous)?;
-                {
-                    let mut owners = self
-                        .state
-                        .ptz_owners
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if owners
-                        .get(&command.source_id)
-                        .is_some_and(|owner| *owner != session_id)
-                    {
-                        return Err(ControlCommandError::new(
-                            proto::ErrorCode::Rejected,
-                            409,
-                            "camera PTZ is owned by another connection",
-                        ));
-                    }
-                    owners.insert(command.source_id.clone(), session_id);
-                }
-                if let Err(error) = reolink_ptz(&control, operation, speed) {
-                    self.release_ptz_owner(&command.source_id, session_id);
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::Unavailable,
-                        502,
-                        format!("camera PTZ movement failed: {error}"),
-                    ));
-                }
-                proto::PtzResult {
-                    source_id: command.source_id,
-                    presets: Vec::new(),
-                }
-            }
-            Some(proto::ptz_command::Action::Stop(_)) => {
-                self.require_ptz_owner(&command.source_id, session_id)?;
-                reolink_ptz(&control, PtzOp::Stop, PTZ_STOP_SPEED).map_err(|error| {
-                    ControlCommandError::new(
-                        proto::ErrorCode::Unavailable,
-                        502,
-                        format!("camera PTZ stop failed: {error}"),
-                    )
-                })?;
-                self.release_ptz_owner(&command.source_id, session_id);
-                proto::PtzResult {
-                    source_id: command.source_id,
-                    presets: Vec::new(),
-                }
-            }
-            Some(proto::ptz_command::Action::ListPresets(_)) => proto::PtzResult {
-                source_id: command.source_id,
-                presets: reolink_ptz_presets(&control)?
-                    .into_iter()
-                    .map(proto_ptz_preset)
-                    .collect::<Result<Vec<_>, _>>()?,
-            },
-            Some(proto::ptz_command::Action::GotoPreset(goto)) => {
-                self.require_ptz_unowned(&command.source_id, session_id)?;
-                if goto.preset_id == 0 {
-                    return Err(ControlCommandError::new(
-                        proto::ErrorCode::InvalidRequest,
-                        400,
-                        "PTZ preset ID must be nonzero",
-                    ));
-                }
-                reolink_goto_preset(&control, goto.preset_id).map_err(|error| {
-                    ControlCommandError::new(
-                        proto::ErrorCode::Unavailable,
-                        502,
-                        format!("camera PTZ preset failed: {error}"),
-                    )
-                })?;
-                proto::PtzResult {
-                    source_id: command.source_id,
-                    presets: Vec::new(),
-                }
-            }
-            Some(
-                proto::ptz_command::Action::Relative(_)
-                | proto::ptz_command::Action::SavePreset(_)
-                | proto::ptz_command::Action::DeletePreset(_),
-            ) => {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::UnsupportedRequest,
-                    501,
-                    "PTZ action is not implemented by this camera transport",
-                ));
-            }
-            None => {
-                return Err(ControlCommandError::new(
-                    proto::ErrorCode::InvalidRequest,
-                    400,
-                    "PTZ command has no action",
-                ));
-            }
-        };
-        Ok(control_ok::Result::PtzResult(result))
-    }
-
-    fn release_ptz_owner(&self, source_id: &str, session_id: SessionId) {
-        let mut owners = self
-            .state
-            .ptz_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if owners.get(source_id) == Some(&session_id) {
-            owners.remove(source_id);
-        }
-    }
-
-    fn require_ptz_owner(
-        &self,
-        source_id: &str,
-        session_id: SessionId,
-    ) -> Result<(), ControlCommandError> {
-        let owners = self
-            .state
-            .ptz_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if owners
-            .get(source_id)
-            .is_some_and(|owner| *owner != session_id)
-        {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "camera PTZ is owned by another connection",
-            ));
-        }
-        Ok(())
-    }
-
-    fn require_ptz_unowned(
-        &self,
-        source_id: &str,
-        session_id: SessionId,
-    ) -> Result<(), ControlCommandError> {
-        self.require_ptz_owner(source_id, session_id)?;
-        let owners = self
-            .state
-            .ptz_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if owners.contains_key(source_id) {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::Rejected,
-                409,
-                "stop continuous PTZ movement before selecting a preset",
-            ));
-        }
-        Ok(())
+        camera_control::handle_ptz(&self.state, session_id, command)
     }
 
     fn handle_camera_configuration(
@@ -2355,6 +2182,7 @@ impl ServerControlHandler {
             CameraTransport::Udp => RtspTransport::Udp,
         };
         let config = CameraConfig {
+            events: Default::default(),
             ip,
             name: None,
             display_name: None,
@@ -6248,20 +6076,29 @@ fn resolve_event_search_attachment(
             "event attachment revision is stale",
         ));
     }
-    if event.canonical_attachment_id.as_deref() != Some(object.attachment_id.as_str()) {
+    let native_image =
+        event.source == EventSource::Camera && object.attachment_id.starts_with("isapi-");
+    if !native_image
+        && event.canonical_attachment_id.as_deref() != Some(object.attachment_id.as_str())
+    {
         return Err(ControlCommandError::new(
             proto::ErrorCode::InvalidRequest,
             400,
             "requested attachment is not canonical for this event revision",
         ));
     }
-    let descriptor = event.canonical_attachment().cloned().ok_or_else(|| {
-        ControlCommandError::new(
-            proto::ErrorCode::Internal,
-            500,
-            "stored event has no canonical attachment descriptor",
-        )
-    })?;
+    let descriptor = event
+        .attachments
+        .iter()
+        .find(|descriptor| descriptor.id == object.attachment_id)
+        .cloned()
+        .ok_or_else(|| {
+            ControlCommandError::new(
+                proto::ErrorCode::Internal,
+                500,
+                "stored event has no canonical attachment descriptor",
+            )
+        })?;
     if !crate::storage::metadata::is_supported_event_image(&descriptor) {
         return Err(ControlCommandError::new(
             proto::ErrorCode::Unavailable,
@@ -6270,8 +6107,8 @@ fn resolve_event_search_attachment(
         ));
     }
     let path = store
-        .thumbnail_path(&event.camera_id, &event.id)
-        .map_err(|error| stored_catalog_error("resolve canonical event attachment", error))?
+        .attachment_path(&event.camera_id, &event.id, &object.attachment_id)
+        .map_err(|error| stored_catalog_error("resolve event attachment", error))?
         .ok_or_else(|| {
             ControlCommandError::new(
                 proto::ErrorCode::Unavailable,
@@ -8072,25 +7909,9 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
             password: camera_config.password.clone(),
             http_port: camera_config.http_port.or(ports.http),
         });
-    let profiles = camera.map_or_else(
-        || {
-            ["main", "sub"]
-                .into_iter()
-                .map(|stream| ProfileSummary {
-                    name: format!("{stream}Stream"),
-                    stream: stream.to_owned(),
-                    encoding: None,
-                    resolution: None,
-                    framerate: None,
-                    bitrate_kbps: None,
-                    gop: None,
-                    h264_profile: None,
-                    audio: None,
-                })
-                .collect()
-        },
-        |camera| profile_summaries(&camera.profiles),
-    );
+    let profiles = camera.map_or_else(default_profile_summaries, |camera| {
+        profile_summaries(&camera.profiles)
+    });
     let mut capabilities = camera
         .map(|camera| camera.capabilities.clone())
         .unwrap_or_default();
@@ -8130,7 +7951,94 @@ fn camera_entry(camera_config: &CameraConfig, camera: Option<&Camera>) -> Camera
             .clone()
             .unwrap_or_else(|| camera_config.ip.to_string()),
         control,
+        control_revision: Arc::new(()),
+        hikvision: None,
     }
+}
+
+fn initial_access_manager(config: &Config) -> AccessManager {
+    let manager = AccessManager::ephemeral(config.access_key);
+    manager.configure_rate_limit(
+        config.access.failed_authentication_limit,
+        Duration::from_secs(config.access.failed_authentication_window_secs),
+    );
+    manager
+}
+
+const fn initial_session_policy(config: &Config) -> ApiSessionPolicy {
+    ApiSessionPolicy {
+        idle_timeout: Duration::from_secs(config.access.session_idle_timeout_secs),
+        absolute_timeout: Duration::from_secs(config.access.session_absolute_timeout_secs),
+        max_per_principal: config.access.max_sessions_per_principal as usize,
+        max_per_address: config.access.max_sessions_per_address as usize,
+        failed_authentication_limit: config.access.failed_authentication_limit,
+        failed_authentication_window: Duration::from_secs(
+            config.access.failed_authentication_window_secs,
+        ),
+    }
+}
+
+fn restored_export_jobs(storage: &StorageConfig) -> (PathBuf, HashMap<String, ExportJobRecord>) {
+    let path = export_history_path(storage);
+    let jobs = load_export_jobs(&path).unwrap_or_else(|error| {
+        tracing::warn!(%error, path = %path.display(), "unable to load export history");
+        HashMap::new()
+    });
+    if let Err(error) = persist_export_jobs(&path, &jobs) {
+        tracing::warn!(%error, path = %path.display(), "unable to persist recovered export history");
+    }
+    (path, jobs)
+}
+
+fn configured_camera_entries(
+    configs: &HashMap<String, Vec<CameraConfig>>,
+    cameras: &HashMap<IpAddr, Camera>,
+) -> (Vec<CameraEntry>, HashMap<String, String>) {
+    let mut groups_by_ip = HashMap::<IpAddr, Vec<String>>::new();
+    for (group, group_cameras) in configs {
+        for camera in group_cameras {
+            groups_by_ip
+                .entry(camera.ip)
+                .or_default()
+                .push(group.clone());
+        }
+    }
+    for groups in groups_by_ip.values_mut() {
+        groups.sort_unstable();
+        groups.dedup();
+    }
+    let mut configured = configs.values().flatten().collect::<Vec<_>>();
+    configured.sort_unstable_by_key(|camera| camera.ip);
+    configured.dedup_by_key(|camera| camera.ip);
+    let mut overrides = HashMap::new();
+    let mut entries = Vec::with_capacity(configured.len());
+    for config in configured {
+        if let Some(manufacturer) = config.manufacturer_override() {
+            overrides.insert(config.ip.to_string(), manufacturer.to_owned());
+        }
+        let mut entry = camera_entry(config, cameras.get(&config.ip));
+        entry.groups = groups_by_ip.remove(&config.ip).unwrap_or_default();
+        entries.push(entry);
+    }
+    entries.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
+    (entries, overrides)
+}
+
+fn default_profile_summaries() -> Vec<ProfileSummary> {
+    ["main", "sub"]
+        .into_iter()
+        .map(|stream| ProfileSummary {
+            name: format!("{stream}Stream"),
+            stream: stream.to_owned(),
+            encoding: None,
+            resolution: None,
+            framerate: None,
+            bitrate_kbps: None,
+            gop: None,
+            h264_profile: None,
+            audio: None,
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -8526,7 +8434,7 @@ pub struct ServerState {
     http_stream_cancellations: Arc<Mutex<Vec<HttpStreamCancellation>>>,
     stored_media_cursors: Arc<Mutex<HashMap<(SessionId, String), StoredMediaCursor>>>,
     stored_media_cursor_reservations: Arc<Mutex<HashSet<(SessionId, String)>>>,
-    ptz_owners: Arc<Mutex<HashMap<String, SessionId>>>,
+    ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
     export_history_path: Option<Arc<PathBuf>>,
     event_search_tasks: EventSearchTasks,
@@ -8534,6 +8442,7 @@ pub struct ServerState {
     event_subscriptions: event_subscription::Registry,
     event_page_token_key: Arc<[u8; 32]>,
     camera_discovery_tasks: camera_discovery::Registry,
+    camera_metadata: Arc<camera_metadata::Queue>,
     configuration_plans: configuration::Registry,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
@@ -8568,56 +8477,11 @@ impl ServerState {
         recording_demand: RecordingDemand,
         webrtc: WebRtc,
     ) -> Self {
-        let mut groups_by_ip = HashMap::<IpAddr, Vec<String>>::new();
-        for (group, group_cameras) in camera_configs {
-            for camera in group_cameras {
-                groups_by_ip
-                    .entry(camera.ip)
-                    .or_default()
-                    .push(group.clone());
-            }
-        }
-        for groups in groups_by_ip.values_mut() {
-            groups.sort_unstable();
-            groups.dedup();
-        }
-        let mut configured = camera_configs.values().flatten().collect::<Vec<_>>();
-        configured.sort_unstable_by_key(|camera| camera.ip);
-        configured.dedup_by_key(|camera| camera.ip);
-        let mut manufacturer_overrides = HashMap::new();
-        for camera_config in &configured {
-            if let Some(manufacturer) = camera_config.manufacturer_override() {
-                manufacturer_overrides
-                    .insert(camera_config.ip.to_string(), manufacturer.to_owned());
-            }
-        }
-        let mut entries = configured
-            .into_iter()
-            .map(|camera_config| {
-                let mut entry = camera_entry(camera_config, cameras.get(&camera_config.ip));
-                entry.groups = groups_by_ip
-                    .get(&camera_config.ip)
-                    .cloned()
-                    .unwrap_or_default();
-                entry
-            })
-            .collect::<Vec<_>>();
-        entries.sort_unstable_by(|left, right| left.info.id.cmp(&right.info.id));
+        let (entries, manufacturer_overrides) = configured_camera_entries(camera_configs, cameras);
         let camera_count = entries.len();
         let sanitized_config = sanitized_config(config, storage, camera_count, &entries);
-        let access_manager = AccessManager::ephemeral(config.access_key);
-        access_manager.configure_rate_limit(
-            config.access.failed_authentication_limit,
-            Duration::from_secs(config.access.failed_authentication_window_secs),
-        );
-        let export_history_path = export_history_path(storage);
-        let export_jobs = load_export_jobs(&export_history_path).unwrap_or_else(|error| {
-            tracing::warn!(%error, path = %export_history_path.display(), "unable to load export history");
-            HashMap::new()
-        });
-        if let Err(error) = persist_export_jobs(&export_history_path, &export_jobs) {
-            tracing::warn!(%error, path = %export_history_path.display(), "unable to persist recovered export history");
-        }
+        let access_manager = initial_access_manager(config);
+        let (export_history_path, export_jobs) = restored_export_jobs(storage);
 
         Self {
             host: config.host.clone(),
@@ -8630,16 +8494,7 @@ impl ServerState {
                 config.access.trusted_proxies.clone(),
             ),
             require_secure_remote: config.access.require_secure_remote,
-            api_session_policy: ApiSessionPolicy {
-                idle_timeout: Duration::from_secs(config.access.session_idle_timeout_secs),
-                absolute_timeout: Duration::from_secs(config.access.session_absolute_timeout_secs),
-                max_per_principal: config.access.max_sessions_per_principal as usize,
-                max_per_address: config.access.max_sessions_per_address as usize,
-                failed_authentication_limit: config.access.failed_authentication_limit,
-                failed_authentication_window: Duration::from_secs(
-                    config.access.failed_authentication_window_secs,
-                ),
-            },
+            api_session_policy: initial_session_policy(config),
             allowed_origins: Arc::new(config.direct_card.allowed_origins.iter().cloned().collect()),
             api_session_owners: Arc::new(Mutex::new(HashMap::new())),
             http_stream_cancellations: Arc::new(Mutex::new(Vec::new())),
@@ -8653,6 +8508,7 @@ impl ServerState {
             event_subscriptions: event_subscription::Registry::default(),
             event_page_token_key: Arc::new(rand::random()),
             camera_discovery_tasks: camera_discovery::Registry::default(),
+            camera_metadata: Arc::new(camera_metadata::Queue::default()),
             configuration_plans: configuration::Registry::default(),
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
@@ -8759,6 +8615,24 @@ impl ServerState {
 
     fn camera_info(&self, camera: &CameraEntry) -> CameraInfo {
         let mut info = camera.info.clone();
+        if let Ok(ip) = info.ip.parse()
+            && let Some(evidence) = self.health.events.snapshot(ip)
+        {
+            info.capabilities.events |=
+                evidence.pull_capable || evidence.metadata_available || !evidence.kinds.is_empty();
+            info.capabilities.analytics |= evidence.kinds.iter().any(|kind| {
+                !matches!(
+                    kind.as_str(),
+                    "motion" | "tamper" | "digital_input" | "audio_detected" | "video_loss"
+                )
+            });
+        }
+        if camera.configuration.events.mode == crate::cameras::events::EventMode::Disabled
+            || !self.health.events.enabled(camera.configuration.ip)
+        {
+            info.capabilities.events = false;
+            info.capabilities.analytics = false;
+        }
         let manufacturer_override = self
             .manufacturer_overrides
             .lock()
@@ -8770,42 +8644,20 @@ impl ServerState {
     }
 
     pub(crate) fn enrich_camera_metadata_in_background(&self, configs: Vec<CameraConfig>) {
-        let pending = Arc::new(Mutex::new(VecDeque::from(configs)));
-        let worker_count = pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
-            .min(MAX_CAMERA_METADATA_WORKERS);
-        for worker_index in 0..worker_count {
-            let state = self.clone();
-            let pending = pending.clone();
-            let spawn = std::thread::Builder::new()
-                .name(format!("camera-metadata-{worker_index}"))
-                .spawn(move || {
-                    loop {
-                        let config = pending
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pop_front();
-                        let Some(config) = config else {
-                            break;
-                        };
-                        match probe_onvif_camera(&config) {
-                            Ok(probe) => state.apply_camera_metadata(config.ip, &probe),
-                            Err(_) => tracing::debug!(
-                                ip = %config.ip,
-                                "configured camera did not provide ONVIF metadata"
-                            ),
-                        }
-                    }
-                });
-            if let Err(error) = spawn {
-                tracing::warn!(%error, "camera metadata worker could not start");
-            }
-        }
+        camera_metadata::enqueue(self, configs);
     }
 
-    fn apply_camera_metadata(&self, ip: IpAddr, probe: &crate::cameras::ProbedOnvifCamera) {
+    fn activate_camera_entry(&self, entry: CameraEntry) {
+        let config = entry.configuration.clone();
+        self.upsert_camera(entry);
+        self.enrich_camera_metadata_in_background(vec![config]);
+    }
+
+    fn apply_camera_metadata(
+        &self,
+        previous: &CameraEntry,
+        probe: &crate::cameras::ProbedOnvifCamera,
+    ) {
         let catalog_brand = self.camera_database.as_ref().and_then(|database| {
             let model = probe.device.model.as_deref()?;
             let manufacturer = probe.device.manufacturer.as_deref().unwrap_or_default();
@@ -8822,10 +8674,13 @@ impl ServerState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(camera) = cameras
             .iter_mut()
-            .find(|camera| camera.info.ip == ip.to_string())
+            .find(|camera| camera.info.id == previous.info.id)
         else {
             return;
         };
+        if !Arc::ptr_eq(&camera.control_revision, &previous.control_revision) {
+            return;
+        }
         camera.reported_manufacturer = manufacturer.clone();
         camera.info.manufacturer = manufacturer;
         camera.info.model.clone_from(&probe.device.model);
@@ -8844,6 +8699,20 @@ impl ServerState {
         camera.info.ports.onvif = Some(probe.onvif_port);
         if !profiles.is_empty() {
             camera.info.profiles = profiles;
+        }
+        if let Some(service) = &probe.event_service {
+            self.health
+                .events
+                .record_service(camera.configuration.ip, service);
+        }
+        for profile in &probe.profiles {
+            if self
+                .health
+                .events
+                .record_snapshot(camera.configuration.ip, profile.snapshot_uri.as_deref())
+            {
+                break;
+            }
         }
     }
 
@@ -9011,26 +8880,7 @@ fn close_api_session(state: &ServerState, session_id: SessionId) {
     state.event_subscriptions.close_session(session_id);
     state.camera_discovery_tasks.close_session(session_id);
     stored_media::close_session(state, session_id);
-    let source_ids = {
-        let mut owners = state
-            .ptz_owners
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let source_ids = owners
-            .iter()
-            .filter_map(|(source_id, owner)| (*owner == session_id).then_some(source_id.clone()))
-            .collect::<Vec<_>>();
-        owners.retain(|_, owner| *owner != session_id);
-        source_ids
-    };
-    for source_id in source_ids {
-        if let Some(camera) = state.camera(&source_id)
-            && let Some(control) = camera.control
-            && let Err(error) = reolink_ptz(&control, PtzOp::Stop, PTZ_STOP_SPEED)
-        {
-            tracing::warn!(%source_id, %error, "unable to stop session-owned PTZ movement");
-        }
-    }
+    camera_control::close_session(state, session_id);
 }
 
 fn close_api_sessions_action(webrtc: WebRtc, sessions: Vec<SessionId>) -> PostSendAction {
@@ -11339,14 +11189,32 @@ fn prometheus_metrics(router_tx: &FacadeSender<RouterMessage>, state: &ServerSta
         .notifications
         .as_ref()
         .map(NotificationHandle::metric_snapshot);
-    match crate::metrics::encode_health_metrics(
+    let event_reports = state
+        .camera_entries()
+        .into_iter()
+        .filter_map(|camera| {
+            let events = state.health.events.snapshot(camera.configuration.ip)?;
+            Some(crate::stats::CameraHealthReport {
+                ip: camera.configuration.ip,
+                name: camera.configuration.name,
+                brand: camera.info.manufacturer,
+                port: camera.configuration.onvif_port.unwrap_or(0),
+                streams: Vec::new(),
+                events: Some(events),
+            })
+        })
+        .collect::<Vec<_>>();
+    match crate::metrics::encode_health_with_events(
         &health,
-        Some(access_metrics_snapshot(state)),
-        recording.as_ref().ok(),
-        backup,
-        notifications,
-        mqtt.as_ref(),
-        Some(external_analysis),
+        crate::metrics::HealthMetricSnapshots {
+            access: Some(access_metrics_snapshot(state)),
+            recording: recording.as_ref().ok(),
+            backup,
+            notifications,
+            mqtt: mqtt.as_ref(),
+            external_analysis: Some(external_analysis),
+        },
+        &event_reports,
     ) {
         Ok(metrics) => Response::from_data(
             "text/plain; version=0.0.4; charset=utf-8",
@@ -12111,6 +11979,10 @@ fn save_camera_settings(
             .and_then(|camera| camera.sub_rtsp_url.clone()),
     };
     let mut config = CameraConfig {
+        events: existing_config
+            .as_ref()
+            .map(|camera| camera.events.clone())
+            .unwrap_or_default(),
         ip,
         name: existing_config
             .as_ref()
@@ -12332,7 +12204,7 @@ fn start_runtime_camera(
     }
     let mut entry = camera_entry(&camera.config, Some(&camera));
     entry.groups = groups;
-    state.upsert_camera(entry);
+    state.activate_camera_entry(entry);
     Some(camera.config)
 }
 
@@ -12394,7 +12266,12 @@ fn delete_camera_settings(
         ));
     }
     match config::remove_camera(config_path, ip) {
-        Ok(()) => camera_configuration_revision(state),
+        Ok(()) => {
+            if let Some(runtime) = &state.camera_runtime {
+                runtime.stop_camera(ip).map_err(|_| ControlCommandError::new(proto::ErrorCode::Unavailable, 503, "camera configuration was removed but its runtime stop could not be confirmed"))?;
+            }
+            camera_configuration_revision(state)
+        }
         Err(error) => Err(ControlCommandError::new(
             proto::ErrorCode::Internal,
             500,
@@ -12545,34 +12422,7 @@ fn set_camera_manufacturer(
 }
 
 fn motion_detection_status(camera: &CameraEntry) -> MotionDetection {
-    let Some(control) = &camera.control else {
-        return MotionDetection {
-            supported: camera.info.capabilities.events,
-            controllable: false,
-            enabled: None,
-            error: None,
-        };
-    };
-    match reolink_motion_state(control) {
-        Ok(enabled) => MotionDetection {
-            supported: true,
-            controllable: true,
-            enabled: Some(enabled),
-            error: None,
-        },
-        Err(error) => MotionDetection {
-            supported: camera.info.capabilities.events,
-            controllable: true,
-            enabled: None,
-            error: Some(error.to_string()),
-        },
-    }
-}
-
-fn reolink_motion_state(control: &CameraControl) -> anyhow::Result<bool> {
-    let mut client = ReolinkClient::new_with_http_port(control.ip, control.http_port);
-    client.login(&control.username, &control.password)?;
-    client.get_md_state(0)
+    camera_control::status(camera)
 }
 
 fn set_camera_motion(
@@ -12580,53 +12430,7 @@ fn set_camera_motion(
     camera_id: &str,
     enabled: bool,
 ) -> Result<MotionDetection, ControlCommandError> {
-    let Some(camera) = state.camera(camera_id) else {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::NotFound,
-            404,
-            "camera not found",
-        ));
-    };
-    let Some(control) = &camera.control else {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            409,
-            "motion detection control is unavailable for this camera",
-        ));
-    };
-    let mut client = ReolinkClient::new_with_http_port(control.ip, control.http_port);
-    if let Err(error) = client.login(&control.username, &control.password) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            502,
-            format!("camera motion login failed: {error}"),
-        ));
-    }
-    if let Err(error) = client.set_alarm(0, enabled) {
-        return Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            502,
-            format!("camera motion update failed: {error}"),
-        ));
-    }
-    match client.get_md_state(0) {
-        Ok(actual) if actual == enabled => Ok(MotionDetection {
-            supported: true,
-            controllable: true,
-            enabled: Some(actual),
-            error: None,
-        }),
-        Ok(actual) => Err(ControlCommandError::new(
-            proto::ErrorCode::Rejected,
-            502,
-            format!("camera motion state was {actual} after requesting {enabled}"),
-        )),
-        Err(error) => Err(ControlCommandError::new(
-            proto::ErrorCode::Unavailable,
-            502,
-            format!("camera motion verification failed: {error}"),
-        )),
-    }
+    camera_control::set_motion(state, camera_id, enabled)
 }
 
 const fn camera_backend_name(backend: CameraBackend) -> &'static str {
@@ -12739,6 +12543,8 @@ fn service_error(status: u16, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
+    mod isapi_events;
+
     use super::*;
     use crate::{
         api::proto::{health_command, stored_media_command},
@@ -13243,6 +13049,7 @@ mod tests {
 
     fn media_test_state() -> ServerState {
         let config = CameraConfig {
+            events: Default::default(),
             ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             name: Some("front-door".to_owned()),
             display_name: Some("Front Door".to_owned()),
@@ -13320,6 +13127,7 @@ mod tests {
     #[test]
     fn health_aggregates_ingress_counters_and_stream_quality_issues() {
         let camera = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.41".parse().unwrap(),
             name: Some("side-door".to_owned()),
             display_name: Some("Side Door".to_owned()),
@@ -13410,6 +13218,7 @@ mod tests {
     #[test]
     fn connected_camera_without_frame_progress_is_starting_during_startup_grace() {
         let camera = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.40".parse().unwrap(),
             name: Some("front-door".to_owned()),
             display_name: Some("Front Door".to_owned()),
@@ -14433,8 +14242,9 @@ mod tests {
                 .ptz_owners
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get("127.0.0.1"),
-            Some(&owner)
+                .get("127.0.0.1")
+                .map(|owner| owner.session_id),
+            Some(owner)
         );
         let first = commands
             .lock()
@@ -21036,6 +20846,34 @@ mod tests {
     }
 
     #[test]
+    fn metrics_route_includes_native_events_before_video_health_arrives() {
+        let state = ServerState::empty();
+        let config: CameraConfig = toml::from_str(
+            "ip='192.0.2.1'\nname='front'\nusername='private-user'\npassword='private-password'",
+        )
+        .unwrap();
+        state.upsert_camera(camera_entry(&config, None));
+        state.health.events.record_kind(config.ip, "digital_input");
+        assert!(state.health.snapshot().is_empty());
+        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
+        let router_thread = std::thread::spawn(move || {
+            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
+        });
+        let request = Request::fake_http("GET", "/metrics", Vec::new(), Vec::new());
+        let response = handle_request(&request, &router_tx, &state);
+        assert_eq!(response.status_code, 200);
+        let body = String::from_utf8(response_data(response)).unwrap();
+        assert!(body.contains("# TYPE keeppeek_camera_events_pulls counter"));
+        assert!(body.contains(
+            "keeppeek_camera_events_pull_capable{camera_id=\"192.0.2.1\",camera_name=\"front\"} 0"
+        ));
+        assert!(!body.contains("private-user"));
+        assert!(!body.contains("private-password"));
+        assert!(!body.contains("digital_input"));
+        assert_eq!(router_thread.join().unwrap(), 1);
+    }
+
+    #[test]
     fn metrics_route_returns_prometheus_text_exposition() {
         let state = ServerState::empty();
         let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
@@ -21097,6 +20935,7 @@ mod tests {
             crate::storage::RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
         let catalog_handle = catalog.handle();
         let camera = |ip: &str, name: &str| CameraConfig {
+            events: Default::default(),
             ip: ip.parse().unwrap(),
             name: Some(name.to_owned()),
             display_name: Some(name.replace('-', " ")),
@@ -21288,6 +21127,7 @@ mod tests {
         let config = Config::default();
         let storage = StorageConfig::default();
         let camera = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.10".parse().unwrap(),
             name: Some("north".to_owned()),
             display_name: Some("North Courtyard".to_owned()),
@@ -21382,6 +21222,7 @@ mod tests {
     #[test]
     fn onvif_metadata_enrichment_updates_camera_identity_and_profiles() {
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.81".parse().unwrap(),
             name: Some("front_gate".to_owned()),
             display_name: Some("Front Gate".to_owned()),
@@ -21418,6 +21259,7 @@ mod tests {
         );
         let probe = crate::cameras::ProbedOnvifCamera {
             onvif_port: 8000,
+            event_service: None,
             device: crate::cameras::DeviceInfo {
                 manufacturer: Some("Manufacturer".to_owned()),
                 model: Some("RLC-820A".to_owned()),
@@ -21447,7 +21289,8 @@ mod tests {
             sub_rtsp_url: None,
         };
 
-        state.apply_camera_metadata(config.ip, &probe);
+        let previous = state.camera("192.0.2.81").unwrap();
+        state.apply_camera_metadata(&previous, &probe);
 
         let camera = state.camera("192.0.2.81").unwrap();
         assert_eq!(camera.info.manufacturer.as_deref(), Some("Reolink"));
@@ -21460,6 +21303,9 @@ mod tests {
             camera.info.profiles[0].resolution.as_deref(),
             Some("3840x2160")
         );
+        state.upsert_camera(camera_entry(&config, None));
+        state.apply_camera_metadata(&previous, &probe);
+        assert!(state.camera("192.0.2.81").unwrap().info.model.is_none());
     }
 
     #[test]
@@ -21538,6 +21384,7 @@ mod tests {
         let config = Config::default();
         let storage = StorageConfig::default();
         let camera = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.41".parse().unwrap(),
             name: Some("fake-retina".to_owned()),
             display_name: Some("Fake Retina".to_owned()),
@@ -21675,6 +21522,7 @@ mod tests {
             },
             reported_manufacturer: Some("ONVIF".to_owned()),
             configuration: CameraConfig {
+                events: Default::default(),
                 ip: "192.0.2.55".parse().unwrap(),
                 name: Some("back_yard".to_owned()),
                 display_name: Some("Back Yard".to_owned()),
@@ -21696,6 +21544,8 @@ mod tests {
             battery_uid: None,
             recording_label: "back-yard".to_owned(),
             control: None,
+            control_revision: Arc::new(()),
+            hikvision: None,
         }]));
         let updated =
             set_camera_manufacturer(&state, "192.0.2.55", Some("Hikvision".to_owned())).unwrap();
@@ -21723,6 +21573,7 @@ mod tests {
     #[test]
     fn camera_entries_preserve_configuration_groups() {
         let front = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.10".parse().unwrap(),
             name: Some("front".to_owned()),
             display_name: Some("Front Door".to_owned()),

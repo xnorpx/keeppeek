@@ -25,10 +25,69 @@ const MAXIMUM_ATTACHMENT_ROUTES: usize = 8;
 #[derive(Clone, Default)]
 pub(super) struct Registry {
     inner: Arc<Mutex<HashMap<(SessionId, String), Subscription>>>,
+    native: Arc<Mutex<NativeCapabilities>>,
     starts: Arc<AtomicU64>,
     rejections: Arc<AtomicU64>,
     deliveries: Arc<AtomicU64>,
     sheds: Arc<AtomicU64>,
+}
+
+#[derive(Default)]
+struct NativeCapabilities {
+    revision: u64,
+    known: HashMap<SessionId, KnownCapabilities>,
+}
+
+struct KnownCapabilities {
+    revision: u64,
+    event_types: HashMap<String, HashSet<String>>,
+}
+
+impl NativeCapabilities {
+    fn remember(&mut self, session_id: SessionId, snapshot: &proto::ServerCapabilities) {
+        if snapshot.encoded_len() > crate::webrtc::MAX_CONTROL_MESSAGE_BYTES {
+            self.known.remove(&session_id);
+            return;
+        }
+        if self.known.len() >= MAXIMUM_EVENT_SUBSCRIPTIONS && !self.known.contains_key(&session_id)
+        {
+            return;
+        }
+        let event_types = snapshot
+            .source_sessions
+            .iter()
+            .filter(|source| !source.source_id.is_empty())
+            .map(|source| {
+                (
+                    source.source_session_id.clone(),
+                    source
+                        .event_types
+                        .iter()
+                        .map(|kind| kind.event_type.clone())
+                        .collect(),
+                )
+            })
+            .collect();
+        self.known.insert(
+            session_id,
+            KnownCapabilities {
+                revision: self.revision,
+                event_types,
+            },
+        );
+    }
+
+    fn has_snapshot(&self, session_id: SessionId, event: &proto::Event, live: bool) -> bool {
+        self.known.get(&session_id).is_some_and(|known| {
+            known.revision == self.revision
+                && (!live
+                    || event
+                        .source_session_id
+                        .as_ref()
+                        .and_then(|source| known.event_types.get(source))
+                        .is_some_and(|kinds| kinds.contains(&event.event_type)))
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,6 +117,20 @@ pub(super) struct Delivery {
 }
 
 impl Registry {
+    pub(super) fn capabilities(
+        &self,
+        session_id: SessionId,
+        snapshot: impl FnOnce() -> proto::ServerCapabilities,
+    ) -> proto::ServerCapabilities {
+        let mut native = self
+            .native
+            .lock()
+            .expect("native capability revisions are not poisoned");
+        let snapshot = snapshot();
+        native.remember(session_id, &snapshot);
+        snapshot
+    }
+
     pub(super) fn subscribe(
         &self,
         state: &ServerState,
@@ -159,6 +232,11 @@ impl Registry {
                 }
                 !remove
             });
+        self.native
+            .lock()
+            .expect("native capability revisions are not poisoned")
+            .known
+            .remove(&session_id);
     }
 
     pub(super) fn invalidate_source(&self, source_id: &str) -> Vec<SessionId> {
@@ -348,9 +426,22 @@ fn validate_subscription(
         MAXIMUM_EVENT_TYPE_FILTERS,
         "event subscription event types are invalid",
     )?;
+    let mut available_types = PUBLISHED_DETECTION_EVENT_TYPES
+        .iter()
+        .map(|kind| (*kind).to_owned())
+        .collect::<HashSet<_>>();
+    for camera in state.camera_entries() {
+        if source_ids.is_empty() || source_ids.contains(&camera.info.id) {
+            available_types.extend(
+                super::native_events::reported_types(&camera.info, &state.health.events)
+                    .into_iter()
+                    .map(|kind| kind.event_type),
+            );
+        }
+    }
     if event_types
         .iter()
-        .any(|event_type| !PUBLISHED_DETECTION_EVENT_TYPES.contains(&event_type.as_str()))
+        .any(|event_type| !available_types.contains(event_type))
     {
         return Err(subscription_error(
             &request.subscription_id,
@@ -413,6 +504,168 @@ fn validate_subscription(
         attachment_routes: request.attachment_routes.clone(),
         guard: EventDeliveryGuard::default(),
     })
+}
+
+pub(super) fn publish(state: &ServerState, event: &proto::Event, image: Option<Arc<[u8]>>) {
+    publish_images(state, event, image, &[]);
+}
+
+pub(super) fn publish_images(
+    state: &ServerState,
+    event: &proto::Event,
+    image: Option<Arc<[u8]>>,
+    additional: &[(String, Arc<[u8]>)],
+) {
+    for delivery in state.event_subscriptions.deliveries(event) {
+        publish_delivery(state, event, image.as_ref(), additional, delivery);
+    }
+}
+
+pub(super) fn publish_native_images(
+    state: &ServerState,
+    camera: &super::CameraInfo,
+    event: &proto::Event,
+    image: Option<Arc<[u8]>>,
+    additional: &[(String, Arc<[u8]>)],
+) {
+    let Ok(ip) = camera.ip.parse() else {
+        return;
+    };
+    if !state.health.events.enabled(ip) {
+        return;
+    }
+    let mut native = state
+        .event_subscriptions
+        .native
+        .lock()
+        .expect("native capability revisions are not poisoned");
+    if state.health.events.record_kind(ip, &event.event_type) {
+        native.revision = native
+            .revision
+            .checked_add(1)
+            .expect("native capability revision exhausted");
+    }
+    if !super::native_events::reported_types(camera, &state.health.events)
+        .iter()
+        .any(|kind| kind.event_type == event.event_type)
+    {
+        return;
+    }
+    let live = !state.webrtc.live_video_sources(ip).is_empty()
+        && event.source_session_id.as_deref()
+            == Some(
+                super::camera_source_session_id(&camera.id, state.webrtc.camera_generation(ip))
+                    .as_str(),
+            );
+    for delivery in state.event_subscriptions.deliveries(event) {
+        if !delivery.guard.is_active() {
+            continue;
+        }
+        let mut snapshot = None;
+        if !native.has_snapshot(delivery.session_id, event, live) {
+            let Some(cameras) = super::camera_access::for_session(state, delivery.session_id)
+                .ok()
+                .and_then(|policy| super::camera_access::query_cameras(state, &policy, &[]).ok())
+            else {
+                state
+                    .event_subscriptions
+                    .shed(delivery.session_id, &delivery.subscription_id);
+                continue;
+            };
+            let snapshot = snapshot.insert(super::server_capabilities(state, &cameras));
+            if !queue_capabilities(state, delivery.session_id, snapshot) {
+                state
+                    .event_subscriptions
+                    .shed(delivery.session_id, &delivery.subscription_id);
+                continue;
+            }
+            native.remember(delivery.session_id, snapshot);
+        }
+        if live
+            && snapshot
+                .as_ref()
+                .is_none_or(|snapshot| snapshot_has_event(snapshot, event))
+        {
+            publish_delivery(state, event, image.as_ref(), additional, delivery);
+        }
+    }
+}
+
+fn snapshot_has_event(snapshot: &proto::ServerCapabilities, event: &proto::Event) -> bool {
+    snapshot.source_sessions.iter().any(|source| {
+        event.source_session_id.as_deref() == Some(source.source_session_id.as_str())
+            && source.source_id == event.source_id
+            && source
+                .event_types
+                .iter()
+                .any(|kind| kind.event_type == event.event_type)
+    })
+}
+
+fn queue_capabilities(
+    state: &ServerState,
+    session_id: SessionId,
+    snapshot: &proto::ServerCapabilities,
+) -> bool {
+    if snapshot.encoded_len() > crate::webrtc::MAX_CONTROL_MESSAGE_BYTES {
+        return false;
+    }
+    let access_session = state
+        .api_session_owners
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&session_id)
+        .map(|session| super::proto_access_session(session_id, session));
+    let notification = proto::Notification {
+        event: Some(proto::notification::Event::InitialCapabilities(
+            super::connection_capabilities(snapshot.clone(), session_id, access_session),
+        )),
+    };
+    crate::webrtc::control_notification_encoded_len(&notification)
+        <= crate::webrtc::MAX_CONTROL_MESSAGE_BYTES
+        && matches!(
+            state
+                .webrtc
+                .try_enqueue_api_notification(session_id, notification),
+            Ok(true)
+        )
+}
+
+fn publish_delivery(
+    state: &ServerState,
+    event: &proto::Event,
+    image: Option<&Arc<[u8]>>,
+    additional: &[(String, Arc<[u8]>)],
+    delivery: Delivery,
+) {
+    let mut delivered_event = event.clone();
+    delivered_event.subscription_id = Some(delivery.subscription_id.clone());
+    let attachment_bytes = delivery
+        .attachment_target
+        .and_then(|_| image.map(Arc::clone));
+    let queued = state.webrtc.try_enqueue_api_event(
+        delivery.session_id,
+        crate::webrtc::OutboundEventDelivery {
+            event: delivered_event,
+            attachment_target: delivery
+                .attachment_target
+                .filter(|_| image.is_some() || !additional.is_empty()),
+            attachment_bytes,
+            additional_attachments: if delivery.attachment_target.is_some() {
+                additional.to_vec()
+            } else {
+                Vec::new()
+            },
+            guard: delivery.guard,
+        },
+    );
+    if !matches!(queued, Ok(true)) {
+        state
+            .event_subscriptions
+            .shed(delivery.session_id, &delivery.subscription_id);
+        tracing::warn!(session_id = %delivery.session_id, subscription_id = %delivery.subscription_id,
+            "shed event subscription after its delivery queue stopped accepting work");
+    }
 }
 
 fn bounded_unique(

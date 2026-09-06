@@ -259,6 +259,21 @@ impl Server {
         listener: L,
         ssl_config: Option<SslConfig>,
     ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        Self::from_listener_mode(listener, ssl_config, false)
+    }
+
+    /// Accepts one request per connection with short socket waits and no body pre-buffering.
+    pub fn from_listener_single_request<L: Into<Listener>>(
+        listener: L,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        Self::from_listener_mode(listener, None, true)
+    }
+
+    fn from_listener_mode<L: Into<Listener>>(
+        listener: L,
+        ssl_config: Option<SslConfig>,
+        single_request: bool,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
         let listener = listener.into();
         // building the "close" variable
         let close_trigger = Arc::new(AtomicBool::new(false));
@@ -298,18 +313,25 @@ impl Server {
             while !inside_close_trigger.load(Relaxed) {
                 let new_client = match server.accept() {
                     Ok((sock, _)) => {
-                        if !connection_capacity_available(inside_connections.load(Acquire)) {
+                        if !connection_capacity_available(inside_connections.load(Acquire))
+                            || (single_request && inside_connections.load(Acquire) >= 16)
+                        {
                             let _ = sock.shutdown(Shutdown::Both);
                             continue;
                         }
+                        let timeout = if single_request {
+                            Duration::from_secs(1)
+                        } else {
+                            CONNECTION_IO_TIMEOUT
+                        };
                         match sock
-                            .set_read_timeout(Some(CONNECTION_IO_TIMEOUT))
-                            .and_then(|()| sock.set_write_timeout(Some(CONNECTION_IO_TIMEOUT)))
+                            .set_read_timeout(Some(timeout))
+                            .and_then(|()| sock.set_write_timeout(Some(timeout)))
                         {
                             Err(error) => Err(error),
                             Ok(()) => {
                                 use util::RefinedTcpStream;
-                                let (read_closable, write_closable) = match ssl {
+                                let (mut read_closable, write_closable) = match ssl {
                                     None => RefinedTcpStream::new(sock),
                                     Some(ref ssl) => {
                                         // trying to apply SSL over the connection
@@ -323,7 +345,13 @@ impl Server {
                                     }
                                 };
 
-                                Ok(ClientConnection::new(write_closable, read_closable))
+                                if single_request {
+                                    read_closable.set_read_deadline(
+                                        std::time::Instant::now() + Duration::from_secs(15),
+                                    );
+                                }
+                                Ok(ClientConnection::new(write_closable, read_closable)
+                                    .single_request(single_request))
                             }
                         }
                     }
@@ -340,7 +368,7 @@ impl Server {
                             let _connection_guard = &connection_guard;
                             if let Some(client) = client.take() {
                                 // Synchronization is needed for HTTPS requests to avoid a deadlock
-                                if client.secure() {
+                                if client.secure() || single_request {
                                     let (sender, receiver) = mpsc::channel();
                                     for rq in client {
                                         messages.push(rq.with_notify_sender(sender.clone()).into());

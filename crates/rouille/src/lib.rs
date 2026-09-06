@@ -418,6 +418,19 @@ where
         })
     }
 
+    /// Builds a bounded upload receiver with one request per connection and no body pre-buffering.
+    pub fn from_tcp_listener_single_request(
+        listener: std::net::TcpListener,
+        handler: F,
+    ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
+        let server = tiny_http::Server::from_listener_single_request(listener)?;
+        Ok(Self {
+            server,
+            executor: Executor::default(),
+            handler: Arc::new(AssertUnwindSafe(handler)),
+        })
+    }
+
     /// Builds a new `Server` object with SSL support.
     ///
     /// After this function returns, the HTTPS server is listening.
@@ -549,6 +562,13 @@ where
     #[inline]
     pub fn poll_timeout(&self, dur: std::time::Duration) {
         while let Ok(Some(request)) = self.server.recv_timeout(dur) {
+            self.process(request);
+        }
+    }
+
+    /// Processes at most one request so callers can check shutdown under continuous traffic.
+    pub fn poll_once_timeout(&self, duration: std::time::Duration) {
+        if let Ok(Some(request)) = self.server.recv_timeout(duration) {
             self.process(request);
         }
     }

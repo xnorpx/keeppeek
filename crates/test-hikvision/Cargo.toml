@@ -1,0 +1,20 @@
+[package]
+name = "test-hikvision"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+description = "Loopback-only fake Hikvision ISAPI camera for integration tests"
+
+[dependencies]
+anyhow = "1.0.104"
+digest_auth = { workspace = true }
+httparse = { workspace = true }
+image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
+subtle = { workspace = true }
+ureq = { workspace = true }
+url = { workspace = true }
+xml = { workspace = true }
+
+[lints]
+workspace = true

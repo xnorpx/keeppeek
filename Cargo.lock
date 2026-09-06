@@ -1373,6 +1373,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "env_filter"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2159,6 +2168,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "isapi"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "digest_auth",
+ "encoding_rs",
+ "httparse",
+ "mime",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "subtle",
+ "test-hikvision",
+ "ureq",
+ "url",
+ "xml",
+]
+
+[[package]]
 name = "itertools"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2276,7 +2304,9 @@ dependencies = [
  "image",
  "include_dir",
  "ipnet",
+ "isapi",
  "mimalloc",
+ "mime",
  "mp4",
  "network-interface",
  "onvif",
@@ -2308,6 +2338,7 @@ dependencies = [
  "subtle",
  "sysinfo",
  "test-frame",
+ "test-hikvision",
  "time",
  "toml",
  "tracing",
@@ -2927,6 +2958,7 @@ dependencies = [
  "nonzero_ext",
  "schema",
  "sha1",
+ "test-hikvision",
  "thiserror",
  "tracing",
  "tracing-subscriber",
@@ -4651,6 +4683,7 @@ dependencies = [
  "schema",
  "serde_json",
  "tempfile",
+ "test-hikvision",
  "tracing",
  "tracing-subscriber",
  "windows 0.62.2",
@@ -4662,6 +4695,20 @@ version = "0.1.0"
 dependencies = [
  "image",
  "openh264",
+]
+
+[[package]]
+name = "test-hikvision"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "digest_auth",
+ "httparse",
+ "image",
+ "subtle",
+ "ureq",
+ "url",
+ "xml",
 ]
 
 [[package]]

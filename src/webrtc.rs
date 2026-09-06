@@ -38,6 +38,9 @@ use str0m::{
 
 mod session_registry;
 
+#[cfg(test)]
+pub(crate) mod test_queue;
+
 use session_registry::SessionRegistry;
 
 const FRAME_QUEUE_CAPACITY: usize = 1_000;
@@ -72,7 +75,7 @@ const MAX_TRACK_ID_BYTES: usize = 64;
 const CONTROL_CHANNEL_LABEL: &str = "control-channel";
 const RELIABLE_DATA_CHANNEL_LABEL: &str = "reliable-data";
 const UNRELIABLE_DATA_CHANNEL_LABEL: &str = "unreliable-data";
-const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1_024;
+pub(crate) const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1_024;
 const MAX_DATA_MESSAGE_BYTES: usize = 64 * 1_024;
 const API_MEDIA_FRAME_CHUNK_BYTES: usize = 48 * 1_024;
 
@@ -244,6 +247,7 @@ pub(crate) struct OutboundEventDelivery {
     pub(crate) event: crate::api::proto::Event,
     pub(crate) attachment_target: Option<DataChannelTarget>,
     pub(crate) attachment_bytes: Option<Arc<[u8]>>,
+    pub(crate) additional_attachments: Vec<(String, Arc<[u8]>)>,
     pub(crate) guard: EventDeliveryGuard,
 }
 
@@ -492,6 +496,10 @@ enum ApiSessionCommand {
         completion: ApiDataCompletion,
     },
     Notification(Box<crate::api::proto::Notification>),
+    Capabilities {
+        notification: Box<crate::api::proto::Notification>,
+        control: Weak<ApiSessionControl>,
+    },
     Event {
         delivery: Box<OutboundEventDelivery>,
         reservation: PendingEventReservation,
@@ -892,7 +900,9 @@ struct QueuedDataMessage {
     payload: Vec<u8>,
 }
 
-fn control_notification_encoded_len(notification: &crate::api::proto::Notification) -> usize {
+pub(crate) fn control_notification_encoded_len(
+    notification: &crate::api::proto::Notification,
+) -> usize {
     ControlEnvelope {
         message: Some(control_envelope::Message::Notification(
             notification.clone(),
@@ -1005,6 +1015,7 @@ impl ApiMediaRuntime {
             event,
             attachment_target,
             attachment_bytes,
+            additional_attachments,
             guard: _,
         } = delivery;
         let subscription_id = event
@@ -1015,70 +1026,21 @@ impl ApiMediaRuntime {
             "event:{subscription_id}:{}:{}",
             event.event_id, event.revision
         );
-        let attachment = match (attachment_target, attachment_bytes) {
-            (Some(target), Some(bytes)) => Some((target, bytes)),
-            (None, None) => None,
-            _ => anyhow::bail!("live event attachment route and bytes are inconsistent"),
-        };
-        let data_messages = if let Some((target, bytes)) = attachment {
-            if bytes.is_empty() || bytes.len() > API_EVENT_ATTACHMENT_MAX_BYTES {
-                anyhow::bail!("live event attachment exceeds delivery bounds");
-            }
-            let descriptor = event
+        let mut attachments = additional_attachments;
+        if let Some(bytes) = attachment_bytes {
+            let id = event
                 .canonical_attachment_id
-                .as_deref()
-                .and_then(|id| {
-                    event
-                        .attachments
-                        .iter()
-                        .find(|attachment| attachment.attachment_id == id)
-                })
+                .clone()
                 .ok_or_else(|| anyhow::anyhow!("live event canonical attachment is missing"))?;
-            if descriptor.byte_len != Some(bytes.len() as u64) {
-                anyhow::bail!("live event attachment bytes do not match the descriptor");
-            }
-            let chunk_count = u32::try_from(bytes.len().div_ceil(API_EVENT_ATTACHMENT_CHUNK_BYTES))
-                .map_err(|_| anyhow::anyhow!("live event attachment has too many chunks"))?;
-            bytes
-                .chunks(API_EVENT_ATTACHMENT_CHUNK_BYTES)
-                .enumerate()
-                .map(|(chunk_index, payload)| OutboundDataMessage {
-                    target,
-                    group: group.clone(),
-                    message: crate::api::proto::Message {
-                        message: Some(crate::api::proto::message::Message::Event(
-                            crate::api::proto::EventMessage {
-                                message: Some(
-                                    crate::api::proto::event_message::Message::Attachment(
-                                        crate::api::proto::EventAttachmentChunk {
-                                            context: Some(
-                                                crate::api::proto::event_attachment_chunk::Context::SubscriptionId(
-                                                    subscription_id.clone(),
-                                                ),
-                                            ),
-                                            event_id: event.event_id.clone(),
-                                            revision: event.revision,
-                                            attachment_id: descriptor.attachment_id.clone(),
-                                            attachment_type: descriptor.attachment_type.clone(),
-                                            content_type: descriptor.content_type.clone(),
-                                            ordinal: descriptor.ordinal,
-                                            timestamp: descriptor.timestamp,
-                                            sequence: 1,
-                                            chunk_index: u32::try_from(chunk_index)
-                                                .unwrap_or(u32::MAX),
-                                            chunk_count,
-                                            payload: payload.to_vec(),
-                                        },
-                                    ),
-                                ),
-                            },
-                        )),
-                    },
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+            attachments.insert(0, (id, bytes));
+        }
+        let data_messages = Self::event_attachments(
+            &event,
+            attachment_target,
+            attachments,
+            &group,
+            &subscription_id,
+        )?;
         let notification = crate::api::proto::Notification {
             event: Some(crate::api::proto::notification::Event::LiveEvent(event)),
         };
@@ -1090,6 +1052,74 @@ impl ApiMediaRuntime {
             .expect("validated control notification byte sum must fit");
         self.control_notifications.push_back(notification);
         Ok(())
+    }
+
+    fn event_attachments(
+        event: &crate::api::proto::Event,
+        target: Option<DataChannelTarget>,
+        attachments: Vec<(String, Arc<[u8]>)>,
+        group: &str,
+        subscription: &str,
+    ) -> anyhow::Result<Vec<OutboundDataMessage>> {
+        anyhow::ensure!(
+            attachments.len() <= 32 && (target.is_some() == !attachments.is_empty()),
+            "live event attachment route and bytes are inconsistent"
+        );
+        let mut remaining = API_EVENT_ATTACHMENT_MAX_BYTES;
+        let mut ids = std::collections::BTreeSet::new();
+        let mut messages = Vec::new();
+        for (id, bytes) in attachments {
+            anyhow::ensure!(
+                !bytes.is_empty() && bytes.len() <= remaining && ids.insert(id.clone()),
+                "live event attachments exceed bounds or repeat an ID"
+            );
+            remaining -= bytes.len();
+            let mut descriptors = event
+                .attachments
+                .iter()
+                .filter(|descriptor| descriptor.attachment_id == id);
+            let descriptor = descriptors
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("live event attachment descriptor is missing"))?;
+            anyhow::ensure!(
+                descriptors.next().is_none() && descriptor.byte_len == Some(bytes.len() as u64),
+                "live event image bytes do not match their descriptor"
+            );
+            messages.extend(Self::event_image_chunks(
+                event,
+                descriptor,
+                &bytes,
+                target.expect("image route was validated"),
+                group,
+                subscription,
+            )?);
+        }
+        Ok(messages)
+    }
+
+    fn event_image_chunks(
+        event: &crate::api::proto::Event,
+        descriptor: &crate::api::proto::EventAttachmentDescriptor,
+        bytes: &[u8],
+        target: DataChannelTarget,
+        group: &str,
+        subscription: &str,
+    ) -> anyhow::Result<Vec<OutboundDataMessage>> {
+        let chunk_count = u32::try_from(bytes.len().div_ceil(API_EVENT_ATTACHMENT_CHUNK_BYTES))?;
+        Ok(bytes.chunks(API_EVENT_ATTACHMENT_CHUNK_BYTES).enumerate().map(|(chunk_index, payload)| OutboundDataMessage {
+            target,
+            group: group.to_owned(),
+            message: crate::api::proto::Message {
+                message: Some(crate::api::proto::message::Message::Event(crate::api::proto::EventMessage {
+                    message: Some(crate::api::proto::event_message::Message::Attachment(crate::api::proto::EventAttachmentChunk {
+                        context: Some(crate::api::proto::event_attachment_chunk::Context::SubscriptionId(subscription.to_owned())),
+                        event_id: event.event_id.clone(), revision: event.revision,
+                        attachment_id: descriptor.attachment_id.clone(), attachment_type: descriptor.attachment_type.clone(), content_type: descriptor.content_type.clone(), ordinal: descriptor.ordinal, timestamp: descriptor.timestamp,
+                        sequence: 1, chunk_index: u32::try_from(chunk_index).expect("bounded image chunk count fits u32"), chunk_count, payload: payload.to_vec(),
+                    })),
+                })),
+            },
+        }).collect())
     }
 
     fn validate_control_notification(
@@ -2348,10 +2378,20 @@ impl WebRtc {
             .sessions
             .api_control(session_id)
             .ok_or_else(|| anyhow::anyhow!("API WebRTC session is unavailable"))?;
-        match control
-            .data_tx
-            .try_send(ApiSessionCommand::Notification(Box::new(notification)))
-        {
+        let command = if matches!(
+            notification.event,
+            Some(crate::api::proto::notification::Event::InitialCapabilities(
+                _
+            ))
+        ) {
+            ApiSessionCommand::Capabilities {
+                notification: Box::new(notification),
+                control: Arc::downgrade(&control),
+            }
+        } else {
+            ApiSessionCommand::Notification(Box::new(notification))
+        };
+        match control.data_tx.try_send(command) {
             Ok(()) => {
                 if let Err(error) = control.poller.notify() {
                     control.close();
@@ -2395,6 +2435,12 @@ impl WebRtc {
                     .as_ref()
                     .map_or(0, |bytes| bytes.len()),
             )
+            .and_then(|bytes| {
+                delivery
+                    .additional_attachments
+                    .iter()
+                    .try_fold(bytes, |total, (_, bytes)| total.checked_add(bytes.len()))
+            })
             .ok_or_else(|| {
                 self.live
                     .inner
@@ -3319,12 +3365,28 @@ fn drain_api_session_commands(data_rx: &Receiver<ApiSessionCommand>, media: &mut
                     tracing::warn!(%error, "dropping control notification at its queue limit");
                 }
             }
+            ApiSessionCommand::Capabilities {
+                notification,
+                control,
+            } => {
+                if let Err(error) = media.enqueue_control_notification(*notification) {
+                    if let Some(control) = control.upgrade() {
+                        control.close();
+                    }
+                    tracing::warn!(%error, "closing API session after capability snapshot queue failure");
+                    break;
+                }
+            }
             ApiSessionCommand::Event {
                 delivery,
                 reservation,
                 control,
             } => {
-                let result = if delivery.guard.is_active() {
+                let result = if delivery.guard.is_active()
+                    && control
+                        .upgrade()
+                        .is_some_and(|control| !control.shutdown.load(Ordering::Acquire))
+                {
                     media.enqueue_event(*delivery)
                 } else {
                     Ok(())
@@ -5651,6 +5713,7 @@ mod tests {
                 event: event.clone(),
                 attachment_target: Some(DataChannelTarget::Reliable),
                 attachment_bytes: Some(Arc::from(payload.clone())),
+                additional_attachments: Vec::new(),
                 guard: EventDeliveryGuard::default(),
             })
             .unwrap();
@@ -5691,6 +5754,65 @@ mod tests {
         assert_eq!(media.control_notification_bytes, 0);
         assert!(media.outbound.is_empty());
         assert_eq!(media.outbound_bytes, 0);
+    }
+
+    #[test]
+    fn isapi_event_delivery_sends_each_correlated_attachment_once() {
+        let mut media = ApiMediaRuntime::default();
+        let payloads = [vec![1_u8; 5], vec![2_u8; 7]];
+        let descriptors = payloads
+            .iter()
+            .enumerate()
+            .map(
+                |(index, bytes)| crate::api::proto::EventAttachmentDescriptor {
+                    attachment_id: format!("snapshot-{index}"),
+                    attachment_type: "snapshot".to_owned(),
+                    content_type: "image/jpeg".to_owned(),
+                    byte_len: Some(bytes.len() as u64),
+                    ordinal: index as u32,
+                    ..Default::default()
+                },
+            )
+            .collect();
+        let event = crate::api::proto::Event {
+            event_id: "isapi-multi-image".to_owned(),
+            revision: 1,
+            source_id: "camera".to_owned(),
+            subscription_id: Some("events-1".to_owned()),
+            attachments: descriptors,
+            canonical_attachment_id: Some("snapshot-0".to_owned()),
+            ..Default::default()
+        };
+        media
+            .enqueue_event(OutboundEventDelivery {
+                event,
+                attachment_target: Some(DataChannelTarget::Reliable),
+                attachment_bytes: Some(Arc::from(payloads[0].clone())),
+                additional_attachments: vec![(
+                    "snapshot-1".to_owned(),
+                    Arc::from(payloads[1].clone()),
+                )],
+                guard: EventDeliveryGuard::default(),
+            })
+            .unwrap();
+        assert_eq!(media.control_notifications.len(), 1);
+        let mut images = std::collections::BTreeMap::new();
+        for queued in &media.outbound {
+            let QueuedApiData::Message(queued) = queued else {
+                panic!("expected attachment chunk")
+            };
+            let message = crate::api::proto::Message::decode(queued.payload.as_slice()).unwrap();
+            let Some(crate::api::proto::message::Message::Event(event)) = message.message else {
+                panic!("expected event")
+            };
+            let Some(crate::api::proto::event_message::Message::Attachment(chunk)) = event.message
+            else {
+                panic!("expected attachment")
+            };
+            assert!(images.insert(chunk.attachment_id, chunk.payload).is_none());
+        }
+        assert_eq!(images["snapshot-0"], payloads[0]);
+        assert_eq!(images["snapshot-1"], payloads[1]);
     }
 
     #[test]
@@ -5749,6 +5871,7 @@ mod tests {
                 },
                 attachment_target: None,
                 attachment_bytes: None,
+                additional_attachments: Vec::new(),
                 guard: EventDeliveryGuard::default(),
             })
             .unwrap();
@@ -5851,6 +5974,7 @@ mod tests {
             },
             attachment_target: None,
             attachment_bytes: None,
+            additional_attachments: Vec::new(),
             guard: EventDeliveryGuard::default(),
         };
 
@@ -5928,6 +6052,7 @@ mod tests {
                         },
                         attachment_target: None,
                         attachment_bytes: None,
+                        additional_attachments: Vec::new(),
                         guard: EventDeliveryGuard::default(),
                     },
                 )
@@ -5957,6 +6082,7 @@ mod tests {
                     event: crate::api::proto::Event::default(),
                     attachment_target: None,
                     attachment_bytes: None,
+                    additional_attachments: Vec::new(),
                     guard: EventDeliveryGuard::default(),
                 }),
                 reservation: PendingEventReservation {

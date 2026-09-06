@@ -19,6 +19,8 @@ const JPEG_QUALITY: u8 = 82;
 const PUBLISHED_IMAGE_DIMENSION_MAX: u32 = 8_192;
 const PUBLISHED_IMAGE_ALLOCATION_MAX: u64 = 64 * 1024 * 1024;
 
+mod native;
+
 #[derive(Clone)]
 pub struct EventStore {
     catalog: RecordingCatalogHandle,
@@ -377,15 +379,19 @@ fn encode_jpeg(image: &DynamicImage) -> anyhow::Result<Vec<u8>> {
     Ok(encoded)
 }
 
-fn validate_published_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
+pub(crate) fn jpeg_dimensions(jpeg: &[u8]) -> anyhow::Result<(u32, u32)> {
     let mut reader = image::ImageReader::with_format(Cursor::new(jpeg), ImageFormat::Jpeg);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(PUBLISHED_IMAGE_DIMENSION_MAX);
     limits.max_image_height = Some(PUBLISHED_IMAGE_DIMENSION_MAX);
     limits.max_alloc = Some(PUBLISHED_IMAGE_ALLOCATION_MAX);
     reader.limits(limits);
-    reader.decode()?;
-    Ok(())
+    let decoded = reader.decode()?;
+    Ok((decoded.width(), decoded.height()))
+}
+
+fn validate_published_jpeg(jpeg: &[u8]) -> anyhow::Result<()> {
+    jpeg_dimensions(jpeg).map(|_| ())
 }
 
 fn published_image_fingerprint(

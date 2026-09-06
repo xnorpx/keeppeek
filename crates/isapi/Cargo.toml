@@ -1,0 +1,33 @@
+[package]
+name = "isapi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+description = "Sans-I/O Hikvision ISAPI protocol with an optional ureq adapter"
+repository = "https://github.com/xnorpx/keeppeek"
+
+[features]
+default = ["ureq"]
+ureq = ["dep:ureq", "dep:rand"]
+
+[dependencies]
+chrono = { workspace = true }
+digest_auth = { workspace = true }
+encoding_rs = { workspace = true }
+httparse = { workspace = true }
+mime = { workspace = true }
+rand = { workspace = true, features = ["thread_rng"], optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+subtle = { workspace = true }
+ureq = { workspace = true, features = ["native-tls"], optional = true }
+url = { workspace = true }
+xml = { workspace = true }
+
+[dev-dependencies]
+test-hikvision = { workspace = true }
+
+[lints]
+workspace = true

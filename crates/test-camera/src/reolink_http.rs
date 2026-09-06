@@ -142,7 +142,15 @@ fn handle_request(request: &Request, state: &ReolinkHttpState) -> Response {
             }
         }),
         "GetMdState" => json!({
-            "state": u8::from(*state.motion_enabled.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+            "state": 0
+        }),
+        "GetAlarm" => json!({
+            "Alarm": {
+                "channel": 0, "type": "md",
+                "enable": u8::from(*state.motion_enabled.lock().unwrap_or_else(|poisoned| poisoned.into_inner())),
+                "sens": [{ "id": 0, "sensitivity": 37 }],
+                "scope": { "area": "retained" }
+            }
         }),
         "SetAlarm" => match requested_motion_state(&payload) {
             Some(enabled) => {

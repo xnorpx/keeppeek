@@ -4461,17 +4461,30 @@ async fn detach_event_thumbnail_file(
 async fn event_thumbnail_filenames(connection: &turso::Connection) -> anyhow::Result<Vec<String>> {
     let mut rows = connection
         .query(
-            "SELECT thumbnail_filename
+            "SELECT id, source, thumbnail_filename, attachments_json
              FROM recording_events
-             WHERE thumbnail_filename IS NOT NULL
+             WHERE thumbnail_filename IS NOT NULL OR (source = 'camera' AND attachments_json LIKE '%isapi-%')
              ORDER BY thumbnail_filename",
             (),
         )
         .await?;
     let mut filenames = Vec::new();
     while let Some(row) = rows.next().await? {
-        filenames.push(row.get(0)?);
+        if let Some(filename) = row.get::<Option<String>>(2)? {
+            filenames.push(filename);
+        }
+        if row.get::<String>(1)? == "camera" {
+            let event_id = row.get::<String>(0)?;
+            let attachments: Vec<EventAttachment> = serde_json::from_str(&row.get::<String>(3)?)?;
+            for attachment in attachments {
+                if attachment.id.starts_with("isapi-") {
+                    filenames.push(format!("{event_id}--{}.jpg", attachment.id));
+                }
+            }
+        }
     }
+    filenames.sort_unstable();
+    filenames.dedup();
     Ok(filenames)
 }
 

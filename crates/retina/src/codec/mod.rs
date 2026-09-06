@@ -113,6 +113,9 @@ pub mod h265;
 pub(crate) mod onvif;
 pub(crate) mod simple_audio;
 
+#[doc(inline)]
+pub use onvif::CompressionType;
+
 /// Configuration options controlling how depacketized frames are formatted.
 ///
 /// Supplied via [`SetupOptions::frame_format`](crate::client::SetupOptions::frame_format).
@@ -631,7 +634,15 @@ impl std::fmt::Debug for AudioFrame {
 
 /// Parameters which describe a message stream, for `application` media types.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct MessageParameters(onvif::CompressionType);
+pub struct MessageParameters(CompressionType);
+
+impl MessageParameters {
+    /// Returns the advertised encoding without decoding the message payload.
+    #[inline]
+    pub const fn compression_type(&self) -> CompressionType {
+        self.0
+    }
+}
 
 /// A single message, for `application` media types.
 #[derive(Eq, PartialEq)]
@@ -845,8 +856,13 @@ impl Depacketizer {
         channels: Option<NonZeroU16>,
         format_specific_params: Option<&str>,
     ) -> Result<Self, String> {
-        use onvif::CompressionType;
-
+        if media == "application"
+            && let Some(compression_type) = onvif::compression_type(encoding_name)
+        {
+            return Ok(Self(DepacketizerInner::Onvif(Box::new(
+                onvif::Depacketizer::new(compression_type),
+            ))));
+        }
         // RTP Payload Format Media Types
         // https://www.iana.org/assignments/rtp-parameters/rtp-parameters.xhtml#rtp-parameters-2
         Ok(Self(match (media, encoding_name) {
@@ -891,18 +907,6 @@ impl Depacketizer {
             ("audio", "g723") => {
                 DepacketizerInner::G723(Box::new(g723::Depacketizer::new(clock_rate)?))
             }
-            ("application", "vnd.onvif.metadata") => DepacketizerInner::Onvif(Box::new(
-                onvif::Depacketizer::new(CompressionType::Uncompressed),
-            )),
-            ("application", "vnd.onvif.metadata.gzip") => DepacketizerInner::Onvif(Box::new(
-                onvif::Depacketizer::new(CompressionType::GzipCompressed),
-            )),
-            ("application", "vnd.onvif.metadata.exi.onvif") => DepacketizerInner::Onvif(Box::new(
-                onvif::Depacketizer::new(CompressionType::ExiDefault),
-            )),
-            ("application", "vnd.onvif.metadata.exi.ext") => DepacketizerInner::Onvif(Box::new(
-                onvif::Depacketizer::new(CompressionType::ExiInBand),
-            )),
             (_, _) => {
                 log::info!("no depacketizer for media/encoding_name {media}/{encoding_name}");
                 return Err(format!(

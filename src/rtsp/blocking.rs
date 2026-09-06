@@ -587,6 +587,9 @@ impl RtspLoop {
             ) {
                 Ok(()) => break,
                 Err(error) => {
+                    self.health
+                        .events
+                        .metadata_lost(self.camera_ip, self.stream);
                     stats.on_error();
                     let _ = self.tx.send(KeepPeekEvent::StreamError {
                         camera_ip: self.camera_ip,
@@ -605,6 +608,9 @@ impl RtspLoop {
                 }
             }
         }
+        self.health
+            .events
+            .metadata_lost(self.camera_ip, self.stream);
     }
 
     fn run_stream(
@@ -801,7 +807,23 @@ impl RtspLoop {
                         }
                     }
                 }
-                CodecItem::MessageFrame(_) | CodecItem::Rtcp(_) => {}
+                CodecItem::MessageFrame(frame) => {
+                    if let Some(ParametersRef::Message(parameters)) = driver
+                        .streams()
+                        .get(frame.stream_id())
+                        .and_then(retina::client::Stream::parameters)
+                    {
+                        self.health.events.metadata(
+                            self.camera_ip,
+                            self.stream,
+                            parameters.compression_type(),
+                            frame.loss(),
+                            frame.data(),
+                            Instant::now(),
+                        );
+                    }
+                }
+                CodecItem::Rtcp(_) => {}
                 _ => tracing::debug!("ignoring unsupported RTSP codec item"),
             }
         }

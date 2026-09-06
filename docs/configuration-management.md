@@ -95,3 +95,47 @@ KeepPeek does not expose a browser TOML editor or a general secret editor. The v
 supported settings, while direct TOML remains available for source-controlled automation and
 newer fields. This avoids promising comment-preserving raw edits that the structured writer cannot
 prove.
+
+## File-only camera event policy
+
+Per-camera event policy belongs in `[cameras.<name>.events]`. It is independent of the camera's
+video backend and is not exposed through the fixed protobuf settings contract or visual editor.
+
+```toml
+[cameras.front]
+ip = "192.0.2.10"
+
+[cameras.front.events]
+mode = "onvif-pullpoint"
+metadata_stream = "auto"
+event_service_url = "http://192.0.2.10/onvif/events"
+source_tokens = ["VideoSource_1"]
+include_topics = ["{http://www.onvif.org/ver10/topics}VideoSource/MotionAlarm"]
+exclude_topics = []
+snapshots = true
+```
+
+`mode` accepts `auto`, `vendor`, `onvif-pullpoint`, `rtsp-metadata`, or `disabled`.
+`metadata_stream` accepts `auto`, `enabled`, or `disabled`. An omitted policy defaults to both
+`auto` modes, snapshots enabled, no endpoint override, and empty token and filter lists.
+`onvif-push` is unsupported and fails deserialization.
+
+`source_tokens` contains exact source or channel identifiers assigned to this camera. It accepts
+at most 32 entries of 256 UTF-8 bytes each. An empty list leaves explicit mapping unspecified.
+Include and exclude filters share a maximum of 32 entries, each at most 1024 UTF-8 bytes. Entries
+cannot be empty, whitespace-only, or contain control characters. Source tokens retain their exact
+text. Topic filters use an expanded root namespace followed by local path names, as in the
+example; prefixes such as `tns1:VideoSource/MotionAlarm` are not accepted.
+
+An explicit event service URL must use HTTP(S) and the exact configured camera IP. Validation
+does not resolve DNS or contact the device. Credentials, queries, fragments, port zero, wildcard
+addresses, multicast addresses, and foreign hosts are rejected. Secret references resolve before
+validation and remain references when a loaded camera configuration is saved. Debug output omits
+URLs, tokens, and filter text.
+
+Default event policies are omitted from camera serialization so ordinary API camera updates
+retain the saved `events` table. Set or reset this policy through TOML, not the camera API. This
+configuration layer validates and preserves policy. Runtime activation that changes only the
+event policy or generic-motion retention replaces event workers without restarting media;
+direct file edits still require the existing activation/restart path. See
+[generic camera events](onvif-events.md) for worker behavior, telemetry, bounds, and hardware limits.

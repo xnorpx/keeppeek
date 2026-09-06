@@ -105,6 +105,9 @@ pub struct Config {
     #[serde(default)]
     pub(crate) event_forwarder: EventForwarderConfig,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) isapi_callbacks: Option<crate::isapi::callbacks::Config>,
+
     #[serde(skip)]
     pub(crate) source: toml::Table,
 }
@@ -842,6 +845,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             operational_events: OperationalEventsConfig::default(),
             event_forwarder: EventForwarderConfig::default(),
+            isapi_callbacks: None,
             source: toml::Table::new(),
         }
     }
@@ -1620,6 +1624,21 @@ pub(crate) fn cameras_from_configuration_table(
 }
 
 fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Config> {
+    if let Some(sources) = root
+        .get("isapi_callbacks")
+        .and_then(|value| value.get("sources"))
+        .and_then(toml::Value::as_array)
+    {
+        for source in sources {
+            anyhow::ensure!(
+                source
+                    .get("password")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(contains_secret_reference),
+                "ISAPI callback passwords must use private secret references"
+            );
+        }
+    }
     let mut runtime = root.clone();
     for section in [
         "access_credentials",
@@ -1632,6 +1651,9 @@ fn config_from_table(root: &toml::Table, secrets: &Secrets) -> anyhow::Result<Co
     let mut resolved = toml::Value::Table(runtime);
     resolve_toml_secret_references(&mut resolved, secrets)?;
     let mut config: Config = resolved.try_into()?;
+    if let Some(callbacks) = &config.isapi_callbacks {
+        callbacks.validate()?;
+    }
     config.source = root.clone();
     Ok(config)
 }
@@ -1705,6 +1727,7 @@ fn cameras_from_table(
             let mut resolved = cam_value.clone();
             resolve_toml_secret_references(&mut resolved, secrets)?;
             let mut config: CameraConfig = resolved.try_into()?;
+            config.events.validate(config.ip)?;
             config.name = Some(cam_name.clone());
             if config.username.is_empty() {
                 config.username.clone_from(&defaults.username);
@@ -1784,6 +1807,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "notifications"
             | "peek_layouts"
             | "configuration_templates"
+            | "isapi_callbacks"
             | "camera_defaults"
             | STORAGE_MIGRATION_SECTION
     )
@@ -2142,14 +2166,33 @@ fn preserve_secret_reference(
     next: toml::Value,
     secrets: &Secrets,
 ) -> anyhow::Result<toml::Value> {
-    if let (Some(existing), Some(next_string)) =
-        (existing.and_then(toml::Value::as_str), next.as_str())
-        && contains_secret_reference(existing)
-        && resolve_secret_references_loaded(existing, secrets)? == next_string
-    {
-        return Ok(toml::Value::String(existing.to_owned()));
+    match (existing, next) {
+        (Some(toml::Value::Table(existing)), toml::Value::Table(next)) => {
+            let mut preserved = existing.clone();
+            for (key, value) in next {
+                let value = preserve_secret_reference(existing.get(&key), value, secrets)?;
+                preserved.insert(key, value);
+            }
+            Ok(toml::Value::Table(preserved))
+        }
+        (Some(toml::Value::Array(existing)), toml::Value::Array(next)) => {
+            let preserved = next
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    preserve_secret_reference(existing.get(index), value, secrets)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            Ok(toml::Value::Array(preserved))
+        }
+        (Some(toml::Value::String(existing)), toml::Value::String(next))
+            if contains_secret_reference(existing)
+                && resolve_secret_references_loaded(existing, secrets)? == next =>
+        {
+            Ok(toml::Value::String(existing.clone()))
+        }
+        (_, next) => Ok(next),
     }
-    Ok(next)
 }
 
 pub fn remove_camera(path: &Path, camera_ip: IpAddr) -> anyhow::Result<()> {
@@ -2162,6 +2205,22 @@ pub fn remove_camera(path: &Path, camera_ip: IpAddr) -> anyhow::Result<()> {
         .and_then(toml::Value::as_table_mut)
         .ok_or_else(|| anyhow::anyhow!("camera namespace {namespace} is not a table"))?
         .remove(&name);
+    if let Some(sources) = root
+        .get_mut("isapi_callbacks")
+        .and_then(|value| value.get_mut("sources"))
+        .and_then(toml::Value::as_array_mut)
+    {
+        sources.retain(|source| {
+            source
+                .get("ip")
+                .and_then(toml::Value::as_str)
+                .and_then(|ip| ip.parse::<IpAddr>().ok())
+                != Some(camera_ip)
+        });
+        if sources.is_empty() {
+            root.remove("isapi_callbacks");
+        }
+    }
     write_private_file_atomically(path, toml::to_string_pretty(&root)?.as_bytes())?;
     Ok(())
 }
@@ -2559,6 +2618,135 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn camera_event_policy_survives_loading() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-event-policy-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [cameras.front]
+                ip = "192.0.2.10"
+
+                [cameras.front.events]
+                mode = "onvif-pullpoint"
+                metadata_stream = "disabled"
+                event_service_url = "http://192.0.2.10/onvif/events"
+                source_tokens = ["channel-1"]
+                snapshots = false
+            "#,
+        )
+        .unwrap();
+
+        let cameras = load_cameras(&path).unwrap();
+        let serialized = toml::Value::try_from(&cameras["cameras"][0]).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+
+        assert_eq!(
+            serialized
+                .get("events")
+                .and_then(|events| events.get("mode")),
+            Some(&toml::Value::String("onvif-pullpoint".to_owned()))
+        );
+    }
+
+    #[test]
+    fn camera_event_policy_rejects_foreign_url_on_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-camera-event-policy-invalid-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = directory.join("config.toml");
+        write_private_file(
+            &path,
+            br#"
+                [cameras.front]
+                ip = "192.0.2.10"
+
+                [cameras.front.events]
+                event_service_url = "http://198.51.100.20/private-event-path"
+            "#,
+        )
+        .unwrap();
+
+        let result = load_cameras(&path);
+        std::fs::remove_dir_all(directory).unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("event"));
+        assert!(!error.contains("private-event-path"));
+    }
+
+    #[test]
+    fn camera_event_policy_upsert_preserves_nested_secret_references() {
+        let (path, expected) = camera_event_policy_fixture();
+        let mut camera = load_cameras(&path).unwrap()["cameras"][0].clone();
+        camera.display_name = Some("Front entrance".to_owned());
+        upsert_camera(&path, &camera).unwrap();
+        let saved = load_configuration_table(&path).unwrap();
+        let reloaded = load_cameras(&path).unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+
+        assert_eq!(saved["cameras"]["front"]["events"], expected);
+        assert_eq!(reloaded["cameras"][0].events, camera.events);
+        let persisted = toml::to_string(&saved).unwrap();
+        assert!(!persisted.contains("private-event-path"));
+        assert!(!persisted.contains("private-channel-token"));
+    }
+
+    #[test]
+    fn camera_event_policy_legacy_upsert_preserves_saved_policy() {
+        let (path, expected) = camera_event_policy_fixture();
+        let legacy: CameraConfig =
+            toml::from_str("ip = '192.0.2.10'\ndisplay_name = 'Updated by API'").unwrap();
+        upsert_camera(&path, &legacy).unwrap();
+        let saved = load_configuration_table(&path).unwrap();
+        let reloaded = load_cameras(&path).unwrap();
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+
+        assert_eq!(saved["cameras"]["front"]["events"], expected);
+        assert_eq!(
+            reloaded["cameras"][0].display_name(),
+            Some("Updated by API")
+        );
+        assert_eq!(
+            reloaded["cameras"][0].events.mode,
+            crate::cameras::events::EventMode::Vendor
+        );
+    }
+
+    fn camera_event_policy_fixture() -> (PathBuf, toml::Value) {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "keeppeek-camera-event-upsert-{}",
+                uuid::Uuid::new_v4()
+            ))
+            .join("config.toml");
+        let text = r#"
+            [cameras.front]
+            ip = "192.0.2.10"
+
+            [cameras.front.events]
+            mode = "vendor"
+            metadata_stream = "enabled"
+            event_service_url = "http://192.0.2.10/{secret:ISSUE96_EVENT_PATH|url}"
+            source_tokens = ["{secret:ISSUE96_SOURCE_TOKEN}", "channel-2"]
+            include_topics = ["{http://www.onvif.org/ver10/topics}VideoSource/MotionAlarm"]
+            exclude_topics = []
+            snapshots = false
+        "#;
+        write_private_file(&path, text.as_bytes()).unwrap();
+        write_private_file(
+            &secrets_path(&path),
+            b"ISSUE96_EVENT_PATH = 'private-event-path'\nISSUE96_SOURCE_TOKEN = 'private-channel-token'",
+        )
+        .unwrap();
+        let root: toml::Table = toml::from_str(text).unwrap();
+        (path, root["cameras"]["front"]["events"].clone())
     }
 
     #[test]
@@ -3540,6 +3728,7 @@ mod tests {
         )
         .unwrap();
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.10".parse().unwrap(),
             name: Some("ignored".to_owned()),
             display_name: Some("Back Yard".to_owned()),
