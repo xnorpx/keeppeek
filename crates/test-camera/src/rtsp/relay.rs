@@ -91,6 +91,16 @@ struct Peer {
     write_buffer: Vec<u8>,
 }
 
+impl Drop for Peer {
+    fn drop(&mut self) {
+        if let Err(error) = self.stream.shutdown(std::net::Shutdown::Both)
+            && error.kind() != io::ErrorKind::NotConnected
+        {
+            tracing::debug!(%error, "metadata RTSP socket shutdown failed");
+        }
+    }
+}
+
 impl Peer {
     fn new(stream: TcpStream) -> anyhow::Result<Self> {
         stream.set_nonblocking(false)?;
