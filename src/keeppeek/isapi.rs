@@ -60,30 +60,22 @@ impl KeepPeekLoop {
                 (event, Trigger::EventUpdated)
             }
             KeepPeekEvent::TimelineEventEnded { id, end_time_ms } => {
-                let Some(existing) = events.event_by_id(&id)? else {
+                let Some(event) = events.close_native_event(&id, end_time_ms)? else {
                     return Ok(());
                 };
-                if existing.end_time_ms.is_some() {
-                    return Ok(());
-                }
-                events.close(&id, end_time_ms)?;
-                match events.event_by_id(&id) {
-                    Ok(Some(event)) => (event, Trigger::EventEnded),
-                    _ => {
-                        tracing::warn!(event_id = %id, "ISAPI close committed but its live revision could not be loaded");
-                        return Ok(());
-                    }
-                }
+                (event, Trigger::EventEnded)
             }
             _ => anyhow::bail!("invalid ISAPI callback transition"),
         };
         if let Some(storage) = &self.storage {
             storage.note_camera_event(&event.camera_id);
         }
-        let image = events
-            .thumbnail_path(&event.camera_id, &event.id)
-            .ok()
-            .flatten();
+        let image = event.thumbnail_filename.as_ref().and_then(|_| {
+            events
+                .thumbnail_path(&event.camera_id, &event.id)
+                .ok()
+                .flatten()
+        });
         self.publish_event_revision(
             &event,
             trigger,

@@ -91,6 +91,15 @@ impl EventStore {
         self.catalog.close_event(id, end_time_ms)
     }
 
+    /// Returns the committed ending, or no revision for a missing or already closed event.
+    pub(crate) fn close_native_event(
+        &self,
+        id: &str,
+        end_time_ms: i64,
+    ) -> anyhow::Result<Option<TimelineEvent>> {
+        self.catalog.close_native_event(id, end_time_ms)
+    }
+
     pub fn events_in_range(
         &self,
         camera_id: &str,
