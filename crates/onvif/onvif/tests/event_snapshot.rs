@@ -37,12 +37,8 @@ fn wire_reply(headers: &str, body: &[u8]) -> Reply {
     Reply::raw(bytes)
 }
 
-fn paced_reply(headers: &str, body: &[u8]) -> Reply {
-    let mut reply = wire_reply(headers, &[]);
-    for chunk in body.chunks(8192) {
-        reply = reply.then(Duration::from_millis(1), chunk.to_vec());
-    }
-    reply
+fn fragmented_reply(headers: &str, body: &[u8]) -> Reply {
+    wire_reply(headers, body).fragmented(8192).unwrap()
 }
 
 fn challenge(nonce: &str, qop: &str, stale: bool) -> Vec<u8> {
@@ -249,14 +245,14 @@ fn snapshot_enforces_the_inclusive_one_mib_limit_with_and_without_a_length() {
         } else {
             "Content-Type: image/jpeg\r\n".to_owned()
         };
-        fake.enqueue(paced_reply(&headers, &body)).unwrap();
+        fake.enqueue(fragmented_reply(&headers, &body)).unwrap();
         let jpeg = client.snapshot(&endpoint, Duration::from_secs(1)).unwrap();
         assert!(jpeg == body);
     }
     body.insert(2, 0);
     for reply in [
         Reply::http(200, "image/jpeg", &body),
-        paced_reply("Content-Type: image/jpeg\r\n", &body).hold_open(),
+        fragmented_reply("Content-Type: image/jpeg\r\n", &body).hold_open(),
     ] {
         fake.enqueue(reply).unwrap();
         let error = rejected(client.snapshot(&endpoint, Duration::from_secs(1)));
@@ -287,6 +283,23 @@ fn snapshot_accepts_chunked_jpeg_without_other_transfer_codings() {
     .unwrap();
     let jpeg = client.snapshot(&endpoint, Duration::from_secs(1)).unwrap();
     assert!(jpeg == expected);
+}
+
+#[test]
+fn snapshot_rejects_the_first_excess_byte_without_waiting_for_eof() {
+    let fake = FakeHikvision::builder().start().unwrap();
+    let (mut client, endpoint) = setup(&fake, "test");
+    let mut body = vec![0; 1024 * 1024 + 1];
+    body[..2].copy_from_slice(&[0xff, 0xd8]);
+    let length = body.len();
+    body[length - 2..].copy_from_slice(&[0xff, 0xd9]);
+    fake.enqueue(wire_reply("Content-Type: image/jpeg\r\n", &body).hold_open())
+        .unwrap();
+    let started = Instant::now();
+    let error = rejected(client.snapshot(&endpoint, Duration::from_secs(1)));
+    assert_eq!(error.to_string(), "invalid ONVIF event protocol response");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(fake.requests().len(), 1);
 }
 
 #[test]
@@ -491,8 +504,7 @@ fn snapshot_uses_one_deadline_across_challenges_and_the_body() {
     let (mut client, endpoint) = setup(&fake, "test");
     for (nonce, stale) in [("expired", false), (FAKE_NONCE, true)] {
         fake.enqueue(
-            Reply::raw(Vec::new())
-                .then(Duration::from_millis(100), challenge(nonce, "auth", stale)),
+            Reply::raw(Vec::new()).then(Duration::from_millis(75), challenge(nonce, "auth", stale)),
         )
         .unwrap();
     }
