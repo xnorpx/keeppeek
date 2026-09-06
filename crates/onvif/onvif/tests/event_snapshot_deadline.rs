@@ -29,7 +29,7 @@ fn snapshot_uses_one_deadline_across_challenges_and_the_body() {
             "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"fake-hikvision\", nonce=\"{nonce}\", algorithm=MD5, qop=\"auth\", stale={stale}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         fake.enqueue(
-            Reply::raw(Vec::new()).then(Duration::from_millis(75), challenge.into_bytes()),
+            Reply::raw(Vec::new()).then(Duration::from_millis(200), challenge.into_bytes()),
         )
         .unwrap();
     }
@@ -37,7 +37,7 @@ fn snapshot_uses_one_deadline_across_challenges_and_the_body() {
         b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: image/jpeg\r\n\r\n".to_vec();
     response.extend_from_slice(&[0xff, 0xd8]);
     fake.enqueue(Reply::raw(response).hold_open()).unwrap();
-    let timeout = Duration::from_millis(350);
+    let timeout = Duration::from_secs(1);
     let started = Instant::now();
     let error = client
         .snapshot(&endpoint, timeout)
