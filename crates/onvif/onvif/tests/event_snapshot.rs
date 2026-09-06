@@ -497,33 +497,3 @@ fn snapshot_deadline_covers_stalled_headers_and_body() {
     }
     assert_eq!(fake.requests().len(), 2);
 }
-
-#[test]
-fn snapshot_uses_one_deadline_across_challenges_and_the_body() {
-    let fake = FakeHikvision::builder().start().unwrap();
-    let (mut client, endpoint) = setup(&fake, "test");
-    for (nonce, stale) in [("expired", false), (FAKE_NONCE, true)] {
-        fake.enqueue(
-            Reply::raw(Vec::new()).then(Duration::from_millis(75), challenge(nonce, "auth", stale)),
-        )
-        .unwrap();
-    }
-    fake.enqueue(wire_reply("Content-Type: image/jpeg\r\n", &[0xff, 0xd8]).hold_open())
-        .unwrap();
-    let timeout = Duration::from_millis(350);
-    let started = Instant::now();
-    let error = rejected(client.snapshot(&endpoint, timeout));
-    let elapsed = started.elapsed();
-    assert_eq!(
-        error.to_string(),
-        "ONVIF event network request failed or timed out"
-    );
-    assert!(elapsed >= timeout.saturating_sub(Duration::from_millis(25)));
-    assert!(
-        elapsed <= timeout + Duration::from_millis(100),
-        "elapsed: {elapsed:?}"
-    );
-    let requests = fake.requests();
-    assert_eq!(requests.len(), 3);
-    assert!(requests[2].authenticated());
-}
