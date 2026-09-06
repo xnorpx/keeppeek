@@ -273,7 +273,9 @@ impl Decoder {
     fn read_boundary(&mut self) -> Result<bool, Error> {
         let padding = self
             .buffer
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .take_while(|pair| *pair == b"\r\n")
             .count()
             * 2;

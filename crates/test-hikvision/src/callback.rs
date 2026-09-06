@@ -63,11 +63,13 @@ impl FakeHikvision {
             .max_redirects(0)
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(5)))
+            .timeout_await_100(Some(Duration::from_secs(1)))
             .build()
             .new_agent();
         let response = agent
             .post(destination)
             .header("content-type", media_type)
+            .header("expect", "100-continue")
             .send(body)?;
         if response.status().as_u16() != 401 {
             return Ok(CallbackResponse {
@@ -92,9 +94,67 @@ impl FakeHikvision {
             .post(destination)
             .header("content-type", media_type)
             .header("authorization", authorization)
+            .header("expect", "100-continue")
             .send(body)?;
         Ok(CallbackResponse {
             status: response.status().as_u16(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn callback_rejection_is_received_before_any_body_upload() {
+        let receiver = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = receiver.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = receiver.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut socket);
+            let mut headers = String::new();
+            for _ in 0..33 {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                headers.push_str(&line);
+                assert!(headers.len() <= 16 * 1024);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("expect: 100-continue\r\n")
+            );
+            assert!(
+                reader.buffer().is_empty(),
+                "body must wait for receiver admission"
+            );
+            socket
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let camera = FakeHikvision::builder().start().unwrap();
+        let response = camera.post_callback(
+            &format!("http://{address}/events"),
+            "application/json",
+            &vec![b' '; 512 * 1024],
+            "test",
+            "test",
+        );
+        server.join().unwrap();
+        assert_eq!(response.unwrap().status(), 400);
     }
 }
