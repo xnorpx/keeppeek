@@ -35,7 +35,15 @@ RTSP metadata -> shared capability/health -> integration and evidence.
 
 ## Verification checkpoint
 
-The final complete canonical gate passes: 2,157 Rust tests, including the 100
+The combined implementation is published in [draft PR #221](https://github.com/xnorpx/keeppeek/pull/221)
+on `feat/isapi-onvif-events`. The upstream integration retains camera permissions,
+configuration ownership, backup metrics, and Home Assistant support. The merged
+canonical gate at `be58e3a` passes 2,248 Rust, 266 Bun, 127 browser/visual,
+57 compatibility, and 204 Playwright tests, with 20 existing Rust and two codec
+skips. Log: `target/pr221-merged-check-2.log`. Final CI status is recorded on the
+[PR checks page](https://github.com/xnorpx/keeppeek/pull/221/checks).
+
+The pre-integration complete canonical gate passes: 2,157 Rust tests, including the 100
 native runtime tests, with 19 existing skips; 222 Bun, 110 browser/visual,
 28 compatibility, and 189 Playwright tests, with two existing codec skips.
 Strict workspace Clippy, dependency, format, registry, and UI static checks pass.
@@ -51,8 +59,8 @@ results and the unverified hardware/CI requirements.
 
 - [x] Review and regress receipt-time fallback, class-conflicting duplicate backing,
       queue saturation, and metadata-owner handoff.
-- [x] Preserve staged ISAPI work and protected `api/`; no branch, commit, push, PR,
-      or issue-closing operation has been performed.
+- [x] Commit and push the combined implementation without discarding staged work;
+      preserve protected `api/` relative to upstream and open one draft PR.
 - [x] Final protocol feature/doctest checks.
 - [x] Final complete canonical gate.
 - [x] Final-build performance confirmation and acceptance-criteria evidence table.
@@ -80,6 +88,6 @@ results and the unverified hardware/CI requirements.
 ONVIF push is conditional in #96: add it only when hardware testing demonstrates
 a need. New external-CV provisioning is not required for native ingestion; preserve
 and test the existing publication contract. These optional phases are not silently
-counted as implemented. The broad physical-device matrix, final-head CI and a
-published combined PR remain unverified until actually performed. No issue will be
+counted as implemented. The broad physical-device matrix and successful final-head
+CI remain separate qualification requirements. No issue will be
 closed solely because local fixtures pass.

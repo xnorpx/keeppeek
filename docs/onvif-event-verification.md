@@ -1,9 +1,40 @@
 # Native event acceptance evidence
 
 This record maps the implementation to issue [#96](https://github.com/xnorpx/keeppeek/issues/96)
-and the associated [ISAPI work](hikvision-isapi.md). It is a local working-tree
-record, not a published PR, successful final-head CI run, or physical-camera
-certification. The protected `api/` contracts are unchanged.
+and the associated [ISAPI work](hikvision-isapi.md), published together in
+[draft PR #221](https://github.com/xnorpx/keeppeek/pull/221). This is implementation
+and test evidence, not physical-camera certification. The protected `api/`
+contracts are unchanged relative to the integrated upstream main branch.
+
+## PR integration and CI
+
+The implementation was committed as `557b433` and merged with upstream main
+`4ac3efe` in `b4c4a43`. Upstream per-user camera permissions, backup and notification
+metrics, configuration ownership, camera groups, and Home Assistant support are
+retained. Both initial and event-triggered capability snapshots filter camera,
+live-source, and stored-source collections through current camera permissions.
+Every native delivery, including a capability-cache hit, rechecks session expiry
+and source access. Credential-bound expiry and restricted-snapshot tests cover
+this integration; production authorization was not relaxed for old test fixtures.
+
+The complete canonical gate passes for repair commit `be58e3a`, with the log in
+`target/pr221-merged-check-2.log`: 2,248 Rust tests, 266 Bun tests, 127 browser/visual
+tests, 57 compatibility tests, and 204 Playwright tests. The integrated upstream
+test set has 20 existing Rust skips and two codec-capability skips. Strict Clippy,
+formatting, dependency checks, UI checks, and Home Assistant checks pass.
+
+CI caught a Rust 1.98 chunk-iteration lint and Linux early callback rejection.
+The callback fixture now uses bounded `Expect: 100-continue`, and the server's
+automatic interim response omits final-response framing headers. The wire
+regression and all callback tests pass. Linux also exposed a metadata relay
+teardown case; `d69edb1` explicitly shuts down relay-owned sockets. The unchanged
+idle/playing wire tests and test-camera Clippy pass locally.
+
+Final cross-platform status and logs are linked from
+[PR #221 checks](https://github.com/xnorpx/keeppeek/pull/221/checks). A passing local
+gate does not substitute for a successful CI run on the final PR head. The
+hardware matrix and browser talkback limitations below remain open regardless
+of the CI result.
 
 ## Local gate
 
@@ -124,6 +155,8 @@ combined gate above supersedes that local checkpoint.
 Browser microphone routing remains unimplemented because the protected API has no
 camera speaker-session destination. Generic ONVIF push remains conditional on a
 demonstrated firmware need. No new inference service or model is provisioned.
-No branch, commit, push, published PR, issue edit, or issue closure has been made.
+The code is committed and pushed on `feat/isapi-onvif-events` in draft PR #221.
+No issue closure, merge to main, physical camera write, or release deployment
+has been performed.
 Final-head CI and the hardware matrix must be attached before treating either
 broad issue as fully complete.
