@@ -69,7 +69,7 @@ impl TaskPool {
     pub fn spawn(&self, code: Box<dyn FnMut() + Send>) {
         let mut queue = self.sharing.todo.lock().unwrap();
 
-        if self.sharing.waiting_tasks.load(Ordering::Acquire) == 0 {
+        if self.sharing.waiting_tasks.load(Ordering::Acquire) <= queue.len() {
             self.add_thread(Some(code));
         } else {
             queue.push_back(code);
@@ -133,5 +133,34 @@ impl Drop for TaskPool {
             .active_tasks
             .store(999_999_999, Ordering::Release);
         self.sharing.condvar.notify_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn queued_work_does_not_wait_for_a_reserved_idle_worker() {
+        let queued_task: Box<dyn FnMut() + Send> = Box::new(|| {});
+        let pool = TaskPool {
+            sharing: Arc::new(Sharing {
+                todo: Mutex::new(VecDeque::from([queued_task])),
+                condvar: Condvar::new(),
+                active_tasks: AtomicUsize::new(1),
+                waiting_tasks: AtomicUsize::new(1),
+            }),
+        };
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        pool.spawn(Box::new(move || {
+            started_tx.send(()).unwrap();
+        }));
+
+        let started = started_rx.recv_timeout(Duration::from_secs(1));
+        assert!(
+            started.is_ok(),
+            "queued work already reserves the idle worker; additional work needs another worker"
+        );
     }
 }
