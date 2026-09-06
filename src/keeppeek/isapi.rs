@@ -1,4 +1,4 @@
-use super::{KeepPeekEvent, KeepPeekLoop, NotificationStage, Trigger, unix_time_ms};
+use super::{KeepPeekEvent, KeepPeekLoop, NotificationStage, TimelineEvent, Trigger, unix_time_ms};
 
 impl KeepPeekLoop {
     pub(crate) fn configure_isapi_callbacks(
@@ -67,6 +67,18 @@ impl KeepPeekLoop {
             }
             _ => anyhow::bail!("invalid ISAPI callback transition"),
         };
+        self.publish_native_revision(&event, trigger)
+    }
+
+    pub(super) fn publish_native_revision(
+        &self,
+        event: &TimelineEvent,
+        trigger: Trigger,
+    ) -> anyhow::Result<()> {
+        let events = self
+            .events
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("native event storage is unavailable"))?;
         if let Some(storage) = &self.storage {
             storage.note_camera_event(&event.camera_id);
         }
@@ -77,7 +89,7 @@ impl KeepPeekLoop {
                 .flatten()
         });
         self.publish_event_revision(
-            &event,
+            event,
             trigger,
             NotificationStage::Enriched,
             image.as_deref(),

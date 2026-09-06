@@ -31,11 +31,29 @@ fn publish_video(state: &ServerState, camera_ip: IpAddr) {
     );
 }
 
+fn event_queue(state: &ServerState, session_id: SessionId, capacity: usize) -> ApiEventQueue {
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .entry(session_id)
+        .or_insert_with(local_test_session);
+    ApiEventQueue::new(&state.webrtc, session_id, capacity)
+}
+
+fn assert_snapshot(actual: &proto::ServerCapabilities, mut expected: proto::ServerCapabilities) {
+    if let (Some(actual), Some(expected)) = (&actual.access_session, &mut expected.access_session) {
+        assert!(expected.last_activity_at_ms >= actual.last_activity_at_ms);
+        expected.last_activity_at_ms = actual.last_activity_at_ms;
+    }
+    assert_eq!(actual, &expected);
+}
+
 #[test]
 fn new_native_kind_queues_complete_snapshot_before_event() {
     let state = live_state();
     let session_id = SessionId::from_u64(96);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     let handler = test_control_handler(state.clone());
     let initial = handler.initial_capabilities(session_id).unwrap();
     assert_eq!(
@@ -76,7 +94,7 @@ fn new_native_kind_queues_complete_snapshot_before_event() {
     else {
         panic!("the complete snapshot must precede the new event type");
     };
-    assert_eq!(snapshot, &handler.initial_capabilities(session_id).unwrap());
+    assert_snapshot(snapshot, handler.initial_capabilities(session_id).unwrap());
     let source = snapshot
         .source_sessions
         .iter()
@@ -120,7 +138,7 @@ fn native_event(kind: &str) -> TimelineEvent {
 fn capacity_one_sheds_the_subscription_without_sending_the_new_event() {
     let state = live_state();
     let session_id = SessionId::from_u64(97);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 1);
+    let queue = event_queue(&state, session_id, 1);
     subscribe(&state, session_id, "native-events");
 
     state.publish_camera_event(&native_event("digital_input"));
@@ -149,7 +167,7 @@ fn capacity_one_sheds_the_subscription_without_sending_the_new_event() {
 fn a_full_snapshot_queue_sheds_without_enqueuing_an_event() {
     let state = live_state();
     let session_id = SessionId::from_u64(98);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 1);
+    let queue = event_queue(&state, session_id, 1);
     assert!(
         state
             .webrtc
@@ -176,7 +194,7 @@ fn a_full_snapshot_queue_sheds_without_enqueuing_an_event() {
 fn downstream_snapshot_backpressure_never_allows_the_dependent_event() {
     let state = live_state();
     let session_id = SessionId::from_u64(99);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 2);
+    let queue = event_queue(&state, session_id, 2);
     subscribe(&state, session_id, "native-events");
     state.publish_camera_event(&native_event("digital_input"));
 
@@ -198,7 +216,7 @@ fn downstream_snapshot_backpressure_never_allows_the_dependent_event() {
 fn metadata_only_camera_waits_for_an_advertised_live_source() {
     let state = media_test_state();
     let session_id = SessionId::from_u64(100);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     let handler = test_control_handler(state.clone());
     assert_eq!(
         handler
@@ -277,8 +295,8 @@ fn complete_snapshots_keep_receiving_identity_and_unrelated_sources() {
     publish_video(&state, other_camera.configuration.ip);
     state.upsert_camera(other_camera);
     let session_ids = [SessionId::from_u64(101), SessionId::from_u64(102)];
-    let queues = session_ids.map(|session_id| ApiEventQueue::new(&state.webrtc, session_id, 4));
-    let observer = ApiEventQueue::new(&state.webrtc, SessionId::from_u64(103), 4);
+    let queues = session_ids.map(|session_id| event_queue(&state, session_id, 4));
+    let observer = event_queue(&state, SessionId::from_u64(103), 4);
     let handler = test_control_handler(state.clone());
     for session_id in session_ids {
         state
@@ -296,7 +314,7 @@ fn complete_snapshots_keep_receiving_identity_and_unrelated_sources() {
         let notifications = queue.drain();
         assert_eq!(notifications.len(), 2);
         let snapshot = snapshot(&notifications[0]);
-        assert_eq!(snapshot, &handler.initial_capabilities(session_id).unwrap());
+        assert_snapshot(snapshot, handler.initial_capabilities(session_id).unwrap());
         assert_eq!(
             snapshot.self_source_session_id,
             format!("webrtc-client-{session_id}")
@@ -326,7 +344,7 @@ fn a_known_kind_uses_the_initial_snapshot_and_is_not_resent_per_subscription() {
     let state = live_state();
     state.publish_camera_event(&native_event("digital_input"));
     let session_id = SessionId::from_u64(104);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     let handler = test_control_handler(state.clone());
     let initial = handler.initial_capabilities(session_id).unwrap();
     assert_eq!(

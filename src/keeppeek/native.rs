@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -8,18 +8,25 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-use super::{KeepPeekEvent, KeepPeekLoop};
+use super::{KeepPeekEvent, KeepPeekLoop, TimelineEvent, Trigger};
 
 const OWNERS_MAX: usize = 1024;
 const EVENTS_PER_OWNER_MAX: usize = 128;
 /// Limits retirement work on latency-sensitive periodic ticks.
-const RETIRED_BATCH_MAX: usize = 64;
+const RETIRED_BATCH_MAX: usize = crate::storage::catalog::NATIVE_EVENT_CLOSE_BATCH_MAX;
 /// Gives healthy retirement bursts time to finish without unbounded shutdown retries.
 const FINAL_DRAIN_BUDGET: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(super) struct Commits {
     owners: HashMap<Uuid, Owner>,
+    pending: VecDeque<Retired>,
+}
+
+struct Retired {
+    owner: Uuid,
+    change: KeepPeekEvent,
+    event: Option<TimelineEvent>,
 }
 
 struct Owner {
@@ -187,23 +194,77 @@ impl KeepPeekLoop {
     }
 
     fn close_retired_native_events_until(&mut self, deadline: Option<Instant>) -> usize {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return 0;
+        }
+        if let Err(error) = self.stage_retired_native_events() {
+            tracing::warn!(%error, "retired native event closure remains pending");
+            return 0;
+        }
         let mut completed = 0;
-        for (owner, id, end_time_ms) in self.native_commits.retired() {
+        for _ in 0..RETIRED_BATCH_MAX {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 break;
             }
-            let change = KeepPeekEvent::TimelineEventEnded { id, end_time_ms };
-            match self.commit_isapi_change(change.clone()) {
-                Ok(()) => {
-                    self.native_commits.record(owner, &change);
-                    completed += 1;
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "retired native event closure remains pending");
-                }
+            let Some(pending) = self.native_commits.pending.front() else {
+                break;
+            };
+            if let Some(event) = &pending.event
+                && let Err(error) = self.publish_native_revision(event, Trigger::EventEnded)
+            {
+                tracing::warn!(%error, "committed native ending publication remains pending");
+                break;
             }
+            let pending = self
+                .native_commits
+                .pending
+                .pop_front()
+                .expect("pending ending was just inspected");
+            self.native_commits.record(pending.owner, &pending.change);
+            completed += 1;
         }
         self.native_commits.prune();
         completed
+    }
+
+    fn stage_retired_native_events(&mut self) -> anyhow::Result<()> {
+        if !self.native_commits.pending.is_empty() {
+            return Ok(());
+        }
+        let retired = self.native_commits.retired();
+        if retired.is_empty() {
+            return Ok(());
+        }
+        let events = self
+            .events
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("native event storage is unavailable"))?;
+        let endings = retired
+            .iter()
+            .map(|(_, id, end_time_ms)| (id.clone(), *end_time_ms))
+            .collect::<Vec<_>>();
+        let committed = events.close_native_events(&endings)?;
+        assert_eq!(
+            committed.len(),
+            retired.len(),
+            "every requested ending must have a commit result"
+        );
+        self.native_commits
+            .pending
+            .extend(
+                retired
+                    .into_iter()
+                    .zip(committed)
+                    .map(|((owner, id, end_time_ms), event)| Retired {
+                        owner,
+                        change: KeepPeekEvent::TimelineEventEnded { id, end_time_ms },
+                        event,
+                    }),
+            );
+        assert!(
+            self.native_commits.pending.len() <= RETIRED_BATCH_MAX,
+            "retired publication batch exceeded its bound"
+        );
+        Ok(())
     }
 }

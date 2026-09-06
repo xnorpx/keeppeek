@@ -4,7 +4,7 @@ use super::*;
 fn replacement_unsubscribe_and_close_cancel_queued_events() {
     let state = live_state();
     let session_id = SessionId::from_u64(105);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     subscribe(&state, session_id, "native-events");
     let mut event = native_event("digital_input");
     state.publish_camera_event(&event);
@@ -39,7 +39,7 @@ fn replacement_unsubscribe_and_close_cancel_queued_events() {
 fn evidence_recorded_before_publish_still_refreshes_the_subscriber() {
     let state = live_state();
     let session_id = SessionId::from_u64(106);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     test_control_handler(state.clone())
         .initial_capabilities(session_id)
         .unwrap();
@@ -69,7 +69,7 @@ fn evidence_recorded_before_publish_still_refreshes_the_subscriber() {
 fn software_origin_does_not_mutate_native_capabilities() {
     let state = live_state();
     let session_id = SessionId::from_u64(107);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     let handler = test_control_handler(state.clone());
     let initial = handler.initial_capabilities(session_id).unwrap();
     subscribe(&state, session_id, "native-events");
@@ -86,14 +86,14 @@ fn software_origin_does_not_mutate_native_capabilities() {
             .snapshot(Ipv4Addr::LOCALHOST.into())
             .is_none()
     );
-    assert_eq!(handler.initial_capabilities(session_id).unwrap(), initial);
+    assert_snapshot(&initial, handler.initial_capabilities(session_id).unwrap());
 }
 
 #[test]
 fn disabled_policy_neither_learns_nor_delivers_a_native_kind() {
     let state = live_state();
     let session_id = SessionId::from_u64(108);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     subscribe(&state, session_id, "native-events");
     let policy = crate::cameras::events::EventConfig {
         mode: crate::cameras::events::EventMode::Disabled,
@@ -138,7 +138,7 @@ fn disabled_policy_neither_learns_nor_delivers_a_native_kind() {
 fn an_oversized_complete_snapshot_sheds_instead_of_sending_a_partial_update() {
     let state = live_state();
     let session_id = SessionId::from_u64(109);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     subscribe(&state, session_id, "native-events");
     state.cameras.write().unwrap()[0].info.name =
         Some("x".repeat(crate::webrtc::MAX_CONTROL_MESSAGE_BYTES));
@@ -161,7 +161,7 @@ fn an_oversized_complete_snapshot_sheds_instead_of_sending_a_partial_update() {
 fn capability_updates_exclude_native_payloads_and_preserve_optional_isapi_images() {
     let state = live_state();
     let session_id = SessionId::from_u64(110);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     subscribe(&state, session_id, "native-events");
     let raw_url = "http://camera-user:private-password@camera.invalid/alert";
     let native_payload = "<EventNotificationAlert>private-native-body</EventNotificationAlert>";
@@ -191,7 +191,7 @@ fn capability_updates_exclude_native_payloads_and_preserve_optional_isapi_images
 fn two_subscriptions_share_one_complete_update_for_a_new_kind() {
     let state = live_state();
     let session_id = SessionId::from_u64(111);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 4);
+    let queue = event_queue(&state, session_id, 4);
     subscribe(&state, session_id, "first-events");
     subscribe(&state, session_id, "second-events");
 
@@ -218,7 +218,7 @@ fn two_subscriptions_share_one_complete_update_for_a_new_kind() {
 fn concurrent_new_kinds_are_advertised_before_each_delivery() {
     let state = live_state();
     let session_id = SessionId::from_u64(112);
-    let queue = ApiEventQueue::new(&state.webrtc, session_id, 8);
+    let queue = event_queue(&state, session_id, 8);
     subscribe(&state, session_id, "native-events");
     let barrier = std::sync::Barrier::new(3);
     std::thread::scope(|threads| {
