@@ -338,6 +338,8 @@ jobs:
           set -o pipefail
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             cargo test --locked --all --lib --bins --tests --features macos-test-aws-crypto -- --test-threads=1 2>&1 | tee rust-test-results.log
+          elif [[ "$RUNNER_OS" == "Windows" ]]; then
+            cargo test --locked --all --lib --bins --tests -- --test-threads=1 2>&1 | tee rust-test-results.log
           else
             cargo test --locked --all --lib --bins --tests 2>&1 | tee rust-test-results.log
           fi
