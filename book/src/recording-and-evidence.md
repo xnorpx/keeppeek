@@ -73,6 +73,49 @@ presentation-only and come from a fixed allowlist.
 [Notifications and integrations](./notifications-and-integrations.md) explains how those same
 event and operational identities remain stable across delivery, retry, and broker recovery.
 
+## Copy a recording moment
+
+Use the link icon in Keep's command bar to copy the current recording moment. The command reads
+the playback clock when invoked; it does not pause, seek, reload the video, or change browser
+history. Event detail has the same command beside **Open at this moment**, using the event's
+start time. Both event actions retain the selected event and active filters. **Back to event**
+returns to that context from any Keep mode.
+
+These are authenticated navigation links, not public shares or exports. Recipients need access to
+the same KeepPeek server and camera, and remote recipients must sign in. A link does not contain an
+access key, session ID, temporary media URL, recording filename, or filesystem path. It does include
+the server-provided camera identifier and, for event links, event and filter context. Treat those
+details as private operational information. Changing camera identity or deleting footage can make
+an old link unavailable.
+
+Links use the existing `/keep` route, including any configured application base path:
+
+| Parameter  | Meaning                                                                         |
+| ---------- | ------------------------------------------------------------------------------- |
+| `camera`   | Server-provided source identifier, encoded without changing its value.          |
+| `at`       | Absolute Unix timestamp in integer milliseconds.                                |
+| `date`     | UTC date derived from `at`; the timestamp wins if an incoming date conflicts.   |
+| `stream`   | Requested `auto`, `high`, `low`, `main`, or `sub` preference.                   |
+| `mode`     | Keep view; omitted for Timeline, otherwise `stories`, `swimlanes`, or `export`. |
+| `event`    | Optional event identifier.                                                      |
+| `returnTo` | Optional local Events route with supported filters and selected event identity. |
+
+The timestamp remains the same across browser timezones. For retained, supported media, playback
+restoration is verified within one second or one source-frame duration, whichever is larger.
+Browser codec support still applies. KeepPeek explains a compatible stream fallback and preserves
+the requested preference in copied links.
+
+An exact link into a gap does not open nearby footage automatically. It keeps the requested UTC
+time visible and offers previous or next recordings found in the bounded five-minute window on
+each side, within that UTC day. Selecting one explicitly moves the playhead. If no retained
+footage is found, the view explains that it may have expired or never been recorded. Missing and
+inaccessible cameras share an unavailable-or-not-authorized message to avoid disclosing hidden
+sources. Malformed links fail visibly instead of selecting another camera.
+
+Successful copying shows a checkmark and announces confirmation. If browser clipboard access is
+denied, unsupported, or takes more than 2.5 seconds, a dialog presents the same link in a selected,
+read-only field for manual copying. Escape closes that dialog and returns focus to the command.
+
 ## Export evidence
 
 An Administrator can select up to two minutes in Keep and create a standalone MP4. Event export
