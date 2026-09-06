@@ -67,6 +67,15 @@ async function decodedFrames(page: Page, count: number): Promise<void> {
 	await expect(page.locator('keeppeek-card .video-state')).toHaveCount(0);
 }
 
+async function closedCardSessions(page: Page): Promise<void> {
+	await expect
+		.poll(async () => {
+			const probe = await readCardProbe(page);
+			return probe.created - probe.closed;
+		})
+		.toBe(0);
+}
+
 async function captureEvidence(page: Page, filePath: string): Promise<void> {
 	await page.screenshot({ path: filePath, fullPage: true, animations: 'disabled' });
 }
@@ -115,6 +124,7 @@ test('real Lovelace shares video, resizes, changes theme, and releases sessions 
 	diagnostics.phase('dashboard navigation');
 	await page.getByRole('tab', { name: 'Away', exact: true }).click();
 	await expect.poll(() => homeAssistant.activeSessions()).toBe(0);
+	await closedCardSessions(page);
 	const beforeShared = await readCardProbe(page);
 	expect(beforeShared.closed).toBe(beforeShared.created);
 	await page.getByRole('tab', { name: 'Shared', exact: true }).click();
@@ -129,6 +139,7 @@ test('real Lovelace shares video, resizes, changes theme, and releases sessions 
 	await decodedFrames(page, 3);
 	await page.getByRole('tab', { name: 'Away', exact: true }).click();
 	await expect.poll(() => homeAssistant.activeSessions()).toBe(0);
+	await closedCardSessions(page);
 	const released = await readCardProbe(page);
 	expect(released.created).toBe(released.closed);
 	expect(released).toMatchObject({ subscriptions: shared.subscriptions + 1, overflow: false });
