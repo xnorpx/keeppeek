@@ -1,6 +1,7 @@
 import type { CameraListItem, RecordingEvent } from './types';
 import type { EventPreviewKeyframe } from './control-client';
 import { canonicalEventAttachment } from './event-presentation';
+import { keepMomentSearchParams } from './keep-link';
 
 export type EventImageFilter = 'all' | 'with' | 'without';
 
@@ -47,18 +48,20 @@ export type EventBrowserTimeWindow = {
 export function eventKeepSearchParams(
 	record: EventBrowserRecord,
 	mode: 'timeline' | 'export',
-	returnHref: string | null
+	returnHref: string | null,
+	eventsPath = '/events'
 ): URLSearchParams {
-	const search = new URLSearchParams({
-		camera: record.camera.id,
-		date: new Date(record.event.start_time_ms).toISOString().slice(0, 10),
-		at: String(record.event.start_time_ms),
-		event: record.event.id,
-		stream: 'main'
-	});
-	if (mode === 'export') search.set('mode', 'export');
-	if (returnHref) search.set('returnTo', returnHref);
-	return search;
+	return keepMomentSearchParams(
+		{
+			cameraId: record.camera.id,
+			timestampMs: record.event.start_time_ms,
+			eventId: record.event.id,
+			streamPreference: 'main',
+			mode,
+			returnHref
+		},
+		eventsPath
+	);
 }
 
 export function eventBrowserDayBounds(

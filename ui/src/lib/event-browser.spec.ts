@@ -155,6 +155,19 @@ describe('Events browser contract', () => {
 		);
 	});
 
+	it('uses the canonical moment route and drops private return query fields', () => {
+		const selected = record('person/1', 'person', 0.9, null, Date.parse('2026-08-18T06:37:23Z'));
+		const params = eventKeepSearchParams(
+			selected,
+			'timeline',
+			'/events?event=person%2F1&token=private&session=temporary'
+		);
+		expect(params.get('at')).toBe(String(selected.event.start_time_ms));
+		expect(params.get('returnTo')).toBe('/events?event=person%2F1');
+		expect(params.toString()).not.toContain('private');
+		expect(params.toString()).not.toContain('temporary');
+	});
+
 	it('filters all structured fields and orders newest first', () => {
 		const records = [
 			record('old', 'person', 0.7, null, 10),

@@ -361,7 +361,14 @@ test('Board 10 detail restores its deep link and exposes only returned Event evi
 		.getByRole('complementary', { name: 'Event detail' })
 		.getByRole('link', { name: 'Open at this moment' })
 		.click();
-	await expect(page).toHaveURL(/\/keep\?camera=front-door&stream=main&date=2026-08-18/);
+	await expect(page).toHaveURL(
+		(url) =>
+			url.pathname === '/keep' &&
+			url.searchParams.get('camera') === 'front-door' &&
+			url.searchParams.get('stream') === 'main' &&
+			url.searchParams.get('date') === eventDate &&
+			url.searchParams.get('at') === String(expectedTimestampMs)
+	);
 	await expect(page.getByRole('region', { name: 'Recorded video player' })).toHaveAttribute(
 		'data-recording-playhead-ms',
 		String(expectedTimestampMs)
