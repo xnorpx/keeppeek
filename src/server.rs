@@ -22066,9 +22066,6 @@ mod tests {
             .with_camera_config_path(config_path)
             .with_camera_runtime(runtime);
         let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
 
         let saved = save_camera_settings(
             CameraSettingsUpdate {
@@ -22090,12 +22087,8 @@ mod tests {
         assert_eq!(camera.recording_label, "front_gate");
         assert_eq!(camera.configuration.name.as_deref(), Some("front_gate"));
         assert_eq!(camera.groups, ["cameras"]);
-        assert_eq!(router_thread.join().unwrap(), 1);
+        assert_eq!(router.wait_and_drain(Some(Duration::ZERO)).unwrap(), 1);
 
-        let (mut router, router_tx) = crate::runtime::Router::new().unwrap();
-        let router_thread = std::thread::spawn(move || {
-            router.wait_and_drain(Some(Duration::from_secs(2))).unwrap()
-        });
         let updated = save_camera_settings(
             CameraSettingsUpdate {
                 display_name: Some(Some("Front Gate Updated".to_owned())),
@@ -22115,7 +22108,15 @@ mod tests {
             Some("Front Gate Updated")
         );
         assert_eq!(updated.camera.recording_mode, "main");
+        assert_eq!(router.wait_and_drain(Some(Duration::ZERO)).unwrap(), 1);
+        assert_runtime_camera_group_access(&state, "192.0.2.79");
 
+        shutdown.cancel();
+        runtime_thread.join().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn assert_runtime_camera_group_access(state: &ServerState, camera_id: &str) {
         let issued = state
             .access_manager
             .create_credential("Group viewer", None, AccessRole::User, None, 1_000)
@@ -22133,17 +22134,12 @@ mod tests {
             )
             .unwrap();
         let session_id = SessionId::from_u64(719);
-        bind_credential_test_session(&state, session_id, issued.access_key);
+        bind_credential_test_session(state, session_id, issued.access_key);
         assert!(
-            camera_access::for_session(&state, session_id)
+            camera_access::for_session(state, session_id)
                 .unwrap()
-                .allows("192.0.2.79")
+                .allows(camera_id)
         );
-
-        shutdown.cancel();
-        runtime_thread.join().unwrap();
-        router_thread.join().unwrap();
-        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
