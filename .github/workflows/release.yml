@@ -110,6 +110,46 @@ jobs:
             gh release create "$VERSION" --draft --verify-tag --title "$VERSION"
           fi
 
+  home-assistant-card:
+    name: Home Assistant Card
+    needs: create-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          submodules: recursive
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        working-directory: ui
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Build versioned card
+        working-directory: ui
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          package_version="$(bun -e 'console.log(Bun.TOML.parse(await Bun.file("../Cargo.toml").text()).package.version)')"
+          if [[ "$VERSION" == master ]]; then
+            export KEEPPEEK_CARD_VERSION="$package_version-dev.$GITHUB_RUN_NUMBER"
+          else
+            export KEEPPEEK_CARD_VERSION="$VERSION"
+          fi
+          bun run build:home-assistant
+      - name: Attach card to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          gh release upload "$VERSION" \
+            target/home-assistant-card/dist/keeppeek.js \
+            target/home-assistant-card/dist/keeppeek-card.json \
+            --clobber
+
   build:
     name: Build (${{ matrix.platform }})
     needs: create-release

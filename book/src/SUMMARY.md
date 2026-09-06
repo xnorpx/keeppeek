@@ -12,6 +12,7 @@
 - [Backup and restore](./backup-and-restore.md)
 - [Recording and evidence](./recording-and-evidence.md)
 - [Notifications and integrations](./notifications-and-integrations.md)
+- [Home Assistant card](./home-assistant.md)
 - [Release readiness and known limitations](./release-readiness.md)
 - [Demo videos](./demo-videos.md)
 - [Open source and licensing](./open-source-and-licensing.md)

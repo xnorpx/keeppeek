@@ -19,6 +19,8 @@ The [recording integrity guide](docs/recording-integrity.md) documents coverage,
 gap evidence, pagination, metrics, and alert inputs.
 The [backup and restore guide](docs/backup-and-restore.md) documents sensitive two-TOML bundles,
 `GET /config/export`, `POST /config/apply`, and crash-safe activation on restart.
+The [Home Assistant card guide](docs/home-assistant.md) covers the direct live-camera Lovelace
+card, HACS/manual installation, visual editor, CORS, and credential security.
 
 ## Stop KeepPeek
 

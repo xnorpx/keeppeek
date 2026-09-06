@@ -538,6 +538,7 @@ jobs:
             target/release/keeppeek
             target/release/test_camera
             target/e2e-mixed-codec
+            target/home-assistant-card/dist
           if-no-files-found: error
           retention-days: 1
 
@@ -580,6 +581,59 @@ jobs:
           path: |
             ui/test-results
             ui/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+  home-assistant-container:
+    name: Home Assistant Container
+    needs: ui-e2e-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KEEPPEEK_HA_TEST_OWNER: ${{ github.run_id }}-${{ github.run_attempt }}
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: ui/.bun-version
+      - name: Install UI dependencies
+        run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Download verified Linux binaries and card
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ui-e2e-linux
+          path: target
+      - name: Restore executable permissions
+        working-directory: .
+        run: chmod +x target/release/keeppeek target/release/test_camera
+      - name: Pull pinned Home Assistant image
+        run: bun run prepare:home-assistant-container
+      - name: Test actual Home Assistant Lovelace
+        run: bun run test:home-assistant-container:run
+      - name: Remove any remaining test-owned containers
+        if: always()
+        run: |
+          docker ps --all --quiet --filter "label=keeppeek.test-owner=$KEEPPEEK_HA_TEST_OWNER" \
+            | xargs --no-run-if-empty docker rm --force
+          docker volume ls --quiet --filter "label=keeppeek.test-owner=$KEEPPEEK_HA_TEST_OWNER" \
+            | xargs --no-run-if-empty docker volume rm --force
+      - name: Upload sanitized Home Assistant evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: home-assistant-container-evidence
+          path: |
+            ui/test-results/home-assistant-container/**/*.png
+            ui/test-results/home-assistant-container/**/*.log
+            ui/test-results/home-assistant-container/**/*.json
+            ui/test-results/home-assistant-container.xml
           if-no-files-found: ignore
           retention-days: 14
 
@@ -667,7 +721,7 @@ jobs:
   ui-gate:
     name: UI (windows-latest)
     if: always()
-    needs: [ui-e2e-build, ui-e2e, ui-windows-build]
+    needs: [ui-e2e-build, ui-e2e, ui-windows-build, home-assistant-container]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -676,10 +730,12 @@ jobs:
           E2E_BUILD_RESULT: ${{ needs.ui-e2e-build.result }}
           E2E_RESULT: ${{ needs.ui-e2e.result }}
           WINDOWS_BUILD_RESULT: ${{ needs.ui-windows-build.result }}
+          HOME_ASSISTANT_RESULT: ${{ needs.home-assistant-container.result }}
         run: |
           test "$E2E_BUILD_RESULT" = success
           test "$E2E_RESULT" = success
           test "$WINDOWS_BUILD_RESULT" = success
+          test "$HOME_ASSISTANT_RESULT" = success
 
   coverage:
     name: Coverage (Rust + UI)

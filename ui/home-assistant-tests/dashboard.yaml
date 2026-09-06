@@ -1,0 +1,41 @@
+title: KeepPeek
+views:
+  - title: Live
+    path: live
+    cards:
+      - type: custom:keeppeek-card
+        endpoint: !secret keeppeek_endpoint
+        token: !secret keeppeek_card_token
+        title: Entrances
+        sources:
+          - source_id: '192.0.2.101'
+            title: Front entrance
+          - source_id: '192.0.2.102'
+            title: Side entrance
+  - title: Shared
+    path: shared
+    cards:
+      - type: custom:keeppeek-card
+        endpoint: !secret keeppeek_endpoint
+        token: !secret keeppeek_card_token
+        title: Shared camera 1
+        sources:
+          - source_id: '192.0.2.101'
+            title: Front entrance
+      - type: custom:keeppeek-card
+        endpoint: !secret keeppeek_endpoint
+        token: !secret keeppeek_card_token
+        title: Shared camera 2
+        sources:
+          - source_id: '192.0.2.101'
+            title: Front entrance
+      - type: custom:keeppeek-card
+        endpoint: !secret keeppeek_endpoint
+        token: !secret keeppeek_card_token
+        title: Shared camera 3
+        sources:
+          - source_id: '192.0.2.101'
+            title: Front entrance
+  - title: Away
+    path: away
+    cards: []
