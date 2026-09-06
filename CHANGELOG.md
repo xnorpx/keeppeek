@@ -4,6 +4,8 @@
 
 ### Added
 
+- Add a direct Home Assistant live-camera card with a visual editor, shared WebRTC connections,
+  responsive theme-aware layouts, bounded reconnects, and versioned HACS/manual release artifacts.
 - Add Administrator-only `GET /config/export` and `POST /config/apply` for two-TOML ZIP transfer,
   validated restart activation, and startup recovery, with `keeppeek config` CLI commands and
   Settings controls through `keeppeek.backup.v1`.

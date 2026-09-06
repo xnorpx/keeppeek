@@ -2,6 +2,15 @@ import { describe, expect, it } from 'bun:test';
 import { isBunCompatibleTest, isVitestCompatTest, normalizeTestPath } from './bun-test-selection';
 
 describe('Bun test selection', () => {
+	it('routes Home Assistant transport mocks through Vitest and pure configuration through Bun', () => {
+		for (const name of ['connection-manager', 'direct-http', 'direct-peer', 'direct-session']) {
+			const testFile = `src/lib/home-assistant/${name}.spec.ts`;
+			expect(isVitestCompatTest(testFile)).toBe(true);
+			expect(isBunCompatibleTest(testFile)).toBe(false);
+		}
+		expect(isBunCompatibleTest('src/lib/home-assistant/config.spec.ts')).toBe(true);
+	});
+
 	it('normalizes Windows paths before applying exclusions', () => {
 		expect(normalizeTestPath('src\\lib\\camera.spec.ts')).toBe('src/lib/camera.spec.ts');
 		for (const testFile of [

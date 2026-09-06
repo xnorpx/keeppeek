@@ -1,66 +1,117 @@
-# Home Assistant Direct Card
+# Home Assistant Card
 
-This design provides a Lovelace card that connects directly from the browser to KeepPeek. The
-card creates its own WebRTC session, receives live media and events directly, and opens stored
-media directly. Home Assistant serves the JavaScript module and dashboard configuration only; it
-is not a media, REST, WebRTC, snapshot, event, or timeline proxy.
-
-The experience follows the useful part of direct-streaming Lovelace cards: native dashboard
-configuration, low-latency browser playback, dense source grids, and inline event review. It does
-not embed another application in an iframe.
-
-## Direct Topology
+`custom:keeppeek-card` is a Lovelace live-camera card with a visual editor. Home Assistant serves
+the JavaScript module and dashboard configuration. The browser connects directly to KeepPeek
+for authenticated session creation, deletion, and WebRTC video. No backend integration,
+iframe, or Home Assistant media proxy is required.
 
 ```mermaid
 flowchart LR
-    H[Home Assistant frontend] -->|Serves module and config| B[KeepPeek card]
-    B -->|Direct POST /create and POST /delete| K[KeepPeek]
-    B <-->|Direct WebRTC: RTP, SCTP, media data| K
+    H[Home Assistant] -->|Module and dashboard config| B[KeepPeek card]
+    B -->|Bearer-authenticated POST /create and /delete| K[KeepPeek]
+    K -->|Direct WebRTC video| B
 ```
 
-After the module loads, all KeepPeek traffic is browser-to-KeepPeek. Home Assistant never receives
-video, audio, JPEGs, MP4 fragments, event payloads, or the browser WebRTC session.
+The package implements live video, shared connections, source selection, grid/single layouts,
+focus, and a visual editor. Audio, event ribbons, timeline playback, PTZ, and Home Assistant
+entity discovery are not implemented in this card. Use the KeepPeek application for those views.
 
-## Direct Token
+## Installation
 
-The card uses one configured KeepPeek Bearer token. It sends that token in the browser's
-`Authorization` header for `/create` and `/delete`.
+The release artifact is one self-contained ES module, `keeppeek.js`. It bundles Svelte, the
+protobuf runtime, icons, and card CSS; it does not load third-party scripts or fonts at runtime.
+`keeppeek-card.json` records the version, SHA-256 checksum, and raw/compressed byte counts.
+
+### HACS
+
+1. Choose a KeepPeek release that contains both card artifacts. Releases created before the
+   card was added do not contain them.
+2. In HACS, add `https://github.com/xnorpx/keeppeek` as a custom **Dashboard** repository.
+3. Download that release and register `/hacsfiles/keeppeek/keeppeek.js` as a **JavaScript module**
+   dashboard resource if HACS does not register it automatically.
+4. Reload the dashboard and select **KeepPeek** in the card picker.
+
+The root `hacs.json` selects `keeppeek.js` and hides the default-branch download because generated
+JavaScript is a release asset, not a committed file. HACS default-store inclusion is separate
+from custom-repository installation. A published release containing the artifact is required;
+building the module locally does not make HACS installation available.
+
+### Manual
+
+1. Download `keeppeek.js` from the intended release and verify its SHA-256 against that release's
+   `keeppeek-card.json`.
+2. Place the module in Home Assistant's `www/keeppeek.js` directory entry. If creating `www/`
+   for the first time, restart Home Assistant.
+3. Register `/local/keeppeek.js?v=VERSION` as a **JavaScript module** resource. Replace `VERSION`
+   with the downloaded card version.
+4. Reload the dashboard and add the card.
+
+To build the artifacts from this checkout:
+
+```sh
+bun run --cwd ui build:home-assistant
+```
+
+Outputs are in `target/home-assistant-card/dist/`. Set `KEEPPEEK_CARD_VERSION` to a semantic
+version when producing a version-specific local artifact. The existing release workflow builds
+the module for each recorder release and attaches it to the same draft or prerelease; the
+normal release approval process still applies.
+
+### Upgrade and Rollback
+
+Use HACS to select the new version, or replace the manual module and change its `?v=` resource
+suffix. Reload every open dashboard tab to release the previous module's sessions. Keep the card
+and KeepPeek server on compatible releases because the protocol is pre-1.0. To roll back, select
+the previous HACS version or restore the previous module and its version suffix, then reload.
+Do not register multiple versions of the resource at once.
+
+## Configuration
 
 ```yaml
 type: custom:keeppeek-card
 endpoint: https://keeppeek.example.net
 token: !secret keeppeek_lovelace_token
+title: Entrances
 sources:
-  - source_id: front-door
+  - source_id: "192.168.1.20"
     title: Front door
-  - source_id: driveway
-view: live
+    quality: auto
+  - source_id: "192.168.1.21"
+    title: Driveway
+    quality: low
 layout: grid
-show_events: true
-show_timeline: true
+columns: 2
+aspect_ratio: "16:9"
+show_name: true
 ```
 
-The token reaches the browser. `!secret` keeps YAML tidy but does not make the resolved token
-secret from a person who can inspect the dashboard or browser runtime. This is intentional for a
-trusted local dashboard.
+Use stable source IDs advertised by KeepPeek, not camera display names or Home Assistant entity
+IDs. In the visual editor, enter the endpoint and key, then select **Load sources**. Discovery
+uses the same direct connection manager and does not subscribe to video by itself.
 
-The card keeps the token only in memory. It never puts the token in URLs, query parameters, local
-storage, session storage, rendered DOM, console output, screenshots, or diagnostics. The visual
-card editor renders a redacted token field and preserves an existing configured value without
-reading it back into visible UI.
+| Field                 | Default        | Supported Values                                                                                                                                            |
+| --------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `endpoint`            | Required       | HTTPS base URL, at most 2048 characters, without user-info, query, or fragment. HTTP is allowed only for `localhost`, `127.0.0.1`, and `[::1]` development. |
+| `token`               | Required       | Resolved KeepPeek access key. YAML `!secret` resolution belongs to Home Assistant, not the card.                                                            |
+| `sources`             | Required       | 1 to 16 unique source objects.                                                                                                                              |
+| `sources[].source_id` | Required       | Nonblank stable ID, at most 160 characters.                                                                                                                 |
+| `sources[].title`     | Camera name/ID | Optional nonblank title, at most 160 characters.                                                                                                            |
+| `sources[].quality`   | `auto`         | `auto`, `low`, or `high`, selected by KeepPeek's advertised variants.                                                                                       |
+| `title`               | `KeepPeek`     | Optional card title, at most 160 characters.                                                                                                                |
+| `layout`              | `grid`         | `grid` or `single`. Single mode provides a camera selector.                                                                                                 |
+| `columns`             | `2`            | Integer from 1 to 4. The grid never allocates more columns than visible cameras and stacks below 440 pixels.                                                |
+| `aspect_ratio`        | `16:9`         | `16:9`, `4:3`, or `1:1`; video is contained, not cropped.                                                                                                   |
+| `show_name`           | `true`         | Show camera names below video.                                                                                                                              |
+| `view`                | `live`         | Only `live` is supported.                                                                                                                                   |
 
-Use a dedicated card token. In this pre-1.0 API every configured GUID has the same rights, so a
-copied card token can also call `/logs` and `/metrics`. Removing it from KeepPeek configuration
-or rotating it revokes future card session creation. KeepPeek stores the authenticated token
-identity, not the raw token, with each session. During token configuration reload it closes
-sessions whose token identity was removed; until that implementation is available, removal is
-guaranteed to block reconnect but may not terminate an already established WebRTC session
-immediately. Do not reuse an administrator token unless all dashboard viewers are meant to have
-its access.
+The visual editor emits standard `config-changed` events and preserves unrelated Home Assistant
+configuration, including `grid_options`. Its access-key input starts empty with a configured-state
+placeholder. Unrelated edits preserve the existing key; entering a replacement or selecting the
+clear action changes it explicitly. Source titles and quality survive layout edits.
 
-## CORS and HTTPS
+## CORS, HTTPS, and Browser Permissions
 
-KeepPeek configuration has an exact allowed-origin list:
+Add the exact Home Assistant browser origin to the existing KeepPeek `config.toml`:
 
 ```toml
 [direct_card]
@@ -70,131 +121,173 @@ allowed_origins = [
 ]
 ```
 
-For an allowed origin, KeepPeek enables credentialless CORS for direct session bootstrap only:
+An origin is scheme, host, and port, without a path or trailing slash. Include each origin from
+which users actually open their dashboards. Restart KeepPeek after editing its direct-card
+configuration, following the normal configuration workflow.
 
-- `Access-Control-Allow-Origin` is the exact configured origin, never `*`.
-- Methods are `POST` and `OPTIONS`.
-- Request headers are `Authorization`, `Content-Type`, and `Content-Encoding`.
-- Browser cookies and `Access-Control-Allow-Credentials` are not used.
+The server allows `POST` and `OPTIONS` on `/create` and `/delete`, with `Authorization`,
+`Content-Type`, and `Content-Encoding`. It returns the exact allowed origin, never `*`.
+The card uses `credentials: omit`; it does not use cookies, redirect credential-bearing requests,
+or require `Access-Control-Allow-Credentials`. The offer body uses gzip; deletion uses JSON.
+Both authenticated requests cause browser preflights.
 
-Because the card sends both `Authorization` and `Content-Encoding: gzip`, browsers issue an
-`OPTIONS` preflight before `/create` and `/delete`. KeepPeek responds with the same exact allowed
-origin, methods, and headers before the browser attempts the actual POST.
+Use browser-trusted HTTPS for Home Assistant and KeepPeek in normal deployments. The browser
+must reach KeepPeek's advertised WebRTC candidates; serving the dashboard through Home Assistant
+Cloud does not relay those candidates. Prefer a private VPN for remote viewing.
 
-CORS is not token protection. Anyone with a copied token can use it as a normal KeepPeek client.
-KeepPeek and Home Assistant use HTTPS with browser-trusted certificates in normal deployments.
-Mixed-content cards and untrusted self-signed certificates are unsupported outside local
-`localhost` development.
+Modern Chromium browsers can also require **Local Network Access** permission for the Home
+Assistant origin. Allow that permission when the browser prompts for this trusted dashboard.
+A denied permission, a TLS problem, an unreachable endpoint, and CORS rejection can all appear
+as an indistinguishable fetch error to JavaScript. The card names the origin and relevant checks
+without claiming to identify the exact cause. It never disables browser security checks.
 
-## Lovelace Package
+## Credentials and Security
 
-The frontend package is an ES-module custom element registered as `custom:keeppeek-card`. It can
-be installed through HACS or loaded as a Home Assistant dashboard resource under `/local/`.
+Create a dedicated **User** credential for the dashboard, with the intended camera access, through
+KeepPeek's access settings. See [access control](access-control.md). Do not use an Administrator
+key unless every dashboard viewer should have its authority. The source list is a display filter,
+not an access-control boundary.
 
-- It registers metadata in `window.customCards` for the card picker.
-- `setConfig` validates endpoint, token, source IDs, and display options before connecting.
-- A visual editor selects sources, grid layout, live/timeline view, and event options.
-- The Home Assistant `hass` object supplies dashboard context only; it never carries KeepPeek
-  media.
-- A browser-local `KeepPeekConnectionManager`, keyed by endpoint plus a token fingerprint, shares
-  one direct WebRTC session across cards on the same dashboard and reference-counts subscriptions.
+The resolved key necessarily reaches Home Assistant's frontend. `!secret` keeps YAML organized;
+it does not hide the key from someone who can inspect the dashboard configuration or browser
+runtime. Dashboard editors and third-party frontend modules share this trust boundary. The card
+itself keeps the key and its SHA-256 connection fingerprint in memory only. It does not write them
+to URLs, browser storage, rendered HTML, console output, screenshots, or diagnostics. Browser
+network tools can inspect the authenticated request header by design.
 
-The token fingerprint is `SHA-256(token)` held only in memory. It is used solely as a map key and
-is never rendered, logged, persisted, or sent to KeepPeek. Reconfiguring a card with a different
-token creates a separate direct connection and releases the old token's subscriptions.
+KeepPeek's trusted-local policy still applies. A browser classified as trusted-local is an
+Administrator even when it sends a User key. Narrow `access.local_networks` when dashboard users
+must be authenticated and restricted; do not assume the card changes that server policy. CORS is
+not authentication and does not protect a copied key from use by another client.
 
-## Direct Session Lifecycle
+Rotation, disable, revocation, expiry, and camera-access changes invalidate the credential's
+sessions according to the server policy. An authentication failure stops the card's automatic
+retries. Replace its key and reconnect. No raw server error body or exception is rendered.
 
-The card creates its `RTCPeerConnection`, three negotiated data channels, and every receive
-transceiver it wants for this session before generating an offer. It applies the offer with
-`setLocalDescription`, uses each non-null browser-assigned `RTCRtpTransceiver.mid` as a
-session-local `StreamId`, and sends the exact `localDescription` SDP without rewriting MID
-values. It does not wait for `iceGatheringState` complete and does not send `onicecandidate` to
-KeepPeek. That offer is the card's complete RTP capacity; KeepPeek is ICE Lite, always answers,
-and does not renegotiate SDP or accept trickle ICE. The card gzip-compresses the JSON offer with
-`CompressionStream`, then posts it directly to KeepPeek. The `201` body is also gzip-compressed
-JSON, including the SDP answer; the card decompresses that whole body before applying
-`answer.sdp`.
+## Connection Ownership
 
-```mermaid
-sequenceDiagram
-    participant C as KeepPeek card
-    participant K as KeepPeek
+A browser-local manager shares one direct session per canonical endpoint and `SHA-256(token)`.
+It bounds a dashboard to eight connection identities, 64 consumers per identity, and 16 distinct
+source/quality subscriptions per connection. Cards requesting the same source and quality share
+both the peer and its media subscription. Different credentials never share media.
 
-    C->>C: Create data channels and receive transceivers
-    C->>C: Apply offer and index StreamId to transceiver
-    C->>K: Direct POST /create with Bearer token and gzip SDP offer
-    K-->>C: 201 gzip CreateResponse (answer and session ID)
-    C->>K: Establish direct WebRTC connection
-    K-->>C: ServerCapabilities
-    C->>K: Ok capabilities acknowledgement
-    C->>K: Subscribe selected source streams
+The initial offer allocates 16 receive-only video transceivers and the three negotiated data
+channels. KeepPeek is ICE Lite: there is no SDP rewriting, renegotiation, trickle ICE, or wait for
+local ICE gathering. The complete offer is gzip-compressed; Fetch transparently decodes the
+gzip-encoded HTTP response. Browser-assigned MIDs are opaque exact-string keys. Subscription IDs
+map to the exact MID returned by KeepPeek, never to an assumed index or source-name convention.
+
+Current `ServerCapabilities` snapshots are control-channel **notifications** and require no ACK.
+Each snapshot replaces the previous one. Removed camera sessions or variants release their
+bindings, and offline/unknown sources receive tile-specific states without stopping other cameras.
+
+Card removal, a hidden tab, an offscreen card, and focus/source changes release obsolete demand.
+Removing the final consumer closes the peer and calls direct `/delete`, including removal during
+HTTP creation. Synchronous DOM moves preserve the consumer. Home Assistant theme and `hass`
+updates do not recreate the peer. Resuming a hidden dashboard acquires a fresh live session.
+
+Negotiation, HTTP, capabilities, and RPC waits are bounded to ten seconds per operation. A session
+has at most 32 pending RPCs. Reconnect uses delays of 1, 2, 4, 8, 16, then 30 seconds, with at most
+eight automatic attempts before an explicit retry. Every replacement session rebuilds MID and
+subscription maps and replays only current demand. A failed delete is surfaced rather than hidden.
+
+## Development and Verification
+
+```sh
+bun run --cwd ui test:e2e:prepare
+bun run --cwd ui demo:home-assistant
 ```
 
-Each `SubscriptionResult.rtp.mid` is a `StreamId` looked up as an exact string in that registry.
-The shared connection manager separately tracks `subscription_id -> StreamId` for every visible
-card. It never uses MID spelling or transceiver order to infer a source, stream, quality, or
-audio/video pairing, and it rebuilds both maps when reconnecting.
+The demo command prints its localhost URL. It starts two synthetic RTSP cameras and an isolated
+KeepPeek process with fixture-only credentials, offers theme/card/editor controls, and removes
+temporary fixture data when stopped. It chooses another preview port if the default is occupied.
+It does not use the operator's configuration or cameras.
 
-The `sources` list is a card UI filter, not access control. KeepPeek returns whatever the direct
-token is allowed to see. On reconnect, the connection manager creates a fresh direct session and
-replays only visible subscriptions. Removing the final card calls direct `/delete`.
+Run focused checks from `ui/`:
 
-## Card Experience
+```sh
+bun run test:unit -- run --project server src/lib/home-assistant/
+bun run test:unit -- run --project client src/lib/home-assistant/
+bun run build:home-assistant
+bun run test:e2e:run -- --config playwright.home-assistant.config.ts
+```
 
-| Element      | Direct behavior                                                                                                                         |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Live grid    | One direct subscription per visible source; the card chooses exact or automatic variants from current capabilities.                     |
-| Tile state   | Uses direct capabilities and connection updates for source availability and constrained connectivity.                                   |
-| Focus        | Enlarges one tile without replacing other cards' shared subscriptions.                                                                  |
-| Audio        | Disabled by default in a grid; enabled only for a focused or explicitly selected source.                                                |
-| Event ribbon | Uses direct event records and JPEG attachments from the same WebRTC session.                                                            |
-| Timeline     | Queries availability/events directly, scrubs with an unreliable preview cursor, and reopens reliable playback at the settled timestamp. |
+Set `KEEPPEEK_CARD_FRONTEND_PORT` to an unused port when another preview is running. The tests
+load the release module into a Lovelace lifecycle harness, not a complete Home Assistant backend.
+They verify real H.264 decoded frames on desktop/mobile, sharing, reconnect, cleanup, editor
+discovery, CORS/authentication failures, and paired performance measurements. The artifact must
+stay below 500 KiB gzipped and shared bootstrap p95 below ten seconds. Run the canonical
+`./check.sh` from the repository root before considering a code change verified.
 
-The card subscribes only to visible or focused live tiles. Hidden tiles are released after a short
-grace period, while event and timeline state remains local to the card. Event images, timeline
-queries, MP4 initialization ranges, and stored fragments are browser-to-KeepPeek traffic.
+### Real Home Assistant Container
 
-## Optional Home Assistant Integration
+The separate container suite loads the current build in actual Home Assistant, not the lifecycle
+harness. It does not need a published release or a HACS/GitHub account. With Docker running:
 
-No backend integration is required for card media. An optional `custom_components/keeppeek`
-integration may register source availability, latest event, and recording-health entities for
-automations and entity pickers. It must not proxy card media or reuse a browser media session.
+```sh
+bun run --cwd ui test:home-assistant-container
+```
 
-The optional integration does not receive the card token from the frontend. If an operator gives it
-its own KeepPeek token for entity discovery, that credential stays in the integration config entry
-and does not authorize the card or change the direct card token's access.
+This command prepares the native KeepPeek/test-camera binaries and the card module, pulls the
+official Home Assistant `2026.9.1` image pinned by its multi-architecture SHA-256 digest, and runs
+Playwright. Once the binaries and image are prepared, use the faster test-only command:
 
-An entity-selected card resolves a stable KeepPeek `source_id`, then establishes the same direct
-token session. Home Assistant entity state is dashboard metadata, not media authorization or a
-replacement for `ServerCapabilities`.
+```sh
+bun run --cwd ui test:home-assistant-container:run
+```
 
-## Failure and Revocation
+Each runtime scenario creates a disposable Home Assistant container and configuration volume,
+publishes an automatically selected loopback HTTP port, and onboards a fixture-only account
+through the real UI. Home Assistant serves the actual module from `www/`, resolves YAML
+`!secret` references, and hosts both YAML and editable storage dashboards. The storage dashboard
+is seeded through the newly authenticated Home Assistant API, not through internal storage files.
+KeepPeek, synthetic RTSP cameras, and Chromium run on the host so the media path avoids Docker NAT.
 
-- A CORS rejection is shown as a configuration error naming the required allowed origin.
-- An unauthorized `/create` response reports a token error without echoing the token.
-- Token removal or rotation blocks reconnect and closes matching direct sessions.
-- A source failure affects only its tile; other direct subscriptions continue.
-- Capability removal stops the affected subscription without silently retargeting it.
-- Tab suspension releases stale subscriptions on resume and rebuilds the direct session if needed.
-- If the initial capabilities acknowledgement deadline expires, the card discards that session and
-  retries normal direct `/create` bootstrap with bounded backoff.
+The tests verify two decoded camera streams, three cards sharing one active session/subscription,
+reconnect, navigation cleanup, responsive layouts, theme changes, source discovery, credential
+redaction, and changes saved through Home Assistant's own visual editor. Every test stops its
+owned processes and removes its container, Docker volume, and temporary files. The container has
+two CPUs, 2 GiB of memory, bounded processes/waits, and no privileged or device access.
 
-## Security Boundary
+The **Home Assistant Container** Ubuntu CI job reuses the existing Linux build artifact and is
+required by the UI gate. Its evidence artifact includes screenshots, sanitized logs, setup notices,
+and JUnit results. It excludes authentication storage, raw configuration, and browser traces.
+The normal `./check.sh` remains Docker-free, but it typechecks the container suite; run both checks
+when changing this integration.
 
-This is explicitly a trusted-dashboard design. Anyone who can inspect the token has the access
-granted by it, including logs and metrics, until per-key scopes exist. KeepPeek token removal
-or rotation is the revocation mechanism.
+Two Home Assistant lifecycle details are accounted for explicitly:
 
-## Acceptance Scenarios
+- At the end of onboarding, Home Assistant closes and revokes its temporary WebSocket connection.
+  The exact `Connection lost` result with code `3`, only on `/onboarding.html` during setup, is
+  recorded separately in `onboarding-notices.json`. All other runtime errors fail the test.
+- Lovelace masonry resizing removes columns before asynchronously reattaching cards. This can
+  cause a clean reconnect. The test requires resumed playback, one active peer, and no leaked
+  sessions; a theme-only update must not recreate the peer.
 
-1. A HACS-installed card creates a KeepPeek WebRTC session with no Home Assistant media request or
-   response.
-2. Three cards for one KeepPeek endpoint share one browser WebRTC connection and independently
-   release subscriptions.
-3. An unconfigured KeepPeek origin fails CORS before session creation.
-4. Removing or rotating the token prevents reconnect without leaking its value in diagnostics.
-5. Live grid, event JPEGs, timeline query, scrub preview, and playback remain direct
-   browser-to-KeepPeek traffic.
-6. A Lovelace source list changes displayed tiles but does not claim to restrict token authority.
-7. Removing the final card calls direct `/delete` and closes the browser session.
+The suite has been exercised on this project's macOS ARM64 Docker Desktop development setup.
+That is a local test result, not a supported Home Assistant production deployment recommendation:
+the official container guide targets Docker Engine on Linux. The Ubuntu CI job is the intended
+reference environment; its hosted result is available only after the workflow runs.
+
+### Release Installation
+
+For HACS installation verification after publishing a release: install that exact version through
+HACS in a disposable Home Assistant instance, add one single-camera card and a two-camera grid,
+then add a duplicate card. Expect live video, one shared connection, and source discovery in the
+editor. Navigate away and back, change theme, resize the dashboard, rotate the fixture key, and
+upgrade/roll back the resource. Verify the documented error states and zero sessions after the
+last card is removed. The local container test verifies real Lovelace compatibility but does not
+replace this published-artifact download, upgrade, and rollback check.
+
+## Sources
+
+- [Home Assistant custom-card lifecycle and editor API](https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/)
+- [HACS dashboard artifact rules](https://www.hacs.xyz/docs/publish/plugin/)
+- [HACS manifest and release requirements](https://www.hacs.xyz/docs/publish/start/#hacsjson)
+- [Svelte imperative mount and unmount](https://svelte.dev/docs/svelte/imperative-component-api)
+- [Vite library build](https://vite.dev/guide/build.html#library-mode)
+- [Chromium Local Network Access](https://developer.chrome.com/blog/local-network-access)
+- [Home Assistant container installation](https://www.home-assistant.io/installation/linux/#install-home-assistant-container)
+- [Home Assistant dashboard resources and YAML configuration](https://www.home-assistant.io/dashboards/dashboards/#adding-yaml-dashboards)
+- [Home Assistant onboarding connection lifecycle](https://github.com/home-assistant/frontend/blob/dev/src/onboarding/ha-onboarding.ts)
+- [Lovelace masonry layout lifecycle](https://github.com/home-assistant/frontend/blob/dev/src/panels/lovelace/views/hui-masonry-view.ts)

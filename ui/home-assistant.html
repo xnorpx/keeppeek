@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>KeepPeek Home Assistant Harness</title>
+	</head>
+	<body>
+		<header class="toolbar">
+			<h1>Home</h1>
+			<label><input id="theme" type="checkbox" />Dark theme</label>
+			<button id="add" type="button">Add card</button>
+			<button id="remove" type="button">Remove card</button>
+			<button id="edit" type="button">Edit card</button>
+		</header>
+		<p id="error" role="alert"></p>
+		<main id="dashboard" aria-label="Home Assistant dashboard"></main>
+		<dialog id="settings">
+			<header class="toolbar">
+				<h2>Card settings</h2>
+				<button id="close" type="button">Close</button>
+			</header>
+			<div id="editor"></div>
+		</dialog>
+		<script type="module" src="/home-assistant/harness.ts"></script>
+	</body>
+</html>
