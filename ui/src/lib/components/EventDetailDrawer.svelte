@@ -14,6 +14,7 @@
 	import CapabilityGate from './CapabilityGate.svelte';
 	import EventPreview from './EventPreview.svelte';
 	import EventIcon from './EventIcon.svelte';
+	import CopyMomentLink from './CopyMomentLink.svelte';
 
 	type Props = {
 		record: EventBrowserRecord;
@@ -94,7 +95,12 @@
 	}
 
 	function keepHref(mode?: 'export'): string {
-		const search = eventKeepSearchParams(record, mode ?? 'timeline', returnHref);
+		const search = eventKeepSearchParams(
+			record,
+			mode ?? 'timeline',
+			returnHref,
+			resolve('/events')
+		);
 		return `${resolve('/keep')}?${search}`;
 	}
 </script>
@@ -240,13 +246,14 @@
 				<CheckCircleIcon class="size-3.5" /> Already exported
 			</p>
 		{/if}
-		<div class="flex h-[50px] shrink-0 items-center gap-2.5 overflow-hidden">
+		<div class="flex min-h-[50px] shrink-0 flex-wrap items-center gap-2.5">
 			<a
 				href={keepHref()}
 				class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-sm bg-primary px-3 text-xs font-semibold text-on-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 			>
 				<ExternalLinkIcon class="size-3.5" />Open at this moment
 			</a>
+			<CopyMomentLink getLink={() => new URL(keepHref(), window.location.origin).href} />
 			<CapabilityGate {...capabilityActions.exportMoment}>
 				<a
 					href={keepHref('export')}
