@@ -156,7 +156,7 @@ const seed = Bun.spawn(
 		'--catalog',
 		path.join(testRoot, 'recordings.db'),
 		'--stream-id',
-		'e2e-h264/main'
+		'e2e-h264/sub'
 	],
 	{ cwd: repositoryRoot, stdout: 'inherit', stderr: 'inherit' }
 );
