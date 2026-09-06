@@ -558,15 +558,12 @@ pub(super) fn publish_native_images(
                     .as_str(),
             );
     for delivery in state.event_subscriptions.deliveries(event) {
-        if !delivery.guard.is_active() {
+        let Some(policy) = native_delivery_access(state, event, &delivery) else {
             continue;
-        }
+        };
         let mut snapshot = None;
         if !native.has_snapshot(delivery.session_id, event, live) {
-            let Some(cameras) = super::camera_access::for_session(state, delivery.session_id)
-                .ok()
-                .and_then(|policy| super::camera_access::query_cameras(state, &policy, &[]).ok())
-            else {
+            let Ok(cameras) = super::camera_access::query_cameras(state, &policy, &[]) else {
                 state
                     .event_subscriptions
                     .shed(delivery.session_id, &delivery.subscription_id);
@@ -589,6 +586,25 @@ pub(super) fn publish_native_images(
             publish_delivery(state, event, image.as_ref(), additional, delivery);
         }
     }
+}
+
+fn native_delivery_access(
+    state: &ServerState,
+    event: &proto::Event,
+    delivery: &Delivery,
+) -> Option<crate::access::CameraAccess> {
+    if !delivery.guard.is_active() {
+        return None;
+    }
+    let policy = super::camera_access::for_session(state, delivery.session_id)
+        .ok()
+        .filter(|policy| policy.allows(&event.source_id));
+    if policy.is_none() {
+        state
+            .event_subscriptions
+            .shed(delivery.session_id, &delivery.subscription_id);
+    }
+    policy
 }
 
 fn snapshot_has_event(snapshot: &proto::ServerCapabilities, event: &proto::Event) -> bool {

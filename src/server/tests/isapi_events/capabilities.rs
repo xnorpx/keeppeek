@@ -2,6 +2,7 @@ use super::*;
 use crate::webrtc::test_queue::ApiEventQueue;
 
 mod guards;
+mod permissions;
 
 fn live_state() -> ServerState {
     let state = media_test_state();

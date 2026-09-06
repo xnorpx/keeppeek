@@ -46,6 +46,11 @@ fn isapi_native_event_routes_to_live_subscribers_without_relabeling_its_origin()
     );
     let session_id = SessionId::from_u64(17);
     state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(session_id, local_test_session());
+    state
         .event_subscriptions
         .subscribe(
             &state,
@@ -93,6 +98,11 @@ fn isapi_capabilities_keep_camera_snapshots_optional() {
 #[test]
 fn generic_event_capabilities_and_subscriptions_use_observed_native_kinds() {
     let state = media_test_state();
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(SessionId::from_u64(11), local_test_session());
     let mut camera = state.camera_entries().remove(0).info;
     camera.is_reolink = false;
     camera.capabilities.events = false;
@@ -324,6 +334,11 @@ fn hikvision_ptz_uses_shared_ownership_presets_and_disconnect_stop() {
     let handler = test_control_handler(state.clone());
     let owner = SessionId::from_u64(901);
     let other = SessionId::from_u64(902);
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(owner, local_test_session());
     let command = |action| proto::PtzCommand {
         source_id: "127.0.0.1".to_owned(),
         action: Some(action),
@@ -373,6 +388,11 @@ fn hikvision_read_only_probes_report_device_control_capabilities() {
     let fake = test_hikvision::FakeHikvision::builder().start().unwrap();
     let config: CameraConfig = toml::from_str(&format!("ip='127.0.0.1'\nmanufacturer='Hikvision'\nusername='test'\npassword='test'\nhttp_port={}\n", fake.address().port())).unwrap();
     let state = ServerState::empty();
+    state
+        .api_session_owners
+        .lock()
+        .unwrap()
+        .insert(SessionId::from_u64(951), local_test_session());
     state.upsert_camera(camera_entry(&config, None));
     assert!(!camera_control::ptz_capability(&state.camera("127.0.0.1").unwrap()).supported);
     state.probe_hikvision_capabilities(config.ip);

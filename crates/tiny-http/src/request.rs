@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::sync::mpsc::Sender;
 
 use crate::util::{EqualReader, FusedReader};
-use crate::{HTTPVersion, Header, Method, Response, StatusCode};
+use crate::{HTTPVersion, Header, Method, Response};
 use chunked_transfer::Decoder;
 
 /// Represents an HTTP request made by a client.
@@ -362,13 +362,10 @@ impl Request {
     #[inline]
     pub fn as_reader(&mut self) -> &mut dyn Read {
         if self.must_send_continue {
-            let msg = Response::new_empty(StatusCode(100));
-            msg.raw_print(
-                self.response_writer.as_mut().unwrap().by_ref(),
-                self.http_version.clone(),
-                &self.headers,
-                true,
-                None,
+            write!(
+                self.response_writer.as_mut().unwrap(),
+                "HTTP/{} 100 Continue\r\n\r\n",
+                self.http_version,
             )
             .ok();
             self.response_writer.as_mut().unwrap().flush().ok();
