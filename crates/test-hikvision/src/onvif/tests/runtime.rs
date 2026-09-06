@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,6 +7,31 @@ use super::super::{FakeOnvif, Subscription, notification};
 use super::lifecycle::{EVENTS_NS, WSNT, create, pull};
 use super::transport::{Client, texts};
 use crate::Reply;
+
+fn wait_for_fragment_consumed(socket: &TcpStream) {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "request fragment was not consumed"
+        );
+        match socket.peek(&mut [0]) {
+            Ok(count) => {
+                assert!(count > 0, "request peer closed before cancellation");
+                std::thread::yield_now();
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return;
+            }
+            Err(error) => panic!("request observation failed: {error}"),
+        }
+    }
+}
 
 #[test]
 fn push_wakes_a_pending_pull_and_preserves_live_timestamps() {
@@ -140,6 +165,156 @@ fn drop_interrupts_held_open_scripted_pull_bodies() {
 }
 
 #[test]
+fn stopped_device_rejects_request_reads_before_waiting_for_socket_data() {
+    let fake = FakeOnvif::builder().start().unwrap();
+    let shared = Arc::clone(&fake.shared);
+    drop(fake);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (socket, _) = listener.accept().unwrap();
+    let started = Instant::now();
+    let result = super::super::wire::handle(socket, &shared);
+    let elapsed = started.elapsed();
+    let error = result.unwrap_err().downcast::<std::io::Error>().unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionAborted);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "stopped request read elapsed: {elapsed:?}"
+    );
+    assert!(shared.state.lock().unwrap().requests.is_empty());
+}
+
+#[test]
+fn cancellation_interrupts_partial_requests_before_and_after_peer_close() {
+    for (fragment, close_peer) in [
+        ("POST /onvif/events HTTP/1.1\r\n", false),
+        (
+            "POST /onvif/events HTTP/1.1\r\nContent-Length: 8\r\n\r\n<par",
+            false,
+        ),
+        ("POST /onvif/events HTTP/1.1\r\n", true),
+        (
+            "POST /onvif/events HTTP/1.1\r\nContent-Length: 8\r\n\r\n<par",
+            true,
+        ),
+    ] {
+        let fake = FakeOnvif::builder().start().unwrap();
+        let shared = Arc::clone(&fake.shared);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .unwrap();
+        let (socket, _) = listener.accept().unwrap();
+        let observer = socket.try_clone().unwrap();
+        observer
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .unwrap();
+        client.write_all(fragment.as_bytes()).unwrap();
+        assert!(observer.peek(&mut [0]).unwrap() > 0);
+        let worker_shared = Arc::clone(&shared);
+        let worker = std::thread::spawn(move || super::super::wire::handle(socket, &worker_shared));
+        wait_for_fragment_consumed(&observer);
+        let waiting = client.peek(&mut [0]).unwrap_err();
+        assert!(matches!(
+            waiting.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert!(!worker.is_finished(), "request ended before cancellation");
+        let started = Instant::now();
+        shared.state.lock().unwrap().stopped = true;
+        shared.changed.notify_all();
+        if close_peer {
+            drop(client);
+        }
+        let result = worker.join().unwrap();
+        let elapsed = started.elapsed();
+        let error = result.unwrap_err().downcast::<std::io::Error>().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionAborted);
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "partial request cancellation elapsed: {elapsed:?}"
+        );
+        assert!(shared.state.lock().unwrap().requests.is_empty());
+    }
+}
+
+#[test]
+fn slow_request_fragments_survive_short_read_waits() {
+    let fake = FakeOnvif::builder().start().unwrap();
+    let mut client = TcpStream::connect(fake.address()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(150)))
+        .unwrap();
+    for fragment in [
+        "POST /onvif/events HTTP/1.1\r\n",
+        "Content-Length: 7\r\n\r\n",
+        "<par",
+    ] {
+        client.write_all(fragment.as_bytes()).unwrap();
+        let waiting = client.peek(&mut [0]).unwrap_err();
+        assert!(matches!(
+            waiting.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+    }
+    client.write_all(b"t/>").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body(), b"<part/>");
+}
+
+#[test]
+fn request_deadline_is_shared_across_header_and_body_waits() {
+    let fake = FakeOnvif::builder().start().unwrap();
+    let shared = Arc::clone(&fake.shared);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let (socket, _) = listener.accept().unwrap();
+    let (finished, received) = std::sync::mpsc::sync_channel(1);
+    let worker_shared = Arc::clone(&shared);
+    let started = Instant::now();
+    let worker = std::thread::spawn(move || {
+        let result = super::super::wire::handle(socket, &worker_shared);
+        finished.send(result).unwrap();
+    });
+    client
+        .write_all(b"POST /onvif/events HTTP/1.1\r\n")
+        .unwrap();
+    let waiting = client.peek(&mut [0]).unwrap_err();
+    assert!(matches!(
+        waiting.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    client.write_all(b"Content-Length: 1\r\n\r\n").unwrap();
+    let result = received.recv_timeout(Duration::from_secs(6).saturating_sub(started.elapsed()));
+    let elapsed = started.elapsed();
+    drop(client);
+    worker.join().unwrap();
+    let error = result
+        .expect("request restarted its deadline after headers")
+        .unwrap_err()
+        .downcast::<std::io::Error>()
+        .unwrap();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(
+        elapsed >= Duration::from_millis(4750),
+        "elapsed: {elapsed:?}"
+    );
+    assert!(elapsed < Duration::from_secs(6), "elapsed: {elapsed:?}");
+    assert!(shared.state.lock().unwrap().requests.is_empty());
+}
+
+#[test]
 fn socket_capacity_is_sixteen_and_drop_closes_blocked_readers() {
     let fake = FakeOnvif::builder().start().unwrap();
     let shared = Arc::clone(&fake.shared);
@@ -168,7 +343,11 @@ fn socket_capacity_is_sixteen_and_drop_closes_blocked_readers() {
     }
     let started = Instant::now();
     drop(fake);
-    assert!(started.elapsed() < Duration::from_secs(1));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "sixteen blocked readers shutdown elapsed: {elapsed:?}"
+    );
     assert!(shared.state.lock().unwrap().sockets.is_empty());
     assert_eq!(Arc::strong_count(&shared), 1);
     for socket in &mut sockets {

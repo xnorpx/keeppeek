@@ -11,10 +11,11 @@ use crate::Reply;
 
 const NONCE: &str = "90123456789abcdef0123456789abcdef";
 const HEADERS_BYTES_MAX: usize = 16 * 1024;
+const READ_WAIT_MAX: Duration = Duration::from_millis(50);
 pub(super) const BODY_BYTES_MAX: usize = 256 * 1024;
 
 pub(super) fn handle(mut socket: TcpStream, shared: &Shared) -> anyhow::Result<()> {
-    let mut request = read(&mut socket)?;
+    let mut request = read(&mut socket, shared)?;
     request.authenticated = authenticate(&request, shared);
     shared.capture(request.clone());
     let reply = if request.authenticated {
@@ -37,9 +38,9 @@ pub(super) fn handle(mut socket: TcpStream, shared: &Shared) -> anyhow::Result<(
     Ok(())
 }
 
-fn read(socket: &mut TcpStream) -> anyhow::Result<CapturedRequest> {
+fn read(socket: &mut TcpStream, shared: &Shared) -> anyhow::Result<CapturedRequest> {
     let deadline = Instant::now() + IO_TIMEOUT;
-    let bytes = read_headers(socket, deadline)?;
+    let bytes = read_headers(socket, deadline, shared)?;
     let mut slots = [httparse::EMPTY_HEADER; 32];
     let mut parsed = httparse::Request::new(&mut slots);
     let httparse::Status::Complete(offset) = parsed.parse(&bytes)? else {
@@ -71,7 +72,7 @@ fn read(socket: &mut TcpStream) -> anyhow::Result<CapturedRequest> {
     body[..available].copy_from_slice(&bytes[offset..offset + available]);
     let mut filled = available;
     while filled < length {
-        filled += read_some(socket, &mut body[filled..], deadline)?;
+        filled += read_some(socket, &mut body[filled..], deadline, shared)?;
     }
     Ok(CapturedRequest {
         method: parsed.method.unwrap_or_default().to_owned(),
@@ -82,7 +83,11 @@ fn read(socket: &mut TcpStream) -> anyhow::Result<CapturedRequest> {
     })
 }
 
-fn read_headers(socket: &mut TcpStream, deadline: Instant) -> anyhow::Result<Vec<u8>> {
+fn read_headers(
+    socket: &mut TcpStream,
+    deadline: Instant,
+    shared: &Shared,
+) -> anyhow::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(4096);
     let mut chunk = [0; 1024];
     while !bytes.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
@@ -91,7 +96,7 @@ fn read_headers(socket: &mut TcpStream, deadline: Instant) -> anyhow::Result<Vec
             "fake ONVIF request header limit exceeded"
         );
         let capacity = chunk.len().min(HEADERS_BYTES_MAX - bytes.len());
-        let read = read_some(socket, &mut chunk[..capacity], deadline)?;
+        let read = read_some(socket, &mut chunk[..capacity], deadline, shared)?;
         bytes.extend_from_slice(&chunk[..read]);
     }
     Ok(bytes)
@@ -104,16 +109,45 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "fake ONVIF I/O deadline expired"))
 }
 
-fn read_some(socket: &mut TcpStream, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
-    socket.set_read_timeout(Some(remaining(deadline)?))?;
-    let count = socket.read(bytes)?;
-    if count == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "incomplete fake ONVIF request",
-        ));
+fn read_some(
+    socket: &mut TcpStream,
+    bytes: &mut [u8],
+    deadline: Instant,
+    shared: &Shared,
+) -> io::Result<usize> {
+    loop {
+        if shared.stopped() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "fake ONVIF device stopped",
+            ));
+        }
+        socket.set_read_timeout(Some(remaining(deadline)?.min(READ_WAIT_MAX)))?;
+        let result = socket.read(bytes);
+        if shared.stopped() {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "fake ONVIF device stopped",
+            ));
+        }
+        match result {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "incomplete fake ONVIF request",
+                ));
+            }
+            Ok(count) => return Ok(count),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(error),
+        }
     }
-    Ok(count)
 }
 
 fn write(socket: &mut TcpStream, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
