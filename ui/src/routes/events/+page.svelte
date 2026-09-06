@@ -759,8 +759,8 @@
 	}
 
 	function eventExportHref(record: EventBrowserRecord): string {
-		const returnHref = `${page.url.pathname}${page.url.search}`;
-		return `${resolve('/keep')}?${eventKeepSearchParams(record, 'export', returnHref)}`;
+		const returnHref = `${resolve('/events')}?${eventBrowserSearchParams(filters, record)}`;
+		return `${resolve('/keep')}?${eventKeepSearchParams(record, 'export', returnHref, resolve('/events'))}`;
 	}
 
 	function eventRecordForTarget(target: EventTarget | null): EventBrowserRecord | null {
@@ -1288,7 +1288,7 @@
 	<EventDetailDrawer
 		record={selectedRecord}
 		previewState={previewStates[eventBrowserRecordKey(selectedRecord)] ?? 'idle'}
-		returnHref={`${page.url.pathname}${page.url.search}`}
+		returnHref={`${resolve('/events')}?${eventBrowserSearchParams(filters, selectedRecord)}`}
 		alreadyExported={exportedEventIds.has(selectedRecord.event.id)}
 		onclose={closeDetail}
 		onpreviewretry={() => requestEventPreview(selectedRecord)}

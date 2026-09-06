@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { replaceState } from '$app/navigation';
+	import { afterNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
@@ -16,7 +16,13 @@
 		type TimelineInterval,
 		type TimelineViewport
 	} from '$lib/timeline-repository.svelte';
-	import { createEventExportRange, parseKeepMode, type KeepMode } from '$lib/keep-modes';
+	import { createEventExportRange, type KeepMode } from '$lib/keep-modes';
+	import {
+		keepMomentSearchParams,
+		parseKeepRoute,
+		recordingMomentUrl,
+		type KeepRoute
+	} from '$lib/keep-link';
 	import { isKeyboardTypingTarget } from '$lib/keyboard-shortcuts';
 	import {
 		browserSupportsRecordedEncoding,
@@ -35,6 +41,7 @@
 	} from '$lib/playback-preferences';
 	import type { CameraListItem, RecordingEvent, RecordingSegment } from '$lib/types';
 	import KeepCameraSwitcher from '$lib/components/KeepCameraSwitcher.svelte';
+	import CopyMomentLink from '$lib/components/CopyMomentLink.svelte';
 	import KeepExportPanel from '$lib/components/KeepExportPanel.svelte';
 	import ColdSeekState from '$lib/components/ColdSeekState.svelte';
 	import KeepStories from '$lib/components/KeepStories.svelte';
@@ -104,7 +111,7 @@
 	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
 	let playbackMuted = $state(false);
 	let playbackNotice = $state<string | null>(null);
-	let requestedPlaybackVariant = $state('auto');
+	let requestedPlaybackVariant = $state<RecordedQualityPreference>('auto');
 	let selectedPlaybackVariant = $state<RecordedStreamId | null>(null);
 	let selectedPlaybackReason = $state('automatic');
 	let selectedFallbackStream = $state<RecordedStreamId | null>(null);
@@ -170,6 +177,10 @@
 	let cameraSwitchFrameUrl = $state<string | null>(null);
 	let cameraSwitchVersion = 0;
 	let cameraSwitchTimer: number | null = null;
+	let routeVersion = 0;
+	let routeContext: KeepRoute | null = null;
+	let missingMomentMs = $state<number | null>(null);
+	let appliedSearch = '';
 
 	let viewportSegments = $derived(
 		timelineRepository.ranges.flatMap((range): RecordingSegment[] => {
@@ -219,6 +230,16 @@
 		return dayStartMs > 0 ? dayStartMs + 12 * 60 * 60_000 : Date.now();
 	});
 	let dateIndex = $derived(dates.indexOf(selectedDate));
+	let previousMoment = $derived(
+		missingMomentMs === null
+			? null
+			: (playableSegments.findLast((segment) => segment.end_time_ms <= missingMomentMs!) ?? null)
+	);
+	let nextMoment = $derived(
+		missingMomentMs === null
+			? null
+			: (playableSegments.find((segment) => segment.start_time_ms > missingMomentMs!) ?? null)
+	);
 	let olderDate = $derived(dateIndex >= 0 ? (dates[dateIndex + 1] ?? null) : null);
 	let newerDate = $derived(dateIndex > 0 ? (dates[dateIndex - 1] ?? null) : null);
 	let frameDurationSeconds = $derived.by(() => {
@@ -318,6 +339,7 @@
 		});
 		void initialize();
 		return () => {
+			routeVersion += 1;
 			portraitMedia.removeEventListener('change', updateOrientation);
 			unsubscribeCapabilities();
 			if (secondaryLoadsTimer !== null) window.clearTimeout(secondaryLoadsTimer);
@@ -338,114 +360,123 @@
 		};
 	});
 
-	async function initialize() {
+	afterNavigate(({ from, to }) => {
+		if (from?.route.id === '/keep' && to?.route.id === '/keep' && to.url.search !== appliedSearch) {
+			void initialize(to.url.search);
+		}
+	});
+
+	async function initialize(search = window.location.search): Promise<void> {
+		const version = ++routeVersion;
+		appliedSearch = search;
+		loadVersion += 1;
+		recordingLoadController?.abort();
+		targetLoadController?.abort();
+		loading = true;
+		error = null;
+		playerError = null;
+		playbackNotice = null;
+		missingMomentMs = null;
 		try {
+			const route = parseKeepRoute(search, resolve('/events'));
+			routeContext = route;
+			await selectSegment(null);
+			if (version !== routeVersion) return;
+			segments = [];
+			cameraId = '';
+			dates = [];
+			if (route.invalid) {
+				throw new Error(
+					'Invalid recording link. Check the camera, timestamp, date, and stream parameters.'
+				);
+			}
 			playbackPreferences = loadPlaybackPreferences(window.localStorage);
 			playbackMuted = playbackPreferences.media.muted;
 			playbackRate = playbackPreferences.media.playbackRate;
-			const initialPlay = playbackPreferences.media.playing;
-			const params = new URLSearchParams(window.location.search);
-			mode = parseKeepMode(params.get('mode'));
-			const requestedTimestampMs = parseTimestamp(params.get('at'));
-			const requestedEventId = params.get('event')?.trim() ?? '';
-			exportReturnHref = localReturnHref(params.get('returnTo'));
-			const requestedCamera = params.get('camera')?.trim() ?? '';
-			const requestedStream = params.get('stream');
-			const hasRequestedStream = requestedStream === 'main' || requestedStream === 'sub';
-			if (hasRequestedStream) stream = requestedStream;
-			const requestedDate =
-				params.get('date') ??
-				(requestedTimestampMs === null
-					? undefined
-					: new Date(requestedTimestampMs).toISOString().slice(0, 10));
-			const resolveLatestDateFirst = requestedDate === undefined && requestedTimestampMs === null;
-			const initialDate = requestedDate ?? new Date().toISOString().slice(0, 10);
-			const camerasPromise = controlClient.getCameras().then((nextCameras) => {
-				cameras = nextCameras;
-				return nextCameras;
-			});
-			cameraProfilesPromise = camerasPromise;
-			const healthPromise = controlClient.getHealth().catch(() => null);
-			let recordingsPromise: Promise<void> | null = null;
-			if (requestedCamera && hasRequestedStream && !resolveLatestDateFirst) {
-				cameraId = requestedCamera;
-				recordingsPromise = loadRecordings(
-					initialDate,
-					requestedTimestampMs ?? undefined,
-					initialPlay,
-					requestedStream
+			mode = route.mode;
+			exportReturnHref = route.returnHref;
+			exportSeedEvent = null;
+			cameraProfilesPromise = controlClient.getCameras();
+			const healthPromise = loadConfiguredFrameRates(version);
+			const nextCameras = await cameraProfilesPromise;
+			if (version !== routeVersion) return;
+			cameras = nextCameras;
+			if (route.cameraId && !cameras.some((camera) => camera.id === route.cameraId)) {
+				throw new Error(
+					'The requested camera is unavailable or you are not authorized to view it. Select an available camera.'
 				);
 			}
-
-			const nextCameras = await camerasPromise;
-			const resolvedCameraId = nextCameras.some((camera) => camera.id === requestedCamera)
-				? requestedCamera
-				: (nextCameras[0]?.id ?? '');
-			if (resolveLatestDateFirst && resolvedCameraId) {
-				cameraId = resolvedCameraId;
-				try {
-					dates = await controlClient.getRecordingDates(resolvedCameraId);
-				} catch {
-					dates = [];
-				}
-				recordingsPromise = loadRecordings(
-					dates[0] ?? initialDate,
-					undefined,
-					initialPlay,
-					hasRequestedStream ? requestedStream : null
-				);
-			} else if (cameraId !== resolvedCameraId) {
-				cameraId = resolvedCameraId;
-				recordingsPromise = cameraId
-					? loadRecordings(
-							initialDate,
-							requestedTimestampMs ?? undefined,
-							initialPlay,
-							hasRequestedStream ? requestedStream : null
-						)
-					: null;
-			} else if (!recordingsPromise && cameraId) {
-				recordingsPromise = loadRecordings(
-					initialDate,
-					requestedTimestampMs ?? undefined,
-					initialPlay,
-					hasRequestedStream ? requestedStream : null
-				);
-			}
-
-			const health = await healthPromise;
-			configuredFrameRates = new Map(
-				(health?.cameras ?? []).flatMap((camera) =>
-					camera.configured_profiles.flatMap((profile) =>
-						profile.framerate && profile.framerate > 0
-							? [[`${camera.id}:${profile.stream}`, profile.framerate] as const]
-							: []
-					)
-				)
-			);
-			if (recordingsPromise) {
-				await recordingsPromise;
-				if (!resolveLatestDateFirst) scheduleRecordingDateDiscovery();
-			}
-			if (requestedEventId && requestedTimestampMs !== null && cameraId) {
-				exportSeedEvent = await resolveExportSeedEvent(
-					requestedEventId,
+			cameraId = route.cameraId || cameras[0]?.id || '';
+			if (route.streamPreference && cameraId) {
+				playbackPreferences = withRecordedPreference(
+					playbackPreferences,
 					cameraId,
-					requestedTimestampMs
+					route.streamPreference
 				);
-				if (exportSeedEvent && mode === 'export') {
-					const seededRange = createEventExportRange(exportSeedEvent, selectedBitrateKbps);
-					exportRangeStartMs = seededRange.startMs;
-					exportRangeEndMs = seededRange.endMs;
-				}
-				if (!exportSeedEvent && mode === 'export') {
-					error = 'The selected event revision is no longer available for export.';
-				}
 			}
+			await loadRouteRecordings(route, version);
+			if (version !== routeVersion) return;
+			await loadRouteEvent(route, version);
+			await healthPromise;
 		} catch (cause) {
-			error = cause instanceof Error ? cause.message : 'Failed to open Keep';
+			if (version === routeVersion)
+				error = cause instanceof Error ? cause.message : 'Failed to open Keep';
 		} finally {
-			loading = false;
+			if (version === routeVersion) loading = false;
+		}
+	}
+
+	async function loadConfiguredFrameRates(version: number): Promise<void> {
+		const health = await controlClient.getHealth().catch(() => null);
+		if (version !== routeVersion) return;
+		configuredFrameRates = new Map(
+			(health?.cameras ?? []).flatMap((camera) =>
+				camera.configured_profiles.flatMap((profile) =>
+					profile.framerate && profile.framerate > 0
+						? [[`${camera.id}:${profile.stream}`, profile.framerate] as const]
+						: []
+				)
+			)
+		);
+	}
+
+	async function loadRouteRecordings(route: KeepRoute, version: number): Promise<void> {
+		if (!cameraId) return;
+		let date = route.date ?? new Date().toISOString().slice(0, 10);
+		if (route.date === null && route.timestampMs === null) {
+			const nextDates = await controlClient.getRecordingDates(cameraId).catch(() => []);
+			if (version !== routeVersion) return;
+			dates = nextDates;
+			date = nextDates[0] ?? date;
+		}
+		if (version !== routeVersion) return;
+		const exactStream =
+			route.streamPreference === 'main' || route.streamPreference === 'sub'
+				? route.streamPreference
+				: null;
+		await loadRecordings(
+			date,
+			route.timestampMs ?? undefined,
+			playbackPreferences.media.playing,
+			exactStream,
+			{
+				exactMoment: route.timestampMs !== null
+			}
+		);
+		if (version === routeVersion && route.date !== null) scheduleRecordingDateDiscovery();
+	}
+
+	async function loadRouteEvent(route: KeepRoute, version: number): Promise<void> {
+		if (!route.eventId || route.timestampMs === null || !cameraId) return;
+		const event = await resolveExportSeedEvent(route.eventId, cameraId, route.timestampMs);
+		if (version !== routeVersion) return;
+		exportSeedEvent = event;
+		if (event && mode === 'export') {
+			const range = createEventExportRange(event, selectedBitrateKbps);
+			exportRangeStartMs = range.startMs;
+			exportRangeEndMs = range.endMs;
+		} else if (!event && mode === 'export') {
+			error = 'The selected event revision is no longer available for export.';
 		}
 	}
 
@@ -453,7 +484,8 @@
 		date?: string,
 		targetTimestampMs?: number,
 		play = true,
-		requestedStream: RecordedStreamId | null = null
+		requestedStream: RecordedStreamId | null = null,
+		{ exactMoment = false }: { exactMoment?: boolean } = {}
 	) {
 		if (!cameraId) return;
 		deferSecondaryLoads();
@@ -475,6 +507,7 @@
 		loading = true;
 		error = null;
 		playerError = null;
+		missingMomentMs = null;
 		const requestedDate = (date ?? selectedDate) || new Date().toISOString().slice(0, 10);
 		selectedDate = requestedDate;
 		segments = [];
@@ -494,30 +527,12 @@
 			if (response.segments.length > 0 && !dates.includes(requestedDate)) {
 				dates = [...dates, requestedDate].toSorted().toReversed();
 			}
-			const selection = chooseRecordedStream(response.segments, requestedStream);
-			if (selection.selectedStream === null) {
-				await selectSegment(null);
-				playerError =
-					response.segments.length === 0 && targetTimestampMs !== undefined
-						? 'No indexed footage is available near that time.'
-						: unsupportedRecordedPlaybackMessage(selection);
-				updateUrl();
-				return;
-			}
-			stream = selection.selectedStream;
-			const candidates = response.segments
-				.filter((segment) => segment.stream === stream)
-				.toSorted((left, right) => left.start_time_ms - right.start_time_ms);
-			const target =
-				targetTimestampMs === undefined ? null : recordingTarget(candidates, targetTimestampMs);
-			if (target) {
-				await selectSegment(target.segment, target.offsetSeconds, play);
-			} else if (targetTimestampMs !== undefined) {
-				await selectSegment(null);
-				playerError = 'No indexed footage is available near that time.';
-			} else {
-				await selectSegment(candidates.at(-1) ?? null, 0, play);
-			}
+			await selectLoadedRecording(response.segments, {
+				timestampMs: targetTimestampMs,
+				play,
+				requestedStream,
+				exactMoment
+			});
 			if (version !== loadVersion || controller.signal.aborted) return;
 			emitKeepFirstSegment();
 			updateUrl();
@@ -534,6 +549,65 @@
 		} finally {
 			if (version === loadVersion) loading = false;
 		}
+	}
+
+	async function selectLoadedRecording(
+		available: RecordingSegment[],
+		{
+			timestampMs,
+			play,
+			requestedStream,
+			exactMoment
+		}: {
+			timestampMs: number | undefined;
+			play: boolean;
+			requestedStream: RecordedStreamId | null;
+			exactMoment: boolean;
+		}
+	): Promise<void> {
+		const selection = chooseRecordedStream(available, requestedStream);
+		if (selection.selectedStream === null) {
+			await selectSegment(null);
+			playerError = unsupportedRecordedPlaybackMessage(selection);
+			if (timestampMs !== undefined && exactMoment) {
+				playheadMs = timestampMs;
+				if (available.length === 0) {
+					missingMomentMs = timestampMs;
+					playerError =
+						'No retained recording is available near this moment. Footage may have expired or never been recorded.';
+				}
+			}
+			return;
+		}
+		stream = selection.selectedStream;
+		const candidates = available
+			.filter((segment) => segment.stream === stream)
+			.toSorted((left, right) => left.start_time_ms - right.start_time_ms);
+		const target = timestampMs === undefined ? null : recordingTarget(candidates, timestampMs);
+		if (
+			timestampMs !== undefined &&
+			exactMoment &&
+			(!target ||
+				timestampMs < target.segment.start_time_ms ||
+				timestampMs >= target.segment.end_time_ms)
+		) {
+			await selectSegment(null);
+			missingMomentMs = timestampMs;
+			playheadMs = timestampMs;
+			playerError =
+				'No recording covers this exact moment. Choose a previous or next recording to move the playhead.';
+		} else if (target) {
+			await selectSegment(target.segment, target.offsetSeconds, play);
+		} else {
+			await selectSegment(candidates.at(-1) ?? null, 0, play);
+		}
+	}
+
+	function openNeighbor(segment: RecordingSegment, previous: boolean): void {
+		missingMomentMs = null;
+		playerError = null;
+		const timestampMs = previous ? segment.end_time_ms - 1 : segment.start_time_ms;
+		void selectSegment(segment, (timestampMs - segment.start_time_ms) / 1000, playbackIntent());
 	}
 
 	function emitKeepFirstSegment(): void {
@@ -573,11 +647,17 @@
 		selection: RecordedStreamSelection,
 		requestedStream: RecordedStreamId | null
 	): string | null {
+		if (selection.selectedStream === null) return null;
 		const rejected =
 			selection.rejectedStreams.find((candidate) => candidate.stream === requestedStream) ??
 			selection.rejectedStreams[0];
-		if (!rejected || selection.selectedStream === null) return null;
-		return `${streamLabel(rejected.stream)} uses ${rejected.encoding}, which this browser cannot decode. Playing ${streamLabel(selection.selectedStream)} instead.`;
+		if (rejected) {
+			return `${streamLabel(rejected.stream)} uses ${rejected.encoding}, which this browser cannot decode. Playing ${streamLabel(selection.selectedStream)} instead.`;
+		}
+		if (requestedStream && requestedStream !== selection.selectedStream) {
+			return `${streamLabel(requestedStream)} has no indexed recording near this moment. Playing ${streamLabel(selection.selectedStream)} instead.`;
+		}
+		return null;
 	}
 
 	function unsupportedRecordedPlaybackMessage(selection: RecordedStreamSelection): string {
@@ -1139,7 +1219,11 @@
 				.filter((segment) => segment.stream === fallbackStream)
 				.toSorted((left, right) => left.start_time_ms - right.start_time_ms);
 			const target = recordingTarget(candidates, timestampMs);
-			if (target) {
+			if (
+				target &&
+				(routeContext?.timestampMs == null ||
+					(timestampMs >= target.segment.start_time_ms && timestampMs < target.segment.end_time_ms))
+			) {
 				fallbackAttempted = true;
 				selectedFallbackStream = fallbackStream;
 				selectedPlaybackVariant = fallbackStream;
@@ -1841,33 +1925,51 @@
 
 	function updateUrl() {
 		if (!cameraId) return;
-		const search = new URLSearchParams({
-			camera: cameraId,
-			stream,
-			...(selectedDate ? { date: selectedDate } : {}),
-			...(mode === 'timeline' ? {} : { mode }),
-			...(exportSeedEvent?.source_id === cameraId
-				? {
-						event: exportSeedEvent.id,
-						at: String(exportSeedEvent.start_time_ms)
-					}
-				: {}),
-			...(mode === 'export' && exportReturnHref ? { returnTo: exportReturnHref } : {})
-		});
+		const linkedTimestampMs = routeContext?.timestampMs ?? null;
+		const search =
+			linkedTimestampMs !== null
+				? keepMomentSearchParams(
+						{
+							cameraId,
+							timestampMs: Math.floor(playheadMs ?? linkedTimestampMs),
+							streamPreference: requestedPlaybackVariant,
+							mode,
+							eventId: routeContext?.cameraId === cameraId ? routeContext.eventId : null,
+							returnHref: exportReturnHref
+						},
+						resolve('/events')
+					)
+				: new URLSearchParams({
+						camera: cameraId,
+						stream,
+						...(selectedDate ? { date: selectedDate } : {}),
+						...(mode === 'timeline' ? {} : { mode }),
+						...(exportReturnHref ? { returnTo: exportReturnHref } : {})
+					});
 		// The base path is resolved before the query string is appended.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		replaceState(`${resolve('/keep')}?${search}`, {});
+		appliedSearch = `?${search}`;
 	}
 
-	function localReturnHref(value: string | null): string | null {
-		if (!value?.startsWith('/') || value.startsWith('//')) return null;
-		try {
-			const origin = 'https://keeppeek.invalid';
-			const parsed = new URL(value, origin);
-			return parsed.origin === origin ? `${parsed.pathname}${parsed.search}${parsed.hash}` : null;
-		} catch {
-			return null;
-		}
+	function currentMomentLink(): string | null {
+		if (!cameraId || playheadMs === null) return null;
+		const timestampMs = Math.floor(
+			selected && video && video.readyState >= 1
+				? playbackAnchorMs + video.currentTime * 1000
+				: playheadMs
+		);
+		return recordingMomentUrl({
+			origin: window.location.origin,
+			keepPath: resolve('/keep'),
+			eventsPath: resolve('/events'),
+			cameraId,
+			timestampMs,
+			mode,
+			streamPreference: requestedPlaybackVariant,
+			eventId: routeContext?.cameraId === cameraId ? routeContext.eventId : null,
+			returnHref: exportReturnHref
+		});
 	}
 
 	function formatDate(date: string): string {
@@ -1877,12 +1979,6 @@
 	function formatTime(timestampMs: number): string {
 		return timeFormatter.format(new Date(timestampMs));
 	}
-
-	function parseTimestamp(value: string | null): number | null {
-		if (value === null || value.trim() === '') return null;
-		const timestampMs = Number(value);
-		return Number.isSafeInteger(timestampMs) && timestampMs > 0 ? timestampMs : null;
-	}
 </script>
 
 <svelte:window onkeydowncapture={handleKeyboard} />
@@ -1891,10 +1987,49 @@
 	<title>Keep - KeepPeek</title>
 </svelte:head>
 
+{#snippet playbackMessages()}
+	{#if playbackNotice}
+		<p class="text-sm text-amber-700 dark:text-amber-300" role="status">{playbackNotice}</p>
+	{/if}
+	{#if playerError}
+		<p class="text-sm text-destructive" role="alert">{playerError}</p>
+	{/if}
+	{#if missingMomentMs !== null}
+		<div class="flex flex-wrap items-center gap-2">
+			<time class="font-mono text-xs" datetime={new Date(missingMomentMs).toISOString()}
+				>{new Date(missingMomentMs).toISOString()}</time
+			>
+			{#if previousMoment}
+				<Button
+					variant="outline"
+					onclick={() => previousMoment && openNeighbor(previousMoment, true)}
+					><ChevronLeftIcon class="size-4" />Previous recording</Button
+				>
+			{/if}
+			{#if nextMoment}
+				<Button variant="outline" onclick={() => nextMoment && openNeighbor(nextMoment, false)}
+					><ChevronRightIcon class="size-4" />Next recording</Button
+				>
+			{/if}
+		</div>
+	{/if}
+{/snippet}
+
 <div data-keep-view class="keep-view mx-auto h-full min-h-0 w-full max-w-[120rem] overflow-hidden">
 	<header data-keep-command-bar class="keep-command-bar">
 		<div class="keep-command-primary">
 			<div class="flex shrink-0 items-center gap-2">
+				{#if exportReturnHref}
+					<a
+						data-export-return
+						href={exportReturnHref}
+						aria-label="Back to event"
+						title="Back to event"
+						class="inline-flex size-11 shrink-0 items-center justify-center rounded-sm border border-hairline-strong bg-raised text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:size-9"
+					>
+						<ChevronLeftIcon class="size-4" />
+					</a>
+				{/if}
 				<ArchiveIcon class="size-5 text-primary" />
 				<h1 class="text-xl font-semibold">Keep</h1>
 			</div>
@@ -2000,16 +2135,24 @@
 			>
 				<RefreshCwIcon class={loading ? 'animate-spin' : ''} />
 			</Button>
+			<CopyMomentLink
+				getLink={currentMomentLink}
+				disabled={!cameraId || playheadMs === null || loading}
+			/>
 		</div>
 	</header>
 
 	<div data-keep-view-content class="keep-view-content min-h-0 overflow-y-auto">
 		{#if error}
 			<div
+				role="alert"
 				class="mb-4 rounded-md border border-destructive/60 bg-destructive/10 px-4 py-3 text-sm text-destructive"
 			>
 				{error}
 			</div>
+		{/if}
+		{#if mode !== 'timeline'}
+			{@render playbackMessages()}
 		{/if}
 		{#if loading && segments.length === 0 && selected === null}
 			<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
@@ -2035,15 +2178,6 @@
 			/>
 		{:else if mode === 'export'}
 			<div class="space-y-3">
-				{#if exportReturnHref}
-					<a
-						data-export-return
-						href={exportReturnHref}
-						class="inline-flex h-8 items-center gap-1.5 rounded-sm border border-hairline-strong bg-raised px-3 text-xs font-medium"
-					>
-						<ChevronLeftIcon class="size-3.5" /> Back to event
-					</a>
-				{/if}
 				{#key `${selected?.url ?? 'empty-export'}:${exportSeedEvent?.id ?? ''}:${exportSeedEvent?.revision ?? ''}`}
 					<KeepExportPanel
 						sourceId={cameraId}
@@ -2154,15 +2288,7 @@
 						{/if}
 					</div>
 
-					{#if playbackNotice}
-						<p class="text-sm text-amber-700 dark:text-amber-300" role="status">
-							{playbackNotice}
-						</p>
-					{/if}
-
-					{#if playerError}
-						<p class="text-sm text-destructive" role="alert">{playerError}</p>
-					{/if}
+					{@render playbackMessages()}
 
 					{#if selectedOperationalEvent}
 						<OperationalEventDetail
@@ -2327,6 +2453,33 @@
 			min-width: 0;
 			min-height: 0;
 			overflow-y: hidden;
+		}
+	}
+
+	@media (48rem <= width < 64rem) {
+		.keep-view {
+			grid-template-rows: 5rem minmax(0, 1fr);
+		}
+
+		.keep-command-bar {
+			height: 5rem;
+			flex-direction: column;
+			align-items: stretch;
+			justify-content: space-between;
+		}
+
+		.keep-command-primary,
+		.keep-command-secondary {
+			height: 2.25rem;
+			flex-shrink: 0;
+		}
+
+		.keep-command-secondary {
+			margin-left: 0;
+		}
+
+		.keep-command-secondary :global([data-camera-switcher]) {
+			flex: 1;
 		}
 	}
 

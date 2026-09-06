@@ -383,13 +383,17 @@ test('uses exact recording ranges when a bucketed event falls inside a real gap'
 	await expect(page.locator('[data-cold-seek]')).toHaveCount(0);
 });
 
-test('opens an event in a recording gap with one bounded exact-range query', async ({ page }) => {
+test('preserves an event gap with one bounded exact-range query until explicit navigation', async ({
+	page
+}) => {
 	const gapTimestampMs = dayStartMs + 6 * 60 * 60_000 + 12 * 60_000;
 	const nextRecordingMs = dayStartMs + 6 * 60 * 60_000 + 15 * 60_000;
 	const requests = await mockKeepTimeline(page);
 	await page.goto(`/keep?camera=front-door&stream=main&date=${date}&at=${gapTimestampMs}`);
 
-	await expect(page.locator('video')).toBeVisible();
+	await expect(page.getByRole('alert')).toContainText('No recording covers this exact moment');
+	await expect(page.locator('video')).toHaveCount(0);
+	expect(requests.storedOpens).toHaveLength(0);
 	expect(
 		requests.storedTimelineQueries.filter(
 			(query) =>
@@ -398,8 +402,10 @@ test('opens an event in a recording gap with one bounded exact-range query', asy
 				query.endMs === gapTimestampMs + 5 * 60_000
 		)
 	).toHaveLength(1);
-	expect(requests.storedOpens).toHaveLength(1);
-	expect(requests.storedOpens[0]?.timestampMs).toBe(nextRecordingMs);
+	await page.getByRole('button', { name: 'Next recording', exact: true }).click();
+	await expect
+		.poll(() => requests.storedOpens.map((request) => request.timestampMs))
+		.toEqual([nextRecordingMs]);
 });
 
 test('does not expand or open unrelated footage for an unavailable event timestamp', async ({
@@ -409,7 +415,9 @@ test('does not expand or open unrelated footage for an unavailable event timesta
 	const requests = await mockKeepTimeline(page);
 	await page.goto(`/keep?camera=front-door&stream=main&date=${date}&at=${unavailableTimestampMs}`);
 
-	await expect(page.getByText('No indexed footage is available near that time.')).toBeVisible();
+	await expect(page.getByRole('alert')).toContainText(
+		'No retained recording is available near this moment'
+	);
 	expect(
 		requests.storedTimelineQueries.filter(
 			(query) =>
