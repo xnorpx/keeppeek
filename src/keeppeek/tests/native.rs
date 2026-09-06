@@ -220,6 +220,63 @@ fn periodic_native_retirement_keeps_64_event_budget() {
 }
 
 #[test]
+fn native_close_batch_is_atomic_bounded_and_idempotent() {
+    with_native_recorder(|mut recorder, store| {
+        let owner = uuid::Uuid::new_v4();
+        let lifetime = Arc::new(AtomicBool::new(true));
+        commit_native_changes(
+            &mut recorder,
+            owner,
+            &lifetime,
+            &[motion("batch-first"), motion("batch-second")],
+        );
+        assert!(
+            store
+                .close_native_events(&[
+                    ("batch-first".to_owned(), 2000),
+                    ("batch-second".to_owned(), 999),
+                ])
+                .is_err()
+        );
+        for id in ["batch-first", "batch-second"] {
+            let event = store.event_by_id(id).unwrap().unwrap();
+            assert_eq!(event.revision, 1);
+            assert!(event.end_time_ms.is_none());
+        }
+        assert!(
+            store
+                .close_native_events(&vec![("batch-first".to_owned(), 2000); 65])
+                .is_err()
+        );
+        let endings = [
+            ("batch-first".to_owned(), 2000),
+            ("batch-second".to_owned(), 3000),
+            ("batch-first".to_owned(), 4000),
+            ("missing".to_owned(), 4000),
+        ];
+        let committed = store.close_native_events(&endings).unwrap();
+        assert_eq!(committed.len(), endings.len());
+        for (index, expected_end) in [(0, 2000), (1, 3000)] {
+            let event = committed[index].as_ref().unwrap();
+            assert_eq!(event.revision, 2);
+            assert_eq!(event.end_time_ms, Some(expected_end));
+            assert_eq!(
+                Some(event.clone()),
+                store.event_by_id(&endings[index].0).unwrap()
+            );
+        }
+        assert!(committed[2..].iter().all(Option::is_none));
+        assert!(
+            store
+                .close_native_events(&endings)
+                .unwrap()
+                .iter()
+                .all(Option::is_none)
+        );
+    });
+}
+
+#[test]
 fn final_native_drain_stops_without_progress_and_retains_all_pending_ids() {
     with_native_recorder(|mut recorder, store| {
         let owner = uuid::Uuid::new_v4();
@@ -334,6 +391,64 @@ fn retired_native_event_uses_effective_payload_observation_time() {
             assert_eq!(stored.revision, 4);
         });
     }
+}
+
+#[test]
+fn retirement_batch_preserves_committed_endings_across_publication_deadline() {
+    with_native_recorder(|mut recorder, store| {
+        let owner = uuid::Uuid::new_v4();
+        let lifetime = Arc::new(AtomicBool::new(true));
+        let changes: Vec<_> = (0..3)
+            .map(|index| motion(&format!("atomic-{index}")))
+            .collect();
+        commit_native_changes(&mut recorder, owner, &lifetime, &changes);
+        lifetime.store(false, Ordering::Release);
+        let (sent, published) = mpsc::channel();
+        let resumed = sent.clone();
+        let catalog = store.clone();
+        let (_release, blocked) = mpsc::sync_channel::<()>(1);
+        let blocked = std::sync::Mutex::new(blocked);
+        let deadline = Instant::now() + Duration::from_millis(250);
+        recorder.set_event_publisher(move |event| {
+            for index in 0..3 {
+                let stored = catalog
+                    .event_by_id(&format!("atomic-{index}"))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    stored.end_time_ms,
+                    Some(1000),
+                    "batch must commit before any publication"
+                );
+                assert_eq!(stored.revision, 2);
+            }
+            sent.send(event.clone()).unwrap();
+            assert_eq!(
+                blocked
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()),),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            );
+        });
+        assert_eq!(recorder.drain_retired_native_events_until(deadline), 2);
+        let first = published.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(published.try_recv().is_err());
+        recorder.set_event_publisher(move |event| {
+            resumed.send(event.clone()).unwrap();
+        });
+        assert_eq!(recorder.drain_retired_native_events(), 0);
+        let remaining: Vec<_> = published.try_iter().collect();
+        assert_eq!(remaining.len(), 2);
+        assert!(
+            remaining
+                .iter()
+                .all(|event| event.id != first.id && event.revision == 2)
+        );
+        assert_ne!(remaining[0].id, remaining[1].id);
+        assert_eq!(recorder.drain_retired_native_events(), 0);
+        assert!(published.try_recv().is_err());
+    });
 }
 
 #[test]

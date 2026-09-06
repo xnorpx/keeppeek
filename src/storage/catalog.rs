@@ -388,10 +388,9 @@ enum Command {
         end_time_ms: i64,
         reply: SyncSender<anyhow::Result<()>>,
     },
-    CloseNativeEvent {
-        id: String,
-        end_time_ms: i64,
-        reply: SyncSender<anyhow::Result<Option<TimelineEvent>>>,
+    CloseNativeEvents {
+        endings: Vec<(String, i64)>,
+        reply: SyncSender<anyhow::Result<Vec<Option<TimelineEvent>>>>,
     },
     AttachEventThumbnail {
         id: String,
@@ -934,11 +933,24 @@ impl RecordingCatalogHandle {
         id: &str,
         end_time_ms: i64,
     ) -> anyhow::Result<Option<TimelineEvent>> {
+        Ok(self
+            .close_native_events(&[(id.to_owned(), end_time_ms)])?
+            .pop()
+            .expect("one native ending must return one result"))
+    }
+
+    pub(crate) fn close_native_events(
+        &self,
+        endings: &[(String, i64)],
+    ) -> anyhow::Result<Vec<Option<TimelineEvent>>> {
+        anyhow::ensure!(
+            endings.len() <= NATIVE_EVENT_CLOSE_BATCH_MAX,
+            "native ending batch exceeds limit"
+        );
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
-            .send(Command::CloseNativeEvent {
-                id: id.to_owned(),
-                end_time_ms,
+            .send(Command::CloseNativeEvents {
+                endings: endings.to_vec(),
                 reply,
             })
             .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
@@ -1491,15 +1503,10 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     end_time_ms,
                 )));
             }
-            Command::CloseNativeEvent {
-                id,
-                end_time_ms,
-                reply,
-            } => {
-                let _ = reply.send(pollster::block_on(close_native_event(
+            Command::CloseNativeEvents { endings, reply } => {
+                let _ = reply.send(pollster::block_on(close_native_events(
                     &connection,
-                    &id,
-                    end_time_ms,
+                    &endings,
                 )));
             }
             Command::AttachEventThumbnail {
@@ -4328,27 +4335,15 @@ async fn reconcile_events_for_fragment(
     Ok(())
 }
 
+pub(crate) const NATIVE_EVENT_CLOSE_BATCH_MAX: usize = 64;
+
 async fn close_event(
     connection: &turso::Connection,
     id: &str,
     end_time_ms: i64,
 ) -> anyhow::Result<()> {
     connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let result = async {
-        let changed = connection
-            .execute(
-                "UPDATE recording_events
-                 SET end_time_ms = ?2, revision = revision + 1
-                 WHERE id = ?1 AND start_time_ms <= ?2",
-                turso::params![id, end_time_ms],
-            )
-            .await?;
-        if changed == 0 {
-            anyhow::bail!("event was not found or its end precedes its start");
-        }
-        record_event_search_mutation(connection, id).await
-    }
-    .await;
+    let result = close_event_in_transaction(connection, id, end_time_ms).await;
     match result {
         Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
         Err(error) => {
@@ -4356,6 +4351,52 @@ async fn close_event(
             Err(error)
         }
     }
+}
+
+async fn close_event_in_transaction(
+    connection: &turso::Connection,
+    id: &str,
+    end_time_ms: i64,
+) -> anyhow::Result<()> {
+    let changed = connection
+        .execute(
+            "UPDATE recording_events
+         SET end_time_ms = ?2, revision = revision + 1
+         WHERE id = ?1 AND start_time_ms <= ?2",
+            turso::params![id, end_time_ms],
+        )
+        .await?;
+    if changed == 0 {
+        anyhow::bail!("event was not found or its end precedes its start");
+    }
+    record_event_search_mutation(connection, id).await
+}
+
+async fn close_native_events(
+    connection: &turso::Connection,
+    endings: &[(String, i64)],
+) -> anyhow::Result<Vec<Option<TimelineEvent>>> {
+    anyhow::ensure!(
+        endings.len() <= NATIVE_EVENT_CLOSE_BATCH_MAX,
+        "native ending batch exceeds limit"
+    );
+    if endings.is_empty() {
+        return Ok(Vec::new());
+    }
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let result = async {
+        let mut committed = Vec::with_capacity(endings.len());
+        for (id, end_time_ms) in endings {
+            committed.push(close_native_event(connection, id, *end_time_ms).await?);
+        }
+        connection.execute_batch("COMMIT").await?;
+        Ok::<_, anyhow::Error>(committed)
+    }
+    .await;
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK").await;
+    }
+    result
 }
 
 async fn close_native_event(
@@ -4373,7 +4414,7 @@ async fn close_native_event(
         .revision
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("event revision exceeded its limit"))?;
-    close_event(connection, id, end_time_ms).await?;
+    close_event_in_transaction(connection, id, end_time_ms).await?;
     event.end_time_ms = Some(end_time_ms);
     Ok(Some(event))
 }

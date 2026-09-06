@@ -100,6 +100,14 @@ impl EventStore {
         self.catalog.close_native_event(id, end_time_ms)
     }
 
+    /// Commits at most 64 endings atomically and returns one result per input.
+    pub(crate) fn close_native_events(
+        &self,
+        endings: &[(String, i64)],
+    ) -> anyhow::Result<Vec<Option<TimelineEvent>>> {
+        self.catalog.close_native_events(endings)
+    }
+
     pub fn events_in_range(
         &self,
         camera_id: &str,
