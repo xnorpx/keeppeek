@@ -156,6 +156,37 @@ fn final_native_shutdown_closes_all_retired_events_once() {
 }
 
 #[test]
+fn native_close_returns_only_the_new_committed_revision() {
+    with_native_recorder(|mut recorder, store| {
+        let owner = uuid::Uuid::new_v4();
+        let lifetime = Arc::new(AtomicBool::new(true));
+        commit_native_changes(&mut recorder, owner, &lifetime, &[motion("close-once")]);
+        assert!(store.close_native_event("close-once", 999).is_err());
+        let open = store.event_by_id("close-once").unwrap().unwrap();
+        assert_eq!(open.revision, 1);
+        assert!(open.end_time_ms.is_none());
+        let closed = store
+            .close_native_event("close-once", 2000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed.revision, 2);
+        assert_eq!(closed.end_time_ms, Some(2000));
+        assert_eq!(Some(closed), store.event_by_id("close-once").unwrap());
+        assert!(
+            store
+                .close_native_event("close-once", 3000)
+                .unwrap()
+                .is_none()
+        );
+        assert!(store.close_native_event("missing", 2000).unwrap().is_none());
+        assert_eq!(
+            store.event_by_id("close-once").unwrap().unwrap().revision,
+            2
+        );
+    });
+}
+
+#[test]
 fn periodic_native_retirement_keeps_64_event_budget() {
     with_native_recorder(|mut recorder, store| {
         let owner = uuid::Uuid::new_v4();

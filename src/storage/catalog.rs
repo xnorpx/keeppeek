@@ -388,6 +388,11 @@ enum Command {
         end_time_ms: i64,
         reply: SyncSender<anyhow::Result<()>>,
     },
+    CloseNativeEvent {
+        id: String,
+        end_time_ms: i64,
+        reply: SyncSender<anyhow::Result<Option<TimelineEvent>>>,
+    },
     AttachEventThumbnail {
         id: String,
         thumbnail_filename: String,
@@ -914,6 +919,24 @@ impl RecordingCatalogHandle {
         let (reply, response) = mpsc::sync_channel(1);
         self.tx
             .send(Command::CloseEvent {
+                id: id.to_owned(),
+                end_time_ms,
+                reply,
+            })
+            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
+    }
+
+    pub(crate) fn close_native_event(
+        &self,
+        id: &str,
+        end_time_ms: i64,
+    ) -> anyhow::Result<Option<TimelineEvent>> {
+        let (reply, response) = mpsc::sync_channel(1);
+        self.tx
+            .send(Command::CloseNativeEvent {
                 id: id.to_owned(),
                 end_time_ms,
                 reply,
@@ -1463,6 +1486,17 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                 reply,
             } => {
                 let _ = reply.send(pollster::block_on(close_event(
+                    &connection,
+                    &id,
+                    end_time_ms,
+                )));
+            }
+            Command::CloseNativeEvent {
+                id,
+                end_time_ms,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(close_native_event(
                     &connection,
                     &id,
                     end_time_ms,
@@ -4322,6 +4356,26 @@ async fn close_event(
             Err(error)
         }
     }
+}
+
+async fn close_native_event(
+    connection: &turso::Connection,
+    id: &str,
+    end_time_ms: i64,
+) -> anyhow::Result<Option<TimelineEvent>> {
+    let Some(mut event) = event_by_id(connection, id).await? else {
+        return Ok(None);
+    };
+    if event.end_time_ms.is_some() {
+        return Ok(None);
+    }
+    event.revision = event
+        .revision
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("event revision exceeded its limit"))?;
+    close_event(connection, id, end_time_ms).await?;
+    event.end_time_ms = Some(end_time_ms);
+    Ok(Some(event))
 }
 
 async fn attach_event_thumbnail(
