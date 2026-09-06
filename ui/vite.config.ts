@@ -34,6 +34,7 @@ export default defineConfig({
 			'@lucide/svelte/icons/inbox',
 			'@lucide/svelte/icons/key-round',
 			'@lucide/svelte/icons/images',
+			'@lucide/svelte/icons/link',
 			'@lucide/svelte/icons/loader-circle',
 			'@lucide/svelte/icons/log-out',
 			'@lucide/svelte/icons/package',
