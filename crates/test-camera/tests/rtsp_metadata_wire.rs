@@ -100,6 +100,34 @@ fn metadata_drop_closes_idle_and_playing_connections() {
     }
 }
 
+#[test]
+fn closure_observation_retries_transient_socket_timeouts() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(25)))
+        .unwrap();
+    let (server, _) = listener.accept().unwrap();
+    let worker = std::thread::spawn(move || {
+        std::thread::park_timeout(Duration::from_millis(150));
+        server.shutdown(std::net::Shutdown::Both).unwrap();
+    });
+    assert_closed(&mut client);
+    worker.join().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "connection remained open after fixture drop")]
+fn closure_observation_rejects_a_connection_that_stays_open() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(25)))
+        .unwrap();
+    let (_server, _) = listener.accept().unwrap();
+    assert_closed(&mut client);
+}
+
 fn assert_closed(stream: &mut TcpStream) {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut buffer = [0; 16 * 1024];
@@ -119,6 +147,11 @@ fn assert_closed(stream: &mut TcpStream) {
             {
                 return;
             }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
             Err(error) => panic!("fixture connection did not close: {error}"),
         }
     }
