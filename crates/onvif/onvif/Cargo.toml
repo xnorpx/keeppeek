@@ -42,6 +42,7 @@ yaserde = "0.12"
 yaserde_derive = "0.12"
 
 [dev-dependencies]
+test-hikvision = { workspace = true }
 b_2 = { path = "../wsdl_rs/b_2" }
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"

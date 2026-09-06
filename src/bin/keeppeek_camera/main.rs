@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 
 mod catalog;
 mod discover;
+mod events;
 mod stream_test;
 
 #[global_allocator]
@@ -24,6 +25,8 @@ enum Command {
     Catalog,
     /// Discover cameras, test credentials, and write staged TOML results.
     Discover(discover::Cli),
+    /// Observe ONVIF or ISAPI events without changing camera settings or recording video.
+    Events(events::Cli),
     /// Stream selected camera profiles to MP4 and report ingress statistics.
     Test(stream_test::Cli),
 }
@@ -39,6 +42,11 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Catalog => catalog::run(),
         Command::Discover(command) => discover::run(command),
+        Command::Events(command) => {
+            tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+                events::run(command)
+            })
+        }
         Command::Test(command) => stream_test::run(command),
     }
 }

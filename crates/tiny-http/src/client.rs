@@ -36,6 +36,7 @@ pub struct ClientConnection {
 
     // set to true if we know that the previous request is the last one
     no_more_requests: bool,
+    single_request: bool,
 
     // true if the connection goes through SSL
     secure: bool,
@@ -66,6 +67,7 @@ impl ClientConnection {
             remote_addr,
             next_header_source: first_header,
             no_more_requests: false,
+            single_request: false,
             secure,
         }
     }
@@ -73,6 +75,11 @@ impl ClientConnection {
     /// true if the connection is HTTPS
     pub const fn secure(&self) -> bool {
         self.secure
+    }
+
+    pub const fn single_request(mut self, enabled: bool) -> Self {
+        self.single_request = enabled;
+        self
     }
 
     /// Reads the next line from self.next_header_source.
@@ -142,7 +149,7 @@ impl ClientConnection {
 
             // getting all headers
             let headers = {
-                let mut headers = Vec::new();
+                let mut headers: Vec<crate::Header> = Vec::new();
                 let mut header_bytes = 0usize;
                 loop {
                     let line = self
@@ -168,6 +175,15 @@ impl ClientConnection {
 
             (method, path, version, headers)
         };
+
+        let mut headers = headers;
+        if self.single_request {
+            headers.retain(|header| !header.field.equiv("Connection"));
+            headers.push(
+                crate::Header::from_bytes("Connection", "close")
+                    .expect("fixed connection header is valid"),
+            );
+        }
 
         // building the writer for the request
         let writer = self.sink.next().unwrap();
@@ -216,85 +232,83 @@ impl Iterator for ClientConnection {
             return None;
         }
 
-        loop {
-            let rq = match self.read() {
-                Err(ReadError::WrongRequestLine) => {
-                    let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(400));
-                    response
-                        .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
-                        .ok();
-                    return None; // we don't know where the next request would start,
-                    // se we have to close
-                }
-
-                Err(ReadError::WrongHeader(ver)) => {
-                    let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(400));
-                    response.raw_print(writer, ver, &[], false, None).ok();
-                    return None; // we don't know where the next request would start,
-                    // se we have to close
-                }
-
-                Err(ReadError::ReadIoError(ref err)) if err.kind() == ErrorKind::TimedOut => {
-                    // request timeout
-                    let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(408));
-                    response
-                        .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
-                        .ok();
-                    return None; // closing the connection
-                }
-
-                Err(ReadError::ExpectationFailed(ver)) => {
-                    let writer = self.sink.next().unwrap();
-                    let response = Response::new_empty(StatusCode(417));
-                    response.raw_print(writer, ver, &[], true, None).ok();
-                    return None; // TODO: should be recoverable, but needs handling in case of body
-                }
-
-                Err(ReadError::ReadIoError(_)) => return None,
-
-                Ok(rq) => rq,
-            };
-
-            // checking HTTP version
-            if *rq.http_version() > (1, 1) {
+        let rq = match self.read() {
+            Err(ReadError::WrongRequestLine) => {
                 let writer = self.sink.next().unwrap();
-                let response = Response::from_string(
-                    "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
-                )
-                .with_status_code(StatusCode(505));
+                let response = Response::new_empty(StatusCode(400));
                 response
                     .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
                     .ok();
-                continue;
+                return None; // we don't know where the next request would start,
+                // se we have to close
             }
 
-            // updating the status of the connection
-            let connection_header = rq
-                .headers()
-                .iter()
-                .find(|h| h.field.equiv("Connection"))
-                .map(|h| h.value.as_str());
+            Err(ReadError::WrongHeader(ver)) => {
+                let writer = self.sink.next().unwrap();
+                let response = Response::new_empty(StatusCode(400));
+                response.raw_print(writer, ver, &[], false, None).ok();
+                return None; // we don't know where the next request would start,
+                // se we have to close
+            }
 
-            let lowercase = connection_header.map(|h| h.to_ascii_lowercase());
+            Err(ReadError::ReadIoError(ref err)) if err.kind() == ErrorKind::TimedOut => {
+                // request timeout
+                let writer = self.sink.next().unwrap();
+                let response = Response::new_empty(StatusCode(408));
+                response
+                    .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
+                    .ok();
+                return None; // closing the connection
+            }
 
-            match lowercase {
-                Some(ref val) if val.contains("close") => self.no_more_requests = true,
-                Some(ref val) if val.contains("upgrade") => self.no_more_requests = true,
-                Some(ref val)
-                    if !val.contains("keep-alive") && *rq.http_version() == HTTPVersion(1, 0) =>
-                {
-                    self.no_more_requests = true;
-                }
-                None if *rq.http_version() == HTTPVersion(1, 0) => self.no_more_requests = true,
-                _ => (),
-            };
+            Err(ReadError::ExpectationFailed(ver)) => {
+                let writer = self.sink.next().unwrap();
+                let response = Response::new_empty(StatusCode(417));
+                response.raw_print(writer, ver, &[], true, None).ok();
+                return None; // TODO: should be recoverable, but needs handling in case of body
+            }
 
-            // returning the request
-            return Some(rq);
+            Err(ReadError::ReadIoError(_)) => return None,
+
+            Ok(rq) => rq,
+        };
+
+        // checking HTTP version
+        if *rq.http_version() > (1, 1) {
+            let writer = rq.into_writer();
+            let response = Response::from_string(
+                "This server only supports HTTP versions 1.0 and 1.1".to_owned(),
+            )
+            .with_status_code(StatusCode(505));
+            response
+                .raw_print(writer, HTTPVersion(1, 1), &[], false, None)
+                .ok();
+            return None;
         }
+
+        // updating the status of the connection
+        let connection_header = rq
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Connection"))
+            .map(|h| h.value.as_str());
+
+        let lowercase = connection_header.map(|h| h.to_ascii_lowercase());
+
+        match lowercase {
+            Some(ref val) if val.contains("close") => self.no_more_requests = true,
+            Some(ref val) if val.contains("upgrade") => self.no_more_requests = true,
+            Some(ref val)
+                if !val.contains("keep-alive") && *rq.http_version() == HTTPVersion(1, 0) =>
+            {
+                self.no_more_requests = true;
+            }
+            None if *rq.http_version() == HTTPVersion(1, 0) => self.no_more_requests = true,
+            _ => (),
+        };
+
+        // returning the request
+        Some(rq)
     }
 }
 

@@ -334,6 +334,7 @@ pub(crate) struct StreamReport {
 #[derive(Clone, Default)]
 pub struct HealthRegistry {
     inner: Arc<Mutex<HashMap<IpAddr, RegisteredCamera>>>,
+    pub(crate) events: crate::camera_events::Registry,
 }
 
 struct RegisteredCamera {
@@ -363,6 +364,7 @@ pub(crate) struct CameraHealthReport {
     pub brand: Option<String>,
     pub port: u16,
     pub streams: Vec<StreamHealthReport>,
+    pub events: Option<crate::camera_events::Evidence>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -521,6 +523,7 @@ impl HealthRegistry {
                     brand: camera.brand.clone(),
                     port: camera.port,
                     streams,
+                    events: self.events.snapshot(*ip),
                 }
             })
             .collect::<Vec<_>>();

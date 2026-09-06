@@ -33,6 +33,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Start a loopback-only fake Hikvision ISAPI device with test/test credentials.
+    Hikvision,
     /// Start a local RTSP camera.
     Rtsp(CameraArgs),
     /// Start a local Reolink camera.
@@ -113,6 +115,7 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match Cli::parse().command {
+        Command::Hikvision => serve_hikvision(),
         Command::Rtsp(command) => serve_camera(command, false),
         Command::ReoProto(command) => serve_camera(command, true),
         Command::SeedRecording(command) => seed_recording(&RecordingSeedOptions {
@@ -124,6 +127,25 @@ fn main() -> anyhow::Result<()> {
             age: Duration::from_secs(command.age_seconds),
         }),
     }
+}
+
+fn serve_hikvision() -> anyhow::Result<()> {
+    let camera = test_camera::hikvision::FakeHikvision::builder().start()?;
+    println!(
+        "[test-camera.hikvision]\nip = \"127.0.0.1\"\nmanufacturer = \"Hikvision\"\nusername = \"test\"\npassword = \"test\"\nhttp_port = {}",
+        camera.address().port()
+    );
+    tracing::info!(
+        origin = camera.origin(),
+        "fake Hikvision ISAPI device is ready"
+    );
+    let (stop, stopped) = mpsc::sync_channel(1);
+    ctrlc::set_handler(move || {
+        let _ = stop.try_send(());
+    })?;
+    let _ = stopped.recv();
+    drop(camera);
+    Ok(())
 }
 
 fn serve_camera(command: CameraArgs, reo_proto: bool) -> anyhow::Result<()> {

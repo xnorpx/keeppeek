@@ -13,6 +13,7 @@ test = false
 workspace = true
 
 [dependencies]
+test-hikvision = { workspace = true }
 anyhow = { version = "1.0.104" }
 clap = { version = "4", default-features = false, features = [
   "std",
@@ -36,3 +37,7 @@ tempfile = { version = "3.27.0" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Media"] }
+
+[[bench]]
+name = "native_events"
+harness = false

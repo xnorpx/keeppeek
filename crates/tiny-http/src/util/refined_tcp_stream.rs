@@ -75,6 +75,7 @@ impl Write for Stream {
 
 pub struct RefinedTcpStream {
     stream: Stream,
+    read_deadline: Option<std::time::Instant>,
     close_read: bool,
     close_write: bool,
 }
@@ -90,12 +91,14 @@ impl RefinedTcpStream {
 
         let read = Self {
             stream: read,
+            read_deadline: None,
             close_read: true,
             close_write: false,
         };
 
         let write = Self {
             stream: write,
+            read_deadline: None,
             close_read: false,
             close_write: true,
         };
@@ -111,6 +114,10 @@ impl RefinedTcpStream {
 
     pub(crate) fn peer_addr(&mut self) -> IoResult<Option<SocketAddr>> {
         self.stream.peer_addr()
+    }
+
+    pub(crate) const fn set_read_deadline(&mut self, deadline: std::time::Instant) {
+        self.read_deadline = Some(deadline);
     }
 }
 
@@ -128,6 +135,15 @@ impl Drop for RefinedTcpStream {
 
 impl Read for RefinedTcpStream {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        if self
+            .read_deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request read deadline expired",
+            ));
+        }
         self.stream.read(buf)
     }
 }
@@ -139,5 +155,27 @@ impl Write for RefinedTcpStream {
 
     fn flush(&mut self) -> IoResult<()> {
         self.stream.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Connection, RefinedTcpStream};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Instant;
+
+    #[test]
+    fn absolute_read_deadline_rejects_even_available_input() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let socket = listener.accept().unwrap().0;
+        let (mut reader, _writer) = RefinedTcpStream::new(Connection::from(socket));
+        peer.write_all(b"still sending").unwrap();
+        reader.set_read_deadline(Instant::now());
+        assert_eq!(
+            reader.read(&mut [0; 32]).unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
     }
 }

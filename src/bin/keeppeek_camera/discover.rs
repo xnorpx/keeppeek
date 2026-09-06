@@ -420,6 +420,7 @@ fn gather_camera_info(
 
     if cam.brand == "reolink" {
         let config = CameraConfig {
+            events: Default::default(),
             ip: cam.ip,
             name: None,
             display_name: None,
@@ -714,6 +715,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         .map(|cam| {
             auth_map.get(&cam.ip).map_or_else(
                 || CameraConfig {
+                    events: Default::default(),
                     ip: cam.ip,
                     name: cam.name.clone(),
                     display_name: None,
@@ -732,6 +734,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     event_recording_duration_secs: 60,
                 },
                 |result| CameraConfig {
+                    events: Default::default(),
                     ip: cam.ip,
                     name: cam.name.clone(),
                     display_name: None,
@@ -909,6 +912,7 @@ mod tests {
 
     fn camera(username: &str, password: &str, ip: [u8; 4]) -> CameraConfig {
         CameraConfig {
+            events: Default::default(),
             ip: IpAddr::from(ip),
             name: None,
             display_name: None,

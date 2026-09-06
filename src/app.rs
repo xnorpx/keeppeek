@@ -232,7 +232,8 @@ pub fn run(
         keeppeek.set_battery_wake(battery_wake.handle());
     }
 
-    let server_state = server_state.with_camera_runtime(keeppeek.control());
+    let server_state = with_camera_events(server_state, &mut keeppeek);
+    keeppeek.configure_isapi_callbacks(cfg.isapi_callbacks.as_ref(), &cameras)?;
 
     let operational_state = server_state.clone();
     let operational_router = router_tx.clone();
@@ -407,4 +408,11 @@ fn rollback_pending_restore(config_path: &Path) -> anyhow::Result<()> {
     )?;
     backup::recover_pending_restore(config_path, now_unix_ms)?;
     Ok(())
+}
+
+fn with_camera_events(state: ServerState, keeppeek: &mut KeepPeekLoop) -> ServerState {
+    let state = state.with_camera_runtime(keeppeek.control());
+    let publisher = state.clone();
+    keeppeek.set_event_publisher(move |event| publisher.publish_camera_event(event));
+    state
 }

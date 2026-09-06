@@ -166,7 +166,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn select_camera_config(
+pub fn select_camera_config(
     configured: &HashMap<String, Vec<CameraConfig>>,
     selector: &str,
 ) -> anyhow::Result<CameraConfig> {
@@ -228,6 +228,7 @@ mod tests {
 
     fn camera(name: &str, ip: [u8; 4]) -> CameraConfig {
         CameraConfig {
+            events: Default::default(),
             ip: IpAddr::from(ip),
             name: Some(name.to_owned()),
             display_name: None,

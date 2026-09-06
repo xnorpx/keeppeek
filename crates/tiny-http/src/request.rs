@@ -191,6 +191,10 @@ where
     } else if let Some(content_length) = content_length {
         if content_length == 0 {
             Box::new(io::empty()) as Box<dyn Read + Send + 'static>
+        } else if headers.iter().any(|header| {
+            header.field.equiv("Connection") && header.value.as_str().eq_ignore_ascii_case("close")
+        }) {
+            Box::new(source_data.take(content_length as u64)) as Box<dyn Read + Send + 'static>
         } else if content_length <= 1024 && !expects_continue {
             // if the content-length is small enough, we just read everything into a buffer
 

@@ -1,9 +1,13 @@
 //! Test camera servers for RTSP and Reolink Baichuan client integration.
 
+/// Reusable loopback Hikvision ISAPI fixture, shared with the protocol and application tests.
+pub use test_hikvision as hikvision;
+
 mod media;
 mod onvif;
 mod reo;
 mod reolink_http;
+mod rtsp;
 pub mod seed;
 mod web_ui;
 
@@ -12,7 +16,6 @@ use crate::{
     web_ui::CameraWebUiServer,
 };
 use anyhow::{Context, bail};
-use retina::server::{Mp4Playback, RtspServer};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -128,6 +131,7 @@ pub struct TestCameraBuilder {
     battery_wake: Option<BatteryWakeEndpoint>,
     isolated_reo_ports: bool,
     realtime_start_at: Option<Duration>,
+    metadata: Option<rtsp::Metadata>,
 }
 
 impl TestCameraBuilder {
@@ -168,6 +172,7 @@ impl TestCameraBuilder {
             battery_wake: None,
             isolated_reo_ports: false,
             realtime_start_at: None,
+            metadata: None,
         }
     }
 
@@ -186,6 +191,49 @@ impl TestCameraBuilder {
     /// Paces and loops RTSP media from the latest sync sample at or before `start_at`.
     pub const fn realtime_start_at(mut self, start_at: Duration) -> Self {
         self.realtime_start_at = Some(start_at);
+        self
+    }
+
+    /// Adds an ONVIF metadata RTP track to both RTSP profiles.
+    ///
+    /// Documents are raw wire bytes. Supply compressed bytes for a gzip encoding;
+    /// this fixture does not compress or parse XML. Each PLAY session sends the
+    /// documents once, in order, with at least 100 ms between documents. Each
+    /// document uses one 90 kHz RTP timestamp and payload fragments below 1200 bytes.
+    /// Timestamps start at zero and advance by 9000 per document on both profiles.
+    /// Video playback does not repeat metadata. An empty list advertises an idle track.
+    ///
+    /// Encodings include `vnd.onvif.metadata`, `vnd.onvif.metadata+gzip`, the legacy
+    /// `vnd.onvif.metadata.gzip`, `vnd.onvif.metadata.exi.onvif`, and
+    /// `vnd.onvif.metadata.exi.ext`. Other valid RTP encoding tokens are sent as given.
+    /// Keep the returned camera alive while clients run. Dropping it stops and joins
+    /// the metadata relays and their video servers.
+    ///
+    /// [`Self::start`] rejects non-RTSP cameras, UDP transport, invalid encoding
+    /// tokens, more than 64 documents, documents over 1 MiB, or a combined payload
+    /// over 8 MiB. Metadata uses TCP interleaving.
+    /// Metadata is disabled unless this method is called.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use test_camera::TestCameraBuilder;
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let document = br#"<tt:MetadataStream xmlns:tt="http://www.onvif.org/ver10/schema"/>"#;
+    /// let camera = TestCameraBuilder::rtsp("main.mp4", "sub.mp4")
+    ///     .metadata("vnd.onvif.metadata", vec![document.to_vec()])
+    ///     .realtime_start_at(Duration::ZERO)
+    ///     .start()?;
+    /// let connection = camera.connection();
+    /// let main_url = connection.main_stream_url();
+    /// let sub_url = connection.sub_stream_url();
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn metadata(mut self, encoding: &str, documents: Vec<Vec<u8>>) -> Self {
+        self.metadata = Some(rtsp::Metadata::new(encoding, documents));
         self
     }
 
@@ -225,8 +273,12 @@ impl TestCameraBuilder {
     /// # Errors
     ///
     /// Returns an error when either media source is invalid, an endpoint cannot
-    /// bind.
+    /// bind, or the metadata configuration is invalid.
     pub fn start(self) -> anyhow::Result<TestCamera> {
+        if let Some(metadata) = &self.metadata {
+            metadata.validate(self.protocol, self.transport)?;
+        }
+
         #[cfg(windows)]
         let timer_resolution = WindowsTimerResolution::request(1);
 
@@ -249,50 +301,20 @@ impl TestCameraBuilder {
         let (endpoint_ip, main_stream_url, sub_stream_url, baichuan_port, bcudp_port, transport) =
             match self.protocol {
                 Protocol::Rtsp => {
-                    if let Some(start_at) = self.realtime_start_at {
-                        let playback = Mp4Playback::realtime_looping(start_at);
-                        let main = RtspServer::from_mp4_on_with_playback(
-                            SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
-                            &self.main_source,
-                            playback,
-                        )
-                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                        let sub = RtspServer::from_mp4_on_with_playback(
-                            SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
-                            &self.sub_source,
-                            playback,
-                        )
-                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                        let endpoint_ip = ipv4_server_ip(main.address())?;
-                        (
-                            endpoint_ip,
-                            main.url().to_string(),
-                            sub.url().to_string(),
-                            None,
-                            None,
-                            ServerTransport::Rtsp {
-                                _servers: vec![main, sub],
-                            },
-                        )
-                    } else {
-                        let camera = RtspServer::from_mp4_streams_on(
-                            SocketAddr::new(IpAddr::V4(self.bind_ip), 0),
-                            &self.main_source,
-                            &self.sub_source,
-                        )
-                        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-                        let endpoint_ip = ipv4_server_ip(camera.address())?;
-                        (
-                            endpoint_ip,
-                            camera.high_resolution_url().to_string(),
-                            camera.low_resolution_url().to_string(),
-                            None,
-                            None,
-                            ServerTransport::Rtsp {
-                                _servers: vec![camera],
-                            },
-                        )
-                    }
+                    let camera = rtsp::Camera::start(
+                        self.bind_ip,
+                        [&self.main_source, &self.sub_source],
+                        self.realtime_start_at,
+                        self.metadata,
+                    )?;
+                    (
+                        ipv4_server_ip(camera.address)?,
+                        camera.main_url.clone(),
+                        camera.sub_url.clone(),
+                        None,
+                        None,
+                        ServerTransport::Rtsp { _server: camera },
+                    )
                 }
                 Protocol::ReoProto => {
                     let address = SocketAddr::new(
@@ -427,7 +449,7 @@ impl TestCamera {
 }
 
 enum ServerTransport {
-    Rtsp { _servers: Vec<RtspServer> },
+    Rtsp { _server: rtsp::Camera },
     Reo { _server: ReoServer },
 }
 
@@ -1009,26 +1031,40 @@ mod tests {
         assert!(ability.contains("abilityChn"));
         assert!(ability.contains("\"alarm\""));
 
-        let initial = reolink_api_request(
-            address,
-            "GetMdState",
-            r#"[{"cmd":"GetMdState","action":0,"param":{"channel":0}}]"#,
-        );
-        assert!(initial.contains("\"state\":1"));
+        assert_reolink_motion_configuration(address);
+    }
 
-        let updated = reolink_api_request(
-            address,
-            "SetAlarm",
-            r#"[{"cmd":"SetAlarm","action":0,"param":{"Alarm":{"channel":0,"type":"md","enable":0}}}]"#,
+    fn assert_reolink_motion_configuration(address: SocketAddr) {
+        let query = |command: &str, param: serde_json::Value| {
+            let request = serde_json::json!([{ "cmd": command, "action": 0, "param": param }]);
+            let response = reolink_api_request(address, command, &request.to_string());
+            let (_, body) = response
+                .split_once("\r\n\r\n")
+                .expect("HTTP response has a body");
+            serde_json::from_str::<serde_json::Value>(body).unwrap()
+        };
+        let motion_query = serde_json::json!({ "channel": 0, "type": "md" });
+        let initial = query("GetAlarm", motion_query.clone());
+        assert_eq!(initial[0]["value"]["Alarm"]["enable"], 1);
+        assert_eq!(
+            query("GetMdState", serde_json::json!({ "channel": 0 }))[0]["value"]["state"],
+            0
         );
-        assert!(updated.contains("\"code\":0"));
-
-        let disabled = reolink_api_request(
-            address,
-            "GetMdState",
-            r#"[{"cmd":"GetMdState","action":0,"param":{"channel":0}}]"#,
-        );
-        assert!(disabled.contains("\"state\":0"));
+        for enabled in [0, 1] {
+            let updated = query(
+                "SetAlarm",
+                serde_json::json!({
+                    "Alarm": { "channel": 0, "type": "md", "enable": enabled }
+                }),
+            );
+            assert_eq!(updated[0]["code"], 0);
+            let actual = query("GetAlarm", motion_query.clone());
+            assert_eq!(actual[0]["value"]["Alarm"]["enable"], enabled);
+            assert_eq!(
+                query("GetMdState", serde_json::json!({ "channel": 0 }))[0]["value"]["state"],
+                0
+            );
+        }
     }
 
     #[test]

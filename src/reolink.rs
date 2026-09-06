@@ -1,3 +1,5 @@
+mod events;
+
 use crate::{
     battery_wake::BatteryWakeHandle,
     cameras::{
@@ -20,7 +22,7 @@ use bytes::Bytes;
 use reo_proto::{
     BcUdpConfig, BcUdpConnection, BcUdpDiscovery, BcUdpDiscoveryConfig, BcUdpDiscoveryOutput,
     BcUdpOutput, LoginParams,
-    alarm::{AlarmCommand, AlarmEventData, AlertEvent},
+    alarm::{AlarmEventData, AlertEvent},
     auth::EncryptionMode,
     media::{AudioCodec as BcAudioCodec, StreamMetadata, VideoCodec as BcVideoCodec},
     session::{BcSession, BcSessionConfig, Command, Event, Input, Output, Role},
@@ -39,8 +41,6 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-
-use crate::storage::metadata::{EventSource, TimelineEvent, event_icon};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -631,6 +631,7 @@ impl ReolinkLoop {
         let mut audio_codec: Option<String> = None;
         let mut pending_snapshots = VecDeque::<Vec<String>>::new();
         let mut snapshot_in_flight = false;
+        let mut event_gate = events::Gate::default();
 
         loop {
             if self.shutdown.is_cancelled() {
@@ -663,6 +664,9 @@ impl ReolinkLoop {
 
             let now = Instant::now();
             session.handle_input(Input::Timeout(now))?;
+            if self.poll_event_policy(&mut event_gate, active_motion, &mut session) {
+                events::invalidate_snapshots(&mut pending_snapshots, snapshot_in_flight);
+            }
 
             loop {
                 match session.poll_output(&mut out_buf) {
@@ -710,13 +714,7 @@ impl ReolinkLoop {
                                 },
                             )))?;
 
-                            if let Err(error) = session.handle_input(Input::Command(
-                                Command::Alarm(AlarmCommand::StartMotionAlarm {
-                                    channel: self.channel,
-                                }),
-                            )) {
-                                tracing::warn!(ip = %self.camera_ip, %error, "camera motion events are unavailable");
-                            }
+                            event_gate.logged_in();
                         }
                         Event::StreamSubscribed {
                             stream_id,
@@ -1003,64 +1001,15 @@ impl ReolinkLoop {
                             tracing::debug!(ip = %self.camera_ip, "camera motion event subscription active");
                         }
                         Event::Alarm(AlertEvent::AlarmEventList(events)) => {
-                            let mut started_event_ids = Vec::new();
-                            let mut received_alarm = false;
-                            let mut received_active_alarm = false;
-
-                            for data in events.events {
-                                if data.channel != self.channel {
-                                    continue;
-                                }
-                                received_alarm = true;
-                                for kind in
-                                    alarm_event_kinds(&data, self.record_generic_motion_events)
-                                {
-                                    received_active_alarm = true;
-                                    if active_motion.contains_key(&kind) {
-                                        continue;
-                                    }
-                                    let event_id = random_event_id();
-                                    active_motion.insert(kind.clone(), event_id.clone());
-                                    let icon_key = event_icon(None, &kind).key.to_owned();
-                                    let event = TimelineEvent {
-                                        id: event_id.clone(),
-                                        revision: 1,
-                                        camera_id: self.camera_ip.to_string(),
-                                        stream: None,
-                                        source: EventSource::Camera,
-                                        kind,
-                                        start_time_ms: unix_time_ms(),
-                                        end_time_ms: None,
-                                        confidence: None,
-                                        bbox: None,
-                                        bbox_attachment_id: None,
-                                        zone: None,
-                                        text: None,
-                                        payload: None,
-                                        attachments: Vec::new(),
-                                        canonical_attachment_id: None,
-                                        icon_key,
-                                        rejected_icon_key: None,
-                                        thumbnail_filename: None,
-                                    };
-                                    let _ = self.tx.send(KeepPeekEvent::TimelineEventStarted {
-                                        event: Box::new(event),
-                                    });
-                                    started_event_ids.push(event_id);
-                                }
+                            let policy = self.event_policy();
+                            if !event_gate.permits(policy) {
+                                continue;
                             }
-
-                            if received_alarm && !received_active_alarm {
-                                let ended_at_ms = unix_time_ms();
-                                for event_id in active_motion.drain().map(|(_, event_id)| event_id)
-                                {
-                                    let _ = self.tx.send(KeepPeekEvent::TimelineEventEnded {
-                                        id: event_id,
-                                        end_time_ms: ended_at_ms,
-                                    });
-                                }
-                            }
-
+                            let started_event_ids = self.record_alarm_events(
+                                &events.events,
+                                policy.record_motion,
+                                active_motion,
+                            );
                             if !started_event_ids.is_empty() {
                                 pending_snapshots.push_back(started_event_ids);
                                 if let Err(error) = request_next_snapshot(
@@ -1075,6 +1024,12 @@ impl ReolinkLoop {
                             }
                         }
                         Event::SnapshotData { data } => {
+                            if !event_gate.permits(self.event_policy()) {
+                                events::invalidate_snapshots(
+                                    &mut pending_snapshots,
+                                    snapshot_in_flight,
+                                );
+                            }
                             snapshot_in_flight = false;
                             if let Some(event_ids) = pending_snapshots.pop_front() {
                                 for event_id in event_ids {
@@ -1096,6 +1051,12 @@ impl ReolinkLoop {
                             }
                         }
                         Event::SnapshotFailed { status } => {
+                            if !event_gate.permits(self.event_policy()) {
+                                events::invalidate_snapshots(
+                                    &mut pending_snapshots,
+                                    snapshot_in_flight,
+                                );
+                            }
                             snapshot_in_flight = false;
                             let event_count =
                                 pending_snapshots.pop_front().map_or(0, |ids| ids.len());

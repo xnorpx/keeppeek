@@ -16,3 +16,21 @@ These are some of the crates KeepPeek depends on. A few are forks, usually becau
 
 Thank you to the original authors, maintainers, and everyone who contributed to these projects. The
 local forks retain their upstream authorship and licenses.
+
+## ISAPI
+
+[isapi](isapi/README.md) implements Hikvision/Annke HTTP event parsing in plain
+Rust, with a Sans-I/O protocol core and an optional `ureq` adapter. Its
+[provenance notes](isapi/UPSTREAM.md) distinguish reused PTZ payload conventions
+from inspected Python, JavaScript, and native SDK references. It does not load a
+Hikvision SDK binary. The [operational guide](../docs/hikvision-isapi.md) documents
+the Rust camera diagnostic, typed management operations, callback activation and
+device compatibility limits.
+
+## Fake Hikvision
+
+[test-hikvision](test-hikvision/README.md) provides the shared, stateful ISAPI HTTP
+camera used by integration tests. It is independent of KeepPeek and the ISAPI
+client, verifies Digest authentication, supports configurable event streams and
+callbacks, and binds only to loopback with ephemeral ports. The existing
+`test_camera hikvision` command exposes it for local protocol testing.

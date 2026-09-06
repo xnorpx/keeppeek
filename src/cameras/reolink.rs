@@ -1135,11 +1135,27 @@ impl ReolinkClient {
     }
 
     pub fn set_alarm(&self, channel: u32, enable: bool) -> anyhow::Result<()> {
-        let param = serde_json::json!({
-            "Alarm": { "channel": channel, "type": "md", "enable": if enable { 1 } else { 0 } }
-        });
+        let mut alarm = self.get_alarm(channel)?;
+        let settings = alarm
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("camera did not return motion alarm configuration"))?;
+        settings.insert("channel".to_owned(), channel.into());
+        settings.insert("type".to_owned(), "md".into());
+        settings.insert("enable".to_owned(), u32::from(enable).into());
+        let param = serde_json::json!({ "Alarm": alarm });
         self.api_call("SetAlarm", Some(param))?;
         Ok(())
+    }
+
+    /// Returns detector enablement rather than the current motion activity.
+    pub fn motion_enabled(&self, channel: u32) -> anyhow::Result<bool> {
+        let alarm = self.get_alarm(channel)?;
+        match alarm.get("enable") {
+            Some(Value::Bool(enabled)) => Ok(*enabled),
+            Some(Value::Number(enabled)) if enabled.as_u64() == Some(0) => Ok(false),
+            Some(Value::Number(enabled)) if enabled.as_u64() == Some(1) => Ok(true),
+            _ => anyhow::bail!("camera did not report a valid motion enable state"),
+        }
     }
 
     pub fn get_md_alarm(&self, channel: u32) -> anyhow::Result<Value> {
@@ -1570,6 +1586,7 @@ impl ReolinkClient {
             mac_address: mac,
             ports,
             capabilities,
+            event_service: None,
             profiles,
             is_reolink: true,
             ptz,
@@ -1640,6 +1657,52 @@ fn parse_video_encoding(codec: Option<&str>) -> VideoEncoding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_enablement_is_not_live_motion_and_toggle_preserves_alarm_fields() {
+        use std::io::Read;
+        use std::sync::{Arc, Mutex};
+        let settings = Arc::new(Mutex::new(serde_json::json!({
+            "channel": 0, "type": "md", "enable": 1,
+            "sens": [{"id": 0, "sensitivity": 37}], "scope": {"area": "retained"}
+        })));
+        let captured = Arc::clone(&settings);
+        let server = rouille::Server::new("127.0.0.1:0", move |request| {
+            let command = request.get_param("cmd").unwrap_or_default();
+            let mut body = String::new();
+            request.data().unwrap().read_to_string(&mut body).unwrap();
+            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let value = match command.as_str() {
+                "Login" => serde_json::json!({"Token": {"name": "fixture-token"}}),
+                "GetMdState" => serde_json::json!({"state": 0}),
+                "GetAlarm" => serde_json::json!({"Alarm": captured.lock().unwrap().clone()}),
+                "SetAlarm" => {
+                    *captured.lock().unwrap() = body[0]["param"]["Alarm"].clone();
+                    serde_json::json!({})
+                }
+                _ => serde_json::json!({}),
+            };
+            rouille::Response::json(
+                &serde_json::json!([{"cmd": command, "code": 0, "value": value}]),
+            )
+        })
+        .unwrap();
+        let port = server.server_addr().port();
+        let (worker, stop) = server.stoppable();
+        let mut client =
+            ReolinkClient::new_with_http_port("127.0.0.1".parse().unwrap(), Some(port));
+        client.login("test", "test").unwrap();
+        assert!(!client.get_md_state(0).unwrap());
+        assert!(client.motion_enabled(0).unwrap());
+        client.set_alarm(0, false).unwrap();
+        let actual = client.motion_enabled(0).unwrap();
+        let stored = settings.lock().unwrap().clone();
+        stop.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(!actual);
+        assert_eq!(stored["sens"][0]["sensitivity"], 37);
+        assert_eq!(stored["scope"]["area"], "retained");
+    }
 
     #[test]
     fn parses_mixed_get_enc_profile_codecs() {

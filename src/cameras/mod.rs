@@ -1,3 +1,4 @@
+pub mod events;
 mod hikvision;
 mod network;
 pub mod reolink;
@@ -30,6 +31,8 @@ pub(crate) const BAICHUAN_PORT: u16 = 9000;
 const RTSP_PORT: u16 = 554;
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_CONCURRENT_PORT_PROBES: usize = 200;
+const EVENT_SERVICE_COUNT_MAX: usize = 256;
+const EVENT_SERVICE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) struct SessionTimestampNormalizer {
     session_origin: Option<Duration>,
@@ -234,6 +237,8 @@ pub struct CameraConfig {
     pub backend: CameraBackend,
     #[serde(default)]
     pub transport: CameraTransport,
+    #[serde(default, skip_serializing_if = "events::EventConfig::is_default")]
+    pub events: events::EventConfig,
     #[serde(default)]
     pub record_generic_motion_events: bool,
     #[serde(default)]
@@ -259,6 +264,7 @@ impl fmt::Debug for CameraConfig {
             .field("uid_configured", &self.uid.is_some())
             .field("backend", &self.backend)
             .field("transport", &self.transport)
+            .field("events", &self.events)
             .field(
                 "record_generic_motion_events",
                 &self.record_generic_motion_events,
@@ -338,6 +344,8 @@ pub struct Camera {
     pub mac_address: Option<String>,
     pub ports: CameraPorts,
     pub capabilities: CameraCapabilities,
+    /// Retains validated event evidence in memory, separate from configuration and public metadata.
+    pub event_service: Option<onvif::event::Service>,
     pub profiles: Vec<MediaProfile>,
     pub is_reolink: bool,
     pub ptz: Option<PtzInfo>,
@@ -394,6 +402,7 @@ pub(crate) struct ProbedStreamUrls {
 pub(crate) struct ProbedOnvifCamera {
     pub(crate) onvif_port: u16,
     pub(crate) device: DeviceInfo,
+    pub(crate) event_service: Option<onvif::event::Service>,
     pub(crate) profiles: Vec<MediaProfile>,
     pub(crate) main_rtsp_url: Option<String>,
     pub(crate) sub_rtsp_url: Option<String>,
@@ -791,12 +800,79 @@ fn probe_tcp_port(ip: Ipv4Addr, port: u16) -> Option<IpAddr> {
     }
 }
 
+fn event_service_from_services(
+    device: &onvif::event::Endpoint,
+    services: &[devicemgmt::Service],
+) -> anyhow::Result<Option<onvif::event::Endpoint>> {
+    anyhow::ensure!(
+        services.len() <= EVENT_SERVICE_COUNT_MAX,
+        "ONVIF service count exceeds the event discovery limit"
+    );
+    let mut events = services
+        .iter()
+        .filter(|service| service.namespace == "http://www.onvif.org/ver10/events/wsdl");
+    let Some(service) = events.next() else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        events.next().is_none(),
+        "multiple ONVIF event services advertised"
+    );
+    Ok(Some(device.resolve(&service.x_addr)?))
+}
+
+fn query_event_service(
+    config: &CameraConfig,
+    services: &[devicemgmt::Service],
+) -> Option<onvif::event::Service> {
+    let result: anyhow::Result<_> = (|| {
+        let address = SocketAddr::new(config.ip, config.onvif_port.unwrap_or(8000));
+        let device = onvif::event::Endpoint::new(format!("http://{address}/onvif/device_service"))?;
+        let Some(endpoint) = event_service_from_services(&device, services)? else {
+            return Ok(None);
+        };
+        let mut client = onvif::event::Client::new(
+            device,
+            Credentials {
+                username: config.username.clone(),
+                password: config.password.clone(),
+            },
+        )?;
+        Ok(Some(client.event_service(endpoint, EVENT_SERVICE_TIMEOUT)?))
+    })();
+    match result {
+        Ok(service) => service,
+        Err(error) => {
+            tracing::debug!(name: "camera.events.discovery.unavailable", camera_ip = %config.ip, %error, "ONVIF event evidence unavailable; media discovery remains usable");
+            None
+        }
+    }
+}
+
+fn query_onvif_services(
+    client: &onvif::soap::client::Client,
+) -> anyhow::Result<devicemgmt::GetServicesResponse> {
+    devicemgmt::get_services(
+        client,
+        &devicemgmt::GetServices {
+            include_capability: true,
+        },
+    )
+    .or_else(|_| {
+        devicemgmt::get_services(
+            client,
+            &devicemgmt::GetServices {
+                include_capability: false,
+            },
+        )
+    })
+    .map_err(|error| anyhow::anyhow!("ONVIF get_services: {error}"))
+}
+
 fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
     let port = config.onvif_port.unwrap_or(8000);
-    let url = Url::parse(&format!(
-        "http://{}:{}/onvif/device_service",
-        config.ip, port
-    ))?;
+    let address = SocketAddr::new(config.ip, port);
+    let url = Url::parse(&format!("http://{address}/onvif/device_service"))?;
 
     let creds = Some(Credentials {
         username: config.username.clone(),
@@ -808,13 +884,7 @@ fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
         .timeout(Duration::from_secs(10))
         .build();
 
-    let services_resp = devicemgmt::get_services(
-        &client,
-        &devicemgmt::GetServices {
-            include_capability: false,
-        },
-    )
-    .map_err(|e| anyhow::anyhow!("ONVIF get_services: {e}"))?;
+    let services_resp = query_onvif_services(&client)?;
 
     let mut ports = CameraPorts {
         onvif: Some(port),
@@ -991,6 +1061,7 @@ fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
         }
     }
 
+    let event_service = query_event_service(config, &services_resp.service);
     Ok(Camera {
         config: config.clone(),
         reported_manufacturer: device.manufacturer.clone(),
@@ -998,7 +1069,13 @@ fn query_onvif(config: &CameraConfig) -> anyhow::Result<Camera> {
         hostname,
         mac_address,
         ports,
-        capabilities: CameraCapabilities::default(),
+        capabilities: CameraCapabilities {
+            events: event_service
+                .as_ref()
+                .is_some_and(onvif::event::Service::pull_supported),
+            ..CameraCapabilities::default()
+        },
+        event_service,
         profiles,
         is_reolink: false,
         ptz: None,
@@ -1041,6 +1118,7 @@ fn configured_camera(config: &CameraConfig) -> Camera {
         mac_address: None,
         ports,
         capabilities: CameraCapabilities::default(),
+        event_service: None,
         profiles,
         is_reolink: config.backend == CameraBackend::ReoProto
             || config
@@ -1216,6 +1294,7 @@ fn probe_onvif_streams_on_port(
     Ok(ProbedOnvifCamera {
         onvif_port: port,
         device: camera.device,
+        event_service: camera.event_service,
         profiles: camera.profiles,
         main_rtsp_url: streams.main_rtsp_url,
         sub_rtsp_url: streams.sub_rtsp_url,
@@ -1466,6 +1545,198 @@ fn merge_reolink_profiles(
 mod tests {
     use super::*;
 
+    fn advertised_service(namespace: &str, endpoint: &str) -> devicemgmt::Service {
+        devicemgmt::Service {
+            namespace: namespace.to_owned(),
+            x_addr: endpoint.to_owned(),
+            ..devicemgmt::Service::default()
+        }
+    }
+
+    fn event_discovery_config(fake: &test_hikvision::onvif::FakeOnvif) -> CameraConfig {
+        let mut config: CameraConfig =
+            toml::from_str("ip='127.0.0.1'\nusername='test'\npassword='test'\n").unwrap();
+        config.onvif_port = Some(fake.address().port());
+        config
+    }
+
+    fn included_capability(request: &test_hikvision::onvif::CapturedRequest) -> bool {
+        let mut reader = quick_xml::Reader::from_reader(request.body());
+        loop {
+            match reader.read_event().unwrap() {
+                quick_xml::events::Event::Start(element)
+                    if element.local_name().as_ref() == "IncludeCapability" =>
+                {
+                    return reader.read_text(element.name()).unwrap().parse().unwrap();
+                }
+                quick_xml::events::Event::Eof => panic!("missing IncludeCapability"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn event_service_discovery_retains_read_only_evidence() {
+        let fake = test_hikvision::onvif::FakeOnvif::builder().start().unwrap();
+        let config = event_discovery_config(&fake);
+        let services = [advertised_service(
+            "http://www.onvif.org/ver10/events/wsdl",
+            "http://0.0.0.0/onvif/events_service",
+        )];
+
+        let service = query_event_service(&config, &services).unwrap();
+
+        assert_eq!(service.endpoint().as_str(), fake.events_endpoint());
+        assert_eq!(service.max_pull_points(), Some(1));
+        assert_eq!(service.max_producers(), Some(1));
+        assert_eq!(service.persistent(), Some(false));
+        assert!(service.pull_supported());
+        assert_eq!(service.topics().len(), 5);
+        assert_eq!(service.topic_dialects().len(), 2);
+        assert!(!service.kinds().is_empty());
+        assert_eq!(fake.active_subscriptions(), 0);
+        let requests = fake.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.authenticated())
+                .count(),
+            2
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.target() == "/onvif/events_service")
+        );
+    }
+
+    #[test]
+    fn event_service_discovery_authentication_failure_is_nonfatal() {
+        let fake = test_hikvision::onvif::FakeOnvif::builder().start().unwrap();
+        let config = event_discovery_config(&fake);
+        fake.next_response(test_hikvision::Reply::http(401, "text/plain", "denied"))
+            .unwrap();
+        let services = [advertised_service(
+            "http://www.onvif.org/ver10/events/wsdl",
+            &fake.events_endpoint(),
+        )];
+
+        assert!(query_event_service(&config, &services).is_none());
+        assert_eq!(fake.active_subscriptions(), 0);
+        assert_eq!(
+            fake.requests()
+                .iter()
+                .filter(|request| request.authenticated())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn event_service_discovery_retries_legacy_services_only_once() {
+        for failures in 0..=2 {
+            let fake = test_hikvision::onvif::FakeOnvif::builder().start().unwrap();
+            for _ in 0..failures {
+                fake.next_response(test_hikvision::Reply::http(
+                    500,
+                    "text/plain",
+                    "unsupported",
+                ))
+                .unwrap();
+            }
+            let url = Url::parse(&format!("{}/onvif/device_service", fake.origin())).unwrap();
+            let client = ClientBuilder::new(&url)
+                .credentials(Some(Credentials {
+                    username: "test".to_owned(),
+                    password: "test".to_owned(),
+                }))
+                .auth_type(AuthType::Digest)
+                .timeout(Duration::from_secs(1))
+                .build();
+
+            let response = query_onvif_services(&client);
+
+            if failures < 2 {
+                assert!(response.unwrap().service.iter().any(|service| {
+                    service.namespace == "http://www.onvif.org/ver10/media/wsdl"
+                }));
+            } else {
+                assert!(response.is_err());
+            }
+            let flags = fake
+                .requests()
+                .iter()
+                .filter(|request| request.authenticated())
+                .map(included_capability)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                flags,
+                if failures == 0 {
+                    vec![true]
+                } else {
+                    vec![true, false]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn event_service_discovery_validates_advertised_endpoints() {
+        let device =
+            onvif::event::Endpoint::new("http://192.0.2.10:8000/onvif/device_service").unwrap();
+        for advertised in [
+            "/onvif/events_service",
+            "http://0.0.0.0/onvif/events_service",
+            "http://192.0.2.10:8000/onvif/events_service",
+        ] {
+            let services = [advertised_service(
+                "http://www.onvif.org/ver10/events/wsdl",
+                advertised,
+            )];
+            let endpoint = event_service_from_services(&device, &services)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                endpoint.as_str(),
+                "http://192.0.2.10:8000/onvif/events_service"
+            );
+        }
+        for advertised in [
+            "http://192.0.2.11/onvif/events_service",
+            "http://camera.example/onvif/events_service",
+            "http://user:secret@192.0.2.10/onvif/events_service",
+            "file:///onvif/events_service",
+        ] {
+            let services = [advertised_service(
+                "http://www.onvif.org/ver10/events/wsdl",
+                advertised,
+            )];
+            assert!(event_service_from_services(&device, &services).is_err());
+        }
+    }
+
+    #[test]
+    fn event_service_discovery_requires_one_exact_event_namespace() {
+        let device =
+            onvif::event::Endpoint::new("http://192.0.2.10:8000/onvif/device_service").unwrap();
+        let mut services = vec![advertised_service(
+            "http://www.onvif.org/ver10/events/wsdl/foreign",
+            "http://192.0.2.11/onvif/events_service",
+        )];
+        assert!(
+            event_service_from_services(&device, &services)
+                .unwrap()
+                .is_none()
+        );
+        for _ in 0..2 {
+            services.push(advertised_service(
+                "http://www.onvif.org/ver10/events/wsdl",
+                "/onvif/events_service",
+            ));
+        }
+        assert!(event_service_from_services(&device, &services).is_err());
+    }
+
     #[test]
     fn candidate_stream_probe_ports_prioritize_common_http_and_preserve_overrides() {
         let automatic = candidate_stream_probe_ports(None);
@@ -1564,6 +1835,7 @@ mod tests {
     #[test]
     fn configured_rtsp_urls_create_direct_main_and_sub_profiles() {
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.77".parse().unwrap(),
             name: Some("manual".to_owned()),
             display_name: None,
@@ -1601,6 +1873,7 @@ mod tests {
     #[test]
     fn configured_reo_proto_camera_needs_no_discovered_endpoints() {
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.78".parse().unwrap(),
             name: Some("reolink".to_owned()),
             display_name: None,
@@ -1637,6 +1910,7 @@ mod tests {
     #[test]
     fn configured_retina_camera_uses_persisted_stream_endpoints() {
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.80".parse().unwrap(),
             name: Some("retina".to_owned()),
             display_name: None,
@@ -1674,6 +1948,7 @@ mod tests {
     #[test]
     fn discovered_rtsp_urls_are_retained_without_credentials() {
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.79".parse().unwrap(),
             name: Some("retina".to_owned()),
             display_name: None,
@@ -1699,6 +1974,7 @@ mod tests {
             mac_address: None,
             ports: CameraPorts::default(),
             capabilities: CameraCapabilities::default(),
+            event_service: None,
             profiles: vec![
                 profile(
                     "mainStream",
@@ -1741,6 +2017,7 @@ mod tests {
     #[test]
     fn configured_rtsp_url_overrides_only_its_matching_onvif_profile() {
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.77".parse().unwrap(),
             name: Some("manual".to_owned()),
             display_name: None,
@@ -1766,6 +2043,7 @@ mod tests {
             mac_address: None,
             ports: CameraPorts::default(),
             capabilities: CameraCapabilities::default(),
+            event_service: None,
             profiles: vec![
                 profile(
                     "mainStream",

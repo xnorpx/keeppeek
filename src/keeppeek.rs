@@ -30,6 +30,8 @@ const CHANNEL_BUFFER: usize = 256;
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CAMERA_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
+type EventPublisher = Box<dyn Fn(&TimelineEvent) + Send + Sync>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CameraRoute {
     Retina(RtspTransport),
@@ -95,6 +97,11 @@ impl std::fmt::Display for StreamKind {
     }
 }
 
+mod events;
+mod isapi;
+mod native;
+use events::event_only_update;
+
 #[derive(Debug, Clone)]
 pub struct VideoMeta {
     pub encoding: VideoEncoding,
@@ -109,7 +116,19 @@ pub struct AudioMeta {
     pub sample_rate: Option<u32>,
 }
 
+#[derive(Clone)]
 pub enum KeepPeekEvent {
+    NativeBatch {
+        owner: uuid::Uuid,
+        lifetime: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        changes: Vec<Self>,
+        reply: SyncSender<usize>,
+    },
+    IsapiBatch {
+        fence: Option<crate::isapi::callbacks::Fence>,
+        changes: Vec<Self>,
+        reply: SyncSender<usize>,
+    },
     StreamConnected {
         camera_ip: IpAddr,
         stream: StreamKind,
@@ -121,6 +140,10 @@ pub enum KeepPeekEvent {
     },
     TimelineEventStarted {
         event: Box<TimelineEvent>,
+    },
+    TimelineEventImages {
+        event: Box<TimelineEvent>,
+        images: Vec<(String, std::sync::Arc<[u8]>)>,
     },
     TimelineEventEnded {
         id: String,
@@ -134,6 +157,10 @@ pub enum KeepPeekEvent {
 }
 
 enum KeepPeekCommand {
+    Stop {
+        ip: IpAddr,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
     StartCamera {
         camera: Camera,
         reply: SyncSender<anyhow::Result<()>>,
@@ -151,6 +178,16 @@ pub struct KeepPeekControl {
 }
 
 impl KeepPeekControl {
+    /// Stops a camera's media and event sources before acknowledging removal.
+    pub fn stop_camera(&self, ip: IpAddr) -> anyhow::Result<()> {
+        let (reply, received) = mpsc::sync_channel(1);
+        self.tx
+            .send(KeepPeekCommand::Stop { ip, reply })
+            .map_err(|_| anyhow::anyhow!("KeepPeek loop is no longer running"))?;
+        received
+            .recv_timeout(CAMERA_CONTROL_TIMEOUT)
+            .map_err(|_| anyhow::anyhow!("KeepPeek loop did not acknowledge camera removal"))?
+    }
     pub fn start_camera(&self, camera: Camera) -> anyhow::Result<()> {
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.tx
@@ -185,6 +222,9 @@ impl KeepPeekControl {
 struct CameraWorkers {
     shutdown: Shutdown,
     handles: Vec<JoinHandle<()>>,
+    event_shutdown: Shutdown,
+    event_handles: Vec<JoinHandle<()>>,
+    configuration: Option<crate::cameras::CameraConfig>,
 }
 
 impl CameraWorkers {
@@ -192,19 +232,26 @@ impl CameraWorkers {
         Self {
             shutdown: Shutdown::new(),
             handles: Vec::new(),
+            event_shutdown: Shutdown::new(),
+            event_handles: Vec::new(),
+            configuration: None,
         }
     }
 
     fn cancel(&self) {
         self.shutdown.cancel();
+        self.event_shutdown.cancel();
     }
 
     fn is_finished(&self) -> bool {
-        self.handles.iter().all(JoinHandle::is_finished)
+        self.handles
+            .iter()
+            .chain(&self.event_handles)
+            .all(JoinHandle::is_finished)
     }
 
     fn join(self, camera_ip: IpAddr) {
-        for handle in self.handles {
+        for handle in self.handles.into_iter().chain(self.event_handles) {
             if handle.join().is_err() {
                 tracing::warn!(%camera_ip, "camera worker panicked");
             }
@@ -288,8 +335,11 @@ pub struct KeepPeekLoop {
     command_tx: Sender<KeepPeekCommand>,
     shutdown: Shutdown,
     camera_workers: HashMap<IpAddr, CameraWorkers>,
+    isapi_callbacks: Option<crate::isapi::callbacks::Runtime>,
     storage: Option<StorageHandle>,
     events: Option<EventStore>,
+    event_publisher: Option<EventPublisher>,
+    native_commits: native::Commits,
     live: Option<Publisher>,
     health: HealthRegistry,
     status_tx: Option<FacadeSender<RouterMessage>>,
@@ -312,8 +362,11 @@ impl KeepPeekLoop {
             command_tx,
             shutdown,
             camera_workers: HashMap::new(),
+            isapi_callbacks: None,
             storage,
             events: None,
+            event_publisher: None,
+            native_commits: native::Commits::default(),
             live: None,
             health: HealthRegistry::new(),
             status_tx: None,
@@ -338,6 +391,13 @@ impl KeepPeekLoop {
 
     pub fn set_event_store(&mut self, events: EventStore) {
         self.events = Some(events);
+    }
+
+    pub(crate) fn set_event_publisher(
+        &mut self,
+        publish: impl Fn(&TimelineEvent) + Send + Sync + 'static,
+    ) {
+        self.event_publisher = Some(Box::new(publish));
     }
 
     pub fn set_health_registry(&mut self, health: HealthRegistry) {
@@ -436,48 +496,168 @@ impl KeepPeekLoop {
         }
         self.camera_workers
             .insert(camera.config.ip, CameraWorkers::new());
+        self.camera_workers
+            .get_mut(&camera.config.ip)
+            .expect("registered camera workers")
+            .configuration = Some(camera.config.clone());
+        self.add_camera_workers(camera, route, enable_main, enable_sub);
+        Ok(())
+    }
+
+    fn add_camera_workers(
+        &mut self,
+        camera: &Camera,
+        route: CameraRoute,
+        enable_main: bool,
+        enable_sub: bool,
+    ) {
+        self.add_event_workers(camera, route);
         match route {
             CameraRoute::Retina(transport) => {
                 self.add_rtsp_camera(camera, enable_main, enable_sub, transport);
-                if camera.is_reolink {
-                    self.add_reolink_event_camera(camera);
-                }
             }
             CameraRoute::ReoProto(transport) => {
-                let main_video = camera
-                    .profiles
-                    .first()
-                    .and_then(|profile| profile.video.as_ref());
-                let sub_video = camera
-                    .profiles
-                    .get(1)
-                    .and_then(|profile| profile.video.as_ref());
-                self.add_reolink_camera(
-                    camera.config.ip,
-                    camera.config.name.clone(),
-                    camera.device.manufacturer.clone(),
-                    camera
-                        .config
-                        .uid
-                        .clone()
-                        .or_else(|| camera.device.p2p_uid.clone()),
-                    camera.config.username.clone(),
-                    camera.config.password.clone(),
-                    transport,
-                    0,
-                    enable_main,
-                    enable_sub,
-                    main_video.map_or(0, |video| video.width),
-                    main_video.map_or(0, |video| video.height),
-                    main_video.map_or(0.0, |video| video.framerate),
-                    sub_video.map_or(0, |video| video.width),
-                    sub_video.map_or(0, |video| video.height),
-                    sub_video.map_or(0.0, |video| video.framerate),
-                    camera.config.record_generic_motion_events,
-                );
+                self.add_reolink_media_camera(camera, enable_main, enable_sub, transport);
             }
         }
-        Ok(())
+    }
+
+    fn add_event_workers(&mut self, camera: &Camera, route: CameraRoute) {
+        use crate::cameras::events::EventMode;
+        let vendor = matches!(
+            camera.config.events.mode,
+            EventMode::Auto | EventMode::Vendor
+        );
+        let known_vendor = camera.is_reolink || crate::isapi::Route::for_camera(camera).is_some();
+        let event_shutdown = self.camera_workers[&camera.config.ip]
+            .event_shutdown
+            .clone();
+        self.health.events.configure(
+            camera.config.ip,
+            camera.config.events.clone(),
+            camera.config.record_generic_motion_events,
+            event_shutdown.clone(),
+        );
+        if matches!(
+            camera.config.events.mode,
+            EventMode::OnvifPullpoint | EventMode::RtspMetadata
+        ) || camera.config.events.mode == EventMode::Auto && !known_vendor
+        {
+            let workers = self
+                .camera_workers
+                .get_mut(&camera.config.ip)
+                .expect("camera worker group exists");
+            match crate::camera_events::spawn(
+                camera,
+                self.tx.clone(),
+                self.health.events.clone(),
+                event_shutdown,
+            ) {
+                Ok(handles) => workers.event_handles.extend(handles),
+                Err(_) => {
+                    tracing::warn!(camera_ip = %camera.config.ip, "unable to start native event workers");
+                }
+            }
+        }
+        if vendor {
+            if camera.is_reolink && matches!(route, CameraRoute::Retina(_)) {
+                self.add_reolink_event_camera(camera);
+            } else if !camera.is_reolink {
+                self.add_isapi_event_camera(camera);
+            }
+        }
+    }
+
+    fn add_reolink_media_camera(
+        &mut self,
+        camera: &Camera,
+        enable_main: bool,
+        enable_sub: bool,
+        transport: CameraTransport,
+    ) {
+        let main_video = camera
+            .profiles
+            .first()
+            .and_then(|profile| profile.video.as_ref());
+        let sub_video = camera
+            .profiles
+            .get(1)
+            .and_then(|profile| profile.video.as_ref());
+        self.add_reolink_camera(
+            camera.config.ip,
+            camera.config.name.clone(),
+            camera.device.manufacturer.clone(),
+            camera
+                .config
+                .uid
+                .clone()
+                .or_else(|| camera.device.p2p_uid.clone()),
+            camera.config.username.clone(),
+            camera.config.password.clone(),
+            transport,
+            0,
+            enable_main,
+            enable_sub,
+            main_video.map_or(0, |video| video.width),
+            main_video.map_or(0, |video| video.height),
+            main_video.map_or(0.0, |video| video.framerate),
+            sub_video.map_or(0, |video| video.width),
+            sub_video.map_or(0, |video| video.height),
+            sub_video.map_or(0.0, |video| video.framerate),
+            camera.config.record_generic_motion_events,
+        );
+    }
+
+    fn add_isapi_event_camera(&mut self, camera: &Camera) {
+        if let Some(callbacks) = &self.isapi_callbacks
+            && callbacks.contains(camera.config.ip)
+        {
+            callbacks.activate(camera.config.ip, camera.config.record_generic_motion_events);
+            return;
+        }
+        let workers = self
+            .camera_workers
+            .get_mut(&camera.config.ip)
+            .expect("camera workers were registered before event startup");
+        let result = if camera.config.events.mode == crate::cameras::events::EventMode::Auto {
+            let fallback_camera = camera.clone();
+            let sent = self.tx.clone();
+            let registry = self.health.events.clone();
+            let shutdown = workers.event_shutdown.clone();
+            crate::isapi::spawn_then(
+                camera,
+                self.tx.clone(),
+                self.storage.clone(),
+                shutdown.clone(),
+                move || {
+                    tracing::info!(camera_ip = %fallback_camera.config.ip, "ISAPI unsupported; switching to generic ONVIF events");
+                    match crate::camera_events::spawn(&fallback_camera, sent, registry, shutdown) {
+                        Ok(handles) => {
+                            for handle in handles {
+                                if handle.join().is_err() {
+                                    tracing::warn!("generic fallback event worker panicked");
+                                }
+                            }
+                        }
+                        Err(_) => tracing::warn!("unable to start generic fallback event workers"),
+                    }
+                },
+            )
+        } else {
+            crate::isapi::spawn(
+                camera,
+                self.tx.clone(),
+                self.storage.clone(),
+                workers.event_shutdown.clone(),
+            )
+        };
+        match result {
+            Ok(Some(handle)) => workers.event_handles.push(handle),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(camera_ip = %camera.config.ip, %error, "unable to start ISAPI event worker");
+            }
+        }
     }
 
     fn add_reolink_event_camera(&mut self, camera: &Camera) {
@@ -504,6 +684,15 @@ impl KeepPeekLoop {
             0.0,
             camera.config.record_generic_motion_events,
         );
+        let workers = self
+            .camera_workers
+            .get_mut(&camera.config.ip)
+            .expect("registered Reolink event workers");
+        let handle = workers
+            .handles
+            .pop()
+            .expect("Reolink event worker was just started");
+        workers.event_handles.push(handle);
     }
 
     /// Profile 0 is treated as Main, all others as Sub.
@@ -656,12 +845,15 @@ impl KeepPeekLoop {
         sub_expected_fps: f64,
         record_generic_motion_events: bool,
     ) {
-        let worker_shutdown = self
+        let workers = self
             .camera_workers
             .entry(camera_ip)
-            .or_insert_with(CameraWorkers::new)
-            .shutdown
-            .clone();
+            .or_insert_with(CameraWorkers::new);
+        let worker_shutdown = if enable_main || enable_sub {
+            workers.shutdown.clone()
+        } else {
+            workers.event_shutdown.clone()
+        };
         if enable_main {
             self.expect_stream(camera_ip, camera_name.as_deref(), StreamKind::Main);
         }
@@ -712,11 +904,63 @@ impl KeepPeekLoop {
 
     fn restart_camera(&mut self, camera: &Camera) -> anyhow::Result<()> {
         resolve_configured_camera_route(&camera.config, camera.is_reolink)?;
+        if self
+            .camera_workers
+            .get(&camera.config.ip)
+            .and_then(|workers| workers.configuration.as_ref())
+            .is_some_and(|previous| event_only_update(previous, &camera.config))
+        {
+            self.stop_camera_events(camera.config.ip);
+            self.camera_workers
+                .get_mut(&camera.config.ip)
+                .expect("existing camera workers")
+                .configuration = Some(camera.config.clone());
+            self.add_event_workers(
+                camera,
+                resolve_configured_camera_route(&camera.config, camera.is_reolink)?,
+            );
+            return Ok(());
+        }
         self.stop_camera(camera.config.ip);
         self.add_camera(camera, true, true)
     }
 
+    fn stop_camera_events(&mut self, camera_ip: IpAddr) {
+        if let Some(callbacks) = &self.isapi_callbacks {
+            callbacks.deactivate(camera_ip);
+        }
+        let Some(workers) = self.camera_workers.get_mut(&camera_ip) else {
+            return;
+        };
+        workers.event_shutdown.cancel();
+        let handles = std::mem::take(&mut workers.event_handles);
+        while handles.iter().any(|handle| !handle.is_finished()) {
+            match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
+                Ok(event) => self.handle_event(event),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        for handle in handles {
+            if handle.join().is_err() {
+                tracing::warn!(%camera_ip, "camera event worker panicked");
+            }
+        }
+        while let Ok(event) = self.rx.try_recv() {
+            self.handle_event(event);
+        }
+        self.close_retired_native_events();
+        self.health.events.remove(camera_ip);
+        self.camera_workers
+            .get_mut(&camera_ip)
+            .expect("media workers retained during event replacement")
+            .event_shutdown = Shutdown::new();
+    }
+
     fn stop_camera(&mut self, camera_ip: IpAddr) {
+        if let Some(callbacks) = &self.isapi_callbacks {
+            callbacks.deactivate(camera_ip);
+        }
         if let Some(workers) = self.camera_workers.remove(&camera_ip) {
             workers.cancel();
             while !workers.is_finished() {
@@ -734,6 +978,7 @@ impl KeepPeekLoop {
         self.stream_statuses.remove(&camera_ip);
         self.battery_uids.remove(&camera_ip);
         self.health.remove(camera_ip);
+        self.health.events.remove(camera_ip);
         if let Some(live) = &self.live {
             live.reset_camera(camera_ip);
         }
@@ -744,6 +989,7 @@ impl KeepPeekLoop {
 
         while !self.shutdown.is_cancelled() {
             self.handle_commands();
+            self.close_retired_native_events();
             match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
                 Ok(event) => self.handle_event(event),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -753,6 +999,10 @@ impl KeepPeekLoop {
 
         tracing::info!("KeepPeek loop shutting down");
 
+        if let Some(callbacks) = &self.isapi_callbacks {
+            callbacks.cancel();
+        }
+
         let camera_workers = std::mem::take(&mut self.camera_workers);
         for workers in camera_workers.values() {
             workers.cancel();
@@ -760,6 +1010,10 @@ impl KeepPeekLoop {
         while camera_workers
             .values()
             .any(|workers| !workers.is_finished())
+            || self
+                .isapi_callbacks
+                .as_ref()
+                .is_some_and(|callbacks| !callbacks.is_finished())
         {
             match self.rx.recv_timeout(EVENT_POLL_INTERVAL) {
                 Ok(event) => self.handle_event(event),
@@ -773,6 +1027,10 @@ impl KeepPeekLoop {
         for (camera_ip, workers) in camera_workers {
             workers.join(camera_ip);
         }
+        self.drain_retired_native_events();
+        if let Some(callbacks) = self.isapi_callbacks.take() {
+            callbacks.join();
+        }
         drop(self.tx);
 
         tracing::info!("KeepPeek loop stopped");
@@ -780,6 +1038,30 @@ impl KeepPeekLoop {
 
     fn handle_event(&mut self, event: KeepPeekEvent) {
         match event {
+            KeepPeekEvent::NativeBatch {
+                owner,
+                lifetime,
+                changes,
+                reply,
+            } => self.commit_native_batch(owner, lifetime, changes, reply),
+            KeepPeekEvent::IsapiBatch {
+                changes,
+                reply,
+                fence,
+            } => {
+                let mut committed = 0;
+                for change in changes {
+                    if fence.as_ref().is_some_and(|fence| !fence.is_current()) {
+                        break;
+                    }
+                    if let Err(error) = self.commit_isapi_change(change) {
+                        tracing::warn!(%error, committed, "ISAPI callback commit paused");
+                        break;
+                    }
+                    committed += 1;
+                }
+                let _ = reply.send(committed);
+            }
             KeepPeekEvent::StreamConnected { camera_ip, stream } => {
                 tracing::info!(%camera_ip, %stream, "stream connected");
                 if let Some(uid) = self.battery_uids.get(&camera_ip)
@@ -833,6 +1115,33 @@ impl KeepPeekLoop {
                             None,
                             event.start_time_ms,
                         );
+                    }
+                }
+            }
+            KeepPeekEvent::TimelineEventImages { event, images } => {
+                if let Some(events) = self.events.clone() {
+                    match events.commit_native_images(*event, &images) {
+                        Ok(event) => {
+                            let attachment_path = events
+                                .thumbnail_path(&event.camera_id, &event.id)
+                                .ok()
+                                .flatten();
+                            let trigger = if event.revision == 1 {
+                                Trigger::EventCreated
+                            } else {
+                                Trigger::EventUpdated
+                            };
+                            self.publish_event_revision(
+                                &event,
+                                trigger,
+                                NotificationStage::Enriched,
+                                attachment_path.as_deref(),
+                                unix_time_ms(),
+                            );
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "unable to commit native event images");
+                        }
                     }
                 }
             }
@@ -905,6 +1214,9 @@ impl KeepPeekLoop {
         attachment_path: Option<&std::path::Path>,
         occurred_at_ms: i64,
     ) {
+        if let Some(publish) = &self.event_publisher {
+            publish(event);
+        }
         if let Some(event_forwarder) = &self.event_forwarder {
             let transition = match trigger {
                 Trigger::EventCreated => EventTransition::Created,
@@ -976,6 +1288,10 @@ impl KeepPeekLoop {
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             };
             match command {
+                KeepPeekCommand::Stop { ip, reply } => {
+                    self.stop_camera(ip);
+                    let _ = reply.send(Ok(()));
+                }
                 KeepPeekCommand::StartCamera { camera, reply } => {
                     let result = self.add_camera(&camera, true, true);
                     let _ = reply.send(result);
@@ -1006,6 +1322,9 @@ fn unix_time_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    mod isapi;
+    mod native;
+
     use super::*;
     use crate::cameras::{CameraCapabilities, CameraConfig, CameraPorts, DeviceInfo, MediaProfile};
     use std::{
@@ -1016,6 +1335,7 @@ mod tests {
     fn runtime_rtsp_camera(address: SocketAddr) -> Camera {
         Camera {
             config: CameraConfig {
+                events: Default::default(),
                 ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 name: Some("runtime-rtsp".to_owned()),
                 display_name: None,
@@ -1042,6 +1362,7 @@ mod tests {
                 ..CameraPorts::default()
             },
             capabilities: CameraCapabilities::default(),
+            event_service: None,
             profiles: vec![MediaProfile {
                 token: "main".to_owned(),
                 name: "Main".to_owned(),
@@ -1096,6 +1417,7 @@ mod tests {
     #[test]
     fn explicit_reo_proto_takes_precedence_over_saved_rtsp_urls() {
         let config = CameraConfig {
+            events: Default::default(),
             ip: "192.0.2.89".parse().unwrap(),
             name: Some("reolink".to_owned()),
             display_name: None,
@@ -1161,6 +1483,7 @@ mod tests {
         let mut loop_ = KeepPeekLoop::new(shutdown.clone(), None);
         let camera = Camera {
             config: CameraConfig {
+                events: Default::default(),
                 ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 name: Some("parallel-rtsp".to_owned()),
                 display_name: None,
@@ -1187,6 +1510,7 @@ mod tests {
                 ..CameraPorts::default()
             },
             capabilities: CameraCapabilities::default(),
+            event_service: None,
             profiles: vec![
                 MediaProfile {
                     token: "main".to_owned(),
@@ -1245,6 +1569,7 @@ mod tests {
         control
             .start_camera(Camera {
                 config: CameraConfig {
+                    events: Default::default(),
                     ip: "192.0.2.88".parse().unwrap(),
                     name: Some("runtime-camera".to_owned()),
                     display_name: None,
@@ -1268,6 +1593,7 @@ mod tests {
                 mac_address: None,
                 ports: CameraPorts::default(),
                 capabilities: CameraCapabilities::default(),
+                event_service: None,
                 profiles: Vec::new(),
                 is_reolink: false,
                 ptz: None,

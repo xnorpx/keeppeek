@@ -2,6 +2,7 @@ use crate::{
     event_forwarder::{MqttConnectionState, MqttStatus},
     health::ServerHealthResponse,
     server::recording_coverage::RecordingCoverageMetricSnapshot,
+    stats::CameraHealthReport,
 };
 use prometheus_client::{
     encoding::{EncodeLabelSet, text::encode_registry},
@@ -9,6 +10,11 @@ use prometheus_client::{
     registry::Registry,
 };
 use std::sync::atomic::AtomicU64;
+
+mod events;
+
+#[cfg(test)]
+mod tests;
 
 type FloatGauge = Gauge<f64, AtomicU64>;
 
@@ -156,6 +162,82 @@ pub fn encode_health_metrics(
     mqtt: Option<&MqttStatus>,
     external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
 ) -> Result<String, std::fmt::Error> {
+    let registry = health_registry(
+        health,
+        access,
+        recording,
+        backup,
+        notifications,
+        mqtt,
+        external_analysis,
+    );
+    let mut output = String::new();
+    encode_registry(&mut output, &registry)?;
+    Ok(output)
+}
+
+/// Optional subsystem snapshots collected for one metrics response.
+#[derive(Default)]
+pub struct HealthMetricSnapshots<'a> {
+    pub access: Option<AccessMetricsSnapshot>,
+    pub recording: Option<&'a RecordingCoverageMetricSnapshot>,
+    pub backup: Option<BackupMetricsSnapshot>,
+    pub notifications: Option<NotificationMetricsSnapshot>,
+    pub mqtt: Option<&'a MqttStatus>,
+    pub external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
+}
+
+/// Encodes health and event evidence using configured camera identities.
+///
+/// Reports without a matching configured camera are omitted, as is absent event evidence.
+pub fn encode_health_with_events(
+    health: &ServerHealthResponse,
+    snapshots: HealthMetricSnapshots<'_>,
+    event_reports: &[CameraHealthReport],
+) -> Result<String, std::fmt::Error> {
+    let HealthMetricSnapshots {
+        access,
+        recording,
+        backup,
+        notifications,
+        mqtt,
+        external_analysis,
+    } = snapshots;
+    if event_reports.is_empty() {
+        return encode_health_metrics(
+            health,
+            access,
+            recording,
+            backup,
+            notifications,
+            mqtt,
+            external_analysis,
+        );
+    }
+    let mut registry = health_registry(
+        health,
+        access,
+        recording,
+        backup,
+        notifications,
+        mqtt,
+        external_analysis,
+    );
+    events::register(&mut registry, health, event_reports);
+    let mut output = String::new();
+    encode_registry(&mut output, &registry)?;
+    Ok(output)
+}
+
+fn health_registry(
+    health: &ServerHealthResponse,
+    access: Option<AccessMetricsSnapshot>,
+    recording: Option<&RecordingCoverageMetricSnapshot>,
+    backup: Option<BackupMetricsSnapshot>,
+    notifications: Option<NotificationMetricsSnapshot>,
+    mqtt: Option<&MqttStatus>,
+    external_analysis: Option<ExternalAnalysisMetricsSnapshot>,
+) -> Registry {
     let mut registry = Registry::with_prefix("keeppeek");
 
     let server_info = Family::<ServerInfoLabels, Gauge>::default();
@@ -796,9 +878,7 @@ pub fn encode_health_metrics(
         );
     }
 
-    let mut output = String::new();
-    encode_registry(&mut output, &registry)?;
-    Ok(output)
+    registry
 }
 
 fn register_external_analysis_metrics(

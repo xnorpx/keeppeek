@@ -42,6 +42,8 @@ impl ClientBuilder {
                 timeout: Self::DEFAULT_TIMEOUT,
                 fix_time_gap: None,
                 tls_verification: TlsVerification::Strict,
+                follow_redirects: true,
+                response_size_limit: None,
             },
         }
     }
@@ -74,6 +76,18 @@ impl ClientBuilder {
 
     pub const fn timeout(mut self, timeout: Duration) -> Self {
         self.config.timeout = timeout;
+        self
+    }
+
+    /// Disables application-level redirects when an endpoint must remain pinned.
+    pub const fn follow_redirects(mut self, follow: bool) -> Self {
+        self.config.follow_redirects = follow;
+        self
+    }
+
+    /// Limits response bytes before SOAP deserialization.
+    pub const fn response_size_limit(mut self, size_bytes: u64) -> Self {
+        self.config.response_size_limit = Some(size_bytes);
         self
     }
 
@@ -137,6 +151,8 @@ struct Config {
     timeout: Duration,
     fix_time_gap: Option<chrono::Duration>,
     tls_verification: TlsVerification,
+    follow_redirects: bool,
+    response_size_limit: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -258,7 +274,7 @@ impl Client {
                 digest.set_success();
             }
 
-            let text = Self::read_response_body(response)?;
+            let text = self.read_response_body(response)?;
             trace!("Response body: {text}");
             let response =
                 soap::unsoap(&text).map_err(|error| Error::Protocol(format!("{error:?}")))?;
@@ -286,7 +302,7 @@ impl Client {
                     digest.set_401(challenge);
                 }
                 _ => {
-                    if let Ok(text) = Self::read_response_body(response) {
+                    if let Ok(text) = self.read_response_body(response) {
                         trace!("Got Unauthorized with body: {text}");
                     }
 
@@ -296,6 +312,9 @@ impl Client {
 
             self.request_recursive(message, uri, auth_type, redirections)
         } else if status.is_redirection() {
+            if !self.config.follow_redirects {
+                return Err(Error::Redirection("Redirects are disabled".to_owned()));
+            }
             if redirections > 0 {
                 return Err(Error::Redirection("Redirection limit exceeded".to_string()));
             }
@@ -313,7 +332,7 @@ impl Client {
 
             self.request_recursive(message, &new_url, auth_type, redirections + 1)
         } else {
-            if let Ok(text) = Self::read_response_body(response) {
+            if let Ok(text) = self.read_response_body(response) {
                 trace!("Got HTTP error with body: {text}");
                 if let Err(soap::Error::Fault(fault)) = soap::unsoap(&text)
                     && fault.is_unauthorized()
@@ -326,10 +345,16 @@ impl Client {
         }
     }
 
-    fn read_response_body(response: ureq::http::Response<ureq::Body>) -> Result<String, Error> {
+    fn read_response_body(
+        &self,
+        response: ureq::http::Response<ureq::Body>,
+    ) -> Result<String, Error> {
         let mut body = response.into_body();
-        body.read_to_string()
-            .map_err(|error| Error::Protocol(error.to_string()))
+        let result = match self.config.response_size_limit {
+            Some(size_bytes) => body.with_config().limit(size_bytes).read_to_string(),
+            None => body.read_to_string(),
+        };
+        result.map_err(|error| Error::Protocol(error.to_string()))
     }
 
     fn map_ureq_error(error: ureq::Error) -> Error {
@@ -454,6 +479,50 @@ mod tests {
         let response = client.request("<m:Request xmlns:m=\"urn:test\"/>").unwrap();
 
         assert!(response.contains("Reply"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn probe_policy_rejects_redirects_without_contacting_target() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let target_url = format!("http://{}/private", target.local_addr().unwrap());
+        let uri = Url::parse(&format!("http://{}/events", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            write_response(&mut stream, "302 Found", &[("Location", &target_url)], "");
+        });
+
+        let client = ClientBuilder::new(&uri)
+            .follow_redirects(false)
+            .timeout(Duration::from_secs(1))
+            .build();
+        let response = client.request("<m:Request xmlns:m=\"urn:test\"/>");
+
+        assert!(matches!(response, Err(Error::Redirection(_))));
+        assert_eq!(
+            target.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn probe_policy_bounds_response_before_deserialization() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let uri = Url::parse(&format!("http://{}/events", listener.local_addr().unwrap())).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            write_response(&mut stream, "200 OK", &[], SOAP_RESPONSE);
+        });
+
+        let client = ClientBuilder::new(&uri).response_size_limit(64).build();
+        let response = client.request("<m:Request xmlns:m=\"urn:test\"/>");
+
+        assert!(matches!(response, Err(Error::Protocol(_))));
         server.join().unwrap();
     }
 

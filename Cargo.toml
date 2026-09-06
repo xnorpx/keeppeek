@@ -2,6 +2,7 @@
 members = [
   ".",
   "crates/chunked-transfer",
+  "crates/isapi",
   "crates/mp4",
   "crates/onvif/onvif",
   "crates/onvif/schema",
@@ -19,8 +20,29 @@ members = [
   "crates/rouille/rouille-multipart",
   "crates/test-camera",
   "crates/test-frame",
+  "crates/test-hikvision",
   "crates/tiny-http",
 ]
+
+[workspace.dependencies]
+test-hikvision = { path = "crates/test-hikvision", version = "0.1.0" }
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+isapi = { path = "crates/isapi", version = "0.1.0" }
+digest_auth = { version = "0.3.1", default-features = false }
+encoding_rs = { version = "0.8.35", default-features = false, features = [
+  "alloc",
+] }
+httparse = { version = "1.10.1", default-features = false, features = ["std"] }
+mime = { version = "0.3.17", default-features = false }
+rand = { version = "0.10.2", default-features = false }
+serde = { version = "1.0.229", default-features = false, features = ["std"] }
+serde_json = { version = "1.0.151", default-features = false, features = [
+  "std",
+] }
+subtle = { version = "2.6.1", default-features = false }
+ureq = { version = "=3.4.0", default-features = false }
+url = { version = "2.5.8", default-features = false, features = ["std"] }
+xml = { version = "1.4.0", default-features = false }
 
 [patch.crates-io]
 chunked_transfer = { path = "crates/chunked-transfer" }
@@ -84,6 +106,7 @@ harness = false
 test = false
 
 [dependencies]
+mime = { workspace = true }
 anyhow = { version = "1.0.104" }
 base64 = { version = "0.23.1" }
 bytes = { version = "1.12.1" }
@@ -104,6 +127,7 @@ hdrhistogram = { version = "7.6.0", default-features = false }
 hmac = "0.13.0"
 image = { version = "0.25.9", default-features = false, features = ["jpeg"] }
 include_dir = "0.7.4"
+isapi = { workspace = true }
 mimalloc = { version = "0.1.52" }
 mp4 = { path = "crates/mp4" }
 ipnet = { version = "2.12.1", features = ["serde"] }
@@ -164,6 +188,7 @@ str0m = { version = "0.23.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+test-hikvision = { workspace = true }
 rcgen = { version = "0.14", default-features = false, features = [
   "aws_lc_rs",
   "pem",
