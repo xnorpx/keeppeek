@@ -55,7 +55,8 @@ numbers and meanings remain unchanged. Other protected API files remain unchange
 - [x] Browser keyboard/mobile/back-navigation/filter-race/export tests pass.
 - [x] Before/after performance evidence meets the stated budgets.
 - [x] Adversarial review findings were reconciled and actionable defects have regression tests.
-- [x] Canonical `./check.sh` passes on the final tree.
+- [x] Canonical `./check.sh` passes on the feature tree `008a956`.
+- [ ] CI passes after the ONVIF deadline follow-up below.
 - [ ] Separate main-only slow-test run required by the PR template has passing evidence.
 
 The issue stays open until every requirement has observed evidence. The user authorized a feature
@@ -173,3 +174,27 @@ Builds use the supported `KEEPPEEK_CAMERA_DATABASE_ARCHIVE` override when public
 unavailable. The local v2.8.0 archive SHA-256 is
 `9b86ff8d4afa8721ab115e3fd0b04ca33a4b28e5b519d2283ea2ef68a0c8f009`, matching the build's pinned digest.
 Dependency manifests, registries, and quality thresholds remain unchanged.
+
+## CI Deadline Follow-up
+
+PR #223 run `34082421201` failed the macOS Rust test
+`camera_events::pullpoint::tests::queue::full_queue_and_reset_share_one_bounded_pressure_wait`.
+Its unchanged 2,300 ms completion bound expired; matrix fail-fast then cancelled Linux and
+Windows Rust tests. All UI and browser jobs passed. The affected PullPoint implementation
+predates this feature.
+
+`Producer::send` waited until the minimum of the lease and pressure deadlines, but returned the
+later pressure deadline in `DeliveryTimeout`. Reset delivery reused that later value and waited
+beyond the exhausted lease-bound delivery budget. The fix returns the effective deadline. It
+still attempts an immediately available queue send before testing expiration.
+
+The new `delivery_timeout_preserves_the_earlier_deadline_for_reset` regression failed before the
+fix because a 25 ms deadline was returned almost two seconds later. It now passes and verifies
+that both delivery and reset retain the same deadline and count their failures. The original
+CI test passes in 1.38 seconds versus 2.07 seconds in the local pre-fix reproduction. These are
+single-run elapsed observations, not percentile measurements; the 2,300 ms assertion is unchanged.
+
+Local verification on the same host: all 24 PullPoint tests pass with
+`cargo test --locked -p keeppeek --lib --features macos-test-aws-crypto camera_events::pullpoint:: -- --test-threads=1`.
+`cargo clippy --locked -p keeppeek --all-targets -- -D warnings`, Rust formatting, and diff checks
+also pass. Full cross-platform CI on the follow-up commit remains pending.

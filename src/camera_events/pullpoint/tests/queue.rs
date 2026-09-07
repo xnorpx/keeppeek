@@ -7,6 +7,7 @@ use test_hikvision::{
     onvif::{FakeOnvif, notification},
 };
 
+use super::super::DeliveryTimeout;
 use super::{Input, finish, producer};
 
 fn camera() -> FakeOnvif {
@@ -21,6 +22,29 @@ fn camera() -> FakeOnvif {
         )])
         .start()
         .unwrap()
+}
+
+#[test]
+fn delivery_timeout_preserves_the_earlier_deadline_for_reset() {
+    let fake = camera();
+    let (producer, _received) = producer(&fake);
+    for _ in 0..32 {
+        assert!(producer.slot.try_send(Input::MetadataLost).is_ok());
+    }
+    let deadline = Instant::now() + Duration::from_millis(25);
+
+    let delivery = producer.send(Input::MetadataLost, deadline).unwrap_err();
+    let delivery = delivery.downcast_ref::<DeliveryTimeout>().unwrap();
+    assert_eq!(delivery.deadline, deadline);
+
+    let reset = producer
+        .send(Input::Disconnected, delivery.deadline)
+        .unwrap_err();
+    let reset = reset.downcast_ref::<DeliveryTimeout>().unwrap();
+    assert_eq!(reset.deadline, deadline);
+    let evidence = producer.slot.evidence.lock().unwrap().clone();
+    assert_eq!(evidence.queue_drops, 2);
+    assert_eq!(evidence.delivery_stalls, 2);
 }
 
 #[test]
