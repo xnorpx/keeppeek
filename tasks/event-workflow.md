@@ -55,7 +55,8 @@ numbers and meanings remain unchanged. Other protected API files remain unchange
 - [x] Browser keyboard/mobile/back-navigation/filter-race/export tests pass.
 - [x] Before/after performance evidence meets the stated budgets.
 - [x] Adversarial review findings were reconciled and actionable defects have regression tests.
-- [ ] Canonical `./check.sh` passes on the final tree.
+- [x] Canonical `./check.sh` passes on the final tree.
+- [ ] Separate main-only slow-test run required by the PR template has passing evidence.
 
 The issue stays open until every requirement has observed evidence. The user authorized a feature
 branch, commit, push, and PR on 2026-09-06. Merge and issue closure are not authorized.
@@ -95,18 +96,18 @@ bookmarked representatives inside dense timeline clusters.
 
 ## Acceptance Criteria Verification
 
-| Criterion                                                                          | Observable outcome                                                                                                                      | Verification                                                                                                                                                        | Observed result               |
-| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| Durable principal review/dismissal; authorized shared bookmarks                    | Independent credentials and LAN workspaces retain their own flags; shared notes enforce creator/admin writes                            | Rust `event_workflow_review_is_principal_scoped_revisioned_and_durable`, `event_workflow_server_enforces_principal_and_camera_boundaries`; real workflow Playwright | Pass                          |
-| Single, selected, and explicit visible scope                                       | An 18-card bulk action changes 18 of 24 records; selected actions preserve hidden-page state; undo uses acknowledged revisions          | Rust `event_workflow_bulk_conflict_rolls_back_and_explicit_undo_preserves_other_events`; desktop workflow Playwright                                                | Pass                          |
-| Authoritative state, filters, and counts                                           | Mixed-principal counts precede pagination and honor source/creator predicates across metadata, text, and semantic search                | Rust `event_workflow_query_filters_and_counts_precede_pagination`, `event_workflow_text_and_semantic_filters_keep_authoritative_counts`, bookmark-library test      | Pass                          |
-| Conflicts preserve intent                                                          | Whole batch rollback, current CAS state, retained note draft, explicit retry, and unrelated newer flags preserved                       | Rust conflict tests; Svelte workflow/controls tests; two-tab mobile Playwright                                                                                      | Pass                          |
-| Bookmark, media, export, and hold remain distinct                                  | Missing files report metadata-only; bookmarks do not protect recordings; exports keep historical bookmark revision after removal        | Rust `event_workflow_bookmark_never_pins_recording_or_claims_a_missing_file`, `export_job_runs_reports_gaps_and_downloads_verified_file`; export-handoff Playwright | Pass                          |
-| Restart/deletion remain understandable                                             | Reopen retains flags and bookmark audit; deleted references remain queryable and expire after 90 days without resetting live tombstones | Rust durable-review/bookmark, deleted-reference cleanup, and bookmark-library tests                                                                                 | Pass                          |
-| Multi-principal, bulk, conflict, retention, accessibility, and end-to-end coverage | Keyboard actions, 44px touch controls, 320/390/768/1440 layouts, browser Back, filter changes, selection restoration, and safe notes    | 14 focused Rust tests; Svelte browser tests; 17 Events/Keep Playwright cases                                                                                        | Pass; canonical suite pending |
+| Criterion                                                                          | Observable outcome                                                                                                                      | Verification                                                                                                                                                        | Observed result              |
+| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| Durable principal review/dismissal; authorized shared bookmarks                    | Independent credentials and LAN workspaces retain their own flags; shared notes enforce creator/admin writes                            | Rust `event_workflow_review_is_principal_scoped_revisioned_and_durable`, `event_workflow_server_enforces_principal_and_camera_boundaries`; real workflow Playwright | Pass                         |
+| Single, selected, and explicit visible scope                                       | An 18-card bulk action changes 18 of 24 records; selected actions preserve hidden-page state; undo uses acknowledged revisions          | Rust `event_workflow_bulk_conflict_rolls_back_and_explicit_undo_preserves_other_events`; desktop workflow Playwright                                                | Pass                         |
+| Authoritative state, filters, and counts                                           | Mixed-principal counts precede pagination and honor source/creator predicates across metadata, text, and semantic search                | Rust `event_workflow_query_filters_and_counts_precede_pagination`, `event_workflow_text_and_semantic_filters_keep_authoritative_counts`, bookmark-library test      | Pass                         |
+| Conflicts preserve intent                                                          | Whole batch rollback, current CAS state, retained note draft, explicit retry, and unrelated newer flags preserved                       | Rust conflict tests; Svelte workflow/controls tests; two-tab mobile Playwright                                                                                      | Pass                         |
+| Bookmark, media, export, and hold remain distinct                                  | Missing files report metadata-only; bookmarks do not protect recordings; exports keep historical bookmark revision after removal        | Rust `event_workflow_bookmark_never_pins_recording_or_claims_a_missing_file`, `export_job_runs_reports_gaps_and_downloads_verified_file`; export-handoff Playwright | Pass                         |
+| Restart/deletion remain understandable                                             | Reopen retains flags and bookmark audit; deleted references remain queryable and expire after 90 days without resetting live tombstones | Rust durable-review/bookmark, deleted-reference cleanup, and bookmark-library tests                                                                                 | Pass                         |
+| Multi-principal, bulk, conflict, retention, accessibility, and end-to-end coverage | Keyboard actions, 44px touch controls, 320/390/768/1440 layouts, browser Back, filter changes, selection restoration, and safe notes    | 14 focused Rust tests; Svelte browser tests; 221 canonical Playwright cases                                                                                         | Pass; canonical suite passes |
 
-`bun x buf breaking ../api --against '../.git#branch=HEAD,subdir=api'` passes. The WebRTC changes
-are additive. No public field numbers or existing meanings changed.
+`bun x buf breaking ../api --against '../.git#branch=main,subdir=api'` passes against `b713266`.
+The WebRTC changes are additive. No public field numbers or existing meanings changed.
 
 ## Pre-Batch Performance Evidence
 
@@ -155,12 +156,18 @@ concurrent workload differ from the serial baseline and are reported separately.
 | Workflow state and counts query |               16.885 / 17.551 |                        18.256 / 23.427 |     100 ms |
 | Atomic 128-event review         |             106.890 / 111.637 |                      118.556 / 129.021 |     250 ms |
 
-The latest canonical run has passed all 2,273 Rust tests, with 20 existing skips, including the
-unchanged workflow performance budgets. Its remaining Clippy and UI phases are still pending at
-PR preparation. Strict package Clippy and the prior complete UI quality phase pass: 297 Bun tests,
-141 browser/visual tests, 57 compatibility tests, formatting, lint, Svelte/E2E typechecks, Paper,
-and harness checks. No threshold or test has been disabled. Keep the PR in draft until the full
-canonical gate and the remaining template requirements have passing evidence.
+The canonical run completed with exit code 0 on the production/test source tree committed as
+`008a956`. It passed all 2,273 Rust tests (20 existing skips), the unchanged workflow performance
+budgets, full-workspace strict Clippy, cargo-machete, formatting, and UI quality. UI results are
+297 Bun tests, 141 browser/visual tests, and 57 compatibility tests. The complete Playwright suite
+passes 221 tests, with two existing codec-capability skips, including both real-server workflow
+cases on the final backend. Svelte/E2E typechecks, Paper, and harness checks also pass.
+
+Command: `NEXTEST_TEST_THREADS=8 ./check.sh`, with the verified archive override below and the
+existing dedicated test volume selected through `TMPDIR`. The follow-up documentation commit
+records these results without changing executable code. No threshold or test has been disabled.
+The separate `KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh` run has not been performed. Keep the PR in
+draft until the remaining template requirements and CI have passing evidence.
 
 Builds use the supported `KEEPPEEK_CAMERA_DATABASE_ARCHIVE` override when public network access is
 unavailable. The local v2.8.0 archive SHA-256 is
