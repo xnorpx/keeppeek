@@ -108,6 +108,61 @@ pub(super) async fn read(
     Ok(Some(bookmark))
 }
 
+pub(super) async fn hydrate_audits(
+    connection: &turso::Connection,
+    states: &mut [State],
+) -> anyhow::Result<()> {
+    assert!(
+        states.len() <= super::MAX_BATCH,
+        "bookmark audit batch exceeds its bound"
+    );
+    let mut params = Vec::with_capacity(states.len() * 2);
+    let targets = states
+        .iter()
+        .enumerate()
+        .filter(|(_, state)| state.bookmark.is_some())
+        .map(|(index, state)| {
+            let target = format!("({index}, ?{}, ?{})", params.len() + 1, params.len() + 2);
+            params.push(turso::Value::Text(state.key.source_id.clone()));
+            params.push(turso::Value::Text(state.key.event_id.clone()));
+            target
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let limit = i64::try_from(states.len())? * MAX_AUDIT_PER_EVENT + 1;
+    let mut rows = connection
+        .query(
+            format!("WITH requested(position, source_id, event_id) AS (VALUES {targets})
+                SELECT requested.position, audit.revision, audit.actor_id, audit.occurred_at_ms, audit.action
+                FROM requested JOIN event_bookmark_audit AS audit
+                    ON audit.source_id = requested.source_id AND audit.event_id = requested.event_id
+                ORDER BY requested.position, audit.revision LIMIT {limit}"),
+            turso::params_from_iter(params),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let index = usize::try_from(row.get::<i64>(0)?)?;
+        let bookmark = states
+            .get_mut(index)
+            .and_then(|state| state.bookmark.as_mut())
+            .ok_or_else(|| anyhow::anyhow!("bookmark audit row is outside its batch"))?;
+        anyhow::ensure!(
+            bookmark.audit.len() < usize::try_from(MAX_AUDIT_PER_EVENT)?,
+            "bookmark audit exceeds its retained bound"
+        );
+        bookmark.audit.push(BookmarkAudit {
+            revision: to_u64(row.get(1)?, "bookmark audit revision")?,
+            actor_id: row.get(2)?,
+            occurred_at_ms: row.get(3)?,
+            action: row.get(4)?,
+        });
+    }
+    Ok(())
+}
+
 pub(super) async fn mutate(
     connection: &turso::Connection,
     actor: &str,
