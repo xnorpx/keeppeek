@@ -583,10 +583,7 @@ impl Producer {
                     disconnected = matches!(input, Input::Disconnected),
                     "ONVIF event delivery exceeded its bounded wait"
                 );
-                return Err(DeliveryTimeout {
-                    deadline: pressure_deadline,
-                }
-                .into());
+                return Err(DeliveryTimeout { deadline }.into());
             }
             self.shutdown.wait_timeout(remaining.min(DELIVERY_INTERVAL));
         }
