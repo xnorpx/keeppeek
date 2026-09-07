@@ -91,6 +91,7 @@ mod configuration;
 mod event_publication;
 mod event_search;
 mod event_subscription;
+mod event_workflow;
 mod health_snapshot;
 mod logging;
 mod mqtt_integration;
@@ -401,6 +402,7 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
             | control_request::Command::SubscribeData(_)
             | control_request::Command::Unsubscribe(_)
             | control_request::Command::StoredMediaCommand(_)
+            | control_request::Command::EventWorkflowCommand(_)
             | control_request::Command::GroupCommand(_)
             | control_request::Command::PublicationCommand(_)
             | control_request::Command::PublicationReport(_),
@@ -430,6 +432,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::HealthCommand(_)) => "health",
         Some(control_request::Command::ExportCommand(_)) => "export",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
+        Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
@@ -664,7 +667,7 @@ impl ControlRequestHandler for ServerControlHandler {
                         }
                     }
                     Some(control_request::Command::EventSearchCommand(command)) => {
-                        match event_search::dispatch(&self.state, session_id, command) {
+                        match event_search::dispatch(&self.state, session_id, &principal, command) {
                             Ok((result, messages)) => {
                                 data_messages = messages;
                                 Ok(result)
@@ -677,6 +680,9 @@ impl ControlRequestHandler for ServerControlHandler {
                         .map(Some),
                     Some(control_request::Command::ConfigurationCommand(command)) => {
                         configuration::dispatch(&self.state, command).map(Some)
+                    }
+                    Some(control_request::Command::EventWorkflowCommand(command)) => {
+                        event_workflow::dispatch(&self.state, &principal, command).map(Some)
                     }
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
@@ -977,6 +983,9 @@ fn server_capabilities(
     ];
     if state.notifications.is_some() {
         capability_ids.push("keeppeek.rules.v1".to_owned());
+    }
+    if event_search_catalog(state).is_ok() {
+        capability_ids.push("keeppeek.event-workflow.v1".to_owned());
     }
     if state.event_forwarder.is_some() {
         capability_ids.push("keeppeek.mqtt-forwarder.v1".to_owned());
@@ -3195,13 +3204,52 @@ fn export_event_seed(
             .is_some();
     let image_availability =
         proto_event_image_availability(event.canonical_attachment_id.is_some(), image_available);
+    let bookmark_revision = export_bookmark_revision(state, source_id, &event.id)?;
+    if requested.bookmark_revision.is_some() && requested.bookmark_revision != bookmark_revision {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "export bookmark revision is stale",
+        ));
+    }
     Ok(Some(proto::EventExportSeed {
         event_id: event.id,
         revision: event.revision,
         canonical_attachment,
         icon_key: Some(event.icon_key),
         image_availability,
+        bookmark_revision,
     }))
+}
+
+fn export_bookmark_revision(
+    state: &ServerState,
+    source_id: &str,
+    event_id: &str,
+) -> Result<Option<u64>, ControlCommandError> {
+    let Some(catalog) = state.catalog.as_ref() else {
+        return Ok(None);
+    };
+    let states = catalog
+        .event_workflow(
+            "export",
+            vec![crate::storage::catalog::workflow::EventKey {
+                source_id: source_id.to_owned(),
+                event_id: event_id.to_owned(),
+            }],
+        )
+        .map_err(|error| stored_catalog_error("read export bookmark", error))?;
+    assert_eq!(
+        states.len(),
+        1,
+        "one export event must produce one workflow state"
+    );
+    Ok(states
+        .into_iter()
+        .next()
+        .and_then(|state| state.bookmark)
+        .filter(|bookmark| bookmark.active)
+        .map(|bookmark| bookmark.revision))
 }
 
 fn export_requests_match_output(
@@ -5251,6 +5299,7 @@ fn start_event_search_query(
     session_id: SessionId,
     request: proto::QueryEvents,
     access: crate::access::CameraAccess,
+    workflow: Option<crate::storage::catalog::workflow::Query>,
 ) -> Result<proto::EventSearchDelivery, ControlCommandError> {
     validate_client_id(&request.query_id, "event search query ID")?;
     let (_, channel) = data_channel_target(request.channel)?;
@@ -5275,8 +5324,8 @@ fn start_event_search_query(
     let spawn = std::thread::Builder::new()
         .name("event-search-query".to_owned())
         .spawn(move || {
-            let result =
-                query_events(&worker_state, request, &access).map(|(_, messages)| messages);
+            let result = query_events(&worker_state, request, &access, workflow)
+                .map(|(_, messages)| messages);
             deliver_event_search_task(
                 &worker_state,
                 session_id,
@@ -5565,6 +5614,7 @@ fn query_events(
     state: &ServerState,
     request: proto::QueryEvents,
     access: &crate::access::CameraAccess,
+    workflow: Option<crate::storage::catalog::workflow::Query>,
 ) -> Result<(proto::EventSearchDelivery, Vec<OutboundDataMessage>), ControlCommandError> {
     camera_access::authorize_event_query(access, &request)?;
     validate_client_id(&request.query_id, "event search query ID")?;
@@ -5677,6 +5727,7 @@ fn query_events(
                     hits: Vec::new(),
                     next_page_token: None,
                     candidates_truncated: false,
+                    workflow_counts: workflow.as_ref().map(|_| Default::default()),
                 }
             } else {
                 search
@@ -5697,6 +5748,7 @@ fn query_events(
                         page_size,
                         page_token,
                         include_preview_keyframes: false,
+                        workflow,
                     })
                     .map_err(|error| event_search_error("search event metadata", error))?
             }
@@ -5723,6 +5775,7 @@ fn query_events(
                     preview_after_ms,
                     page_size,
                     page_token,
+                    workflow,
                 })
                 .map_err(|error| event_search_error("search event metadata", error))?
         }
@@ -5737,6 +5790,7 @@ fn query_events(
                 preview_after_ms,
                 page_size,
                 page_token,
+                workflow,
             })
             .map_err(|error| event_search_error("search event embeddings", error))?,
         None => {
@@ -5784,6 +5838,7 @@ fn query_events(
             next_offset: None,
             next_page_token: next_page_token.unwrap_or_default(),
             candidates_truncated: page.candidates_truncated,
+            workflow_counts: page.workflow_counts.map(event_workflow::proto_counts),
         }),
     ));
     Ok((
@@ -6578,6 +6633,9 @@ fn proto_event_search_hit(hit: crate::storage::EventSearchHit) -> proto::EventSe
     let image_availability =
         proto_event_image_availability(hit.has_image_attachment, hit.image_available);
     proto::EventSearchHit {
+        workflow: hit
+            .workflow
+            .map(|workflow| event_workflow::proto_state(workflow, false)),
         event_id: hit.event_id,
         revision: hit.revision,
         source_id: source_id.clone(),
@@ -12964,6 +13022,147 @@ mod tests {
         ServerControlHandler::new(state, router_tx)
     }
 
+    #[test]
+    fn event_workflow_server_enforces_principal_and_camera_boundaries() {
+        let directory = std::env::temp_dir().join(format!("workflow-server-{}", Uuid::new_v4()));
+        let catalog =
+            crate::storage::RecordingCatalog::open(&directory.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let mut event = crate::storage::catalog::tests::test_event("workflow-server", 1_000);
+        event.camera_id = "127.0.0.1".to_owned();
+        handle.insert_event(event).unwrap();
+        let mut state = media_test_state();
+        state.catalog = Some(handle.clone());
+        let alice = state
+            .access_manager
+            .create_credential("Alice", None, AccessRole::User, None, 1_000)
+            .unwrap();
+        let bob = restricted_test_user(&state);
+        bind_credential_test_session(&state, SessionId::from_u64(1211), alice.access_key);
+        bind_credential_test_session(&state, SessionId::from_u64(1212), bob.access_key);
+        let handler = test_control_handler(state.clone());
+        let target = proto::EventWorkflowTarget {
+            source_id: "127.0.0.1".to_owned(),
+            event_id: "workflow-server".to_owned(),
+        };
+        let request = workflow_test_request(proto::event_workflow_command::Action::Review(
+            proto::MutateEventReviews {
+                changes: vec![proto::EventReviewChange {
+                    target: Some(target.clone()),
+                    expected_revision: 0,
+                    reviewed: true,
+                    dismissed: false,
+                }],
+            },
+        ));
+        let accepted = handler.handle_for_session(SessionId::from_u64(1211), request.clone());
+        assert!(matches!(
+            accepted.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        let denied = handler.handle_for_session(SessionId::from_u64(1212), request.clone());
+        assert!(matches!(
+            denied.response.result,
+            Some(control_response::Result::Error(_))
+        ));
+        let key = crate::storage::catalog::workflow::EventKey {
+            source_id: target.source_id.clone(),
+            event_id: target.event_id.clone(),
+        };
+        assert!(
+            !handle
+                .event_workflow(&bob.metadata.id.to_string(), vec![key.clone()])
+                .unwrap()[0]
+                .reviewed
+        );
+        let stale = handler.handle_for_session(SessionId::from_u64(1211), request);
+        let Some(control_response::Result::Error(error)) = stale.response.result else {
+            panic!("stale workflow write must fail");
+        };
+        let detail = proto::EventWorkflowError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, proto::EventWorkflowErrorCode::Conflict as i32);
+        assert_eq!(detail.current.unwrap().review_revision, 1);
+        let bookmark_request = workflow_test_request(
+            proto::event_workflow_command::Action::Bookmark(proto::EventBookmarkChange {
+                target: Some(target),
+                expected_revision: 0,
+                active: true,
+                note: "Shared".to_owned(),
+            }),
+        );
+        let created = handler.handle_for_session(SessionId::from_u64(1211), bookmark_request);
+        assert!(matches!(
+            created.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        state
+            .access_manager
+            .set_camera_access(
+                bob.metadata.id,
+                bob.metadata.revision,
+                crate::access::CameraAccess::unrestricted(),
+            )
+            .unwrap();
+        bind_credential_test_session(&state, SessionId::from_u64(1212), bob.access_key);
+        let principal = state
+            .api_session_owners
+            .lock()
+            .unwrap()
+            .get(&SessionId::from_u64(1212))
+            .unwrap()
+            .principal
+            .clone();
+        assert!(
+            event_workflow::dispatch(
+                &state,
+                &principal,
+                proto::EventWorkflowCommand {
+                    local_workspace_id: String::new(),
+                    expected_actor_id: principal.id(),
+                    action: Some(proto::event_workflow_command::Action::Bookmark(
+                        proto::EventBookmarkChange {
+                            target: Some(proto::EventWorkflowTarget {
+                                source_id: key.source_id.clone(),
+                                event_id: key.event_id.clone()
+                            }),
+                            expected_revision: 1,
+                            active: false,
+                            note: String::new(),
+                        }
+                    )),
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            handle
+                .event_workflow(&bob.metadata.id.to_string(), vec![key])
+                .unwrap()[0]
+                .bookmark
+                .as_ref()
+                .unwrap()
+                .active
+        );
+        drop(handler);
+        drop(state);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn workflow_test_request(action: proto::event_workflow_command::Action) -> proto::Request {
+        proto::Request {
+            request_id: 121,
+            command: Some(control_request::Command::EventWorkflowCommand(
+                proto::EventWorkflowCommand {
+                    local_workspace_id: String::new(),
+                    expected_actor_id: String::new(),
+                    action: Some(action),
+                },
+            )),
+        }
+    }
+
     fn secured_test_state() -> ServerState {
         let mut state = ServerState::empty();
         let access_key = AccessKey::parse("550e8400-e29b-41d4-a716-446655440000").unwrap();
@@ -17129,6 +17328,7 @@ mod tests {
                 proto::EventSearchCommand {
                     action: Some(event_search_command::Action::Query(proto::QueryEvents {
                         query_id: "metadata-query-1".to_owned(),
+                        workflow: None,
                         search: Some(proto::query_events::Search::Metadata(
                             proto::EventMetadataSearch {
                                 event_ids: Vec::new(),
@@ -17209,6 +17409,7 @@ mod tests {
                 proto::EventSearchCommand {
                     action: Some(event_search_command::Action::Query(proto::QueryEvents {
                         query_id: "event-query-1".to_owned(),
+                        workflow: None,
                         search: Some(proto::query_events::Search::Text(proto::EventTextSearch {
                             query: "ali".to_owned(),
                             field: Some(proto::EventSearchField::FaceName as i32),
@@ -17260,6 +17461,7 @@ mod tests {
                 proto::EventSearchCommand {
                     action: Some(event_search_command::Action::Query(proto::QueryEvents {
                         query_id: "semantic-query-1".to_owned(),
+                        workflow: None,
                         search: Some(proto::query_events::Search::Semantic(
                             proto::EventSemanticSearch {
                                 embedding: Some(embedding),
@@ -18306,6 +18508,21 @@ mod tests {
         let mut export_event = event_store.event_by_id("export-event").unwrap().unwrap();
         export_event.revision = 2;
         event_store.insert(export_event).unwrap();
+        handle
+            .mutate_event_bookmark(
+                "reviewer",
+                false,
+                crate::storage::catalog::workflow::BookmarkChange {
+                    key: crate::storage::catalog::workflow::EventKey {
+                        source_id: "127.0.0.1".to_owned(),
+                        event_id: "export-event".to_owned(),
+                    },
+                    expected_revision: 0,
+                    active: true,
+                    note: "Export this evidence".to_owned(),
+                },
+            )
+            .unwrap();
         let mut state = media_test_state();
         state.catalog = Some(handle);
         state.events = Some(event_store);
@@ -18327,6 +18544,7 @@ mod tests {
                             burn_in_timestamp: false,
                             event_seed: Some(proto::EventExportSeed {
                                 event_id: "export-event".to_owned(),
+                                bookmark_revision: None,
                                 revision: 2,
                                 canonical_attachment: Some(proto::EventAttachmentDescriptor {
                                     attachment_id: "snapshot-hero".to_owned(),
@@ -18355,6 +18573,29 @@ mod tests {
         let seed = created.event_seed.as_ref().unwrap();
         assert_eq!(seed.event_id, "export-event");
         assert_eq!(seed.revision, 2);
+        assert_eq!(seed.bookmark_revision, Some(1));
+        state
+            .catalog
+            .as_ref()
+            .unwrap()
+            .mutate_event_bookmark(
+                "reviewer",
+                false,
+                crate::storage::catalog::workflow::BookmarkChange {
+                    key: crate::storage::catalog::workflow::EventKey {
+                        source_id: "127.0.0.1".to_owned(),
+                        event_id: "export-event".to_owned(),
+                    },
+                    expected_revision: 1,
+                    active: false,
+                    note: "Export this evidence".to_owned(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            created.event_seed.as_ref().unwrap().bookmark_revision,
+            Some(1)
+        );
         assert_eq!(
             seed.canonical_attachment
                 .as_ref()

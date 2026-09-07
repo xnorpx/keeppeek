@@ -27,6 +27,23 @@ import type {
 import { NotificationControlClient } from './control-client-notifications';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
+import {
+	EventWorkflowControlClient,
+	decodeEventWorkflowError,
+	eventWorkflowCounts,
+	eventWorkflowState
+} from './control-client-event-workflow';
+import {
+	localWorkflowId,
+	type EventBookmarkChange,
+	type EventReviewChange,
+	type EventWorkflowCounts,
+	type EventWorkflowFilter,
+	type EventWorkflowIdentity,
+	type EventWorkflowState,
+	type EventWorkflowTarget
+} from './event-workflow';
+import type { EventBookmarkQuery } from './event-workflow';
 import { BackupHttpClient } from './backup-http-client';
 import { emitTimelinePerformanceEvent } from './timeline-observability';
 import { decodeStateStoreRequestError } from './state-store-error';
@@ -226,6 +243,7 @@ export type MediaExportJob = {
 
 export type MediaExportEventSeed = {
 	eventId: string;
+	bookmarkRevision?: string;
 	revision: number;
 	canonicalAttachment: RecordingEventAttachment | null;
 	iconKey: RecordingEvent['icon_key'];
@@ -270,12 +288,14 @@ export type EventPreviewHit = {
 	previewEndMs: number;
 	keyframes: EventPreviewKeyframe[];
 	keyframesTruncated: boolean;
+	workflow?: EventWorkflowState;
 };
 
 export type EventPreviewPage = {
 	hits: EventPreviewHit[];
 	nextPageToken: string;
 	candidatesTruncated: boolean;
+	workflowCounts?: EventWorkflowCounts;
 };
 
 export type EventMetadataSearchOptions = {
@@ -293,6 +313,7 @@ export type EventMetadataSearchOptions = {
 	pageSize?: number;
 	pageToken?: string;
 	includePreviewKeyframes?: boolean;
+	workflow?: EventWorkflowFilter;
 	signal?: AbortSignal;
 };
 
@@ -460,6 +481,10 @@ export class ControlClient {
 	#peekLayouts = new PeekLayoutControlClient((command) => this.request(command));
 	#cameraAccess = new CameraAccessControlClient((command) => this.request(command));
 	#configuration = new ConfigurationControlClient((command) => this.request(command));
+	#eventWorkflow = new EventWorkflowControlClient(
+		(command) => this.request(command),
+		() => this.eventWorkflowIdentity()
+	);
 	#backups = new BackupHttpClient(() => this.#accessKey);
 	#system = new SystemControlClient(
 		(command) => this.request(command),
@@ -476,6 +501,43 @@ export class ControlClient {
 		this.#accessStateListeners.add(listener);
 		listener(this.#accessState);
 		return () => this.#accessStateListeners.delete(listener);
+	}
+
+	eventWorkflowIdentity(): EventWorkflowIdentity {
+		const session = this.#accessState.session;
+		if (!session) throw new Error('Connect to KeepPeek before reviewing events.');
+		const localWorkspaceId = session.local ? localWorkflowId(window.localStorage) : '';
+		return {
+			actorId: session.local ? `workspace:${localWorkspaceId}` : session.principalId,
+			localWorkspaceId,
+			administrator: session.role === 'administrator'
+		};
+	}
+
+	async getEventWorkflow(targets: readonly EventWorkflowTarget[], includeAudit = false) {
+		await this.getServerCapabilities();
+		return this.#eventWorkflow.get(targets, includeAudit);
+	}
+
+	async reviewEvents(changes: readonly EventReviewChange[]) {
+		const actorId = this.eventWorkflowIdentity().actorId;
+		await this.getServerCapabilities();
+		if (this.eventWorkflowIdentity().actorId !== actorId)
+			throw new Error('Reviewer identity changed. Reload event state.');
+		return this.#eventWorkflow.review(changes);
+	}
+
+	async bookmarkEvent(change: EventBookmarkChange) {
+		const actorId = this.eventWorkflowIdentity().actorId;
+		await this.getServerCapabilities();
+		if (this.eventWorkflowIdentity().actorId !== actorId)
+			throw new Error('Reviewer identity changed. Reload event state.');
+		return this.#eventWorkflow.bookmark(change);
+	}
+
+	async listEventBookmarks(query: EventBookmarkQuery) {
+		await this.getServerCapabilities();
+		return this.#eventWorkflow.list(query);
 	}
 
 	async checkAccess(): Promise<void> {
@@ -710,6 +772,7 @@ export class ControlClient {
 	}
 
 	async searchEventMetadata(options: EventMetadataSearchOptions): Promise<EventPreviewPage> {
+		if (options.workflow) await this.getServerCapabilities();
 		const image =
 			options.image === 'with'
 				? ProtoEventImageFilter.WITH_IMAGE
@@ -719,6 +782,7 @@ export class ControlClient {
 		return this.runEventSearch(options.signal, (queryId) =>
 			create(QueryEventsSchema, {
 				queryId,
+				workflow: options.workflow ? this.#eventWorkflow.query(options.workflow) : undefined,
 				search: {
 					case: 'metadata',
 					value: create(EventMetadataSearchSchema, {
@@ -2066,6 +2130,8 @@ export class ControlClient {
 				if (stateStoreError) throw stateStoreError;
 				const configurationError = decodeConfigurationRequestError(reply.result.value);
 				if (configurationError) throw configurationError;
+				const workflowError = decodeEventWorkflowError(reply.result.value);
+				if (workflowError) throw workflowError;
 				const conflict = reply.result.value.details.find(
 					(detail) => detail.typeUrl === 'type.keeppeek.dev/notification-rule-conflict.v1'
 				);
@@ -2420,7 +2486,8 @@ export class ControlClient {
 			pending.resolve({
 				hits: pending.hits.map(eventPreviewHit),
 				nextPageToken: end.nextPageToken,
-				candidatesTruncated: end.candidatesTruncated
+				candidatesTruncated: end.candidatesTruncated,
+				...(end.workflowCounts ? { workflowCounts: eventWorkflowCounts(end.workflowCounts) } : {})
 			});
 		} catch (cause) {
 			pending.reject(
@@ -3737,6 +3804,7 @@ function eventPreviewHit(hit: ProtoEventSearchHit): EventPreviewHit {
 	const attachments = hit.attachments.map(recordingEventAttachment);
 	return {
 		eventId: hit.eventId,
+		...(hit.workflow ? { workflow: eventWorkflowState(hit.workflow) } : {}),
 		revision: numeric(hit.revision),
 		sourceId: hit.sourceId,
 		eventType: hit.eventType,
@@ -3860,6 +3928,9 @@ function mediaExportJob(job: ProtoExportJob): MediaExportJob {
 		eventSeed: job.eventSeed
 			? {
 					eventId: job.eventSeed.eventId,
+					...(job.eventSeed.bookmarkRevision === undefined
+						? {}
+						: { bookmarkRevision: job.eventSeed.bookmarkRevision.toString() }),
 					revision: numeric(job.eventSeed.revision),
 					canonicalAttachment: job.eventSeed.canonicalAttachment
 						? recordingEventAttachment(job.eventSeed.canonicalAttachment)
@@ -3883,6 +3954,7 @@ function protoExportEventSeed(
 		| 'canonical_attachment_id'
 		| 'icon_key'
 		| 'image_availability'
+		| 'workflow'
 	>
 ) {
 	if (!Number.isSafeInteger(event.revision) || (event.revision ?? 0) <= 0) {
@@ -3894,6 +3966,9 @@ function protoExportEventSeed(
 	);
 	return create(EventExportSeedSchema, {
 		eventId: event.id,
+		bookmarkRevision: event.workflow?.bookmark?.active
+			? BigInt(event.workflow.bookmark.revision)
+			: undefined,
 		revision: BigInt(event.revision!),
 		canonicalAttachment: canonical
 			? create(EventAttachmentDescriptorSchema, {

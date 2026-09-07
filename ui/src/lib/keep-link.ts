@@ -34,6 +34,8 @@ const returnFields = [
 	'confidence',
 	'image',
 	'q',
+	'review',
+	'bookmarks',
 	'event',
 	'eventCamera'
 ];

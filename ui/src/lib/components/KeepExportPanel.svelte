@@ -15,6 +15,7 @@
 	} from '$lib/keep-modes';
 	import type { RecordingEvent, RecordingSegment } from '$lib/types';
 	import CheckCircleIcon from '@lucide/svelte/icons/circle-check';
+	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import HardDriveIcon from '@lucide/svelte/icons/hard-drive';
 	import InfoIcon from '@lucide/svelte/icons/info';
@@ -415,6 +416,20 @@
 			<DownloadIcon class="size-4 text-primary-soft" />
 			<h2 class="text-sm font-semibold">Export a range</h2>
 		</header>
+	{/if}
+	{#if !paperFrame && (event?.workflow?.bookmark?.active || job?.eventSeed?.bookmarkRevision)}
+		<p
+			data-export-source-bookmark
+			class="flex min-h-11 flex-wrap items-center gap-2 border-b border-hairline px-4 py-2 text-xs"
+		>
+			<BookmarkIcon class="size-4 shrink-0 text-primary" fill="currentColor" />
+			{job?.eventSeed?.bookmarkRevision
+				? `Source bookmark revision ${job.eventSeed.bookmarkRevision}`
+				: 'Bookmarked event'}
+			{#if event?.workflow && !event.workflow.mediaAvailable}<span class="text-warning"
+					>Metadata only; recording unavailable</span
+				>{/if}
+		</p>
 	{/if}
 	{#if range && segment}
 		{#if job}

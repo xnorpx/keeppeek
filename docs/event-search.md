@@ -18,8 +18,10 @@ keyset continuation token. Ordinary filters compose with `AND` semantics:
 - normalized indexed-text prefixes across event type and producer-supplied search terms.
 
 Repeated values within one filter use `OR` semantics. A metadata page contains at most 128 hits,
-does not include attachment or encoded keyframe bytes, and does not compute an unbounded exact
-total. Exact event IDs allow a selected detail deep link to resolve in one bounded query without
+does not include attachment or encoded keyframe bytes, and does not compute an exact total unless
+workflow context is requested. Workflow queries return authoritative counts before pagination for
+the effective authorized query. See [event review and bookmarks](event-workflow.md).
+Exact event IDs allow a selected detail deep link to resolve in one bounded query without
 walking continuation pages.
 
 ## Searchable metadata

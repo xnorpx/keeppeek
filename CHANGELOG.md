@@ -4,6 +4,9 @@
 
 ### Added
 
+- Add durable per-reviewer event review/dismissal, shared revisioned bookmarks and notes, explicit
+  visible/selected bulk review with undo, authoritative workflow filters/counts, retained bookmark
+  references, and source-bookmark export relationships through `keeppeek.event-workflow.v1`.
 - Add a direct Home Assistant live-camera card with a visual editor, shared WebRTC connections,
   responsive theme-aware layouts, bounded reconnects, and versioned HACS/manual release artifacts.
 - Add Administrator-only `GET /config/export` and `POST /config/apply` for two-TOML ZIP transfer,

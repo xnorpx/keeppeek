@@ -5,6 +5,7 @@
 	import { buildTimelineAvailability } from '$lib/timeline-availability';
 	import ZoomInIcon from '@lucide/svelte/icons/zoom-in';
 	import ZoomOutIcon from '@lucide/svelte/icons/zoom-out';
+	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
 
 	const DAY_MS = 86_400_000;
 	const MINUTE_MS = 60_000;
@@ -122,7 +123,15 @@
 			const previous = clusters.at(-1);
 			if (previous && left - previous.left < EVENT_CLUSTER_GAP_PX) {
 				previous.count += 1;
-				if (!previous.event.thumbnail_url && event.thumbnail_url) previous.event = event;
+				const previousBookmarked = previous.event.workflow?.bookmark?.active ?? false;
+				const bookmarked = event.workflow?.bookmark?.active ?? false;
+				if (
+					(!previousBookmarked && bookmarked) ||
+					(previousBookmarked === bookmarked &&
+						!previous.event.thumbnail_url &&
+						event.thumbnail_url)
+				)
+					previous.event = event;
 				continue;
 			}
 			clusters.push({ event, count: 1, left });
@@ -421,6 +430,7 @@
 					type="button"
 					class="absolute top-14 flex h-11 w-[88px] -translate-x-1/2 items-center gap-1 overflow-hidden rounded-sm border border-hairline bg-surface p-1 text-left shadow-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 					style:left={`${eventCardLeft(cluster.left)}px`}
+					data-timeline-bookmarked={cluster.event.workflow?.bookmark?.active || undefined}
 					aria-label={`${eventLabel(cluster.event.kind)} event at ${formatTime(cluster.event.start_time_ms)}`}
 					onclick={(pointerEvent) => {
 						pointerEvent.stopPropagation();
@@ -439,7 +449,11 @@
 					{/if}
 					<span class="min-w-0 flex-1">
 						<span class="block truncate text-[9px] font-medium">
-							{eventLabel(cluster.event.kind)}
+							{#if cluster.event.workflow?.bookmark?.active}<BookmarkIcon
+									class="mr-1 inline size-3 text-primary"
+									aria-label="Bookmarked event"
+									fill="currentColor"
+								/>{/if}{eventLabel(cluster.event.kind)}
 						</span>
 						<span class="block font-mono text-[8px] text-text-faint">
 							{formatTime(cluster.event.start_time_ms)}

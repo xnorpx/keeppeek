@@ -2,6 +2,7 @@ import type { CameraListItem, RecordingEvent } from './types';
 import type { EventPreviewKeyframe } from './control-client';
 import { canonicalEventAttachment } from './event-presentation';
 import { keepMomentSearchParams } from './keep-link';
+import type { EventReviewFilter } from './event-workflow';
 
 export type EventImageFilter = 'all' | 'with' | 'without';
 
@@ -18,6 +19,8 @@ export type EventBrowserFilters = {
 	minimumConfidence: number | null;
 	image: EventImageFilter;
 	query: string;
+	review?: EventReviewFilter;
+	bookmarks?: 'all' | 'bookmarked' | 'mine';
 };
 
 export type EventBrowserRecord = {
@@ -118,6 +121,8 @@ export function parseEventBrowserFilters(
 	const requestedImage = params.get('image');
 	const requestedStartTime = params.get('from');
 	const requestedEndTime = params.get('to');
+	const requestedReview = params.get('review');
+	const requestedBookmarks = params.get('bookmarks');
 	const startTime =
 		requestedStartTime !== null && UTC_TIME.test(requestedStartTime) ? requestedStartTime : null;
 	const endTime =
@@ -125,6 +130,14 @@ export function parseEventBrowserFilters(
 	const validTimeRange = startTime === null || endTime === null || startTime < endTime;
 	return {
 		date: requestedDate !== null && ISO_DATE.test(requestedDate) ? requestedDate : fallbackDate,
+		...(requestedReview === 'unreviewed' ||
+		requestedReview === 'reviewed' ||
+		requestedReview === 'dismissed'
+			? { review: requestedReview }
+			: {}),
+		...(requestedBookmarks === 'bookmarked' || requestedBookmarks === 'mine'
+			? { bookmarks: requestedBookmarks }
+			: {}),
 		startTime: validTimeRange ? startTime : null,
 		endTime: validTimeRange ? endTime : null,
 		cameraId: clean(params.get('camera')),
@@ -146,6 +159,8 @@ export function eventBrowserSearchParams(
 ): URLSearchParams {
 	return new URLSearchParams({
 		date: filters.date,
+		...(filters.review && filters.review !== 'all' ? { review: filters.review } : {}),
+		...(filters.bookmarks && filters.bookmarks !== 'all' ? { bookmarks: filters.bookmarks } : {}),
 		...(filters.startTime ? { from: filters.startTime } : {}),
 		...(filters.endTime ? { to: filters.endTime } : {}),
 		...(filters.cameraId ? { camera: filters.cameraId } : {}),
@@ -217,6 +232,12 @@ export function eventBrowserRecordKey(record: EventBrowserRecord): string {
 
 export function eventFilterSummary(filters: EventBrowserFilters): string {
 	const clauses = [
+		filters.review && filters.review !== 'all' ? filters.review : null,
+		filters.bookmarks === 'mine'
+			? 'bookmarked by me'
+			: filters.bookmarks === 'bookmarked'
+				? 'bookmarked'
+				: null,
 		filters.startTime ? `from ${filters.startTime} UTC` : null,
 		filters.endTime ? `until ${filters.endTime} UTC` : null,
 		filters.cameraId ? `camera ${filters.cameraId}` : null,

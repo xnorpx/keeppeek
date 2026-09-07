@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 pub(super) fn dispatch(
     state: &ServerState,
     session_id: SessionId,
+    principal: &super::ApiPrincipal,
     command: proto::EventSearchCommand,
 ) -> Result<(Option<control_ok::Result>, Vec<OutboundDataMessage>), ControlCommandError> {
     match command.action {
@@ -37,7 +38,9 @@ pub(super) fn dispatch(
                 Vec::new(),
             ))
         }
-        Some(event_search_command::Action::Query(request)) => query(state, session_id, request),
+        Some(event_search_command::Action::Query(request)) => {
+            query(state, session_id, principal, request)
+        }
         Some(event_search_command::Action::FetchMedia(request)) => {
             if state.webrtc.has_api_session(session_id) {
                 let delivery = start_event_search_media(state, session_id, request)?;
@@ -81,17 +84,23 @@ pub(super) fn dispatch(
 fn query(
     state: &ServerState,
     session_id: SessionId,
+    principal: &super::ApiPrincipal,
     request: proto::QueryEvents,
 ) -> Result<(Option<control_ok::Result>, Vec<OutboundDataMessage>), ControlCommandError> {
     let access = super::camera_access::for_session(state, session_id)?;
+    let workflow = request
+        .workflow
+        .as_ref()
+        .map(|context| super::event_workflow::query_filter(principal, context))
+        .transpose()?;
     if state.webrtc.has_api_session(session_id) {
-        let delivery = start_event_search_query(state, session_id, request, access)?;
+        let delivery = start_event_search_query(state, session_id, request, access, workflow)?;
         return Ok((
             Some(control_ok::Result::EventSearchDelivery(delivery)),
             Vec::new(),
         ));
     }
-    let (delivery, messages) = query_events(state, request, &access)?;
+    let (delivery, messages) = query_events(state, request, &access, workflow)?;
     Ok((
         Some(control_ok::Result::EventSearchDelivery(delivery)),
         messages,
