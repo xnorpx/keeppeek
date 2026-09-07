@@ -4,6 +4,10 @@
 	import CalendarDaysIcon from '@lucide/svelte/icons/calendar-days';
 	import ImagesIcon from '@lucide/svelte/icons/images';
 	import InfoIcon from '@lucide/svelte/icons/info';
+	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
+	import EventWorkflowControls from './EventWorkflowControls.svelte';
+	import type { EventWorkflow } from '$lib/event-workflow.svelte';
+	import type { EventWorkflowIdentity } from '$lib/event-workflow';
 
 	type Props = {
 		events: readonly RecordingEvent[];
@@ -13,6 +17,9 @@
 		onseek: (timestampMs: number) => void;
 		panel?: 'all' | 'stories' | 'calendar';
 		paperFrame?: boolean;
+		workflow?: EventWorkflow;
+		workflowIdentity?: EventWorkflowIdentity | null;
+		onopen?: (event: RecordingEvent) => void;
 	};
 
 	type CalendarDay = {
@@ -29,7 +36,10 @@
 		ondate,
 		onseek,
 		panel = 'all',
-		paperFrame = false
+		paperFrame = false,
+		workflow,
+		workflowIdentity = null,
+		onopen
 	}: Props = $props();
 	const dateFormatter = new Intl.DateTimeFormat(undefined, {
 		weekday: 'long',
@@ -191,7 +201,10 @@
 								type="button"
 								class="grid w-full gap-3 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none sm:grid-cols-[9rem_minmax(0,1fr)]"
 								aria-label={`Review story at ${timeFormatter.format(new Date(story.start_time_ms))} UTC`}
-								onclick={() => onseek(story.start_time_ms)}
+								onclick={() => {
+									onseek(story.start_time_ms);
+									onopen?.(story);
+								}}
 							>
 								{#if story.thumbnail_url}
 									<img
@@ -214,7 +227,13 @@
 											? ''
 											: ` – ${timeFormatter.format(new Date(story.end_time_ms))}`}
 									</span>
-									<span class="mt-1 block text-sm font-medium">Story event</span>
+									<span class="mt-1 flex items-center gap-2 text-sm font-medium"
+										>Story event{#if story.workflow?.bookmark?.active}<BookmarkIcon
+												class="size-4 text-primary"
+												aria-label="Bookmarked story"
+												fill="currentColor"
+											/>{/if}</span
+									>
 									<span class="mt-1 block text-xs text-text-muted">
 										Summary and additional frames were not reported by this server.
 									</span>
@@ -223,6 +242,11 @@
 									</span>
 								</span>
 							</button>
+							{#if workflow && workflowIdentity && story.workflow}<EventWorkflowControls
+									value={story.workflow}
+									{workflow}
+									identity={workflowIdentity}
+								/>{/if}
 						</article>
 					{/if}
 				{:else}

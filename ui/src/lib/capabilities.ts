@@ -7,6 +7,15 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.event-workflow.v1': {
+		delivery: 'ships',
+		serverOwns:
+			'Durable principal review state, shared bookmark CAS and audit, authorized filters and counts',
+		unlocks: 'Event review, dismiss, bookmarks, and explicit visible or selected bulk actions',
+		whenMissing: 'Events remain readable; durable review and bookmark actions stay unavailable',
+		failureGuarantee:
+			'Conflicts preserve drafts and never overwrite newer state; bookmarks do not protect recordings'
+	},
 	'keeppeek.backup.v1': {
 		delivery: 'ships',
 		serverOwns:

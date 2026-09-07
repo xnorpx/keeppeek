@@ -1,5 +1,7 @@
 # Implementation Plan: Validated Backup, Restore, and Migration
 
+Current work: [issue #121 event workflow](event-workflow.md). The completed plan below is retained.
+
 ## Superseding contract
 
 The plan below records the original issue #128 implementation, not the current HTTP interface.

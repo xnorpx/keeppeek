@@ -244,6 +244,7 @@ export type EventImageAvailability = 'none' | 'available' | 'unavailable';
 
 export interface RecordingEvent {
 	id: string;
+	workflow?: import('./event-workflow').EventWorkflowState;
 	source_id?: string;
 	revision?: number;
 	source: 'camera' | 'keeppeek';

@@ -60,6 +60,16 @@ exact totals.
 
 ## Review events consistently
 
+Mark events reviewed or dismissed without deleting evidence. Those flags belong to your authenticated
+identity, or to a persistent **Local workspace** in trusted-LAN use. Event updates do not reset them.
+Use the visible or selected count on bulk actions; undo applies only to the acknowledged targets.
+Review and bookmark filters use server-computed counts, not the current page length.
+
+Bookmarks are shared with authorized camera viewers. Their creator or an Administrator can edit
+the bounded note or remove the bookmark. **Saved bookmarks** retains honest metadata-only references
+when media, events, or sources are unavailable. A bookmark does not pin video through retention.
+Exports keep their source event/bookmark revision relationship without creating a retention hold.
+
 Events, Keep, notifications, MQTT, and export entry points use the same event revision and canonical
 preview. An authorized producer may name the canonical attachment. Otherwise KeepPeek chooses a
 supported snapshot, then a story frame, then a retained thumbnail using stable ordinal, capture

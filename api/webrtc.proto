@@ -45,6 +45,7 @@ message Request {
     EventSearchCommand event_search_command = 23;
     NotificationRuleCommand notification_rule_command = 24;
     ConfigurationCommand configuration_command = 25;
+    EventWorkflowCommand event_workflow_command = 26;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -802,6 +803,7 @@ message EventExportSeed {
   optional EventAttachmentDescriptor canonical_attachment = 3;
   optional string icon_key = 4;
   EventImageAvailability image_availability = 5;
+  optional uint64 bookmark_revision = 6;
 }
 
 message ListExportJobs {}
@@ -929,6 +931,21 @@ message QueryEvents {
   uint32 offset = 11;
   DataChannelKind channel = 12;
   string page_token = 13;
+  EventWorkflowQuery workflow = 15;
+}
+
+message EventWorkflowQuery {
+  string local_workspace_id = 1;
+  EventReviewFilter review = 2;
+  optional bool bookmarked = 3;
+  bool bookmarked_by_me = 4;
+}
+
+enum EventReviewFilter {
+  EVENT_REVIEW_FILTER_ANY = 0;
+  EVENT_REVIEW_FILTER_UNREVIEWED = 1;
+  EVENT_REVIEW_FILTER_REVIEWED = 2;
+  EVENT_REVIEW_FILTER_DISMISSED = 3;
 }
 
 message EventTextSearch {
@@ -1659,6 +1676,120 @@ message NotificationRuleCommand {
   }
 }
 
+message EventWorkflowCommand {
+  string local_workspace_id = 1;
+  string expected_actor_id = 6;
+  oneof action {
+    GetEventWorkflow get = 2;
+    MutateEventReviews review = 3;
+    EventBookmarkChange bookmark = 4;
+    ListEventBookmarks list_bookmarks = 5;
+  }
+}
+
+message EventWorkflowTarget {
+  string source_id = 1;
+  string event_id = 2;
+}
+
+message GetEventWorkflow {
+  repeated EventWorkflowTarget targets = 1;
+  bool include_audit = 2;
+}
+
+message ListEventBookmarks {
+  repeated string source_ids = 1;
+  int64 start_ms = 2;
+  int64 end_ms = 3;
+  bool by_me = 4;
+  uint32 page_size = 5;
+  string page_token = 6;
+}
+
+message EventReviewChange {
+  EventWorkflowTarget target = 1;
+  uint64 expected_revision = 2;
+  bool reviewed = 3;
+  bool dismissed = 4;
+}
+
+message MutateEventReviews {
+  repeated EventReviewChange changes = 1;
+}
+
+message EventBookmarkChange {
+  EventWorkflowTarget target = 1;
+  uint64 expected_revision = 2;
+  bool active = 3;
+  string note = 4;
+}
+
+message EventBookmark {
+  bool active = 1;
+  string note = 2;
+  uint64 revision = 3;
+  string created_by = 4;
+  int64 created_at_ms = 5;
+  string updated_by = 6;
+  int64 updated_at_ms = 7;
+  int64 event_start_ms = 8;
+  string event_kind = 9;
+  repeated EventBookmarkAudit audit = 10;
+}
+
+message EventBookmarkAudit {
+  uint64 revision = 1;
+  string actor_id = 2;
+  int64 occurred_at_ms = 3;
+  string action = 4;
+}
+
+message EventWorkflowState {
+  EventWorkflowTarget target = 1;
+  bool reviewed = 2;
+  bool dismissed = 3;
+  uint64 review_revision = 4;
+  optional int64 reviewed_at_ms = 5;
+  optional int64 dismissed_at_ms = 6;
+  optional int64 updated_at_ms = 7;
+  EventBookmark bookmark = 8;
+  bool event_present = 9;
+  bool media_available = 10;
+  bool source_available = 11;
+}
+
+message EventWorkflowResult {
+  repeated EventWorkflowState states = 1;
+  string actor_id = 2;
+  bool local_workspace = 3;
+  bool bookmarks_included = 4;
+  optional uint64 total = 5;
+  string next_page_token = 6;
+}
+
+message EventWorkflowCounts {
+  uint64 total = 1;
+  uint64 unreviewed = 2;
+  uint64 reviewed = 3;
+  uint64 dismissed = 4;
+  uint64 bookmarked = 5;
+  uint64 bookmarked_by_me = 6;
+}
+
+message EventWorkflowError {
+  EventWorkflowErrorCode code = 1;
+  EventWorkflowState current = 2;
+}
+
+enum EventWorkflowErrorCode {
+  EVENT_WORKFLOW_ERROR_CODE_UNSPECIFIED = 0;
+  EVENT_WORKFLOW_ERROR_CODE_CONFLICT = 1;
+  EVENT_WORKFLOW_ERROR_CODE_INVALID = 2;
+  EVENT_WORKFLOW_ERROR_CODE_NOT_AUTHORIZED = 3;
+  EVENT_WORKFLOW_ERROR_CODE_LIMIT = 4;
+  EVENT_WORKFLOW_ERROR_CODE_UNAVAILABLE = 5;
+}
+
 message ListNotificationRules {}
 
 message SaveNotificationRuleDraft {
@@ -2121,6 +2252,7 @@ message Ok {
     AccessSessionResult access_session_result = 34;
     AccessAuditResult access_audit_result = 35;
     ConfigurationResult configuration_result = 36;
+    EventWorkflowResult event_workflow_result = 37;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";
@@ -2962,6 +3094,7 @@ message EventSearchHit {
   optional string bounding_box_attachment_id = 21;
   EventImageAvailability image_availability = 22;
   repeated EventAttachmentDescriptor attachments = 23;
+  EventWorkflowState workflow = 24;
 }
 
 message EventSearchKeyframe {
@@ -2980,6 +3113,7 @@ message EventSearchQueryEnd {
   optional uint32 next_offset = 3;
   string next_page_token = 4;
   bool candidates_truncated = 5;
+  EventWorkflowCounts workflow_counts = 6;
 }
 
 message EventSearchMediaChunk {

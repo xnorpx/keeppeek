@@ -6,6 +6,7 @@
 	} from '$lib/event-browser';
 	import { onMount } from 'svelte';
 	import EventPreview from './EventPreview.svelte';
+	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
 
 	type Props = {
 		record: EventBrowserRecord;
@@ -138,6 +139,12 @@
 			<span
 				class="absolute top-1.5 left-1.5 rounded-sm bg-primary px-1.5 py-0.5 font-mono text-2xs font-semibold tracking-caps text-on-primary"
 				>STORY</span
+			>
+		{/if}
+		{#if record.event.workflow?.bookmark?.active}
+			<span
+				class="absolute bottom-1.5 left-1.5 grid size-6 place-items-center rounded-sm bg-video/85 text-white"
+				aria-label="Bookmarked event"><BookmarkIcon class="size-3.5" fill="currentColor" /></span
 			>
 		{/if}
 	</div>
