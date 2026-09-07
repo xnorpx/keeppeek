@@ -76,6 +76,7 @@ pub struct EventTextSearchQuery {
     pub preview_after_ms: u64,
     pub page_size: u32,
     pub page_token: Option<String>,
+    pub workflow: Option<crate::storage::catalog::workflow::Query>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,6 +107,7 @@ pub struct EventMetadataQuery {
     pub page_size: u32,
     pub page_token: Option<String>,
     pub include_preview_keyframes: bool,
+    pub workflow: Option<crate::storage::catalog::workflow::Query>,
 }
 
 impl EventMetadataQuery {
@@ -128,6 +130,7 @@ impl EventMetadataQuery {
             page_size: 50,
             page_token: None,
             include_preview_keyframes: false,
+            workflow: None,
         }
     }
 }
@@ -151,6 +154,7 @@ impl EventTextSearchQuery {
             preview_after_ms: DEFAULT_PREVIEW_AFTER_MS,
             page_size: 50,
             page_token: None,
+            workflow: None,
         }
     }
 }
@@ -167,6 +171,7 @@ pub struct EventSemanticSearchQuery {
     pub preview_after_ms: u64,
     pub page_size: u32,
     pub page_token: Option<String>,
+    pub workflow: Option<crate::storage::catalog::workflow::Query>,
 }
 
 impl EventSemanticSearchQuery {
@@ -187,6 +192,7 @@ impl EventSemanticSearchQuery {
             preview_after_ms: DEFAULT_PREVIEW_AFTER_MS,
             page_size: 50,
             page_token: None,
+            workflow: None,
         }
     }
 }
@@ -218,6 +224,7 @@ pub struct EventSearchHit {
     pub preview_end_ms: i64,
     pub keyframes: Vec<EventKeyframeLocation>,
     pub keyframes_truncated: bool,
+    pub workflow: Option<crate::storage::catalog::workflow::State>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -226,6 +233,7 @@ pub struct EventSearchPage {
     pub hits: Vec<EventSearchHit>,
     pub next_page_token: Option<String>,
     pub candidates_truncated: bool,
+    pub workflow_counts: Option<crate::storage::catalog::workflow::Counts>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

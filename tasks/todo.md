@@ -1,5 +1,7 @@
 # Issue #128 Tasks
 
+Current task checklist: [issue #121 event workflow](event-workflow.md).
+
 This completed checklist records the original implementation. The managed HTTP lifecycle and CLI
 below are superseded by `GET /config/export`, `POST /config/apply`, and `keeppeek config`. The
 current two-TOML contract is documented in [backup and restore](../docs/backup-and-restore.md).

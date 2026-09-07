@@ -29,6 +29,8 @@ use std::{
     time::Duration,
 };
 
+pub mod workflow;
+
 const COMMAND_CAPACITY: usize = 256;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_SEARCH_PAGE_TOKEN_BYTES: usize = 4_096;
@@ -419,6 +421,10 @@ enum Command {
         id: String,
         reply: SyncSender<anyhow::Result<Option<TimelineEvent>>>,
     },
+    Workflow {
+        command: workflow::Command,
+        reply: SyncSender<anyhow::Result<Vec<workflow::State>>>,
+    },
     EventPublicationIdentity {
         id: String,
         reply: SyncSender<anyhow::Result<Option<EventPublicationIdentity>>>,
@@ -515,6 +521,10 @@ enum Command {
 }
 
 enum SearchCommand {
+    Bookmarks {
+        query: workflow::BookmarkQuery,
+        reply: SyncSender<anyhow::Result<workflow::BookmarkPage>>,
+    },
     Metadata {
         query: EventMetadataQuery,
         reply: SyncSender<anyhow::Result<EventSearchPage>>,
@@ -1553,6 +1563,9 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
             Command::EventById { id, reply } => {
                 let _ = reply.send(pollster::block_on(event_by_id(&connection, &id)));
             }
+            Command::Workflow { command, reply } => {
+                let _ = reply.send(pollster::block_on(workflow::execute(&connection, command)));
+            }
             Command::EventPublicationIdentity { id, reply } => {
                 let _ = reply.send(pollster::block_on(event_publication_identity(
                     &connection,
@@ -1733,6 +1746,12 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
 fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>) {
     while let Ok(command) = rx.recv() {
         match command {
+            SearchCommand::Bookmarks { query, reply } => {
+                let _ = reply.send(pollster::block_on(workflow::list_bookmarks(
+                    &connection,
+                    &query,
+                )));
+            }
             SearchCommand::Metadata { query, reply } => {
                 let _ = reply.send(pollster::block_on(search_event_metadata(
                     &connection,
@@ -2639,6 +2658,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     backfill_event_presentation(connection, icon_key_added).await?;
     apply_event_search_backfill(connection).await?;
     backfill_recording_coverage(connection).await?;
+    workflow::initialize(connection).await?;
     Ok(())
 }
 
@@ -5003,6 +5023,17 @@ async fn search_event_metadata(
     connection: &turso::Connection,
     query: EventMetadataQuery,
 ) -> anyhow::Result<EventSearchPage> {
+    workflow::snapshot(
+        connection,
+        search_event_metadata_snapshot(connection, query),
+    )
+    .await
+}
+
+async fn search_event_metadata_snapshot(
+    connection: &turso::Connection,
+    query: EventMetadataQuery,
+) -> anyhow::Result<EventSearchPage> {
     let fingerprint = metadata_search_fingerprint(&query);
     let cursor = query
         .page_token
@@ -5032,13 +5063,12 @@ async fn search_event_metadata(
     };
     ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
 
-    let mut sql = format!(
-        "SELECT {EVENT_SEARCH_COLUMNS}
-         FROM recording_events AS e
-         WHERE (e.stream IS NULL OR e.stream = ?)
-           AND e.start_time_ms < ?
-           AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?
-           AND e.rowid <= ?"
+    let mut sql = String::from(
+        "FROM recording_events AS e
+                 WHERE (e.stream IS NULL OR e.stream = ?1)
+                     AND e.start_time_ms < ?2
+                     AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?3
+                     AND e.rowid <= ?4",
     );
     let mut params = vec![
         turso::Value::Text(query.stream_id.clone()),
@@ -5057,7 +5087,7 @@ async fn search_event_metadata(
     append_text_filter(&mut sql, "e.source", &origins, &mut params);
     append_text_filter(&mut sql, "lower(e.zone)", &query.zones, &mut params);
     if let Some(confidence) = query.minimum_confidence {
-        sql.push_str(" AND e.confidence >= ?");
+        sql.push_str(&format!(" AND e.confidence >= ?{}", params.len() + 1));
         params.push(turso::Value::Real(confidence));
     }
     match query.image {
@@ -5066,32 +5096,46 @@ async fn search_event_metadata(
         EventImageFilter::WithoutImage => sql.push_str(" AND e.canonical_attachment_id IS NULL"),
     }
     if let Some(text) = &query.text {
-        sql.push_str(
+        sql.push_str(&format!(
             " AND EXISTS (
                  SELECT 1 FROM recording_event_search_terms AS t
                  WHERE t.event_id = e.id
-                   AND t.normalized_value >= ? AND t.normalized_value < ?
+                   AND t.normalized_value >= ?{} AND t.normalized_value < ?{}
              )",
-        );
+            params.len() + 1,
+            params.len() + 2,
+        ));
         params.push(turso::Value::Text(text.clone()));
         params.push(turso::Value::Text(format!("{text}\u{10ffff}")));
     }
+    workflow::append_filter(query.workflow.as_ref(), &mut sql, &mut params)?;
+    let workflow_counts =
+        workflow::counts(connection, query.workflow.as_ref(), &sql, &params).await?;
     if let (Some(last_start_time_ms), Some(last_event_id)) = (last_start_time_ms, last_event_id) {
-        sql.push_str(
+        sql.push_str(&format!(
             " AND (
-                 e.start_time_ms < ?
-                 OR (e.start_time_ms = ? AND e.id > ?)
+                 e.start_time_ms < ?{}
+                 OR (e.start_time_ms = ?{} AND e.id > ?{})
              )",
-        );
+            params.len() + 1,
+            params.len() + 2,
+            params.len() + 3,
+        ));
         params.push(turso::Value::Integer(last_start_time_ms));
         params.push(turso::Value::Integer(last_start_time_ms));
         params.push(turso::Value::Text(last_event_id));
     }
-    sql.push_str(" ORDER BY e.start_time_ms DESC, e.id LIMIT ?");
+    sql.push_str(&format!(
+        " ORDER BY e.start_time_ms DESC, e.id LIMIT ?{}",
+        params.len() + 1
+    ));
     params.push(turso::Value::Integer(i64::from(query.page_size) + 1));
 
     let mut rows = connection
-        .query(sql, turso::params_from_iter(params))
+        .query(
+            format!("SELECT {EVENT_SEARCH_COLUMNS} {sql}"),
+            turso::params_from_iter(params),
+        )
         .await?;
     let mut hits = Vec::with_capacity(query.page_size as usize);
     let mut has_more = false;
@@ -5107,6 +5151,7 @@ async fn search_event_metadata(
             query.preview_after_ms,
         )?);
     }
+    workflow::hydrate(connection, query.workflow.as_ref(), &mut hits).await?;
     if query.include_preview_keyframes {
         attach_default_previews(connection, &mut hits, &query.stream_id).await?;
     }
@@ -5129,6 +5174,7 @@ async fn search_event_metadata(
         hits,
         next_page_token,
         candidates_truncated: false,
+        workflow_counts,
     })
 }
 
@@ -5148,13 +5194,20 @@ fn append_text_filter(
         if index > 0 {
             sql.push(',');
         }
-        sql.push('?');
+        sql.push_str(&format!("?{}", params.len() + 1));
         params.push(turso::Value::Text(value.clone()));
     }
     sql.push(')');
 }
 
 async fn search_event_text(
+    connection: &turso::Connection,
+    query: EventTextSearchQuery,
+) -> anyhow::Result<EventSearchPage> {
+    workflow::snapshot(connection, search_event_text_snapshot(connection, query)).await
+}
+
+async fn search_event_text_snapshot(
     connection: &turso::Connection,
     query: EventTextSearchQuery,
 ) -> anyhow::Result<EventSearchPage> {
@@ -5193,50 +5246,60 @@ async fn search_event_text(
     let field = query.field.map(|field| field.as_str().to_owned());
     let include_event_text = i64::from(query.field == Some(crate::storage::EventSearchField::Text));
     let source_id = query.source_id;
-    let sql = format!(
-        "SELECT {EVENT_SEARCH_COLUMNS}
-             FROM recording_event_search_terms AS t
-             JOIN recording_events AS e ON e.id = t.event_id
-             WHERE t.normalized_value >= ?1 AND t.normalized_value < ?2
+    let mut sql = String::from(
+        "FROM recording_events AS e
+             WHERE EXISTS (SELECT 1 FROM recording_event_search_terms AS t
+               WHERE t.event_id = e.id AND t.normalized_value >= ?1 AND t.normalized_value < ?2
                AND (?3 IS NULL OR t.field = ?4 OR (?5 = 1 AND t.field = 'event_text'))
+             )
                AND (?6 IS NULL OR e.camera_id = ?7)
                    AND (e.stream IS NULL OR e.stream = ?8)
                    AND e.start_time_ms < ?10
                    AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?9
-                         AND e.rowid <= ?11
-                             AND (
-                             ?12 IS NULL
-                             OR e.start_time_ms < ?13
-                             OR (e.start_time_ms = ?14 AND e.id > ?15)
-                             )
-             GROUP BY e.id
-             ORDER BY e.start_time_ms DESC, e.id
-                     LIMIT ?16"
+                         AND e.rowid <= ?11",
+    );
+    let mut params = turso::params![
+        query.query,
+        prefix_end,
+        field.clone(),
+        field,
+        include_event_text,
+        source_id.clone(),
+        source_id,
+        query.stream_id.clone(),
+        query.start_time_ms,
+        query.end_time_ms,
+        event_snapshot_rowid,
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()?;
+    workflow::append_filter(query.workflow.as_ref(), &mut sql, &mut params)?;
+    let workflow_counts =
+        workflow::counts(connection, query.workflow.as_ref(), &sql, &params).await?;
+    let cursor_parameter = params.len() + 1;
+    sql.push_str(&format!(
+        " AND (?{cursor_parameter} IS NULL OR e.start_time_ms < ?{cursor_parameter}
+        OR (e.start_time_ms = ?{cursor_parameter} AND e.id > ?{}))
+        ORDER BY e.start_time_ms DESC, e.id LIMIT ?{}",
+        cursor_parameter + 1,
+        cursor_parameter + 2
+    ));
+    params.extend(
+        turso::params![
+            last_start_time_ms,
+            last_event_id,
+            i64::from(query.page_size) + 1
+        ]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?,
     );
     let mut rows = connection
         .query(
-            sql,
-            turso::params![
-                query.query,
-                prefix_end,
-                field.clone(),
-                field,
-                include_event_text,
-                source_id.clone(),
-                source_id,
-                query.stream_id.clone(),
-                query.start_time_ms,
-                query.end_time_ms,
-                event_snapshot_rowid,
-                last_start_time_ms,
-                last_start_time_ms,
-                last_start_time_ms,
-                last_event_id,
-                i64::from(query.page_size) + 1,
-            ],
+            format!("SELECT {EVENT_SEARCH_COLUMNS} {sql}"),
+            turso::params_from_iter(params),
         )
         .await?;
-    let mut hits = Vec::new();
+    let mut hits = Vec::with_capacity(query.page_size as usize);
     let mut has_more = false;
     while let Some(row) = rows.next().await? {
         if hits.len() == query.page_size as usize {
@@ -5251,6 +5314,7 @@ async fn search_event_text(
         )?);
     }
     attach_default_previews(connection, &mut hits, &query.stream_id).await?;
+    workflow::hydrate(connection, query.workflow.as_ref(), &mut hits).await?;
     ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
     let next_page_token = has_more
         .then(|| {
@@ -5270,10 +5334,22 @@ async fn search_event_text(
         hits,
         next_page_token,
         candidates_truncated: false,
+        workflow_counts,
     })
 }
 
 async fn search_event_semantic(
+    connection: &turso::Connection,
+    query: EventSemanticSearchQuery,
+) -> anyhow::Result<EventSearchPage> {
+    workflow::snapshot(
+        connection,
+        search_event_semantic_snapshot(connection, query),
+    )
+    .await
+}
+
+async fn search_event_semantic_snapshot(
     connection: &turso::Connection,
     query: EventSemanticSearchQuery,
 ) -> anyhow::Result<EventSearchPage> {
@@ -5324,30 +5400,50 @@ async fn search_event_semantic(
     let dimensions = i64::try_from(query.embedding.values.len())?;
     let encoded = serde_json::to_string(&query.embedding.values)?;
     let source_id = query.source_id;
-    let candidates_truncated = semantic_candidates_truncated(
-        connection,
-        &query.embedding.model_id,
+    let mut from_sql = String::from(
+        "FROM recording_event_embeddings AS s JOIN recording_events AS e ON e.id = s.event_id
+         WHERE s.model_id = ?2 AND s.dimensions = ?3 AND (?4 IS NULL OR e.camera_id = ?5)
+             AND (e.stream IS NULL OR e.stream = ?6) AND e.start_time_ms < ?8
+             AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?7
+             AND e.rowid <= ?9 AND s.rowid <= ?10",
+    );
+    let mut params = turso::params![
+        encoded,
+        query.embedding.model_id,
         dimensions,
-        source_id.as_deref(),
-        &query.stream_id,
+        source_id.clone(),
+        source_id,
+        query.stream_id.clone(),
         query.start_time_ms,
         query.end_time_ms,
         event_snapshot_rowid,
         embedding_snapshot_rowid,
-    )
-    .await?;
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()?;
+    workflow::append_filter(query.workflow.as_ref(), &mut from_sql, &mut params)?;
+    let workflow_counts =
+        workflow::counts(connection, query.workflow.as_ref(), &from_sql, &params).await?;
+    let candidates_truncated =
+        semantic_candidates_truncated(connection, &from_sql, &params).await?;
+    let distance_parameter = params.len() + 1;
+    let time_parameter = distance_parameter + 1;
+    let id_parameter = distance_parameter + 2;
+    let limit_parameter = distance_parameter + 3;
+    params.extend(
+        turso::params![
+            last_distance,
+            last_start_time_ms,
+            last_event_id,
+            i64::from(query.page_size) + 1
+        ]
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?,
+    );
     let sql = format!(
         "WITH candidates AS (
                  SELECT {EVENT_SEARCH_COLUMNS}, s.embedding
-                                 FROM recording_event_embeddings AS s
-                                 JOIN recording_events AS e ON e.id = s.event_id
-                                 WHERE s.model_id = ?2 AND s.dimensions = ?3
-                                     AND (?4 IS NULL OR e.camera_id = ?5)
-                                     AND (e.stream IS NULL OR e.stream = ?6)
-                                     AND e.start_time_ms < ?8
-                                     AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?7
-                                     AND e.rowid <= ?9
-                                     AND s.rowid <= ?10
+                                 {from_sql}
                                  ORDER BY e.start_time_ms DESC, e.id
                                  LIMIT {MAX_SEMANTIC_CANDIDATES}
                          ),
@@ -5366,39 +5462,17 @@ async fn search_event_semantic(
                                 attachments_json, canonical_attachment_id, icon_key,
                                 rejected_icon_key, text, distance
                          FROM scored
-                            WHERE ?11 IS NULL
-                                OR distance > ?12
-                                OR (distance = ?13 AND start_time_ms < ?14)
-                                OR (distance = ?15 AND start_time_ms = ?16 AND id > ?17)
+                            WHERE ?{distance_parameter} IS NULL
+                                OR distance > ?{distance_parameter}
+                                OR (distance = ?{distance_parameter} AND start_time_ms < ?{time_parameter})
+                                OR (distance = ?{distance_parameter} AND start_time_ms = ?{time_parameter} AND id > ?{id_parameter})
                          ORDER BY distance, start_time_ms DESC, id
-                            LIMIT ?18"
+                            LIMIT ?{limit_parameter}"
     );
     let mut rows = connection
-        .query(
-            sql,
-            turso::params![
-                encoded,
-                query.embedding.model_id,
-                dimensions,
-                source_id.clone(),
-                source_id,
-                query.stream_id.clone(),
-                query.start_time_ms,
-                query.end_time_ms,
-                event_snapshot_rowid,
-                embedding_snapshot_rowid,
-                last_distance,
-                last_distance,
-                last_distance,
-                last_start_time_ms,
-                last_distance,
-                last_start_time_ms,
-                last_event_id,
-                i64::from(query.page_size) + 1,
-            ],
-        )
+        .query(sql, turso::params_from_iter(params))
         .await?;
-    let mut hits = Vec::new();
+    let mut hits = Vec::with_capacity(query.page_size as usize);
     let mut has_more = false;
     while let Some(row) = rows.next().await? {
         if hits.len() == query.page_size as usize {
@@ -5414,6 +5488,7 @@ async fn search_event_semantic(
         )?);
     }
     attach_default_previews(connection, &mut hits, &query.stream_id).await?;
+    workflow::hydrate(connection, query.workflow.as_ref(), &mut hits).await?;
     ensure_search_snapshot_current(connection, search_revision, event_snapshot_rowid).await?;
     let next_page_token = has_more
         .then(|| {
@@ -5438,53 +5513,25 @@ async fn search_event_semantic(
         hits,
         next_page_token,
         candidates_truncated,
+        workflow_counts,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn semantic_candidates_truncated(
     connection: &turso::Connection,
-    model_id: &str,
-    dimensions: i64,
-    source_id: Option<&str>,
-    stream_id: &str,
-    start_time_ms: i64,
-    end_time_ms: i64,
-    event_snapshot_rowid: i64,
-    embedding_snapshot_rowid: i64,
+    from_sql: &str,
+    params: &[turso::Value],
 ) -> anyhow::Result<bool> {
     let sql = format!(
         "SELECT COUNT(*)
              FROM (
-                 SELECT 1
-                 FROM recording_event_embeddings AS s
-                 JOIN recording_events AS e ON e.id = s.event_id
-                 WHERE s.model_id = ?1 AND s.dimensions = ?2
-                   AND (?3 IS NULL OR e.camera_id = ?4)
-                                     AND (e.stream IS NULL OR e.stream = ?5)
-                                     AND e.start_time_ms < ?7
-                                     AND COALESCE(e.end_time_ms, e.start_time_ms + 1) > ?6
-                                     AND e.rowid <= ?8
-                                     AND s.rowid <= ?9
+                 SELECT 1 {from_sql}
                  LIMIT {}
              )",
         MAX_SEMANTIC_CANDIDATES + 1,
     );
     let mut rows = connection
-        .query(
-            sql,
-            turso::params![
-                model_id,
-                dimensions,
-                source_id,
-                source_id,
-                stream_id,
-                start_time_ms,
-                end_time_ms,
-                event_snapshot_rowid,
-                embedding_snapshot_rowid,
-            ],
-        )
+        .query(sql, turso::params_from_iter(params.iter().cloned()))
         .await?;
     let count = rows
         .next()
@@ -5497,6 +5544,9 @@ async fn semantic_candidates_truncated(
 fn metadata_search_fingerprint(query: &EventMetadataQuery) -> String {
     let mut hasher = Sha256::new();
     update_search_fingerprint(&mut hasher, b"metadata");
+    if let Some(workflow) = &query.workflow {
+        update_search_fingerprint(&mut hasher, workflow.fingerprint().as_bytes());
+    }
     for event_id in &query.event_ids {
         update_search_fingerprint(&mut hasher, event_id.as_bytes());
     }
@@ -5544,8 +5594,14 @@ fn metadata_search_fingerprint(query: &EventMetadataQuery) -> String {
 }
 
 fn text_search_fingerprint(query: &EventTextSearchQuery) -> String {
+    let workflow = query
+        .workflow
+        .as_ref()
+        .map(workflow::Query::fingerprint)
+        .unwrap_or_default();
     search_fingerprint(&[
         b"text",
+        workflow.as_bytes(),
         query.query.as_bytes(),
         query
             .field
@@ -5561,6 +5617,11 @@ fn text_search_fingerprint(query: &EventTextSearchQuery) -> String {
 }
 
 fn semantic_search_fingerprint(query: &EventSemanticSearchQuery) -> String {
+    let workflow = query
+        .workflow
+        .as_ref()
+        .map(workflow::Query::fingerprint)
+        .unwrap_or_default();
     let embedding_bytes = query
         .embedding
         .values
@@ -5569,6 +5630,7 @@ fn semantic_search_fingerprint(query: &EventSemanticSearchQuery) -> String {
         .collect::<Vec<_>>();
     search_fingerprint(&[
         b"semantic",
+        workflow.as_bytes(),
         query.embedding.model_id.as_bytes(),
         &embedding_bytes,
         query.source_id.as_deref().unwrap_or_default().as_bytes(),
@@ -5720,6 +5782,7 @@ fn event_search_hit(
         preview_end_ms,
         keyframes: Vec::new(),
         keyframes_truncated: requested_end_ms > preview_end_ms,
+        workflow: None,
     })
 }
 
@@ -6087,12 +6150,12 @@ fn to_u64(value: i64, name: &str) -> anyhow::Result<u64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use bytes::Bytes;
     use std::io::BufWriter;
 
-    fn test_dir(name: &str) -> PathBuf {
+    pub(super) fn test_dir(name: &str) -> PathBuf {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("test-output")
@@ -7080,7 +7143,7 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn test_event(id: &str, start_time_ms: i64) -> TimelineEvent {
+    pub fn test_event(id: &str, start_time_ms: i64) -> TimelineEvent {
         TimelineEvent {
             id: id.to_owned(),
             revision: 1,
@@ -7104,6 +7167,64 @@ mod tests {
         }
     }
 
+    #[test]
+    fn event_workflow_review_is_principal_scoped_revisioned_and_durable() {
+        let root = test_dir("turso-event-workflow-review");
+        let path = root.join("recordings.db");
+        let catalog = RecordingCatalog::open(&path).unwrap();
+        let handle = catalog.handle();
+        let mut event = test_event("review-1", 1_000);
+        event.camera_id = "stable-source-1".to_owned();
+        handle.insert_event(event.clone()).unwrap();
+        let key = workflow::EventKey {
+            source_id: "stable-source-1".to_owned(),
+            event_id: "review-1".to_owned(),
+        };
+        let change = workflow::ReviewChange {
+            key: key.clone(),
+            expected_revision: 0,
+            reviewed: true,
+            dismissed: false,
+        };
+        let changed = handle
+            .mutate_event_reviews("principal-a", vec![change.clone()])
+            .unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(changed[0].reviewed);
+        assert!(!changed[0].dismissed);
+        assert_eq!(changed[0].review_revision, 1);
+        assert_eq!(
+            handle
+                .event_workflow("principal-a", vec![key.clone()])
+                .unwrap(),
+            changed
+        );
+        assert!(
+            handle
+                .mutate_event_reviews("principal-a", vec![change])
+                .is_err()
+        );
+        let independent = handle
+            .event_workflow("principal-b", vec![key.clone()])
+            .unwrap();
+        assert!(!independent[0].reviewed);
+        assert_eq!(independent[0].review_revision, 0);
+        event.revision = 2;
+        handle.insert_event(event).unwrap();
+        drop(handle);
+        catalog.shutdown();
+
+        let reopened = RecordingCatalog::open(&path).unwrap();
+        let persisted = reopened
+            .handle()
+            .event_workflow("principal-a", vec![key])
+            .unwrap();
+        assert!(persisted[0].reviewed);
+        assert_eq!(persisted[0].review_revision, 1);
+        reopened.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn test_fragment() -> CatalogFragment {
         CatalogFragment {
             recording_id: "recording-1".to_owned(),
@@ -7116,6 +7237,124 @@ mod tests {
         }
     }
 
+    #[test]
+    fn event_workflow_bookmarks_are_shared_owned_audited_and_revisioned() {
+        let root = test_dir("turso-event-workflow-bookmarks");
+        let path = root.join("recordings.db");
+        let catalog = RecordingCatalog::open(&path).unwrap();
+        let handle = catalog.handle();
+        handle
+            .insert_event(test_event("bookmark-1", 1_000))
+            .unwrap();
+        let key = workflow::EventKey {
+            source_id: "192.0.2.10".to_owned(),
+            event_id: "bookmark-1".to_owned(),
+        };
+        let mut change = workflow::BookmarkChange {
+            key: key.clone(),
+            expected_revision: 0,
+            active: true,
+            note: "Check the gate".to_owned(),
+        };
+        let created = handle
+            .mutate_event_bookmark("alice", false, change.clone())
+            .unwrap();
+        let bookmark = created[0].bookmark.as_ref().unwrap();
+        assert_eq!(bookmark.created_by, "alice");
+        assert_eq!(bookmark.revision, 1);
+        assert!(!created[0].media_available);
+        let shared = handle.event_workflow("bob", vec![key.clone()]).unwrap();
+        assert_eq!(shared[0].bookmark.as_ref().unwrap().note, "Check the gate");
+        change.expected_revision = 1;
+        change.note = "Changed note".to_owned();
+        assert!(
+            handle
+                .mutate_event_bookmark("bob", false, change.clone())
+                .is_err()
+        );
+        handle
+            .mutate_event_bookmark("admin", true, change.clone())
+            .unwrap();
+        assert!(
+            handle
+                .mutate_event_bookmark("alice", false, change.clone())
+                .is_err()
+        );
+        change.expected_revision = 2;
+        change.active = false;
+        let removed = handle
+            .mutate_event_bookmark("alice", false, change)
+            .unwrap();
+        let bookmark = removed[0].bookmark.as_ref().unwrap();
+        assert!(!bookmark.active);
+        assert_eq!(bookmark.revision, 3);
+        assert_eq!(bookmark.audit.len(), 3);
+        assert_eq!(bookmark.audit[1].actor_id, "admin");
+        drop(handle);
+        catalog.shutdown();
+        let reopened = RecordingCatalog::open(&path).unwrap();
+        let persisted = reopened
+            .handle()
+            .event_workflow("alice", vec![key])
+            .unwrap();
+        assert_eq!(persisted[0].bookmark.as_ref().unwrap().revision, 3);
+        reopened.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn event_workflow_bulk_conflict_rolls_back_and_explicit_undo_preserves_other_events() {
+        let root = test_dir("turso-event-workflow-bulk");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let changes = (0..3)
+            .map(|index| {
+                let event_id = format!("bulk-{index}");
+                handle.insert_event(test_event(&event_id, 1_000)).unwrap();
+                workflow::ReviewChange {
+                    key: workflow::EventKey {
+                        source_id: "192.0.2.10".to_owned(),
+                        event_id,
+                    },
+                    expected_revision: 0,
+                    reviewed: true,
+                    dismissed: false,
+                }
+            })
+            .collect::<Vec<_>>();
+        handle
+            .mutate_event_reviews("alice", vec![changes[1].clone()])
+            .unwrap();
+        assert!(
+            handle
+                .mutate_event_reviews("alice", changes[..2].to_vec())
+                .is_err()
+        );
+        let states = handle
+            .event_workflow(
+                "alice",
+                changes.iter().map(|item| item.key.clone()).collect(),
+            )
+            .unwrap();
+        assert!(!states[0].reviewed);
+        assert!(states[1].reviewed);
+        assert!(!states[2].reviewed);
+        let mut undo = changes[1].clone();
+        undo.expected_revision = 1;
+        undo.reviewed = false;
+        let undone = handle.mutate_event_reviews("alice", vec![undo]).unwrap();
+        assert!(!undone[0].reviewed);
+        assert_eq!(undone[0].review_revision, 2);
+        assert!(
+            handle
+                .mutate_event_reviews("alice", vec![changes[1].clone()])
+                .is_err()
+        );
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn test_keyframe() -> CatalogKeyframe {
         CatalogKeyframe {
             recording_id: "recording-1".to_owned(),
@@ -7123,6 +7362,273 @@ mod tests {
             byte_offset: 7,
             byte_len: 16,
         }
+    }
+
+    #[test]
+    fn event_workflow_query_latency_measurement() {
+        let root = test_dir("turso-event-workflow-latency");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        for index in 0..1_024 {
+            let mut event = test_event(&format!("measurement-{index}"), 1_000 + index * 1_000);
+            event.camera_id = format!("source-{}", index % 8);
+            handle.insert_event(event).unwrap();
+        }
+        let mut query = EventMetadataQuery::new("main", 0, 2_000_000);
+        query.source_ids = vec!["source-0".to_owned(), "source-1".to_owned()];
+        query.page_size = 18;
+        let mut samples = Vec::with_capacity(30);
+        for _ in 0..30 {
+            let start = std::time::Instant::now();
+            let page = handle.search_event_metadata(query.clone()).unwrap();
+            samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            assert_eq!(page.hits.len(), 18);
+            assert!(page.next_page_token.is_some());
+        }
+        samples.sort_by(f64::total_cmp);
+        println!(
+            "workflow_query_baseline events=1024 sources=8 authorized_sources=2 samples=30 page=18 p50_ms={:.3} p95_ms={:.3}",
+            samples[15], samples[28]
+        );
+        assert!(
+            samples[28] < 100.0,
+            "query p95 exceeded 100 ms: {}",
+            samples[28]
+        );
+        let targets = (0..128)
+            .map(|index| workflow::ReviewChange {
+                key: workflow::EventKey {
+                    source_id: format!("source-{}", index % 8),
+                    event_id: format!("measurement-{index}"),
+                },
+                expected_revision: 0,
+                reviewed: true,
+                dismissed: false,
+            })
+            .collect::<Vec<_>>();
+        let mut mutation_samples = Vec::with_capacity(30);
+        for revision in 0..30 {
+            let changes = targets
+                .iter()
+                .map(|change| workflow::ReviewChange {
+                    expected_revision: revision,
+                    reviewed: revision % 2 == 0,
+                    ..change.clone()
+                })
+                .collect();
+            let start = std::time::Instant::now();
+            let changed = handle
+                .mutate_event_reviews("benchmark-alice", changes)
+                .unwrap();
+            mutation_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            assert_eq!(changed.len(), 128);
+        }
+        handle
+            .mutate_event_reviews("benchmark-bob", targets)
+            .unwrap();
+        query.workflow = Some(workflow::Query::new("benchmark-alice"));
+        let mut workflow_samples = Vec::with_capacity(30);
+        for _ in 0..30 {
+            let start = std::time::Instant::now();
+            let page = handle.search_event_metadata(query.clone()).unwrap();
+            workflow_samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+            assert_eq!(page.workflow_counts.unwrap().total, 256);
+            assert_eq!(page.hits.len(), 18);
+        }
+        mutation_samples.sort_by(f64::total_cmp);
+        workflow_samples.sort_by(f64::total_cmp);
+        println!(
+            "workflow_enabled_query events=1024 principals=2 samples=30 page=18 p50_ms={:.3} p95_ms={:.3}",
+            workflow_samples[15], workflow_samples[28]
+        );
+        println!(
+            "workflow_mutation events=128 samples=30 p50_ms={:.3} p95_ms={:.3}",
+            mutation_samples[15], mutation_samples[28]
+        );
+        assert!(
+            workflow_samples[28] < 100.0,
+            "workflow query p95 exceeded 100 ms: {}",
+            workflow_samples[28]
+        );
+        assert!(
+            mutation_samples[28] < 250.0,
+            "workflow mutation p95 exceeded 250 ms: {}",
+            mutation_samples[28]
+        );
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn event_workflow_query_filters_and_counts_precede_pagination() {
+        let root = test_dir("turso-event-workflow-query");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let keys = (0..6)
+            .map(|index| {
+                let event_id = format!("query-{index}");
+                handle
+                    .insert_event(test_event(&event_id, 1_000 + index * 1_000))
+                    .unwrap();
+                workflow::EventKey {
+                    source_id: "192.0.2.10".to_owned(),
+                    event_id,
+                }
+            })
+            .collect::<Vec<_>>();
+        for (actor, index, reviewed, dismissed) in [
+            ("alice", 0, true, false),
+            ("alice", 1, false, true),
+            ("bob", 2, true, false),
+        ] {
+            handle
+                .mutate_event_reviews(
+                    actor,
+                    vec![workflow::ReviewChange {
+                        key: keys[index].clone(),
+                        expected_revision: 0,
+                        reviewed,
+                        dismissed,
+                    }],
+                )
+                .unwrap();
+        }
+        for (actor, index) in [("alice", 3), ("bob", 4)] {
+            handle
+                .mutate_event_bookmark(
+                    actor,
+                    false,
+                    workflow::BookmarkChange {
+                        key: keys[index].clone(),
+                        expected_revision: 0,
+                        active: true,
+                        note: String::new(),
+                    },
+                )
+                .unwrap();
+        }
+        let mut query = EventMetadataQuery::new("main", 0, 10_000);
+        query.page_size = 1;
+        query.workflow = Some(workflow::Query::new("alice"));
+        let first = handle.search_event_metadata(query.clone()).unwrap();
+        let counts = first.workflow_counts.as_ref().unwrap();
+        assert_eq!(
+            (
+                counts.total,
+                counts.unreviewed,
+                counts.reviewed,
+                counts.dismissed
+            ),
+            (6, 4, 1, 1)
+        );
+        assert_eq!((counts.bookmarked, counts.bookmarked_by_me), (2, 1));
+        assert_eq!(first.hits.len(), 1);
+        assert!(first.hits[0].workflow.is_some());
+        query.workflow.as_mut().unwrap().review = workflow::ReviewFilter::Reviewed;
+        let reviewed = handle.search_event_metadata(query.clone()).unwrap();
+        assert_eq!(reviewed.hits[0].event_id, "query-0");
+        assert_eq!(reviewed.workflow_counts.unwrap().total, 1);
+        query.workflow.as_mut().unwrap().review = workflow::ReviewFilter::Any;
+        query.workflow.as_mut().unwrap().bookmarked = Some(true);
+        query.workflow.as_mut().unwrap().bookmarked_by_me = true;
+        let mine = handle.search_event_metadata(query.clone()).unwrap();
+        assert_eq!(mine.hits[0].event_id, "query-3");
+        query.workflow.as_mut().unwrap().actor_id = "bob".to_owned();
+        assert_eq!(
+            handle.search_event_metadata(query.clone()).unwrap().hits[0].event_id,
+            "query-4"
+        );
+        query.source_ids = vec!["not-authorized-source".to_owned()];
+        let empty = handle.search_event_metadata(query).unwrap();
+        assert_eq!(empty.workflow_counts.unwrap().total, 0);
+        assert!(empty.hits.is_empty());
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn event_workflow_text_and_semantic_filters_keep_authoritative_counts() {
+        let root = test_dir("turso-event-workflow-ranked-query");
+        let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let search = crate::storage::EventSearch::new(handle.clone());
+        for index in 0..3 {
+            let event_id = format!("ranked-{index}");
+            handle
+                .insert_event(test_event(&event_id, 1_000 + index * 1_000))
+                .unwrap();
+            search
+                .set_embedding(
+                    &event_id,
+                    EventEmbedding {
+                        model_id: "test-model".to_owned(),
+                        values: vec![1.0, 0.5],
+                    },
+                )
+                .unwrap();
+        }
+        handle
+            .mutate_event_reviews(
+                "alice",
+                vec![workflow::ReviewChange {
+                    key: workflow::EventKey {
+                        source_id: "192.0.2.10".to_owned(),
+                        event_id: "ranked-0".to_owned(),
+                    },
+                    expected_revision: 0,
+                    reviewed: true,
+                    dismissed: false,
+                }],
+            )
+            .unwrap();
+        let mut filter = workflow::Query::new("alice");
+        filter.review = workflow::ReviewFilter::Unreviewed;
+        let mut text = EventTextSearchQuery::new("motion", "main", 0, 10_000);
+        text.workflow = Some(filter.clone());
+        text.page_size = 1;
+        let first = search.search_text(text.clone()).unwrap();
+        assert_eq!(first.workflow_counts.as_ref().unwrap().total, 2);
+        assert_eq!(first.hits[0].event_id, "ranked-2");
+        text.page_token = first.next_page_token;
+        assert_eq!(
+            search.search_text(text.clone()).unwrap().hits[0].event_id,
+            "ranked-1"
+        );
+        let mut semantic = EventSemanticSearchQuery::new(
+            EventEmbedding {
+                model_id: "test-model".to_owned(),
+                values: vec![1.0, 0.5],
+            },
+            "main",
+            0,
+            10_000,
+        );
+        semantic.workflow = Some(filter);
+        semantic.page_size = 1;
+        let ranked = search.search_semantic(semantic).unwrap();
+        assert_eq!(ranked.workflow_counts.unwrap().total, 2);
+        assert_eq!(ranked.hits[0].event_id, "ranked-2");
+        handle
+            .mutate_event_reviews(
+                "alice",
+                vec![workflow::ReviewChange {
+                    key: workflow::EventKey {
+                        source_id: "192.0.2.10".to_owned(),
+                        event_id: "ranked-1".to_owned(),
+                    },
+                    expected_revision: 0,
+                    reviewed: true,
+                    dismissed: false,
+                }],
+            )
+            .unwrap();
+        assert!(search.search_text(text).is_err());
+        drop(search);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn write_fragmented_recording(path: &Path) -> (mp4::Mp4ByteRange, Vec<mp4::Mp4FragmentInfo>) {

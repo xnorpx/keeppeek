@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { pushState, replaceState } from '$app/navigation';
+	import { afterNavigate, pushState, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { page } from '$app/state';
+	import { navigating, page } from '$app/state';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
 	import { capabilityActions } from '$lib/capability-actions';
@@ -10,6 +10,20 @@
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventNoResultsState from '$lib/components/EventNoResultsState.svelte';
 	import EventResultCard from '$lib/components/EventResultCard.svelte';
+	import EventWorkflowControls from '$lib/components/EventWorkflowControls.svelte';
+	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
+	import EventBookmarkLibrary from '$lib/components/EventBookmarkLibrary.svelte';
+	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
+	import { EventWorkflow } from '$lib/event-workflow.svelte';
+	import {
+		EVENT_WORKFLOW_CAPABILITY,
+		eventWorkflowKey,
+		type EventReviewFilter,
+		type EventWorkflowCounts,
+		type EventWorkflowIdentity
+	} from '$lib/event-workflow';
+	import CheckCheckIcon from '@lucide/svelte/icons/check-check';
+	import XIcon from '@lucide/svelte/icons/x';
 	import {
 		EVENT_BROWSER_PAGE_SIZE,
 		eventBrowserQueryBounds,
@@ -46,6 +60,13 @@
 	];
 	const controlClient = useControlClient();
 	const capabilities = useCapabilityState();
+	const workflow = new EventWorkflow(controlClient);
+	let workflowIdentity = $state.raw<EventWorkflowIdentity | null>(null);
+	let workflowCounts = $state.raw<EventWorkflowCounts | null>(null);
+	let bookmarkLibraryOpen = $state(false);
+	let workflowCountsController: AbortController | null = null;
+	let resultsScroll = $state<HTMLDivElement | null>(null);
+	let restoredHref: string | null = null;
 
 	let cameras = $state.raw<CameraListItem[]>([]);
 	let records = $state.raw<EventBrowserRecord[]>([]);
@@ -95,6 +116,9 @@
 		eventPageTokenBase?: number;
 		eventPageIndex?: number;
 		eventScrollY?: number;
+		eventResultsScrollTop?: number;
+		eventWorkflowActor?: string;
+		eventWorkflowSelection?: { sourceId: string; eventId: string }[];
 	};
 
 	let noResultsSuggestion = $state<{
@@ -102,7 +126,10 @@
 		update: Partial<EventBrowserFilters>;
 	} | null>(null);
 	let isToday = $derived(filters.date === currentDate);
-	let visibleRecords = $derived(records);
+	let visibleRecords = $derived(records.map(workflowRecord));
+	let visibleWorkflowStates = $derived(
+		visibleRecords.flatMap((record) => (record.event.workflow ? [record.event.workflow] : []))
+	);
 	let visibleResultStart = $derived(
 		records.length === 0 ? 0 : pageIndex * EVENT_BROWSER_PAGE_SIZE + 1
 	);
@@ -188,8 +215,14 @@
 	});
 
 	onMount(() => {
-		restoreSelection(new URL(window.location.href).searchParams);
-		void initialize();
+		if (!navigating.to) restoreNavigation();
+		const stopAccess = controlClient.onAccessState((access) => {
+			if (!access.session) {
+				workflow.setActor('');
+				workflowIdentity = null;
+				workflowCounts = null;
+			} else if (capabilities.supports(EVENT_WORKFLOW_CAPABILITY)) initializeWorkflow();
+		});
 		const refreshTimer = window.setInterval(() => {
 			currentDate = new Date().toISOString().slice(0, 10);
 			if (!document.hidden) void refreshRecentEvents();
@@ -215,11 +248,16 @@
 			const index = Number.isInteger(state?.eventPageIndex) ? state!.eventPageIndex! : 0;
 			void loadPage(token, Math.max(0, index)).then(() => {
 				if (typeof state?.eventScrollY === 'number') window.scrollTo({ top: state.eventScrollY });
+				if (resultsScroll && typeof state?.eventResultsScrollTop === 'number')
+					resultsScroll.scrollTop = state.eventResultsScrollTop;
 			});
 		};
 		document.addEventListener('visibilitychange', handleVisibilityChange);
 		window.addEventListener('popstate', handlePopState);
 		return () => {
+			stopAccess();
+			workflowCountsController?.abort();
+			workflow.setActor('');
 			window.clearInterval(refreshTimer);
 			if (searchTimer !== undefined) window.clearTimeout(searchTimer);
 			document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -236,9 +274,22 @@
 		};
 	});
 
+	afterNavigate(restoreNavigation);
+
+	function restoreNavigation(): void {
+		if (window.location.pathname !== resolve('/events') || restoredHref === window.location.href)
+			return;
+		restoredHref = window.location.href;
+		const restoredParameters = new URL(window.location.href).searchParams;
+		filters = parseEventBrowserFilters(restoredParameters, currentDate);
+		restoreSelection(restoredParameters);
+		void initialize();
+	}
+
 	async function initialize(): Promise<void> {
 		try {
 			cameras = await controlClient.getCameras();
+			initializeWorkflow();
 			const state = page.state as EventPageState;
 			const restoredTokens = state.eventPageTokens?.filter(
 				(token): token is string => typeof token === 'string'
@@ -256,11 +307,14 @@
 			} else {
 				await loadFirstPage();
 			}
+			await restoreWorkflowSelection(state);
 			syncUrl();
 			if (typeof state.eventScrollY === 'number') {
 				await tick();
 				window.scrollTo({ top: state.eventScrollY });
 			}
+			if (resultsScroll && typeof state.eventResultsScrollTop === 'number')
+				resultsScroll.scrollTop = state.eventResultsScrollTop;
 		} catch (cause) {
 			loadController?.abort();
 			error = cause instanceof Error ? cause.message : 'Failed to load events';
@@ -271,6 +325,7 @@
 
 	async function refreshRecentEvents(): Promise<void> {
 		if (
+			workflow.busy ||
 			!isToday ||
 			pageIndex !== 0 ||
 			loading ||
@@ -288,6 +343,7 @@
 			const result = await queryEventPage(filters, '', controller.signal);
 			if (controller.signal.aborted || refreshVersion !== requestVersion) return;
 			const incoming = eventRecords(result.hits);
+			workflowCounts = result.workflowCounts ?? null;
 			const previous = records;
 			records = mergeEventRecords(previous, incoming);
 			nextPageToken = result.nextPageToken;
@@ -324,6 +380,8 @@
 	}
 
 	async function loadPage(token: string, targetPage: number, recoverToken = true): Promise<void> {
+		workflowCountsController?.abort();
+		workflowCounts = null;
 		loadController?.abort();
 		refreshController?.abort();
 		refreshController = null;
@@ -347,6 +405,7 @@
 			const result = await queryEventPage(filters, token, controller.signal);
 			if (controller.signal.aborted || version !== requestVersion) return;
 			records = eventRecords(result.hits);
+			workflowCounts = result.workflowCounts ?? null;
 			pageIndex = targetPage;
 			nextPageToken = result.nextPageToken;
 			const relativePage = targetPage - pageTokenBase;
@@ -400,7 +459,24 @@
 		eventIds: readonly string[] = []
 	): Promise<EventPreviewPage> {
 		const bounds = eventBrowserQueryBounds(queryFilters);
+		if (
+			!workflowIdentity &&
+			((queryFilters.review && queryFilters.review !== 'all') ||
+				(queryFilters.bookmarks && queryFilters.bookmarks !== 'all'))
+		) {
+			return Promise.reject(
+				new Error('Event workflow filters are unavailable until this workspace connects.')
+			);
+		}
 		return controlClient.searchEventMetadata({
+			workflow: workflowIdentity
+				? {
+						review: queryFilters.review ?? 'all',
+						bookmarked:
+							queryFilters.bookmarks && queryFilters.bookmarks !== 'all' ? true : undefined,
+						bookmarkedByMe: queryFilters.bookmarks === 'mine'
+					}
+				: undefined,
 			eventIds,
 			sourceIds: queryFilters.cameraId
 				? [queryFilters.cameraId]
@@ -441,6 +517,7 @@
 	}
 
 	function eventRecords(hits: readonly EventPreviewHit[]): EventBrowserRecord[] {
+		workflow.hydrate(hits.flatMap((hit) => (hit.workflow ? [hit.workflow] : [])));
 		const camerasById = new Map(cameras.map((camera) => [camera.id, camera]));
 		return hits.flatMap((hit) => {
 			const camera = camerasById.get(hit.sourceId);
@@ -449,6 +526,7 @@
 			const hasLegacyPreview = hit.canonicalAttachment === null && hit.hasImageAttachment;
 			const event: RecordingEvent = {
 				id: hit.eventId,
+				workflow: hit.workflow,
 				source_id: hit.sourceId,
 				revision: hit.revision,
 				source: hit.origin,
@@ -491,6 +569,128 @@
 				(left, right) =>
 					Math.abs(left.eventTimeMs - hit.startMs) - Math.abs(right.eventTimeMs - hit.startMs)
 			)[0];
+	}
+
+	function initializeWorkflow(): void {
+		if (!capabilities.supports(EVENT_WORKFLOW_CAPABILITY)) return;
+		try {
+			const identity = controlClient.eventWorkflowIdentity();
+			workflow.setActor(identity.actorId);
+			workflowIdentity = identity;
+		} catch (cause) {
+			workflow.error =
+				cause instanceof Error ? cause.message : 'Event review identity is unavailable.';
+		}
+	}
+
+	function workflowRecord(record: EventBrowserRecord): EventBrowserRecord {
+		const value = workflowIdentity
+			? workflow.stateFor({ sourceId: record.camera.id, eventId: record.event.id })
+			: null;
+		return { ...record, event: { ...record.event, workflow: value ?? undefined } };
+	}
+
+	function workflowChanged(): void {
+		void refreshWorkflowResults();
+	}
+
+	async function refreshWorkflowResults(): Promise<void> {
+		workflowCountsController?.abort();
+		const controller = new AbortController();
+		workflowCountsController = controller;
+		const version = requestVersion;
+		const queryKey = eventBrowserSearchParams(filters).toString();
+		const filtered =
+			(filters.review && filters.review !== 'all') ||
+			(filters.bookmarks && filters.bookmarks !== 'all');
+		try {
+			const result = await queryEventPage(
+				filters,
+				'',
+				controller.signal,
+				filtered ? EVENT_BROWSER_PAGE_SIZE : 1
+			);
+			if (
+				controller.signal.aborted ||
+				version !== requestVersion ||
+				queryKey !== eventBrowserSearchParams(filters).toString()
+			)
+				return;
+			workflowCounts = result.workflowCounts ?? null;
+			if (filtered) {
+				const scrollTop = resultsScroll?.scrollTop ?? 0;
+				const previous = records;
+				if (selectedRecord) selectedDetachedRecord = selectedRecord;
+				records = mergeEventRecords(previous, eventRecords(result.hits));
+				pageIndex = 0;
+				pageTokenBase = 0;
+				pageTokens = [''];
+				nextPageToken = result.nextPageToken;
+				await tick();
+				if (resultsScroll) resultsScroll.scrollTop = scrollTop;
+				for (const item of previous) {
+					if (
+						eventBrowserRecordKey(item) !== selectedKey &&
+						!records.some((entry) => eventBrowserRecordKey(entry) === eventBrowserRecordKey(item))
+					)
+						releaseEventPreview(item);
+				}
+				syncUrl();
+			}
+		} catch (cause) {
+			if (!controller.signal.aborted) {
+				workflowCounts = null;
+				workflow.error = `The action was saved, but counts could not be refreshed. ${cause instanceof Error ? cause.message : 'Refresh events to retry.'}`;
+			}
+		}
+	}
+
+	async function reviewScope(scope: 'visible' | 'selected'): Promise<void> {
+		const targets = scope === 'visible' ? visibleWorkflowStates : workflow.selectedStates;
+		if (await workflow.review(targets, { reviewed: true }, `${targets.length} ${scope}`))
+			workflowChanged();
+	}
+
+	async function restoreWorkflowSelection(state: EventPageState): Promise<void> {
+		if (
+			!workflowIdentity ||
+			state.eventWorkflowActor !== workflowIdentity.actorId ||
+			!Array.isArray(state.eventWorkflowSelection)
+		)
+			return;
+		const targets = state.eventWorkflowSelection
+			.slice(0, 128)
+			.filter(
+				(target) =>
+					target &&
+					typeof target.sourceId === 'string' &&
+					typeof target.eventId === 'string' &&
+					target.sourceId.length <= 256 &&
+					target.eventId.length <= 256
+			);
+		if (!targets.length) return;
+		const actorId = workflowIdentity.actorId;
+		try {
+			await workflow.load(targets);
+			if (workflowIdentity?.actorId !== actorId) return;
+			for (const target of targets) {
+				const current = workflow.stateFor(target);
+				if (current?.eventPresent) workflow.select(current, true);
+			}
+		} catch (cause) {
+			workflow.error =
+				cause instanceof Error ? cause.message : 'Selected event state could not be restored.';
+		}
+	}
+
+	function selectWorkflowRecord(record: EventBrowserRecord, checked: boolean): void {
+		if (record.event.workflow) workflow.select(record.event.workflow, checked);
+		syncUrl();
+	}
+
+	function clearWorkflowSelection(): void {
+		workflow.selected = new Set();
+		syncUrl();
 	}
 
 	function mergeEventRecords(
@@ -846,7 +1046,13 @@
 			eventPageTokens: pageTokens,
 			eventPageTokenBase: pageTokenBase,
 			eventPageIndex: pageIndex,
-			eventScrollY: window.scrollY
+			eventScrollY: window.scrollY,
+			eventResultsScrollTop: resultsScroll?.scrollTop ?? 0,
+			eventWorkflowActor: workflowIdentity?.actorId,
+			eventWorkflowSelection: workflow.selectedStates.map((item) => ({
+				sourceId: item.sourceId,
+				eventId: item.eventId
+			}))
 		};
 		const url = `${resolve('/events')}?${search}`;
 		if (mode === 'push') pushState(url, state);
@@ -905,6 +1111,8 @@
 
 	function clearFilters(): void {
 		updateFilters({
+			review: 'all',
+			bookmarks: 'all',
 			startTime: null,
 			endTime: null,
 			cameraId: null,
@@ -948,6 +1156,12 @@
 		</div>
 		<div class="min-w-2 flex-1"></div>
 		<div class="flex items-center gap-2">
+			{#if workflowIdentity}<button
+					type="button"
+					class="inline-flex min-h-11 items-center gap-2 rounded-sm px-3 text-xs hover:bg-raised"
+					onclick={() => (bookmarkLibraryOpen = true)}
+					><BookmarkIcon class="size-4" />Saved bookmarks</button
+				>{/if}
 			{#if isToday}
 				<span
 					class="inline-flex h-8 items-center gap-2 px-1.5 font-mono text-2xs tracking-caps text-text-muted"
@@ -1079,6 +1293,37 @@
 			</label>
 		</div>
 		<div class="{mobileFiltersOpen ? 'flex' : 'hidden'} flex-wrap items-center gap-2 md:flex">
+			{#if workflowIdentity}
+				<label class="flex items-center gap-2 text-xs text-text-muted"
+					>Review
+					<select
+						aria-label="Review filter"
+						value={filters.review ?? 'all'}
+						class="h-11 rounded-sm border border-hairline bg-raised px-2 text-xs md:h-8"
+						onchange={(event) =>
+							updateFilters({ review: event.currentTarget.value as EventReviewFilter })}
+					>
+						<option value="all">All review states</option><option value="unreviewed"
+							>Unreviewed</option
+						><option value="reviewed">Reviewed</option><option value="dismissed">Dismissed</option>
+					</select>
+				</label>
+				<label class="flex items-center gap-2 text-xs text-text-muted"
+					>Bookmarks
+					<select
+						aria-label="Bookmark filter"
+						value={filters.bookmarks ?? 'all'}
+						class="h-11 rounded-sm border border-hairline bg-raised px-2 text-xs md:h-8"
+						onchange={(event) =>
+							updateFilters({
+								bookmarks: event.currentTarget.value as EventBrowserFilters['bookmarks']
+							})}
+					>
+						<option value="all">All events</option><option value="bookmarked">Bookmarked</option
+						><option value="mine">Bookmarked by me</option>
+					</select>
+				</label>
+			{/if}
 			<SlidersHorizontalIcon class="size-3.5 text-text-faint" />
 			<label class="flex items-center gap-2 text-xs text-text-muted">
 				Minimum confidence
@@ -1131,8 +1376,42 @@
 		</div>
 	</section>
 
+	{#if workflowIdentity}
+		<div
+			class="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline pb-2"
+			role="group"
+			aria-label="Bulk event review"
+		>
+			<button
+				type="button"
+				class="inline-flex min-h-11 items-center gap-2 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
+				disabled={workflow.busy || loading || visibleWorkflowStates.length === 0}
+				onclick={() => void reviewScope('visible')}
+				><CheckCheckIcon class="size-4" />Mark {visibleWorkflowStates.length} visible reviewed</button
+			>
+			<button
+				type="button"
+				class="inline-flex min-h-11 items-center gap-2 rounded-sm border border-hairline px-3 text-xs disabled:opacity-40"
+				disabled={workflow.busy || workflow.selected.size === 0}
+				onclick={() => void reviewScope('selected')}
+				><CheckCheckIcon class="size-4" />Mark {workflow.selected.size} selected reviewed</button
+			>
+			{#if workflow.selected.size > 0}<button
+					type="button"
+					class="grid size-11 place-items-center rounded-sm text-text-muted hover:bg-raised"
+					aria-label="Clear event selection"
+					title="Clear event selection"
+					onclick={clearWorkflowSelection}><XIcon class="size-4" /></button
+				>{/if}
+			<span class="ml-auto text-xs text-text-faint"
+				>{workflowIdentity.localWorkspaceId ? 'Local workspace' : 'Your review queue'}</span
+			>
+		</div>
+	{/if}
+	<EventWorkflowNotice {workflow} onchanged={workflowChanged} />
+
 	<div
-		class="flex shrink-0 items-center gap-2 text-xs text-text-muted"
+		class="flex shrink-0 flex-wrap items-center gap-2 text-xs text-text-muted"
 		role="status"
 		aria-live="polite"
 	>
@@ -1144,7 +1423,10 @@
 				: `${records.length}${nextPageToken ? '+' : ''} ${records.length === 1 && !nextPageToken ? 'event' : 'events'}`}</span
 		>
 		<span aria-hidden="true">·</span>
-		<span>{eventFilterSummary(filters)}</span>
+		<span class="min-w-0 break-words">{eventFilterSummary(filters)}</span>
+		{#if workflowCounts}<span data-workflow-count class="ml-auto shrink-0 font-mono"
+				>{workflowCounts.total} matching</span
+			>{/if}
 	</div>
 	{#if recoveryNotice}
 		<div class="shrink-0 border-y border-primary/30 bg-primary/10 px-4 py-2 text-xs" role="status">
@@ -1160,7 +1442,7 @@
 		</div>
 	{/if}
 
-	<div data-event-results-scroll class="min-h-0 flex-1 overflow-y-auto">
+	<div bind:this={resultsScroll} data-event-results-scroll class="min-h-0 flex-1 overflow-y-auto">
 		{#if error}
 			<div
 				class="border-y border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
@@ -1200,20 +1482,42 @@
 				onpointercancel={clearEventLongPress}
 			>
 				{#each visibleRecords as record, index (eventBrowserRecordKey(record))}
-					<EventResultCard
-						{record}
-						previewState={previewStates[eventBrowserRecordKey(record)] ?? 'idle'}
-						selected={selectedKey === eventBrowserRecordKey(record)}
-						mobileVariant={index === 0 ? 'hero' : 'row'}
-						tabindex={focusedKey === eventBrowserRecordKey(record) ||
-						(focusedKey === null && index === 0)
-							? 0
-							: -1}
-						onfocus={() => (focusedKey = eventBrowserRecordKey(record))}
-						onkeydown={(event) => void moveEventFocus(event, record)}
-						onclick={() => selectEventCard(record)}
-						onpreviewrequest={() => requestEventPreview(record)}
-					/>
+					<div class="flex min-w-0 flex-col">
+						<EventResultCard
+							{record}
+							previewState={previewStates[eventBrowserRecordKey(record)] ?? 'idle'}
+							selected={selectedKey === eventBrowserRecordKey(record)}
+							mobileVariant={index === 0 ? 'hero' : 'row'}
+							tabindex={focusedKey === eventBrowserRecordKey(record) ||
+							(focusedKey === null && index === 0)
+								? 0
+								: -1}
+							onfocus={() => (focusedKey = eventBrowserRecordKey(record))}
+							onkeydown={(event) => void moveEventFocus(event, record)}
+							onclick={() => selectEventCard(record)}
+							onpreviewrequest={() => requestEventPreview(record)}
+						/>
+						{#if workflowIdentity && record.event.workflow}
+							<div class="flex items-center justify-between gap-1 px-1">
+								<label class="grid size-11 shrink-0 place-items-center"
+									><input
+										type="checkbox"
+										class="size-4 accent-primary"
+										aria-label={`Select event ${record.event.id}`}
+										data-workflow-select={eventWorkflowKey(record.event.workflow)}
+										checked={workflow.selected.has(eventWorkflowKey(record.event.workflow))}
+										onchange={(event) => selectWorkflowRecord(record, event.currentTarget.checked)}
+									/></label
+								>
+								<EventWorkflowControls
+									value={record.event.workflow}
+									{workflow}
+									identity={workflowIdentity}
+									onchanged={workflowChanged}
+								/>
+							</div>
+						{/if}
+					</div>
 				{/each}
 			</div>
 			{#if pageIndex > pageTokenBase || nextPageToken}
@@ -1278,6 +1582,16 @@
 	</div>
 {/if}
 
+{#if bookmarkLibraryOpen && workflowIdentity}
+	<EventBookmarkLibrary
+		date={filters.date}
+		{cameras}
+		{workflow}
+		identity={workflowIdentity}
+		onclose={() => (bookmarkLibraryOpen = false)}
+	/>
+{/if}
+
 {#if selectedRecord}
 	<button
 		type="button"
@@ -1286,7 +1600,10 @@
 		onclick={closeDetail}
 	></button>
 	<EventDetailDrawer
-		record={selectedRecord}
+		record={workflowRecord(selectedRecord)}
+		{workflow}
+		{workflowIdentity}
+		onworkflowchanged={workflowChanged}
 		previewState={previewStates[eventBrowserRecordKey(selectedRecord)] ?? 'idle'}
 		returnHref={`${resolve('/events')}?${eventBrowserSearchParams(filters, selectedRecord)}`}
 		alreadyExported={exportedEventIds.has(selectedRecord.event.id)}

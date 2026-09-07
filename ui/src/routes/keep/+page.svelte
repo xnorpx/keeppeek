@@ -1,8 +1,13 @@
 <script lang="ts">
 	import { afterNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { navigating } from '$app/state';
 	import { onMount, tick } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
+	import { EVENT_WORKFLOW_CAPABILITY, type EventWorkflowIdentity } from '$lib/event-workflow';
+	import { EventWorkflow } from '$lib/event-workflow.svelte';
+	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
+	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import type {
 		EventPreviewHit,
 		StoredMediaKeyFramePreview,
@@ -88,6 +93,9 @@
 	];
 	const controlClient = useControlClient();
 	const timelineRepository = new TimelineRepository(controlClient);
+	const workflow = new EventWorkflow(controlClient);
+	let workflowIdentity = $state.raw<EventWorkflowIdentity | null>(null);
+	let selectedWorkflowEvent = $state.raw<RecordingEvent | null>(null);
 
 	let cameras: CameraListItem[] = $state([]);
 	let mode = $state<KeepMode>('timeline');
@@ -152,6 +160,7 @@
 	let recordingCoverage = $state.raw<TimelineInterval[]>([]);
 	let latestTimelineViewport = $state.raw<TimelineViewport | null>(null);
 	let eventSearchAvailable = $state(false);
+	let eventWorkflowAvailable = $state(false);
 	let stillPreviewUrl = $state<string | null>(null);
 	let selectedOperationalEventId = $state<string | null>(null);
 	let previewVersion = 0;
@@ -212,13 +221,15 @@
 	);
 	let dayStartMs = $derived(selectedDate ? Date.parse(`${selectedDate}T00:00:00Z`) : 0);
 	let events = $derived(
-		timelineRepository.events.filter(
-			(event) =>
-				event.start_time_ms < dayStartMs + 86_400_000 &&
-				(event.operational
-					? (event.end_time_ms ?? dayStartMs + 86_400_000) > dayStartMs
-					: event.start_time_ms >= dayStartMs)
-		)
+		timelineRepository.events
+			.filter(
+				(event) =>
+					event.start_time_ms < dayStartMs + 86_400_000 &&
+					(event.operational
+						? (event.end_time_ms ?? dayStartMs + 86_400_000) > dayStartMs
+						: event.start_time_ms >= dayStartMs)
+			)
+			.map(withWorkflow)
 	);
 	let selectedOperationalEvent = $derived(
 		events.find((event) => event.id === selectedOperationalEventId && event.operational) ?? null
@@ -291,6 +302,7 @@
 		void controlClient
 			.searchEventMetadata({
 				sourceIds: [cameraId],
+				workflow: workflowIdentity ? {} : undefined,
 				streamId: 'main',
 				startMs,
 				endMs,
@@ -299,10 +311,36 @@
 				signal: controller.signal
 			})
 			.then((result) => {
-				if (!controller.signal.aborted) storyModeEvents = result.hits.map(recordingEventFromHit);
+				if (!controller.signal.aborted) {
+					workflow.hydrate(result.hits.flatMap((hit) => (hit.workflow ? [hit.workflow] : [])));
+					storyModeEvents = result.hits.map(recordingEventFromHit);
+				}
 			})
 			.catch(() => {
 				if (!controller.signal.aborted) storyModeEvents = [];
+			});
+		return () => controller.abort();
+	});
+
+	$effect(() => {
+		if (!workflowIdentity || !secondaryLoadsReady || !cameraId) return;
+		const viewport = latestTimelineViewport;
+		const targets = timelineRepository.events
+			.filter(
+				(event) =>
+					!event.operational &&
+					(!viewport ||
+						(event.start_time_ms < viewport.endMs &&
+							(event.end_time_ms ?? event.start_time_ms + 1) > viewport.startMs))
+			)
+			.slice(0, 128)
+			.map((event) => ({ sourceId: event.source_id ?? cameraId, eventId: event.id }));
+		const controller = new AbortController();
+		if (targets.length)
+			void workflow.load(targets, false, controller.signal).catch((cause: unknown) => {
+				if (!controller.signal.aborted)
+					workflow.error =
+						cause instanceof Error ? cause.message : 'Event review state could not be loaded.';
 			});
 		return () => controller.abort();
 	});
@@ -326,6 +364,7 @@
 		portraitMedia.addEventListener('change', updateOrientation);
 		const unsubscribeCapabilities = controlClient.onCapabilities((capabilityIds) => {
 			eventSearchAvailable = capabilityIds.includes('keeppeek.event-search');
+			eventWorkflowAvailable = capabilityIds.includes(EVENT_WORKFLOW_CAPABILITY);
 			if (capabilityIds.length === 0) {
 				if (capabilitiesSeen) reconnectPending = true;
 				return;
@@ -337,11 +376,28 @@
 			}
 			capabilitiesSeen = true;
 		});
+		const unsubscribeAccess = controlClient.onAccessState((access) => {
+			if (!access.session) {
+				workflow.setActor('');
+				workflowIdentity = null;
+				selectedWorkflowEvent = null;
+			} else if (eventWorkflowAvailable) {
+				try {
+					workflowIdentity = controlClient.eventWorkflowIdentity();
+					workflow.setActor(workflowIdentity.actorId);
+				} catch (cause) {
+					workflow.error =
+						cause instanceof Error ? cause.message : 'Event review identity is unavailable.';
+				}
+			}
+		});
 		void initialize();
 		return () => {
 			routeVersion += 1;
 			portraitMedia.removeEventListener('change', updateOrientation);
 			unsubscribeCapabilities();
+			unsubscribeAccess();
+			workflow.setActor('');
 			if (secondaryLoadsTimer !== null) window.clearTimeout(secondaryLoadsTimer);
 			if (cameraSwitchTimer !== null) window.clearTimeout(cameraSwitchTimer);
 			if (cameraSwitchFrameUrl) URL.revokeObjectURL(cameraSwitchFrameUrl);
@@ -367,6 +423,7 @@
 	});
 
 	async function initialize(search = window.location.search): Promise<void> {
+		selectedWorkflowEvent = null;
 		const version = ++routeVersion;
 		appliedSearch = search;
 		loadVersion += 1;
@@ -791,6 +848,7 @@
 	function recordingEventFromHit(hit: EventPreviewHit): RecordingEvent {
 		return {
 			id: hit.eventId,
+			workflow: hit.workflow,
 			source_id: hit.sourceId,
 			revision: hit.revision,
 			source: hit.origin,
@@ -811,6 +869,27 @@
 		};
 	}
 
+	function withWorkflow(event: RecordingEvent): RecordingEvent {
+		return {
+			...event,
+			workflow: workflowIdentity
+				? (workflow.stateFor({ sourceId: event.source_id ?? cameraId, eventId: event.id }) ??
+					event.workflow)
+				: undefined
+		};
+	}
+
+	async function openWorkflowDetail(event: RecordingEvent): Promise<void> {
+		selectedWorkflowEvent = event;
+		const target = { sourceId: event.source_id ?? cameraId, eventId: event.id };
+		try {
+			await workflow.load([target], true);
+		} catch (cause) {
+			workflow.error =
+				cause instanceof Error ? cause.message : 'Event review state could not be loaded.';
+		}
+	}
+
 	async function resolveExportSeedEvent(
 		eventId: string,
 		sourceId: string,
@@ -823,6 +902,7 @@
 				controlClient
 					.searchEventMetadata({
 						eventIds: [eventId],
+						workflow: eventWorkflowAvailable ? {} : undefined,
 						sourceIds: [sourceId],
 						streamId,
 						startMs,
@@ -1045,6 +1125,7 @@
 			return;
 		}
 		selectedOperationalEventId = null;
+		if (workflowIdentity) void openWorkflowDetail(event);
 		stillPreviewUrl = event.thumbnail_url;
 		if (event.thumbnail_url) {
 			return;
@@ -1924,7 +2005,12 @@
 	}
 
 	function updateUrl() {
-		if (!cameraId) return;
+		if (
+			!cameraId ||
+			window.location.pathname !== resolve('/keep') ||
+			(navigating.to && navigating.to.route.id !== '/keep')
+		)
+			return;
 		const linkedTimestampMs = routeContext?.timestampMs ?? null;
 		const search =
 			linkedTimestampMs !== null
@@ -2161,7 +2247,10 @@
 			</div>
 		{:else if mode === 'stories'}
 			<KeepStories
-				events={storyModeEvents}
+				events={storyModeEvents.map(withWorkflow)}
+				{workflow}
+				{workflowIdentity}
+				onopen={workflowIdentity ? (event) => void openWorkflowDetail(event) : undefined}
 				{dates}
 				{selectedDate}
 				ondate={changeDate}
@@ -2186,7 +2275,7 @@
 						bitrateKbps={selectedBitrateKbps}
 						rangeStartMs={exportRangeStartMs}
 						rangeEndMs={exportRangeEndMs}
-						event={exportSeedEvent}
+						event={exportSeedEvent ? withWorkflow(exportSeedEvent) : null}
 					/>
 				{/key}
 			</div>
@@ -2363,6 +2452,25 @@
 		{/if}
 	</div>
 </div>
+
+{#if selectedWorkflowEvent && selectedCamera && workflowIdentity}
+	<button
+		type="button"
+		class="fixed inset-0 z-[80] cursor-default bg-black/55"
+		aria-label="Close event detail backdrop"
+		onclick={() => (selectedWorkflowEvent = null)}
+	></button>
+	<EventDetailDrawer
+		record={{ camera: selectedCamera, event: withWorkflow(selectedWorkflowEvent) }}
+		{workflow}
+		{workflowIdentity}
+		onclose={() => (selectedWorkflowEvent = null)}
+	/>
+{:else if workflow.error}
+	<div class="fixed right-4 bottom-4 left-4 z-50 bg-surface">
+		<EventWorkflowNotice {workflow} />
+	</div>
+{/if}
 
 <style>
 	@media (min-width: 48rem) {
