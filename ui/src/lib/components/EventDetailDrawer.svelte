@@ -15,6 +15,10 @@
 	import EventPreview from './EventPreview.svelte';
 	import EventIcon from './EventIcon.svelte';
 	import CopyMomentLink from './CopyMomentLink.svelte';
+	import EventWorkflowControls from './EventWorkflowControls.svelte';
+	import EventWorkflowNotice from './EventWorkflowNotice.svelte';
+	import type { EventWorkflow } from '$lib/event-workflow.svelte';
+	import type { EventWorkflowIdentity } from '$lib/event-workflow';
 
 	type Props = {
 		record: EventBrowserRecord;
@@ -24,6 +28,9 @@
 		alreadyExported?: boolean;
 		onclose?: () => void;
 		onpreviewretry?: () => void;
+		workflow?: EventWorkflow;
+		workflowIdentity?: EventWorkflowIdentity | null;
+		onworkflowchanged?: () => void;
 	};
 
 	let {
@@ -33,7 +40,10 @@
 		returnHref = null,
 		alreadyExported = false,
 		onclose,
-		onpreviewretry
+		onpreviewretry,
+		workflow,
+		workflowIdentity = null,
+		onworkflowchanged
 	}: Props = $props();
 	const eventTimeFormatter = new Intl.DateTimeFormat(undefined, {
 		year: 'numeric',
@@ -187,6 +197,19 @@
 		{/each}
 	</div>
 
+	{#if !paperFrame && workflow && workflowIdentity && record.event.workflow}
+		<div class="shrink-0 border-b border-hairline px-4 py-2">
+			<EventWorkflowControls
+				value={record.event.workflow}
+				{workflow}
+				identity={workflowIdentity}
+				detail
+				onchanged={onworkflowchanged}
+			/>
+			<EventWorkflowNotice {workflow} onchanged={onworkflowchanged} />
+		</div>
+	{/if}
+
 	<div class="flex flex-col gap-3 p-4 {paperFrame ? 'h-[264px] shrink-0' : ''}">
 		<dl class="flex h-[31px] shrink-0 gap-5 text-xs">
 			<div>
@@ -262,7 +285,10 @@
 					<ExternalLinkIcon class="size-3.5" /> Export event
 				</a>
 			</CapabilityGate>
-			<CapabilityGate {...capabilityActions.bookmarkMoment} class="min-w-0 flex-1" />
+			{#if !workflowIdentity}<CapabilityGate
+					{...capabilityActions.bookmarkMoment}
+					class="min-w-0 flex-1"
+				/>{/if}
 		</div>
 	</div>
 </aside>

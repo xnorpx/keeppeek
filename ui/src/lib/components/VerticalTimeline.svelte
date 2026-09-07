@@ -7,6 +7,7 @@
 	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import ScanSearchIcon from '@lucide/svelte/icons/scan-search';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
+	import BookmarkIcon from '@lucide/svelte/icons/bookmark';
 	import ZoomInIcon from '@lucide/svelte/icons/zoom-in';
 	import ZoomOutIcon from '@lucide/svelte/icons/zoom-out';
 
@@ -184,7 +185,15 @@
 			const previous = clusters.at(-1);
 			if (previous && top - previous.top < EVENT_CLUSTER_GAP) {
 				previous.count += 1;
-				if (!previous.event.thumbnail_url && event.thumbnail_url) previous.event = event;
+				const previousBookmarked = previous.event.workflow?.bookmark?.active ?? false;
+				const bookmarked = event.workflow?.bookmark?.active ?? false;
+				if (
+					(!previousBookmarked && bookmarked) ||
+					(previousBookmarked === bookmarked &&
+						!previous.event.thumbnail_url &&
+						event.thumbnail_url)
+				)
+					previous.event = event;
 				continue;
 			}
 			clusters.push({ event, count: 1, top });
@@ -680,6 +689,7 @@
 				<button
 					type="button"
 					data-timeline-event={cluster.event.id}
+					data-timeline-bookmarked={cluster.event.workflow?.bookmark?.active || undefined}
 					class="absolute left-[5.375rem] z-30 flex h-[68px] overflow-hidden rounded-sm border bg-surface p-1.5 text-left shadow-sm transition-colors hover:bg-raised focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none {paperFrame
 						? 'right-[9px]'
 						: 'right-2'} {playheadMs !== null &&
@@ -722,7 +732,11 @@
 							{formatTime(cluster.event.start_time_ms)}
 						</span>
 						<span class="block truncate text-xs font-medium text-foreground">
-							{eventLabel(cluster.event.kind)}
+							{#if cluster.event.workflow?.bookmark?.active}<BookmarkIcon
+									class="mr-1 inline size-3 text-primary"
+									aria-label="Bookmarked event"
+									fill="currentColor"
+								/>{/if}{eventLabel(cluster.event.kind)}
 						</span>
 						<span class="block truncate text-2xs text-text-faint">
 							{cluster.event.operational
