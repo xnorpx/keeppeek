@@ -234,4 +234,19 @@ budget, 250 ms mutation budget, and all CI settings are unchanged.
 Review proposals about audit overflow and event-ID collisions did not require changes: audit
 pruning is transactional and capped at 16 records, and `recording_events.id` is the global primary
 key. Corrupt audit overflow returns an error. Cross-model review was skipped because the user
-was unavailable; no external CLI was invoked. Full CI on the new mutation commit remains pending.
+was unavailable; no external CLI was invoked. Run `34088046121` at `fba35af` passes the full Linux
+and macOS Rust suites, including the unchanged performance budgets. Exact passing benchmark
+percentiles are not printed by libtest; the successful assertion establishes p95 below 250 ms.
+
+## CI Cache Follow-up
+
+The Windows job in run `34088046121` exhausted its 15-minute job budget without a test assertion
+failure. An unchanged-job retry completed every Rust test successfully: the test command finished
+at 06:19:34 UTC and uploaded its log by 06:19:40. The cache action then spent the remaining
+18 seconds on post-job work and was cancelled during target-directory cleanup. All aggregate
+Rust gates failed because the Windows job was cancelled despite its successful test step.
+
+Rust test jobs now restore caches on PRs and save caches only on `main`. The pinned cache action
+supports `save-if` for this exact behavior. A structured YAML comparison verifies that this input
+is the only workflow change: every test command, matrix entry, failure gate, and the 15-minute
+deadline are identical. Formatting and editor checks pass. The next full CI run remains pending.
