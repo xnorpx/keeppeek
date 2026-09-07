@@ -56,7 +56,7 @@ numbers and meanings remain unchanged. Other protected API files remain unchange
 - [x] Before/after performance evidence meets the stated budgets.
 - [x] Adversarial review findings were reconciled and actionable defects have regression tests.
 - [x] Canonical `./check.sh` passes on the feature tree `008a956`.
-- [ ] CI passes after the ONVIF deadline follow-up below.
+- [ ] CI passes after the deadline and mutation follow-ups below.
 - [ ] Separate main-only slow-test run required by the PR template has passing evidence.
 
 The issue stays open until every requirement has observed evidence. The user authorized a feature
@@ -197,4 +197,41 @@ single-run elapsed observations, not percentile measurements; the 2,300 ms asser
 Local verification on the same host: all 24 PullPoint tests pass with
 `cargo test --locked -p keeppeek --lib --features macos-test-aws-crypto camera_events::pullpoint:: -- --test-threads=1`.
 `cargo clippy --locked -p keeppeek --all-targets -- -D warnings`, Rust formatting, and diff checks
-also pass. Full cross-platform CI on the follow-up commit remains pending.
+also pass. The next CI run exposed the separate mutation performance failure below.
+
+## CI Mutation Follow-up
+
+Run `34085604787` at `86a321f` failed on Linux in
+`storage::catalog::tests::event_workflow_query_latency_measurement`: ordinary query p50/p95
+31.114/33.524 ms, workflow query 48.682/50.318 ms, and 128-event mutation 603.577/629.395 ms.
+The mutation exceeded the unchanged 250 ms budget. Matrix fail-fast cancelled the other Rust jobs.
+
+The mutation path prepared and executed independent state reads, review writes, and search
+invalidation statements for each target. The follow-up makes three measured changes:
+
+| Increment                               | Local mutation p50 / p95 (ms) |
+| --------------------------------------- | ----------------------------: |
+| Batch search revision invalidation      |               83.141 / 85.861 |
+| Batch workflow and bookmark-audit reads |               52.281 / 53.804 |
+| Reuse the prepared review write         |               31.108 / 33.106 |
+
+These measurements use the same host, debug profile, unchanged 1,024-event fixture, 128-event
+mutation, and 30 samples described above. Each increment ran
+`cargo test --locked -p keeppeek --lib --features macos-test-aws-crypto storage::catalog::tests::event_workflow -- --nocapture --test-threads=1`.
+Linux after-fix measurements remain pending; local numbers are not substituted for CI evidence.
+
+CAS, source validation, serial quota checks, timestamps, audit order, and actual-file media
+checks remain inside the same immediate transaction. One invalid target rolls back all writes.
+Search invalidation advances the revision by the batch size and verifies that every changed event
+was updated. The new independent point-read regression covers ordered acknowledgments, active and
+inactive bookmarks, audit pruning, wrong-source rollback, and principal-specific conflicts.
+
+The eight-worker storage/workflow/WebRTC/PullPoint slice passes all 198 tests. Query p50/p95 is
+18.064/19.303 ms, and mutation p50/p95 is 32.067/44.264 ms under this workload. Strict all-target
+package Clippy, formatting, and diff checks pass. The benchmark data, sample counts, 100 ms query
+budget, 250 ms mutation budget, and all CI settings are unchanged.
+
+Review proposals about audit overflow and event-ID collisions did not require changes: audit
+pruning is transactional and capped at 16 records, and `recording_events.id` is the global primary
+key. Corrupt audit overflow returns an error. Cross-model review was skipped because the user
+was unavailable; no external CLI was invoked. Full CI on the new mutation commit remains pending.

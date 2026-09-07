@@ -120,22 +120,41 @@ pub(in crate::storage::catalog) async fn hydrate(
     let Some(query) = query else {
         return Ok(());
     };
-    if hits.is_empty() {
-        return Ok(());
+    let keys = hits
+        .iter()
+        .map(|hit| EventKey {
+            source_id: hit.source_id.clone(),
+            event_id: hit.event_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    let states = read_states(connection, &query.actor_id, &keys).await?;
+    for (hit, state) in hits.iter_mut().zip(states) {
+        hit.workflow = Some(state);
+    }
+    Ok(())
+}
+
+pub(super) async fn read_states(
+    connection: &turso::Connection,
+    actor: &str,
+    keys: &[EventKey],
+) -> anyhow::Result<Vec<State>> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
     }
     assert!(
-        hits.len() <= super::MAX_BATCH,
-        "workflow page exceeds its query bound"
+        keys.len() <= super::MAX_BATCH,
+        "workflow state read exceeds its batch bound"
     );
-    let mut params = Vec::with_capacity(1 + hits.len() * 2);
-    params.push(turso::Value::Text(query.actor_id.clone()));
-    let targets = hits
+    let mut params = Vec::with_capacity(1 + keys.len() * 2);
+    params.push(turso::Value::Text(actor.to_owned()));
+    let targets = keys
         .iter()
         .enumerate()
-        .map(|(index, hit)| {
+        .map(|(index, key)| {
             let target = format!("({index}, ?{}, ?{})", params.len() + 1, params.len() + 2);
-            params.push(turso::Value::Text(hit.source_id.clone()));
-            params.push(turso::Value::Text(hit.event_id.clone()));
+            params.push(turso::Value::Text(key.source_id.clone()));
+            params.push(turso::Value::Text(key.event_id.clone()));
             target
         })
         .collect::<Vec<_>>()
@@ -147,25 +166,25 @@ pub(in crate::storage::catalog) async fn hydrate(
     let mut rows = connection
         .query(sql, turso::params_from_iter(params))
         .await?;
-    let mut count = 0;
+    let mut states = Vec::with_capacity(keys.len());
     while let Some(row) = rows.next().await? {
         let index = usize::try_from(row.get::<i64>(0)?)?;
-        let hit = hits
-            .get_mut(index)
-            .ok_or_else(|| anyhow::anyhow!("workflow row is outside its page"))?;
-        let key = EventKey {
-            source_id: hit.source_id.clone(),
-            event_id: hit.event_id.clone(),
-        };
-        hit.workflow = Some(hydrated_state(&row, key)?);
-        count += 1;
+        assert_eq!(
+            index,
+            states.len(),
+            "workflow states must retain request order"
+        );
+        let key = keys
+            .get(index)
+            .ok_or_else(|| anyhow::anyhow!("workflow row is outside its batch"))?;
+        states.push(hydrated_state(&row, key.clone())?);
     }
     assert_eq!(
-        count,
-        hits.len(),
-        "workflow page must return one state per requested event"
+        states.len(),
+        keys.len(),
+        "workflow batch must return one state per requested event"
     );
-    Ok(())
+    Ok(states)
 }
 
 fn hydration_select() -> String {
@@ -183,12 +202,15 @@ fn hydration_select() -> String {
     format!("SELECT requested.position, COALESCE(review.reviewed, 0), COALESCE(review.dismissed, 0),
         COALESCE(review.revision, 0), review.reviewed_at_ms, review.dismissed_at_ms, review.updated_at_ms,
         bookmark.active, bookmark.note, bookmark.revision, bookmark.created_by, bookmark.created_at_ms,
-        bookmark.updated_by, bookmark.updated_at_ms, bookmark.event_start_ms, bookmark.event_kind, {paths}
+        bookmark.updated_by, bookmark.updated_at_ms, bookmark.event_start_ms, bookmark.event_kind, {paths},
+        EXISTS(SELECT 1 FROM recording_events AS event
+            WHERE event.id = requested.event_id AND event.camera_id = requested.source_id)
         FROM requested
         LEFT JOIN event_reviews AS review ON review.source_id = requested.source_id
             AND review.event_id = requested.event_id AND review.principal_id = ?1
         LEFT JOIN event_bookmarks AS bookmark ON bookmark.source_id = requested.source_id
-            AND bookmark.event_id = requested.event_id")
+            AND bookmark.event_id = requested.event_id
+        ORDER BY requested.position")
 }
 
 fn hydrated_state(row: &turso::Row, key: EventKey) -> anyhow::Result<State> {
@@ -209,13 +231,16 @@ fn hydrated_state(row: &turso::Row, key: EventKey) -> anyhow::Result<State> {
             })
         })
         .transpose()?;
+    let event_present = row.get::<i64>(20)? != 0;
     let mut media_available = false;
-    for column in 16..20 {
-        if let Some(path) = row.get::<Option<String>>(column)?
-            && std::path::Path::new(&path).is_file()
-        {
-            media_available = true;
-            break;
+    if event_present {
+        for column in 16..20 {
+            if let Some(path) = row.get::<Option<String>>(column)?
+                && std::path::Path::new(&path).is_file()
+            {
+                media_available = true;
+                break;
+            }
         }
     }
     Ok(State {
@@ -227,7 +252,7 @@ fn hydrated_state(row: &turso::Row, key: EventKey) -> anyhow::Result<State> {
         dismissed_at_ms: row.get(5)?,
         updated_at_ms: row.get(6)?,
         bookmark,
-        event_present: true,
+        event_present,
         media_available,
     })
 }

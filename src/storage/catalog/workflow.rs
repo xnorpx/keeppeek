@@ -489,9 +489,25 @@ async fn mutate_reviews(
     changes: Vec<ReviewChange>,
     now_ms: i64,
 ) -> anyhow::Result<Vec<State>> {
+    let keys = changes
+        .iter()
+        .map(|change| change.key.clone())
+        .collect::<Vec<_>>();
+    let mut current_states = query::read_states(connection, actor, &keys).await?;
+    bookmarks::hydrate_audits(connection, &mut current_states).await?;
+    let mut write = connection
+        .prepare(
+            "INSERT INTO event_reviews (source_id, event_id, principal_id, reviewed, dismissed,
+             revision, reviewed_at_ms, dismissed_at_ms, updated_at_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(source_id, event_id, principal_id) DO UPDATE SET
+             reviewed = excluded.reviewed, dismissed = excluded.dismissed,
+             revision = excluded.revision, reviewed_at_ms = excluded.reviewed_at_ms,
+             dismissed_at_ms = excluded.dismissed_at_ms, updated_at_ms = excluded.updated_at_ms",
+        )
+        .await?;
     let mut states = Vec::with_capacity(changes.len());
-    for change in changes {
-        let mut current = read(connection, actor, change.key.clone()).await?;
+    for (change, mut current) in changes.into_iter().zip(current_states) {
         anyhow::ensure!(current.event_present, Failure::NotFound);
         if current.review_revision != change.expected_revision {
             return Err(Conflict { current }.into());
@@ -512,22 +528,59 @@ async fn mutate_reviews(
             .dismissed
             .then_some(current.dismissed_at_ms.unwrap_or(now_ms));
         current.updated_at_ms = Some(now_ms);
-        connection.execute(
-            "INSERT INTO event_reviews (source_id, event_id, principal_id, reviewed, dismissed,
-                 revision, reviewed_at_ms, dismissed_at_ms, updated_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(source_id, event_id, principal_id) DO UPDATE SET
-                 reviewed = excluded.reviewed, dismissed = excluded.dismissed,
-                 revision = excluded.revision, reviewed_at_ms = excluded.reviewed_at_ms,
-                 dismissed_at_ms = excluded.dismissed_at_ms, updated_at_ms = excluded.updated_at_ms",
-            turso::params![change.key.source_id.clone(), change.key.event_id.clone(), actor,
-                i64::from(change.reviewed), i64::from(change.dismissed), revision,
-                current.reviewed_at_ms, current.dismissed_at_ms, now_ms],
-        ).await?;
-        super::record_event_search_mutation(connection, &change.key.event_id).await?;
+        write
+            .execute(turso::params![
+                change.key.source_id.clone(),
+                change.key.event_id.clone(),
+                actor,
+                i64::from(change.reviewed),
+                i64::from(change.dismissed),
+                revision,
+                current.reviewed_at_ms,
+                current.dismissed_at_ms,
+                now_ms
+            ])
+            .await?;
+        write.reset()?;
         states.push(current);
     }
+    invalidate_review_search(connection, &states).await?;
     Ok(states)
+}
+
+async fn invalidate_review_search(
+    connection: &turso::Connection,
+    states: &[State],
+) -> anyhow::Result<()> {
+    assert!(
+        !states.is_empty() && states.len() <= MAX_BATCH,
+        "review search invalidation requires a bounded nonempty batch"
+    );
+    connection
+        .execute(
+            "UPDATE recording_event_search_state SET revision = revision + ?1 WHERE id = 1",
+            turso::params![i64::try_from(states.len())?],
+        )
+        .await?;
+    let placeholders = (1..=states.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let changed = connection
+        .execute(
+            format!(
+                "UPDATE recording_events SET search_revision = (
+                SELECT revision FROM recording_event_search_state WHERE id = 1
+            ) WHERE id IN ({placeholders})"
+            ),
+            turso::params_from_iter(states.iter().map(|state| state.key.event_id.clone())),
+        )
+        .await?;
+    anyhow::ensure!(
+        changed == u64::try_from(states.len())?,
+        "review search invalidation did not update every event"
+    );
+    Ok(())
 }
 
 async fn require_event(connection: &turso::Connection, key: &EventKey) -> anyhow::Result<()> {
@@ -569,6 +622,79 @@ async fn check_review_capacity(
 mod tests {
     use super::*;
     use crate::storage::catalog::tests::{test_dir, test_event};
+
+    #[test]
+    fn event_workflow_batch_reads_preserve_audit_order_and_source_validation() {
+        let root = test_dir("turso-workflow-batch-reads");
+        let catalog = crate::storage::RecordingCatalog::open(&root.join("recordings.db")).unwrap();
+        let handle = catalog.handle();
+        let keys = ["last", "first", "middle"].map(|event_id| {
+            handle.insert_event(test_event(event_id, 1_000)).unwrap();
+            EventKey {
+                source_id: "192.0.2.10".to_owned(),
+                event_id: event_id.to_owned(),
+            }
+        });
+        seed_batch_bookmarks(&handle, &keys);
+        let changes = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| ReviewChange {
+                key: key.clone(),
+                expected_revision: 0,
+                reviewed: index != 1,
+                dismissed: index == 1,
+            })
+            .collect::<Vec<_>>();
+        handle.mutate_event_reviews("bob", changes.clone()).unwrap();
+        let acknowledged = handle
+            .mutate_event_reviews("alice", changes.clone())
+            .unwrap();
+        let expected = handle.event_workflow("alice", keys.to_vec()).unwrap();
+        assert_eq!(acknowledged, expected);
+        assert_eq!(expected[0].bookmark.as_ref().unwrap().audit.len(), 16);
+        assert!(!expected[1].bookmark.as_ref().unwrap().active);
+        let mut rejected = changes.clone();
+        for change in &mut rejected {
+            change.expected_revision = 1;
+            change.reviewed = !change.reviewed;
+        }
+        rejected[1].key.source_id = "another-source".to_owned();
+        let error = handle.mutate_event_reviews("alice", rejected).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Failure>(),
+            Some(Failure::NotFound)
+        ));
+        assert_eq!(
+            handle.event_workflow("alice", keys.to_vec()).unwrap(),
+            expected
+        );
+        let bob = handle.event_workflow("bob", keys.to_vec()).unwrap();
+        let error = handle.mutate_event_reviews("bob", changes).unwrap_err();
+        assert_eq!(error.downcast_ref::<Conflict>().unwrap().current, bob[0]);
+        drop(handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn seed_batch_bookmarks(handle: &RecordingCatalogHandle, keys: &[EventKey]) {
+        for (index, key) in keys.iter().enumerate() {
+            for revision in 0..18 {
+                handle
+                    .mutate_event_bookmark(
+                        "alice",
+                        false,
+                        BookmarkChange {
+                            key: key.clone(),
+                            expected_revision: revision,
+                            active: index != 1,
+                            note: format!("{} note revision {revision}", key.event_id),
+                        },
+                    )
+                    .unwrap();
+            }
+        }
+    }
 
     #[test]
     fn event_workflow_rejects_oversized_identity_batches_before_database_work() {
