@@ -85,7 +85,7 @@ jobs:
       - name: Install UI dependencies
         working-directory: ui
         run: bun install --no-save --registry=https://registry.npmjs.org/
-      - uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2
         with:
           tool: cargo-llvm-cov
       - name: Generate Rust coverage
