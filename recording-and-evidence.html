@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3db6effe.js";
+            window.path_to_searchindex_js = "searchindex-22f06337.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-0cad4f0f.js"></script>
@@ -236,6 +236,14 @@ and an explicit unknown state. Gap actions open nearby footage, camera health, o
 at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
 exact totals.</p>
 <h2 id="review-events-consistently"><a class="header" href="#review-events-consistently">Review events consistently</a></h2>
+<p>Mark events reviewed or dismissed without deleting evidence. Those flags belong to your authenticated
+identity, or to a persistent <strong>Local workspace</strong> in trusted-LAN use. Event updates do not reset them.
+Use the visible or selected count on bulk actions; undo applies only to the acknowledged targets.
+Review and bookmark filters use server-computed counts, not the current page length.</p>
+<p>Bookmarks are shared with authorized camera viewers. Their creator or an Administrator can edit
+the bounded note or remove the bookmark. <strong>Saved bookmarks</strong> retains honest metadata-only references
+when media, events, or sources are unavailable. A bookmark does not pin video through retention.
+Exports keep their source event/bookmark revision relationship without creating a retention hold.</p>
 <p>Events, Keep, notifications, MQTT, and export entry points use the same event revision and canonical
 preview. An authorized producer may name the canonical attachment. Otherwise KeepPeek chooses a
 supported snapshot, then a story frame, then a retained thumbnail using stable ordinal, capture
