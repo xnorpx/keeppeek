@@ -7365,6 +7365,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "performance benchmark; run explicitly"]
     fn event_workflow_query_latency_measurement() {
         let root = test_dir("turso-event-workflow-latency");
         let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
