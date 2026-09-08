@@ -16,6 +16,8 @@ evidence links.
 Startup preserves `.active` files and their catalog rows. A temporary-looking
 filename does not establish ownership or authorize deletion, in either the
 medium-term or long-term root. Interrupted media remains available for inspection.
+Writers create new `.active` files exclusively. If the output path already exists,
+creation fails without truncating or replacing the existing file.
 
 ## Review and delete recordings
 
