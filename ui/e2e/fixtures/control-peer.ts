@@ -2799,6 +2799,7 @@ function encodedCapabilities(
 											.map((profile) =>
 												create(MediaVariantCapabilitySchema, {
 													variantId: profile.stream,
+													qualityRank: profile.quality_rank ?? 0,
 													codec: create(CodecDescriptorSchema, {
 														name: profile.encoding ?? ''
 													}),

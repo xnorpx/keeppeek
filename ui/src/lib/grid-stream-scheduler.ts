@@ -5,6 +5,9 @@ const ADMISSION_BATCH_SIZE = 3;
 const ADMISSION_BATCH_DELAY_MS = 40;
 
 export type GridTileMode = 'live' | 'history';
+export type GridStreamingMode = 'smart' | 'continuous';
+export type GridTileAdmission =
+	'admitted' | 'queued' | 'capacity' | 'offscreen' | 'hidden' | 'unsupported' | 'unavailable';
 
 export type GridTileDemand = {
 	cameraId: string;
@@ -27,6 +30,7 @@ export type GridStreamGrant = {
 export type GridSchedule = {
 	grants: readonly GridStreamGrant[];
 	queuedCameraIds: readonly string[];
+	limitedCameraIds: readonly string[];
 	nextReconcileAtMs: number | null;
 };
 
@@ -38,25 +42,34 @@ export class GridStreamScheduler {
 	#nextAdmissionAtMs = 0;
 
 	constructor(options: { subscriptionSlots: number; decoderSlots: number }) {
-		this.#subscriptionSlots = positiveCapacity(options.subscriptionSlots);
-		this.#decoderSlots = positiveCapacity(options.decoderSlots);
+		this.#subscriptionSlots = nonnegativeCapacity(options.subscriptionSlots);
+		this.#decoderSlots = nonnegativeCapacity(options.decoderSlots);
 	}
 
 	setCapacity(options: { subscriptionSlots: number; decoderSlots: number }): void {
-		this.#subscriptionSlots = positiveCapacity(options.subscriptionSlots);
-		this.#decoderSlots = positiveCapacity(options.decoderSlots);
+		this.#subscriptionSlots = nonnegativeCapacity(options.subscriptionSlots);
+		this.#decoderSlots = nonnegativeCapacity(options.decoderSlots);
 	}
 
-	reconcile(demands: readonly GridTileDemand[], nowMs: number): GridSchedule {
-		const candidates = demands
-			.filter((demand) => demand.screenActive && demand.mode === 'live')
+	#candidates(demands: readonly GridTileDemand[], nowMs: number, mode: GridStreamingMode) {
+		const cameraIds = new Set(demands.map((demand) => demand.cameraId));
+		for (const cameraId of this.#lastVisibleMs.keys()) {
+			if (!cameraIds.has(cameraId)) this.#lastVisibleMs.delete(cameraId);
+		}
+		return demands
+			.filter(
+				(demand) =>
+					demand.screenActive &&
+					demand.mode === 'live' &&
+					(mode === 'smart' || demand.visibleFraction > 0 || demand.focused || demand.fullscreen)
+			)
 			.map((demand) => {
 				if (demand.visibleFraction > 0) this.#lastVisibleMs.set(demand.cameraId, nowMs);
 				const lastVisibleMs = this.#lastVisibleMs.get(demand.cameraId) ?? Number.NEGATIVE_INFINITY;
 				return {
 					demand,
 					lastVisibleMs,
-					score: demandScore(demand, nowMs - lastVisibleMs <= RELEASE_GRACE_MS)
+					score: demandScore(demand, nowMs - lastVisibleMs < RELEASE_GRACE_MS)
 				};
 			})
 			.filter((candidate) => candidate.score > 0)
@@ -66,6 +79,14 @@ export class GridStreamScheduler {
 					right.lastVisibleMs - left.lastVisibleMs ||
 					left.demand.cameraId.localeCompare(right.demand.cameraId)
 			);
+	}
+
+	reconcile(
+		demands: readonly GridTileDemand[],
+		nowMs: number,
+		mode: GridStreamingMode = 'smart'
+	): GridSchedule {
+		const candidates = this.#candidates(demands, nowMs, mode);
 		const budget = Math.min(this.#subscriptionSlots, this.#decoderSlots);
 		const desired = candidates.slice(0, budget);
 		const desiredIds = new Set(desired.map((candidate) => candidate.demand.cameraId));
@@ -103,7 +124,7 @@ export class GridStreamScheduler {
 			.filter(
 				(candidate) =>
 					candidate.demand.visibleFraction === 0 &&
-					nowMs - candidate.lastVisibleMs <= RELEASE_GRACE_MS
+					nowMs - candidate.lastVisibleMs < RELEASE_GRACE_MS
 			)
 			.map((candidate) => candidate.lastVisibleMs + RELEASE_GRACE_MS)
 			.filter((deadline) => deadline > nowMs)
@@ -119,6 +140,7 @@ export class GridStreamScheduler {
 		return {
 			grants,
 			queuedCameraIds,
+			limitedCameraIds: candidates.slice(budget).map((candidate) => candidate.demand.cameraId),
 			nextReconcileAtMs: Number.isFinite(nextReconcileAtMs) ? nextReconcileAtMs : null
 		};
 	}
@@ -140,7 +162,7 @@ export function webDecoderBudget(hardwareConcurrency: number | undefined): numbe
 	return Math.max(4, Math.min(12, Math.floor(hardwareConcurrency / 2)));
 }
 
-function positiveCapacity(value: number): number {
-	if (!Number.isFinite(value)) return 1;
-	return Math.max(1, Math.floor(value));
+function nonnegativeCapacity(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.max(0, Math.floor(value));
 }

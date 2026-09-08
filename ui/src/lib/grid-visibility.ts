@@ -5,51 +5,65 @@ export type GridTileVisibility = {
 	viewportExtentPx: number;
 };
 
+type GridRect = Pick<DOMRectReadOnly, 'top' | 'right' | 'bottom' | 'left' | 'width' | 'height'>;
+
 export function observeGridVisibility(
 	node: Element,
 	cameraId: string,
 	onchange: (visibility: GridTileVisibility) => void
 ): () => void {
-	const report = (rect: DOMRectReadOnly) => {
-		onchange(measureGridVisibility(cameraId, rect, window.innerWidth, window.innerHeight));
+	const report = (rect: DOMRectReadOnly, intersection?: DOMRectReadOnly) => {
+		onchange(
+			measureGridVisibility(cameraId, rect, window.innerWidth, window.innerHeight, intersection)
+		);
 	};
 	if (typeof IntersectionObserver === 'undefined') {
 		report(node.getBoundingClientRect());
 		return () => undefined;
 	}
-	const observer = new IntersectionObserver(
-		(entries) => {
-			const entry = entries[0];
-			if (!entry) return;
-			if (entry.boundingClientRect) {
-				report(entry.boundingClientRect);
-				return;
-			}
-			onchange({
-				cameraId,
-				visibleFraction: entry.intersectionRatio ?? (entry.isIntersecting ? 1 : 0),
-				distanceFromViewportPx: entry.isIntersecting ? 0 : Number.POSITIVE_INFINITY,
-				viewportExtentPx: Math.max(1, Math.max(window.innerWidth, window.innerHeight))
-			});
-		},
-		{
-			root: null,
-			rootMargin: '100% 100%',
-			threshold: [0, 0.01, 1 / 3, 2 / 3, 1]
+	const observe: IntersectionObserverCallback = (entries) => {
+		const entry = entries[0];
+		if (!entry) return;
+		if (entry.boundingClientRect) {
+			report(entry.boundingClientRect, entry.intersectionRect);
+			return;
 		}
+		onchange({
+			cameraId,
+			visibleFraction: entry.intersectionRatio ?? (entry.isIntersecting ? 1 : 0),
+			distanceFromViewportPx: entry.isIntersecting ? 0 : Number.POSITIVE_INFINITY,
+			viewportExtentPx: Math.max(1, Math.max(window.innerWidth, window.innerHeight))
+		});
+	};
+	const observers = ['0px', '100% 100%'].map(
+		(rootMargin) =>
+			new IntersectionObserver(observe, {
+				root: null,
+				rootMargin,
+				threshold: [0, 0.01, 1 / 3, 2 / 3, 1]
+			})
 	);
-	observer.observe(node);
-	return () => observer.disconnect();
+	for (const observer of observers) observer.observe(node);
+	return () => {
+		for (const observer of observers) observer.disconnect();
+	};
 }
 
 export function measureGridVisibility(
 	cameraId: string,
-	rect: Pick<DOMRectReadOnly, 'top' | 'right' | 'bottom' | 'left' | 'width' | 'height'>,
+	rect: GridRect,
 	viewportWidth: number,
-	viewportHeight: number
+	viewportHeight: number,
+	intersection: GridRect = rect
 ): GridTileVisibility {
-	const visibleWidth = Math.max(0, Math.min(rect.right, viewportWidth) - Math.max(rect.left, 0));
-	const visibleHeight = Math.max(0, Math.min(rect.bottom, viewportHeight) - Math.max(rect.top, 0));
+	const visibleWidth = Math.max(
+		0,
+		Math.min(intersection.right, viewportWidth) - Math.max(intersection.left, 0)
+	);
+	const visibleHeight = Math.max(
+		0,
+		Math.min(intersection.bottom, viewportHeight) - Math.max(intersection.top, 0)
+	);
 	const area = Math.max(1, rect.width * rect.height);
 	const horizontalDistance =
 		rect.right < 0 ? -rect.right : rect.left > viewportWidth ? rect.left - viewportWidth : 0;
