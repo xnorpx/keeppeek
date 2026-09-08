@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Release readiness and known limitations - The KeepPeek Book</title>
+        <title>Recording maintenance - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -174,106 +174,153 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="release-readiness-and-known-limitations"><a class="header" href="#release-readiness-and-known-limitations">Release readiness and known limitations</a></h1>
-<p>KeepPeek has completed its proof-of-concept gate and is undergoing MVP qualification. Passing
-automated tests is necessary, but it is not enough to call a camera recorder production-ready. The
-MVP decision belongs to the tested release build and representative deployment recorded in
-<a href="https://github.com/xnorpx/keeppeek/issues/144">issue #144</a>.</p>
-<h2 id="what-automated-validation-proves"><a class="header" href="#what-automated-validation-proves">What automated validation proves</a></h2>
-<p>The repository gate builds the Rust workspace and browser application, runs Rust, TypeScript,
-Svelte, browser, real-media, and Playwright tests, checks formatting and dependencies, and validates
-the versioned Paper scenario and visual-harness manifests. Focused benchmarks enforce latency and
-memory budgets for recording coverage, operational events, notifications, MQTT enqueue, storage,
-and event lookup.</p>
-<p>Those checks prove deterministic contracts and regression fixtures. They do not prove that a
-particular camera firmware, network, disk, browser, reverse proxy, notification account, or broker
-will behave correctly under sustained load.</p>
-<h2 id="release-and-dependency-integrity"><a class="header" href="#release-and-dependency-integrity">Release and dependency integrity</a></h2>
-<p><code>Cargo.lock</code> is a tracked release input. Direct Cargo requirements name a compatible version, and
-repository build, test, benchmark, container, and release commands use <code>--locked</code>. CI runs
-<code>cargo audit --deny warnings</code> without advisory exceptions.</p>
-<p>The UI and visual harness intentionally do not track JavaScript lockfiles. Every direct Bun
-dependency uses an exact version, while transitive dependencies resolve from the public npm
-registry on each clean install. CI creates a separate temporary lockfile for each manifest with
-dependency scripts disabled, runs <code>bun audit</code>, and rejects high or critical advisories. This policy
-detects current ecosystem breakage but does not make JavaScript transitive resolution reproducible
-between runs.</p>
-<p>The object-detection example intentionally tests the newest compatible Python packages. CI uses
-Python 3.12 and resolves <code>requirements.txt</code> through <code>pip-audit</code> without installing the full model
-runtime in the audit job.</p>
-<p>The embedded CCTV Camera Database comes from the v2.8.0 release archive. The build verifies its
-SHA-256 digest before opening the ZIP. Container builds use Bun 1.4.0 and immutable base-image
-digests, then CI starts the production image and probes its HTTP listener. A version tag can create
-release artifacts only when it points to a commit on <code>main</code> and that exact commit has a successful
-push CI run.</p>
-<h2 id="representative-deployment-matrix"><a class="header" href="#representative-deployment-matrix">Representative deployment matrix</a></h2>
-<p>Before promotion, record exact evidence for the deployment that will rely on KeepPeek:</p>
+                        <h1 id="recording-maintenance"><a class="header" href="#recording-maintenance">Recording maintenance</a></h1>
+<p>Manual recording deletion and catalog reconciliation are not yet available in the
+KeepPeek interface or public protocol. The backend supports bounded catalog
+inspection, durable deletion intent, and read-only preflight checks. Confirming
+an intent does not reserve a recording, change playback, or delete a file.</p>
+<p>Automatic storage retention is separate and remains unchanged. Do not delete
+recording files directly as a substitute for the unfinished maintenance workflow:
+doing so can leave stale catalog entries and unavailable evidence links.</p>
+<h2 id="select-a-complete-scope"><a class="header" href="#select-a-complete-scope">Select a complete scope</a></h2>
+<p>Maintenance uses stable source, stream, and recording identifiers, never a
+display name or a caller-supplied filesystem path. Catalog inspection accepts
+one recording or a nonempty half-open time range on one source and logical stream.
+The start is included and the end is excluded.</p>
+<p>A range selects whole recording objects that overlap it. It does not trim media
+at the requested timestamps. The snapshot retains each object’s full start and
+end bounds so an eventual destructive preview can show any expansion explicitly.</p>
+<p>Selections contain at most 128 recording objects. Time ranges span at most
+31 days, and indexed history inspection is bounded to 4,096 rows. If a complete
+selection cannot be established within those limits, the request fails instead
+of returning a partial result that could be mistaken for the full scope.</p>
+<p>Counts and bytes in a catalog snapshot are recorded metadata. They do not prove
+that a file is intact, that its media is playable, or that the selected interval
+has no gaps. Active, protected, and cleanup-pending objects remain visible rather
+than disappearing from the selection.</p>
+<h2 id="understand-durable-intent"><a class="header" href="#understand-durable-intent">Understand durable intent</a></h2>
+<p>Preparation reads an authoritative snapshot and checks its catalog revision. It
+rejects empty selections, active or unfinalized recordings, protected recordings,
+pending automatic cleanup, and recordings without a known end time. The stored
+intent records the requester, scope, operator or privacy reason, and timestamps.</p>
+<p>Confirmation requires the same requester, a server-generated nonce, and the
+unchanged preview revision. The catalog stores a hash of the nonce rather than
+the nonce itself. Prepared plans expire after ten minutes using both wall-clock
+and monotonic time; restarting the catalog requires a new preparation.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>Prepared</td><td>A short-lived intent is awaiting confirmation. No per-recording work is admitted.</td></tr>
+<tr><td>Expired</td><td>Preparation must be repeated before confirmation.</td></tr>
+<tr><td>Queued</td><td>Confirmation and a per-recording work ledger are durable. No deletion runs yet.</td></tr>
+<tr><td>Cancelled</td><td>Intent was cancelled. No recording or media is changed by cancellation.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Confirmation creates exactly one ledger entry per selected recording in snapshot
+order, in the same transaction as the queued state. Retrying the same confirmation
+after a lost reply or restart returns that job rather than duplicating work.
+Queued and cancelled intents survive restart. Cancellation is idempotent and
+cannot assign a time before creation or confirmation.</p>
+<p>The catalog admits at most 128 prepared plans and 256 confirmed or retained
+cancelled jobs. Expired preparation and cancellation history older than 30 days
+can be pruned; queued intent is not evicted to make room. Cancelling before
+confirmation does not create work entries.</p>
+<h2 id="read-a-preflight-report"><a class="header" href="#read-a-preflight-report">Read a preflight report</a></h2>
+<p>Preflight accepts an actor-owned queued job. Its caller must authenticate and
+authorize the Administrator and supply the configured archive. These internal
+storage methods are not themselves a network authorization boundary.</p>
+<p>The job, ledger, current recording rows, and observed catalog revision share one
+read transaction on the catalog search worker. Filesystem checks run only after
+that transaction closes. Reports preserve snapshot order and do not expose host
+paths or confirmation secrets.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Present</code></td><td>Recorded device/file identifiers and size match the observed file. Content is not verified.</td></tr>
+<tr><td><code>IdentityChanged</code></td><td>The path names a different device/file identifier from the catalog observation.</td></tr>
+<tr><td><code>IdentityUnavailable</code></td><td>The catalog has no file identifier; matching path and size cannot establish a match.</td></tr>
+<tr><td><code>MissingFile</code></td><td>The catalog-resolved file could not be found during inspection.</td></tr>
+<tr><td><code>MissingCatalog</code></td><td>The recording row is absent. Its file location and whether bytes remain are unknown.</td></tr>
+<tr><td><code>CatalogChanged</code></td><td>Source, logical stream, recording bounds, or recorded size no longer match the plan.</td></tr>
+<tr><td><code>ActiveRecording</code></td><td>The recording is no longer finalized.</td></tr>
+<tr><td><code>ProtectedRecording</code></td><td>Current catalog protection blocks maintenance.</td></tr>
+<tr><td><code>CleanupPending</code></td><td>Automatic retention already has pending work for the recording.</td></tr>
+<tr><td><code>SizeMismatch</code></td><td>The observed file size differs from the catalog byte count.</td></tr>
+<tr><td><code>PathRejected</code></td><td>The path is not eligible for inspection, including escapes, hidden paths, or links.</td></tr>
+<tr><td><code>InspectionFailed</code></td><td>Another filesystem error prevented a usable observation.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Malformed identity evidence or an inconsistent ledger rejects the report rather
+than reconstructing work from current files. Known catalog blockers are reported
+before inspecting the affected path. Both the planned and observed catalog
+revisions are returned; a changed revision requires another preview.</p>
+<p>The entire request shares one two-second deadline across queueing, catalog reads,
+and at most 128 filesystem checks. Paths are limited to 4,096 bytes and sixteen
+components. The deadline is cooperative: it cannot interrupt an operating-system
+or database call already in progress. A timeout returns no partial report.</p>
+<h2 id="know-what-file-inspection-proves"><a class="header" href="#know-what-file-inspection-proves">Know what file inspection proves</a></h2>
+<p>Inspection pins the configured archive directory and opens each descendant
+directory without following links. It rejects hidden directories such as
+<code>.exports</code>, traversal, alternate-stream syntax, leaf symlinks, nonregular files,
+and files with multiple hard links. Checks before opening do not replace the
+checks on the opened file.</p>
+<p>Each observation retains a non-writable file handle until it is dropped. Unix
+uses nonblocking opens to avoid waiting for a writer if a regular file is swapped
+for a FIFO. Unix requires read permission; Windows requests file attributes.
+Inspection does not read media bytes or request write, create, or truncate access.
+Preflight releases each file observation as it advances to the next object.</p>
+<p>A retained handle pins the observed object, not its pathname. Another handle can
+still change the file’s contents. Device/file identifiers can be reused outside
+the lifetime of an open handle, and the available 64-bit Windows file index is not
+a complete ReFS identity. These checks do not certify immutable recording ownership
+or qualify Windows reparse-point races without runtime verification.</p>
+<p>Even an all-<code>Present</code> report with a matching revision is not permission to delete.
+Filesystem observations are not atomic with the catalog read or with one another.
+Revalidating a file and then unlinking its pathname still leaves a replacement
+race. Missing catalog metadata is never evidence that an unknown file is safe to
+remove.</p>
+<h2 id="safeguards-still-required"><a class="header" href="#safeguards-still-required">Safeguards still required</a></h2>
+<p>The user-facing maintenance workflow remains unavailable until it provides:</p>
 <ul>
-<li>at least one direct RTSP or ONVIF camera and the established native camera path;</li>
-<li>main and sub streams, including browser-compatible and incompatible codec profiles;</li>
-<li>desktop and mobile browser workflows;</li>
-<li>local access and remote access through the intended VPN or reverse proxy;</li>
-<li>healthy, stale, reconnecting, recording-failed, storage-pressure, and recovered states;</li>
-<li>events with and without images, revised events, and a dense event day;</li>
-<li>Pushover success, failure, and retry plus MQTT success, outage, and recovery;</li>
-<li>normal, partial, failed, cancelled, retried, and independently decoded exports.</li>
+<li>a complete destructive preview with exact or expanded intervals, gaps,
+bookmarks, exports, shares, holds, and expected catalog/event consequences;</li>
+<li>current authorization and coordination with active writers, moves, restores,
+and evidence protection before work is claimed;</li>
+<li>exact object ownership and race-safe removal, followed by durable catalog
+completion or a tombstone;</li>
+<li>per-object progress, errors, partial results, retry, and cancellation that stops
+before the next object without undoing an already committed removal;</li>
+<li>crash recovery for every file/catalog presence combination;</li>
+<li>reconciliation dry runs for missing, orphaned, duplicated, corrupted, escaping,
+stale-temporary, and interrupted-job data, with explicit category-specific remedies;</li>
+<li>Administrator controls, audit records, and equivalent desktop and mobile confirmation.</li>
 </ul>
-<p>This matrix documents tested configurations. It is not a universal camera, browser, broker, or
-provider support claim.</p>
-<h2 id="continuous-recording-soak"><a class="header" href="#continuous-recording-soak">Continuous recording soak</a></h2>
-<p>Run the final release build long enough to cross normal segment finalization, catalog maintenance,
-camera reconnect, provider retry, and storage cleanup cycles. During the soak:</p>
-<ul>
-<li>account for every unexpected recording gap with camera, writer, storage, or catalog evidence;</li>
-<li>verify primary recorded playback remains at source rate while timelines refresh and exports run;</li>
-<li>monitor memory, recording databases, thumbnails, export jobs, the in-memory notification outbox, MQTT outbox, logs,
-threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;</li>
-<li>restart and verify notification state resets while durable operational events, the MQTT outbox,
-export jobs, coverage summaries, and sessions recover according to their documented contracts;</li>
-<li>rerun the complete workflow without manual database or recording-file edits.</li>
-</ul>
-<p>Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
-indefinitely running job, or open release-blocking defect.</p>
-<h2 id="current-limitations"><a class="header" href="#current-limitations">Current limitations</a></h2>
-<h3 id="camera-support-is-evidence-based"><a class="header" href="#camera-support-is-evidence-based">Camera support is evidence-based</a></h3>
-<p>Discovery does not prove authentication, stable media, keyframes, or valid recordings. Validate
-each requested stream through a finalized MP4 and independent decode before relying on it. Prefer
-<code>reo-proto</code> over TCP for a Reolink camera only after that path passes; use RTSP over TCP for a
-generic ONVIF camera unless measured evidence supports another transport.</p>
-<h3 id="browser-codec-support-varies"><a class="header" href="#browser-codec-support-varies">Browser codec support varies</a></h3>
-<p>KeepPeek stores camera media without re-encoding it. A browser may therefore record or index a main
-stream that it cannot decode. Keep a broadly compatible H.264 substream for live view and review,
-and treat a truthful incompatibility message as different from missing footage. Automatic
-transcoding remains separate work.</p>
-<h3 id="configuration-bundles-do-not-archive-recording-media"><a class="header" href="#configuration-bundles-do-not-archive-recording-media">Configuration bundles do not archive recording media</a></h3>
-<p>KeepPeek provides direct ZIP export and validated application of <code>config.toml</code> and plaintext
-<code>secrets.toml</code>, with restart activation and automatic startup recovery. <code>recordings.db</code>, recording MP4s, and thumbnail
-JPEGs remain a separate archive responsibility. A recovery rehearsal must test both the sensitive
-KeepPeek configuration bundle and the recording archive. See
-<a href="./backup-and-restore.html">Backup and restore</a>.</p>
-<h3 id="access-roles-are-intentionally-fixed"><a class="header" href="#access-roles-are-intentionally-fixed">Access roles are intentionally fixed</a></h3>
-<p>Remote access supports Administrator and User. Custom roles and per-camera permissions are not
-available. Use network separation or separate servers when a person must not see every configured
-camera; hiding a control in the browser is not an authorization boundary.</p>
-<h3 id="detection-remains-external"><a class="header" href="#detection-remains-external">Detection remains external</a></h3>
-<p>KeepPeek records and presents camera-native or externally published events. It does not own object,
-face, or license-plate detection, model management, zones, masks, or training. Recording and health
-must remain useful when an external analysis service is absent.</p>
-<h2 id="promotion-record"><a class="header" href="#promotion-record">Promotion record</a></h2>
-<p>The owner records the exact release commit, platform and browser versions, camera and codec matrix,
-network topology, storage configuration, test commands, soak duration, observed limits, known
-workarounds, and a promote or reject decision. Unverified items stay explicit; a green build never
-silently checks a deployment-specific criterion.</p>
+<p>Unknown files must never be adopted or deleted automatically. A ready export must
+not be removed as a side effect of deleting its source, and a bookmark is not an
+evidence hold. The implementation and acceptance criteria are tracked in
+<a href="https://github.com/xnorpx/keeppeek/issues/133">issue #133</a>.</p>
+<p>Use <a href="./recording-and-evidence.html">Recording and evidence</a> for recording policies,
+playable coverage, and evidence exports. See <a href="./backup-and-restore.html">Backup and restore</a>
+before changing storage, and <a href="./release-readiness.html">Release readiness and known limitations</a>
+for the qualification status of the wider system.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="home-assistant.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="recording-and-evidence.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="demo-videos.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="notifications-and-integrations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -283,11 +330,11 @@ silently checks a deployment-specific criterion.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="home-assistant.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="recording-and-evidence.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="demo-videos.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="notifications-and-integrations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
