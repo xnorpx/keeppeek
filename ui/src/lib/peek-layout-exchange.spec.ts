@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PeekLayoutRegistry } from './peek-layout';
+import { defaultPeekWallPreferences } from './peek-wall-preferences';
 import {
 	applyPeekLayoutImport,
 	exportPeekLayoutRegistry,
@@ -46,6 +47,12 @@ describe('Peek layout exchange', () => {
 					ownerId: 'alice',
 					audience: { everyone: false, credentialIds: ['alice'] },
 					activityFocus: false,
+					display: {
+						...defaultPeekWallPreferences(),
+						gapPx: 7,
+						cornerRadiusPx: 18,
+						keepAwake: true
+					},
 					items: [
 						{
 							cameraId: 'side-gate',

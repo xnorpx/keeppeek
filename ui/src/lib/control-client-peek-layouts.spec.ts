@@ -1,6 +1,8 @@
 import { create, type JsonObject } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 import { PeekLayoutControlClient } from './control-client-peek-layouts';
+import { duplicatePeekLayout } from './peek-layout';
+import { defaultPeekWallPreferences, wallDisplayToWire } from './peek-wall-preferences';
 import { StateEntrySchema, StateStoreResultSchema, type Ok, type Request } from './proto/webrtc_pb';
 
 const wireRegistry: JsonObject = {
@@ -50,7 +52,10 @@ const savedWireRegistry: JsonObject = {
 	]
 };
 
-function stateResult(revision: bigint): NonNullable<Ok['result']> {
+function stateResult(
+	revision: bigint,
+	registry: JsonObject = wireRegistry
+): NonNullable<Ok['result']> {
 	return {
 		case: 'stateStoreResult',
 		value: create(StateStoreResultSchema, {
@@ -60,7 +65,7 @@ function stateResult(revision: bigint): NonNullable<Ok['result']> {
 					namespace: 'keeppeek.peek-layouts',
 					key: 'registry',
 					schema: 'keeppeek.peek-layout-registry.v1',
-					value: wireRegistry,
+					value: registry,
 					revision,
 					ownerId: 'alice'
 				})
@@ -70,6 +75,33 @@ function stateResult(revision: bigint): NonNullable<Ok['result']> {
 }
 
 describe('Peek layout control client', () => {
+	it('loads, duplicates, and saves display settings with their dashboard identity', async () => {
+		const preferences = { ...defaultPeekWallPreferences(), gapPx: 2, cornerRadiusPx: 0 };
+		const wire = structuredClone(wireRegistry);
+		(wire.layouts as JsonObject[])[0].display = wallDisplayToWire(preferences);
+		const sent: Request['command'][] = [];
+		const client = new PeekLayoutControlClient(async (command) => {
+			sent.push(command);
+			return stateResult(7n, wire);
+		});
+		const registry = await client.get();
+		expect(registry.layouts[0].display).toEqual(preferences);
+		const duplicate = duplicatePeekLayout(registry, 'default', {
+			id: 'phone',
+			name: 'Phone',
+			ownerId: 'server'
+		});
+		expect(duplicate.layouts.at(-1)?.display).toEqual(preferences);
+		await client.save(duplicate);
+		const command = sent.at(-1);
+		if (command?.case !== 'stateStoreCommand' || command.value.action.case !== 'put') {
+			throw new Error('Expected a dashboard save');
+		}
+		const layouts = command.value.action.value.value?.layouts as JsonObject[];
+		expect(layouts[0].display).toEqual(wallDisplayToWire(preferences));
+		expect(layouts.at(-1)?.display).toEqual(wallDisplayToWire(preferences));
+	});
+
 	it('gets and saves a revisioned principal registry through StateStore', async () => {
 		const responses = [stateResult(7n), stateResult(8n)];
 		const sent: Request['command'][] = [];

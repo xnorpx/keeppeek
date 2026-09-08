@@ -1,3 +1,5 @@
+import type { PeekWallPreferences } from './peek-wall-preferences';
+
 export const peekLayoutColumns = 12;
 export const peekLayoutRows = 12;
 
@@ -34,6 +36,7 @@ export type PeekLayout = {
 	ownerId: string;
 	audience: PeekLayoutAudience;
 	activityFocus: boolean;
+	display?: PeekWallPreferences;
 	items: readonly PeekLayoutItem[];
 };
 
@@ -226,6 +229,7 @@ export function duplicatePeekLayout(
 		source.scope,
 		source.audience
 	);
+	if (source.display) duplicate.display = { ...source.display };
 	return {
 		...registry,
 		activeLayoutId: duplicate.id,

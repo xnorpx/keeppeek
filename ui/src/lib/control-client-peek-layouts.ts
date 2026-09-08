@@ -1,4 +1,5 @@
 import { create, type JsonObject } from '@bufbuild/protobuf';
+import { wallDisplayFromWire, wallDisplayToWire } from './peek-wall-preferences';
 import {
 	GetStateSchema,
 	PutStateSchema,
@@ -115,7 +116,16 @@ function layoutFromWire(value: unknown): PeekLayout {
 			throw new Error('Server returned overlapping Peek layout tiles.');
 		}
 	}
-	return { id, name, scope, ownerId, audience, activityFocus, items };
+	return {
+		id,
+		name,
+		scope,
+		ownerId,
+		audience,
+		activityFocus,
+		items,
+		...(wire.display === undefined ? {} : { display: wallDisplayFromWire(wire.display) })
+	};
 }
 
 function tileFromWire(value: unknown): PeekLayoutItem {
@@ -155,6 +165,7 @@ function registryValue(registry: PeekLayoutRegistry): JsonObject {
 				credential_ids: [...layout.audience.credentialIds]
 			},
 			activity_focus: layout.activityFocus,
+			...(layout.display === undefined ? {} : { display: wallDisplayToWire(layout.display) }),
 			tiles: layout.items.map((item) => ({
 				camera_id: item.cameraId,
 				column: item.column,

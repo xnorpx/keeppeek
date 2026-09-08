@@ -13,6 +13,9 @@ use std::{
     time::SystemTime,
 };
 
+mod display;
+use display::DisplaySettings;
+
 pub(super) const CAPABILITY_ID: &str = "keeppeek.peek-layouts.v1";
 pub(super) const NAMESPACE: &str = "keeppeek.peek-layouts";
 const REGISTRY_KEY: &str = "registry";
@@ -50,6 +53,12 @@ struct Layout {
     #[serde(default)]
     audience: LayoutAudience,
     activity_focus: bool,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "display::deserialize"
+    )]
+    display: Option<DisplaySettings>,
     tiles: Vec<LayoutTile>,
 }
 
@@ -327,6 +336,7 @@ fn canonical_candidate(
             current_revision: store.revision(),
         });
     }
+    let candidate = store.complete_display(candidate);
     if principal.role == AccessRole::Administrator {
         return Ok(candidate);
     }
@@ -604,12 +614,17 @@ impl RegistryStore {
     }
 
     fn synchronize_default(&mut self, camera_ids: &[String]) -> bool {
-        let default = default_layout(camera_ids);
+        let mut default = default_layout(camera_ids);
         let default_index = self
             .registry
             .shared_layouts
             .iter()
             .position(|layout| layout.id == DEFAULT_LAYOUT_ID);
+        if let Some(index) = default_index {
+            default
+                .display
+                .clone_from(&self.registry.shared_layouts[index].display);
+        }
         if default_index == Some(0) && self.registry.shared_layouts[0] == default {
             return false;
         }
@@ -641,6 +656,9 @@ impl RegistryStore {
             .collect::<Vec<_>>();
         if let Some(user) = user {
             layouts.extend(user.layouts.clone());
+        }
+        for layout in &mut layouts {
+            layout.display.get_or_insert_with(DisplaySettings::default);
         }
         let active_layout_id = user
             .map(|user| user.active_layout_id.as_str())
@@ -684,6 +702,7 @@ impl RegistryStore {
         for layout in self.registry.shared_layouts.iter().chain(private_layouts) {
             allowed_camera_ids.extend(layout.tiles.iter().map(|tile| tile.camera_id.clone()));
         }
+        let candidate = self.complete_display(candidate);
         candidate.validate(principal_id, &allowed_camera_ids)?;
         if !administrator {
             let current = self.registry_for(principal_id);
@@ -709,21 +728,54 @@ impl RegistryStore {
             self.registry = next;
             return Ok(());
         }
-        let (shared_layouts, private_layouts): (Vec<_>, Vec<_>) = candidate
-            .layouts
-            .into_iter()
-            .partition(|layout| layout.scope == LayoutScope::Shared);
-        if !private_layouts.is_empty() {
+        self.validate_shared_layouts(&candidate.layouts)?;
+        let mut next = self.registry.clone();
+        next.shared_layouts = candidate.layouts;
+        next.users.insert(
+            principal_id.to_owned(),
+            StoredUserRegistry {
+                active_layout_id: candidate.active_layout_id,
+                layouts: Vec::new(),
+            },
+        );
+        next.revision = next.revision.saturating_add(1);
+        next.repair_active_layouts();
+        self.persist(&next)?;
+        self.registry = next;
+        Ok(())
+    }
+
+    fn complete_display(&self, mut candidate: LayoutRegistry) -> LayoutRegistry {
+        for layout in &mut candidate.layouts {
+            if layout.display.is_none() {
+                layout.display = Some(
+                    self.registry
+                        .shared_layouts
+                        .iter()
+                        .find(|stored| stored.id == layout.id)
+                        .and_then(|stored| stored.display.clone())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+        candidate
+    }
+
+    fn validate_shared_layouts(&self, layouts: &[Layout]) -> Result<(), RegistryError> {
+        if layouts
+            .iter()
+            .any(|layout| layout.scope != LayoutScope::Shared)
+        {
             return Err(RegistryError::new(
                 "dashboard registry cannot contain private layouts",
             ));
         }
-        if shared_layouts.is_empty() {
+        if layouts.is_empty() {
             return Err(RegistryError::new(
                 "layout registry must retain at least one shared layout",
             ));
         }
-        if shared_layouts
+        if layouts
             .iter()
             .any(|layout| layout.owner_id != SHARED_OWNER_ID)
         {
@@ -731,30 +783,14 @@ impl RegistryStore {
         }
         let mut camera_ids = self.camera_ids.iter().cloned().collect::<Vec<_>>();
         camera_ids.sort_unstable();
-        let default = default_layout(&camera_ids);
-        if shared_layouts
-            .iter()
-            .find(|layout| layout.id == DEFAULT_LAYOUT_ID)
-            != Some(&default)
-        {
+        let candidate_default = layouts.iter().find(|layout| layout.id == DEFAULT_LAYOUT_ID);
+        let mut expected = default_layout(&camera_ids);
+        expected.display = candidate_default.and_then(|layout| layout.display.clone());
+        if candidate_default != Some(&expected) {
             return Err(RegistryError::new(
                 "the All cameras dashboard cannot be changed",
             ));
         }
-
-        let mut next = self.registry.clone();
-        next.shared_layouts = shared_layouts;
-        next.users.insert(
-            principal_id.to_owned(),
-            StoredUserRegistry {
-                active_layout_id: candidate.active_layout_id,
-                layouts: private_layouts,
-            },
-        );
-        next.revision = next.revision.saturating_add(1);
-        next.repair_active_layouts();
-        self.persist(&next)?;
-        self.registry = next;
         Ok(())
     }
 
@@ -892,6 +928,7 @@ fn default_layout(camera_ids: &[String]) -> Layout {
         owner_id: SHARED_OWNER_ID.to_owned(),
         audience: LayoutAudience::default(),
         activity_focus: true,
+        display: Some(DisplaySettings::default()),
         tiles: camera_ids
             .iter()
             .take(MAX_TILES)
@@ -1010,6 +1047,9 @@ impl LayoutRegistry {
 impl Layout {
     fn validate(&self, camera_ids: &HashSet<String>) -> Result<(), RegistryError> {
         self.audience.validate()?;
+        if let Some(display) = &self.display {
+            display.validate()?;
+        }
         if self.tiles.len() > MAX_TILES {
             return Err(RegistryError::new("layout has too many tiles"));
         }
@@ -1337,6 +1377,7 @@ mod tests {
                 owner_id: SHARED_OWNER_ID.to_owned(),
                 audience: LayoutAudience::default(),
                 activity_focus: true,
+                display: None,
                 tiles: vec![
                     LayoutTile {
                         camera_id: "front-door".to_owned(),
@@ -1539,6 +1580,54 @@ mod tests {
             "layout registry revision conflict (current 3)"
         );
 
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn dashboard_display_settings_persist_per_layout_for_every_viewer() {
+        let directory = std::env::temp_dir().join(format!(
+            "keeppeek-dashboard-display-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.toml");
+        std::fs::write(&path, "[storage]\nlong_term_max_gb = 10\n").unwrap();
+        let camera_ids = vec!["front-door".to_owned()];
+        let mut store = RegistryStore::open(path.clone(), &camera_ids).unwrap();
+        let mut value =
+            serde_json::to_value(store.registry_for_principal("local-administrator", true))
+                .unwrap();
+        let display = serde_json::json!({
+            "version": 1, "tile_shape": "4:3", "media_fit": "cover",
+            "streaming_mode": "continuous", "stream_limit": 6, "keep_awake": true,
+            "gap_px": 2, "corner_radius_px": 0
+        });
+        value["layouts"][0]["display"] = display.clone();
+        let mut phone = value["layouts"][0].clone();
+        phone["id"] = "phone".into();
+        phone["name"] = "Phone".into();
+        phone["display"]["gap_px"] = 12.into();
+        phone["display"]["corner_radius_px"] = 16.into();
+        phone["display"]["keep_awake"] = false.into();
+        value["layouts"].as_array_mut().unwrap().push(phone);
+        let candidate = LayoutRegistry::from_json(value, "local-administrator", &store.camera_ids)
+            .expect("dashboard display settings must be accepted");
+        store
+            .replace_for("local-administrator", true, store.revision(), candidate)
+            .unwrap();
+
+        let reopened = RegistryStore::open(path.clone(), &camera_ids).unwrap();
+        let viewer = serde_json::to_value(reopened.registry_for("another-viewer")).unwrap();
+        assert_eq!(viewer["layouts"][0]["display"], display);
+        assert_eq!(viewer["layouts"][1]["display"]["gap_px"], 12);
+        assert_eq!(viewer["layouts"][1]["display"]["corner_radius_px"], 16);
+        assert_eq!(viewer["layouts"][1]["display"]["keep_awake"], false);
+        let configuration = crate::config::load_configuration_table(&path).unwrap();
+        assert_eq!(
+            configuration["storage"]["long_term_max_gb"].as_integer(),
+            Some(10)
+        );
+        validate_configuration(&configuration).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
 
