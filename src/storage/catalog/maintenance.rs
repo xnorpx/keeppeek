@@ -5,7 +5,8 @@
 //! proposing a destructive operation. No filesystem paths or confirmation tokens are returned.
 
 use super::{BUSY_TIMEOUT, RecordingCatalogHandle, SearchCommand, to_u64};
-use std::{sync::mpsc, time::Instant};
+use crate::storage::long_term::inspection::{IDENTITY_BYTES_MAX, Identity};
+use std::{fmt, sync::mpsc, time::Instant};
 
 pub mod jobs;
 
@@ -53,8 +54,6 @@ const MAX_RECORDINGS: usize = 128;
 const MAX_SCAN_RECORDINGS: usize = 4_096;
 /// Limits requested wall-clock intervals to match existing catalog coverage windows.
 const MAX_RANGE_MS: i64 = 31 * 86_400_000;
-const RECORDING_COLUMNS: &str = "SELECT id, started_at_ms, ended_at_ms, file_bytes,
-    finalized, protected, cleanup_pending FROM recording_files";
 
 /// Selects one source and logical stream without accepting storage paths.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -105,6 +104,29 @@ impl Scope {
     }
 }
 
+/// Binds a snapshot to catalog device/file numbers without exposing the raw identifiers.
+///
+/// This fingerprint is not a content checksum or proof of immutable recording ownership.
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct FileIdentity([u8; 32]);
+
+impl FileIdentity {
+    fn parse(value: &str) -> Option<Self> {
+        Identity::parse(value).map(Self::from_observed)
+    }
+
+    fn from_observed(identity: Identity) -> Self {
+        Self(identity.fingerprint())
+    }
+}
+
+impl fmt::Debug for FileIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FileIdentity([REDACTED])")
+    }
+}
+
 /// Describes the full catalog envelope of an object, including known deletion blockers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Recording {
@@ -113,6 +135,8 @@ pub struct Recording {
     pub ended_at_ms: Option<i64>,
     /// The last catalog byte count, not a fresh measurement of the file.
     pub catalog_bytes: u64,
+    /// Preserves the catalog identity observed at preparation; missing evidence stays unavailable.
+    pub file_identity: Option<FileIdentity>,
     pub finalized: bool,
     pub protected: bool,
     pub cleanup_pending: bool,
@@ -238,6 +262,11 @@ async fn selected_rows(
     connection: &turso::Connection,
     scope: &Scope,
 ) -> anyhow::Result<turso::Rows> {
+    let columns = format!(
+        "SELECT id, started_at_ms, ended_at_ms, file_bytes, finalized, protected, cleanup_pending,
+         CASE WHEN length(CAST(file_identity AS BLOB)) > {IDENTITY_BYTES_MAX}
+              THEN '' ELSE file_identity END FROM recording_files"
+    );
     match scope {
         Scope::Recording {
             source_id,
@@ -246,7 +275,7 @@ async fn selected_rows(
         } => Ok(connection
             .query(
                 &format!(
-                    "{RECORDING_COLUMNS} WHERE source_id = ?1 AND logical_stream_id = ?2
+                    "{columns} WHERE source_id = ?1 AND logical_stream_id = ?2
                         AND id = ?3"
                 ),
                 turso::params![
@@ -264,7 +293,7 @@ async fn selected_rows(
         } => Ok(connection
             .query(
                 &format!(
-                    "{RECORDING_COLUMNS} INDEXED BY recording_files_source_stream_time
+                    "{columns} INDEXED BY recording_files_source_stream_time
                         WHERE source_id = ?1 AND logical_stream_id = ?2 AND started_at_ms < ?3
                         ORDER BY started_at_ms DESC LIMIT ?4"
                 ),
@@ -336,6 +365,13 @@ fn read_recording(row: &turso::Row) -> anyhow::Result<Recording> {
         started_at_ms,
         ended_at_ms,
         catalog_bytes: to_u64(row.get(3)?, "maintenance recording bytes")?,
+        file_identity: row
+            .get::<Option<String>>(7)?
+            .map(|value| {
+                FileIdentity::parse(&value)
+                    .ok_or_else(|| anyhow::anyhow!("invalid maintenance file identity"))
+            })
+            .transpose()?,
         finalized: read_flag(row, 4)?,
         protected: read_flag(row, 5)?,
         cleanup_pending: read_flag(row, 6)?,
@@ -360,7 +396,7 @@ fn validate_identifier(value: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Scope, Snapshot, snapshot};
+    use super::{FileIdentity, Scope, Snapshot, snapshot};
     use crate::storage::catalog::{
         CatalogRecording, Command, RecordingCatalog, RecordingCatalogHandle, SearchCommand,
         initialize_schema,
@@ -369,6 +405,65 @@ mod tests {
         sync::mpsc,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn file_identity_fingerprints_are_canonical_redacted_and_bounded() {
+        let identity = FileIdentity::parse("123456:987654").unwrap();
+        assert_eq!(identity, FileIdentity::parse("00123456:00987654").unwrap());
+        assert_ne!(identity, FileIdentity::parse("123457:987654").unwrap());
+        assert_ne!(identity, FileIdentity::parse("123456:987655").unwrap());
+        assert_eq!(format!("{identity:?}"), "FileIdentity([REDACTED])");
+        let encoded = serde_json::to_string(&identity).unwrap();
+        assert!(!encoded.contains("123456"));
+        assert!(!encoded.contains("987654"));
+        assert_eq!(
+            serde_json::from_str::<FileIdentity>(&encoded).unwrap(),
+            identity
+        );
+        for count in [0, 31, 33, 1_024] {
+            let value = serde_json::json!(vec![0_u8; count]);
+            assert!(serde_json::from_value::<FileIdentity>(value).is_err());
+        }
+        let invalid_byte = serde_json::json!(vec![256; 32]);
+        assert!(serde_json::from_value::<FileIdentity>(invalid_byte).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_malformed_identity_without_leaking_values_or_retaining_a_transaction() {
+        pollster::block_on(async {
+            let connection = test_connection().await;
+            insert_recordings(&connection, 1).await;
+            for invalid in [
+                "private-identity",
+                "1:2:3",
+                &"private-identity".repeat(100_000),
+            ] {
+                connection
+                    .execute(
+                        "UPDATE recording_files SET file_identity = ?1",
+                        turso::params![invalid],
+                    )
+                    .await
+                    .unwrap();
+                let error = snapshot(&connection, recording_scope(), deadline())
+                    .await
+                    .unwrap_err();
+                assert!(!format!("{error:?}").contains("private-identity"));
+                assert!(connection.is_autocommit().unwrap());
+            }
+            connection
+                .execute("UPDATE recording_files SET file_identity = '1:2'", ())
+                .await
+                .unwrap();
+            let snapshot = snapshot(&connection, recording_scope(), deadline())
+                .await
+                .unwrap();
+            assert_eq!(
+                snapshot.recordings[0].file_identity,
+                FileIdentity::parse("1:2")
+            );
+        });
+    }
 
     #[test]
     fn exact_snapshot_reports_protection_without_claiming_or_removing_media() {

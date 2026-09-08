@@ -31,11 +31,93 @@ state must still be preserved; compatibility scope does not waive data safety.
 
 Build order: catalog-selection, deletion-jobs, reconciliation, maintenance-ui.
 
+## Continuation After PR #229
+
+Continue on `feat/recording-maintenance-workflow`, branched from foundation commit
+`9cbed56001b680b295da315b77f0f30a80435bfd` in
+[PR #229](https://github.com/xnorpx/keeppeek/pull/229). Keep the foundation branch
+unchanged. Rebase the continuation onto `main` only after #229 merges, preserving
+the continuation's commits and dropping the already-merged foundation history.
+Issue #133 remains the completion tracker; its acceptance criteria are unchanged.
+
+The existing capability map still governs the remaining implementation order:
+
+1. `deletion-jobs`: establish exact object ownership and protection coordination,
+   then implement confined removal, durable per-object outcomes, cancellation,
+   and recovery. Verify replacement races and every file/catalog presence
+   combination with synthetic fixtures before enabling execution.
+2. `reconciliation`: implement bounded drift inspection and explicit remedies.
+   Verify missing, orphaned, duplicate, corrupted, escaping, stale-temporary,
+   and interrupted-job fixtures; unknown bytes must never be deleted or adopted
+   implicitly.
+3. `maintenance-ui`: integrate the authorized protocol, Administrator preview,
+   confirmation, progress, retry, audit, and truthful timeline results. Verify
+   role rejection and desktop/mobile workflows with real-browser tests.
+4. Complete cross-platform qualification, before/after performance evidence,
+   the book chapter, and the full canonical validation for the final tree.
+
+The end-to-end implementation is blocked on an approved maintenance API contract.
+The current `Request.command` and `StoredMediaCommand.action` definitions have no
+deletion or reconciliation command, and repository instructions keep `api/`
+read-only. Do not bypass this boundary with an undocumented HTTP endpoint or an
+unrelated command payload. Obtain the approved protocol through a separate change
+before implementing its server handlers and frontend client. Backend-only work
+can proceed independently but does not complete #133.
+
+## Prepared Identity Binding
+
+The continuation preserves the catalog file identity in each preparation snapshot
+as an opaque `FileIdentity`. It hashes the two parsed `u64` identifiers in big-endian
+order with SHA-256 and serializes exactly 32 bytes. The digest is metadata evidence,
+not a media checksum, secret, keyed authentication value, or immutable ownership
+proof. Diagnostics redact it, and public snapshots do not expose the raw numbers.
+
+Preflight requires the preparation-time fingerprint, current catalog identity,
+and opened file to agree before reporting `Present`. A later catalog refresh
+cannot rebind a confirmed job to a replacement, including after restart. Missing
+preparation evidence stays unavailable; the loader does not reconstruct it from
+the current catalog. Malformed snapshot identities fail with `Failure::Invalid`
+without echoing rejected input through public intent reads or confirmation retries.
+
+The same source/stream, row, serialized-snapshot, and cooperative deadline bounds
+remain in force. No new filesystem operation, dependency, deletion state, network
+command, or UI control is added. Exact object ownership and safe removal remain
+executor requirements, not properties of this fingerprint.
+
+- [x] The same-size replacement plus catalog-refresh regression fails before the change.
+- [x] The replacement remains rejected after reopening the catalog; both files are preserved.
+- [x] Missing planned/persisted evidence and catalog-only changes cannot become `Present`.
+- [x] Fingerprint encoding, canonicalization, redaction, bounds, and corrupt-row recovery pass.
+- [x] The public malformed-snapshot error regression fails before loader redaction and passes after it.
+- [x] Fresh-context review is reconciled and the follow-up review finds no further issues.
+- [x] Strict Clippy, formatting, the function-size bound, and focused tests pass before rebasing.
+- [x] Thirty-run measurements retain the existing 2,000 ms budget.
+- [ ] Canonical validation passes on the rebased continuation.
+
+Before rebasing, 55 maintenance unit tests and 20 public integration tests pass.
+The first review found that Serde errors could disclose malformed persisted
+identity values through public intent reads and confirmation retries. The public
+regression confirmed that leak, and the shared loader now maps decoding failures
+to `Failure::Invalid`. The follow-up review found no further issue in this slice.
+Cross-model review was skipped because the user was unavailable; no external CLI
+ran. The book chapter builds and its Markdown formatting passes.
+
+Thirty 128-recording runs measured ledger-read median/P95/maximum at
+2.087/2.774/2.848 ms and complete preflight at 9.179/11.696/28.757 ms. Confirmation
+measured 32.700/51.866/56.991 ms. The #229 foundation run at
+`9cbed56001b680b295da315b77f0f30a80435bfd` measured preflight P95 at 6.933 ms,
+so the observed P95 increase is 4.763 ms. Both use Apple M5 Max, macOS 26.6.2,
+Rust 1.97.1, the default test profile, locked Turso 0.7.2, an in-memory catalog,
+and local synthetic 64-byte files. These separate-run observations do not isolate
+host contention or prove production throughput, cold-filesystem, or Windows
+performance. The existing 128-object harnesses below reproduce the measurements.
+
 ## Recorded Identity and File Pinning
 
-Preflight now compares the catalog's recorded device/file identifier with metadata
-from the opened archive file. The existing decimal `device:file` representation
-is bounded to 41 bytes, with both components parsed as `u64`. SQL withholds
+Preflight compares the prepared binding and the current catalog's recorded
+device/file identifier with metadata from the opened archive file. The existing
+decimal `device:file` representation is bounded to 41 bytes, with both components
+parsed as `u64`. SQL withholds
 oversized values before they cross into Rust, and malformed identifiers fail
 closed. A mismatch reports `IdentityChanged`; absent evidence reports
 `IdentityUnavailable`, not `Present`. Both remain read-only observations.

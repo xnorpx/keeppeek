@@ -10,6 +10,7 @@
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, File, Metadata, OpenOptions};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -41,6 +42,13 @@ impl Identity {
             device: device.parse().ok()?,
             file: file.parse().ok()?,
         })
+    }
+
+    pub(in crate::storage) fn fingerprint(self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(self.device.to_be_bytes());
+        digest.update(self.file.to_be_bytes());
+        digest.finalize().into()
     }
 }
 

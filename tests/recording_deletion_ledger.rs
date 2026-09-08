@@ -26,6 +26,24 @@ impl Fixture {
         RecordingCatalog::open(&self.root.join("recordings.db")).unwrap()
     }
 
+    fn replace_snapshot(&self, job: &Job, snapshot: &serde_json::Value) {
+        pollster::block_on(async {
+            let database_path = self.root.join("recordings.db");
+            let database = turso::Builder::new_local(database_path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            let connection = database.connect().unwrap();
+            connection
+                .execute(
+                    "UPDATE recording_maintenance_intents SET snapshot_json = ?1 WHERE id = ?2",
+                    turso::params![serde_json::to_string(snapshot).unwrap(), job.id.as_str()],
+                )
+                .await
+                .unwrap();
+        });
+    }
+
     fn confirm(&self, catalog: &RecordingCatalog) -> Job {
         let prepared = self.prepare(catalog);
         catalog
@@ -241,6 +259,92 @@ fn deletion_preflight_does_not_accept_a_same_size_replacement_as_the_catalog_fil
             )
             .unwrap(),
         queued
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn deletion_preflight_preserves_planned_identity_after_catalog_refresh_and_restart() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let queued = fixture.confirm(&catalog);
+    let archive = Archive::open(&fixture.root).unwrap();
+    let original = fixture.root.join("original.mp4");
+    let recording = fixture.root.join("recording.mp4");
+    std::fs::rename(&recording, &original).unwrap();
+    std::fs::write(&recording, [24; 64]).unwrap();
+    let handle = catalog.handle();
+    handle
+        .update_recording_path("recording-1", &recording, true)
+        .unwrap();
+    let report = handle
+        .recording_deletion_preflight("administrator", &queued.id, &archive)
+        .unwrap();
+    assert_eq!(report.objects[0].status, Status::IdentityChanged);
+    assert!(report.catalog_revision > report.planned_revision);
+    catalog.shutdown();
+    let catalog = fixture.open();
+    assert_eq!(
+        catalog
+            .handle()
+            .recording_deletion_preflight("administrator", &queued.id, &archive)
+            .unwrap(),
+        report
+    );
+    assert_eq!(std::fs::read(original).unwrap(), [42; 64]);
+    assert_eq!(std::fs::read(recording).unwrap(), [24; 64]);
+    catalog.shutdown();
+}
+
+#[test]
+fn malformed_persisted_identity_is_redacted_for_intent_reads_and_confirmation_retries() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let prepared = fixture.prepare(&catalog);
+    let confirm = Action::Confirm {
+        id: prepared.id,
+        nonce: prepared.confirmation.unwrap(),
+        expected_revision: prepared.revision,
+    };
+    let queued = catalog
+        .handle()
+        .recording_deletion_intent("administrator", confirm.clone())
+        .unwrap();
+    catalog.shutdown();
+    let original = serde_json::to_value(&queued.snapshot).unwrap();
+    for invalid in ["123456:987654", "/private/recordings/camera.mp4"] {
+        let mut corrupted = original.clone();
+        corrupted["recordings"][0]["file_identity"] = serde_json::json!(invalid);
+        fixture.replace_snapshot(&queued, &corrupted);
+        let catalog = fixture.open();
+        for action in [
+            Action::Read {
+                id: queued.id.clone(),
+            },
+            confirm.clone(),
+        ] {
+            let error = catalog
+                .handle()
+                .recording_deletion_intent("administrator", action)
+                .unwrap_err();
+            assert!(!format!("{error}").contains(invalid));
+            assert!(!format!("{error:?}").contains(invalid));
+            assert_eq!(error.downcast_ref::<Failure>(), Some(&Failure::Invalid));
+        }
+        catalog.shutdown();
+    }
+    fixture.replace_snapshot(&queued, &original);
+    let catalog = fixture.open();
+    assert_eq!(
+        catalog
+            .handle()
+            .recording_deletion_intent("administrator", confirm)
+            .unwrap(),
+        queued
+    );
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        [42; 64]
     );
     catalog.shutdown();
 }
