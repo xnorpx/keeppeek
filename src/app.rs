@@ -56,6 +56,25 @@ impl Drop for WindowsTimerResolution {
     }
 }
 
+fn open_recording_catalog(storage_config: &StorageConfig) -> anyhow::Result<RecordingCatalog> {
+    let catalog = RecordingCatalog::open(&storage_config.recording_catalog_path)?;
+    if storage_config.long_term_path.is_dir() {
+        let archive =
+            crate::storage::long_term::inspection::Archive::open(&storage_config.long_term_path)?;
+        match catalog.handle().recover_recording_deletions(&archive) {
+            Ok(summary) => tracing::info!(
+                completed = summary.completed,
+                unresolved = summary.unresolved,
+                "recording maintenance startup reconciliation"
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "recording maintenance startup reconciliation requires retry");
+            }
+        }
+    }
+    Ok(catalog)
+}
+
 /// Runs KeepPeek until shutdown and reports whether configuration requested a restart.
 pub fn run(
     cfg: Config,
@@ -126,7 +145,7 @@ pub fn run(
     };
 
     let storage_config = StorageConfig::from_toml(&cfg.storage);
-    let recording_catalog = RecordingCatalog::open(&storage_config.recording_catalog_path)?;
+    let recording_catalog = open_recording_catalog(&storage_config)?;
     let catalog_handle = recording_catalog.handle();
     for camera in cameras.values() {
         let source_id = camera.config.ip.to_string();

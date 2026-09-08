@@ -297,7 +297,7 @@ async fn transition(
     persist_transition(connection, job, epoch, &claim, next, directory).await
 }
 
-async fn persist_transition(
+pub(super) async fn persist_transition(
     connection: &turso::Connection,
     job: &super::Job,
     epoch: &super::Epoch,
@@ -424,7 +424,7 @@ async fn read(
     Ok(report)
 }
 
-fn decode_identity(value: Option<Vec<u8>>) -> anyhow::Result<Option<FileIdentity>> {
+pub(super) fn decode_identity(value: Option<Vec<u8>>) -> anyhow::Result<Option<FileIdentity>> {
     value
         .map(|bytes| {
             bytes

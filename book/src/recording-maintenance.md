@@ -120,8 +120,13 @@ object remains failed and reserved for inspection or recovery. **Retry failed
 objects** is available for those failures even when the job is cancelled. After
 restart, a previous worker's pending objects report failed instead of indefinitely
 working; the checkpoint and reservations remain intact for authenticated retry.
-Automatic startup reconciliation of every interrupted filesystem/catalog
-combination remains a qualification requirement.
+Before recording pipelines start, a bounded recovery pass settles catalog completion
+only when the original staging-directory checkpoint and absence checks prove that
+unlink has already completed. It does not move or delete present media. Other
+pending objects remain failed and reserved for an Administrator to inspect or retry.
+Each settled outcome is atomic, respects the original request deadline, and leaves
+any live executor untouched. If the pass cannot finish within its two-second budget,
+the server records a warning and retains unresolved claims.
 
 ## Audit and coordination
 
