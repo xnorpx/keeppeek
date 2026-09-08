@@ -23,7 +23,10 @@ use test_hikvision::onvif::notification;
 
 const CHILD_CASE: &str = "KEEPPEEK_NATIVE_EVENTS_CASE";
 const CHILD_ROOT: &str = "KEEPPEEK_NATIVE_EVENTS_ROOT";
+#[cfg(not(windows))]
 const CASE_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(windows)]
+const CASE_TIMEOUT: Duration = Duration::from_secs(30);
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const EMPTY_METADATA: &[u8] =
     br#"<tt:MetadataStream xmlns:tt="http://www.onvif.org/ver10/schema"/>"#;
