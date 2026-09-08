@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-aace67d8.js";
+            window.path_to_searchindex_js = "searchindex-e237e6d5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-1423543a.js"></script>
@@ -2794,8 +2794,8 @@ History and files remain scoped to the Administrator identity that created them.
 <p>Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
 normal export path preserves source frames and timestamps without re-encoding.</p>
 <p>For the availability and safety limits of manual deletion and catalog drift checks,
-see <a href="#recording-maintenance">Recording maintenance</a>. Confirmed maintenance intent
-does not delete recordings; the destructive workflow is not yet available.</p>
+see <a href="#recording-maintenance">Recording maintenance</a>. The Administrator workflow
+is under qualification; confirmed jobs can remove selected recordings permanently.</p>
 <p>For the detailed coverage model and export lifecycle, see the
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/recording-integrity.md">recording integrity</a>,
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-presentation.md">event presentation</a>,
@@ -2873,13 +2873,43 @@ capability and permission checks.</p>
 higher available stream quality separately when you need more decoded pixels.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="recording-maintenance"><a class="header" href="#recording-maintenance">Recording maintenance</a></h1>
-<p>Manual recording deletion and catalog reconciliation are not yet available in the
-KeepPeek interface or public protocol. The backend supports bounded catalog
-inspection, durable deletion intent, and read-only preflight checks. Confirming
-an intent does not reserve a recording, change playback, or delete a file.</p>
-<p>Automatic storage retention is separate and remains unchanged. Do not delete
-recording files directly as a substitute for the unfinished maintenance workflow:
-doing so can leave stale catalog entries and unavailable evidence links.</p>
+<p>Recording maintenance provides Administrator previews, confirmed deletion jobs,
+and bounded catalog reconciliation over the WebRTC control connection. It is
+under qualification in <a href="https://github.com/xnorpx/keeppeek/issues/133">issue #133</a>,
+not yet a completed or production-qualified feature. The macOS synthetic-media
+workflow has passed end-to-end testing; native Windows validation and other
+acceptance criteria remain outstanding.</p>
+<p>Automatic storage retention remains separate from manual deletion. Manual claims
+exclude their recordings from retention and new playback/export resolution until
+the claim reaches a terminal outcome. Never delete recording files directly as a
+substitute for maintenance: that can leave stale catalog entries and unavailable
+evidence links.</p>
+<h2 id="review-and-delete-recordings"><a class="header" href="#review-and-delete-recordings">Review and delete recordings</a></h2>
+<ol>
+<li>Sign in as an Administrator and open <strong>Recording integrity</strong>, then <strong>Maintenance</strong>.
+<strong>Review deletion</strong> in Keep’s export-range view carries its camera, stream, and
+interval into maintenance. Closing Keep also releases its playback cursor.</li>
+<li>Select the camera, stream, UTC start and end, and operator or privacy reason.
+Choose <strong>Preview deletion</strong>. A day or hour is an ordinary UTC time range.</li>
+<li>Review every whole-recording boundary, byte count, gap, bookmark, related
+export, and stated consequence. An active, protected, retention-pending, or
+identity-unavailable selection cannot be confirmed.</li>
+<li>Type the exact confirmation text, such as <code>DELETE 1</code>, and choose
+<strong>Delete permanently</strong>. <strong>Keep recordings</strong> closes the confirmation without
+starting deletion; <strong>Cancel job</strong> cancels the prepared intent.</li>
+<li>Follow the per-object results. Use <strong>Refresh job</strong> after a connection failure
+and <strong>Download report</strong> to retain the result. Reports contain no confirmation
+nonce or host filesystem path.</li>
+</ol>
+<p>One deletion worker runs at a time. Close stored playback and wait for active
+exports before confirming. The server rechecks authorization during execution;
+revoking the session can leave a recoverable staged object rather than granting
+an old request unlimited permission to continue. A failed confirmation consumes
+its private nonce. Choose <strong>Refresh preview</strong>, review the new result, and type
+the confirmation again. The textbox is disabled while the refresh is pending.
+Losing the Administrator role or maintenance capability discards the review,
+including late preview responses. Already-removed bytes cannot be restored by
+cancellation.</p>
 <h2 id="select-a-complete-scope"><a class="header" href="#select-a-complete-scope">Select a complete scope</a></h2>
 <p>Maintenance uses stable source, stream, and recording identifiers, never a
 display name or a caller-supplied filesystem path. Catalog inspection accepts
@@ -2887,7 +2917,10 @@ one recording or a nonempty half-open time range on one source and logical strea
 The start is included and the end is excluded.</p>
 <p>A range selects whole recording objects that overlap it. It does not trim media
 at the requested timestamps. The snapshot retains each object’s full start and
-end bounds so an eventual destructive preview can show any expansion explicitly.</p>
+end bounds so an eventual destructive preview can show any expansion explicitly.
+The confirmation uses those whole-object bounds; it does not rewrite partial
+boundary fragments. Inspect the listed boundaries even when the requested
+interval is much shorter than the selected recording.</p>
 <p>Selections contain at most 128 recording objects. Time ranges span at most
 31 days, and indexed history inspection is bounded to 4,096 rows. If a complete
 selection cannot be established within those limits, the request fails instead
@@ -2901,6 +2934,12 @@ than disappearing from the selection.</p>
 rejects empty selections, active or unfinalized recordings, protected recordings,
 pending automatic cleanup, and recordings without a known end time. The stored
 intent records the requester, scope, operator or privacy reason, and timestamps.</p>
+<p>The snapshot also retains an opaque fingerprint of each recording’s catalog
+device/file identifier. Confirmation and restart preserve this preparation-time
+binding; a later catalog refresh cannot substitute another file into the plan.
+Missing preparation evidence stays unavailable even if the current catalog later
+gains an identifier. The fingerprint does not verify media contents or prevent
+filesystem identifier reuse.</p>
 <p>Confirmation requires the same requester, a server-generated nonce, and the
 unchanged preview revision. The catalog stores a hash of the nonce rather than
 the nonce itself. Prepared plans expire after ten minutes using both wall-clock
@@ -2911,10 +2950,14 @@ and monotonic time; restarting the catalog requires a new preparation.</p>
 <tr><th>State</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td>Prepared</td><td>A short-lived intent is awaiting confirmation. No per-recording work is admitted.</td></tr>
+<tr><td>Prepared</td><td>A short-lived intent is awaiting confirmation; no recording is reserved.</td></tr>
 <tr><td>Expired</td><td>Preparation must be repeated before confirmation.</td></tr>
-<tr><td>Queued</td><td>Confirmation and a per-recording work ledger are durable. No deletion runs yet.</td></tr>
-<tr><td>Cancelled</td><td>Intent was cancelled. No recording or media is changed by cancellation.</td></tr>
+<tr><td>Queued</td><td>Confirmation and a per-recording ledger are durable. Execution may reserve the selection.</td></tr>
+<tr><td>Working</td><td>A live execution attempt owns the object.</td></tr>
+<tr><td>Staged</td><td>The selected file has moved into private maintenance storage, with a durable staging checkpoint.</td></tr>
+<tr><td>Deleted</td><td>File removal and catalog completion have been recorded.</td></tr>
+<tr><td>Failed</td><td>Removal did not finish; retained evidence and a retry or inspection are required.</td></tr>
+<tr><td>Cancelled</td><td>Admission of unstarted objects has stopped. Objects already deleted stay deleted.</td></tr>
 </tbody>
 </table>
 </div>
@@ -2924,9 +2967,73 @@ after a lost reply or restart returns that job rather than duplicating work.
 Queued and cancelled intents survive restart. Cancellation is idempotent and
 cannot assign a time before creation or confirmation.</p>
 <p>The catalog admits at most 128 prepared plans and 256 confirmed or retained
-cancelled jobs. Expired preparation and cancellation history older than 30 days
-can be pruned; queued intent is not evicted to make room. Cancelling before
+cancelled jobs. Expired preparation and terminal history older than 30 days
+can be pruned; unresolved execution is not evicted to make room. Cancelling before
 confirmation does not create work entries.</p>
+<p>Reservations and per-object checkpoints survive restart. An authenticated retry
+can resume an abandoned attempt; it cannot run concurrently with a still-live
+worker. A file that disappeared before any staging evidence is not reported as
+deleted. The staging checkpoint binds recovery to the original token directory’s
+filesystem identity. A missing or replacement directory, renamed staged recording,
+or unexpected entry requires inspection instead of a successful result. Once
+unlink has completed, recovery can still finish if the empty original source
+directory has been removed.</p>
+<p>Cancelling interrupted work does not release a claim merely because staging is
+absent. The original selected file must be positively identified; otherwise the
+object remains failed and reserved for inspection or recovery. <strong>Retry failed
+objects</strong> is available for those failures even when the job is cancelled. After
+restart, a previous worker’s pending objects report failed instead of indefinitely
+working; the checkpoint and reservations remain intact for authenticated retry.
+Automatic startup reconciliation of every interrupted filesystem/catalog
+combination remains a qualification requirement.</p>
+<h2 id="audit-and-coordination"><a class="header" href="#audit-and-coordination">Audit and coordination</a></h2>
+<p>Maintenance admission shares the configuration-update lock used by restore and
+access configuration. An export retry cannot remove its existing job while
+maintenance is admitted. The worker retains storage coordination during execution
+and rechecks the current session before filesystem mutations.</p>
+<p>The access audit links each execution outcome to its durable job ID. Structured
+<code>recording_maintenance</code> log events include requester, source and stream, requested
+and expanded interval bounds, operator or privacy reason, preview revision,
+object and byte counts, relationship counts, and the observed result. Hold
+override is always false: this workflow cannot release a hold. Results distinguish
+successful deletion, partial failure, incomplete work, completed cancellation,
+and cancellation with pending work. Paths, confirmation nonces, and raw failure
+details are excluded.</p>
+<h2 id="reconcile-the-catalog"><a class="header" href="#reconcile-the-catalog">Reconcile the catalog</a></h2>
+<p>Open the <strong>Reconciliation</strong> view and choose <strong>Inspect catalog</strong>. The dry run reads
+at most 4,096 catalog rows and 4,096 archive entries and returns at most 128
+findings. Scan limits are explicit: an incomplete report cannot authorize a
+remedy. Reports expire after ten minutes and belong to the requesting
+Administrator. At most sixteen reports are retained in server memory.</p>
+<p>The inventory reports missing and unknown files, duplicate paths or catalog file
+identities, size or identity mismatch, rejected paths, temporary files, interrupted
+work, corrupt containers, and playback-index mismatch. Protected recordings are
+not mislabeled as interrupted jobs. Active recordings are not parsed while their
+writer can still change them.</p>
+<p>Finalized cataloged files use bounded fragmented-MP4 validation: box boundaries,
+decode times, track identities, sample extents, and decoder metadata are checked.
+The parser accepts at most 4,096 fragments, 8 MiB of metadata and two tracks; each
+track fragment has at most 65,536 samples. This is not a full media decode or a
+stored-content checksum comparison. Unknown files are never automatically adopted,
+moved, or deleted.</p>
+<ul>
+<li><strong>Acknowledge</strong> records an explicit ignore decision in the retained report and
+leaves the file and catalog untouched.</li>
+<li><strong>Retain tombstone</strong> is available only for a missing, unprotected cataloged
+file. It rechecks absence and catalog revision, then removes the stale row and
+playback indexes while retaining existing coverage-derived deletion evidence.
+No filesystem bytes are deleted. A reappeared file or changed catalog rejects
+the operation; inspect again before making another change.</li>
+<li><strong>Rebuild index</strong> is available only for an existing unprotected catalog recording
+whose container validates and whose playback index differs. After confirmation,
+it rechecks the catalog revision, exact index fingerprint and retained file
+observation. It replaces fragment/keyframe indexes and derived coverage in one
+transaction. The media bytes are unchanged. Unknown files cannot use this action.</li>
+</ul>
+<p>Category filters and <strong>Download reconciliation report</strong> preserve inspection
+results. A new scan is required after a catalog-changing remedy. Mutating remedies
+share storage coordination with deletion and restore. Quarantine, content-checksum
+comparison, and previewed deletion of owned temporary files are not implemented yet.</p>
 <h2 id="read-a-preflight-report"><a class="header" href="#read-a-preflight-report">Read a preflight report</a></h2>
 <p>Preflight accepts an actor-owned queued job. Its caller must authenticate and
 authorize the Administrator and supply the configured archive. These internal
@@ -2941,9 +3048,9 @@ paths or confirmation secrets.</p>
 <tr><th>Status</th><th>Meaning</th></tr>
 </thead>
 <tbody>
-<tr><td><code>Present</code></td><td>Recorded device/file identifiers and size match the observed file. Content is not verified.</td></tr>
-<tr><td><code>IdentityChanged</code></td><td>The path names a different device/file identifier from the catalog observation.</td></tr>
-<tr><td><code>IdentityUnavailable</code></td><td>The catalog has no file identifier; matching path and size cannot establish a match.</td></tr>
+<tr><td><code>Present</code></td><td>Planned and current device/file fingerprints match the observed file, and its size matches. Content is not verified.</td></tr>
+<tr><td><code>IdentityChanged</code></td><td>The preparation-time fingerprint, current catalog identifier, and observed file do not all agree.</td></tr>
+<tr><td><code>IdentityUnavailable</code></td><td>The preparation or current catalog lacks identity evidence; path and size cannot establish a match.</td></tr>
 <tr><td><code>MissingFile</code></td><td>The catalog-resolved file could not be found during inspection.</td></tr>
 <tr><td><code>MissingCatalog</code></td><td>The recording row is absent. Its file location and whether bytes remain are unknown.</td></tr>
 <tr><td><code>CatalogChanged</code></td><td>Source, logical stream, recording bounds, or recorded size no longer match the plan.</td></tr>
@@ -2960,6 +3067,9 @@ paths or confirmation secrets.</p>
 than reconstructing work from current files. Known catalog blockers are reported
 before inspecting the affected path. Both the planned and observed catalog
 revisions are returned; a changed revision requires another preview.</p>
+<p>Malformed persisted fingerprints also reject intent reads and confirmation retries
+with a redacted error. Rejected values and internal paths are not included in
+public diagnostic messages.</p>
 <p>The entire request shares one two-second deadline across queueing, catalog reads,
 and at most 128 filesystem checks. Paths are limited to 4,096 bytes and sixteen
 components. The deadline is cooperative: it cannot interrupt an operating-system
@@ -2985,21 +3095,40 @@ Filesystem observations are not atomic with the catalog read or with one another
 Revalidating a file and then unlinking its pathname still leaves a replacement
 race. Missing catalog metadata is never evidence that an unknown file is safe to
 remove.</p>
-<h2 id="safeguards-still-required"><a class="header" href="#safeguards-still-required">Safeguards still required</a></h2>
-<p>The user-facing maintenance workflow remains unavailable until it provides:</p>
+<p>The removal path uses separate private staging directories, revalidates the
+staged object, and synchronizes directory changes before recording completion.
+Unix directories must be owned by the process user and deny untrusted mutation;
+private staging denies group and other access. macOS and Linux use atomic
+no-replace rename, so a destination introduced before the move is not overwritten.
+Unix also checks the retained selected inode after unlink and rejects the attempt
+if that inode is still linked.</p>
+<p>These checks do not isolate maintenance from another process running as the same
+operating-system account or root. Such a process can replace private staging
+names immediately before Unix pathname-based unlink. Post-unlink checks can
+detect some substitutions, but cannot prevent the replacement from being removed
+or establish where a relocated recording went. Do not treat retries after external
+staging manipulation as qualified recovery. A trusted service-account boundary
+or stronger process isolation must be resolved before this feature is qualified.</p>
+<p>The native Windows implementation targets NTFS with persistent ACLs, checked
+directory flushes, and handle-based rename/disposition. Other filesystems,
+including ReFS, are rejected before source-file mutation. ReFS requires a full
+128-bit file identity and a separately justified namespace-durability strategy;
+a successful directory-flush call alone is not sufficient. Windows compilation,
+ACL/race tests, and crash-boundary execution remain unverified in the current
+local environment.</p>
+<h2 id="qualification-still-required"><a class="header" href="#qualification-still-required">Qualification still required</a></h2>
+<p>Before issue #133 can be completed, qualification must cover:</p>
 <ul>
-<li>a complete destructive preview with exact or expanded intervals, gaps,
-bookmarks, exports, shares, holds, and expected catalog/event consequences;</li>
-<li>current authorization and coordination with active writers, moves, restores,
-and evidence protection before work is claimed;</li>
-<li>exact object ownership and race-safe removal, followed by durable catalog
-completion or a tombstone;</li>
-<li>per-object progress, errors, partial results, retry, and cancellation that stops
-before the next object without undoing an already committed removal;</li>
-<li>crash recovery for every file/catalog presence combination;</li>
-<li>reconciliation dry runs for missing, orphaned, duplicated, corrupted, escaping,
-stale-temporary, and interrupted-job data, with explicit category-specific remedies;</li>
-<li>Administrator controls, audit records, and equivalent desktop and mobile confirmation.</li>
+<li>exact object ownership and adversarial replacement at every mutation boundary;</li>
+<li>Windows NTFS and Linux runtime tests, plus supported-filesystem failure behavior;</li>
+<li>holds, shares, operational investigations, moves, restores, and current access
+coordination, including audit completeness;</li>
+<li>partial failure, lost replies, cancellation, and crash recovery across all
+file/catalog/tombstone combinations;</li>
+<li>the remaining reconciliation categories and remedies;</li>
+<li>browser conflict regeneration, failed-job retry, access revocation, and truthful
+timeline results, beyond the existing desktop/mobile happy-path coverage;</li>
+<li>final-commit canonical checks and reproducible performance evidence.</li>
 </ul>
 <p>Unknown files must never be adopted or deleted automatically. A ready export must
 not be removed as a side effect of deleting its source, and a bookmark is not an
