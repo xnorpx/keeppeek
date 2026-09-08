@@ -743,7 +743,7 @@ test('shows only the saved active dashboard on a cold load', async ({ page }) =>
 	await expect(page.getByRole('button', { name: 'Choose dashboard, Grid 3x3' })).toBeVisible();
 });
 
-test('floats the dashboard selector over a full-shell nine-camera wall', async ({ page }) => {
+test('reserves wall controls above a full-shell nine-camera wall', async ({ page }) => {
 	await page.setViewportSize({ width: 1188, height: 624 });
 	const cameras = Array.from({ length: 9 }, (_, index) => ({
 		...mixedCameras[index % mixedCameras.length],
@@ -872,19 +872,20 @@ test('floats the dashboard selector over a full-shell nine-camera wall', async (
 		expect(bounds.content.right).toBeCloseTo(bounds.main.right, 0);
 		expect(bounds.content.bottom).toBeCloseTo(bounds.main.bottom, 0);
 		expect(bounds.frame.left).toBeCloseTo(bounds.main.left, 0);
-		expect(bounds.frame.top).toBeCloseTo(bounds.main.top, 0);
+		expect(bounds.frame.top).toBeCloseTo(bounds.main.top + 64, 0);
 		expect(bounds.frame.right).toBeCloseTo(bounds.main.right, 0);
 		expect(bounds.frame.bottom).toBeCloseTo(bounds.main.bottom, 0);
 		expect(bounds.wall.width).toBeCloseTo(
-			Math.min(bounds.main.width, (bounds.main.height * 16) / 9),
+			Math.min(bounds.frame.width, (bounds.frame.height * 16) / 9),
 			0
 		);
 		expect(bounds.wall.height).toBeCloseTo(
-			Math.min(bounds.main.height, (bounds.main.width * 9) / 16),
+			Math.min(bounds.frame.height, (bounds.frame.width * 9) / 16),
 			0
 		);
 		expect(bounds.switcherCenterOffset).toBeLessThanOrEqual(1);
 		expect(bounds.switcher.top).toBeGreaterThanOrEqual(bounds.main.top + 8);
+		expect(bounds.switcher.bottom).toBeLessThanOrEqual(bounds.frame.top);
 		expect(bounds.switcherOwnsCenter).toBe(true);
 		expect(bounds.status.left).toBeLessThan(bounds.content.left + 1);
 		expect(bounds.status.bottom).toBeLessThanOrEqual(bounds.theme.top);
