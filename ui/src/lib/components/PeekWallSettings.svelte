@@ -256,7 +256,7 @@
 						{#if saveError}<p role="alert" class="text-xs text-destructive">{saveError}</p>{/if}
 						{#if editable}
 							<p role="status" class="text-xs text-muted-foreground">
-								{saving ? 'Saving to server...' : dirty ? 'Unsaved changes' : 'Saved on server'}
+								{saving ? 'Saving to server...' : dirty ? 'Unsaved changes' : 'Saved'}
 							</p>
 							<div class="flex gap-2">
 								<button
