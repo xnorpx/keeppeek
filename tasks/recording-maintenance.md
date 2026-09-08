@@ -37,7 +37,10 @@ diagnostics and a focused native primitive test. They localize the failure to th
 relative `FileRenameInfo` call; NTFS qualification, ACL checks, private-directory
 creation and directory flush already pass. `d8ba6b4` uses a handle-derived absolute
 destination and null `RootDirectory`, with exclusive source ownership and
-no-replacement semantics unchanged. Native execution of this repair is pending.
+no-replacement semantics unchanged. Run `34275029245` passes all native Windows,
+macOS and Linux tests and all other required CI checks on `d8ba6b4`. The follow-up
+reindex commit `cec91de` is also fully green in the PR status checks. The original
+reported failures are resolved without changing budgets or suppressing errors.
 
 The next local reconciliation slice adds bounded container validation, distinct
 corrupt/duplicate-identity/index-drift findings, and explicit catalog-owned reindex.
@@ -63,6 +66,29 @@ in 34.6 seconds with their unchanged zero-console-error assertion; evidence is
 exception or skip was added. Final exact-SHA native CI still gates this draft.
 
 ### Continuation Safety Checks
+
+Startup now invokes non-destructive deletion reconciliation before recording
+pipelines launch. It marks abandoned pending objects failed and retains their
+claims; a recorded, matching staging directory with no selected source or staged
+bytes permits atomic catalog completion only. Present bytes are never moved or
+deleted by recovery. Transactions preserve original checkpoints after injected
+catalog failure, respect the original deadline and remaining database wait budget,
+and skip same-epoch live executors including siblings. Four focused startup tests
+and the complete 17-test execution slice pass. Three bounded review cycles are
+reconciled, with no further material findings in the final review.
+
+The canonical startup gate passes: 2,406 Rust tests (21 existing skips,
+101.886 seconds), 361 Bun tests, 193 browser/visual tests, 57 compatibility tests,
+and 242 Playwright tests (two existing capability skips, 57.0 seconds). Evidence:
+`target/issue133-startup-check.log`, marker `ISSUE133_STARTUP_CHECK_EXIT=0`.
+The subsequent extraction of the unchanged startup hook into a small helper passes
+all four startup regressions and strict Clippy; it does not change execution order.
+
+The legacy `StorageEngine::start_inner` still calls `cleanup_stale_active_files`,
+which deletes `.active` paths at startup without persistent ownership proof. That
+pre-existing path must be replaced with explicit owned-temporary remediation for
+the full #133 unknown-file invariant. This is not hidden by the passing new
+recording-deletion recovery tests or the green PR checks.
 
 The latest continuation adds immutable 32-byte staging-directory identity evidence
 in place of the unqualified `was_staged` boolean. The field is bounded on load and

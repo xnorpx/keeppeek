@@ -351,6 +351,11 @@ struct LegacyRecording {
 }
 
 enum Command {
+    RecoverDeletions {
+        archive: super::long_term::inspection::Archive,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<maintenance::jobs::recovery::Summary>>,
+    },
     ReindexRecording {
         expected: maintenance::reconciliation::Row,
         revision: u64,
@@ -1470,6 +1475,18 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::RecoverDeletions {
+                archive,
+                deadline,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(maintenance::jobs::recovery::recover(
+                    &connection,
+                    &intent_epoch,
+                    &archive,
+                    deadline,
+                )));
+            }
             Command::ReindexRecording {
                 expected,
                 revision,

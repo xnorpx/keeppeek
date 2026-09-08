@@ -56,6 +56,42 @@ impl Archive {
         }
     }
 
+    pub(in crate::storage) fn check_removed_claim(
+        &self,
+        claim: &Claim,
+        checkpoint: FileIdentity,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        let deadline = deadline.min(Instant::now() + REMOVAL_BUDGET);
+        check_deadline(deadline)?;
+        self.validate_removal()?;
+        check_deadline(deadline)?;
+        let staging = private_directory(&self.directory, OsStr::new(".maintenance"), false)?;
+        check_deadline(deadline)?;
+        let directory = private_directory(&staging, OsStr::new(&claim.token), false)?;
+        check_deadline(deadline)?;
+        if directory_identity(&directory)? != checkpoint || staging_contents(&directory)? {
+            return Err(super::changed());
+        }
+        let relative = claim
+            .path
+            .strip_prefix(&self.root)
+            .map_err(|_| super::denied())?;
+        super::validate_relative(relative)?;
+        let (parent, name) = self.removal_parent(relative, deadline)?;
+        if let Some(name) = name {
+            match parent.symlink_metadata(name) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => return Err(super::changed()),
+            }
+        }
+        check_deadline(deadline)?;
+        sync_directory(&parent)?;
+        check_deadline(deadline)?;
+        sync_directory(&directory)?;
+        check_deadline(deadline)
+    }
+
     pub(in crate::storage) fn stage_claim(
         &self,
         claim: &Claim,

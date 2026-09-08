@@ -15,6 +15,7 @@ pub mod execution;
 pub(super) mod history;
 mod ledger;
 pub mod preflight;
+pub mod recovery;
 
 /// Prepared intentions are short-lived so a lost reply cannot retain them indefinitely.
 const PLAN_TTL_MS: i64 = 10 * 60 * 1_000;

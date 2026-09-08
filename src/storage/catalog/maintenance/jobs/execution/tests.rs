@@ -598,3 +598,166 @@ fn cancellation_preserves_started_claims_for_recovery() {
         );
     });
 }
+
+#[test]
+fn startup_reconciliation_settles_completed_unlinks_without_deleting_present_media() {
+    pollster::block_on(async {
+        let fixture = Fixture::new().await;
+        fixture.begin().await.unwrap();
+        let archive = Archive::open(&fixture.root).unwrap();
+        let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
+        fixture
+            .apply(Action::Staged(
+                fixture.claim.clone(),
+                staged.directory_identity(),
+            ))
+            .await
+            .unwrap();
+        drop(staged);
+        let restarted = Epoch::new();
+        let first = super::super::recovery::recover(
+            &fixture.connection,
+            &restarted,
+            &archive,
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.completed, 0);
+        assert_eq!(first.unresolved, 1);
+        let progress = fixture.apply(Action::Read).await.unwrap();
+        assert_eq!(progress.objects[0].status, Status::Failed);
+        let staged = archive
+            .stage_claim(&fixture.claim, progress.objects[0].staged_directory)
+            .unwrap()
+            .unwrap();
+        staged.remove().unwrap();
+
+        let second = super::super::recovery::recover(
+            &fixture.connection,
+            &Epoch::new(),
+            &archive,
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.completed, 1);
+        assert_eq!(second.unresolved, 0);
+        assert_eq!(fixture.apply(Action::Read).await.unwrap().deleted, 1);
+        let repeated = super::super::recovery::recover(
+            &fixture.connection,
+            &Epoch::new(),
+            &archive,
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(repeated.completed, 0);
+        assert_eq!(repeated.unresolved, 0);
+    });
+}
+
+#[test]
+fn startup_reconciliation_preserves_a_live_sibling_attempt() {
+    pollster::block_on(async {
+        let fixture = Fixture::with_count(2).await;
+        let claims = jobs::claims::read(
+            &fixture.connection,
+            &fixture.job,
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let lease = std::sync::Arc::new(());
+        let before = fixture
+            .apply(Action::Begin(
+                claims[1].clone(),
+                std::sync::Arc::downgrade(&lease),
+            ))
+            .await
+            .unwrap();
+        let archive = Archive::open(&fixture.root).unwrap();
+        super::super::recovery::recover(
+            &fixture.connection,
+            &fixture.epoch,
+            &archive,
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let after = fixture.apply(Action::Read).await.unwrap();
+        assert_eq!(after.objects[0].status, Status::Failed);
+        assert_eq!(after.objects[1], before.objects[1]);
+        assert_eq!(
+            std::fs::read(fixture.root.join("second.mp4")).unwrap(),
+            [24; 64]
+        );
+    });
+}
+
+#[test]
+fn startup_filesystem_probe_respects_the_original_expired_deadline() {
+    pollster::block_on(async {
+        let fixture = Fixture::new().await;
+        let archive = Archive::open(&fixture.root).unwrap();
+        let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
+        let checkpoint = staged.directory_identity();
+        staged.remove().unwrap();
+        let expired = Instant::now() - std::time::Duration::from_millis(1);
+        let error = archive
+            .check_removed_claim(&fixture.claim, checkpoint, expired)
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(fixture.apply(Action::Read).await.unwrap().deleted, 0);
+    });
+}
+
+#[test]
+fn startup_catalog_failure_does_not_leave_a_working_executor() {
+    pollster::block_on(async {
+        let fixture = Fixture::new().await;
+        fixture.begin().await.unwrap();
+        let archive = Archive::open(&fixture.root).unwrap();
+        let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
+        fixture
+            .apply(Action::Staged(
+                fixture.claim.clone(),
+                staged.directory_identity(),
+            ))
+            .await
+            .unwrap();
+        staged.remove().unwrap();
+        fixture
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_recovery BEFORE DELETE ON recording_files
+            BEGIN SELECT RAISE(ABORT, 'injected recovery catalog failure'); END;",
+            )
+            .await
+            .unwrap();
+        let result = super::super::recovery::recover(
+            &fixture.connection,
+            &Epoch::new(),
+            &archive,
+            Instant::now() + BUSY_TIMEOUT,
+        )
+        .await;
+        let mut rows = fixture
+            .connection
+            .query("SELECT phase FROM recording_maintenance_execution", ())
+            .await
+            .unwrap();
+        let phase = rows
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<String>(0)
+            .unwrap();
+        drop(rows);
+
+        assert!(result.is_err());
+        assert_eq!(phase, "staged");
+        assert_eq!(fixture.apply(Action::Read).await.unwrap().deleted, 0);
+    });
+}

@@ -249,7 +249,7 @@ async fn candidate(
     })
 }
 
-async fn read(
+pub(super) async fn read(
     connection: &turso::Connection,
     job: &Job,
     deadline: Instant,
