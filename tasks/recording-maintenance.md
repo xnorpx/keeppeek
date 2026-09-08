@@ -17,6 +17,51 @@ documents the implemented workflow and its remaining safety and qualification li
 
 ## Workflow Qualification Status
 
+### PR 232 Follow-Up
+
+The owner rebased the continuation onto `origin/main` at `4977bdd`. Draft
+[PR #232](https://github.com/xnorpx/keeppeek/pull/232) now runs cross-platform
+qualification and remains incomplete. `4b6a4c9` fixes both initial direct CI
+failures: the missing newline in `.config/nextest.toml` and the generated WebRTC
+binding's actual protoc-gen-es provenance. `bun x @bufbuild/protoc-gen-es@2.14.1`
+resolves the real pinned executable even though the full local Bun install and
+direct curl download failed. Explicit Buf plugin invocation with that executable
+regenerated the binding; the code was identical apart from generator provenance.
+No version check or manifest pin was weakened.
+
+CI run `34267658608` passes Format, Ubuntu UI, Linux Rust tests, both native builds,
+and four E2E shards. The unchanged macOS lease-pressure test failed once and passed
+on rerun without changing its 1,600 ms budget. Native Windows testing then exposed
+`ERROR_INVALID_PARAMETER` in staging. Commit `5683cd6` adds operation-level
+diagnostics and a focused native primitive test. They localize the failure to the
+relative `FileRenameInfo` call; NTFS qualification, ACL checks, private-directory
+creation and directory flush already pass. `d8ba6b4` uses a handle-derived absolute
+destination and null `RootDirectory`, with exclusive source ownership and
+no-replacement semantics unchanged. Native execution of this repair is pending.
+
+The next local reconciliation slice adds bounded container validation, distinct
+corrupt/duplicate-identity/index-drift findings, and explicit catalog-owned reindex.
+Reindex uses retained filesystem handles and checks identity before transaction
+mutation and commit. Exact fingerprints compare fragment/keyframe offsets and
+timing, coverage ranges, and coverage totals. Tests cover equal-count corruption,
+missing coverage, replaced files before commit, overflow decode times, sample
+offsets into headers, and duplicate track runs before shared parsing. Unknown files
+are never admitted by this remedy. Mutating remedies share the restore/configuration
+coordination lock. Focused results: 23 public catalog tests, four parser regressions,
+queued-reindex regression, eight server tests and two Chromium remedy tests pass.
+The canonical `KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh` now passes on macOS: 2,402 Rust
+tests (21 existing skips, 101.249 seconds), 361 Bun tests, 193 browser/visual tests,
+57 compatibility tests and 242 Playwright tests (two existing capability skips,
+58.2 seconds). Evidence: `target/issue133-reindex-check.log`, marker
+`ISSUE133_REINDEX_CHECK_EXIT=0`. This includes all parser, index, and coordination
+repairs. The later Windows-only rename change is not a macOS runtime difference.
+
+The independent Home Assistant container job reported `unknown_command` from its
+visual editor on `5683cd6`. All five exact pinned-image container tests pass locally
+in 34.6 seconds with their unchanged zero-console-error assertion; evidence is
+`target/issue133-ha-reproduction.log`, marker `ISSUE133_HA_REPRO_EXIT=0`. No error
+exception or skip was added. Final exact-SHA native CI still gates this draft.
+
 ### Continuation Safety Checks
 
 The latest continuation adds immutable 32-byte staging-directory identity evidence

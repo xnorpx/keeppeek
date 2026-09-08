@@ -292,6 +292,49 @@ fn reconciliation_protocol_requires_owned_reports_and_explicit_remedies() {
     );
 }
 
+#[test]
+fn catalog_remedies_wait_for_storage_coordination() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.root.join("recording.mp4")).unwrap();
+    let result = fixture
+        .request(
+            proto::recording_maintenance_command::Action::InspectCatalog(
+                proto::InspectRecordingCatalog {},
+            ),
+        )
+        .unwrap();
+    let proto::ok::Result::RecordingReconciliationReport(report) = result else {
+        panic!("expected catalog report");
+    };
+    let item = report
+        .items
+        .iter()
+        .find(|item| item.kind == proto::RecordingDriftKind::MissingFile as i32)
+        .unwrap();
+    let guard = fixture.handler.state.config_update.lock().unwrap();
+    let result = fixture.request(proto::recording_maintenance_command::Action::ApplyRemedy(
+        proto::ApplyRecordingRemedy {
+            report_id: report.report_id.clone(),
+            item_id: item.item_id.clone(),
+            remedy: proto::RecordingRemedy::RetainTombstone as i32,
+        },
+    ));
+    drop(guard);
+
+    assert_eq!(result.unwrap_err()._http_status, 409);
+    assert_eq!(
+        fixture
+            .catalog
+            .as_ref()
+            .unwrap()
+            .handle()
+            .stats()
+            .unwrap()
+            .recording_files,
+        1
+    );
+}
+
 fn assert_remedy_owner(fixture: &Fixture, request: &proto::ApplyRecordingRemedy) {
     let mut other = ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST));
     other.identity = super::super::ApiPrincipalIdentity::Credential {

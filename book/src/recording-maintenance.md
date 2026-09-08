@@ -147,10 +147,18 @@ findings. Scan limits are explicit: an incomplete report cannot authorize a
 remedy. Reports expire after ten minutes and belong to the requesting
 Administrator. At most sixteen reports are retained in server memory.
 
-The current inventory reports missing and unknown files, duplicate paths, size
-or identity mismatch, rejected paths, temporary files, and interrupted work.
-It is a metadata scan, not full container, checksum, or media-decoding validation.
-Unknown files are not automatically adopted, moved, or deleted.
+The inventory reports missing and unknown files, duplicate paths or catalog file
+identities, size or identity mismatch, rejected paths, temporary files, interrupted
+work, corrupt containers, and playback-index mismatch. Protected recordings are
+not mislabeled as interrupted jobs. Active recordings are not parsed while their
+writer can still change them.
+
+Finalized cataloged files use bounded fragmented-MP4 validation: box boundaries,
+decode times, track identities, sample extents, and decoder metadata are checked.
+The parser accepts at most 4,096 fragments, 8 MiB of metadata and two tracks; each
+track fragment has at most 65,536 samples. This is not a full media decode or a
+stored-content checksum comparison. Unknown files are never automatically adopted,
+moved, or deleted.
 
 - **Acknowledge** records an explicit ignore decision in the retained report and
   leaves the file and catalog untouched.
@@ -159,11 +167,16 @@ Unknown files are not automatically adopted, moved, or deleted.
   playback indexes while retaining existing coverage-derived deletion evidence.
   No filesystem bytes are deleted. A reappeared file or changed catalog rejects
   the operation; inspect again before making another change.
+- **Rebuild index** is available only for an existing unprotected catalog recording
+  whose container validates and whose playback index differs. After confirmation,
+  it rechecks the catalog revision, exact index fingerprint and retained file
+  observation. It replaces fragment/keyframe indexes and derived coverage in one
+  transaction. The media bytes are unchanged. Unknown files cannot use this action.
 
 Category filters and **Download reconciliation report** preserve inspection
-results. A new scan is required after a catalog-changing remedy. Quarantine,
-validated re-indexing, full corruption detection, and previewed deletion of
-owned temporary files are not implemented yet.
+results. A new scan is required after a catalog-changing remedy. Mutating remedies
+share storage coordination with deletion and restore. Quarantine, content-checksum
+comparison, and previewed deletion of owned temporary files are not implemented yet.
 
 ## Read a preflight report
 

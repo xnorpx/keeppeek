@@ -26,6 +26,81 @@ impl Fixture {
         RecordingCatalog::open(&self.root.join("recordings.db")).unwrap()
     }
 
+    fn edit_catalog(&self, statement: &str) {
+        pollster::block_on(async {
+            let database =
+                turso::Builder::new_local(self.root.join("recordings.db").to_str().unwrap())
+                    .build()
+                    .await
+                    .unwrap();
+            database
+                .connect()
+                .unwrap()
+                .execute_batch(statement)
+                .await
+                .unwrap();
+        });
+    }
+
+    fn repair_index(&self, catalog: &RecordingCatalog, archive: &Archive) {
+        use keeppeek::storage::catalog::maintenance::reconciliation::{Kind, Remedy};
+        let report = catalog
+            .handle()
+            .recording_reconciliation("administrator", archive)
+            .unwrap();
+        let item = report
+            .items
+            .iter()
+            .find(|item| item.kind == Kind::IndexMismatch)
+            .expect("index drift must be reported even when row counts match");
+        catalog
+            .handle()
+            .apply_recording_reconciliation(
+                "administrator",
+                &report,
+                &item.id,
+                Remedy::Reindex,
+                archive,
+            )
+            .unwrap();
+    }
+
+    fn write_fragmented(&self) {
+        let config = mp4::Mp4Config {
+            major_brand: "iso6".parse().unwrap(),
+            minor_version: 1,
+            compatible_brands: vec!["iso6".parse().unwrap(), "mp41".parse().unwrap()],
+            timescale: 1_000,
+        };
+        let track = mp4::TrackConfig {
+            track_type: mp4::TrackType::Video,
+            timescale: 90_000,
+            language: "und".to_owned(),
+            media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
+                width: 320,
+                height: 240,
+                seq_param_set: vec![0x67, 0x42, 0, 0x1e, 0xe9, 1, 0x40, 0x7b, 0x20],
+                pic_param_set: vec![0x68, 0xce, 6, 0xe2],
+            }),
+        };
+        let file = std::fs::File::create(self.root.join("recording.mp4")).unwrap();
+        let mut writer = mp4::FragmentedMp4Writer::write_start(file, &config, &[track]).unwrap();
+        writer
+            .write_sample(
+                1,
+                mp4::Mp4Sample {
+                    start_time: 0,
+                    duration: 90_000,
+                    rendering_offset: 0,
+                    is_sync: true,
+                    bytes: bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65]),
+                },
+            )
+            .unwrap();
+        writer.write_end().unwrap();
+        writer.into_writer().sync_all().unwrap();
+    }
+
     fn replace_snapshot(&self, job: &Job, snapshot: &serde_json::Value) {
         pollster::block_on(async {
             let database_path = self.root.join("recordings.db");
@@ -333,6 +408,118 @@ fn reconciliation_remedies_require_the_owner_and_reject_reappeared_files() {
         )
         .unwrap();
     assert_eq!(catalog.handle().stats().unwrap().recording_files, 0);
+    catalog.shutdown();
+}
+
+#[test]
+fn reconciliation_reports_corrupt_containers_without_changing_the_file() {
+    use keeppeek::storage::catalog::maintenance::reconciliation::Kind;
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    fixture.prepare(&catalog);
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .recording_reconciliation("administrator", &archive)
+        .unwrap();
+    assert!(
+        report
+            .items
+            .iter()
+            .any(|item| item.kind == Kind::CorruptFile)
+    );
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        [42; 64]
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn explicit_reindex_repairs_only_valid_catalog_owned_media() {
+    use keeppeek::storage::catalog::maintenance::reconciliation::{Kind, Remedy};
+    let fixture = Fixture::new();
+    fixture.write_fragmented();
+    let before = std::fs::read(fixture.root.join("recording.mp4")).unwrap();
+    let catalog = fixture.open();
+    fixture.prepare(&catalog);
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .recording_reconciliation("administrator", &archive)
+        .unwrap();
+    let item = report
+        .items
+        .iter()
+        .find(|item| item.kind == Kind::IndexMismatch)
+        .unwrap();
+    assert!(
+        catalog
+            .handle()
+            .apply_recording_reconciliation("other", &report, &item.id, Remedy::Reindex, &archive)
+            .is_err()
+    );
+    catalog
+        .handle()
+        .apply_recording_reconciliation(
+            "administrator",
+            &report,
+            &item.id,
+            Remedy::Reindex,
+            &archive,
+        )
+        .unwrap();
+    let fragments = catalog
+        .handle()
+        .media_fragments_in_range("front/sub", 1_000, 2_000)
+        .unwrap();
+    assert_eq!(fragments.len(), 1);
+    assert_eq!(fragments[0].start_ms, 1_000);
+    assert_eq!(fragments[0].duration_ms, 1_000);
+    assert!(
+        catalog
+            .handle()
+            .recording_reconciliation("administrator", &archive)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        before
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn reconciliation_detects_equal_count_indexes_and_missing_coverage() {
+    let fixture = Fixture::new();
+    fixture.write_fragmented();
+    let before = std::fs::read(fixture.root.join("recording.mp4")).unwrap();
+    let catalog = fixture.open();
+    fixture.prepare(&catalog);
+    let archive = Archive::open(&fixture.root).unwrap();
+    fixture.repair_index(&catalog, &archive);
+    for statement in [
+        "UPDATE recording_fragments SET byte_offset = byte_offset + 1",
+        "UPDATE recording_keyframes SET byte_offset = byte_offset + 1",
+        "DELETE FROM recording_coverage_ranges",
+    ] {
+        fixture.edit_catalog(statement);
+        fixture.repair_index(&catalog, &archive);
+        assert!(
+            catalog
+                .handle()
+                .recording_reconciliation("administrator", &archive)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        before
+    );
     catalog.shutdown();
 }
 

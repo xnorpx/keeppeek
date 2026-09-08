@@ -100,6 +100,7 @@ pub(super) fn apply(
     let remedy = match proto::RecordingRemedy::try_from(request.remedy) {
         Ok(proto::RecordingRemedy::Ignore) => Remedy::Ignore,
         Ok(proto::RecordingRemedy::RetainTombstone) => Remedy::RetainTombstone,
+        Ok(proto::RecordingRemedy::Reindex) => Remedy::Reindex,
         _ => {
             return Err(error(
                 proto::ErrorCode::InvalidRequest,
@@ -108,6 +109,38 @@ pub(super) fn apply(
             ));
         }
     };
+    let _permit = (remedy != Remedy::Ignore)
+        .then(|| super::worker::admit(state))
+        .transpose()?;
+    let _configuration = (remedy != Remedy::Ignore)
+        .then(|| {
+            state.config_update.try_lock().map_err(|_| {
+                error(
+                    proto::ErrorCode::Rejected,
+                    409,
+                    "storage coordination is busy",
+                )
+            })
+        })
+        .transpose()?;
+    if remedy != Remedy::Ignore {
+        super::worker::check_restore(state).map_err(|_| {
+            error(
+                proto::ErrorCode::Rejected,
+                409,
+                "restore is active or unavailable",
+            )
+        })?;
+    }
+    apply_report(state, principal, request, remedy)
+}
+
+fn apply_report(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    request: proto::ApplyRecordingRemedy,
+    remedy: Remedy,
+) -> Result<proto::ok::Result, ControlCommandError> {
     let mut reports = state.maintenance_reconciliation.reports.lock().unwrap();
     let stored = reports
         .get_mut(&request.report_id)
@@ -173,18 +206,16 @@ fn wire(stored: &Stored) -> proto::RecordingReconciliationReport {
                 bytes: item.bytes,
                 remedies: if !report.complete {
                     Vec::new()
-                } else if item.kind == Kind::MissingFile {
-                    vec![
-                        proto::RecordingRemedy::Ignore as i32,
-                        proto::RecordingRemedy::RetainTombstone as i32,
-                    ]
                 } else {
-                    vec![proto::RecordingRemedy::Ignore as i32]
+                    item.remedies
+                        .iter()
+                        .map(|remedy| wire_remedy(*remedy) as i32)
+                        .collect()
                 },
-                applied_remedy: stored.applied.get(&item.id).map(|remedy| match remedy {
-                    Remedy::Ignore => proto::RecordingRemedy::Ignore,
-                    Remedy::RetainTombstone => proto::RecordingRemedy::RetainTombstone,
-                } as i32),
+                applied_remedy: stored
+                    .applied
+                    .get(&item.id)
+                    .map(|remedy| wire_remedy(*remedy) as i32),
             })
             .collect(),
     }
@@ -201,5 +232,16 @@ const fn wire_kind(kind: Kind) -> proto::RecordingDriftKind {
         Kind::TemporaryFile => proto::RecordingDriftKind::TemporaryFile,
         Kind::InterruptedWork => proto::RecordingDriftKind::InterruptedWork,
         Kind::InspectionFailed => proto::RecordingDriftKind::InspectionFailed,
+        Kind::CorruptFile => proto::RecordingDriftKind::CorruptFile,
+        Kind::DuplicateIdentity => proto::RecordingDriftKind::DuplicateIdentity,
+        Kind::IndexMismatch => proto::RecordingDriftKind::IndexMismatch,
+    }
+}
+
+const fn wire_remedy(remedy: Remedy) -> proto::RecordingRemedy {
+    match remedy {
+        Remedy::Ignore => proto::RecordingRemedy::Ignore,
+        Remedy::RetainTombstone => proto::RecordingRemedy::RetainTombstone,
+        Remedy::Reindex => proto::RecordingRemedy::Reindex,
     }
 }
