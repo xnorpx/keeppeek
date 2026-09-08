@@ -63,8 +63,10 @@ CI uses these same entry points. Individual UI commands may be used while diagno
 
 ## Protected API Contract
 
-- Treat `api/` as read-only. Do not modify its schemas, protocol documentation, or generated contract sources.
-- Preserve API and protobuf contracts through implementation changes elsewhere in the repository.
+- Treat `api/`, including schemas, protocol documentation, and generated contract sources, as read-only by default.
+- API changes are allowed with explicit user approval for the current task. Keep changes within the approved files and contract scope, and preserve unrelated API and protobuf contracts.
+- If a required API change is not covered by approval, explain the proposed change and why it is needed, then ask the user for approval before editing. Do not bypass the approval requirement with an undocumented endpoint or unrelated command payload.
+- Once approval is given, proceed within that scope without asking again. Keep affected documentation, generated bindings, and contract tests synchronized; ask before expanding the approved scope.
 
 ## Code Style
 
