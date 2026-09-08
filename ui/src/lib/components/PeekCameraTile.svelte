@@ -3,6 +3,12 @@
 	import { onMount } from 'svelte';
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import { videoResolutionMatches } from '$lib/video-resolution';
+	import type { GridTileAdmission } from '$lib/grid-stream-scheduler';
+	import {
+		stableNativeRatio,
+		type PeekMediaFit,
+		type PeekTileShape
+	} from '$lib/peek-wall-preferences';
 	import type { CameraHealth, CameraListItem } from '$lib/types';
 	import {
 		peekCameraStateColorClass,
@@ -19,6 +25,10 @@
 		camera: CameraListItem;
 		health?: CameraHealth | null;
 		stream: 'main' | 'sub';
+		tileShape?: PeekTileShape;
+		mediaFit?: PeekMediaFit;
+		cornerRadiusPx?: number;
+		admission?: GridTileAdmission;
 		mobileFeatured?: boolean;
 		desktopPaperFrame?: boolean;
 		layoutMode?: boolean;
@@ -46,6 +56,10 @@
 		camera,
 		health = null,
 		stream,
+		tileShape,
+		mediaFit = 'contain',
+		cornerRadiusPx,
+		admission,
 		mobileFeatured = false,
 		desktopPaperFrame = false,
 		layoutMode = false,
@@ -69,15 +83,31 @@
 		onlayoutkeydown
 	}: Props = $props();
 	let tileElement: HTMLElement | null = $state(null);
+	let nativeRatio = $state<number | null>(null);
+	let tileRatio = $derived(
+		tileShape === '4:3' ? 4 / 3 : tileShape === 'native' ? (nativeRatio ?? 16 / 9) : 16 / 9
+	);
+	const admissionLabels = {
+		queued: 'Waiting for a stream slot',
+		capacity: 'Device stream budget reached',
+		offscreen: 'Offscreen stream paused',
+		hidden: 'Hidden page paused',
+		unsupported: 'No browser-compatible stream',
+		unavailable: 'Stream unavailable'
+	};
+	let suspensionReason = $derived(
+		admission && admission !== 'admitted' ? admissionLabels[admission] : null
+	);
 	let presentation = $derived(presentPeekCamera(camera, health));
 	let hasRecentFrames = $state(false);
 	let rendersVideo = $derived(presentation.state !== 'offline' && presentation.state !== 'stopped');
 	let showsCachedFrame = $derived(rendersVideo && !hasRecentFrames && fallbackFrameUrl !== null);
 	let waitingForFirstFrame = $derived(
-		showsCachedFrame ||
-			(presentation.state === 'healthy' &&
-				camera.profiles.some((profile) => profile.encoding !== null) &&
-				!hasRecentFrames)
+		(admission === undefined || admission === 'admitted') &&
+			(showsCachedFrame ||
+				(presentation.state === 'healthy' &&
+					camera.profiles.some((profile) => profile.encoding !== null) &&
+					!hasRecentFrames))
 	);
 	let firstFrameElapsedMs = $state(0);
 	let effectiveFirstFrameElapsedMs = $derived(firstFrameElapsedMsOverride ?? firstFrameElapsedMs);
@@ -92,15 +122,17 @@
 			visualState === 'reconnecting'
 	);
 	let mobileSizeClass = $derived(
-		compactStatus
-			? 'h-full min-w-0 flex-1 basis-0'
-			: desktopPaperFrame
-				? 'size-full'
-				: layoutMode
+		tileShape
+			? 'size-full'
+			: compactStatus
+				? 'h-full min-w-0 flex-1 basis-0'
+				: desktopPaperFrame
 					? 'size-full'
-					: mobileFeatured
-						? 'col-span-2 aspect-video md:col-span-1'
-						: 'aspect-[174/110] md:aspect-video'
+					: layoutMode
+						? 'size-full'
+						: mobileFeatured
+							? 'col-span-2 aspect-video md:col-span-1'
+							: 'aspect-[174/110] md:aspect-video'
 	);
 	let mobileCompactFlexClass = $derived(
 		desktopPaperFrame || layoutMode || mobileFeatured ? 'flex' : 'hidden md:flex'
@@ -254,9 +286,33 @@
 	}
 </script>
 
+{#snippet wallHealthEvidence()}
+	{#if !showsCachedFrame && (presentation.state === 'degraded' || presentation.state === 'stale')}
+		<div
+			data-peek-camera-region="evidence"
+			role="status"
+			class="w-full rounded-sm border border-activity bg-black/80 px-2 py-1 text-2xs leading-[14px] text-white"
+		>
+			{canonicalStateLabel}
+			{'\u2014'} <span>{presentation.detail}</span>
+		</div>
+	{/if}
+{/snippet}
+
 <article
 	bind:this={tileElement}
 	data-peek-camera={camera.id}
+	data-peek-tile-shape={tileShape}
+	data-peek-media-fit={mediaFit}
+	data-peek-admission={admission}
+	style:--peek-tile-ratio={tileShape ? tileRatio : undefined}
+	style:border-radius={cornerRadiusPx === undefined ? undefined : `${cornerRadiusPx}px`}
+	style:border-width={cornerRadiusPx === 0 && rendersVideo ? '0px' : undefined}
+	style:outline={cornerRadiusPx === 0 &&
+	(visualState === 'degraded' || visualState === 'stale' || visualState === 'reconnecting')
+		? '1px solid var(--color-activity)'
+		: undefined}
+	style:outline-offset={cornerRadiusPx === 0 ? '-1px' : undefined}
 	data-peek-camera-state={visualState}
 	data-peek-camera-size={layoutMode ? 'layout' : mobileFeatured ? 'featured' : 'compact'}
 	class="group relative min-w-0 overflow-hidden rounded-lg border md:col-span-1 {tileSurface} {borderColor} {mobileSizeClass}"
@@ -266,6 +322,14 @@
 			cameraId={camera.id}
 			{stream}
 			{fallbackFrameUrl}
+			{mediaFit}
+			mediaAspectRatio={tileShape ? tileRatio : undefined}
+			{suspensionReason}
+			showFreshness={admission !== undefined}
+			statusOverlay={admission === undefined ? undefined : wallHealthEvidence}
+			onvideosizechange={({ width, height }) => {
+				nativeRatio = stableNativeRatio(nativeRatio, width, height);
+			}}
 			showDiagnostics={!compactStatus && !layoutMode}
 			diagnosticsLabel={!compactStatus && !layoutMode ? label : undefined}
 			diagnosticsStatusClass={stateColor}
@@ -383,11 +447,12 @@
 			{label}
 			elapsedMs={effectiveFirstFrameElapsedMs}
 			frameUrl={fallbackFrameUrl}
+			{mediaFit}
 			class="absolute inset-0 z-20"
 		/>
 	{/if}
 
-	{#if !showsCachedFrame && !compactStatus && (presentation.state === 'degraded' || presentation.state === 'stale')}
+	{#if admission === undefined && !showsCachedFrame && !compactStatus && (presentation.state === 'degraded' || presentation.state === 'stale')}
 		<div
 			data-peek-camera-region="evidence"
 			class="pointer-events-none absolute right-2.5 left-2.5 z-20 rounded-sm border border-activity bg-activity/15 font-medium text-white {mobileFeatured

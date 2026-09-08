@@ -3,10 +3,17 @@
 		label: string;
 		elapsedMs: number;
 		frameUrl?: string | null;
+		mediaFit?: 'contain' | 'cover';
 		class?: string;
 	};
 
-	let { label, elapsedMs, frameUrl = null, class: className = '' }: Props = $props();
+	let {
+		label,
+		elapsedMs,
+		frameUrl = null,
+		mediaFit = 'contain',
+		class: className = ''
+	}: Props = $props();
 </script>
 
 <div
@@ -23,7 +30,8 @@
 			data-peek-cached-frame
 			src={frameUrl}
 			alt=""
-			class="pointer-events-none absolute inset-0 size-full object-cover"
+			class="pointer-events-none absolute inset-0 size-full"
+			style:object-fit={mediaFit}
 		/>
 		<div class="pointer-events-none absolute inset-0 bg-black/20"></div>
 	{/if}
@@ -34,7 +42,7 @@
 		<span class="tracking-[0.08em]">{frameUrl ? 'RESTORING' : 'CONNECTING'}</span>
 	</span>
 	<div class="relative z-10 flex flex-col items-center gap-1.5">
-		<div class="flex h-[3px] w-[180px] overflow-hidden rounded-full bg-[#FFFFFF2E]">
+		<div class="flex h-[3px] w-[180px] max-w-full overflow-hidden rounded-full bg-[#FFFFFF2E]">
 			<div class="w-[72px] {frameUrl ? 'bg-amber-400' : 'bg-text-muted'}"></div>
 		</div>
 		<p class="font-mono text-2xs leading-3 tracking-caps text-white/70 uppercase">
@@ -42,6 +50,9 @@
 				? `Showing last frame · waiting for live video · ${(elapsedMs / 1_000).toFixed(1)}s`
 				: `Negotiated · waiting for a keyframe · ${(elapsedMs / 1_000).toFixed(1)}s`}
 		</p>
+		{#if frameUrl}<p class="text-2xs text-white/70">
+				Frame time unknown{mediaFit === 'cover' ? ' / Cropped' : ''}
+			</p>{/if}
 	</div>
-	<p class="relative z-10 text-md leading-[18px] font-semibold">{label}</p>
+	<p class="relative z-10 max-w-full truncate text-md leading-[18px] font-semibold">{label}</p>
 </div>
