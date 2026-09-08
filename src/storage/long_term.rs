@@ -1,6 +1,8 @@
 use crate::storage::layout;
 use std::path::{Path, PathBuf};
 
+pub mod inspection;
+
 pub struct LongTermStore {
     root: PathBuf,
 }

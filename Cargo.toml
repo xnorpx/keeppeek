@@ -25,6 +25,10 @@ members = [
 ]
 
 [workspace.dependencies]
+cap-fs-ext = { version = "=4.0.3", default-features = false, features = [
+  "std",
+] }
+cap-std = { version = "=4.0.3", default-features = false }
 test-hikvision = { path = "crates/test-hikvision", version = "0.1.0" }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 isapi = { path = "crates/isapi", version = "0.1.0" }
@@ -106,6 +110,8 @@ harness = false
 test = false
 
 [dependencies]
+cap-fs-ext = { workspace = true }
+cap-std = { workspace = true }
 mime = { workspace = true }
 anyhow = { version = "1.0.104" }
 base64 = { version = "0.23.1" }

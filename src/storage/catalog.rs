@@ -29,6 +29,7 @@ use std::{
     time::Duration,
 };
 
+pub mod maintenance;
 pub mod workflow;
 
 const COMMAND_CAPACITY: usize = 256;
@@ -349,6 +350,10 @@ struct LegacyRecording {
 }
 
 enum Command {
+    DeletionIntent {
+        request: maintenance::jobs::Request,
+        reply: SyncSender<anyhow::Result<maintenance::jobs::Job>>,
+    },
     UpsertRecording {
         recording: CatalogRecording,
         reply: SyncSender<anyhow::Result<()>>,
@@ -521,6 +526,7 @@ enum Command {
 }
 
 enum SearchCommand {
+    Maintenance(maintenance::ReadRequest),
     Bookmarks {
         query: workflow::BookmarkQuery,
         reply: SyncSender<anyhow::Result<workflow::BookmarkPage>>,
@@ -1433,8 +1439,16 @@ impl RecordingCatalogHandle {
 }
 
 fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
+    let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::DeletionIntent { request, reply } => {
+                let _ = reply.send(pollster::block_on(maintenance::jobs::execute(
+                    &connection,
+                    &intent_epoch,
+                    request,
+                )));
+            }
             Command::UpsertRecording { recording, reply } => {
                 let _ = reply.send(pollster::block_on(upsert_recording(&connection, recording)));
             }
@@ -1746,6 +1760,7 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
 fn run_search_catalog(connection: turso::Connection, rx: Receiver<SearchCommand>) {
     while let Ok(command) = rx.recv() {
         match command {
+            SearchCommand::Maintenance(request) => maintenance::read(&connection, request),
             SearchCommand::Bookmarks { query, reply } => {
                 let _ = reply.send(pollster::block_on(workflow::list_bookmarks(
                     &connection,
@@ -2659,6 +2674,7 @@ pub(super) async fn initialize_schema(connection: &turso::Connection) -> anyhow:
     apply_event_search_backfill(connection).await?;
     backfill_recording_coverage(connection).await?;
     workflow::initialize(connection).await?;
+    maintenance::jobs::initialize(connection).await?;
     Ok(())
 }
 
