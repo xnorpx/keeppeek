@@ -3,15 +3,19 @@
 Recording maintenance provides Administrator previews, confirmed deletion jobs,
 and bounded catalog reconciliation over the WebRTC control connection. It is
 under qualification in [issue #133](https://github.com/xnorpx/keeppeek/issues/133),
-not yet a completed or production-qualified feature. The macOS synthetic-media
-workflow has passed end-to-end testing; native Windows validation and other
-acceptance criteria remain outstanding.
+not yet a completed or production-qualified feature. The synthetic-media workflow
+and native Windows, macOS, and Linux checks have passed; remaining acceptance
+criteria are tracked in the issue.
 
 Automatic storage retention remains separate from manual deletion. Manual claims
 exclude their recordings from retention and new playback/export resolution until
 the claim reaches a terminal outcome. Never delete recording files directly as a
 substitute for maintenance: that can leave stale catalog entries and unavailable
 evidence links.
+
+Startup preserves `.active` files and their catalog rows. A temporary-looking
+filename does not establish ownership or authorize deletion, in either the
+medium-term or long-term root. Interrupted media remains available for inspection.
 
 ## Review and delete recordings
 

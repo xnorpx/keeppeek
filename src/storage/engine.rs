@@ -465,16 +465,6 @@ impl StorageEngine {
     }
 
     fn start_inner(config: StorageConfig, catalog: Option<RecordingCatalogHandle>) -> Self {
-        let mut removed_active = cleanup_stale_active_files(&config.medium_term_path);
-        if config.medium_term_path != config.long_term_path {
-            removed_active.extend(cleanup_stale_active_files(&config.long_term_path));
-        }
-        if let Some(catalog) = &catalog
-            && let Err(error) = catalog.delete_recordings_by_path(&removed_active)
-        {
-            tracing::warn!(%error, "unable to remove stale active recording catalog rows");
-        }
-
         tracing::info!(
             medium_term_path = %config.medium_term_path.display(),
             long_term_path = %config.long_term_path.display(),
@@ -1199,36 +1189,6 @@ pub struct ShortTermStats {
     pub chunks: usize,
     pub bytes: usize,
     pub duration: Duration,
-}
-
-fn cleanup_stale_active_files(root: &Path) -> Vec<PathBuf> {
-    let mut removed = Vec::new();
-    let walker = match std::fs::read_dir(root) {
-        Ok(w) => w,
-        Err(_) => return removed,
-    };
-    fn walk(dir: std::fs::ReadDir, removed: &mut Vec<PathBuf>) {
-        for entry in dir.flatten() {
-            let path = entry.path();
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                if let Ok(sub) = std::fs::read_dir(&path) {
-                    walk(sub, removed);
-                }
-            } else if file_type.is_file()
-                && path.extension().and_then(|e| e.to_str()) == Some("active")
-            {
-                tracing::warn!(path = %path.display(), "removing stale active segment from previous run");
-                if std::fs::remove_file(&path).is_ok() {
-                    removed.push(path);
-                }
-            }
-        }
-    }
-    walk(walker, &mut removed);
-    removed
 }
 
 #[cfg(test)]
@@ -2192,7 +2152,41 @@ mod tests {
     }
 
     #[test]
-    fn startup_removes_stale_active_file_and_its_catalog_row() {
+    fn startup_preserves_unowned_active_files_in_both_media_roots() {
+        let mut config = storage_config("unowned-active-preservation");
+        let root = config.long_term_path.clone();
+        let _ = std::fs::remove_dir_all(&root);
+        config.medium_term_path = root.join("medium");
+        std::fs::create_dir_all(&config.medium_term_path).unwrap();
+        let medium_file = config.medium_term_path.join("unowned.mp4.active");
+        let long_file = root.join("unrelated.active");
+        std::fs::write(&medium_file, b"unowned medium media").unwrap();
+        std::fs::write(&long_file, b"unowned archive data").unwrap();
+        let catalog = RecordingCatalog::open(&config.recording_catalog_path).unwrap();
+        let catalog_handle = catalog.handle();
+
+        for with_catalog in [false, true] {
+            let engine = if with_catalog {
+                StorageEngine::start_with_catalog(config.clone(), catalog_handle.clone())
+            } else {
+                StorageEngine::start(config.clone())
+            };
+            engine.shutdown();
+
+            assert_eq!(
+                std::fs::read(&medium_file).unwrap(),
+                b"unowned medium media"
+            );
+            assert_eq!(std::fs::read(&long_file).unwrap(), b"unowned archive data");
+            assert_eq!(catalog_handle.stats().unwrap().recording_files, 0);
+        }
+        drop(catalog_handle);
+        catalog.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_preserves_interrupted_recording_for_explicit_reconciliation() {
         let config = storage_config("stale-active-recovery");
         let root = config.long_term_path.clone();
         let _ = std::fs::remove_dir_all(&root);
@@ -2224,8 +2218,11 @@ mod tests {
         let engine = StorageEngine::start_with_catalog(config, catalog_handle.clone());
         engine.shutdown();
 
-        assert!(!active_path.exists());
-        assert_eq!(catalog_handle.stats().unwrap().recording_files, 0);
+        assert_eq!(
+            std::fs::read(&active_path).unwrap(),
+            b"interrupted recording"
+        );
+        assert_eq!(catalog_handle.stats().unwrap().recording_files, 1);
         drop(catalog_handle);
         catalog.shutdown();
         std::fs::remove_dir_all(root).unwrap();
@@ -2233,11 +2230,11 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stale_active_cleanup_does_not_follow_directory_symlinks() {
+    fn startup_preserves_active_files_behind_directory_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/test-output/stale-active-symlink-root");
+        let config = storage_config("stale-active-symlink-root");
+        let root = config.long_term_path.clone();
         let outside = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target/test-output/stale-active-symlink-outside");
         let _ = std::fs::remove_dir_all(&root);
@@ -2248,10 +2245,10 @@ mod tests {
         std::fs::write(&victim, b"outside").unwrap();
         symlink(&outside, root.join("linked-outside")).unwrap();
 
-        let removed = cleanup_stale_active_files(&root);
+        let engine = StorageEngine::start(config);
+        engine.shutdown();
 
-        assert!(removed.is_empty());
-        assert!(victim.exists());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"outside");
         std::fs::remove_dir_all(root).unwrap();
         std::fs::remove_dir_all(outside).unwrap();
     }

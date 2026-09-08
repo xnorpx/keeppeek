@@ -512,10 +512,6 @@ enum Command {
         recording_id: String,
         reply: SyncSender<anyhow::Result<()>>,
     },
-    DeleteRecordingsByPath {
-        paths: Vec<String>,
-        reply: SyncSender<anyhow::Result<()>>,
-    },
     ClaimCleanupCandidate {
         reply: SyncSender<anyhow::Result<Option<CatalogCleanupCandidate>>>,
     },
@@ -1274,24 +1270,6 @@ impl RecordingCatalogHandle {
             .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
     }
 
-    pub(crate) fn delete_recordings_by_path(&self, paths: &[PathBuf]) -> anyhow::Result<()> {
-        let paths = paths
-            .iter()
-            .map(|path| {
-                path.to_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| anyhow::anyhow!("recording path is not valid UTF-8"))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let (reply, response) = mpsc::sync_channel(1);
-        self.tx
-            .send(Command::DeleteRecordingsByPath { paths, reply })
-            .map_err(|_| anyhow::anyhow!("recording catalog is unavailable"))?;
-        response
-            .recv()
-            .map_err(|_| anyhow::anyhow!("recording catalog stopped before replying"))?
-    }
-
     pub(crate) fn claim_cleanup_candidate(
         &self,
     ) -> anyhow::Result<Option<CatalogCleanupCandidate>> {
@@ -1782,12 +1760,6 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
                     &recording_id,
                 )));
             }
-            Command::DeleteRecordingsByPath { paths, reply } => {
-                let _ = reply.send(pollster::block_on(delete_recordings_by_path(
-                    &connection,
-                    &paths,
-                )));
-            }
             Command::ClaimCleanupCandidate { reply } => {
                 let _ = reply.send(pollster::block_on(claim_cleanup_candidate(&connection)));
             }
@@ -2235,55 +2207,6 @@ async fn delete_recording(
                 turso::params![recording_id],
             )
             .await?;
-        anyhow::Ok(())
-    }
-    .await;
-    match result {
-        Ok(()) => connection.execute_batch("COMMIT").await.map_err(Into::into),
-        Err(error) => {
-            let _ = connection.execute_batch("ROLLBACK").await;
-            Err(error)
-        }
-    }
-}
-
-async fn delete_recordings_by_path(
-    connection: &turso::Connection,
-    paths: &[String],
-) -> anyhow::Result<()> {
-    if paths.is_empty() {
-        return Ok(());
-    }
-    connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let result = async {
-        for path in paths {
-            let mut rows = connection
-                .query(
-                    "SELECT id FROM recording_files WHERE path = ?1",
-                    turso::params![path.clone()],
-                )
-                .await?;
-            let recording_id = rows
-                .next()
-                .await?
-                .map(|row| row.get::<String>(0))
-                .transpose()?;
-            drop(rows);
-            if let Some(recording_id) = recording_id {
-                record_deletion(
-                    connection,
-                    &recording_id,
-                    CatalogDeletionReason::Reconciliation,
-                )
-                .await?;
-            }
-            connection
-                .execute(
-                    "DELETE FROM recording_files WHERE path = ?1",
-                    turso::params![path.clone()],
-                )
-                .await?;
-        }
         anyhow::Ok(())
     }
     .await;
@@ -7074,7 +6997,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retention_deletes_media_links_but_preserves_events() {
+    fn deleting_recording_preserves_events_and_removes_media_links() {
         let root = test_dir("turso-retention-cascade");
         let recording_path = root.join("recording.mp4");
         let catalog = RecordingCatalog::open(&root.join("recordings.db")).unwrap();
@@ -7104,9 +7027,7 @@ pub(crate) mod tests {
                 .is_some()
         );
 
-        handle
-            .delete_recordings_by_path(std::slice::from_ref(&recording_path))
-            .unwrap();
+        handle.delete_recording("recording-1").unwrap();
         assert!(handle.event_by_id("event-1").unwrap().is_some());
         assert!(
             handle
