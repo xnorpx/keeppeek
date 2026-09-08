@@ -7,6 +7,7 @@
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import InfoIcon from '@lucide/svelte/icons/info';
 	import { Popover } from 'bits-ui';
+	import FocusedMediaViewport from './FocusedMediaViewport.svelte';
 
 	type ExtendedInboundStats = RTCInboundRtpStreamStats & {
 		powerEfficientDecoder?: boolean;
@@ -82,6 +83,7 @@
 		cameraId: string;
 		stream: 'main' | 'sub';
 		quality?: LiveQuality;
+		digitalZoom?: boolean;
 		matchVideoAspectRatio?: boolean;
 		showDiagnostics?: boolean;
 		diagnosticsLabel?: string;
@@ -113,6 +115,7 @@
 		cameraId,
 		stream,
 		quality,
+		digitalZoom = false,
 		matchVideoAspectRatio = false,
 		showDiagnostics = true,
 		diagnosticsLabel,
@@ -133,6 +136,7 @@
 	let container: HTMLDivElement | null = $state(null);
 	let video = $state<HTMLVideoElement | null>(null);
 	let videoAspectRatio = $state<number | null>(null);
+	let digitalZoomScale = $state(1);
 	let negotiatedCodec = $state<string | null>(null);
 	let diagnosticsOpen = $state(false);
 	let diagnostics = $state.raw<VideoDiagnostics>(EMPTY_DIAGNOSTICS);
@@ -537,46 +541,55 @@
 	data-codec={negotiatedCodec}
 	data-frame-activity={frameActivityActive ? 'active' : 'idle'}
 >
-	<video
-		bind:this={video}
-		autoplay
-		playsinline
-		muted
-		onplaying={handlePlaying}
-		onloadeddata={handleLoadedData}
-		onloadedmetadata={handleVideoResize}
-		onwaiting={handlePlaybackInactive}
-		onstalled={handlePlaybackInactive}
-		onpause={handlePlaybackInactive}
-		onemptied={handlePlaybackInactive}
-		ontimeupdate={() => {
-			if (typeof video?.requestVideoFrameCallback !== 'function') {
-				markFrameActivity();
-				reportPresentedFrame();
-			}
-		}}
-		onresize={handleVideoResize}
-		onerror={() => {
-			handlePlaybackInactive();
-			livePeer.markUnavailable(cameraId);
-		}}
-		class="h-full w-full object-contain"
-	></video>
-	{#if fallbackFrameUrl && (!presentedFrameReady || status !== 'live')}
-		<img
-			data-peek-cached-frame
-			src={fallbackFrameUrl}
-			alt=""
-			class="pointer-events-none absolute inset-0 z-20 size-full bg-black object-cover"
-		/>
-	{/if}
-	{#if frozenFrameUrl && status !== 'live'}
-		<img
-			src={frozenFrameUrl}
-			alt=""
-			class="pointer-events-none absolute inset-0 z-10 size-full object-contain"
-		/>
-	{/if}
+	<FocusedMediaViewport
+		mediaKey={cameraId}
+		enabled={digitalZoom}
+		aspectRatio={videoAspectRatio ?? 16 / 9}
+		onzoomchange={(scale) => (digitalZoomScale = scale)}
+	>
+		<video
+			bind:this={video}
+			autoplay
+			playsinline
+			muted
+			onplaying={handlePlaying}
+			onloadeddata={handleLoadedData}
+			onloadedmetadata={handleVideoResize}
+			onwaiting={handlePlaybackInactive}
+			onstalled={handlePlaybackInactive}
+			onpause={handlePlaybackInactive}
+			onemptied={handlePlaybackInactive}
+			ontimeupdate={() => {
+				if (typeof video?.requestVideoFrameCallback !== 'function') {
+					markFrameActivity();
+					reportPresentedFrame();
+				}
+			}}
+			onresize={handleVideoResize}
+			onerror={() => {
+				handlePlaybackInactive();
+				livePeer.markUnavailable(cameraId);
+			}}
+			class="h-full w-full object-contain"
+		></video>
+		{#if fallbackFrameUrl && (!presentedFrameReady || status !== 'live')}
+			<img
+				data-peek-cached-frame
+				src={fallbackFrameUrl}
+				alt=""
+				class="pointer-events-none absolute inset-0 z-20 size-full bg-black {digitalZoom
+					? 'object-contain'
+					: 'object-cover'}"
+			/>
+		{/if}
+		{#if frozenFrameUrl && status !== 'live'}
+			<img
+				src={frozenFrameUrl}
+				alt=""
+				class="pointer-events-none absolute inset-0 z-10 size-full object-contain"
+			/>
+		{/if}
+	</FocusedMediaViewport>
 	{#if showDiagnostics}
 		<Popover.Root bind:open={diagnosticsOpen}>
 			<div
@@ -684,6 +697,10 @@
 							<dd class="font-mono uppercase">{negotiatedCodec?.replace('video/', '') ?? '—'}</dd>
 							<dt class="text-white/45">Resolution</dt>
 							<dd class="font-mono">{resolution}</dd>
+							{#if digitalZoom}
+								<dt class="text-white/45">Digital zoom</dt>
+								<dd class="font-mono">{digitalZoomScale.toFixed(1)}x</dd>
+							{/if}
 							<dt class="text-white/45">Stream FPS</dt>
 							<dd class="font-mono">
 								{formatFramesPerSecond(diagnostics.streamFramesPerSecond)}

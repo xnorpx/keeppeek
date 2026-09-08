@@ -85,6 +85,10 @@ event and operational identities remain stable across delivery, retry, and broke
 
 ## Copy a recording moment
 
+Use [digital zoom and pan](./digital-zoom.md) to inspect recorded frames and canonical event images
+without changing their source resolution or the evidence. Inspection crops are not included in
+copied moment links or exports.
+
 Use the link icon in Keep's command bar to copy the current recording moment. The command reads
 the playback clock when invoked; it does not pause, seek, reload the video, or change browser
 history. Event detail has the same command beside **Open at this moment**, using the event's

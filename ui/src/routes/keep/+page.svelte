@@ -8,6 +8,8 @@
 	import { EventWorkflow } from '$lib/event-workflow.svelte';
 	import EventDetailDrawer from '$lib/components/EventDetailDrawer.svelte';
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
+	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
+	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
 	import type {
 		EventPreviewHit,
 		StoredMediaKeyFramePreview,
@@ -61,8 +63,6 @@
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
-	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
-	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 
 	const dateFormatter = new Intl.DateTimeFormat(undefined, {
 		weekday: 'short',
@@ -112,6 +112,10 @@
 	let error: string | null = $state(null);
 	let playerError: string | null = $state(null);
 	let video: HTMLVideoElement | null = $state(null);
+	let recordedPlayer = $state<HTMLElement | null>(null);
+	let decodedVideoWidth = $state(0);
+	let decodedVideoHeight = $state(0);
+	let playbackVolume = $state(1);
 	let storedPlayback: StoredMediaPlayback | null = null;
 	let playbackUrl: string | null = $state(null);
 	let playbackAnchorMs = 0;
@@ -1889,6 +1893,8 @@
 			return;
 		}
 		const target = event.target instanceof Element ? event.target : null;
+		if (target?.closest('[data-recorded-playback-controls]')) return;
+		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
 		const playerFocused = target?.closest('[data-keep-player]') !== null;
 		const key = event.key.toLowerCase();
 		if (key === 'j') shuttle(-1);
@@ -1955,6 +1961,12 @@
 		playbackMuted = video.muted;
 		playbackPreferences = withMediaPreferences(playbackPreferences, { muted: playbackMuted });
 		savePlaybackPreferences(window.localStorage, playbackPreferences);
+	}
+
+	function togglePlaybackMute(): void {
+		if (!video) return;
+		video.muted = !playbackMuted;
+		updateMutedPreference();
 	}
 
 	function playbackIntent(): boolean {
@@ -2284,6 +2296,7 @@
 				class="grid h-full min-h-0 items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_18rem]"
 			>
 				<section
+					bind:this={recordedPlayer}
 					data-keep-player
 					data-recording-requested-variant={requestedPlaybackVariant}
 					data-recording-selected-variant={selectedPlaybackVariant ?? undefined}
@@ -2304,56 +2317,70 @@
 							? 'entering'
 							: 'idle'}
 					data-camera-transition-direction={cameraSwitchDirection === 1 ? 'next' : 'previous'}
-					class="min-w-0 space-y-3"
+					class="flex min-h-0 min-w-0 flex-col gap-3 lg:h-full"
 					aria-label="Recorded video player"
 				>
-					<div class="relative overflow-hidden rounded-md bg-black ring-1 ring-black/10">
+					<div
+						data-keep-media-frame
+						class="relative aspect-video overflow-hidden rounded-md bg-black ring-1 ring-black/10 lg:aspect-auto lg:min-h-0 lg:flex-1"
+					>
 						{#if selected && playbackUrl}
-							{#key selected.url}
-								<!-- svelte-ignore a11y_media_has_caption (security camera recordings do not include caption tracks) -->
-								<video
-									bind:this={video}
-									controls
-									playsinline
-									muted={scrubbing || playbackMuted}
-									preload="metadata"
-									src={playbackUrl}
-									class="aspect-video w-full object-contain {cameraSwitchAnimating
-										? cameraSwitchDirection === 1
-											? 'camera-switch-enter-next'
-											: 'camera-switch-enter-previous'
-										: ''}"
-									onloadedmetadata={applyPendingSeek}
-									ondurationchange={applyPendingSeek}
-									onloadeddata={handlePlayerLoadedData}
-									onseeked={clearStillPreview}
-									ontimeupdate={updatePlayhead}
-									onended={handleEnded}
-									onplay={handlePlay}
-									onpause={handlePause}
-									onratechange={updatePlaybackRate}
-									onvolumechange={updateMutedPreference}
-									onerror={handlePlayerError}
-								></video>
-							{/key}
-							{#if stillPreviewUrl}
-								<img
-									src={stillPreviewUrl}
-									alt=""
-									class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
-								/>
-							{/if}
-							{#if cameraSwitchFrameUrl}
-								<img
-									src={cameraSwitchFrameUrl}
-									alt=""
-									data-camera-switch-frame
-									class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
-								/>
-							{/if}
+							<FocusedMediaViewport
+								mediaKey={`${cameraId}:${selected.url}`}
+								aspectRatio={decodedVideoHeight > 0
+									? decodedVideoWidth / decodedVideoHeight
+									: 16 / 9}
+								controlsPosition="top-left"
+							>
+								{#key selected.url}
+									<!-- svelte-ignore a11y_media_has_caption (security camera recordings do not include caption tracks) -->
+									<video
+										bind:this={video}
+										bind:videoWidth={decodedVideoWidth}
+										bind:videoHeight={decodedVideoHeight}
+										bind:volume={playbackVolume}
+										tabindex="-1"
+										playsinline
+										muted={scrubbing || playbackMuted}
+										preload="metadata"
+										src={playbackUrl}
+										class="size-full object-contain {cameraSwitchAnimating
+											? cameraSwitchDirection === 1
+												? 'camera-switch-enter-next'
+												: 'camera-switch-enter-previous'
+											: ''}"
+										onloadedmetadata={applyPendingSeek}
+										ondurationchange={applyPendingSeek}
+										onloadeddata={handlePlayerLoadedData}
+										onseeked={clearStillPreview}
+										ontimeupdate={updatePlayhead}
+										onended={handleEnded}
+										onplay={handlePlay}
+										onpause={handlePause}
+										onratechange={updatePlaybackRate}
+										onvolumechange={updateMutedPreference}
+										onerror={handlePlayerError}
+									></video>
+								{/key}
+								{#if stillPreviewUrl}
+									<img
+										src={stillPreviewUrl}
+										alt=""
+										class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+									/>
+								{/if}
+								{#if cameraSwitchFrameUrl}
+									<img
+										src={cameraSwitchFrameUrl}
+										alt=""
+										data-camera-switch-frame
+										class="pointer-events-none absolute inset-0 z-10 size-full bg-black object-contain"
+									/>
+								{/if}
+							</FocusedMediaViewport>
 							<span
 								data-camera-name
-								class="pointer-events-none absolute top-3 right-3 z-20 max-w-[calc(100%-1.5rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
+								class="pointer-events-none absolute right-3 bottom-3 z-20 max-w-[calc(100%-1.5rem)] truncate rounded-sm bg-black/72 px-2 py-1 text-xs font-semibold text-white shadow-sm backdrop-blur-sm"
 							>
 								{selectedCamera?.name ?? selectedCamera?.id ?? cameraId}
 							</span>
@@ -2386,31 +2413,30 @@
 						/>
 					{/if}
 
-					<div
-						class="flex min-h-10 items-center justify-end gap-1 border-b pb-3"
-						aria-label="Playback controls"
-					>
-						<Button
-							variant="outline"
-							size="icon-sm"
-							class="size-11 md:size-8"
-							title="Back 10 seconds"
-							disabled={!selected}
-							onclick={() => skip(-10)}
-						>
-							<RotateCcwIcon />
-						</Button>
-						<Button
-							variant="outline"
-							size="icon-sm"
-							class="size-11 md:size-8"
-							title="Forward 10 seconds"
-							disabled={!selected}
-							onclick={() => skip(10)}
-						>
-							<RotateCwIcon />
-						</Button>
-					</div>
+					<RecordedPlaybackControls
+						{playing}
+						muted={playbackMuted}
+						volume={playbackVolume}
+						rate={playbackRate}
+						positionSeconds={selected && playheadMs !== null
+							? (playheadMs - selected.start_time_ms) / 1_000
+							: 0}
+						durationSeconds={(selected?.duration_ms ?? 0) / 1_000}
+						disabled={!video || scrubbing}
+						fullscreenTarget={recordedPlayer}
+						ontoggleplay={toggleTransport}
+						ontogglemute={togglePlaybackMute}
+						onskip={skip}
+						onseek={(seconds) => {
+							if (!selected) return;
+							seekToTimestamp(
+								Math.min(selected.end_time_ms - 1, selected.start_time_ms + seconds * 1_000),
+								playing
+							);
+						}}
+						onvolumechange={(volume) => (playbackVolume = volume)}
+						onratechange={setPlaybackSpeed}
+					/>
 				</section>
 
 				{#if mobilePortrait}
@@ -2473,6 +2499,20 @@
 {/if}
 
 <style>
+	[data-keep-player]:fullscreen {
+		display: flex;
+		width: 100%;
+		height: 100%;
+		padding: 1rem;
+		background: var(--background);
+	}
+
+	[data-keep-player]:fullscreen > [data-keep-media-frame] {
+		min-height: 0;
+		flex: 1;
+		aspect-ratio: auto;
+	}
+
 	@media (min-width: 48rem) {
 		.keep-view {
 			display: grid;

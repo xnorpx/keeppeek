@@ -42,7 +42,11 @@ test('compares at most eight cameras on one shared recording clock', async ({ pa
 		'aria-pressed',
 		'true'
 	);
-	await expect(page.locator('video[controls]')).toBeVisible();
+	const player = page.getByRole('region', { name: 'Recorded video player' });
+	await expect(player.locator('video')).toBeVisible();
+	await expect(player.getByRole('group', { name: 'Playback controls', exact: true })).toBeVisible();
+	await expect(player.getByRole('button', { name: /^(Play|Pause) recording$/ })).toBeEnabled();
+	await expect(player.getByRole('button', { name: 'Digital zoom in', exact: true })).toBeEnabled();
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);

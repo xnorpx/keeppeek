@@ -1,6 +1,6 @@
 # Implementation Plan: Validated Backup, Restore, and Migration
 
-Current work: [issue #121 event workflow](event-workflow.md). The completed plan below is retained.
+Current work: [issue #118 digital zoom and pan](digital-zoom.md). The completed plan below is retained.
 
 ## Superseding contract
 

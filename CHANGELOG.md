@@ -4,6 +4,9 @@
 
 ### Added
 
+- Add accessible, local-only digital zoom and pan to focused Peek video, Keep playback, and event
+  detail images, with bounded gestures, aligned overlays, unscaled playback controls, and a user
+  book chapter (#118).
 - Add durable per-reviewer event review/dismissal, shared revisioned bookmarks and notes, explicit
   visible/selected bulk review with undo, authoritative workflow filters/counts, retained bookmark
   references, and source-bookmark export relationships through `keeppeek.event-workflow.v1`.

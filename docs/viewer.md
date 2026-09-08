@@ -106,6 +106,24 @@ selected camera on the device and falls back to the first available camera.
 
 ## Search, scrub, and play stored media
 
+### Local digital inspection
+
+Focused live video, recorded playback, and canonical event detail images share a client-owned
+viewport. It fits decoded dimensions, bounds scale to 1x through 8x, and clamps translation to the
+fitted media rectangle. Image-coordinate overlays belong inside the transformed layer; controls
+and diagnostics remain outside it. Compact wall tiles and filmstrip items do not install gestures.
+
+Two active pointers and one pending animation frame bound gesture state and rendering work. Pan
+does not publish scale changes. Camera, recording, and canonical image identity changes reset the
+transform without storing a crop. Ordinary playback progress does not reset it or replace the media
+element. Alt-wheel is the only wheel zoom policy; browser Control/Command shortcuts remain intact.
+
+Digital inspection sends no PTZ, subscription, seek, or export commands. Keep's capture-phase
+keyboard handler yields arrow keys to an active digital pan before frame stepping. Playback
+controls remain unscaled and preserve the existing transport actions. The
+[digital zoom book chapter](../book/src/digital-zoom.md) documents the user interactions and reset
+rules.
+
 ### Recording timeline view
 
 The recording view is a persistent review workspace, not a list of recording files. The player,

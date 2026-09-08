@@ -37,16 +37,26 @@ export default defineConfig({
 			'@lucide/svelte/icons/link',
 			'@lucide/svelte/icons/loader-circle',
 			'@lucide/svelte/icons/log-out',
+			'@lucide/svelte/icons/maximize',
+			'@lucide/svelte/icons/minimize',
 			'@lucide/svelte/icons/package',
+			'@lucide/svelte/icons/pause',
 			'@lucide/svelte/icons/paw-print',
+			'@lucide/svelte/icons/play',
 			'@lucide/svelte/icons/plus',
 			'@lucide/svelte/icons/refresh-cw',
+			'@lucide/svelte/icons/rotate-ccw',
 			'@lucide/svelte/icons/rotate-cw',
+			'@lucide/svelte/icons/scan',
 			'@lucide/svelte/icons/scan-line',
 			'@lucide/svelte/icons/shield-off',
 			'@lucide/svelte/icons/triangle-alert',
 			'@lucide/svelte/icons/trash-2',
-			'@lucide/svelte/icons/user-round'
+			'@lucide/svelte/icons/user-round',
+			'@lucide/svelte/icons/volume-2',
+			'@lucide/svelte/icons/volume-x',
+			'@lucide/svelte/icons/zoom-in',
+			'@lucide/svelte/icons/zoom-out'
 		]
 	},
 	server: {
