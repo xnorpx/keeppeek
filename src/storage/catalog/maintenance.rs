@@ -8,9 +8,21 @@ use super::{BUSY_TIMEOUT, RecordingCatalogHandle, SearchCommand, to_u64};
 use crate::storage::long_term::inspection::{IDENTITY_BYTES_MAX, Identity};
 use std::{fmt, sync::mpsc, time::Instant};
 
+pub mod evidence;
 pub mod jobs;
+pub mod reconciliation;
 
 pub(super) enum ReadRequest {
+    Reconcile {
+        deadline: Instant,
+        reply: mpsc::SyncSender<anyhow::Result<reconciliation::Inputs>>,
+    },
+    Jobs {
+        actor: String,
+        after: String,
+        deadline: Instant,
+        reply: mpsc::SyncSender<anyhow::Result<Vec<jobs::Job>>>,
+    },
     Snapshot {
         scope: Scope,
         deadline: Instant,
@@ -26,6 +38,21 @@ pub(super) enum ReadRequest {
 
 pub(super) fn read(connection: &turso::Connection, request: ReadRequest) {
     match request {
+        ReadRequest::Reconcile { deadline, reply } => {
+            let _ = reply.send(pollster::block_on(reconciliation::read(
+                connection, deadline,
+            )));
+        }
+        ReadRequest::Jobs {
+            actor,
+            after,
+            deadline,
+            reply,
+        } => {
+            let result =
+                pollster::block_on(jobs::history::read(connection, &actor, &after, deadline));
+            let _ = reply.send(result);
+        }
         ReadRequest::Snapshot {
             scope,
             deadline,
@@ -116,7 +143,7 @@ impl FileIdentity {
         Identity::parse(value).map(Self::from_observed)
     }
 
-    fn from_observed(identity: Identity) -> Self {
+    pub(in crate::storage) fn from_observed(identity: Identity) -> Self {
         Self(identity.fingerprint())
     }
 }
@@ -150,6 +177,7 @@ pub struct Snapshot {
     pub revision: u64,
     pub recordings: Vec<Recording>,
     pub catalog_bytes: u64,
+    pub evidence: evidence::Evidence,
 }
 
 impl RecordingCatalogHandle {
@@ -250,11 +278,13 @@ async fn read_snapshot(
             .ok_or_else(|| anyhow::anyhow!("maintenance byte count overflow"))
     })?;
     check_deadline(deadline)?;
+    let evidence = evidence::read(connection, &scope, &recordings, deadline).await?;
     Ok(Snapshot {
         scope,
         revision,
         recordings,
         catalog_bytes,
+        evidence,
     })
 }
 
@@ -405,6 +435,32 @@ mod tests {
         sync::mpsc,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn snapshot_retains_bookmark_revision_and_reports_missing_coverage() {
+        pollster::block_on(async {
+            let connection = test_connection().await;
+            insert_recordings(&connection, 1).await;
+            connection.execute_batch(
+                "INSERT INTO event_bookmarks (source_id, event_id, active, note, revision,
+                 created_by, created_at_ms, updated_by, updated_at_ms, event_start_ms, event_kind)
+                 VALUES ('front', 'event-selected', 1, '', 1, 'admin', 0, 'admin', 0, 500, 'motion'),
+                        ('other', 'event-unrelated', 1, '', 1, 'admin', 0, 'admin', 0, 500, 'motion');"
+            ).await.unwrap();
+            let result = snapshot(&connection, recording_scope(), deadline())
+                .await
+                .unwrap();
+            assert_eq!(result.evidence.bookmarks, ["event-selected"]);
+            assert_eq!(result.evidence.bookmark_revision, 2);
+            assert_eq!(
+                result.evidence.gaps,
+                [super::evidence::Interval {
+                    start_ms: 0,
+                    end_ms: 1_000
+                }]
+            );
+        });
+    }
 
     #[test]
     fn file_identity_fingerprints_are_canonical_redacted_and_bounded() {
@@ -690,6 +746,11 @@ mod tests {
                     revision: 42,
                     recordings: Vec::new(),
                     catalog_bytes: 0,
+                    evidence: super::evidence::Evidence {
+                        bookmark_revision: 0,
+                        bookmarks: Vec::new(),
+                        gaps: Vec::new(),
+                    },
                 }))
                 .unwrap();
         });

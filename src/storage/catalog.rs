@@ -65,7 +65,8 @@ const RESOLVE_EVENT_KEYFRAME_SQL: &str = "SELECT l.event_id, l.stream_id, e.star
              ON f.recording_id = l.recording_id
             AND f.sequence = l.fragment_sequence
          JOIN recording_files AS r ON r.id = l.recording_id
-         WHERE l.event_id = ?1 AND l.stream_id = ?2";
+                 WHERE l.event_id = ?1 AND l.stream_id = ?2
+                     AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EventPublicationIdentity {
@@ -350,6 +351,25 @@ struct LegacyRecording {
 }
 
 enum Command {
+    ReconcileMissing {
+        expected: maintenance::reconciliation::Row,
+        revision: u64,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
+    DeletionWork {
+        actor: String,
+        id: String,
+        action: maintenance::jobs::execution::Action,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<maintenance::jobs::execution::Report>>,
+    },
+    ClaimRecordings {
+        actor: String,
+        id: String,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<Vec<maintenance::jobs::claims::Claim>>>,
+    },
     DeletionIntent {
         request: maintenance::jobs::Request,
         reply: SyncSender<anyhow::Result<maintenance::jobs::Job>>,
@@ -1442,6 +1462,52 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::ReconcileMissing {
+                expected,
+                revision,
+                deadline,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(
+                    maintenance::reconciliation::remove_missing(
+                        &connection,
+                        &expected,
+                        revision,
+                        deadline,
+                    ),
+                ));
+            }
+            Command::DeletionWork {
+                actor,
+                id,
+                action,
+                deadline,
+                reply,
+            } => {
+                let result = pollster::block_on(maintenance::jobs::execution::execute(
+                    &connection,
+                    &intent_epoch,
+                    &actor,
+                    &id,
+                    action,
+                    deadline,
+                ));
+                let _ = reply.send(result);
+            }
+            Command::ClaimRecordings {
+                actor,
+                id,
+                deadline,
+                reply,
+            } => {
+                let result = pollster::block_on(maintenance::jobs::claims::reserve(
+                    &connection,
+                    &actor,
+                    &id,
+                    deadline,
+                ));
+                let _ = reply.send(result);
+            }
             Command::DeletionIntent { request, reply } => {
                 let _ = reply.send(pollster::block_on(maintenance::jobs::execute(
                     &connection,
@@ -1827,6 +1893,7 @@ async fn legacy_recordings_without_keyframes(
                                                 WHERE f.recording_id = r.id AND k.recording_id IS NULL
                                         )
              FROM recording_files AS r
+             WHERE NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
              ORDER BY r.started_at_ms, r.id",
             (),
         )
@@ -2195,6 +2262,8 @@ async fn claim_cleanup_candidate(
                 "SELECT id, path, file_bytes, cleanup_pending
                  FROM recording_files
                  WHERE finalized = 1 AND protected = 0
+                   AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims
+                                   WHERE recording_id = recording_files.id AND active = 1)
                  ORDER BY cleanup_pending DESC, started_at_ms, id
                  LIMIT 1",
                 (),
@@ -3137,6 +3206,7 @@ async fn fragments_in_range(
              FROM recording_fragments AS f
              JOIN recording_files AS r ON r.id = f.recording_id
              WHERE r.stream_id = ?1
+                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND f.start_ms < ?3
                AND f.start_ms + f.duration_ms > ?2
              ORDER BY f.start_ms, f.sequence",
@@ -3171,6 +3241,7 @@ pub(super) async fn media_fragments_in_range(
              FROM recording_fragments AS f
              JOIN recording_files AS r ON r.id = f.recording_id
              WHERE r.stream_id = ?1
+                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND f.start_ms < ?3
                AND f.start_ms + f.duration_ms > ?2
              ORDER BY f.start_ms, f.sequence",
@@ -3211,6 +3282,7 @@ async fn availability_ranges_in_range(
                         AS bucket_end
              FROM recording_files AS r
              WHERE r.stream_id = ?1
+                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND r.started_at_ms < ?3
                AND COALESCE(r.ended_at_ms, ?3) > ?2
          )
@@ -3225,6 +3297,7 @@ async fn availability_ranges_in_range(
              FROM recording_fragments AS f
              JOIN recording_files AS r ON r.id = f.recording_id
              WHERE r.stream_id = ?1
+                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND r.started_at_ms < ?3
                AND COALESCE(r.ended_at_ms, ?3) > ?2
                AND f.start_ms < ?3
@@ -5845,6 +5918,7 @@ async fn resolve_event_preview_batch(
                              ON k.recording_id = f.recording_id
                             AND k.fragment_sequence = f.sequence
                          WHERE f.start_ms < q.end_time_ms
+                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                              AND f.start_ms + f.duration_ms > q.start_time_ms
                          UNION ALL
                          SELECT q.request_index, q.event_id, q.stream_id, q.event_time_ms,
@@ -5859,6 +5933,7 @@ async fn resolve_event_preview_batch(
                              ON k.recording_id = f.recording_id
                             AND k.fragment_sequence = f.sequence
                          WHERE f.start_ms < q.end_time_ms
+                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                              AND f.start_ms + f.duration_ms > q.start_time_ms
                  ),
                  ranked AS (
@@ -5959,6 +6034,7 @@ async fn resolve_media_object(
                ON k.recording_id = f.recording_id
               AND k.fragment_sequence = f.sequence
              WHERE r.id = ?1 AND f.sequence = ?2
+                             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = r.id AND active = 1)
                AND (
                    (r.source_id = ?3 AND r.logical_stream_id = ?4)
                    OR (

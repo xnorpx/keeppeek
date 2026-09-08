@@ -10,6 +10,9 @@ use crate::storage::catalog::{
 use sha2::{Digest, Sha256};
 use std::{fmt, sync::mpsc, time::Instant};
 
+pub mod claims;
+pub mod execution;
+pub(super) mod history;
 mod ledger;
 pub mod preflight;
 
@@ -105,6 +108,10 @@ impl fmt::Debug for Nonce {
 #[derive(Debug, Clone)]
 pub enum Action {
     Prepare(Intent),
+    BindExports {
+        id: String,
+        export_ids: Vec<String>,
+    },
     Read {
         id: String,
     },
@@ -131,6 +138,7 @@ pub struct Job {
     pub confirmed_at_ms: Option<i64>,
     pub cancelled_at_ms: Option<i64>,
     pub snapshot: Snapshot,
+    pub export_ids: Vec<String>,
     /// Contains one entry per confirmed recording, in snapshot order; otherwise empty.
     pub objects: Vec<Object>,
     /// Returned only by preparation; persistence retains its SHA-256 digest instead.
@@ -177,6 +185,7 @@ pub(in crate::storage::catalog) struct Request {
 pub(in crate::storage::catalog) struct Epoch {
     id: String,
     origin: Instant,
+    executors: std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<()>>>,
 }
 
 impl Epoch {
@@ -184,6 +193,7 @@ impl Epoch {
         Self {
             id: format!("{:032x}", rand::random::<u128>()),
             origin: Instant::now(),
+            executors: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -256,11 +266,20 @@ fn validate_action(actor: &str, action: &Action) -> anyhow::Result<()> {
             intent.scope.validate().map_err(|_| Failure::Invalid)?;
             i64::try_from(intent.expected_revision).map_err(|_| Failure::Invalid)?;
         }
-        Action::Read { id } | Action::Cancel { id } | Action::Confirm { id, .. } => {
+        Action::Read { id }
+        | Action::Cancel { id }
+        | Action::Confirm { id, .. }
+        | Action::BindExports { id, .. } => {
             anyhow::ensure!(
                 id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
                 Failure::Invalid
             );
+        }
+    }
+    if let Action::BindExports { export_ids, .. } = action {
+        anyhow::ensure!(export_ids.len() <= super::MAX_RECORDINGS, Failure::Invalid);
+        for id in export_ids {
+            validate_identifier(id).map_err(|_| Failure::Invalid)?;
         }
     }
     Ok(())
@@ -310,6 +329,15 @@ pub(in crate::storage::catalog) async fn initialize(
             );",
         )
         .await?;
+    execution::initialize(connection).await?;
+    claims::initialize(connection).await?;
+    crate::storage::catalog::ensure_column(
+        connection,
+        "recording_maintenance_intents",
+        "export_ids_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    .await?;
     Ok(())
 }
 
@@ -363,6 +391,25 @@ async fn transition(
     now: &Moment,
 ) -> anyhow::Result<Job> {
     match request.action {
+        Action::BindExports { id, export_ids } => {
+            let (job, authorization) =
+                load(connection, &request.actor, &id, request.deadline).await?;
+            anyhow::ensure!(
+                job.state == State::Prepared && plan_is_live(&job, &authorization, now),
+                Failure::InvalidState
+            );
+            let serialized = serde_json::to_string(&export_ids)?;
+            anyhow::ensure!(serialized.len() <= 16 * 1024, Failure::Invalid);
+            connection
+                .execute(
+                    "UPDATE recording_maintenance_intents SET export_ids_json = ?1 WHERE id = ?2",
+                    turso::params![serialized, id.as_str()],
+                )
+                .await?;
+            Ok(load(connection, &request.actor, &id, request.deadline)
+                .await?
+                .0)
+        }
         Action::Prepare(intent) => {
             prepare(
                 connection,
@@ -423,6 +470,7 @@ async fn prepare(
     validate_snapshot(&snapshot, intent.expected_revision)?;
     anyhow::ensure!(snapshot.scope == intent.scope, Failure::Invalid);
     check_revision(connection, intent.expected_revision).await?;
+    check_evidence(connection, &snapshot).await?;
     prune(connection, now, deadline).await?;
     check_quota(connection, true, MAX_PLANS).await?;
     let serialized = serde_json::to_string(&snapshot)?;
@@ -459,31 +507,57 @@ async fn prune(
     now: &Moment,
     deadline: Instant,
 ) -> anyhow::Result<()> {
-    let expired = "(state = 'prepared' AND
-        (expires_at_ms <= ?1 OR epoch != ?3 OR expires_after_ms <= ?4)) OR
-        (state = 'cancelled' AND cancelled_at_ms <= ?2)";
-    let statements = [
-        format!(
-            "DELETE FROM recording_maintenance_objects WHERE job_id IN
-            (SELECT id FROM recording_maintenance_intents WHERE {expired})"
-        ),
-        format!("DELETE FROM recording_maintenance_intents WHERE {expired}"),
-    ];
-    for statement in statements {
+    let ids = prunable_ids(connection, now, deadline).await?;
+    for (table, column) in [
+        ("recording_maintenance_claims", "job_id"),
+        ("recording_maintenance_execution", "job_id"),
+        ("recording_maintenance_objects", "job_id"),
+        ("recording_maintenance_intents", "id"),
+    ] {
         check_deadline(deadline)?;
-        connection
-            .execute(
-                &statement,
-                turso::params![
-                    now.utc_ms,
-                    now.utc_ms.saturating_sub(CANCEL_RETENTION_MS),
-                    now.epoch.as_str(),
-                    now.elapsed_ms
-                ],
-            )
+        let mut statement = connection
+            .prepare(&format!("DELETE FROM {table} WHERE {column} = ?1"))
             .await?;
+        for id in &ids {
+            check_deadline(deadline)?;
+            statement.execute(turso::params![id.as_str()]).await?;
+        }
     }
     Ok(())
+}
+
+async fn prunable_ids(
+    connection: &turso::Connection,
+    now: &Moment,
+    deadline: Instant,
+) -> anyhow::Result<Vec<String>> {
+    let mut rows = connection.query(
+        "SELECT id FROM recording_maintenance_intents AS jobs
+         WHERE ((state = 'prepared' AND (expires_at_ms <= ?1 OR epoch != ?3 OR expires_after_ms <= ?4))
+             OR (state = 'cancelled' AND cancelled_at_ms <= ?2)
+             OR (state = 'queued'
+                 AND EXISTS (SELECT 1 FROM recording_maintenance_execution WHERE job_id = jobs.id)
+                 AND NOT EXISTS (SELECT 1 FROM recording_maintenance_objects AS objects
+                     LEFT JOIN recording_maintenance_execution AS execution
+                     ON execution.job_id = objects.job_id AND execution.recording_id = objects.recording_id
+                     WHERE objects.job_id = jobs.id AND (execution.phase IS NULL OR execution.phase != 'deleted'))
+                 AND (SELECT MAX(changed_at_ms) FROM recording_maintenance_execution WHERE job_id = jobs.id) <= ?2))
+             AND NOT EXISTS (SELECT 1 FROM recording_maintenance_execution
+                 WHERE job_id = jobs.id AND phase NOT IN ('deleted', 'cancelled'))
+         ORDER BY id LIMIT ?5",
+        turso::params![now.utc_ms, now.utc_ms.saturating_sub(CANCEL_RETENTION_MS),
+            now.epoch.as_str(), now.elapsed_ms, MAX_PLANS + MAX_JOBS + 1],
+    ).await?;
+    let mut ids = Vec::new();
+    while let Some(row) = rows.next().await? {
+        check_deadline(deadline)?;
+        anyhow::ensure!(
+            ids.len() < usize::try_from(MAX_PLANS + MAX_JOBS)?,
+            Failure::Invalid
+        );
+        ids.push(row.get(0)?);
+    }
+    Ok(ids)
 }
 
 async fn check_revision(connection: &turso::Connection, revision: u64) -> anyhow::Result<()> {
@@ -525,7 +599,8 @@ async fn load(
 ) -> anyhow::Result<(Job, Authorization)> {
     let mut rows = connection.query(
         "SELECT state, reason, revision, nonce_hash, snapshot_json, created_at_ms, expires_at_ms,
-            confirmed_at_ms, cancelled_at_ms, epoch, expires_after_ms
+            confirmed_at_ms, cancelled_at_ms, epoch, expires_after_ms,
+            CASE WHEN length(CAST(export_ids_json AS BLOB)) <= 16384 THEN export_ids_json END
          FROM recording_maintenance_intents WHERE id = ?1 AND actor = ?2",
         turso::params![id, actor],
     ).await?;
@@ -546,6 +621,10 @@ async fn load(
     let revision = u64::try_from(row.get::<i64>(2)?).map_err(|_| Failure::Invalid)?;
     let snapshot: Snapshot = serde_json::from_str(&serialized).map_err(|_| Failure::Invalid)?;
     validate_snapshot(&snapshot, revision)?;
+    let export_ids: Vec<String> =
+        serde_json::from_str(&row.get::<Option<String>>(11)?.ok_or(Failure::Invalid)?)
+            .map_err(|_| Failure::Invalid)?;
+    anyhow::ensure!(export_ids.len() <= super::MAX_RECORDINGS, Failure::Invalid);
     let (mut job, authorization) = (
         Job {
             id: id.to_owned(),
@@ -558,6 +637,7 @@ async fn load(
             confirmed_at_ms: row.get(7)?,
             cancelled_at_ms: row.get(8)?,
             snapshot,
+            export_ids,
             objects: Vec::new(),
             confirmation: None,
         },
@@ -593,6 +673,7 @@ async fn confirm(
     anyhow::ensure!(job.state == State::Prepared, Failure::InvalidState);
     anyhow::ensure!(plan_is_live(&job, &authorization, now), Failure::Expired);
     check_revision(connection, revision).await?;
+    check_evidence(connection, &job.snapshot).await?;
     check_quota(connection, false, MAX_JOBS).await?;
     ledger::enqueue(connection, &job, deadline).await?;
     connection.execute(
@@ -608,6 +689,14 @@ fn plan_is_live(job: &Job, authorization: &Authorization, now: &Moment) -> bool 
         && now.elapsed_ms < authorization.expires_after_ms
         && now.utc_ms >= job.created_at_ms
         && now.utc_ms < job.expires_at_ms
+}
+
+async fn check_evidence(connection: &turso::Connection, snapshot: &Snapshot) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        super::evidence::revision(connection).await? == snapshot.evidence.bookmark_revision,
+        Failure::Conflict
+    );
+    Ok(())
 }
 
 async fn cancel(
@@ -630,6 +719,8 @@ async fn cancel(
     if job.state == State::Prepared {
         check_quota(connection, false, MAX_JOBS).await?;
     }
+    execution::cancel_unstarted(connection, id).await?;
+    claims::release(connection, id).await?;
     connection
         .execute(
             "UPDATE recording_maintenance_objects SET state = 'cancelled' WHERE job_id = ?1",
