@@ -492,6 +492,10 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Build Home Assistant card from clean checkout
+        run: |
+          test ! -e .svelte-kit
+          bun run build:home-assistant
       - name: Run static UI quality checks
         run: bun run quality:static
       - name: Build production UI
