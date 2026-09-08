@@ -55,7 +55,7 @@ pub(super) fn validate_directory(directory: &Dir, private: bool) -> io::Result<(
             Some(&mut filesystem),
         )
     }
-    .map_err(io::Error::other)?;
+    .map_err(|error| operation_error("query volume", error))?;
     let name = String::from_utf16_lossy(
         &filesystem[..filesystem
             .iter()
@@ -127,7 +127,7 @@ fn child_name(parent: &Dir, name: &OsStr) -> io::Result<Vec<u16>> {
 fn user_sid() -> io::Result<Vec<usize>> {
     let mut token = HANDLE::default();
     unsafe { OpenProcessToken(GetCurrentProcess(), Security::TOKEN_QUERY, &mut token) }
-        .map_err(io::Error::other)?;
+        .map_err(|error| operation_error("open process token", error))?;
     let token = unsafe { OwnedHandle::from_raw_handle(token.0) };
     let mut buffer = vec![0_usize; 128];
     let mut written = 0;
@@ -140,7 +140,7 @@ fn user_sid() -> io::Result<Vec<usize>> {
             &mut written,
         )
     }
-    .map_err(io::Error::other)?;
+    .map_err(|error| operation_error("query token user", error))?;
     if usize::try_from(written).unwrap() < mem::size_of::<Security::TOKEN_USER>() {
         return Err(super::super::denied());
     }
@@ -176,7 +176,7 @@ fn validate_security(object: HANDLE, private: bool) -> io::Result<()> {
         )
     }
     .ok()
-    .map_err(io::Error::other)?;
+    .map_err(|error| operation_error("query security descriptor", error))?;
     let allocation = Allocation(descriptor.0);
     if acl.is_null() || owner.0.is_null() {
         return Err(super::super::denied());
@@ -185,7 +185,7 @@ fn validate_security(object: HANDLE, private: bool) -> io::Result<()> {
     let mut control = 0;
     let mut revision = 0;
     unsafe { Security::GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) }
-        .map_err(io::Error::other)?;
+        .map_err(|error| operation_error("query security control", error))?;
     if private && control & Security::SE_DACL_PROTECTED.0 == 0 {
         return Err(super::super::denied());
     }
@@ -319,7 +319,7 @@ pub(super) fn rename(file: &File, directory: &Dir) -> io::Result<()> {
             u32::try_from(bytes).unwrap(),
         )
     }
-    .map_err(io::Error::other)
+    .map_err(|error| operation_error("rename selected handle", error))
 }
 
 pub(super) fn remove(file: File) -> io::Result<()> {
@@ -351,5 +351,48 @@ pub(super) fn sync(directory: &Dir) -> io::Result<()> {
         .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
         .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0);
-    directory.open_with(".", &options)?.sync_all()
+    directory
+        .open_with(".", &options)
+        .map_err(|error| {
+            io::Error::new(error.kind(), format!("open directory for flush: {error}"))
+        })?
+        .sync_all()
+        .map_err(|error| io::Error::new(error.kind(), format!("flush directory: {error}")))
+}
+
+fn operation_error(operation: &str, error: windows::core::Error) -> io::Error {
+    io::Error::other(format!("{operation}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ntfs_primitives_qualify_rename_flush_and_remove_the_selected_file() {
+        let root =
+            std::env::temp_dir().join(format!("keeppeek-ntfs-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir(&root).unwrap();
+        let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let result = (|| -> io::Result<()> {
+            validate_directory(&directory, false)?;
+            sync(&directory)?;
+            create_private(&directory, OsStr::new("staging"))?;
+            let staging = directory.open_dir("staging")?;
+            validate_directory(&staging, true)?;
+            directory.write("selected.mp4", [42; 8])?;
+            let selected = exclusive_file(&directory, OsStr::new("selected.mp4"))?;
+            rename(&selected, &staging)?;
+            sync(&directory)?;
+            sync(&staging)?;
+            assert_eq!(staging.read(super::super::STAGED_FILE)?, [42; 8]);
+            remove(selected)?;
+            sync(&staging)?;
+            assert!(!staging.try_exists(super::super::STAGED_FILE)?);
+            Ok(())
+        })();
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+        result.unwrap();
+    }
 }
