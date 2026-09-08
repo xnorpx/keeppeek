@@ -249,7 +249,7 @@ impl MediumTermWriter {
                 }),
             });
         }
-        let file = BufWriter::with_capacity(self.write_buffer_bytes, File::create(&self.path)?);
+        let file = BufWriter::with_capacity(self.write_buffer_bytes, File::create_new(&self.path)?);
         let writer = mp4::FragmentedMp4Writer::write_start(file, &mp4_config, &track_configs)
             .map_err(mp4_err)?;
         let initialization = writer.initialization();
@@ -721,6 +721,27 @@ mod tests {
         io::{Read, Seek, SeekFrom},
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn writer_creation_preserves_an_existing_active_path() {
+        let root = std::env::temp_dir().join(format!("keeppeek-writer-{}", uuid::Uuid::new_v4()));
+        let started_at = Instant::now();
+        let writer = MediumTermWriter::create(&root, "camera/sub", started_at, 8_192).unwrap();
+        std::fs::write(&writer.path, b"unowned interrupted data").unwrap();
+
+        let error = writer
+            .init_mp4(&[video_frame(started_at, Duration::ZERO)])
+            .err();
+
+        assert!(
+            std::fs::read(&writer.path).unwrap() == b"unowned interrupted data",
+            "writer creation must preserve all pre-existing bytes"
+        );
+        assert_eq!(error.unwrap().kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(!writer.final_path.exists());
+        drop(writer);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn video_frame(received_at: Instant, timestamp: Duration) -> RecordingFrame {
         RecordingFrame {
