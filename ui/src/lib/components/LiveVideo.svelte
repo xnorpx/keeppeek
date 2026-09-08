@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, type Snippet } from 'svelte';
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { LiveQuality } from '$lib/types';
@@ -84,6 +84,7 @@
 		stream: 'main' | 'sub';
 		quality?: LiveQuality;
 		digitalZoom?: boolean;
+		focusedControls?: Snippet;
 		matchVideoAspectRatio?: boolean;
 		showDiagnostics?: boolean;
 		diagnosticsLabel?: string;
@@ -116,6 +117,7 @@
 		stream,
 		quality,
 		digitalZoom = false,
+		focusedControls,
 		matchVideoAspectRatio = false,
 		showDiagnostics = true,
 		diagnosticsLabel,
@@ -547,6 +549,10 @@
 		aspectRatio={videoAspectRatio ?? 16 / 9}
 		onzoomchange={(scale) => (digitalZoomScale = scale)}
 	>
+		{#snippet toolbar()}
+			{@render focusedControls?.()}
+			{@render diagnosticsControls()}
+		{/snippet}
 		<video
 			bind:this={video}
 			autoplay
@@ -590,189 +596,204 @@
 			/>
 		{/if}
 	</FocusedMediaViewport>
-	{#if showDiagnostics}
-		<Popover.Root bind:open={diagnosticsOpen}>
-			<div
-				data-live-video-camera-controls={cameraHref ? '' : undefined}
-				class="absolute right-2 z-30 flex max-w-[calc(100%-1rem)] items-stretch justify-end {diagnosticsPosition ===
-				'bottom-right'
-					? 'bottom-2'
-					: 'top-2'}"
-			>
-				{#if cameraHref && diagnosticsLabel}
-					<!-- eslint-disable svelte/no-navigation-without-resolve -->
-					<a
-						href={cameraHref}
-						class="grid h-[26px] w-7 shrink-0 place-items-center rounded-l-sm border border-r-0 border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none"
-						aria-label={`Open ${diagnosticsLabel} camera`}
-						title={`Open ${diagnosticsLabel} camera`}
-					>
-						<CameraIcon class="size-3.5" />
-					</a>
-					<!-- eslint-enable svelte/no-navigation-without-resolve -->
-				{/if}
-				<Popover.Trigger
-					data-peek-camera-label={diagnosticsLabel ?? undefined}
-					class="min-w-0 border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {cameraHref &&
-					diagnosticsLabel
-						? 'rounded-r-sm'
-						: 'rounded-sm'} {diagnosticsLabel
-						? 'inline-flex h-[26px] items-center gap-2 px-2'
-						: 'grid size-6 place-items-center'} {diagnosticsOpen
-						? 'bg-black/90 text-white ring-1 ring-white/35'
-						: ''}"
-					aria-label={diagnosticsAccessibleLabel}
-				>
-					{#if diagnosticsLabel}
-						<span class="size-1.5 shrink-0 rounded-full {diagnosticsStatusClass}"></span>
-						<span class="max-w-36 truncate text-xs font-medium">{diagnosticsLabel}</span>
-						<span class="h-3.5 w-px shrink-0 bg-white/15"></span>
-					{/if}
-					<InfoIcon class="size-3.5 shrink-0" />
-				</Popover.Trigger>
-			</div>
-			<Popover.Portal>
-				<Popover.Content
-					role="dialog"
-					side="left"
-					align="start"
-					sideOffset={6}
-					collisionPadding={8}
-					class="z-50 max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-white/15 bg-zinc-950/97 p-3 text-left text-[11px] text-white shadow-2xl backdrop-blur-md"
-					aria-label={diagnosticsAccessibleLabel}
-					trapFocus={false}
-					onEscapeKeydown={handleDiagnosticsEscape}
-				>
-					<div data-web-rtc-diagnostics={cameraId}>
-						<div class="mb-2 flex items-center justify-between gap-3 border-b border-white/10 pb-2">
-							<div class="flex items-center gap-2">
-								<span
-									class="size-1.5 rounded-full {status === 'live'
-										? 'bg-emerald-400'
-										: 'bg-amber-400'}"
-								></span>
-								<span class="font-semibold text-white"
-									>{diagnosticsLabel ? 'Camera info' : 'WebRTC'}</span
-								>
-							</div>
-							<span class="font-mono text-[10px] text-white/45">#{sessionId ?? '—'}</span>
-						</div>
-
-						<dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1.5">
-							{#if diagnosticsRecording}
-								<dt class="text-white/45">Recording</dt>
-								<dd
-									data-web-rtc-recording={cameraId}
-									data-recording-state={diagnosticsRecording.state}
-									class="flex max-w-44 items-center justify-end gap-1.5 text-right font-medium"
-								>
-									<span
-										class="size-1.5 shrink-0 rounded-full {recordingIndicatorClass(
-											diagnosticsRecording.state
-										)}"
-									></span>
-									<span>{diagnosticsRecording.detail}</span>
-								</dd>
-								<dt class="text-white/45">Camera session</dt>
-								<dd data-camera-session-duration={cameraId} class="font-mono">
-									{formatDuration(diagnosticsRecording.sessionDurationMs)}
-								</dd>
-								<dt class="text-white/45">Main recorded</dt>
-								<dd data-main-recorded-duration={cameraId} class="font-mono">
-									{formatDuration(diagnosticsRecording.mainDurationMs)}
-								</dd>
-								<dt class="text-white/45">Sub recorded</dt>
-								<dd data-sub-recorded-duration={cameraId} class="font-mono">
-									{formatDuration(diagnosticsRecording.subDurationMs)}
-								</dd>
-								<dt class="text-white/45">Total recorded</dt>
-								<dd data-total-recorded-duration={cameraId} class="font-mono">
-									{formatDuration(diagnosticsRecording.totalDurationMs)}
-								</dd>
-								<div class="col-span-2 my-1 border-t border-white/10"></div>
-							{/if}
-							<dt class="text-white/45">Quality</dt>
-							<dd class="text-right font-medium capitalize">{requestedQuality} · {activeStream}</dd>
-							<dt class="text-white/45">Codec</dt>
-							<dd class="font-mono uppercase">{negotiatedCodec?.replace('video/', '') ?? '—'}</dd>
-							<dt class="text-white/45">Resolution</dt>
-							<dd class="font-mono">{resolution}</dd>
-							{#if digitalZoom}
-								<dt class="text-white/45">Digital zoom</dt>
-								<dd class="font-mono">{digitalZoomScale.toFixed(1)}x</dd>
-							{/if}
-							<dt class="text-white/45">Stream FPS</dt>
-							<dd class="font-mono">
-								{formatFramesPerSecond(diagnostics.streamFramesPerSecond)}
-							</dd>
-							<dt class="text-white/45">Decoded FPS</dt>
-							<dd class="font-mono">{formatFramesPerSecond(diagnostics.framesPerSecond)}</dd>
-							<dt class="text-white/45">Receive bitrate</dt>
-							<dd class="font-mono" data-web-rtc-metric="receive-bitrate">
-								{formatBitrate(diagnostics.receiveBitrateBps)}
-							</dd>
-							<dt class="text-white/45">Server capacity</dt>
-							<dd class="font-mono">{formatBitrate(estimatedBitrateBps)}</dd>
-
-							<div class="col-span-2 my-1 border-t border-white/10"></div>
-
-							<dt class="text-white/45">Packets received</dt>
-							<dd class="font-mono">{compactNumber.format(diagnostics.packetsReceived)}</dd>
-							<dt class="text-white/45">Packets lost</dt>
-							<dd class="font-mono {diagnostics.packetsLost > 0 ? 'text-amber-300' : ''}">
-								{packetLoss}
-							</dd>
-							<dt class="text-white/45">Jitter</dt>
-							<dd class="font-mono">{formatMilliseconds(diagnostics.jitterMs)}</dd>
-							<dt class="text-white/45">Jitter buffer</dt>
-							<dd class="font-mono">{formatMilliseconds(diagnostics.jitterBufferMs)}</dd>
-							<dt class="text-white/45">Round trip</dt>
-							<dd class="font-mono">{formatMilliseconds(diagnostics.roundTripTimeMs)}</dd>
-							<dt class="text-white/45">Feedback</dt>
-							<dd class="font-mono">{diagnostics.pliCount} PLI · {diagnostics.nackCount} NACK</dd>
-
-							<div class="col-span-2 my-1 border-t border-white/10"></div>
-
-							<dt class="text-white/45">Frames decoded</dt>
-							<dd class="font-mono">{compactNumber.format(diagnostics.framesDecoded)}</dd>
-							<dt class="text-white/45">Presented</dt>
-							<dd class="font-mono">
-								{diagnostics.presentedFramesPerSecond === null
-									? '—'
-									: `${diagnostics.presentedFramesPerSecond.toFixed(1)} fps`}
-							</dd>
-							<dt class="text-white/45">Keyframes decoded</dt>
-							<dd class="font-mono">{compactNumber.format(diagnostics.keyFramesDecoded)}</dd>
-							<dt class="text-white/45">RTC drops</dt>
-							<dd class="font-mono {diagnostics.rtcFramesDropped > 0 ? 'text-amber-300' : ''}">
-								{compactNumber.format(diagnostics.rtcFramesDropped)}
-							</dd>
-							<dt class="text-white/45">Render drops</dt>
-							<dd class="font-mono {diagnostics.renderFramesDropped > 0 ? 'text-amber-300' : ''}">
-								{compactNumber.format(diagnostics.renderFramesDropped)}
-							</dd>
-							<dt class="text-white/45">Decode time</dt>
-							<dd class="font-mono">{formatMilliseconds(diagnostics.averageDecodeTimeMs)}</dd>
-							<dt class="text-white/45">Freezes</dt>
-							<dd class="font-mono">
-								{diagnostics.freezeCount} · {diagnostics.totalFreezeDurationSeconds.toFixed(1)} s
-							</dd>
-							<dt class="text-white/45">Decoder</dt>
-							<dd
-								class="max-w-40 truncate text-right"
-								title={diagnostics.decoderImplementation ?? ''}
-							>
-								{diagnostics.decoderImplementation ??
-									'Browser'}{diagnostics.powerEfficientDecoder === true ? ' · HW' : ''}
-							</dd>
-							<dt class="text-white/45">Connection</dt>
-							<dd class="font-mono">{connectionState} · {iceConnectionState}</dd>
-						</dl>
-					</div>
-				</Popover.Content>
-			</Popover.Portal>
-		</Popover.Root>
+	{#if !digitalZoom}
+		{@render diagnosticsControls()}
 	{/if}
+	{#snippet diagnosticsControls()}
+		{#if showDiagnostics}
+			<Popover.Root bind:open={diagnosticsOpen}>
+				<div
+					data-live-video-camera-controls={cameraHref ? '' : undefined}
+					class="z-30 flex items-stretch justify-end {digitalZoom
+						? 'relative mr-2 shrink-0'
+						: `absolute right-2 max-w-[calc(100%-1rem)] ${diagnosticsPosition === 'bottom-right' ? 'bottom-2' : 'top-2'}`}"
+					style:height={digitalZoom
+						? 'calc(var(--focused-media-control-size, 1.75rem) + 4px)'
+						: undefined}
+				>
+					{#if cameraHref && diagnosticsLabel}
+						<!-- eslint-disable svelte/no-navigation-without-resolve -->
+						<a
+							href={cameraHref}
+							class="grid shrink-0 place-items-center rounded-l-sm border border-r-0 border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {digitalZoom
+								? 'h-full w-[var(--focused-media-control-size,1.75rem)]'
+								: 'h-[26px] w-7'}"
+							aria-label={`Open ${diagnosticsLabel} camera`}
+							title={`Open ${diagnosticsLabel} camera`}
+						>
+							<CameraIcon class="size-3.5" />
+						</a>
+						<!-- eslint-enable svelte/no-navigation-without-resolve -->
+					{/if}
+					<Popover.Trigger
+						data-peek-camera-label={diagnosticsLabel ?? undefined}
+						class="min-w-0 border border-white/15 bg-black/65 text-white/65 shadow-sm backdrop-blur-sm hover:bg-black/85 hover:text-white focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none {cameraHref &&
+						diagnosticsLabel
+							? 'rounded-r-sm'
+							: 'rounded-sm'} {digitalZoom
+							? 'inline-flex h-full min-w-[var(--focused-media-control-size,1.75rem)] items-center gap-2 px-2'
+							: diagnosticsLabel
+								? 'inline-flex h-[26px] items-center gap-2 px-2'
+								: 'grid size-6 place-items-center'} {diagnosticsOpen
+							? 'bg-black/90 text-white ring-1 ring-white/35'
+							: ''}"
+						aria-label={diagnosticsAccessibleLabel}
+					>
+						{#if diagnosticsLabel}
+							<span class="size-1.5 shrink-0 rounded-full {diagnosticsStatusClass}"></span>
+							<span class="max-w-36 truncate text-xs font-medium">{diagnosticsLabel}</span>
+							<span class="h-3.5 w-px shrink-0 bg-white/15"></span>
+						{/if}
+						<InfoIcon class="size-3.5 shrink-0" />
+					</Popover.Trigger>
+				</div>
+				<Popover.Portal>
+					<Popover.Content
+						role="dialog"
+						side="left"
+						align="start"
+						sideOffset={6}
+						collisionPadding={8}
+						class="z-50 max-h-[calc(100vh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-white/15 bg-zinc-950/97 p-3 text-left text-[11px] text-white shadow-2xl backdrop-blur-md"
+						aria-label={diagnosticsAccessibleLabel}
+						trapFocus={false}
+						onEscapeKeydown={handleDiagnosticsEscape}
+					>
+						<div data-web-rtc-diagnostics={cameraId}>
+							<div
+								class="mb-2 flex items-center justify-between gap-3 border-b border-white/10 pb-2"
+							>
+								<div class="flex items-center gap-2">
+									<span
+										class="size-1.5 rounded-full {status === 'live'
+											? 'bg-emerald-400'
+											: 'bg-amber-400'}"
+									></span>
+									<span class="font-semibold text-white"
+										>{diagnosticsLabel ? 'Camera info' : 'WebRTC'}</span
+									>
+								</div>
+								<span class="font-mono text-[10px] text-white/45">#{sessionId ?? '—'}</span>
+							</div>
+
+							<dl class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1.5">
+								{#if diagnosticsRecording}
+									<dt class="text-white/45">Recording</dt>
+									<dd
+										data-web-rtc-recording={cameraId}
+										data-recording-state={diagnosticsRecording.state}
+										class="flex max-w-44 items-center justify-end gap-1.5 text-right font-medium"
+									>
+										<span
+											class="size-1.5 shrink-0 rounded-full {recordingIndicatorClass(
+												diagnosticsRecording.state
+											)}"
+										></span>
+										<span>{diagnosticsRecording.detail}</span>
+									</dd>
+									<dt class="text-white/45">Camera session</dt>
+									<dd data-camera-session-duration={cameraId} class="font-mono">
+										{formatDuration(diagnosticsRecording.sessionDurationMs)}
+									</dd>
+									<dt class="text-white/45">Main recorded</dt>
+									<dd data-main-recorded-duration={cameraId} class="font-mono">
+										{formatDuration(diagnosticsRecording.mainDurationMs)}
+									</dd>
+									<dt class="text-white/45">Sub recorded</dt>
+									<dd data-sub-recorded-duration={cameraId} class="font-mono">
+										{formatDuration(diagnosticsRecording.subDurationMs)}
+									</dd>
+									<dt class="text-white/45">Total recorded</dt>
+									<dd data-total-recorded-duration={cameraId} class="font-mono">
+										{formatDuration(diagnosticsRecording.totalDurationMs)}
+									</dd>
+									<div class="col-span-2 my-1 border-t border-white/10"></div>
+								{/if}
+								<dt class="text-white/45">Quality</dt>
+								<dd class="text-right font-medium capitalize">
+									{requestedQuality} · {activeStream}
+								</dd>
+								<dt class="text-white/45">Codec</dt>
+								<dd class="font-mono uppercase">{negotiatedCodec?.replace('video/', '') ?? '—'}</dd>
+								<dt class="text-white/45">Resolution</dt>
+								<dd class="font-mono">{resolution}</dd>
+								{#if digitalZoom}
+									<dt class="text-white/45">Digital zoom</dt>
+									<dd class="font-mono">{digitalZoomScale.toFixed(1)}x</dd>
+								{/if}
+								<dt class="text-white/45">Stream FPS</dt>
+								<dd class="font-mono">
+									{formatFramesPerSecond(diagnostics.streamFramesPerSecond)}
+								</dd>
+								<dt class="text-white/45">Decoded FPS</dt>
+								<dd class="font-mono">{formatFramesPerSecond(diagnostics.framesPerSecond)}</dd>
+								<dt class="text-white/45">Receive bitrate</dt>
+								<dd class="font-mono" data-web-rtc-metric="receive-bitrate">
+									{formatBitrate(diagnostics.receiveBitrateBps)}
+								</dd>
+								<dt class="text-white/45">Server capacity</dt>
+								<dd class="font-mono">{formatBitrate(estimatedBitrateBps)}</dd>
+
+								<div class="col-span-2 my-1 border-t border-white/10"></div>
+
+								<dt class="text-white/45">Packets received</dt>
+								<dd class="font-mono">{compactNumber.format(diagnostics.packetsReceived)}</dd>
+								<dt class="text-white/45">Packets lost</dt>
+								<dd class="font-mono {diagnostics.packetsLost > 0 ? 'text-amber-300' : ''}">
+									{packetLoss}
+								</dd>
+								<dt class="text-white/45">Jitter</dt>
+								<dd class="font-mono">{formatMilliseconds(diagnostics.jitterMs)}</dd>
+								<dt class="text-white/45">Jitter buffer</dt>
+								<dd class="font-mono">{formatMilliseconds(diagnostics.jitterBufferMs)}</dd>
+								<dt class="text-white/45">Round trip</dt>
+								<dd class="font-mono">{formatMilliseconds(diagnostics.roundTripTimeMs)}</dd>
+								<dt class="text-white/45">Feedback</dt>
+								<dd class="font-mono">{diagnostics.pliCount} PLI · {diagnostics.nackCount} NACK</dd>
+
+								<div class="col-span-2 my-1 border-t border-white/10"></div>
+
+								<dt class="text-white/45">Frames decoded</dt>
+								<dd class="font-mono">{compactNumber.format(diagnostics.framesDecoded)}</dd>
+								<dt class="text-white/45">Presented</dt>
+								<dd class="font-mono">
+									{diagnostics.presentedFramesPerSecond === null
+										? '—'
+										: `${diagnostics.presentedFramesPerSecond.toFixed(1)} fps`}
+								</dd>
+								<dt class="text-white/45">Keyframes decoded</dt>
+								<dd class="font-mono">{compactNumber.format(diagnostics.keyFramesDecoded)}</dd>
+								<dt class="text-white/45">RTC drops</dt>
+								<dd class="font-mono {diagnostics.rtcFramesDropped > 0 ? 'text-amber-300' : ''}">
+									{compactNumber.format(diagnostics.rtcFramesDropped)}
+								</dd>
+								<dt class="text-white/45">Render drops</dt>
+								<dd class="font-mono {diagnostics.renderFramesDropped > 0 ? 'text-amber-300' : ''}">
+									{compactNumber.format(diagnostics.renderFramesDropped)}
+								</dd>
+								<dt class="text-white/45">Decode time</dt>
+								<dd class="font-mono">{formatMilliseconds(diagnostics.averageDecodeTimeMs)}</dd>
+								<dt class="text-white/45">Freezes</dt>
+								<dd class="font-mono">
+									{diagnostics.freezeCount} · {diagnostics.totalFreezeDurationSeconds.toFixed(1)} s
+								</dd>
+								<dt class="text-white/45">Decoder</dt>
+								<dd
+									class="max-w-40 truncate text-right"
+									title={diagnostics.decoderImplementation ?? ''}
+								>
+									{diagnostics.decoderImplementation ??
+										'Browser'}{diagnostics.powerEfficientDecoder === true ? ' · HW' : ''}
+								</dd>
+								<dt class="text-white/45">Connection</dt>
+								<dd class="font-mono">{connectionState} · {iceConnectionState}</dd>
+							</dl>
+						</div>
+					</Popover.Content>
+				</Popover.Portal>
+			</Popover.Root>
+		{/if}
+	{/snippet}
 	{#if status === 'unavailable'}
 		<div class="absolute inset-0 z-20 grid place-items-center bg-black/35">
 			<span class="rounded-sm bg-black/70 px-2 py-1 text-xs font-medium text-white/70"

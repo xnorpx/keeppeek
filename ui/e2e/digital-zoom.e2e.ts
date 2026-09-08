@@ -58,6 +58,72 @@ test('focused live supports wheel and drag without zooming wall tiles, and reset
 	await expectScale(focus, 1);
 });
 
+test('focused zoom stays top-left outside the picture and clear of other controls', async ({
+	page
+}, testInfo) => {
+	await mockMixedHealth(page);
+	await page.goto('/viewer?camera=front-door');
+	const focus = page.getByRole('region', { name: 'Front Door focus', exact: true });
+	await focus.getByRole('button', { name: 'Digital zoom in', exact: true }).click();
+	await expectScale(focus, 2);
+	for (const size of [
+		{ width: 1440, height: 900 },
+		{ width: 1024, height: 576 },
+		{ width: 768, height: 1024 },
+		{ width: 900, height: 420 },
+		{ width: 320, height: 740 }
+	]) {
+		await page.setViewportSize(size);
+		await expect
+			.poll(() =>
+				focus.evaluate((element) => {
+					const stage = element.querySelector('[data-peek-focus-stage]')!.getBoundingClientRect();
+					const zoom = element
+						.querySelector('[data-digital-zoom-controls]')!
+						.getBoundingClientRect();
+					const media = element.querySelector('[role="application"]')!.getBoundingClientRect();
+					const quality = element.querySelector('.focus-controls')!.getBoundingClientRect();
+					const information = element
+						.querySelector('[data-live-video-camera-controls]')!
+						.getBoundingClientRect();
+					const qualityGroup = element
+						.querySelector('.focus-quality-options')!
+						.getBoundingClientRect();
+					const overlaps = (bounds: DOMRect) =>
+						zoom.left < bounds.right &&
+						zoom.right > bounds.left &&
+						zoom.top < bounds.bottom &&
+						zoom.bottom > bounds.top;
+					return {
+						topLeft:
+							zoom.top >= stage.top && zoom.top - stage.top <= 12 && zoom.left - stage.left <= 12,
+						outsidePicture: zoom.bottom <= media.top,
+						mediaVisible: media.width > 0 && media.height > 0,
+						clearOfControls: !overlaps(quality) && !overlaps(information),
+						sameRow:
+							Math.abs(zoom.top - qualityGroup.top) < 1 && Math.abs(zoom.top - information.top) < 1,
+						sameHeight:
+							zoom.height === 32 &&
+							zoom.height === qualityGroup.height &&
+							zoom.height === information.height
+					};
+				})
+			)
+			.toEqual({
+				topLeft: true,
+				outsidePicture: true,
+				mediaVisible: true,
+				clearOfControls: true,
+				sameRow: true,
+				sameHeight: true
+			});
+		await expect(
+			focus.getByRole('button', { name: 'Reset digital zoom', exact: true })
+		).toBeInViewport();
+		await page.screenshot({ path: testInfo.outputPath(`digital-zoom-top-left-${size.width}.png`) });
+	}
+});
+
 test('recorded zoom preserves transport, media identity, and fullscreen without arrow-key seeking', async ({
 	page
 }) => {
@@ -203,6 +269,44 @@ test('real recorded pixels remain decoded through zoom, pause, seek, and viewpor
 	}
 	await player.getByRole('button', { name: 'Reset digital zoom', exact: true }).click();
 	await expectScale(player, 1);
+});
+
+test.describe('touch live toolbar', () => {
+	test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+	test('keeps one aligned row with full-size touch targets and scrollable access to every control', async ({
+		page
+	}) => {
+		await mockMixedHealth(page);
+		await page.goto('/viewer?camera=front-door');
+		const focus = page.getByRole('region', { name: 'Front Door focus', exact: true });
+		const zoomIn = focus.getByRole('button', { name: 'Digital zoom in', exact: true });
+		await zoomIn.tap();
+		await expectScale(focus, 2);
+		const target = await zoomIn.boundingBox();
+		expect(target!.width).toBeGreaterThanOrEqual(44);
+		expect(target!.height).toBeGreaterThanOrEqual(44);
+		const heights = await focus.evaluate((element) =>
+			[
+				'[data-digital-zoom-controls]',
+				'.focus-quality-options',
+				'[data-live-video-camera-controls]'
+			].map((selector) => {
+				const bounds = element.querySelector(selector)!.getBoundingClientRect();
+				return { top: bounds.top, height: bounds.height };
+			})
+		);
+		expect(heights[0].height).toBe(48);
+		expect(heights[1]).toEqual(heights[0]);
+		expect(heights[2]).toEqual(heights[0]);
+		const information = focus.getByRole('button', { name: 'Front Door camera information' });
+		await information.scrollIntoViewIfNeeded();
+		await expect(information).toBeInViewport();
+		await focus.getByRole('button', { name: 'Reset digital zoom', exact: true }).tap();
+		await expectScale(focus, 1);
+		await expect
+			.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+			.toBe(true);
+	});
 });
 
 for (const viewportSize of [
