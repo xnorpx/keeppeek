@@ -4,6 +4,9 @@
 
 ### Added
 
+- Add server-persisted per-dashboard live-wall shape, fit, gap, and corner-radius controls with
+  editable appearance presets, bounded Smart/Continuous streaming, explicit paused-frame freshness,
+  and opt-in visibility-aware display wake lock with preview, save, reset, and diagnostics.
 - Add accessible, local-only digital zoom and pan to focused Peek video, Keep playback, and event
   detail images, with bounded gestures, aligned overlays, unscaled playback controls, and a user
   book chapter (#118).

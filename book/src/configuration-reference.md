@@ -5,6 +5,11 @@ The existing companion `secrets.toml` holds reusable private strings. Layouts, n
 credential metadata, and camera templates belong in the application configuration, not in separate
 settings files. Media files and recording catalogs are data, not additional settings stores.
 
+[Live-wall display settings](./live-wall.md) belong to each saved dashboard in `[peek_layouts]`.
+Shape, fit, gap, corner radius, streaming mode, stream ceiling, and wake-lock intent are stored
+on the server and included in configuration and layout exchange. Browser permission and active
+media/wake-lock handles remain runtime state.
+
 This chapter describes the supported on-disk sections and their serialized Rust types. It is not
 a list of every API response or runtime struct. Use [visual configuration](./configuration-management.md)
 for normal administration and [configuration exchange](./configuration-export-import.md) for
@@ -436,15 +441,36 @@ Type: `StoredUserRegistry`, section `[peek_layouts.users."<principal-id>"]`.
 
 Type: `Layout`, under `shared_layouts[]` or legacy `users.<principal-id>.layouts[]`.
 
-| Field            | Type              | Rule                                                                                |
-| ---------------- | ----------------- | ----------------------------------------------------------------------------------- |
-| `id`             | `String`          | Unique within the registry view; nonblank, at most 128 characters.                  |
-| `name`           | `String`          | Nonblank, at most 80 characters.                                                    |
-| `scope`          | `LayoutScope`     | `"shared"` for canonical layouts; `"private"` is retained for migration.            |
-| `owner_id`       | `String`          | `"server"` for shared layouts; private records must match their principal.          |
-| `audience`       | `LayoutAudience`  | Defaults to everyone with an empty credential list when the entire field is absent. |
-| `activity_focus` | `bool`            | Whether activity can affect layout focus.                                           |
-| `tiles`          | `Vec<LayoutTile>` | Ordered tiles, at most 64 per layout; no duplicate camera IDs or overlaps.          |
+| Field            | Type                       | Rule                                                                                                                           |
+| ---------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `id`             | `String`                   | Unique within the registry view; nonblank, at most 128 characters.                                                             |
+| `name`           | `String`                   | Nonblank, at most 80 characters.                                                                                               |
+| `scope`          | `LayoutScope`              | `"shared"` for canonical layouts; `"private"` is retained for migration.                                                       |
+| `owner_id`       | `String`                   | `"server"` for shared layouts; private records must match their principal.                                                     |
+| `audience`       | `LayoutAudience`           | Defaults to everyone with an empty credential list when the entire field is absent.                                            |
+| `activity_focus` | `bool`                     | Whether activity can affect layout focus.                                                                                      |
+| `display`        | Optional `DisplaySettings` | Dashboard-owned display settings; absent objects use defaults. Older client writes that omit the object preserve saved values. |
+| `tiles`          | `Vec<LayoutTile>`          | Ordered tiles, at most 64 per layout; no duplicate camera IDs or overlaps.                                                     |
+
+Type: `DisplaySettings`, nested `display` table. The dashboard editor writes the complete object
+with the existing registry revision. Only Administrators can change it. A User can still change
+their selected dashboard but cannot alter its display settings. No field resolves secret references.
+
+| Field              | Type            | Default     | Validation and meaning                                                                          |
+| ------------------ | --------------- | ----------- | ----------------------------------------------------------------------------------------------- |
+| `version`          | `u32`           | `1`         | Required in present objects; only version `1` is supported.                                     |
+| `tile_shape`       | `TileShape`     | `"16:9"`    | `"16:9"`, `"4:3"`, or `"native"`.                                                               |
+| `media_fit`        | `MediaFit`      | `"contain"` | `"contain"` or `"cover"`; never stretch.                                                        |
+| `streaming_mode`   | `StreamingMode` | `"smart"`   | `"smart"` or `"continuous"`.                                                                    |
+| `stream_limit`     | `u32`           | `12`        | Whole number from 1 through 12; each browser also enforces its own capacity.                    |
+| `keep_awake`       | `bool`          | `false`     | Saved wake-lock intent; browser gesture, visibility, permission, and device policy still apply. |
+| `gap_px`           | `u32`           | `10`        | Whole pixels from 0 through 24 between tile slots.                                              |
+| `corner_radius_px` | `u32`           | `10`        | Whole pixels from 0 through 24; zero gives square video corners.                                |
+
+Display objects reject unknown fields, positional arrays, invalid types, and out-of-range values.
+The All cameras dashboard keeps immutable generated coordinates and identity, but its display
+object can be edited and survives camera-inventory synchronization. Preset names are derived from
+gap/radius values and are not an additional stored field.
 
 Type: `LayoutAudience`, nested `audience` table.
 

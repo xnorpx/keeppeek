@@ -77,7 +77,8 @@ of dashboards. Each dashboard contains stable identity, name, audience, Activity
 and ordered camera tiles with 12 by 12 positions, spans, and pin state.
 
 KeepPeek stores server-owned dashboards once and stores the active selection per authenticated
-principal. `All cameras` is an immutable dashboard that tracks the configured camera inventory.
+principal. `All cameras` has an immutable generated grid that tracks the configured camera inventory.
+Its display settings remain editable by Administrators.
 Administrators create, rename, duplicate, update, import, export, and delete custom dashboards in
 Settings. Each custom dashboard grants viewing to everyone or to selected named User credentials;
 Administrators always retain access. A User receives only authorized dashboards and can replace
@@ -103,6 +104,24 @@ The web application separates the two live surfaces. Dashboard at `/` shows came
 floating dashboard selector. Viewer at `/viewer` shows one full-shell camera, a `PEEK / camera`
 overlay, and a filmstrip containing every available camera. The Viewer route remembers the last
 selected camera on the device and falls back to the first available camera.
+
+### Dashboard-owned wall presentation
+
+Dashboard display settings provide stable 16:9, 4:3, or native media frames, separate contain/cover
+fit, adjustable gap and corner radius, appearance presets, Smart or Continuous admission, a stream
+ceiling, and opt-in screen wake lock. Every
+active wall or focused-background stream passes through the same bounded scheduler. Hidden
+documents suspend media independently of wake-lock intent. Paused tiles retain explicit admission
+and frame-freshness evidence rather than presenting an unlabeled old image.
+
+Display settings are stored in each dashboard's optional versioned `display` object in the existing
+layout registry and `config.toml`. They follow duplication, exchange, and restart. Administrators
+preview changes and save with the current registry revision; failed saves retain the preview.
+Different dashboards can target different screens without browser-local settings. Existing clients
+that omit display fields preserve the server values. Browser codec/capacity evidence and wake-lock
+permission remain local runtime facts. Camera configuration and recordings are unaffected.
+See [Live wall and kiosk display](../book/src/live-wall.md) for defaults, resource limits, preference
+validation, and wake-lock lifecycle and troubleshooting.
 
 ## Search, scrub, and play stored media
 
