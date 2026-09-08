@@ -15,12 +15,21 @@ describe('FirstKeyframeState', () => {
 
 		const image = container.querySelector<HTMLImageElement>('[data-peek-cached-frame]');
 		expect(image?.src).toBe(cachedFrame);
+		expect(getComputedStyle(image!).objectFit).toBe('contain');
 		await expect.element(page.getByText('RESTORING', { exact: true })).toBeVisible();
 		await expect
 			.element(
 				page.getByText('Showing last frame · waiting for live video · 7.8s', { exact: true })
 			)
 			.toBeVisible();
+	});
+
+	it('uses an explicitly selected crop policy for cached frames', async () => {
+		const { container } = await render(FirstKeyframeState, {
+			props: { label: 'Front', elapsedMs: 100, frameUrl: cachedFrame, mediaFit: 'cover' }
+		});
+		const image = container.querySelector<HTMLImageElement>('[data-peek-cached-frame]');
+		expect(getComputedStyle(image!).objectFit).toBe('cover');
 	});
 
 	it('keeps the initial connection state when no cached frame exists', async () => {

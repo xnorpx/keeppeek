@@ -3,6 +3,7 @@
 	import { observeGridVisibility, type GridTileVisibility } from '$lib/grid-visibility';
 	import { useLivePeer } from '$lib/stream-peer-context';
 	import type { LiveQuality } from '$lib/types';
+	import type { PeekMediaFit } from '$lib/peek-wall-preferences';
 	import { emitTimelinePerformanceEvent } from '$lib/timeline-observability';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import InfoIcon from '@lucide/svelte/icons/info';
@@ -86,6 +87,11 @@
 		digitalZoom?: boolean;
 		focusedControls?: Snippet;
 		matchVideoAspectRatio?: boolean;
+		mediaFit?: PeekMediaFit;
+		mediaAspectRatio?: number;
+		suspensionReason?: string | null;
+		showFreshness?: boolean;
+		statusOverlay?: Snippet;
 		showDiagnostics?: boolean;
 		diagnosticsLabel?: string;
 		diagnosticsStatusClass?: string;
@@ -119,6 +125,11 @@
 		digitalZoom = false,
 		focusedControls,
 		matchVideoAspectRatio = false,
+		mediaFit = 'contain',
+		mediaAspectRatio,
+		suspensionReason = null,
+		showFreshness = false,
+		statusOverlay,
 		showDiagnostics = true,
 		diagnosticsLabel,
 		diagnosticsStatusClass = 'bg-white/65',
@@ -152,6 +163,7 @@
 	let presentedFrames = 0;
 	let presentedFrameReady = $state(false);
 	let lastPresentedFrameAt = 0;
+	let frameAgeSeconds = $state<number | null>(null);
 	let frameActivityActive = $state(false);
 	let frozenFrameUrl = $state<string | null>(null);
 	let reportedVideoSize = '';
@@ -159,6 +171,16 @@
 	// The compositor discards every frame while the tab is hidden; those are not render drops.
 	let renderDropsNeedRebaseline = false;
 	let status = $derived(track?.status ?? 'connecting');
+	let freshnessVisible = $derived(
+		showFreshness && (suspensionReason !== null || status !== 'live' || !frameActivityActive)
+	);
+	let freshnessLabel = $derived(
+		frameAgeSeconds !== null
+			? `Frame ${frameAgeSeconds}s old`
+			: fallbackFrameUrl
+				? 'Frame time unknown'
+				: 'No frame received'
+	);
 	let sessionId = $derived(livePeer.sessionId);
 	let activeStream = $derived(track?.activeStream ?? 'sub');
 	let estimatedBitrateBps = $derived(track?.estimatedBitrateBps ?? livePeer.estimatedBitrateBps);
@@ -201,7 +223,7 @@
 
 	$effect(() => {
 		if (!video) return;
-		const stream = track?.stream ?? null;
+		const stream = track?.subscribed === false ? null : (track?.stream ?? null);
 		if (video.srcObject !== stream) {
 			presentedFrameReady = false;
 			if (video.srcObject && !stream) void captureFrozenFrame(video);
@@ -238,6 +260,12 @@
 		const monitor = window.setInterval(() => {
 			if (frameActivityActive && performance.now() - lastPresentedFrameAt >= 5_000) {
 				setFrameActivity(false);
+			}
+			if (showFreshness && lastPresentedFrameAt > 0) {
+				frameAgeSeconds = Math.max(
+					0,
+					Math.floor((performance.now() - lastPresentedFrameAt) / 1_000)
+				);
 			}
 		}, 500);
 		return () => {
@@ -333,6 +361,7 @@
 
 	function markFrameActivity(): void {
 		lastPresentedFrameAt = performance.now();
+		if (showFreshness && frameAgeSeconds !== 0) frameAgeSeconds = 0;
 		setFrameActivity(true);
 	}
 
@@ -528,6 +557,7 @@
 <div
 	bind:this={container}
 	class="relative bg-video {className}"
+	class:media-framed={mediaAspectRatio !== undefined}
 	style={matchVideoAspectRatio && videoAspectRatio !== null
 		? `aspect-ratio: ${videoAspectRatio}`
 		: undefined}
@@ -553,49 +583,79 @@
 			{@render focusedControls?.()}
 			{@render diagnosticsControls()}
 		{/snippet}
-		<video
-			bind:this={video}
-			autoplay
-			playsinline
-			muted
-			onplaying={handlePlaying}
-			onloadeddata={handleLoadedData}
-			onloadedmetadata={handleVideoResize}
-			onwaiting={handlePlaybackInactive}
-			onstalled={handlePlaybackInactive}
-			onpause={handlePlaybackInactive}
-			onemptied={handlePlaybackInactive}
-			ontimeupdate={() => {
-				if (typeof video?.requestVideoFrameCallback !== 'function') {
-					markFrameActivity();
-					reportPresentedFrame();
-				}
-			}}
-			onresize={handleVideoResize}
-			onerror={() => {
-				handlePlaybackInactive();
-				livePeer.markUnavailable(cameraId);
-			}}
-			class="h-full w-full object-contain"
-		></video>
-		{#if fallbackFrameUrl && (!presentedFrameReady || status !== 'live')}
-			<img
-				data-peek-cached-frame
-				src={fallbackFrameUrl}
-				alt=""
-				class="pointer-events-none absolute inset-0 z-20 size-full bg-black {digitalZoom
-					? 'object-contain'
-					: 'object-cover'}"
-			/>
-		{/if}
-		{#if frozenFrameUrl && status !== 'live'}
-			<img
-				src={frozenFrameUrl}
-				alt=""
-				class="pointer-events-none absolute inset-0 z-10 size-full object-contain"
-			/>
-		{/if}
+		<div
+			data-live-media-frame
+			class={mediaAspectRatio === undefined ? 'relative size-full' : 'media-frame'}
+			style:--live-media-ratio={mediaAspectRatio}
+		>
+			<video
+				bind:this={video}
+				autoplay
+				playsinline
+				muted
+				onplaying={handlePlaying}
+				onloadeddata={handleLoadedData}
+				onloadedmetadata={handleVideoResize}
+				onwaiting={handlePlaybackInactive}
+				onstalled={handlePlaybackInactive}
+				onpause={handlePlaybackInactive}
+				onemptied={handlePlaybackInactive}
+				ontimeupdate={() => {
+					if (typeof video?.requestVideoFrameCallback !== 'function') {
+						markFrameActivity();
+						reportPresentedFrame();
+					}
+				}}
+				onresize={handleVideoResize}
+				onerror={() => {
+					handlePlaybackInactive();
+					livePeer.markUnavailable(cameraId);
+				}}
+				class="h-full w-full"
+				style:object-fit={mediaFit}
+			></video>
+			{#if fallbackFrameUrl && (!presentedFrameReady || status !== 'live')}
+				<img
+					data-peek-cached-frame
+					src={fallbackFrameUrl}
+					alt=""
+					class="pointer-events-none absolute inset-0 z-20 size-full bg-black"
+					style:object-fit={mediaFit}
+				/>
+			{/if}
+			{#if frozenFrameUrl && status !== 'live'}
+				<img
+					src={frozenFrameUrl}
+					alt=""
+					class="pointer-events-none absolute inset-0 z-10 size-full"
+					style:object-fit={mediaFit}
+				/>
+			{/if}
+		</div>
 	</FocusedMediaViewport>
+	{#if statusOverlay || freshnessVisible || mediaFit === 'cover'}
+		<div
+			class="pointer-events-none absolute inset-x-2 bottom-2 z-30 flex flex-col items-start gap-1"
+		>
+			{@render statusOverlay?.()}
+			{#if freshnessVisible || mediaFit === 'cover'}
+				<div
+					data-live-frame-freshness
+					class="max-w-full rounded-sm bg-black/80 px-2 py-1 text-[11px] leading-4 text-white"
+				>
+					{#if mediaFit === 'cover'}<span>Cropped</span>{/if}
+					{#if freshnessVisible}
+						<p>
+							{track?.admissionError ??
+								suspensionReason ??
+								(status === 'unavailable' ? 'Stream unavailable' : 'Waiting for live frame')}
+						</p>
+						<p class="text-white/75">{freshnessLabel}</p>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/if}
 	{#if !digitalZoom}
 		{@render diagnosticsControls()}
 	{/if}
@@ -794,13 +854,13 @@
 			</Popover.Root>
 		{/if}
 	{/snippet}
-	{#if status === 'unavailable'}
+	{#if !showFreshness && status === 'unavailable'}
 		<div class="absolute inset-0 z-20 grid place-items-center bg-black/35">
 			<span class="rounded-sm bg-black/70 px-2 py-1 text-xs font-medium text-white/70"
 				>Live view unavailable</span
 			>
 		</div>
-	{:else if status === 'queued'}
+	{:else if !showFreshness && status === 'queued'}
 		<div
 			class="absolute inset-0 z-20 grid place-items-center {fallbackFrameUrl ? '' : 'bg-black/35'}"
 		>
@@ -814,3 +874,18 @@
 		</div>
 	{/if}
 </div>
+
+<style>
+	.media-framed {
+		container-type: size;
+	}
+	.media-frame {
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		width: min(100cqw, calc(100cqh * var(--live-media-ratio)));
+		height: min(100cqh, calc(100cqw / var(--live-media-ratio)));
+		transform: translate(-50%, -50%);
+		overflow: hidden;
+	}
+</style>
