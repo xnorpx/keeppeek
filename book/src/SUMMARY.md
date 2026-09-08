@@ -6,6 +6,7 @@
 - [Get started](./get-started.md)
 - [Authentication and access control](./authentication.md)
 - [Camera and stream health](./camera-health.md)
+- [Live wall and kiosk display](./live-wall.md)
 - [Visual configuration management](./configuration-management.md)
 - [Configuration reference](./configuration-reference.md)
 - [Export and import configuration](./configuration-export-import.md)
