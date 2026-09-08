@@ -1,3 +1,4 @@
+import { wallDisplayFromWire, wallDisplayToWire } from './peek-wall-preferences';
 import type {
 	PeekLayout,
 	PeekLayoutAudience,
@@ -208,6 +209,7 @@ function layoutToWire(layout: PeekLayout) {
 			credential_ids: [...layout.audience.credentialIds]
 		},
 		activity_focus: layout.activityFocus,
+		...(layout.display === undefined ? {} : { display: wallDisplayToWire(layout.display) }),
 		tiles: layout.items.map((item) => ({
 			camera_id: item.cameraId,
 			column: item.column,
@@ -223,7 +225,7 @@ function layoutFromWire(value: unknown, path: string, unsupportedFields: string[
 	const wire = record(value, 'layout');
 	collectUnsupported(
 		wire,
-		['id', 'name', 'scope', 'owner_id', 'audience', 'activity_focus', 'tiles'],
+		['id', 'name', 'scope', 'owner_id', 'audience', 'activity_focus', 'display', 'tiles'],
 		path,
 		unsupportedFields
 	);
@@ -242,6 +244,7 @@ function layoutFromWire(value: unknown, path: string, unsupportedFields: string[
 		ownerId,
 		audience: layoutAudience(wire.audience, layoutScope, ownerId),
 		activityFocus: boolean(wire.activity_focus, 'layout activity focus'),
+		...(wire.display === undefined ? {} : { display: wallDisplayFromWire(wire.display) }),
 		items
 	};
 }
