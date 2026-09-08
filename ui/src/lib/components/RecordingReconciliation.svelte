@@ -18,11 +18,13 @@
 	let busy = $state(false);
 	let error = $state('');
 	let pendingId = $state('');
+	let pendingRemedy = $state<RecordingRemedy>(RecordingRemedy.RETAIN_TOMBSTONE);
 	let filter = $state<RecordingDriftKind | ''>('');
 	let dialog = $state<HTMLDialogElement>();
 	let alive = false;
 	let items = $derived(report?.items.filter((item) => filter === '' || item.kind === filter) ?? []);
 	let categories = $derived([...new Set(report?.items.map((item) => item.kind) ?? [])]);
+	let reindexing = $derived(pendingRemedy === RecordingRemedy.REINDEX);
 
 	onMount(() => {
 		alive = true;
@@ -133,7 +135,9 @@
 						{#if item.appliedRemedy !== undefined}<span class="self-center text-text-muted"
 								>{item.appliedRemedy === RecordingRemedy.IGNORE
 									? 'Acknowledged'
-									: 'Catalog tombstone retained'}</span
+									: item.appliedRemedy === RecordingRemedy.REINDEX
+										? 'Playback index rebuilt'
+										: 'Catalog tombstone retained'}</span
 							>
 						{:else}
 							{#if item.remedies.includes(RecordingRemedy.IGNORE)}<button
@@ -146,7 +150,19 @@
 									type="button"
 									class="h-10 rounded-sm border border-destructive px-3 text-destructive disabled:opacity-40"
 									disabled={busy || !enabled}
-									onclick={() => (pendingId = item.itemId)}>Retain tombstone</button
+									onclick={() => {
+										pendingRemedy = RecordingRemedy.RETAIN_TOMBSTONE;
+										pendingId = item.itemId;
+									}}>Retain tombstone</button
+								>{/if}
+							{#if item.remedies.includes(RecordingRemedy.REINDEX)}<button
+									type="button"
+									class="h-10 rounded-sm border border-hairline px-3 disabled:opacity-40"
+									disabled={busy || !enabled}
+									onclick={() => {
+										pendingRemedy = RecordingRemedy.REINDEX;
+										pendingId = item.itemId;
+									}}>Rebuild index</button
 								>{/if}
 						{/if}
 					</div>
@@ -164,7 +180,9 @@
 	aria-labelledby="reconcile-title"
 >
 	<div class="flex items-center gap-3">
-		<h2 id="reconcile-title" class="text-base font-semibold">Remove the missing catalog entry?</h2>
+		<h2 id="reconcile-title" class="text-base font-semibold">
+			{reindexing ? 'Rebuild this playback index?' : 'Remove the missing catalog entry?'}
+		</h2>
 		<button
 			type="button"
 			class="ml-auto grid size-10 shrink-0 place-items-center"
@@ -173,8 +191,9 @@
 		>
 	</div>
 	<p class="my-4 text-sm text-text-muted">
-		The file must still be missing. A tombstone is retained, playback indexes are removed, and no
-		filesystem bytes are deleted.
+		{reindexing
+			? 'The recording must still match the inspected identity and pass container validation. Playback indexes are rebuilt; media bytes are not changed.'
+			: 'The file must still be missing. A tombstone is retained, playback indexes are removed, and no filesystem bytes are deleted.'}
 	</p>
 	{#if error}<p role="alert" class="mb-3 text-sm text-destructive">{error}</p>{/if}
 	<div class="flex flex-wrap justify-end gap-3">
@@ -186,7 +205,8 @@
 			type="button"
 			class="text-destructive-foreground h-11 rounded-sm bg-destructive px-4 text-sm disabled:opacity-40"
 			disabled={busy || !enabled}
-			onclick={() => apply(pendingId, RecordingRemedy.RETAIN_TOMBSTONE)}>Retain tombstone</button
+			onclick={() => apply(pendingId, pendingRemedy)}
+			>{reindexing ? 'Rebuild index' : 'Retain tombstone'}</button
 		>
 	</div>
 </dialog>

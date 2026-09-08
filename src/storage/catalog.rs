@@ -351,6 +351,14 @@ struct LegacyRecording {
 }
 
 enum Command {
+    ReindexRecording {
+        expected: maintenance::reconciliation::Row,
+        revision: u64,
+        index: super::long_term::inspection::container::Index,
+        evidence: maintenance::reconciliation::reindex::Evidence,
+        deadline: std::time::Instant,
+        reply: SyncSender<anyhow::Result<()>>,
+    },
     ReconcileMissing {
         expected: maintenance::reconciliation::Row,
         revision: u64,
@@ -1462,6 +1470,25 @@ fn run_catalog(connection: turso::Connection, rx: Receiver<Command>) {
     let intent_epoch = maintenance::jobs::Epoch::new();
     while let Ok(command) = rx.recv() {
         match command {
+            Command::ReindexRecording {
+                expected,
+                revision,
+                index,
+                evidence,
+                deadline,
+                reply,
+            } => {
+                let _ = reply.send(pollster::block_on(
+                    maintenance::reconciliation::reindex::apply(
+                        &connection,
+                        &expected,
+                        revision,
+                        index,
+                        evidence,
+                        deadline,
+                    ),
+                ));
+            }
             Command::ReconcileMissing {
                 expected,
                 revision,

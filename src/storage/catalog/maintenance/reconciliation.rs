@@ -11,6 +11,9 @@ use crate::storage::catalog::{
 use crate::storage::long_term::inspection::{Archive, IDENTITY_BYTES_MAX, PATH_BYTES_MAX};
 use std::{collections::HashMap, fmt, io::ErrorKind, path::PathBuf, sync::mpsc, time::Instant};
 
+mod fingerprint;
+pub(in crate::storage::catalog) mod reindex;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     MissingFile,
@@ -22,12 +25,16 @@ pub enum Kind {
     TemporaryFile,
     InterruptedWork,
     InspectionFailed,
+    CorruptFile,
+    DuplicateIdentity,
+    IndexMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Remedy {
     Ignore,
     RetainTombstone,
+    Reindex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +44,7 @@ pub struct Item {
     pub kind: Kind,
     pub label: String,
     pub bytes: Option<u64>,
+    pub remedies: Vec<Remedy>,
 }
 
 #[derive(Clone)]
@@ -79,6 +87,11 @@ pub(in crate::storage::catalog) struct Row {
     active: bool,
     protected: bool,
     pending: bool,
+    started_ms: i64,
+    ended_ms: Option<i64>,
+    init_offset: u64,
+    init_len: u64,
+    index_fingerprint: [u8; 32],
 }
 
 impl RecordingCatalogHandle {
@@ -112,6 +125,13 @@ impl RecordingCatalogHandle {
             return Ok(());
         }
         let (row, kind) = report.candidates.get(id).ok_or(Failure::Invalid)?;
+        if remedy == Remedy::Reindex {
+            anyhow::ensure!(
+                *kind == Kind::IndexMismatch && !row.pending && !row.active && !row.protected,
+                Failure::Blocked
+            );
+            return reindex::submit(self, report, row, archive);
+        }
         anyhow::ensure!(
             *kind == Kind::MissingFile && !row.pending && !row.active && !row.protected,
             Failure::Blocked
@@ -211,6 +231,7 @@ async fn read_rows(connection: &turso::Connection, deadline: Instant) -> anyhow:
             cleanup_pending = 1 OR EXISTS
             (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = recording_files.id AND active = 1)
             , finalized = 0, protected = 1
+            , started_at_ms, ended_at_ms, init_offset, init_len
          FROM recording_files ORDER BY id LIMIT ?1",
         turso::params![i64::try_from(MAX_SCAN_RECORDINGS + 1)?, i64::try_from(PATH_BYTES_MAX)?, i64::try_from(IDENTITY_BYTES_MAX)?],
     ).await?;
@@ -228,6 +249,7 @@ async fn read_rows(connection: &turso::Connection, deadline: Instant) -> anyhow:
         let id: String = row.get(0)?;
         validate_identifier(&id)?;
         inputs.rows.push(Row {
+            index_fingerprint: fingerprint::read(connection, &id, deadline).await?,
             id,
             path: row.get::<Option<String>>(1)?.map(PathBuf::from),
             bytes: u64::try_from(row.get::<i64>(2)?)?,
@@ -237,6 +259,10 @@ async fn read_rows(connection: &turso::Connection, deadline: Instant) -> anyhow:
             pending: row.get::<i64>(4)? != 0,
             active: row.get::<i64>(5)? != 0,
             protected: row.get::<i64>(6)? != 0,
+            started_ms: row.get(7)?,
+            ended_ms: row.get(8)?,
+            init_offset: u64::try_from(row.get::<i64>(9)?)?,
+            init_len: u64::try_from(row.get::<i64>(10)?)?,
         });
     }
     Ok(inputs)
@@ -259,15 +285,26 @@ fn inspect(
         candidates: HashMap::new(),
     };
     let mut paths = HashMap::new();
+    let mut identities = HashMap::new();
     for row in &inputs.rows {
         if let Some(path) = &row.path {
             *paths.entry(path.clone()).or_insert(0_u32) += 1;
+        }
+        if let Some(identity) = row.identity {
+            *identities.entry(identity.0).or_insert(0_u32) += 1;
         }
     }
     for row in inputs.rows {
         check_deadline(deadline)?;
         report.inspected += 1;
-        let kind = classify(&row, archive, &paths, deadline)?;
+        let kind = if row
+            .identity
+            .is_some_and(|identity| identities.get(&identity.0).is_some_and(|count| *count > 1))
+        {
+            Some(Kind::DuplicateIdentity)
+        } else {
+            classify(&row, archive, &paths, deadline)?
+        };
         if let Some(kind) = kind {
             report.push(Some(row), kind, "Catalog recording".to_owned(), None);
         }
@@ -323,7 +360,22 @@ fn classify(
         Ok(observation)
             if row.identity == Some(FileIdentity::from_observed(observation.identity())) =>
         {
-            return Ok(None);
+            return match archive.container_index(&observation, deadline) {
+                Ok(index) => Ok((index.initialization.offset != row.init_offset
+                    || index.initialization.size != row.init_len
+                    || fingerprint::expected(&index, row.started_ms)? != row.index_fingerprint)
+                    .then_some(Kind::IndexMismatch)),
+                Err(error)
+                    if error.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|error| error.kind() == ErrorKind::TimedOut)
+                    }) =>
+                {
+                    Err(super::jobs::Failure::Unavailable.into())
+                }
+                Err(_) => Ok(Some(Kind::CorruptFile)),
+            };
         }
         Ok(_) => Kind::IdentityMismatch,
         Err(error) => match error.kind() {
@@ -344,12 +396,24 @@ impl Report {
             return;
         }
         let id = format!("{:032x}", rand::random::<u128>());
+        let mut remedies = vec![Remedy::Ignore];
+        if row
+            .as_ref()
+            .is_some_and(|row| !row.pending && !row.active && !row.protected)
+        {
+            match kind {
+                Kind::MissingFile => remedies.push(Remedy::RetainTombstone),
+                Kind::IndexMismatch => remedies.push(Remedy::Reindex),
+                _ => {}
+            }
+        }
         self.items.push(Item {
             id: id.clone(),
             recording_id: row.as_ref().map(|row| row.id.clone()),
             kind,
             label,
             bytes: row.as_ref().map(|row| row.bytes).or(bytes),
+            remedies,
         });
         if let Some(row) = row {
             self.candidates.insert(id, (row, kind));

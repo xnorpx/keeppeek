@@ -21,6 +21,7 @@ pub(in crate::storage) const IDENTITY_BYTES_MAX: usize = 41;
 const PATH_COMPONENTS_MAX: usize = 16;
 const INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
+pub(in crate::storage) mod container;
 mod inventory;
 mod removal;
 
@@ -77,6 +78,14 @@ pub struct Observation {
 }
 
 impl Archive {
+    pub(in crate::storage) fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self {
+            root: self.root.clone(),
+            directory: self.directory.try_clone()?,
+            instance: self.instance,
+        })
+    }
+
     /// Opens a trusted configured root once, without enumerating its contents.
     ///
     /// The caller must control the root and its ancestors during this operation.
@@ -177,6 +186,15 @@ impl Archive {
     }
 
     fn open_file(&self, relative: &Path, deadline: Instant) -> std::io::Result<(File, Metadata)> {
+        self.open_file_with(relative, deadline, &observation_options())
+    }
+
+    fn open_file_with(
+        &self,
+        relative: &Path,
+        deadline: Instant,
+        options: &OpenOptions,
+    ) -> std::io::Result<(File, Metadata)> {
         check_deadline(deadline)?;
         let mut directory = self.directory.try_clone()?;
         let mut components = relative.components().peekable();
@@ -186,7 +204,7 @@ impl Archive {
                 directory = directory.open_dir_nofollow(component.as_os_str())?;
             } else {
                 eligible(&directory.symlink_metadata(component.as_os_str())?)?;
-                return open_leaf(&directory, component.as_os_str(), deadline);
+                return open_leaf_with(&directory, component.as_os_str(), deadline, options);
             }
         }
         Err(denied())
@@ -198,8 +216,17 @@ fn open_leaf(
     name: &std::ffi::OsStr,
     deadline: Instant,
 ) -> std::io::Result<(File, Metadata)> {
+    open_leaf_with(directory, name, deadline, &observation_options())
+}
+
+fn open_leaf_with(
+    directory: &Dir,
+    name: &std::ffi::OsStr,
+    deadline: Instant,
+    options: &OpenOptions,
+) -> std::io::Result<(File, Metadata)> {
     check_deadline(deadline)?;
-    let file = directory.open_with(name, &observation_options())?;
+    let file = directory.open_with(name, options)?;
     let metadata = file.metadata()?;
     eligible(&metadata)?;
     check_deadline(deadline)?;

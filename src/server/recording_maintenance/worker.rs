@@ -131,17 +131,7 @@ fn run(
         .config_update
         .try_lock()
         .map_err(|_| anyhow::anyhow!("configuration is changing"))?;
-    if let Some(config_path) = &state.camera_config_path {
-        let restore = crate::backup::active_restore(config_path, super::super::unix_time_ms())?;
-        anyhow::ensure!(
-            restore.is_none_or(|record| matches!(
-                crate::api::backup_proto::RestoreState::try_from(record.state),
-                Ok(crate::api::backup_proto::RestoreState::Complete
-                    | crate::api::backup_proto::RestoreState::RolledBack)
-            )),
-            "restore is active"
-        );
-    }
+    check_restore(state)?;
     let archive = Archive::open(&state.storage_config.long_term_path)?;
     let catalog = state
         .catalog
@@ -165,4 +155,19 @@ fn run(
         }
         Ok(())
     })
+}
+
+pub(super) fn check_restore(state: &ServerState) -> anyhow::Result<()> {
+    if let Some(config_path) = &state.camera_config_path {
+        let restore = crate::backup::active_restore(config_path, super::super::unix_time_ms())?;
+        anyhow::ensure!(
+            restore.is_none_or(|record| matches!(
+                crate::api::backup_proto::RestoreState::try_from(record.state),
+                Ok(crate::api::backup_proto::RestoreState::Complete
+                    | crate::api::backup_proto::RestoreState::RolledBack)
+            )),
+            "restore is active"
+        );
+    }
+    Ok(())
 }
