@@ -437,7 +437,7 @@ fn maximum_preflight_is_complete_and_keeps_unknown_files_untouched() {
         let archive = Archive::open(&fixture.root).unwrap();
         let mut baseline = Vec::with_capacity(30);
         let mut preflight = Vec::with_capacity(30);
-        for _ in 0..30 {
+        for iteration in 0..30 {
             let started = Instant::now();
             fixture.connection.execute_batch("BEGIN").await.unwrap();
             let (loaded, _) = super::super::load(
@@ -460,7 +460,13 @@ fn maximum_preflight_is_complete_and_keeps_unknown_files_untouched() {
             )
             .await
             .unwrap();
-            let report = inspect(inputs, &archive, started + BUSY_TIMEOUT).unwrap();
+            let catalog_elapsed = started.elapsed();
+            let report = inspect(inputs, &archive, started + BUSY_TIMEOUT).unwrap_or_else(|error| {
+                panic!(
+                    "preflight iteration {iteration} failed: {error}; catalog={catalog_elapsed:?}; total={:?}",
+                    started.elapsed()
+                )
+            });
             preflight.push(started.elapsed());
             assert_eq!(report.objects.len(), 128);
             for (ordinal, object) in report.objects.iter().enumerate() {
