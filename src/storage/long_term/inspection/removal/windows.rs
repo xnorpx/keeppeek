@@ -299,14 +299,14 @@ fn reject_reparse(object: HANDLE) -> io::Result<()> {
 }
 
 pub(super) fn rename(file: &File, directory: &Dir) -> io::Result<()> {
-    let name: Vec<u16> = super::STAGED_FILE.encode_utf16().collect();
+    let name = child_name(directory, OsStr::new(super::STAGED_FILE))?;
     let bytes = mem::offset_of!(FILE_RENAME_INFO, FileName) + name.len() * 2;
     let mut buffer = vec![0_usize; bytes.div_ceil(mem::size_of::<usize>())];
     let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     unsafe {
         (*information).Anonymous.ReplaceIfExists = false;
-        (*information).RootDirectory = handle(directory);
-        (*information).FileNameLength = u32::try_from(name.len() * 2).unwrap();
+        (*information).RootDirectory = HANDLE::default();
+        (*information).FileNameLength = u32::try_from((name.len() - 1) * 2).unwrap();
         std::ptr::copy_nonoverlapping(
             name.as_ptr(),
             std::ptr::addr_of_mut!((*information).FileName).cast(),
