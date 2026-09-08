@@ -25,6 +25,8 @@ import { LivePeer } from './stream-peer.svelte';
 class FakeDataChannel {
 	static suppressCapabilities = false;
 	static offlineCamera: string | null = null;
+	static rejectedSubscription: string | null = null;
+	static rejectUnsubscribe = false;
 
 	readyState: RTCDataChannelState = 'connecting';
 	binaryType: BinaryType = 'blob';
@@ -72,10 +74,15 @@ class FakeDataChannel {
 				case: 'response',
 				value: create(ResponseSchema, {
 					requestId: request.requestId,
-					result: {
-						case: 'ok',
-						value: create(OkSchema, { result })
-					}
+					result:
+						(command.case === 'subscribeMedia' &&
+							command.value.subscriptionId === FakeDataChannel.rejectedSubscription) ||
+						(command.case === 'unsubscribe' && FakeDataChannel.rejectUnsubscribe)
+							? { case: 'error', value: { message: 'Stream capacity reached' } }
+							: {
+									case: 'ok',
+									value: create(OkSchema, { result })
+								}
 				})
 			}
 		});
@@ -183,6 +190,8 @@ afterEach(() => {
 	vi.clearAllMocks();
 	FakeDataChannel.suppressCapabilities = false;
 	FakeDataChannel.offlineCamera = null;
+	FakeDataChannel.rejectedSubscription = null;
+	FakeDataChannel.rejectUnsubscribe = false;
 	FakePeerConnection.failRemoteDescription = false;
 	FakePeerConnection.latest = null;
 });
@@ -321,6 +330,76 @@ describe('LivePeer', () => {
 
 		await peer.configure([plan]);
 		expect(peer.track('front-door')).toMatchObject({ receiver, stream, subscribed: true });
+	});
+
+	it('releases an old subscription before admitting its replacement', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'bounded-handoff',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([
+			{ cameraId: 'front-door', quality: 'low', active: false },
+			{ cameraId: 'garage', quality: 'low', active: true }
+		]);
+		await peer.configure([
+			{ cameraId: 'front-door', quality: 'low', active: true },
+			{ cameraId: 'garage', quality: 'low', active: false }
+		]);
+		expect(FakePeerConnection.latest?.channels[0].commands).toEqual([
+			'subscribeMedia',
+			'unsubscribe',
+			'subscribeMedia'
+		]);
+		expect(peer.track('front-door')?.subscribed).toBe(true);
+		expect(peer.track('garage')?.subscribed).toBe(false);
+		expect(peer.sessionId).toBe('bounded-handoff');
+		await peer.close();
+	});
+
+	it('reports a refused stream without closing the other admitted streams', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		FakeDataChannel.rejectedSubscription = 'camera-1';
+		api.createSession.mockResolvedValue({
+			session_id: 'limited-session',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([
+			{ cameraId: 'front-door', quality: 'low' },
+			{ cameraId: 'garage', quality: 'low' }
+		]);
+		expect(peer.track('front-door')?.subscribed).toBe(true);
+		expect(peer.track('garage')).toMatchObject({
+			status: 'unavailable',
+			subscribed: false,
+			admissionError: 'Server did not admit this stream'
+		});
+		expect(peer.sessionId).toBe('limited-session');
+		expect(api.deleteSession).not.toHaveBeenCalled();
+		await peer.close();
+	});
+
+	it('stops local media when an eviction cannot be confirmed', async () => {
+		vi.stubGlobal('RTCPeerConnection', FakePeerConnection);
+		api.createSession.mockResolvedValue({
+			session_id: 'failed-eviction',
+			answer: { type: 'answer', sdp: 'v=0' }
+		});
+		api.deleteSession.mockResolvedValue(undefined);
+		const peer = new LivePeer();
+		await peer.configure([{ cameraId: 'front-door', quality: 'low' }]);
+		FakeDataChannel.rejectUnsubscribe = true;
+		await expect(
+			peer.configure([{ cameraId: 'front-door', quality: 'low', active: false }])
+		).rejects.toThrow();
+		expect(peer.tracks).toEqual({});
+		expect(peer.sessionId).toBeNull();
+		expect(peer.error).toBe('Unable to release live streams');
+		expect(api.deleteSession).toHaveBeenCalledWith('failed-eviction', null, undefined);
 	});
 
 	it('deletes a created server session when remote setup fails', async () => {

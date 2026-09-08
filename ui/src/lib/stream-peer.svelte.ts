@@ -10,12 +10,15 @@ import {
 	VideoQuality,
 	type Ok,
 	type Request,
+	type SubscribeMedia,
 	type Response as ControlResponse,
 	type ServerCapabilities
 } from './proto/webrtc_pb';
 import type { CreateResponse, LiveQuality } from './types';
 
 const controlTimeoutMs = 10_000;
+
+class MediaAdmissionError extends Error {}
 
 export type LiveSessionTransport = {
 	create: (offer: RTCSessionDescriptionInit) => Promise<CreateResponse>;
@@ -52,6 +55,7 @@ export type LivePeerTrack = {
 	pendingStream: 'main' | 'sub' | null;
 	estimatedBitrateBps: number | null;
 	subscribed: boolean;
+	admissionError?: string | null;
 };
 
 export class LivePeer {
@@ -159,6 +163,7 @@ export class LivePeer {
 			await this.connect(plans, topologyKey);
 			return;
 		}
+		await this.releaseInactiveTracks(plans);
 		await Promise.all(
 			plans.map(async (plan) => {
 				const track = this.track(plan.cameraId);
@@ -172,10 +177,6 @@ export class LivePeer {
 					);
 					return;
 				}
-				if (!plan.active && track.subscribed) {
-					await this.unsubscribeTrack(plan.cameraId, track.trackId);
-					return;
-				}
 				if (
 					plan.active &&
 					(track.requestedQuality !== plan.quality ||
@@ -185,6 +186,28 @@ export class LivePeer {
 				}
 			})
 		);
+	}
+
+	private async releaseInactiveTracks(plans: LivePeerPlan[]): Promise<void> {
+		try {
+			await Promise.all(
+				plans.flatMap((plan) => {
+					const track = this.track(plan.cameraId);
+					return !plan.active && track?.subscribed
+						? [this.unsubscribeTrack(plan.cameraId, track.trackId)]
+						: [];
+				})
+			);
+		} catch (error) {
+			const sessionToken = this.releaseLocalResources();
+			this.error = 'Unable to release live streams';
+			if (sessionToken !== null) {
+				await this.#sessionTransport.delete(sessionToken).catch(() => {
+					this.error = 'Live view stopped; server cleanup could not be confirmed';
+				});
+			}
+			throw error;
+		}
 	}
 
 	private async connect(plans: LivePeerPlan[], topologyKey: string): Promise<void> {
@@ -368,7 +391,8 @@ export class LivePeer {
 			videoQuality: protoQuality(variantId === null ? quality : 'auto'),
 			variantId: variantId ?? ''
 		});
-		const result = await this.request({ case: 'subscribeMedia', value: subscribe });
+		const result = await this.requestMedia(cameraId, subscribe);
+		if (result === null) return;
 		if (result.case !== 'subscriptionResult' || result.value.delivery.case !== 'rtp') {
 			throw new Error('Server returned an unexpected media subscription response.');
 		}
@@ -383,6 +407,7 @@ export class LivePeer {
 				: null;
 		this.#cameraByMid[mid] = cameraId;
 		this.replaceTrack(cameraId, {
+			admissionError: null,
 			requestedQuality: quality,
 			requestedVariantId: variantId,
 			activeStream: pendingStream === null ? selectedStream : current!.activeStream,
@@ -391,6 +416,22 @@ export class LivePeer {
 		});
 		const event = this.#trackEventByMid[mid];
 		if (event) this.attachTrackEvent(cameraId, event);
+	}
+
+	private async requestMedia(
+		cameraId: string,
+		subscribe: SubscribeMedia
+	): Promise<Ok['result'] | null> {
+		try {
+			return await this.request({ case: 'subscribeMedia', value: subscribe });
+		} catch (error) {
+			if (!(error instanceof MediaAdmissionError)) throw error;
+			this.replaceTrack(cameraId, {
+				status: 'unavailable',
+				admissionError: 'Server did not admit this stream'
+			});
+			return null;
+		}
 	}
 
 	private async unsubscribeTrack(cameraId: string, subscriptionId: string): Promise<void> {
@@ -440,7 +481,10 @@ export class LivePeer {
 		});
 		channel.send(toBinary(ControlEnvelopeSchema, envelope));
 		const reply = await response;
-		if (reply.result.case === 'error') throw new Error(reply.result.value.message);
+		if (reply.result.case === 'error') {
+			const ErrorType = command.case === 'subscribeMedia' ? MediaAdmissionError : Error;
+			throw new ErrorType(reply.result.value.message);
+		}
 		if (reply.result.case !== 'ok') throw new Error('Server returned an empty media response.');
 		return reply.result.value.result;
 	}

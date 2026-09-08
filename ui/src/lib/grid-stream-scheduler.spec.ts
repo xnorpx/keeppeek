@@ -65,6 +65,7 @@ describe('GridStreamScheduler', () => {
 
 		const leaving = demand('front');
 		expect(scheduler.reconcile([leaving], 999).grants[0]?.cameraId).toBe('front');
+		expect(scheduler.reconcile([leaving], 1_000).grants).toHaveLength(0);
 		expect(scheduler.reconcile([leaving], 1_001).grants).toHaveLength(0);
 
 		const focused = demand('garage', { focused: true });
@@ -78,4 +79,57 @@ describe('GridStreamScheduler', () => {
 		expect(webDecoderBudget(18)).toBe(9);
 		expect(webDecoderBudget(64)).toBe(12);
 	});
+
+	it('limits Continuous mode to visible or focused cameras without prefetch', () => {
+		const demands = [
+			demand('visible', { visibleFraction: 0.01 }),
+			demand('near', { distanceFromViewportPx: 10 }),
+			demand('focused', { focused: true })
+		];
+		const smart = new GridStreamScheduler({ subscriptionSlots: 4, decoderSlots: 4 });
+		const continuous = new GridStreamScheduler({ subscriptionSlots: 4, decoderSlots: 4 });
+
+		expect(smart.reconcile(demands, 0).grants).toHaveLength(3);
+		expect(continuous.reconcile(demands, 0, 'continuous').grants).toEqual([
+			{ cameraId: 'focused', quality: 'high', score: 1_000 },
+			{ cameraId: 'visible', quality: 'low', score: 400 }
+		]);
+	});
+
+	it.each(['smart', 'continuous'] as const)(
+		'%s honors zero capacity and reports limits',
+		(mode) => {
+			const scheduler = new GridStreamScheduler({ subscriptionSlots: 0, decoderSlots: 4 });
+			const demands = [demand('front', { visibleFraction: 1 })];
+
+			const blocked = scheduler.reconcile(demands, 0, mode);
+			expect(blocked.grants).toEqual([]);
+			expect(blocked.limitedCameraIds).toEqual(['front']);
+			expect(blocked.nextReconcileAtMs).toBeNull();
+
+			scheduler.setCapacity({ subscriptionSlots: 4, decoderSlots: 0 });
+			expect(scheduler.reconcile(demands, 40, mode).grants).toEqual([]);
+		}
+	);
+
+	it.each(['smart', 'continuous'] as const)(
+		'%s stays within the smaller capacity and suspends every hidden-page stream',
+		(mode) => {
+			const scheduler = new GridStreamScheduler({ subscriptionSlots: 6, decoderSlots: 4 });
+			const demands = Array.from({ length: 6 }, (_, index) =>
+				demand(`camera-${index}`, { visibleFraction: 1 })
+			);
+
+			expect(scheduler.reconcile(demands, 0, mode).grants).toHaveLength(3);
+			const settled = scheduler.reconcile(demands, 40, mode);
+			expect(settled.grants).toHaveLength(4);
+			expect(settled.grants.every((grant) => grant.quality === 'low')).toBe(true);
+			expect(settled.limitedCameraIds).toEqual(['camera-4', 'camera-5']);
+
+			scheduler.setCapacity({ subscriptionSlots: 2, decoderSlots: 4 });
+			expect(scheduler.reconcile(demands, 80, mode).grants).toHaveLength(2);
+			const hidden = demands.map((item) => ({ ...item, screenActive: false }));
+			expect(scheduler.reconcile(hidden, 120, mode).grants).toEqual([]);
+		}
+	);
 });
