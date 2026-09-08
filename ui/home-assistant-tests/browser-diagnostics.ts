@@ -31,16 +31,19 @@ export async function observeBrowserErrors(page: Page) {
 				keys: reason && typeof reason === 'object' ? Object.keys(reason).slice(0, 10) : [],
 				type: String(reason?.type ?? ''),
 				name: String(reason?.name ?? ''),
-				code: String(reason?.code ?? reason?.error?.code ?? ''),
+				code: String(
+					typeof reason === 'number' ? reason : (reason?.code ?? reason?.error?.code ?? '')
+				),
 				message: String(reason?.message ?? reason?.error?.message ?? '').slice(0, 512),
 				target: reason?.target?.constructor?.name
 			});
 			const onboardingClose =
 				location.pathname === '/onboarding.html' &&
-				reason?.type === 'result' &&
-				reason?.success === false &&
-				reason?.error?.code === 3 &&
-				reason?.error?.message === 'Connection lost';
+				(reason === 3 ||
+					(reason?.type === 'result' &&
+						reason?.success === false &&
+						reason?.error?.code === 3 &&
+						reason?.error?.message === 'Connection lost'));
 			void report(detail, onboardingClose);
 		});
 	});

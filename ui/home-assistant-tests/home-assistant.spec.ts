@@ -26,6 +26,71 @@ test('CI diagnostics redact credentials while preserving ordinary errors', () =>
 	expect(sanitized).toContain('Camera connection failed');
 });
 
+test('CI diagnostics preserve numeric rejection codes without ignoring them', async ({ page }) => {
+	const origin = 'http://home-assistant.test';
+	await page.route(`${origin}/**`, (route) =>
+		route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Diagnostics</title>' })
+	);
+	const diagnostics = await observeBrowserErrors(page);
+	diagnostics.phase('live dashboard');
+	await page.goto(`${origin}/dashboard-keeppeek/live`);
+	await page.evaluate(() => {
+		window.dispatchEvent(
+			new PromiseRejectionEvent('unhandledrejection', { reason: 3, promise: Promise.resolve() })
+		);
+	});
+	await expect.poll(() => diagnostics.errors.length).toBe(1);
+	expect(diagnostics.errors[0]).toContain('"kind":"number"');
+	expect(diagnostics.errors[0]).toContain('"code":"3"');
+	expect(diagnostics.onboardingNotices).toEqual([]);
+});
+
+test('CI diagnostics restrict connection-lost notices to Home Assistant onboarding', async ({
+	page
+}) => {
+	const origin = 'http://home-assistant.test';
+	await page.route(`${origin}/**`, (route) =>
+		route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Diagnostics</title>' })
+	);
+	const diagnostics = await observeBrowserErrors(page);
+	await page.goto(`${origin}/onboarding.html`);
+	await page.evaluate(() => {
+		for (const reason of [
+			3,
+			{ type: 'result', success: false, error: { code: 3, message: 'Connection lost' } },
+			2,
+			'3',
+			{ type: 'result', success: false, error: { code: 2, message: 'Invalid authentication' } },
+			{ type: 'result', success: false, error: { code: 3, message: 'Unexpected failure' } }
+		]) {
+			window.dispatchEvent(
+				new PromiseRejectionEvent('unhandledrejection', { reason, promise: Promise.resolve() })
+			);
+		}
+	});
+	await expect.poll(() => diagnostics.onboardingNotices.length).toBe(2);
+	await expect.poll(() => diagnostics.errors.length).toBe(4);
+	expect(diagnostics.onboardingNotices[0]).toContain('"kind":"number"');
+	expect(diagnostics.onboardingNotices[0]).toContain('"code":"3"');
+	expect(diagnostics.onboardingNotices[1]).toContain('"message":"Connection lost"');
+	diagnostics.phase('live dashboard');
+	await page.evaluate(() => {
+		window.dispatchEvent(
+			new PromiseRejectionEvent('unhandledrejection', { reason: 3, promise: Promise.resolve() })
+		);
+	});
+	await expect.poll(() => diagnostics.errors.length).toBe(5);
+	diagnostics.phase('onboarding');
+	await page.goto(`${origin}/dashboard-keeppeek/live`);
+	await page.evaluate(() => {
+		window.dispatchEvent(
+			new PromiseRejectionEvent('unhandledrejection', { reason: 3, promise: Promise.resolve() })
+		);
+	});
+	await expect.poll(() => diagnostics.errors.length).toBe(6);
+	expect(diagnostics.onboardingNotices).toHaveLength(2);
+});
+
 async function decodedFrames(page: Page, count: number): Promise<void> {
 	await expect(page.locator('keeppeek-card video')).toHaveCount(count);
 	await expect
