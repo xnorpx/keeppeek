@@ -223,12 +223,13 @@ test('opens a full-shell focus view with consolidated camera controls and comple
 	if (!mobileMain || !mobileCameraControls || !mobileFocusControls || !mobileFilmstrip) {
 		throw new Error('Mobile Viewer control geometry is unavailable');
 	}
-	expect(mobileCameraControls.x + mobileCameraControls.width).toBeLessThanOrEqual(
-		mobileMain.x + mobileMain.width
-	);
-	expect(mobileFocusControls.y).toBeGreaterThanOrEqual(
-		mobileCameraControls.y + mobileCameraControls.height
-	);
+	expect(mobileFocusControls.y).toBeCloseTo(mobileCameraControls.y, 1);
+	expect(mobileFocusControls.height).toBeCloseTo(mobileCameraControls.height, 1);
+	const cameraInformation = cameraControls.getByRole('button', {
+		name: 'Front Door camera information'
+	});
+	await cameraInformation.scrollIntoViewIfNeeded();
+	await expect(cameraInformation).toBeInViewport();
 	expect(mobileFilmstrip.y).toBeGreaterThan(mobileFocusControls.y + mobileFocusControls.height);
 	expect(mobileFilmstrip.y + mobileFilmstrip.height).toBeLessThanOrEqual(
 		mobileMain.y + mobileMain.height

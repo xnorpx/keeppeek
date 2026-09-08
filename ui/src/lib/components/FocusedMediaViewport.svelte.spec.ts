@@ -4,6 +4,36 @@ import { render } from 'vitest-browser-svelte';
 import Fixture from './FocusedMediaViewport.fixture.svelte';
 
 describe('FocusedMediaViewport', () => {
+	it.each([
+		{ width: 640, height: 360 },
+		{ width: 320, height: 180 },
+		{ width: 320, height: 640 }
+	])(
+		'keeps the zoom toolbar at the top left outside the picture at $width x $height',
+		async (size) => {
+			const view = await render(Fixture, { props: size });
+			const toolbar = page.getByRole('group', { name: 'Digital zoom controls', exact: true });
+			const viewport = page.getByRole('application', { name: 'Digital zoom viewport' });
+			const outer = view.container.querySelector('[data-focused-media]')!;
+			await expect
+				.poll(() => {
+					const toolbarBounds = toolbar.element().getBoundingClientRect();
+					const mediaBounds = viewport.element().getBoundingClientRect();
+					return toolbarBounds.bottom <= mediaBounds.top;
+				})
+				.toBe(true);
+			const toolbarBounds = toolbar.element().getBoundingClientRect();
+			const outerBounds = outer.getBoundingClientRect();
+			expect(toolbarBounds.left - outerBounds.left).toBeLessThanOrEqual(12);
+			expect(toolbarBounds.top - outerBounds.top).toBeLessThanOrEqual(12);
+			await userEvent.click(page.getByRole('button', { name: 'Digital zoom in', exact: true }));
+			await expect.element(page.getByLabelText('Digital zoom level')).toHaveTextContent('2.0x');
+			expect(toolbar.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+				viewport.element().getBoundingClientRect().top
+			);
+		}
+	);
+
 	it('exposes named controls, the zoom value, disabled bounds, and 44-pixel targets', async () => {
 		await render(Fixture);
 		const zoomIn = page.getByRole('button', { name: 'Digital zoom in', exact: true });
@@ -96,7 +126,7 @@ describe('FocusedMediaViewport', () => {
 			);
 		}
 		await view.rerender({ width: 320, height: 180 });
-		await expect.poll(() => viewport.getBoundingClientRect().width).toBe(320);
+		await expect.poll(() => viewport.getBoundingClientRect().height).toBe(110);
 		await new Promise(requestAnimationFrame);
 		const before = layer.style.transform;
 		viewport.dispatchEvent(

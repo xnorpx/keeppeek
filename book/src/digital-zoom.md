@@ -9,9 +9,12 @@ in Viewer before using digital zoom.
 
 ## Inspect a frame
 
-The **Digital** controls show the current magnification. The minimum is **1.0x**, which fits the
-complete image, and the maximum is **8.0x**. The image keeps its original aspect ratio. Panning is
-bounded to the fitted image area, so a drag cannot move the image out of view.
+The **Digital** controls sit at the top-left above the image without covering the picture.
+In Peek, they share one row and height with Live/History, quality, and camera information. The
+row scrolls horizontally when needed rather than wrapping. They show the current magnification.
+The minimum is **1.0x**, which fits the complete image, and the maximum is **8.0x**.
+The image keeps its original aspect ratio. Panning is bounded to the fitted image area, so a drag
+cannot move the image out of view.
 
 | Input                             | Result                                                                        |
 | --------------------------------- | ----------------------------------------------------------------------------- |
@@ -29,8 +32,9 @@ bounded to the fitted image area, so a drag cannot move the image out of view.
 | Escape                            | Reset digital zoom before the normal Viewer or event-detail exit action.      |
 
 Tab reaches the named zoom buttons. Activating a zoom button focuses the inspection surface, where
-the keyboard commands work. The buttons have at least 44-pixel targets, visible focus indicators,
-and disabled states at the limits. The zoom value is also available to assistive technology.
+the keyboard commands work. Peek's desktop control groups are 32 pixels high. Touch input uses
+at least 44-pixel button targets. All buttons have visible focus indicators and disabled states at
+the limits. The zoom value is also available to assistive technology.
 
 Ordinary wheel scrolling does not change magnification. Control/Command zoom shortcuts still
 belong to the browser. Touch gestures are captured only inside the focused image; scrolling and

@@ -59,18 +59,18 @@ and zero gesture-induced layout shift while decoded frames continue to advance.
 
 | Criterion                                                               | Observable outcome                                                                                  | Verification                                                           | Evidence                                                       |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Focused live, recorded, and event images support bounded local zoom/pan | Scale stays within 1x-8x; media remains visible; compact tiles stay unchanged                       | Geometry, gesture, component, and `digital-zoom.e2e.ts` tests          | 40 focused tests, 7 workflow tests, and full gate pass         |
+| Focused live, recorded, and event images support bounded local zoom/pan | Scale stays within 1x-8x; media remains visible; compact tiles stay unchanged                       | Geometry, gesture, component, and `digital-zoom.e2e.ts` tests          | 43 focused tests, 9 workflow tests, and full gate pass         |
 | Input modes coexist                                                     | Alt-wheel, pointer, pinch, double-tap, keyboard, and buttons work without conflicting with playback | Gesture tests, real multi-touch tests, existing Keep keyboard test     | Focused tests pass                                             |
 | Reset returns the full frame after interaction and resize               | Identity/reset clears stale pan; resize fits the complete frame                                     | Geometry, viewport, canonical image, and E2E tests                     | Focused tests pass                                             |
 | Overlays align; controls and diagnostics remain unscaled                | Bounding-box corners share the media transform; control sizes remain fixed                          | Viewport and EventPreview component tests                              | Focused tests pass                                             |
 | Media changes reset; pause preserves context                            | Camera/canonical identity resets; play/pause retains zoom and the media node                        | Component and E2E identity/transport tests                             | Focused tests pass                                             |
 | Digital and physical zoom remain distinct                               | Digital controls do not require or send PTZ commands                                                | Component PTZ independence test, capability-limited E2E fixtures, book | Focused tests pass                                             |
-| Accessibility, geometry, mobile, overlay, and performance checks pass   | Named controls, 44-pixel targets, keyboard access, stable decode, bounded gesture cost              | Focused suites, browser benchmark, full gate                           | Full gate passes; gesture input p95 0.7 ms against 8 ms budget |
+| Accessibility, geometry, mobile, overlay, and performance checks pass   | Named controls, 44-pixel touch targets, keyboard access, stable decode, bounded gesture cost        | Focused suites, browser benchmark, full gate                           | Full gate passes; gesture input p95 0.8 ms against 8 ms budget |
 
 ## Performance results
 
-Baseline UI: `58edafeb1565a1460ba6c9598f0b6db3785dab3d`. Result: the equivalent gesture and viewport
-implementation in this PR. The later recording-slider repair does not change the measured live path.
+Baseline UI: `58edafeb1565a1460ba6c9598f0b6db3785dab3d`. Result: the compact single-row toolbar and
+focused viewport implementation in this PR.
 Environment: macOS (Darwin 25.6.0), Apple M5 Max, Chromium 151.0.7922.34, Vite 8.2.1 development UI,
 release recorder/test-camera binaries, 1440x900. The source is the repository's 640x360 H.264 clip
 at 15 fps, paced and looped with `--start-at-seconds 0`.
@@ -81,8 +81,8 @@ identical input without applying a digital transform.
 
 | Metric                       | Baseline p50 | Result p50 | Baseline p95 | Result p95 | p95 delta | Budget                |
 | ---------------------------- | -----------: | ---------: | -----------: | ---------: | --------: | --------------------- |
-| Input dispatch, ms           |          0.2 |        0.3 |          0.3 |        0.7 |      +0.4 | <8 ms p95             |
-| Animation-frame interval, ms |         66.7 |       66.7 |         67.1 |       67.2 |      +0.1 | Diagnostic comparison |
+| Input dispatch, ms           |          0.2 |        0.3 |          0.3 |        0.8 |      +0.5 | <8 ms p95             |
+| Animation-frame interval, ms |         66.7 |       66.6 |         67.1 |       67.5 |      +0.4 | Diagnostic comparison |
 
 Every run has zero added sessions, zero media load/empty events, zero media-node replacement, and
 zero layout shift. Decoded frame counters advance in every run. The observed frame cadence is
@@ -113,21 +113,34 @@ data and produces a real-video screenshot.
 
 ## Validation results
 
-- Focused geometry, gesture, viewport, event-image, and transport suites: 40 tests pass.
-- Complete E2E suite: 228 pass, two existing unsupported-codec skips. This includes all seven
+- Focused geometry, gesture, viewport, event-image, and transport suites: 43 tests pass.
+- Complete E2E suite: 230 pass, two existing unsupported-codec skips. This includes all nine
   digital-zoom workflows, existing keyboard/swimlane flows, and real WebRTC and recording tests.
 - Real recorded pixels and controls are verified at 320, 768, 1024, and 1440 pixels. Mobile
   multi-touch uses Chromium emulation at 320, 390, and 768 pixels; physical iOS/Safari qualification
   is not claimed.
 - The production UI build, strict Svelte check, E2E typecheck, and book build pass. The installed
   mdbook-mermaid preprocessor reports a 0.5.0/0.5.4 version warning while producing the complete book.
-- `KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh` passes on the final executable tree: 2,274 Rust tests
+- The original implementation passed `KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh`: 2,274 Rust tests
   (21 existing skipped tests), 316 server UI tests, 160 browser/visual tests, 57 compatibility
   tests, and 228 E2Es (two existing unsupported-codec skips). The command emitted
-  `ISSUE_118_PUBLISH_GATE_PASSED`. Subsequent edits update only this evidence record and the PR body.
+  `ISSUE_118_PUBLISH_GATE_PASSED`.
+- The compact-toolbar update passes `./check.sh` and `bun run build`: 2,348 Rust tests passed
+  (one reported leaky, 21 skipped), 316 server UI tests, 163 browser/visual tests, 57 compatibility
+  tests, and 230 E2Es (two codec skips). The command emitted
+  `ISSUE_118_COMPACT_TOOLBAR_FINAL_GATE_PASSED`. No timeouts, retries, or quality gates were relaxed.
 
 ## Review decisions
 
+- Zoom sits in the top-left toolbar above the picture. Focused Peek composes zoom, Live/History,
+  quality, and camera information into a single non-wrapping row. Desktop groups are all 32 px
+  high; coarse-pointer groups are 48 px high with 44 px zoom targets. Narrow rows scroll rather
+  than introducing a second row or obscuring the media. Placement and height checks cover
+  1440, 1024, 900, 768, 390, and 320 px viewports.
+- The compact-toolbar real-video benchmark uses the same baseline and workload described above.
+  It reports input p50/p95 of 0.3/0.8 ms and frame-interval p50/p95 of 66.6/67.5 ms. Input p95 is
+  0.5 ms above the original baseline and remains below the 8 ms budget. Media load/empty events,
+  additional sessions, node replacements, and layout shifts remain zero in every run.
 - ResizeObserver cancels active pointers before refitting. A browser regression confirms that
   moves from a pre-resize pinch cannot apply stale transforms; no layout read is added to each
   pointer movement.

@@ -1024,6 +1024,7 @@
 								<LiveVideo
 									cameraId={focusedCamera.id}
 									digitalZoom
+									{focusedControls}
 									stream={focusPreviewPresented ? focusedVariant : previewStream(focusedCamera)}
 									quality={effectiveFocusQuality}
 									fallbackFrameUrl={peekViewState.cameraFrame(focusedCamera.id)}
@@ -1038,7 +1039,7 @@
 							{/key}
 						</div>
 
-						<div data-peek-focus-options class="pointer-events-none absolute inset-0 z-30">
+						{#snippet focusedControls()}
 							<div class="focus-controls pointer-events-auto">
 								<div
 									class="focus-mode-options rounded-sm bg-video/70 p-0.5 text-white shadow-md ring-1 ring-white/10 backdrop-blur-md"
@@ -1099,7 +1100,9 @@
 									</span>
 								{/if}
 							</div>
+						{/snippet}
 
+						<div data-peek-focus-options class="pointer-events-none absolute inset-0 z-30">
 							<aside
 								class="focus-camera-options pointer-events-auto rounded-md bg-video/65 p-1.5 shadow-lg ring-1 ring-white/10 backdrop-blur-md"
 								aria-label="Camera filmstrip"
@@ -1280,16 +1283,23 @@
 	}
 
 	.focus-controls {
-		position: absolute;
-		top: 0.75rem;
-		left: 50%;
 		display: flex;
-		max-width: calc(100% - 24rem);
-		transform: translateX(-50%);
+		min-width: max-content;
+		flex: 1;
 		align-items: center;
+		justify-content: center;
 		gap: 0.5rem;
-		overflow-x: auto;
-		overflow-y: hidden;
+		white-space: nowrap;
+	}
+
+	.focus-mode-options > span,
+	.focus-mode-options > a,
+	.focus-quality-options > button {
+		height: var(--focused-media-control-size);
+	}
+
+	.focus-controls > button {
+		height: calc(var(--focused-media-control-size) + 4px);
 	}
 
 	.focus-camera-options {
@@ -1315,12 +1325,11 @@
 	}
 
 	.focus-stage {
+		--focused-media-control-size: 1.75rem;
+		--focused-media-control-padding: 1px;
+		--focused-media-toolbar-height: 3rem;
 		display: grid;
 		place-items: center;
-	}
-
-	.focus-stage :global([data-digital-zoom-controls]) {
-		bottom: 6.25rem;
 	}
 
 	.focus-layout-status {
@@ -1330,15 +1339,14 @@
 		white-space: nowrap;
 	}
 
-	@media (max-width: 47.999rem) {
-		.focus-controls {
-			top: 3.25rem;
-			right: 0.75rem;
-			left: 0.75rem;
-			max-width: none;
-			transform: none;
+	@media (pointer: coarse) {
+		.focus-stage {
+			--focused-media-control-size: 2.75rem;
+			--focused-media-toolbar-height: 4rem;
 		}
+	}
 
+	@media (max-width: 47.999rem) {
 		.focus-camera-option {
 			width: 7rem;
 		}
