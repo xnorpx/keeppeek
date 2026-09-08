@@ -149,6 +149,10 @@ History and files remain scoped to the Administrator identity that created them.
 Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
 normal export path preserves source frames and timestamps without re-encoding.
 
+For the availability and safety limits of manual deletion and catalog drift checks,
+see [Recording maintenance](./recording-maintenance.md). Confirmed maintenance intent
+does not delete recordings; the destructive workflow is not yet available.
+
 For the detailed coverage model and export lifecycle, see the
 [recording integrity](https://github.com/xnorpx/keeppeek/blob/master/docs/recording-integrity.md),
 [event presentation](https://github.com/xnorpx/keeppeek/blob/master/docs/event-presentation.md),

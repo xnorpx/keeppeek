@@ -11,6 +11,7 @@
 - [Export and import configuration](./configuration-export-import.md)
 - [Backup and restore](./backup-and-restore.md)
 - [Recording and evidence](./recording-and-evidence.md)
+- [Recording maintenance](./recording-maintenance.md)
 - [Notifications and integrations](./notifications-and-integrations.md)
 - [Home Assistant card](./home-assistant.md)
 - [Release readiness and known limitations](./release-readiness.md)
