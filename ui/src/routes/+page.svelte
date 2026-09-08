@@ -14,12 +14,16 @@
 	import { videoResolutionMatches } from '$lib/video-resolution';
 	import {
 		GridStreamScheduler,
+		type GridStreamGrant,
+		type GridTileAdmission,
 		type GridTileDemand,
 		webDecoderBudget
 	} from '$lib/grid-stream-scheduler';
 	import LiveVideo from '$lib/components/LiveVideo.svelte';
 	import PeekCameraTile from '$lib/components/PeekCameraTile.svelte';
 	import PeekDashboardSwitcher from '$lib/components/PeekDashboardSwitcher.svelte';
+	import PeekWallSettings from '$lib/components/PeekWallSettings.svelte';
+	import { defaultPeekWallPreferences, type PeekWallPreferences } from '$lib/peek-wall-preferences';
 	import {
 		peekCameraStateColorClass,
 		presentPeekCamera,
@@ -75,9 +79,26 @@
 
 	let serverHealth = $derived(peekViewState.serverHealth);
 	let cameras = $derived(peekViewState.cameras);
+	let previewStreams = $derived(
+		new Map(
+			cameras.map(
+				(camera) =>
+					[
+						camera.id,
+						selectRecordedStream(camera, {
+							preference: 'low',
+							isEncodingSupported: browserSupportsLiveEncoding
+						}).selectedStream
+					] as const
+			)
+		)
+	);
 	let error = $derived(peekViewState.error);
 	let loading = $derived(!peekViewState.loaded);
 	let layoutRegistry = $derived(peekViewState.layoutRegistry);
+	let activeLayout = $derived<PeekLayout | null>(
+		layoutRegistry?.layouts.find((layout) => layout.id === layoutRegistry?.activeLayoutId) ?? null
+	);
 	let layoutError = $derived(peekViewState.layoutError);
 	let transition = $derived(peekViewState.transition);
 	let layoutSaving = $state(false);
@@ -88,6 +109,25 @@
 	let requestedCameraId = $derived(page.url.searchParams.get('camera')?.trim() ?? '');
 	let focusQuality = $state<FocusedLivePreference>('auto');
 	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
+	let wallDraft = $state.raw<{
+		layoutId: string;
+		revision: string;
+		preferences: PeekWallPreferences;
+	} | null>(null);
+	let wallSaving = $state(false);
+	let wallSaveError = $state<string | null>(null);
+	let administrator = $state(false);
+	let wallEditable = $derived(administrator && activeLayout?.display !== undefined);
+	let wallPreferences = $derived(
+		wallDraft && wallDraft.layoutId === activeLayout?.id
+			? wallDraft.preferences
+			: (activeLayout?.display ?? defaultPeekWallPreferences())
+	);
+	let wallDirty = $derived(
+		JSON.stringify(wallPreferences) !==
+			JSON.stringify(activeLayout?.display ?? defaultPeekWallPreferences())
+	);
+	let tileAdmissions = $state.raw<Record<string, GridTileAdmission>>({});
 	let focusFallbackVariant = $state<'main' | 'sub' | null>(null);
 	let focusFallbackAttempted = false;
 	let focusPreviewPresented = $state(false);
@@ -96,10 +136,22 @@
 	let livePlansReady = $state(false);
 	let tileVisibility = $state.raw<Record<string, GridTileVisibility>>({});
 	let componentActive = true;
-	let screenActive = true;
+	let screenActive = $state(true);
 	let schedulerTimer: number | null = null;
 	let livePlanReconcileScheduled = false;
-	let decoderCapacity = 4;
+	let decoderCapacity = $state(4);
+	let wallCapacity = $derived(Math.min(decoderCapacity, wallPreferences.streamLimit));
+	let activeStreamCount = $derived(
+		Object.values(livePeer.tracks).filter((track) => track.subscribed).length
+	);
+	let visibleStreamCount = $derived(
+		cameras.filter(
+			(camera) =>
+				camera.profiles.length > 0 &&
+				previewStreams.get(camera.id) !== null &&
+				(tileVisibility[camera.id]?.visibleFraction ?? 0) > 0
+		).length
+	);
 	let backgroundStreamRate = $state<'full' | '1fps'>('full');
 	let backgroundPulseCameraIds = $state.raw<ReadonlySet<string>>(new Set());
 	let backgroundWarmTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,9 +166,6 @@
 	let healthRefreshInFlight = false;
 	let focusReturnPending = $state(false);
 	let wallRevealed = $derived(wallRevealState !== 'staging');
-	let activeLayout = $derived<PeekLayout | null>(
-		layoutRegistry?.layouts.find((layout) => layout.id === layoutRegistry?.activeLayoutId) ?? null
-	);
 	let focusedCamera = $derived(
 		focusedCameraId === null
 			? null
@@ -139,7 +188,8 @@
 	);
 	let focusCompatibilityNotice = $derived.by(() => {
 		const selection = focusedVariantSelection;
-		if (!selection || selection.selectedStream === null) return null;
+		if (!selection) return null;
+		if (selection.selectedStream === null) return 'No browser-compatible live stream is available.';
 		const rejected = selection.rejectedStreams.find(
 			(candidate) => candidate.stream === focusQuality
 		);
@@ -240,6 +290,8 @@
 		void focusedCameraId;
 		void focusQuality;
 		void focusFallbackVariant;
+		void wallPreferences.streamingMode;
+		gridScheduler.setCapacity({ subscriptionSlots: wallCapacity, decoderSlots: wallCapacity });
 		scheduleLivePlanReconcile();
 	});
 
@@ -292,14 +344,21 @@
 	});
 
 	onMount(() => {
-		playbackPreferences = loadPlaybackPreferences(window.localStorage);
-		lastViewerCameraId = window.localStorage.getItem(lastViewerCameraKey)?.trim() ?? '';
+		try {
+			playbackPreferences = loadPlaybackPreferences(window.localStorage);
+			lastViewerCameraId = window.localStorage.getItem(lastViewerCameraKey)?.trim() ?? '';
+		} catch {
+			lastViewerCameraId = '';
+		}
+		const closeAccessState = controlClient.onAccessState((access) => {
+			administrator = access.session?.role === 'administrator';
+		});
 		viewerSelectionReady = true;
 		const decoderBudget = webDecoderBudget(navigator.hardwareConcurrency);
 		decoderCapacity = decoderBudget;
 		gridScheduler.setCapacity({
-			subscriptionSlots: decoderBudget,
-			decoderSlots: decoderBudget
+			subscriptionSlots: Math.min(decoderBudget, wallPreferences.streamLimit),
+			decoderSlots: Math.min(decoderBudget, wallPreferences.streamLimit)
 		});
 		emitTimelinePerformanceEvent('DecoderCapacity', {
 			decoderSlots: decoderBudget,
@@ -310,12 +369,14 @@
 			reconcileLivePlans();
 		};
 		document.addEventListener('visibilitychange', onVisibility);
+		onVisibility();
 		void loadDashboard();
 		const healthTimer = window.setInterval(() => {
 			if (document.visibilityState === 'visible') void refreshHealth();
 		}, healthRefreshIntervalMs);
 		return () => {
 			componentActive = false;
+			closeAccessState();
 			document.removeEventListener('visibilitychange', onVisibility);
 			window.clearInterval(healthTimer);
 			if (schedulerTimer) clearTimeout(schedulerTimer);
@@ -325,13 +386,76 @@
 	});
 
 	function previewStream(camera: CameraListItem): 'main' | 'sub' {
-		return (
-			camera.profiles.find((profile) => profile.stream === 'sub' && profile.encoding === 'h264')
-				?.stream ??
-			camera.profiles.find((profile) => profile.encoding === 'h264')?.stream ??
-			camera.profiles.at(-1)?.stream ??
-			'main'
-		);
+		return previewStreams.get(camera.id) ?? 'sub';
+	}
+
+	function updateWallPreferences(preferences: PeekWallPreferences): void {
+		if (!wallEditable || wallSaving || !activeLayout || !layoutRegistry) return;
+		wallDraft = {
+			layoutId: activeLayout.id,
+			revision:
+				wallDraft?.layoutId === activeLayout.id ? wallDraft.revision : layoutRegistry.revision,
+			preferences
+		};
+	}
+
+	async function saveWallPreferences(): Promise<void> {
+		if (!wallEditable || wallSaving || !wallDirty || !layoutRegistry || !activeLayout) return;
+		const draft = wallDraft;
+		const layoutId = activeLayout.id;
+		const generation = peekViewState.generation;
+		const candidate = {
+			...layoutRegistry,
+			revision: draft?.revision ?? layoutRegistry.revision,
+			layouts: layoutRegistry.layouts.map((layout) =>
+				layout.id === layoutId ? { ...layout, display: { ...wallPreferences } } : layout
+			)
+		};
+		wallSaving = true;
+		wallSaveError = null;
+		try {
+			const saved = await controlClient.savePeekLayoutRegistry(candidate);
+			if (!componentActive || !peekViewState.updateLayoutRegistry(generation, saved)) return;
+			if (wallDraft === draft) wallDraft = null;
+		} catch (cause) {
+			if (componentActive && generation === peekViewState.generation) {
+				wallSaveError =
+					cause instanceof Error ? cause.message : 'Display settings could not be saved.';
+			}
+		} finally {
+			if (componentActive) wallSaving = false;
+		}
+	}
+
+	async function discardWallPreferences(): Promise<void> {
+		if (wallSaving) return;
+		if (!wallSaveError) {
+			wallDraft = null;
+			return;
+		}
+		const generation = peekViewState.generation;
+		const layoutId = activeLayout?.id;
+		wallSaving = true;
+		try {
+			const loaded = await controlClient.getPeekLayoutRegistry();
+			if (layoutId && loaded.layouts.some((layout) => layout.id === layoutId))
+				loaded.activeLayoutId = layoutId;
+			if (!componentActive || !peekViewState.updateLayoutRegistry(generation, loaded)) return;
+			wallDraft = null;
+			wallSaveError = null;
+		} catch (cause) {
+			if (componentActive)
+				wallSaveError = cause instanceof Error ? cause.message : 'Dashboard could not be reloaded.';
+		} finally {
+			if (componentActive) wallSaving = false;
+		}
+	}
+
+	function tileAdmission(cameraId: string): GridTileAdmission {
+		if (!screenActive) return 'hidden';
+		if (previewStreams.get(cameraId) === null) return 'unsupported';
+		if (livePeer.track(cameraId)?.status === 'unavailable' || livePeer.error) return 'unavailable';
+		return tileAdmissions[cameraId] ?? 'queued';
 	}
 
 	async function refreshHealth(): Promise<void> {
@@ -392,9 +516,10 @@
 			.filter(
 				(camera) =>
 					camera.profiles.length > 0 &&
+					previewStreams.get(camera.id) !== null &&
 					presentPeekCamera(camera, cameraHealthById.get(camera.id) ?? null).state !== 'offline'
 			)
-			.slice(0, decoderCapacity)
+			.slice(0, wallCapacity)
 			.map((camera) => camera.id);
 		if (wallRevealTimer) clearTimeout(wallRevealTimer);
 		if (wallTargetCameraIds.length === 0) {
@@ -616,6 +741,7 @@
 
 	function pulseBackgroundStreams(): void {
 		if (
+			!screenActive ||
 			focusedCameraId === null ||
 			backgroundStreamRate !== '1fps' ||
 			backgroundPulseCameraIds.size > 0
@@ -651,6 +777,45 @@
 		scheduleLivePlanReconcile();
 	}
 
+	function liveDemand(camera: CameraListItem): GridTileDemand {
+		const visibility = tileVisibility[camera.id];
+		const focused = !focusReturnPending && focusedCameraId === camera.id;
+		const staging = wallRevealState === 'staging' && wallTargetCameraIds.includes(camera.id);
+		const backgroundActive =
+			focusedCameraId !== null &&
+			(backgroundStreamRate === 'full' || backgroundPulseCameraIds.has(camera.id));
+		return {
+			cameraId: camera.id,
+			visibleFraction: focused ? 1 : (visibility?.visibleFraction ?? (staging ? 1 : 0)),
+			distanceFromViewportPx: focused
+				? 0
+				: (visibility?.distanceFromViewportPx ?? Number.POSITIVE_INFINITY),
+			viewportExtentPx: visibility?.viewportExtentPx ?? Math.max(1, window.innerHeight),
+			focused,
+			fullscreen: false,
+			selectedForAudio: false,
+			screenActive: screenActive && (focusedCameraId === null || focused || backgroundActive),
+			mode: 'live'
+		};
+	}
+
+	function livePlan(
+		camera: CameraListItem,
+		grants: ReadonlyMap<string, GridStreamGrant>
+	): LivePeerPlan {
+		const focused = !focusReturnPending && focusedCameraId === camera.id;
+		const focusVariant = focusPreviewPresented ? focusedVariant : previewStream(camera);
+		return {
+			cameraId: camera.id,
+			quality:
+				focused && focusPreviewPresented
+					? effectiveFocusQuality
+					: (grants.get(camera.id)?.quality ?? 'low'),
+			active: screenActive && grants.has(camera.id),
+			variantId: focused ? focusVariant : previewStream(camera)
+		};
+	}
+
 	function reconcileLivePlans(): void {
 		if (schedulerTimer) {
 			clearTimeout(schedulerTimer);
@@ -659,52 +824,33 @@
 		const availableCameras = cameras.filter(
 			(camera) =>
 				camera.profiles.length > 0 &&
+				previewStreams.get(camera.id) !== null &&
 				presentPeekCamera(camera, cameraHealthById.get(camera.id) ?? null).state !== 'offline'
 		);
-		const demands: GridTileDemand[] = availableCameras.map((camera) => {
-			const visibility = tileVisibility[camera.id];
-			const focused = !focusReturnPending && focusedCameraId === camera.id;
-			const staging = wallRevealState === 'staging' && wallTargetCameraIds.includes(camera.id);
-			return {
-				cameraId: camera.id,
-				visibleFraction: focused || staging ? 1 : (visibility?.visibleFraction ?? 0),
-				distanceFromViewportPx: focused
-					? 0
-					: staging
-						? 0
-						: (visibility?.distanceFromViewportPx ?? Number.POSITIVE_INFINITY),
-				viewportExtentPx: visibility?.viewportExtentPx ?? Math.max(1, window.innerHeight),
-				focused,
-				fullscreen: false,
-				selectedForAudio: false,
-				screenActive,
-				mode: 'live'
-			};
-		});
+		const demands = availableCameras.map(liveDemand);
 		const nowMs = performance.now();
 		const previouslyActive = new Set(
 			livePlans.filter((plan) => plan.active).map((plan) => plan.cameraId)
 		);
-		const schedule = gridScheduler.reconcile(demands, nowMs);
+		const schedule = gridScheduler.reconcile(demands, nowMs, wallPreferences.streamingMode);
 		const grants = new Map(schedule.grants.map((grant) => [grant.cameraId, grant]));
-		livePlans = availableCameras.map((camera) => {
-			const focused = !focusReturnPending && focusedCameraId === camera.id;
-			const focusVariant = focusPreviewPresented ? focusedVariant : previewStream(camera);
-			const backgroundActive =
-				focusedCameraId !== null &&
-				(backgroundStreamRate === 'full' || backgroundPulseCameraIds.has(camera.id));
-			return {
-				cameraId: camera.id,
-				quality:
-					focused && focusPreviewPresented
-						? effectiveFocusQuality
-						: (grants.get(camera.id)?.quality ?? ('low' as const)),
-				active:
-					screenActive &&
-					(focusedCameraId === null ? grants.has(camera.id) : focused || backgroundActive),
-				variantId: focused ? focusVariant : previewStream(camera)
-			};
-		});
+		const limited = new Set(schedule.limitedCameraIds);
+		const queued = new Set(schedule.queuedCameraIds);
+		tileAdmissions = Object.fromEntries(
+			availableCameras.map((camera) => [
+				camera.id,
+				!screenActive
+					? 'hidden'
+					: limited.has(camera.id)
+						? 'capacity'
+						: queued.has(camera.id)
+							? 'queued'
+							: grants.has(camera.id)
+								? 'admitted'
+								: 'offscreen'
+			])
+		);
+		livePlans = availableCameras.map((camera) => livePlan(camera, grants));
 		livePlansReady = true;
 		for (const cameraId of grants.keys()) {
 			if (!previouslyActive.has(cameraId)) {
@@ -847,6 +993,8 @@
 				selectPeekLayout(layoutRegistry, dashboardId)
 			);
 			if (!peekViewState.updateLayoutRegistry(generation, savedRegistry)) return;
+			wallDraft = null;
+			wallSaveError = null;
 			armWallReveal();
 			await tick();
 			reconcileLivePlans();
@@ -961,7 +1109,13 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div data-peek-view class="peek-view absolute inset-0 flex min-h-0 min-w-0 flex-col">
+<div
+	data-peek-view
+	class="peek-view absolute inset-0 flex min-h-0 min-w-0 flex-col"
+	style:--peek-wall-ratio={wallPreferences.tileShape === '4:3' ? 4 / 3 : 16 / 9}
+	style:--peek-wall-gap={`${wallPreferences.gapPx}px`}
+	style:--peek-wall-radius={`${wallPreferences.cornerRadiusPx}px`}
+>
 	{#if !cameraViewActive}
 		<h1 class="sr-only">Dashboard</h1>
 	{/if}
@@ -969,8 +1123,25 @@
 		<PeekDashboardSwitcher
 			layouts={layoutRegistry?.layouts ?? []}
 			{activeLayout}
-			busy={layoutSaving}
+			busy={layoutSaving || wallSaving}
 			onselect={selectDashboard}
+		/>
+		<PeekWallSettings
+			preferences={wallPreferences}
+			deviceCapacity={decoderCapacity}
+			visibleStreams={visibleStreamCount}
+			activeStreams={activeStreamCount}
+			editable={wallEditable && !layoutSaving}
+			dirty={wallDirty}
+			saving={wallSaving}
+			saveError={wallSaveError ??
+				(activeLayout?.display === undefined
+					? 'Display settings are unavailable on this server.'
+					: null)}
+			dashboardName={activeLayout?.name}
+			onchange={updateWallPreferences}
+			onsave={() => void saveWallPreferences()}
+			ondiscard={() => void discardWallPreferences()}
 		/>
 		{#if layoutError}
 			<p
@@ -981,7 +1152,11 @@
 			</p>
 		{/if}
 	{/if}
-	<div data-peek-view-content class="peek-view-content">
+	<div
+		data-peek-view-content
+		class="peek-view-content"
+		class:wall-toolbar-space={!cameraViewActive}
+	>
 		{#if loading}
 			<div
 				data-peek-layout-loading
@@ -1141,6 +1316,9 @@
 				{/if}
 				<div
 					data-peek-wall
+					data-streaming-mode={wallPreferences.streamingMode}
+					data-stream-capacity={wallCapacity}
+					data-active-streams={activeStreamCount}
 					data-peek-wall-state={wallRevealed ? 'ready' : 'staging'}
 					data-peek-wall-reveal={wallRevealState === 'staging' ? undefined : wallRevealState}
 					data-peek-wall-ready-count={wallFrameCameraIds.size}
@@ -1165,12 +1343,18 @@
 							{#each activeLayout.items as item, cameraIndex (item.cameraId)}
 								{@const camera = cameras.find((candidate) => candidate.id === item.cameraId)}
 								<div
-									class="layout-tile min-h-0 min-w-0"
+									class="layout-tile wall-tile-slot min-w-0 {cameraIndex === 0
+										? 'col-span-2 md:col-span-1'
+										: ''}"
 									style={`--layout-column:${item.column} / span ${item.columnSpan};--layout-row:${item.row} / span ${item.rowSpan}`}
 								>
 									{#if camera}
 										<PeekCameraTile
 											{camera}
+											tileShape={wallPreferences.tileShape}
+											mediaFit={wallPreferences.mediaFit}
+											cornerRadiusPx={wallPreferences.cornerRadiusPx}
+											admission={tileAdmission(camera.id)}
 											health={cameraHealth(camera.id)}
 											stream={previewStream(camera)}
 											fallbackFrameUrl={peekViewState.cameraFrame(camera.id)}
@@ -1196,17 +1380,27 @@
 							{/each}
 						{:else}
 							{#each cameras as camera, cameraIndex (camera.id)}
-								<PeekCameraTile
-									{camera}
-									health={cameraHealth(camera.id)}
-									stream={previewStream(camera)}
-									fallbackFrameUrl={peekViewState.cameraFrame(camera.id)}
-									mobileFeatured={cameraIndex === 0}
-									onframepresented={handleBackgroundFramePresented}
-									onframeactivitychange={handleWallFrameActivity}
-									onvisibilitychange={handleTileVisibility}
-									onfocus={openFocus}
-								/>
+								<div
+									class="wall-tile-slot min-w-0 {cameraIndex === 0
+										? 'col-span-2 md:col-span-1'
+										: ''}"
+								>
+									<PeekCameraTile
+										{camera}
+										tileShape={wallPreferences.tileShape}
+										mediaFit={wallPreferences.mediaFit}
+										cornerRadiusPx={wallPreferences.cornerRadiusPx}
+										admission={tileAdmission(camera.id)}
+										health={cameraHealth(camera.id)}
+										stream={previewStream(camera)}
+										fallbackFrameUrl={peekViewState.cameraFrame(camera.id)}
+										mobileFeatured={cameraIndex === 0}
+										onframepresented={handleBackgroundFramePresented}
+										onframeactivitychange={handleWallFrameActivity}
+										onvisibilitychange={handleTileVisibility}
+										onfocus={openFocus}
+									/>
+								</div>
 							{/each}
 						{/if}
 					</div>
@@ -1220,9 +1414,11 @@
 						aria-hidden="true"
 					>
 						{#if activeLayout}
-							{#each activeLayout.items as item (item.cameraId)}
+							{#each activeLayout.items as item, cameraIndex (item.cameraId)}
 								<div
-									class="layout-tile min-h-0 min-w-0"
+									class="layout-tile wall-tile-slot min-w-0 {cameraIndex === 0
+										? 'col-span-2 md:col-span-1'
+										: ''}"
 									style={`--layout-column:${item.column} / span ${item.columnSpan};--layout-row:${item.row} / span ${item.rowSpan}`}
 								>
 									<Skeleton class="size-full min-h-28 rounded-lg" />
@@ -1230,11 +1426,9 @@
 							{/each}
 						{:else}
 							{#each cameras as camera, cameraIndex (camera.id)}
-								<Skeleton
-									class="w-full rounded-lg {cameraIndex === 0
-										? 'col-span-2 aspect-video md:col-span-1'
-										: 'aspect-[174/110] md:aspect-video'}"
-								/>
+								<div class="wall-tile-slot {cameraIndex === 0 ? 'col-span-2 md:col-span-1' : ''}">
+									<Skeleton class="size-full rounded-lg" />
+								</div>
 							{/each}
 						{/if}
 					</div>
@@ -1267,6 +1461,30 @@
 </div>
 
 <style>
+	.layout-wall {
+		gap: var(--peek-wall-gap);
+	}
+
+	.wall-tile-slot :global([data-slot='skeleton']) {
+		border-radius: var(--peek-wall-radius);
+	}
+
+	.peek-view :global([data-peek-dashboard-switcher]) {
+		max-width: calc(100% - 8rem);
+	}
+
+	.peek-wall-frame {
+		height: 100%;
+		min-height: 0;
+		overflow: auto;
+	}
+
+	.wall-tile-slot {
+		width: 100%;
+		min-height: 10rem;
+		aspect-ratio: var(--peek-wall-ratio);
+	}
+
 	.peek-view-content {
 		position: relative;
 		display: flex;
@@ -1275,6 +1493,10 @@
 		flex: 1;
 		flex-direction: column;
 		overflow: hidden;
+	}
+
+	.wall-toolbar-space {
+		padding-top: 4rem;
 	}
 
 	.focus-mode-options,
@@ -1353,19 +1575,24 @@
 	}
 
 	@media (min-width: 48rem) {
+		.wall-tile-slot {
+			min-height: 0;
+		}
+
 		.peek-wall-frame:has(.saved-layout) {
 			container-type: size;
 		}
 
 		.layout-wall.saved-layout {
-			width: min(100cqw, calc(100cqh * 16 / 9));
-			height: min(100cqh, calc(100cqw * 9 / 16));
+			width: min(100cqw, calc(100cqh * var(--peek-wall-ratio)));
+			height: min(100cqh, calc(100cqw / var(--peek-wall-ratio)));
 			margin-inline: auto;
 			grid-template-columns: repeat(12, minmax(0, 1fr));
 			grid-template-rows: repeat(12, minmax(0, 1fr));
 		}
 
 		.layout-wall.saved-layout .layout-tile {
+			aspect-ratio: auto;
 			grid-column: var(--layout-column);
 			grid-row: var(--layout-row);
 		}

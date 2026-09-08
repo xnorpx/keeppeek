@@ -49,6 +49,8 @@ export default defineConfig({
 			'@lucide/svelte/icons/rotate-cw',
 			'@lucide/svelte/icons/scan',
 			'@lucide/svelte/icons/scan-line',
+			'@lucide/svelte/icons/save',
+			'@lucide/svelte/icons/settings-2',
 			'@lucide/svelte/icons/shield-off',
 			'@lucide/svelte/icons/triangle-alert',
 			'@lucide/svelte/icons/trash-2',

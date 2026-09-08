@@ -346,7 +346,8 @@ test('keeps mixed Peek states usable at the authored mobile viewport', async ({ 
 				return [Math.round(bounds.width), Math.round(bounds.height)];
 			})
 		)
-		.toEqual([190, 120]);
+		.toEqual([190, 160]);
+	await expect(page.locator('[data-peek-camera="porch"] video')).toHaveCSS('object-fit', 'contain');
 	for (const tile of await page.locator('[data-peek-camera]').all()) {
 		const overlaps = await tile.evaluate((element) => {
 			const regions = Array.from(
