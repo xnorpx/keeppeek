@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Notifications and integrations - The KeepPeek Book</title>
+        <title>Live wall and kiosk display - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -174,102 +174,151 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="notifications-and-integrations"><a class="header" href="#notifications-and-integrations">Notifications and integrations</a></h1>
-<p>KeepPeek evaluates notification policy on the server after an event or operational transition has
-been persisted. Camera workers never call a notification provider or MQTT broker directly. A slow
-or unavailable integration therefore cannot stop camera ingest, recording, event storage, health
-projection, or another delivery channel. See <a href="./camera-health.html">Camera and stream health</a> for the
-evidence that creates operational transitions.</p>
-<p>Notification controls are available only when the server advertises <code>keeppeek.rules.v1</code>.</p>
-<h2 id="build-and-activate-a-rule"><a class="header" href="#build-and-activate-a-rule">Build and activate a rule</a></h2>
-<p>Open <strong>Settings &gt; Notifications</strong> to create a rule. A rule can match:</p>
+                        <h1 id="live-wall-and-kiosk-display"><a class="header" href="#live-wall-and-kiosk-display">Live wall and kiosk display</a></h1>
+<p>The Dashboard is KeepPeek’s multi-camera live wall. Open <strong>Wall display settings</strong> with the
+sliders icon in the upper-right corner to change its presentation and resource policy. These
+choices belong to the selected dashboard on the server, not to camera recording or detection.</p>
+<h2 id="defaults-and-ownership"><a class="header" href="#defaults-and-ownership">Defaults and ownership</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>Default</th><th>Supported choices</th></tr>
+</thead>
+<tbody>
+<tr><td>Tile shape</td><td>16:9</td><td>16:9, 4:3, Native</td></tr>
+<tr><td>Media fit</td><td>Contain</td><td>Contain, Cover (cropped)</td></tr>
+<tr><td>Gap</td><td>10 px</td><td>Whole pixels from 0 through 24</td></tr>
+<tr><td>Corner radius</td><td>10 px</td><td>Whole pixels from 0 through 24</td></tr>
+<tr><td>Streaming mode</td><td>Smart</td><td>Smart, Continuous</td></tr>
+<tr><td>Stream limit</td><td>12, further limited by the browser estimate</td><td>Whole numbers from 1 through 12</td></tr>
+<tr><td>Keep display awake</td><td>Off</td><td>Opt-in Screen Wake Lock</td></tr>
+</tbody>
+</table>
+</div>
+<p>Administrators can preview changes in the current wall and select <strong>Save</strong> to store them in
+the selected dashboard. <strong>Discard changes</strong> restores the saved values. A rejected or conflicting
+save leaves the preview intact; discarding after an error reloads the server’s latest values.
+Users without dashboard-edit permission see read-only controls.</p>
+<p><strong>Reset wall settings</strong> previews the defaults and releases any requested wake lock. Select Save
+to make the reset permanent. Shape, fit, and radius changes do not recreate the WebRTC session,
+restart recording, or alter exported media. Gap changes can naturally change which tiles are visible.</p>
+<p>The server stores each dashboard’s versioned <code>display</code> object under <code>[peek_layouts]</code> in the existing
+<code>config.toml</code>. Settings follow the dashboard through duplication, layout export/import, configuration
+export/import, and restart. A kiosk and a phone can use different dashboards with different settings;
+loading the same dashboard uses the same saved choices, subject to each browser’s runtime limits.</p>
+<p>Older dashboards without a display object use defaults. Writes from older clients that omit the
+object preserve the stored settings. Invalid versions, fields, types, and values are rejected before
+the configuration changes. Browser-local wall preferences are no longer read or written and are not
+automatically uploaded. See the <a href="./configuration-reference.html#peek-layout-registry">layout registry reference</a>.</p>
+<h2 id="gap-corners-and-presets"><a class="header" href="#gap-corners-and-presets">Gap, corners, and presets</a></h2>
+<p>The appearance controls combine live sliders with exact pixel inputs:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Preset</th><th style="text-align: right">Gap</th><th style="text-align: right">Corner radius</th></tr>
+</thead>
+<tbody>
+<tr><td>Current</td><td style="text-align: right">10 px</td><td style="text-align: right">10 px</td></tr>
+<tr><td>Hairline</td><td style="text-align: right">2 px</td><td style="text-align: right">0 px</td></tr>
+<tr><td>Flush</td><td style="text-align: right">0 px</td><td style="text-align: right">0 px</td></tr>
+</tbody>
+</table>
+</div>
+<p>Adjust either value to create a custom appearance. The preset indicator follows the actual values;
+presets change only gap and radius, leaving shape, fit, streaming, and wake-lock settings intact.
+Zero radius gives square corners and removes the normal video-tile border. Health warnings retain
+an inset outline. Zero gap joins neighboring tile slots; Contain can still add letterboxing when
+source and tile ratios differ. No appearance setting stretches pixels or forces Cover fit.</p>
+<p>The automatic All cameras dashboard retains its generated camera grid, but its display settings
+are editable. Other dashboards retain their own independent display settings.</p>
+<h2 id="tile-shape-and-media-fit"><a class="header" href="#tile-shape-and-media-fit">Tile shape and media fit</a></h2>
+<p><strong>16:9</strong> and <strong>4:3</strong> select the wall’s presentation ratio. <strong>Native</strong> uses the first valid decoded
+dimensions for each camera, with 16:9 reserved until dimensions arrive. Native ratios from 1:16
+through 16:1 are accepted. Invalid or missing dimensions retain the reserved frame.</p>
+<p>Media frames fit inside stable grid slots. Native metadata can change the frame inside its slot,
+but it does not repack neighboring tiles. A later main/sub quality switch retains the camera’s
+latched presentation ratio for that mounted wall. Labels, health evidence, and diagnostics remain
+outside the resized media frame, including for portrait and panoramic cameras.</p>
+<p>The wall reserves a compact toolbar strip above the camera grid. On narrow screens, tile slots
+retain at least 160 pixels of height for labels and status, while media keeps the selected ratio.
+The wall scrolls inside its viewport without extending under the surrounding navigation.</p>
 <ul>
-<li>event creation, enrichment, and completion;</li>
-<li>camera offline, stale stream, unavailable decode, and interrupted recording transitions;</li>
-<li>storage or recording health changes;</li>
-<li>an explicit test send.</li>
+<li><strong>Contain</strong> preserves the complete source image. Black bars are expected when the source and
+presentation ratios differ.</li>
+<li><strong>Cover (cropped)</strong> fills the presentation frame without stretching. A <strong>Cropped</strong> label
+identifies the omitted edges. Select Contain to reverse the crop.</li>
+<li>Selecting a tile opens the focused Viewer, which always offers uncropped video independently
+of the wall’s fit choice.</li>
 </ul>
-<p>Filters can narrow a rule by camera or source, group, event kind, zone, confidence, image
-availability, duration, severity, review state, and bookmark state. Schedules use an IANA timezone
-and support active windows and quiet hours, including daylight-saving transitions.</p>
-<p>Editing creates a draft. <strong>Activate</strong> validates and atomically promotes the complete draft; a
-conflict or invalid draft leaves the previous active revision unchanged. Use the test action before
-depending on a new destination. Test sends have separate rate accounting but still use the saved
-credentials and provider configuration.</p>
-<h2 id="avoid-duplicate-and-noisy-alerts"><a class="header" href="#avoid-duplicate-and-noisy-alerts">Avoid duplicate and noisy alerts</a></h2>
-<p>KeepPeek gives one logical notification a stable identity derived from its rule, source, event or
-outage, and lifecycle. Event revisions, retries, enrichment, and recovery retain that identity while
-KeepPeek remains running. Equal message text never collapses unrelated cameras or events.</p>
-<p>Rules can apply cooldowns per event family, camera and event kind, group, whole rule, or outage
-interval. The cooldown starts when the logical notification is created and resets on restart. Rate
-limits can apply to the rule, channel, principal, or whole server and also reset on restart.
-Critical bypass is explicit, bounded, and logged.</p>
-<p>A preliminary alert may be replaced by an enriched revision when a canonical image or final
-duration becomes available within the configured deadline. Missing imagery does not suppress a
-metadata alert unless the action explicitly requires an attachment. Late enrichment stays in
-history without waking the user unless the rule permits it.</p>
-<p>The process-local inbox keeps unread, seen, acknowledged, and cleared state per authenticated principal. Provider
-delivery and acknowledgement remain separate from KeepPeek review state. Delivery history explains
-whether work was created, replaced, suppressed, collapsed, rate-limited, retried, expired,
-delivered, or failed until the next restart.</p>
-<h2 id="deliver-through-pushover"><a class="header" href="#deliver-through-pushover">Deliver through Pushover</a></h2>
-<p>Pushover is the supported push channel. To configure it:</p>
-<ol>
-<li>Register an application at <a href="https://pushover.net/apps/build">https://pushover.net/apps/build</a>.</li>
-<li>Obtain the application token and a user or delivery-group key.</li>
-<li>Add a <strong>Push</strong> action to a notification rule.</li>
-<li>Enter the token and key directly in <strong>Settings &gt; Notifications</strong>.</li>
-<li>Save, activate, and run the rule’s test action.</li>
-</ol>
-<p>The two credentials are write-only. KeepPeek stores owner-only values in <code>secrets.toml</code> and keeps
-references with the rules in <code>config.toml</code>. It never returns them to the browser, health snapshots,
-logs, or delivery reasons. Editing non-secret settings preserves the configured values; replacing
-credentials requires entering both again.</p>
-<p>Push actions support optional device names, sound, priorities <code>-2</code> through <code>2</code>, a public base URL
-for deep links, and one bounded JPEG attachment. Emergency priority <code>2</code> also requires retry and
-expiry values and records provider acknowledgement separately from KeepPeek acknowledgement.</p>
-<p>Timeouts, connection failures, HTTP 408, 425, 429, and 5xx responses use the rule’s bounded
-in-memory retry policy. Invalid credentials and other permanent provider failures do not retry
-indefinitely. Restarting KeepPeek discards pending attempts. Disabling a rule or Push action stops
-new work and expires its pending attempts.</p>
-<h2 id="forward-events-through-mqtt"><a class="header" href="#forward-events-through-mqtt">Forward events through MQTT</a></h2>
-<p>Open <strong>Settings &gt; Integrations</strong> to configure, test, observe, or disable the MQTT event forwarder.
-It requires an MQTT 5 broker; MQTT 3.1 and 3.1.1 are not fallback protocols.</p>
-<p>Configure a stable client ID, KeepPeek instance ID, topic prefix, optional username and write-only
-password, QoS, retention policy, and optional CA certificate for <code>mqtts://</code>. Use TLS outside an
-explicitly trusted local development network. Credentials embedded in the broker URL are rejected.</p>
-<p>The default topics are:</p>
-<pre><code class="language-text">keeppeek/{instance_id}/sources/{source_id}/events/{event_type}
-keeppeek/{instance_id}/forwarders/{forwarder_id}/status
-</code></pre>
-<p>Every event publication is a complete JSON snapshot with <code>schema_version = 1</code>. Consumers should
-deduplicate with <code>(instance_id, event_id, revision)</code>. Camera outage and recovery records use the
-same envelope and carry bounded cause, affected streams, recording consequence, duration, and
-recovery evidence. This profile publishes attachment metadata, not image bytes.</p>
-<p>QoS 1 is the default and provides at-least-once transport while KeepPeek remains running. A broker
-reconnect around acknowledgement can redeliver the same stable identity, so consumers must still
-deduplicate. QoS 0 has no broker acknowledgement; QoS 2 does not make queued work durable across a
-KeepPeek restart.</p>
-<p>The bounded in-memory MQTT outbox defaults to 64 MiB and reconnect delay grows from 250 ms to a
-30-second ceiling. A broker outage or configuration replacement does not reconnect camera streams.
-Restarting KeepPeek discards pending publications and deduplication history. When the outbox is full,
-forwarding fails visibly while event persistence and recording continue.</p>
-<p>Settings and Prometheus expose connection state, bounded error detail, pending items and bytes,
-retry and duplicate counts, last received and delivered times, and oldest unacknowledged work.</p>
-<p>See the detailed <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/notifications.md">notification rule</a>,
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/pushover.md">Pushover</a>, and
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-forwarder.md">MQTT 5 forwarder</a>
-references for every field, payload, metric, and failure state.</p>
+<p>These settings do not add per-camera crop positions or alter the saved grid’s tile coordinates.</p>
+<h2 id="smart-and-continuous-streaming"><a class="header" href="#smart-and-continuous-streaming">Smart and Continuous streaming</a></h2>
+<p><strong>Smart</strong> prioritizes the focused camera, visible tiles, nearby offscreen tiles, and the existing
+audio/visibility signals. It permits bounded prefetch and a one-second release grace period for
+a tile that leaves the viewport.</p>
+<p><strong>Continuous</strong> attempts to keep every visible tile subscribed, independently of motion and
+events. It does not prefetch offscreen tiles. Both modes prefer the lowest browser-compatible
+quality rank for wall previews and preserve the focused Viewer’s separate quality selection.
+When ranks are unavailable, the existing resolution, bitrate, frame-rate, and stream fallback
+ordering applies. A codec rejected by the browser is not requested.</p>
+<p>The settings panel shows requested streams and decoders, the effective budget, the active count,
+and any excess demand before Continuous is selected. The initial browser estimate is half of
+reported hardware concurrency, rounded down and bounded to 4-12 decoders. Missing hardware
+information uses four. The effective ceiling is the smaller of that estimate and <strong>Stream limit</strong>.
+The estimate is not a guarantee that every codec or camera will decode smoothly; lower the limit
+when this device cannot sustain the workload.</p>
+<p>Admission uses batches of up to three cameras, with a 40 ms delay while more admissions are queued.
+Focused and warm background
+streams use the same ceiling. Existing subscriptions are released before their replacements are
+requested. The server still authorizes every subscription and enforces its negotiated transport
+and resource limits; the current capability snapshot does not advertise a numeric server quota.</p>
+<p>A server-refused stream shows <strong>Server did not admit this stream</strong>, while other admitted streams
+continue. A failed eviction stops the local live session and reports an unavailable state instead
+of retaining unconfirmed media work. Lower the stream limit, inspect camera diagnostics, and retry
+the live view when the server or network is available.</p>
+<p>Both modes suspend media subscriptions when the document becomes hidden. Wake lock does not
+override suspension. Returning to the visible wall resumes admission within the same budget.
+None of these actions stops camera ingest, recording, detection, or retention on the server.</p>
+<h2 id="frame-freshness-and-health"><a class="header" href="#frame-freshness-and-health">Frame freshness and health</a></h2>
+<p>A camera’s server-reported health and a browser tile’s live admission are separate facts. A
+healthy camera can have a paused tile when the browser has exhausted its budget.</p>
+<p>Paused tiles identify whether they are waiting for admission, over the device budget, offscreen,
+hidden, unsupported by the browser, or unavailable. A retained frame shows its age when the current
+viewer observed it. A cached frame without a capture timestamp says <strong>Frame time unknown</strong>.
+<strong>No frame received</strong> means there is no observed frame to present. A paused frame is not evidence
+that the camera itself stopped recording.</p>
+<p>Use the camera-information control for transport, decoded video, and recording evidence. See
+<a href="./camera-health.html">camera and stream health</a> for the authoritative health meanings.</p>
+<h2 id="keep-a-display-awake"><a class="header" href="#keep-a-display-awake">Keep a display awake</a></h2>
+<p>Enable <strong>Keep display awake</strong> after interacting with the Dashboard, then save it for that dashboard.
+The setting uses the browser’s
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API">Screen Wake Lock API</a>.
+Support requires a secure context, normally HTTPS or localhost, and permission from the browser,
+embedding policy, and device.</p>
+<p>A saved enabled preference waits for a user interaction before its first request. Only one request
+is outstanding at a time. The status reports waiting, requesting, active, released, unsupported,
+or denied. A request that receives no response within ten seconds is also reported as denied.</p>
+<p>Only the intent is stored on the server. The active wake-lock handle, browser permission, current
+visibility, and measured decoder capacity are runtime facts, not persisted settings. Switching to
+a dashboard with wake lock disabled releases the previous dashboard’s lock.</p>
+<p>The lock is released when the setting is turned off, the document is hidden, the user leaves the
+Dashboard, or the view is destroyed. A late request result is released too. After a visibility
+return, KeepPeek may reacquire the lock if it is still enabled and the browser permits it.
+Rapid toggles and visibility changes reconcile to the latest choice after release completes.</p>
+<p>The browser or operating system can release or deny a lock, including in battery-saving mode.
+KeepPeek does not repeatedly prompt or immediately reacquire a system-released lock. To try again
+after denial, turn the setting off and on. If <strong>Release failed</strong> appears, close the Dashboard tab
+to end its use of the browser resource. Wake lock is not native operating-system kiosk management
+and does not guarantee that a device can never sleep.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="recording-maintenance.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="camera-health.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="home-assistant.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="configuration-management.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -279,11 +328,11 @@ references for every field, payload, metric, and failure state.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="recording-maintenance.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="camera-health.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="home-assistant.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="configuration-management.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

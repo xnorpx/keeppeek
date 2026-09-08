@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a1d02705.js";
+            window.path_to_searchindex_js = "searchindex-aace67d8.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a457eaa6.js"></script>
+        <script src="toc-1423543a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1500,6 +1500,142 @@ work runs independently from camera media.</p>
 gaps. Use <a href="#notifications-and-integrations">Notifications and integrations</a> to deliver these
 operational transitions without coupling providers or brokers to camera ingest.</p>
 <div style="break-before: page; page-break-before: always;"></div>
+<h1 id="live-wall-and-kiosk-display"><a class="header" href="#live-wall-and-kiosk-display">Live wall and kiosk display</a></h1>
+<p>The Dashboard is KeepPeek’s multi-camera live wall. Open <strong>Wall display settings</strong> with the
+sliders icon in the upper-right corner to change its presentation and resource policy. These
+choices belong to the selected dashboard on the server, not to camera recording or detection.</p>
+<h2 id="defaults-and-ownership"><a class="header" href="#defaults-and-ownership">Defaults and ownership</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>Default</th><th>Supported choices</th></tr>
+</thead>
+<tbody>
+<tr><td>Tile shape</td><td>16:9</td><td>16:9, 4:3, Native</td></tr>
+<tr><td>Media fit</td><td>Contain</td><td>Contain, Cover (cropped)</td></tr>
+<tr><td>Gap</td><td>10 px</td><td>Whole pixels from 0 through 24</td></tr>
+<tr><td>Corner radius</td><td>10 px</td><td>Whole pixels from 0 through 24</td></tr>
+<tr><td>Streaming mode</td><td>Smart</td><td>Smart, Continuous</td></tr>
+<tr><td>Stream limit</td><td>12, further limited by the browser estimate</td><td>Whole numbers from 1 through 12</td></tr>
+<tr><td>Keep display awake</td><td>Off</td><td>Opt-in Screen Wake Lock</td></tr>
+</tbody>
+</table>
+</div>
+<p>Administrators can preview changes in the current wall and select <strong>Save</strong> to store them in
+the selected dashboard. <strong>Discard changes</strong> restores the saved values. A rejected or conflicting
+save leaves the preview intact; discarding after an error reloads the server’s latest values.
+Users without dashboard-edit permission see read-only controls.</p>
+<p><strong>Reset wall settings</strong> previews the defaults and releases any requested wake lock. Select Save
+to make the reset permanent. Shape, fit, and radius changes do not recreate the WebRTC session,
+restart recording, or alter exported media. Gap changes can naturally change which tiles are visible.</p>
+<p>The server stores each dashboard’s versioned <code>display</code> object under <code>[peek_layouts]</code> in the existing
+<code>config.toml</code>. Settings follow the dashboard through duplication, layout export/import, configuration
+export/import, and restart. A kiosk and a phone can use different dashboards with different settings;
+loading the same dashboard uses the same saved choices, subject to each browser’s runtime limits.</p>
+<p>Older dashboards without a display object use defaults. Writes from older clients that omit the
+object preserve the stored settings. Invalid versions, fields, types, and values are rejected before
+the configuration changes. Browser-local wall preferences are no longer read or written and are not
+automatically uploaded. See the <a href="#peek-layout-registry">layout registry reference</a>.</p>
+<h2 id="gap-corners-and-presets"><a class="header" href="#gap-corners-and-presets">Gap, corners, and presets</a></h2>
+<p>The appearance controls combine live sliders with exact pixel inputs:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Preset</th><th style="text-align: right">Gap</th><th style="text-align: right">Corner radius</th></tr>
+</thead>
+<tbody>
+<tr><td>Current</td><td style="text-align: right">10 px</td><td style="text-align: right">10 px</td></tr>
+<tr><td>Hairline</td><td style="text-align: right">2 px</td><td style="text-align: right">0 px</td></tr>
+<tr><td>Flush</td><td style="text-align: right">0 px</td><td style="text-align: right">0 px</td></tr>
+</tbody>
+</table>
+</div>
+<p>Adjust either value to create a custom appearance. The preset indicator follows the actual values;
+presets change only gap and radius, leaving shape, fit, streaming, and wake-lock settings intact.
+Zero radius gives square corners and removes the normal video-tile border. Health warnings retain
+an inset outline. Zero gap joins neighboring tile slots; Contain can still add letterboxing when
+source and tile ratios differ. No appearance setting stretches pixels or forces Cover fit.</p>
+<p>The automatic All cameras dashboard retains its generated camera grid, but its display settings
+are editable. Other dashboards retain their own independent display settings.</p>
+<h2 id="tile-shape-and-media-fit"><a class="header" href="#tile-shape-and-media-fit">Tile shape and media fit</a></h2>
+<p><strong>16:9</strong> and <strong>4:3</strong> select the wall’s presentation ratio. <strong>Native</strong> uses the first valid decoded
+dimensions for each camera, with 16:9 reserved until dimensions arrive. Native ratios from 1:16
+through 16:1 are accepted. Invalid or missing dimensions retain the reserved frame.</p>
+<p>Media frames fit inside stable grid slots. Native metadata can change the frame inside its slot,
+but it does not repack neighboring tiles. A later main/sub quality switch retains the camera’s
+latched presentation ratio for that mounted wall. Labels, health evidence, and diagnostics remain
+outside the resized media frame, including for portrait and panoramic cameras.</p>
+<p>The wall reserves a compact toolbar strip above the camera grid. On narrow screens, tile slots
+retain at least 160 pixels of height for labels and status, while media keeps the selected ratio.
+The wall scrolls inside its viewport without extending under the surrounding navigation.</p>
+<ul>
+<li><strong>Contain</strong> preserves the complete source image. Black bars are expected when the source and
+presentation ratios differ.</li>
+<li><strong>Cover (cropped)</strong> fills the presentation frame without stretching. A <strong>Cropped</strong> label
+identifies the omitted edges. Select Contain to reverse the crop.</li>
+<li>Selecting a tile opens the focused Viewer, which always offers uncropped video independently
+of the wall’s fit choice.</li>
+</ul>
+<p>These settings do not add per-camera crop positions or alter the saved grid’s tile coordinates.</p>
+<h2 id="smart-and-continuous-streaming"><a class="header" href="#smart-and-continuous-streaming">Smart and Continuous streaming</a></h2>
+<p><strong>Smart</strong> prioritizes the focused camera, visible tiles, nearby offscreen tiles, and the existing
+audio/visibility signals. It permits bounded prefetch and a one-second release grace period for
+a tile that leaves the viewport.</p>
+<p><strong>Continuous</strong> attempts to keep every visible tile subscribed, independently of motion and
+events. It does not prefetch offscreen tiles. Both modes prefer the lowest browser-compatible
+quality rank for wall previews and preserve the focused Viewer’s separate quality selection.
+When ranks are unavailable, the existing resolution, bitrate, frame-rate, and stream fallback
+ordering applies. A codec rejected by the browser is not requested.</p>
+<p>The settings panel shows requested streams and decoders, the effective budget, the active count,
+and any excess demand before Continuous is selected. The initial browser estimate is half of
+reported hardware concurrency, rounded down and bounded to 4-12 decoders. Missing hardware
+information uses four. The effective ceiling is the smaller of that estimate and <strong>Stream limit</strong>.
+The estimate is not a guarantee that every codec or camera will decode smoothly; lower the limit
+when this device cannot sustain the workload.</p>
+<p>Admission uses batches of up to three cameras, with a 40 ms delay while more admissions are queued.
+Focused and warm background
+streams use the same ceiling. Existing subscriptions are released before their replacements are
+requested. The server still authorizes every subscription and enforces its negotiated transport
+and resource limits; the current capability snapshot does not advertise a numeric server quota.</p>
+<p>A server-refused stream shows <strong>Server did not admit this stream</strong>, while other admitted streams
+continue. A failed eviction stops the local live session and reports an unavailable state instead
+of retaining unconfirmed media work. Lower the stream limit, inspect camera diagnostics, and retry
+the live view when the server or network is available.</p>
+<p>Both modes suspend media subscriptions when the document becomes hidden. Wake lock does not
+override suspension. Returning to the visible wall resumes admission within the same budget.
+None of these actions stops camera ingest, recording, detection, or retention on the server.</p>
+<h2 id="frame-freshness-and-health"><a class="header" href="#frame-freshness-and-health">Frame freshness and health</a></h2>
+<p>A camera’s server-reported health and a browser tile’s live admission are separate facts. A
+healthy camera can have a paused tile when the browser has exhausted its budget.</p>
+<p>Paused tiles identify whether they are waiting for admission, over the device budget, offscreen,
+hidden, unsupported by the browser, or unavailable. A retained frame shows its age when the current
+viewer observed it. A cached frame without a capture timestamp says <strong>Frame time unknown</strong>.
+<strong>No frame received</strong> means there is no observed frame to present. A paused frame is not evidence
+that the camera itself stopped recording.</p>
+<p>Use the camera-information control for transport, decoded video, and recording evidence. See
+<a href="#camera-and-stream-health">camera and stream health</a> for the authoritative health meanings.</p>
+<h2 id="keep-a-display-awake"><a class="header" href="#keep-a-display-awake">Keep a display awake</a></h2>
+<p>Enable <strong>Keep display awake</strong> after interacting with the Dashboard, then save it for that dashboard.
+The setting uses the browser’s
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API">Screen Wake Lock API</a>.
+Support requires a secure context, normally HTTPS or localhost, and permission from the browser,
+embedding policy, and device.</p>
+<p>A saved enabled preference waits for a user interaction before its first request. Only one request
+is outstanding at a time. The status reports waiting, requesting, active, released, unsupported,
+or denied. A request that receives no response within ten seconds is also reported as denied.</p>
+<p>Only the intent is stored on the server. The active wake-lock handle, browser permission, current
+visibility, and measured decoder capacity are runtime facts, not persisted settings. Switching to
+a dashboard with wake lock disabled releases the previous dashboard’s lock.</p>
+<p>The lock is released when the setting is turned off, the document is hidden, the user leaves the
+Dashboard, or the view is destroyed. A late request result is released too. After a visibility
+return, KeepPeek may reacquire the lock if it is still enabled and the browser permits it.
+Rapid toggles and visibility changes reconcile to the latest choice after release completes.</p>
+<p>The browser or operating system can release or deny a lock, including in battery-saving mode.
+KeepPeek does not repeatedly prompt or immediately reacquire a system-released lock. To try again
+after denial, turn the setting off and on. If <strong>Release failed</strong> appears, close the Dashboard tab
+to end its use of the browser resource. Wake lock is not native operating-system kiosk management
+and does not guarantee that a device can never sleep.</p>
+<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="visual-configuration-management"><a class="header" href="#visual-configuration-management">Visual configuration management</a></h1>
 <p>The Cameras page can inspect and change shared camera defaults, effective inherited values,
 versioned templates, and explicit camera sets when the server advertises
@@ -1526,6 +1662,10 @@ are not available.</p>
 The existing companion <code>secrets.toml</code> holds reusable private strings. Layouts, notification rules,
 credential metadata, and camera templates belong in the application configuration, not in separate
 settings files. Media files and recording catalogs are data, not additional settings stores.</p>
+<p><a href="#live-wall-and-kiosk-display">Live-wall display settings</a> belong to each saved dashboard in <code>[peek_layouts]</code>.
+Shape, fit, gap, corner radius, streaming mode, stream ceiling, and wake-lock intent are stored
+on the server and included in configuration and layout exchange. Browser permission and active
+media/wake-lock handles remain runtime state.</p>
 <p>This chapter describes the supported on-disk sections and their serialized Rust types. It is not
 a list of every API response or runtime struct. Use <a href="#visual-configuration-management">visual configuration</a>
 for normal administration and <a href="#export-and-import-configuration">configuration exchange</a> for
@@ -2022,10 +2162,35 @@ server-managed section.</p>
 <tr><td><code>owner_id</code></td><td><code>String</code></td><td><code>"server"</code> for shared layouts; private records must match their principal.</td></tr>
 <tr><td><code>audience</code></td><td><code>LayoutAudience</code></td><td>Defaults to everyone with an empty credential list when the entire field is absent.</td></tr>
 <tr><td><code>activity_focus</code></td><td><code>bool</code></td><td>Whether activity can affect layout focus.</td></tr>
+<tr><td><code>display</code></td><td>Optional <code>DisplaySettings</code></td><td>Dashboard-owned display settings; absent objects use defaults. Older client writes that omit the object preserve saved values.</td></tr>
 <tr><td><code>tiles</code></td><td><code>Vec&lt;LayoutTile&gt;</code></td><td>Ordered tiles, at most 64 per layout; no duplicate camera IDs or overlaps.</td></tr>
 </tbody>
 </table>
 </div>
+<p>Type: <code>DisplaySettings</code>, nested <code>display</code> table. The dashboard editor writes the complete object
+with the existing registry revision. Only Administrators can change it. A User can still change
+their selected dashboard but cannot alter its display settings. No field resolves secret references.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>version</code></td><td><code>u32</code></td><td><code>1</code></td><td>Required in present objects; only version <code>1</code> is supported.</td></tr>
+<tr><td><code>tile_shape</code></td><td><code>TileShape</code></td><td><code>"16:9"</code></td><td><code>"16:9"</code>, <code>"4:3"</code>, or <code>"native"</code>.</td></tr>
+<tr><td><code>media_fit</code></td><td><code>MediaFit</code></td><td><code>"contain"</code></td><td><code>"contain"</code> or <code>"cover"</code>; never stretch.</td></tr>
+<tr><td><code>streaming_mode</code></td><td><code>StreamingMode</code></td><td><code>"smart"</code></td><td><code>"smart"</code> or <code>"continuous"</code>.</td></tr>
+<tr><td><code>stream_limit</code></td><td><code>u32</code></td><td><code>12</code></td><td>Whole number from 1 through 12; each browser also enforces its own capacity.</td></tr>
+<tr><td><code>keep_awake</code></td><td><code>bool</code></td><td><code>false</code></td><td>Saved wake-lock intent; browser gesture, visibility, permission, and device policy still apply.</td></tr>
+<tr><td><code>gap_px</code></td><td><code>u32</code></td><td><code>10</code></td><td>Whole pixels from 0 through 24 between tile slots.</td></tr>
+<tr><td><code>corner_radius_px</code></td><td><code>u32</code></td><td><code>10</code></td><td>Whole pixels from 0 through 24; zero gives square video corners.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Display objects reject unknown fields, positional arrays, invalid types, and out-of-range values.
+The All cameras dashboard keeps immutable generated coordinates and identity, but its display
+object can be edited and survives camera-inventory synchronization. Preset names are derived from
+gap/radius values and are not an additional stored field.</p>
 <p>Type: <code>LayoutAudience</code>, nested <code>audience</code> table.</p>
 <div class="table-wrapper">
 <table>

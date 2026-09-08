@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a1d02705.js";
+            window.path_to_searchindex_js = "searchindex-aace67d8.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a457eaa6.js"></script>
+        <script src="toc-1423543a.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,6 +179,10 @@
 The existing companion <code>secrets.toml</code> holds reusable private strings. Layouts, notification rules,
 credential metadata, and camera templates belong in the application configuration, not in separate
 settings files. Media files and recording catalogs are data, not additional settings stores.</p>
+<p><a href="./live-wall.html">Live-wall display settings</a> belong to each saved dashboard in <code>[peek_layouts]</code>.
+Shape, fit, gap, corner radius, streaming mode, stream ceiling, and wake-lock intent are stored
+on the server and included in configuration and layout exchange. Browser permission and active
+media/wake-lock handles remain runtime state.</p>
 <p>This chapter describes the supported on-disk sections and their serialized Rust types. It is not
 a list of every API response or runtime struct. Use <a href="./configuration-management.html">visual configuration</a>
 for normal administration and <a href="./configuration-export-import.html">configuration exchange</a> for
@@ -675,10 +679,35 @@ server-managed section.</p>
 <tr><td><code>owner_id</code></td><td><code>String</code></td><td><code>"server"</code> for shared layouts; private records must match their principal.</td></tr>
 <tr><td><code>audience</code></td><td><code>LayoutAudience</code></td><td>Defaults to everyone with an empty credential list when the entire field is absent.</td></tr>
 <tr><td><code>activity_focus</code></td><td><code>bool</code></td><td>Whether activity can affect layout focus.</td></tr>
+<tr><td><code>display</code></td><td>Optional <code>DisplaySettings</code></td><td>Dashboard-owned display settings; absent objects use defaults. Older client writes that omit the object preserve saved values.</td></tr>
 <tr><td><code>tiles</code></td><td><code>Vec&lt;LayoutTile&gt;</code></td><td>Ordered tiles, at most 64 per layout; no duplicate camera IDs or overlaps.</td></tr>
 </tbody>
 </table>
 </div>
+<p>Type: <code>DisplaySettings</code>, nested <code>display</code> table. The dashboard editor writes the complete object
+with the existing registry revision. Only Administrators can change it. A User can still change
+their selected dashboard but cannot alter its display settings. No field resolves secret references.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Validation and meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>version</code></td><td><code>u32</code></td><td><code>1</code></td><td>Required in present objects; only version <code>1</code> is supported.</td></tr>
+<tr><td><code>tile_shape</code></td><td><code>TileShape</code></td><td><code>"16:9"</code></td><td><code>"16:9"</code>, <code>"4:3"</code>, or <code>"native"</code>.</td></tr>
+<tr><td><code>media_fit</code></td><td><code>MediaFit</code></td><td><code>"contain"</code></td><td><code>"contain"</code> or <code>"cover"</code>; never stretch.</td></tr>
+<tr><td><code>streaming_mode</code></td><td><code>StreamingMode</code></td><td><code>"smart"</code></td><td><code>"smart"</code> or <code>"continuous"</code>.</td></tr>
+<tr><td><code>stream_limit</code></td><td><code>u32</code></td><td><code>12</code></td><td>Whole number from 1 through 12; each browser also enforces its own capacity.</td></tr>
+<tr><td><code>keep_awake</code></td><td><code>bool</code></td><td><code>false</code></td><td>Saved wake-lock intent; browser gesture, visibility, permission, and device policy still apply.</td></tr>
+<tr><td><code>gap_px</code></td><td><code>u32</code></td><td><code>10</code></td><td>Whole pixels from 0 through 24 between tile slots.</td></tr>
+<tr><td><code>corner_radius_px</code></td><td><code>u32</code></td><td><code>10</code></td><td>Whole pixels from 0 through 24; zero gives square video corners.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Display objects reject unknown fields, positional arrays, invalid types, and out-of-range values.
+The All cameras dashboard keeps immutable generated coordinates and identity, but its display
+object can be edited and survives camera-inventory synchronization. Preset names are derived from
+gap/radius values and are not an additional stored field.</p>
 <p>Type: <code>LayoutAudience</code>, nested <code>audience</code> table.</p>
 <div class="table-wrapper">
 <table>
