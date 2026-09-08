@@ -84,11 +84,12 @@ and 242 Playwright tests (two existing capability skips, 57.0 seconds). Evidence
 The subsequent extraction of the unchanged startup hook into a small helper passes
 all four startup regressions and strict Clippy; it does not change execution order.
 
-The legacy `StorageEngine::start_inner` still calls `cleanup_stale_active_files`,
-which deletes `.active` paths at startup without persistent ownership proof. That
-pre-existing path must be replaced with explicit owned-temporary remediation for
-the full #133 unknown-file invariant. This is not hidden by the passing new
-recording-deletion recovery tests or the green PR checks.
+The legacy suffix-based `cleanup_stale_active_files` pass is removed. A regression
+first reproduced deletion of unowned bytes, then verified preservation in both media
+roots with and without a catalog. Interrupted recording bytes and catalog rows now
+survive startup, as do files behind directory symlinks. All 20 storage-engine tests
+pass; normal finalized-media retention remains unchanged. Previewed remediation of
+proven abandoned temporary data still needs its explicit workflow.
 
 The latest continuation adds immutable 32-byte staging-directory identity evidence
 in place of the unqualified `was_staged` boolean. The field is bounded on load and
