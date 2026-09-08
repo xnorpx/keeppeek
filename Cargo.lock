@@ -2409,6 +2409,7 @@ dependencies = [
  "retina",
  "rouille",
  "rumqttc",
+ "rustix 1.1.4",
  "schema",
  "serde",
  "serde_json",

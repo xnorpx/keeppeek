@@ -21,6 +21,9 @@ pub(in crate::storage) const IDENTITY_BYTES_MAX: usize = 41;
 const PATH_COMPONENTS_MAX: usize = 16;
 const INSPECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
+mod inventory;
+mod removal;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::storage) struct Identity {
     device: u64,

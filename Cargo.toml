@@ -172,6 +172,9 @@ sha2 = "0.11"
 subtle = "2"
 zip = { version = "7.2.0", default-features = false, features = ["deflate"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["process", "fs"] }
+
 [target.'cfg(windows)'.dependencies]
 str0m = { version = "0.23.0", default-features = false, features = [
   "wincrypto-dimpl",
@@ -180,7 +183,11 @@ tracing-layer-win-eventlog = { version = "1.0.1", default-features = false }
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Media",
+  "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+  "Win32_System_SystemServices",
 ] }
 windows-service = { version = "0.8.0", default-features = false }
 

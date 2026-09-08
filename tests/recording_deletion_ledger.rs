@@ -59,6 +59,41 @@ impl Fixture {
             .unwrap()
     }
 
+    fn interrupt_started_work(&self, job: &Job) -> PathBuf {
+        pollster::block_on(async {
+            let database =
+                turso::Builder::new_local(self.root.join("recordings.db").to_str().unwrap())
+                    .build()
+                    .await
+                    .unwrap();
+            let connection = database.connect().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO recording_maintenance_execution
+                 (job_id, recording_id, phase, executor, changed_at_ms)
+                 VALUES (?1, 'recording-1', 'working', 'interrupted', 1)",
+                    turso::params![job.id.as_str()],
+                )
+                .await
+                .unwrap();
+            let mut rows = connection
+                .query(
+                    "SELECT token FROM recording_maintenance_claims WHERE job_id = ?1",
+                    turso::params![job.id.as_str()],
+                )
+                .await
+                .unwrap();
+            let token = rows
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get::<String>(0)
+                .unwrap();
+            self.root.join(".maintenance").join(token)
+        })
+    }
+
     fn prepare(&self, catalog: &RecordingCatalog) -> Job {
         let handle = catalog.handle();
         let media = self.root.join("recording.mp4");
@@ -103,6 +138,352 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.root).unwrap();
     }
+}
+
+#[test]
+fn cancellation_after_restart_preserves_unresolved_missing_media_claims() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let job = fixture.confirm(&catalog);
+    assert_eq!(
+        catalog
+            .handle()
+            .recording_deletion_claims("administrator", &job.id)
+            .unwrap()
+            .len(),
+        1
+    );
+    catalog.shutdown();
+    fixture.interrupt_started_work(&job);
+    let original = fixture.root.join("recording.mp4");
+    let relocated = fixture.root.join("relocated.mp4");
+    std::fs::rename(&original, &relocated).unwrap();
+    let catalog = fixture.open();
+    catalog
+        .handle()
+        .recording_deletion_intent("administrator", Action::Cancel { id: job.id.clone() })
+        .unwrap();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .execute_recording_deletion("administrator", &job.id, &archive)
+        .unwrap();
+    assert_eq!(report.deleted, 0);
+    assert_eq!(report.failed, 1);
+    assert!(report.cancelled);
+    assert!(
+        catalog
+            .handle()
+            .update_recording_path("recording-1", &relocated, true)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&relocated).unwrap(), [42; 64]);
+
+    std::fs::rename(&relocated, &original).unwrap();
+    let resolved = catalog
+        .handle()
+        .execute_recording_deletion("administrator", &job.id, &archive)
+        .unwrap();
+    assert_eq!(resolved.failed, 0);
+    assert_eq!(
+        resolved.objects[0].status,
+        keeppeek::storage::catalog::maintenance::jobs::execution::Status::Cancelled
+    );
+    assert_eq!(std::fs::read(original).unwrap(), [42; 64]);
+    catalog.shutdown();
+}
+
+#[test]
+fn cancelled_work_with_unexpected_staging_contents_remains_unresolved() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let job = fixture.confirm(&catalog);
+    catalog
+        .handle()
+        .recording_deletion_claims("administrator", &job.id)
+        .unwrap();
+    catalog.shutdown();
+    let directory = fixture.interrupt_started_work(&job);
+    std::fs::create_dir_all(&directory).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            directory.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(directory.join("unexpected"), [24; 8]).unwrap();
+    let catalog = fixture.open();
+    catalog
+        .handle()
+        .recording_deletion_intent("administrator", Action::Cancel { id: job.id.clone() })
+        .unwrap();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .execute_recording_deletion("administrator", &job.id, &archive)
+        .unwrap();
+
+    assert_eq!(report.failed, 1);
+    assert_eq!(report.deleted, 0);
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        [42; 64]
+    );
+    assert_eq!(
+        std::fs::read(directory.join("unexpected")).unwrap(),
+        [24; 8]
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn restarted_worker_reports_interrupted_work_as_retryable_failure() {
+    use keeppeek::storage::catalog::maintenance::jobs::execution::Status as ExecutionStatus;
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let job = fixture.confirm(&catalog);
+    catalog
+        .handle()
+        .recording_deletion_claims("administrator", &job.id)
+        .unwrap();
+    catalog.shutdown();
+    fixture.interrupt_started_work(&job);
+    let catalog = fixture.open();
+    let progress = catalog
+        .handle()
+        .recording_deletion_progress("administrator", &job.id)
+        .unwrap();
+
+    assert_eq!(progress.objects[0].status, ExecutionStatus::Failed);
+    assert_eq!(progress.failed, 1);
+    assert_eq!(progress.deleted, 0);
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        [42; 64]
+    );
+    let archive = Archive::open(&fixture.root).unwrap();
+    assert_eq!(
+        catalog
+            .handle()
+            .execute_recording_deletion("administrator", &job.id, &archive)
+            .unwrap()
+            .deleted,
+        1
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn reconciliation_remedies_require_the_owner_and_reject_reappeared_files() {
+    use keeppeek::storage::catalog::maintenance::reconciliation::{Kind, Remedy};
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    fixture.prepare(&catalog);
+    let file = fixture.root.join("recording.mp4");
+    std::fs::remove_file(&file).unwrap();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .recording_reconciliation("administrator", &archive)
+        .unwrap();
+    let item = report
+        .items
+        .iter()
+        .find(|item| item.kind == Kind::MissingFile)
+        .unwrap();
+    assert!(
+        catalog
+            .handle()
+            .apply_recording_reconciliation(
+                "other",
+                &report,
+                &item.id,
+                Remedy::RetainTombstone,
+                &archive
+            )
+            .is_err()
+    );
+    std::fs::write(&file, [24; 64]).unwrap();
+    assert!(
+        catalog
+            .handle()
+            .apply_recording_reconciliation(
+                "administrator",
+                &report,
+                &item.id,
+                Remedy::RetainTombstone,
+                &archive
+            )
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), [24; 64]);
+    std::fs::remove_file(&file).unwrap();
+    catalog
+        .handle()
+        .apply_recording_reconciliation(
+            "administrator",
+            &report,
+            &item.id,
+            Remedy::RetainTombstone,
+            &archive,
+        )
+        .unwrap();
+    assert_eq!(catalog.handle().stats().unwrap().recording_files, 0);
+    catalog.shutdown();
+}
+
+#[test]
+fn reconciliation_reports_missing_and_unknown_files_without_mutating_them() {
+    use keeppeek::storage::catalog::maintenance::reconciliation::Kind;
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    fixture.prepare(&catalog);
+    std::fs::remove_file(fixture.root.join("recording.mp4")).unwrap();
+    let unknown = fixture.root.join("unknown.mp4");
+    std::fs::write(&unknown, [24; 64]).unwrap();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .recording_reconciliation("administrator", &archive)
+        .unwrap();
+    assert!(report.complete);
+    assert!(
+        report
+            .items
+            .iter()
+            .any(|item| item.kind == Kind::MissingFile
+                && item.recording_id.as_deref() == Some("recording-1"))
+    );
+    assert!(
+        report
+            .items
+            .iter()
+            .any(|item| item.kind == Kind::UnknownFile)
+    );
+    assert_eq!(std::fs::read(unknown).unwrap(), [24; 64]);
+    assert!(!format!("{report:?}").contains(fixture.root.to_str().unwrap()));
+    assert_eq!(catalog.handle().stats().unwrap().recording_files, 1);
+    catalog.shutdown();
+}
+
+#[test]
+fn completed_deletion_does_not_reserve_the_path_for_a_new_recording() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let first = fixture.confirm(&catalog);
+    let archive = Archive::open(&fixture.root).unwrap();
+    assert_eq!(
+        catalog
+            .handle()
+            .execute_recording_deletion("administrator", &first.id, &archive)
+            .unwrap()
+            .deleted,
+        1
+    );
+    std::fs::write(fixture.root.join("recording.mp4"), [24; 64]).unwrap();
+    let replacement = fixture.confirm(&catalog);
+    let report = catalog
+        .handle()
+        .execute_recording_deletion("administrator", &replacement.id, &archive)
+        .unwrap();
+    assert_eq!(report.deleted, 1);
+    assert_eq!(
+        catalog
+            .handle()
+            .recording_deletion_progress("administrator", &first.id)
+            .unwrap()
+            .deleted,
+        1
+    );
+    catalog.shutdown();
+}
+
+#[test]
+fn confirmed_deletion_preserves_unknown_media_and_reports_the_same_result_after_restart() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let queued = fixture.confirm(&catalog);
+    let unknown = fixture.root.join("unknown.mp4");
+    std::fs::write(&unknown, [24; 64]).unwrap();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .execute_recording_deletion("administrator", &queued.id, &archive)
+        .unwrap();
+    assert_eq!(report.deleted, 1);
+    assert_eq!(report.failed, 0);
+    assert!(!fixture.root.join("recording.mp4").exists());
+    assert_eq!(std::fs::read(&unknown).unwrap(), [24; 64]);
+    assert!(
+        catalog
+            .handle()
+            .recording_maintenance_snapshot(queued.snapshot.scope.clone())
+            .unwrap()
+            .recordings
+            .is_empty()
+    );
+    assert_eq!(
+        catalog
+            .handle()
+            .execute_recording_deletion("administrator", &queued.id, &archive)
+            .unwrap(),
+        report
+    );
+    catalog.shutdown();
+    let catalog = fixture.open();
+    assert_eq!(
+        catalog
+            .handle()
+            .execute_recording_deletion("administrator", &queued.id, &archive)
+            .unwrap(),
+        report
+    );
+    assert_eq!(std::fs::read(unknown).unwrap(), [24; 64]);
+    catalog.shutdown();
+}
+
+#[test]
+fn deletion_claims_survive_restart_and_fence_recording_mutation_until_cancelled() {
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    let queued = fixture.confirm(&catalog);
+    let handle = catalog.handle();
+    let claims = handle
+        .recording_deletion_claims("administrator", &queued.id)
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].recording_id(), "recording-1");
+    assert!(!format!("{claims:?}").contains(fixture.root.to_str().unwrap()));
+    assert!(handle.set_recording_protected("recording-1", true).is_err());
+    let replacement = fixture.root.join("replacement.mp4");
+    std::fs::write(&replacement, [24; 64]).unwrap();
+    assert!(
+        handle
+            .update_recording_path("recording-1", &replacement, true)
+            .is_err()
+    );
+    catalog.shutdown();
+    let catalog = fixture.open();
+    let handle = catalog.handle();
+    assert_eq!(
+        handle
+            .recording_deletion_claims("administrator", &queued.id)
+            .unwrap(),
+        claims
+    );
+    handle
+        .recording_deletion_intent("administrator", Action::Cancel { id: queued.id })
+        .unwrap();
+    handle.set_recording_protected("recording-1", true).unwrap();
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        [42; 64]
+    );
+    catalog.shutdown();
 }
 
 #[test]
