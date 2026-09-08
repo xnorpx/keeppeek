@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const CAMERA_DATABASE_ARCHIVE_URL: &str =
@@ -20,6 +20,8 @@ const CAMERA_DATABASE_ARCHIVE_FILE: &str = "cameras.zip";
 const CAMERA_DATABASE_FILES: &[&str] = &["cameras.json", "cameras.csv", "release-metadata.json"];
 const CAMERA_DATABASE_DOWNLOAD_ATTEMPTS: usize = 3;
 const UI_BUILD_DIR_ENV: &str = "KEEPPEEK_UI_BUILD_DIR";
+const UI_BUILD_LOCK_RETRY: Duration = Duration::from_millis(100);
+const UI_BUILD_LOCK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 const UI_INPUTS: &[&str] = &[
     "ui/src",
@@ -70,10 +72,10 @@ fn main() -> io::Result<()> {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR"));
     let mut out_dir_hasher = DefaultHasher::new();
     out_dir.hash(&mut out_dir_hasher);
-    let cargo_ui_dir = ui_dir
-        .join(".cargo-ui")
-        .join(format!("{:016x}", out_dir_hasher.finish()));
+    let cargo_ui_root = ui_dir.join(".cargo-ui");
+    let cargo_ui_dir = cargo_ui_root.join(format!("{:016x}", out_dir_hasher.finish()));
     let ui_build_dir = cargo_ui_dir.join("build");
+    let ui_build_lock = acquire_ui_build_lock(&cargo_ui_root)?;
     let status = Command::new("bun")
         .args(["run", "build"])
         .current_dir(&ui_dir)
@@ -100,12 +102,44 @@ fn main() -> io::Result<()> {
             ui_build_dir.join("index.html").display()
         )));
     }
+    drop(ui_build_lock);
     println!(
         "cargo:rustc-env={UI_BUILD_DIR_ENV}={}",
         ui_build_dir.display()
     );
 
     Ok(())
+}
+
+fn acquire_ui_build_lock(cargo_ui_root: &Path) -> io::Result<fs::File> {
+    fs::create_dir_all(cargo_ui_root)?;
+    let lock_path = cargo_ui_root.join("build.lock");
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    let deadline = Instant::now() + UI_BUILD_LOCK_TIMEOUT;
+
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(UI_BUILD_LOCK_RETRY);
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "timed out waiting for the UI build lock at {}",
+                        lock_path.display()
+                    ),
+                ));
+            }
+            Err(fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
 }
 
 fn download_camera_database() -> io::Result<()> {

@@ -10,7 +10,7 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "svelte-kit sync && vite build",
-		"build:home-assistant": "bun run check:home-assistant && vite build --config vite.home-assistant.config.ts",
+		"build:home-assistant": "svelte-kit sync && bun run check:home-assistant && vite build --config vite.home-assistant.config.ts",
 		"check:home-assistant": "tsc --ignoreConfig --noEmit --strict --skipLibCheck --module esnext --moduleResolution bundler --target es2022 --types node,vite/client scripts/start-home-assistant-demo.ts home-assistant/harness.ts vite.home-assistant.config.ts playwright.home-assistant.config.ts",
 		"dev:home-assistant": "vite --config vite.home-assistant.config.ts",
 		"demo:home-assistant": "bun scripts/start-home-assistant-demo.ts",

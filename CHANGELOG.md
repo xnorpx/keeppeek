@@ -29,6 +29,8 @@
 
 ### Fixed
 
+- Generate SvelteKit metadata before standalone Home Assistant card builds and serialize
+  Cargo-triggered UI generation so concurrent builds cannot corrupt shared metadata.
 - Preserve newer BCUDP packets when cumulative acknowledgments cross the 32-bit sequence rollover.
 - Reject AVC and HEVC parameter sets that cannot be represented in MP4 configuration boxes.
 - Preserve unsaved MQTT settings during status refresh and expose hidden advanced-storage validation failures while the section is collapsed.
