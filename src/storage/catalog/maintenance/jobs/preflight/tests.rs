@@ -186,6 +186,89 @@ fn missing_catalog_identity_does_not_become_present_from_path_and_size_alone() {
 }
 
 #[test]
+fn missing_planned_identity_is_not_backfilled_from_the_current_catalog() {
+    pollster::block_on(async {
+        let fixture = Fixture::new(1).await;
+        let recording = fixture.root.join("0.mp4");
+        let identity = crate::storage::catalog::recording_file_identity(
+            &recording,
+            &std::fs::metadata(&recording).unwrap(),
+        );
+        fixture
+            .connection
+            .execute("UPDATE recording_files SET file_identity = NULL", ())
+            .await
+            .unwrap();
+        let job = fixture.queue().await;
+        assert!(job.snapshot.recordings[0].file_identity.is_none());
+        fixture
+            .connection
+            .execute(
+                "UPDATE recording_files SET file_identity = ?1",
+                turso::params![identity],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.report(&job).await.objects[0].status,
+            Status::IdentityUnavailable
+        );
+        assert_eq!(std::fs::read(recording).unwrap(), [42; 64]);
+    });
+}
+
+#[test]
+fn missing_persisted_identity_is_not_reconstructed_during_preflight() {
+    pollster::block_on(async {
+        let fixture = Fixture::new(1).await;
+        let job = fixture.queue().await;
+        let mut snapshot = serde_json::to_value(&job.snapshot).unwrap();
+        assert!(
+            snapshot["recordings"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("file_identity")
+                .is_some()
+        );
+        fixture
+            .connection
+            .execute(
+                "UPDATE recording_maintenance_intents SET snapshot_json = ?1 WHERE id = ?2",
+                turso::params![serde_json::to_string(&snapshot).unwrap(), job.id.as_str()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.report(&job).await.objects[0].status,
+            Status::IdentityUnavailable
+        );
+        assert_eq!(std::fs::read(fixture.root.join("0.mp4")).unwrap(), [42; 64]);
+    });
+}
+
+#[test]
+fn changed_catalog_identity_cannot_match_only_the_plan_and_opened_file() {
+    pollster::block_on(async {
+        let fixture = Fixture::new(1).await;
+        let job = fixture.queue().await;
+        assert_eq!(
+            fixture.report(&job).await.objects[0].status,
+            Status::Present
+        );
+        fixture
+            .connection
+            .execute("UPDATE recording_files SET file_identity = '0:0'", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.report(&job).await.objects[0].status,
+            Status::IdentityChanged
+        );
+        assert_eq!(std::fs::read(fixture.root.join("0.mp4")).unwrap(), [42; 64]);
+    });
+}
+
+#[test]
 fn malformed_catalog_identifiers_fail_closed_without_exposing_their_values() {
     pollster::block_on(async {
         let fixture = Fixture::new(1).await;

@@ -37,6 +37,13 @@ rejects empty selections, active or unfinalized recordings, protected recordings
 pending automatic cleanup, and recordings without a known end time. The stored
 intent records the requester, scope, operator or privacy reason, and timestamps.
 
+The snapshot also retains an opaque fingerprint of each recording's catalog
+device/file identifier. Confirmation and restart preserve this preparation-time
+binding; a later catalog refresh cannot substitute another file into the plan.
+Missing preparation evidence stays unavailable even if the current catalog later
+gains an identifier. The fingerprint does not verify media contents or prevent
+filesystem identifier reuse.
+
 Confirmation requires the same requester, a server-generated nonce, and the
 unchanged preview revision. The catalog stores a hash of the nonce rather than
 the nonce itself. Prepared plans expire after ten minutes using both wall-clock
@@ -71,25 +78,29 @@ read transaction on the catalog search worker. Filesystem checks run only after
 that transaction closes. Reports preserve snapshot order and do not expose host
 paths or confirmation secrets.
 
-| Status                | Meaning                                                                                     |
-| --------------------- | ------------------------------------------------------------------------------------------- |
-| `Present`             | Recorded device/file identifiers and size match the observed file. Content is not verified. |
-| `IdentityChanged`     | The path names a different device/file identifier from the catalog observation.             |
-| `IdentityUnavailable` | The catalog has no file identifier; matching path and size cannot establish a match.        |
-| `MissingFile`         | The catalog-resolved file could not be found during inspection.                             |
-| `MissingCatalog`      | The recording row is absent. Its file location and whether bytes remain are unknown.        |
-| `CatalogChanged`      | Source, logical stream, recording bounds, or recorded size no longer match the plan.        |
-| `ActiveRecording`     | The recording is no longer finalized.                                                       |
-| `ProtectedRecording`  | Current catalog protection blocks maintenance.                                              |
-| `CleanupPending`      | Automatic retention already has pending work for the recording.                             |
-| `SizeMismatch`        | The observed file size differs from the catalog byte count.                                 |
-| `PathRejected`        | The path is not eligible for inspection, including escapes, hidden paths, or links.         |
-| `InspectionFailed`    | Another filesystem error prevented a usable observation.                                    |
+| Status                | Meaning                                                                                                              |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `Present`             | Planned and current device/file fingerprints match the observed file, and its size matches. Content is not verified. |
+| `IdentityChanged`     | The preparation-time fingerprint, current catalog identifier, and observed file do not all agree.                    |
+| `IdentityUnavailable` | The preparation or current catalog lacks identity evidence; path and size cannot establish a match.                  |
+| `MissingFile`         | The catalog-resolved file could not be found during inspection.                                                      |
+| `MissingCatalog`      | The recording row is absent. Its file location and whether bytes remain are unknown.                                 |
+| `CatalogChanged`      | Source, logical stream, recording bounds, or recorded size no longer match the plan.                                 |
+| `ActiveRecording`     | The recording is no longer finalized.                                                                                |
+| `ProtectedRecording`  | Current catalog protection blocks maintenance.                                                                       |
+| `CleanupPending`      | Automatic retention already has pending work for the recording.                                                      |
+| `SizeMismatch`        | The observed file size differs from the catalog byte count.                                                          |
+| `PathRejected`        | The path is not eligible for inspection, including escapes, hidden paths, or links.                                  |
+| `InspectionFailed`    | Another filesystem error prevented a usable observation.                                                             |
 
 Malformed identity evidence or an inconsistent ledger rejects the report rather
 than reconstructing work from current files. Known catalog blockers are reported
 before inspecting the affected path. Both the planned and observed catalog
 revisions are returned; a changed revision requires another preview.
+
+Malformed persisted fingerprints also reject intent reads and confirmation retries
+with a redacted error. Rejected values and internal paths are not included in
+public diagnostic messages.
 
 The entire request shares one two-second deadline across queueing, catalog reads,
 and at most 128 filesystem checks. Paths are limited to 4,096 bytes and sixteen

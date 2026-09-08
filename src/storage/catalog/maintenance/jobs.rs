@@ -544,7 +544,7 @@ async fn load(
         _ => return Err(Failure::Invalid.into()),
     };
     let revision = u64::try_from(row.get::<i64>(2)?).map_err(|_| Failure::Invalid)?;
-    let snapshot: Snapshot = serde_json::from_str(&serialized)?;
+    let snapshot: Snapshot = serde_json::from_str(&serialized).map_err(|_| Failure::Invalid)?;
     validate_snapshot(&snapshot, revision)?;
     let (mut job, authorization) = (
         Job {

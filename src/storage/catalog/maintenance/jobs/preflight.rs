@@ -7,18 +7,16 @@
 
 use super::{Action, Failure, Job, State, load, validate_action};
 use crate::storage::catalog::maintenance::{
-    MAX_RECORDINGS, ReadRequest, Recording, Scope, check_deadline,
+    FileIdentity, MAX_RECORDINGS, ReadRequest, Recording, Scope, check_deadline,
 };
 use crate::storage::catalog::{BUSY_TIMEOUT, RecordingCatalogHandle, SearchCommand};
-use crate::storage::long_term::inspection::{
-    Archive, IDENTITY_BYTES_MAX, Identity, PATH_BYTES_MAX,
-};
+use crate::storage::long_term::inspection::{Archive, IDENTITY_BYTES_MAX, PATH_BYTES_MAX};
 use std::{io::ErrorKind, path::PathBuf, sync::mpsc, time::Instant};
 
 /// Describes one observation or blocker, never a successful deletion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    /// Catalog identifiers and size match observed metadata; immutable content ownership remains unproven.
+    /// Planned and current identifiers match observed metadata; immutable content ownership remains unproven.
     Present,
     IdentityChanged,
     IdentityUnavailable,
@@ -63,7 +61,8 @@ enum Check {
     File {
         path: PathBuf,
         bytes: u64,
-        identity: Option<Identity>,
+        planned_identity: Option<FileIdentity>,
+        catalog_identity: Option<FileIdentity>,
     },
 }
 
@@ -123,12 +122,19 @@ fn inspect(inputs: Inputs, archive: &Archive, deadline: Instant) -> anyhow::Resu
             Check::File {
                 path,
                 bytes,
-                identity,
+                planned_identity,
+                catalog_identity,
             } => match archive.inspect_until(&path, bytes, deadline) {
-                Ok(observation) => match identity {
-                    Some(expected) if expected == observation.identity() => Status::Present,
-                    Some(_) => Status::IdentityChanged,
-                    None => Status::IdentityUnavailable,
+                Ok(observation) => match (planned_identity, catalog_identity) {
+                    (Some(planned), Some(current)) => {
+                        let observed = FileIdentity::from_observed(observation.identity());
+                        if planned == current && planned == observed {
+                            Status::Present
+                        } else {
+                            Status::IdentityChanged
+                        }
+                    }
+                    _ => Status::IdentityUnavailable,
                 },
                 Err(error) => match error.kind() {
                     ErrorKind::NotFound => Status::MissingFile,
@@ -296,16 +302,17 @@ fn current(row: &turso::Row, expected: &Recording) -> anyhow::Result<Check> {
     {
         return Ok(Check::Catalog(Status::CatalogChanged));
     }
-    let identity = row
+    let catalog_identity = row
         .get::<Option<String>>(10)?
-        .map(|value| Identity::parse(&value).ok_or(Failure::Invalid))
+        .map(|value| FileIdentity::parse(&value).ok_or(Failure::Invalid))
         .transpose()?;
     Ok(row
         .get::<Option<String>>(9)?
         .map_or(Check::Catalog(Status::PathRejected), |path| Check::File {
             path: PathBuf::from(path),
             bytes,
-            identity,
+            planned_identity: expected.file_identity,
+            catalog_identity,
         }))
 }
 
