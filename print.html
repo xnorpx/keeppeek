@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ab0f6853.js";
+            window.path_to_searchindex_js = "searchindex-a1d02705.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-c0e64c8c.js"></script>
+        <script src="toc-a457eaa6.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -2565,6 +2565,9 @@ presentation-only and come from a fixed allowlist.</p>
 <p><a href="#notifications-and-integrations">Notifications and integrations</a> explains how those same
 event and operational identities remain stable across delivery, retry, and broker recovery.</p>
 <h2 id="copy-a-recording-moment"><a class="header" href="#copy-a-recording-moment">Copy a recording moment</a></h2>
+<p>Use <a href="#digital-zoom-and-pan">digital zoom and pan</a> to inspect recorded frames and canonical event images
+without changing their source resolution or the evidence. Inspection crops are not included in
+copied moment links or exports.</p>
 <p>Use the link icon in Keep’s command bar to copy the current recording moment. The command reads
 the playback clock when invoked; it does not pause, seek, reload the video, or change browser
 history. Event detail has the same command beside <strong>Open at this moment</strong>, using the event’s
@@ -2633,6 +2636,76 @@ does not delete recordings; the destructive workflow is not yet available.</p>
 <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-presentation.md">event presentation</a>,
 and <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/evidence-exports.md">evidence export</a>
 references.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="digital-zoom-and-pan"><a class="header" href="#digital-zoom-and-pan">Digital zoom and pan</a></h1>
+<p>Digital zoom enlarges the media already decoded by your browser. It is available in the focused
+Peek Viewer, Keep recorded playback, and event detail images. It does not move the camera, request
+a different stream, or increase the source resolution.</p>
+<p>Compact Dashboard tiles and the camera filmstrip do not capture inspection gestures. Open a camera
+in Viewer before using digital zoom.</p>
+<h2 id="inspect-a-frame"><a class="header" href="#inspect-a-frame">Inspect a frame</a></h2>
+<p>The <strong>Digital</strong> controls sit at the top-left above the image without covering the picture.
+In Peek, they share one row and height with Live/History, quality, and camera information. The
+row scrolls horizontally when needed rather than wrapping. They show the current magnification.
+The minimum is <strong>1.0x</strong>, which fits the complete image, and the maximum is <strong>8.0x</strong>.
+The image keeps its original aspect ratio. Panning is bounded to the fitted image area, so a drag
+cannot move the image out of view.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Input</th><th>Result</th></tr>
+</thead>
+<tbody>
+<tr><td>Zoom-in icon</td><td>Double the magnification, up to 8.0x.</td></tr>
+<tr><td>Zoom-out icon</td><td>Halve the magnification, down to 1.0x.</td></tr>
+<tr><td>Reset icon</td><td>Return to the complete, centered frame.</td></tr>
+<tr><td>Two-finger pinch inside the image</td><td>Zoom around the midpoint between the fingers; moving that midpoint also pans.</td></tr>
+<tr><td>Mouse, pen, or one-finger drag</td><td>Pan while magnification is above 1.0x.</td></tr>
+<tr><td>Alt + wheel or trackpad scroll</td><td>Zoom around the pointer. Use Option on macOS keyboards.</td></tr>
+<tr><td>Double-click or double-tap</td><td>Switch between 1.0x and 2.0x around the pointer or tap.</td></tr>
+<tr><td><code>+</code> or <code>=</code></td><td>Zoom in when the inspection surface has focus.</td></tr>
+<tr><td><code>-</code></td><td>Zoom out when the inspection surface has focus.</td></tr>
+<tr><td><code>0</code></td><td>Reset when the inspection surface has focus.</td></tr>
+<tr><td>Arrow keys</td><td>Pan while zoomed and focused.</td></tr>
+<tr><td>Escape</td><td>Reset digital zoom before the normal Viewer or event-detail exit action.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Tab reaches the named zoom buttons. Activating a zoom button focuses the inspection surface, where
+the keyboard commands work. Peek’s desktop control groups are 32 pixels high. Touch input uses
+at least 44-pixel button targets. All buttons have visible focus indicators and disabled states at
+the limits. The zoom value is also available to assistive technology.</p>
+<p>Ordinary wheel scrolling does not change magnification. Control/Command zoom shortcuts still
+belong to the browser. Touch gestures are captured only inside the focused image; scrolling and
+browser gestures remain available elsewhere on the page. Zoom and reset do not require animated
+transitions.</p>
+<h2 id="keep-playback-controls"><a class="header" href="#keep-playback-controls">Keep playback controls</a></h2>
+<p>Keep’s play/pause, skip, position, volume, mute, speed, and fullscreen controls remain outside the
+transformed video. Timeline scrubbing still selects recording time, not an image crop. Arrow keys
+pan when the zoomed image has focus; Keep’s normal frame-stepping shortcuts remain available at
+full-frame view or outside the inspection surface.</p>
+<p>The fullscreen button expands the whole recorded player, including its controls. Zoom bounds
+update when entering or leaving fullscreen. Browser-native Escape handling can leave fullscreen
+before the page receives the key. A disabled fullscreen button indicates that the browser does not
+offer the Fullscreen API in that context; digital zoom remains available without fullscreen.</p>
+<h2 id="reset-and-evidence"><a class="header" href="#reset-and-evidence">Reset and evidence</a></h2>
+<p>Changing the camera, recording, or canonical event image resets digital zoom. Play/pause and
+ordinary progress within the same selected media preserve the inspection position. Resizing the
+window, rotating the device, or changing decoded dimensions recomputes the bounds. Reset always
+returns to the complete frame at the current size.</p>
+<p>Event bounding boxes use the canonical image’s coordinate space and move with that image. Player
+controls, camera information, and diagnostics do not scale. Live camera information reports digital
+magnification separately from decoded resolution.</p>
+<p>The inspection crop exists only in the current browser view. It is not saved into configuration,
+recording metadata, bookmarks, copied moment links, or exported evidence. Exports still contain the
+original recorded frame. See <a href="#recording-and-evidence">Recording and evidence</a>.</p>
+<h2 id="digital-zoom-is-not-ptz"><a class="header" href="#digital-zoom-is-not-ptz">Digital zoom is not PTZ</a></h2>
+<p>Digital zoom is labelled <strong>Digital</strong> and works for any media you can already view, including
+recordings and offline-camera event images. It does not require PTZ permission or a PTZ-capable
+camera. Physical pan, tilt, and optical zoom remain separate camera commands with their existing
+capability and permission checks.</p>
+<p>Magnifying a low-resolution stream does not reveal detail that the camera did not send. Choose a
+higher available stream quality separately when you need more decoded pixels.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="recording-maintenance"><a class="header" href="#recording-maintenance">Recording maintenance</a></h1>
 <p>Manual recording deletion and catalog reconciliation are not yet available in the
