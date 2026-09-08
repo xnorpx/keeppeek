@@ -76,6 +76,8 @@ pub(in crate::storage::catalog) struct Row {
     path: Option<PathBuf>,
     bytes: u64,
     identity: Option<FileIdentity>,
+    active: bool,
+    protected: bool,
     pending: bool,
 }
 
@@ -110,7 +112,10 @@ impl RecordingCatalogHandle {
             return Ok(());
         }
         let (row, kind) = report.candidates.get(id).ok_or(Failure::Invalid)?;
-        anyhow::ensure!(*kind == Kind::MissingFile && !row.pending, Failure::Blocked);
+        anyhow::ensure!(
+            *kind == Kind::MissingFile && !row.pending && !row.active && !row.protected,
+            Failure::Blocked
+        );
         let deadline = Instant::now() + BUSY_TIMEOUT;
         let path = row.path.as_ref().ok_or(Failure::Invalid)?;
         match archive.inspect_until(path, row.bytes, deadline) {
@@ -203,8 +208,9 @@ async fn read_rows(connection: &turso::Connection, deadline: Instant) -> anyhow:
     let mut rows = connection.query(
         "SELECT id, CASE WHEN length(CAST(path AS BLOB)) <= ?2 THEN path END, file_bytes,
          CASE WHEN length(CAST(file_identity AS BLOB)) <= ?3 THEN file_identity END,
-         finalized = 0 OR protected = 1 OR cleanup_pending = 1 OR EXISTS
+            cleanup_pending = 1 OR EXISTS
             (SELECT 1 FROM recording_maintenance_claims WHERE recording_id = recording_files.id AND active = 1)
+            , finalized = 0, protected = 1
          FROM recording_files ORDER BY id LIMIT ?1",
         turso::params![i64::try_from(MAX_SCAN_RECORDINGS + 1)?, i64::try_from(PATH_BYTES_MAX)?, i64::try_from(IDENTITY_BYTES_MAX)?],
     ).await?;
@@ -229,6 +235,8 @@ async fn read_rows(connection: &turso::Connection, deadline: Instant) -> anyhow:
                 .get::<Option<String>>(3)?
                 .and_then(|value| FileIdentity::parse(&value)),
             pending: row.get::<i64>(4)? != 0,
+            active: row.get::<i64>(5)? != 0,
+            protected: row.get::<i64>(6)? != 0,
         });
     }
     Ok(inputs)
@@ -304,6 +312,9 @@ fn classify(
     };
     if row.pending {
         return Ok(Some(Kind::InterruptedWork));
+    }
+    if row.active {
+        return Ok(None);
     }
     if paths.get(path).is_some_and(|count| *count > 1) {
         return Ok(Some(Kind::DuplicatePath));

@@ -337,6 +337,46 @@ fn reconciliation_remedies_require_the_owner_and_reject_reappeared_files() {
 }
 
 #[test]
+fn reconciliation_does_not_mislabel_protected_recordings_as_interrupted_jobs() {
+    use keeppeek::storage::catalog::maintenance::reconciliation::Kind;
+    let fixture = Fixture::new();
+    let catalog = fixture.open();
+    fixture.prepare(&catalog);
+    catalog.shutdown();
+    pollster::block_on(async {
+        let database =
+            turso::Builder::new_local(fixture.root.join("recordings.db").to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+        database
+            .connect()
+            .unwrap()
+            .execute("UPDATE recording_files SET protected = 1", ())
+            .await
+            .unwrap();
+    });
+    let catalog = fixture.open();
+    let archive = Archive::open(&fixture.root).unwrap();
+    let report = catalog
+        .handle()
+        .recording_reconciliation("administrator", &archive)
+        .unwrap();
+    assert!(report.complete);
+    assert!(
+        !report
+            .items
+            .iter()
+            .any(|item| item.kind == Kind::InterruptedWork)
+    );
+    assert_eq!(
+        std::fs::read(fixture.root.join("recording.mp4")).unwrap(),
+        [42; 64]
+    );
+    catalog.shutdown();
+}
+
+#[test]
 fn reconciliation_reports_missing_and_unknown_files_without_mutating_them() {
     use keeppeek::storage::catalog::maintenance::reconciliation::Kind;
     let fixture = Fixture::new();
