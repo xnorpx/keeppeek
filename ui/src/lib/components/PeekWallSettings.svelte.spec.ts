@@ -116,6 +116,7 @@ describe('Peek wall display settings', () => {
 		await page.getByRole('button', { name: 'Wall display settings' }).click();
 		await expect.element(page.getByText('9 streams / 9 decoders requested')).toBeVisible();
 		await expect.element(page.getByText('5 over budget')).toBeVisible();
+		await expect.element(page.getByText('Saved', { exact: true })).toBeVisible();
 		await page.getByRole('radio', { name: 'Continuous', exact: true }).click();
 		expect(onchange).toHaveBeenCalledWith({
 			...defaultPeekWallPreferences(),
