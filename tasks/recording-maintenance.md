@@ -5,15 +5,140 @@
 Tasks are tracked in [issue #133](https://github.com/xnorpx/keeppeek/issues/133).
 This record does not replace the existing plans for other features.
 
-The backend now includes read-only catalog inspection and durable deletion-intent
-preparation, confirmation, inspection, and cancellation, with a per-recording
-work ledger and a read-only preflight report. Queued intent does not claim a file
-or enable deletion. The protected `api/` contract still has no recording-maintenance
-commands; it remains unchanged. No network command or UI action is enabled by this
-work.
+The continuation now implements catalog reservations, per-object execution and
+recovery checkpoints, an approved WebRTC maintenance command, Administrator
+deletion and reconciliation views, and explicit missing-row/ignore remedies.
+Confirmation can remove selected media; the feature is still under qualification
+and does not yet satisfy every #133 acceptance criterion. Earlier increment
+descriptions and measurements below are historical evidence, not final readiness.
 
 The [Recording maintenance book chapter](../book/src/recording-maintenance.md)
-documents the available backend behavior and the unfinished user-facing workflow.
+documents the implemented workflow and its remaining safety and qualification limits.
+
+## Workflow Qualification Status
+
+### Continuation Safety Checks
+
+The latest continuation adds immutable 32-byte staging-directory identity evidence
+in place of the unqualified `was_staged` boolean. The field is bounded on load and
+cannot be rebound. Recovery rejects replaced directories and unexpected contents,
+including a recording renamed inside staging. Legitimate unlink/catalog-failure
+recovery tolerates removal of an empty original source parent and synchronizes its
+last surviving ancestor. Cancelled uncheckpointed objects retain reservations when
+the original selected file cannot be identified or staging contents conflict.
+
+The focused catalog integration suite now has 19 passing tests; execution has
+13 passing tests. Atomic no-replace rename and post-unlink retained-inode checks
+have separate macOS regressions. Every new failure regression was observed red
+before its corresponding fix. Strict Clippy passes on the current macOS slice.
+
+The server maintenance slice has eight passing tests. Export retry now shares
+the configuration-update lock with maintenance admission and rejects maintenance
+before mutating export history. Restore receives the same lock through `app.rs`
+and `BackupManager::open_with_config_update`. Tests cover busy coordination and
+revoked authorization before filesystem work. Audit status never labels unresolved
+zero-failure work as success; structured tracing tests verify requester, exact
+bounds, reason, revision, counts, hold-override false, and private-data redaction.
+
+Restarted execution progress now projects previous-epoch working/staged objects
+as failed without changing the durable checkpoint. A public restart test verifies
+the file survives and explicit retry completes. Ten Chromium page tests cover
+cancelled-failure retry, blocked-preview controls, stale-preview regeneration,
+fresh typed confirmation after deferred refresh, role/capability loss, batched
+capability loss/restoration, and stale asynchronous results. The existing
+`CapabilityState` loss latch is reused. Three client tests verify nonce redaction,
+scope bounds, and one-attempt confirmation consumption. Explicit dismissal also
+invalidates a pending preview so its late response cannot reopen the dialog.
+Three bounded UI reviews were reconciled with these regression tests; no external
+model CLI or fourth review cycle was run while the user was unavailable.
+
+Current verification evidence:
+
+- `target/issue133-final-continuation-check.log`: the final source tree repeats
+  the canonical build, all 2,388 Rust tests (21 existing skips, 89.168 seconds),
+  strict Clippy, dependency and formatting checks successfully. UI quality again
+  stops at protoc-gen-es 2.14.0 versus required 2.14.1, marker
+  `ISSUE133_FINAL_CONTINUATION_CHECK_EXIT=1`. The subsequent task-record update is
+  prose only. This is a failed canonical gate, not a completion result.
+- `target/issue133-continuation-check.log`: canonical build, 2,388 Rust tests
+  (21 existing skips), strict Clippy, dependency checks and formatting passed.
+  The test phase took 100.692 seconds. UI quality then failed on actual generator
+  2.14.0 versus required 2.14.1, marker `ISSUE133_CONTINUATION_CHECK_EXIT=1`.
+  These Rust results are from the final backend tree; the last dialog-only fix
+  follows that run, so this is not a full final-tree canonical pass.
+- `target/issue133-continuation-ui.log`: final UI has 300 Bun tests, 151
+  browser/visual tests and 57 compatibility tests passing. The isolated real-server
+  desktop/mobile maintenance E2E passes in 9.5 seconds, with a 2.6-second test body.
+  Marker: `ISSUE133_CONTINUATION_UI_EXIT=0`. The rebuilt release backend is the
+  same backend source used by `target/issue133-continuation-e2e.log`.
+- Final desktop 1440x900 and mobile 390x844 confirmation screenshots were inspected;
+  text and controls fit, typed confirmation is required, and document overflow
+  remains guarded by E2E. Fixtures contain generated media only.
+- Oxlint, Svelte diagnostics and E2E typechecks pass with installed tooling.
+  Book builds and tracked diff whitespace checks pass. The backup protobuf
+  binding is unchanged; generator provenance has not been edited by hand.
+
+Three fresh-context recovery reviews produced actionable findings. The tested
+fixes address directory replacement, unexpected contents, missing source parents,
+premature cancellation, and destination overwrite. The third review also exposes
+an unresolved Unix same-account namespace race: no portable conditional-inode
+unlink exists in this implementation. A process with the service account's access
+can substitute private staging names just before unlink. Retained-inode checks
+prevent some false success reports but cannot prevent deletion of a replacement,
+and subsequent retries after such manipulation are not qualified. Acceptance of
+the service-account/root trust boundary, or approval of stronger process isolation,
+is outstanding. The unavailable user was not treated as approval. No fourth review
+cycle or external model CLI was run.
+
+The public npm install retry still fails with `ConnectionClosed` before generation.
+Manifest pins, registry configuration, and the generator-version check are unchanged.
+Historical full-suite counts below do not certify these newest changes.
+
+### Earlier Workflow Evidence
+
+- [x] Synthetic public integration tests cover reservations, deletion, terminal path reuse,
+      owner-bound reconciliation, and rejection of reappeared files (16 tests).
+- [x] Execution tests cover interrupted catalog completion, cancelled started work, live-worker
+      exclusion, missing staging directories, evidence drift, claimed media readers, and
+      two-object cancellation (nine tests).
+- [x] Server tests cover Administrator rejection, typed confirmation, durable progress, and
+      actor-owned reconciliation remedies (three tests).
+- [x] The isolated real-server Playwright workflow passes desktop and mobile preview,
+      cancellation, deletion, nonce-free report download, and unknown-file preservation.
+      Local evidence is in `target/issue133-e2e.log` and Playwright screenshot artifacts.
+- [x] Svelte typecheck, Oxlint, and strict macOS Rust Clippy passed before the latest
+      Windows-only safety repairs; ACE/SID bounds have a platform-independent passing test.
+- [x] The full Rust suite passes with `KEEPPEEK_RUN_SLOW_TESTS=1` and the canonical
+      macOS crypto feature: 2,374 passed, 21 existing skips, 89.922 seconds.
+      Evidence: `target/issue133-workflow-rust.log`, marker `ISSUE133_FULL_RUST_EXIT=0`.
+- [x] UI unit suites pass with the installed tooling: 299 Bun tests, 141 browser/visual
+      tests, and 57 compatibility tests. Evidence: `target/issue133-workflow-ui-tests.log`,
+      marker `ISSUE133_UI_UNIT_EXIT=0`. These results do not replace the generator-version gate.
+- [x] Updated book chapters build, all new handwritten functions fit within 70 source lines,
+      and generated-file whitespace is normalized without changing generator provenance.
+- [ ] Regenerate WebRTC TypeScript with the required actual protoc-gen-es 2.14.1 package.
+      Installed 2.14.0 generated the current binding. Public npm requests fail with
+      `ConnectionClosed` / TLS socket errors; no mirror, pin change, or header spoofing is allowed.
+- [ ] Full canonical gate passes after resolving that generator mismatch. The failed run is
+      `target/issue133-workflow-check.log`, marker `ISSUE133_WORKFLOW_CHECK_EXIT=1`.
+- [ ] Native Windows NTFS compilation, ACL/reparse/race tests, and durability/recovery tests pass.
+      ReFS is deliberately rejected; Unix tests do not qualify the Windows implementation.
+- [ ] Complete ownership and crash-boundary review, including stale staging and in-place changes.
+- [ ] Resolve the Unix service-account namespace trust boundary; the current post-unlink
+      detection does not protect against a malicious process with the same OS identity.
+- [ ] Complete reconciliation corruption/content-duplicate/interrupted-work classification,
+      validated re-indexing, quarantine, and owned-temporary cleanup remedies.
+- [ ] Complete hold/share/investigation and move/restore protection coordination and audit fields.
+- [ ] Verify browser stale-preview recovery, partial failure/retry, revocation, timeline result,
+      and accessibility beyond the existing happy-path test.
+- [ ] Update final measurements and open the completion PR only when these requirements pass.
+
+The current Windows helper uses native NTFS ACL and handle APIs. Review identified
+and repaired raw disposition flag construction, premature ACE/SID pointer use, and
+unvalidated nested directories. Runtime qualification is still required. The
+installed custom Rust toolchain has no `rustup` Windows target management; the
+repository's Windows CI remains necessary. No private footage or configuration
+was used for verification.
 
 Backward compatibility is not a requirement for this pre-release feature, per
 the owner's instruction. Do not add legacy wire adapters or migration layers for
@@ -65,13 +190,14 @@ The existing capability map still governs the remaining implementation order:
 4. Complete cross-platform qualification, before/after performance evidence,
    the book chapter, and the full canonical validation for the final tree.
 
-The end-to-end implementation is blocked on an approved maintenance API contract.
-The current `Request.command` and `StoredMediaCommand.action` definitions have no
-deletion or reconciliation command, and repository instructions keep `api/`
-read-only. Do not bypass this boundary with an undocumented HTTP endpoint or an
-unrelated command payload. Obtain the approved protocol through a separate change
-before implementing its server handlers and frontend client. Backend-only work
-can proceed independently but does not complete #133.
+The owner explicitly approved changes to `api/webrtc.proto` for #133 on
+2026-09-08. This removes the API-editing approval blocker for that file; the
+maintenance contract and user-facing workflow still need implementation. Define
+and validate deletion and reconciliation commands before implementing their
+server handlers and frontend client. Follow the approval rules in `AGENTS.md`
+and ask before expanding the approved API scope. Do not introduce an undocumented
+HTTP endpoint or tunnel maintenance operations through an unrelated command.
+Backend-only work does not complete #133.
 
 ## Prepared Identity Binding
 
@@ -394,7 +520,8 @@ delete private camera footage or application configuration for verification.
 - [x] Read consistency, overload, and error paths are verified.
 - [x] Focused tests, Clippy, formatting, and canonical validation pass for the latest intent increment.
 - [x] Fresh-context adversarial review is reconciled for the latest intent increment.
-- [ ] Resolve the protected API contract before wiring the user-facing workflow.
+- [x] Obtain explicit approval to change `api/webrtc.proto` for #133.
+- [ ] Define and validate the maintenance API contract before wiring the user-facing workflow.
 - [ ] Implement confined, confirmed, durable deletion jobs and crash recovery.
 - [ ] Implement reconciliation and Administrator UI with end-to-end tests.
 

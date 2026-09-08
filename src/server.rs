@@ -98,6 +98,7 @@ mod mqtt_integration;
 mod native_events;
 mod peek_layouts;
 pub(crate) mod recording_coverage;
+mod recording_maintenance;
 mod runtime_configuration;
 mod stored_media;
 
@@ -433,6 +434,7 @@ const fn access_operation(command: Option<&control_request::Command>) -> &'stati
         Some(control_request::Command::ExportCommand(_)) => "export",
         Some(control_request::Command::EventSearchCommand(_)) => "event_search",
         Some(control_request::Command::EventWorkflowCommand(_)) => "event_workflow",
+        Some(control_request::Command::RecordingMaintenanceCommand(_)) => "recording_maintenance",
         Some(control_request::Command::NotificationRuleCommand(_)) => "notification_rule",
         Some(control_request::Command::ConfigurationCommand(_)) => "configuration",
         None => "missing_command",
@@ -683,6 +685,10 @@ impl ControlRequestHandler for ServerControlHandler {
                     }
                     Some(control_request::Command::EventWorkflowCommand(command)) => {
                         event_workflow::dispatch(&self.state, &principal, command).map(Some)
+                    }
+                    Some(control_request::Command::RecordingMaintenanceCommand(command)) => {
+                        recording_maintenance::dispatch(self, session_id, &principal, command)
+                            .map(Some)
                     }
                     Some(control_request::Command::StoredMediaCommand(command)) => {
                         match stored_media::dispatch(&self.state, session_id, command) {
@@ -986,6 +992,9 @@ fn server_capabilities(
     }
     if event_search_catalog(state).is_ok() {
         capability_ids.push("keeppeek.event-workflow.v1".to_owned());
+        if cfg!(any(unix, windows)) {
+            capability_ids.push("keeppeek.recording-maintenance.v1".to_owned());
+        }
     }
     if state.event_forwarder.is_some() {
         capability_ids.push("keeppeek.mqtt-forwarder.v1".to_owned());
@@ -2920,6 +2929,13 @@ fn create_export_job(
     requester_id: &str,
     request: proto::CreateExportJob,
 ) -> Result<proto::ExportJob, ControlCommandError> {
+    if state.maintenance_active.load(Ordering::Acquire) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "recording maintenance is running",
+        ));
+    }
     validate_export_job_id(&request.job_id)?;
     let camera = state.camera(&request.source_id).ok_or_else(|| {
         ControlCommandError::new(
@@ -3059,6 +3075,13 @@ fn create_export_job(
         .export_jobs
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.maintenance_active.load(Ordering::Acquire) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "recording maintenance is running",
+        ));
+    }
     if let Some(existing) = jobs.values().find(|record| {
         record.requester_id == requester_id
             && record.job.status == proto::ExportJobStatus::Running as i32
@@ -3702,6 +3725,20 @@ fn retry_export_job(
     requester_id: &str,
     job_id: &str,
 ) -> Result<proto::ExportJob, ControlCommandError> {
+    let _configuration = state.config_update.try_lock().map_err(|_| {
+        ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "storage coordination is busy",
+        )
+    })?;
+    if state.maintenance_active.load(Ordering::Acquire) {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "recording maintenance is running",
+        ));
+    }
     let (request, artifact_id) = {
         let mut jobs = state
             .export_jobs
@@ -8494,6 +8531,8 @@ pub struct ServerState {
     stored_media_cursor_reservations: Arc<Mutex<HashSet<(SessionId, String)>>>,
     ptz_owners: Arc<Mutex<HashMap<String, camera_control::Owner>>>,
     export_jobs: Arc<Mutex<HashMap<String, ExportJobRecord>>>,
+    maintenance_active: Arc<AtomicBool>,
+    maintenance_reconciliation: Arc<recording_maintenance::reconciliation::Registry>,
     export_history_path: Option<Arc<PathBuf>>,
     event_search_tasks: EventSearchTasks,
     event_publications: event_publication::Registry,
@@ -8560,6 +8599,10 @@ impl ServerState {
             stored_media_cursor_reservations: Arc::new(Mutex::new(HashSet::new())),
             ptz_owners: Arc::new(Mutex::new(HashMap::new())),
             export_jobs: Arc::new(Mutex::new(export_jobs)),
+            maintenance_active: Arc::new(AtomicBool::new(false)),
+            maintenance_reconciliation: Arc::new(
+                recording_maintenance::reconciliation::Registry::default(),
+            ),
             export_history_path: Some(Arc::new(export_history_path)),
             event_search_tasks: Arc::new(Mutex::new(HashMap::new())),
             event_publications: event_publication::Registry::default(),

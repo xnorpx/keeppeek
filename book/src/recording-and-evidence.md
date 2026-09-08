@@ -154,8 +154,8 @@ Timestamp burn-in requires a configured re-encoding worker and otherwise fails e
 normal export path preserves source frames and timestamps without re-encoding.
 
 For the availability and safety limits of manual deletion and catalog drift checks,
-see [Recording maintenance](./recording-maintenance.md). Confirmed maintenance intent
-does not delete recordings; the destructive workflow is not yet available.
+see [Recording maintenance](./recording-maintenance.md). The Administrator workflow
+is under qualification; confirmed jobs can remove selected recordings permanently.
 
 For the detailed coverage model and export lifecycle, see the
 [recording integrity](https://github.com/xnorpx/keeppeek/blob/master/docs/recording-integrity.md),

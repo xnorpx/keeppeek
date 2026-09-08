@@ -3,7 +3,12 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const repositoryRoot = path.resolve(import.meta.dir, '../..');
-const testRoot = path.join(repositoryRoot, 'target', 'ui-logging-e2e');
+const runId = process.env.KEEPPEEK_E2E_RUN_ID ?? '';
+if (runId && !/^[a-z0-9-]{1,64}$/.test(runId)) throw new Error('Invalid E2E run ID');
+const testRoot = path.join(repositoryRoot, 'target', `ui-logging-e2e${runId ? `-${runId}` : ''}`);
+const seedAge = Number(process.env.KEEPPEEK_E2E_SEED_AGE_SECONDS ?? '240');
+if (!Number.isInteger(seedAge) || seedAge < 0 || seedAge > 86_400)
+	throw new Error('Invalid E2E seed age');
 const storageRoot = path.join(testRoot, 'recordings');
 const configPath = path.join(testRoot, 'config.toml');
 const cameraDraftPath = path.join(testRoot, 'camera-draft.json');
@@ -167,7 +172,11 @@ const seed = Bun.spawn(
 		'--catalog',
 		path.join(testRoot, 'recordings.db'),
 		'--stream-id',
-		'e2e-h264/sub'
+		process.env.KEEPPEEK_E2E_SEED_STABLE_ID === '1'
+			? `${parseCameraDraft(testCamera).ip}/sub`
+			: 'e2e-h264/sub',
+		'--age-seconds',
+		String(seedAge)
 	],
 	{ cwd: repositoryRoot, stdout: 'inherit', stderr: 'inherit' }
 );
