@@ -45,7 +45,7 @@ test('Peek presents native WebRTC frames without a canvas fallback', async ({ pa
 			)
 			.toMatch(new RegExp(`^video:${stream.width}x${stream.height}:[1-9]\\d*$`));
 		await expect(liveView).toHaveAttribute('data-frame-activity', 'active');
-		await expect(tile).toHaveAttribute('data-peek-camera-state', /^(?:starting|reconnecting)$/);
+		await expect(tile).toHaveAttribute('data-peek-camera-state', 'healthy', { timeout: 30_000 });
 		await expect(tile).not.toContainText('HEALTHY');
 		await expect(tile).not.toContainText('NO SIGNAL');
 	}

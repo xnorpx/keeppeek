@@ -162,6 +162,7 @@
 				{previewState}
 				fit="contain"
 				showBoundingBox
+				digitalZoom
 				onretry={onpreviewretry}
 			/>
 		{/if}

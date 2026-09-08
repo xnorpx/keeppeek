@@ -60,7 +60,18 @@ type ParsedTestCameraConfig = {
 
 async function startTestCamera(name: string, main: string, sub: string): Promise<TestCamera> {
 	const camera = Bun.spawn(
-		[testCameraBinary, 'rtsp', '--main', main, '--sub', sub, '--name', name],
+		[
+			testCameraBinary,
+			'rtsp',
+			'--main',
+			main,
+			'--sub',
+			sub,
+			'--name',
+			name,
+			'--start-at-seconds',
+			'0'
+		],
 		{
 			cwd: repositoryRoot,
 			stdout: 'pipe',

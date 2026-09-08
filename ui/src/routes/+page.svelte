@@ -1023,6 +1023,7 @@
 							{#key focusedCamera.id}
 								<LiveVideo
 									cameraId={focusedCamera.id}
+									digitalZoom
 									stream={focusPreviewPresented ? focusedVariant : previewStream(focusedCamera)}
 									quality={effectiveFocusQuality}
 									fallbackFrameUrl={peekViewState.cameraFrame(focusedCamera.id)}
@@ -1316,6 +1317,10 @@
 	.focus-stage {
 		display: grid;
 		place-items: center;
+	}
+
+	.focus-stage :global([data-digital-zoom-controls]) {
+		bottom: 6.25rem;
 	}
 
 	.focus-layout-status {
