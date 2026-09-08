@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-e237e6d5.js";
+            window.path_to_searchindex_js = "searchindex-ba9dba47.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-1423543a.js"></script>
@@ -178,14 +178,19 @@
 <p>Recording maintenance provides Administrator previews, confirmed deletion jobs,
 and bounded catalog reconciliation over the WebRTC control connection. It is
 under qualification in <a href="https://github.com/xnorpx/keeppeek/issues/133">issue #133</a>,
-not yet a completed or production-qualified feature. The macOS synthetic-media
-workflow has passed end-to-end testing; native Windows validation and other
-acceptance criteria remain outstanding.</p>
+not yet a completed or production-qualified feature. The synthetic-media workflow
+and native Windows, macOS, and Linux checks have passed; remaining acceptance
+criteria are tracked in the issue.</p>
 <p>Automatic storage retention remains separate from manual deletion. Manual claims
 exclude their recordings from retention and new playback/export resolution until
 the claim reaches a terminal outcome. Never delete recording files directly as a
 substitute for maintenance: that can leave stale catalog entries and unavailable
 evidence links.</p>
+<p>Startup preserves <code>.active</code> files and their catalog rows. A temporary-looking
+filename does not establish ownership or authorize deletion, in either the
+medium-term or long-term root. Interrupted media remains available for inspection.
+Writers create new <code>.active</code> files exclusively. If the output path already exists,
+creation fails without truncating or replacing the existing file.</p>
 <h2 id="review-and-delete-recordings"><a class="header" href="#review-and-delete-recordings">Review and delete recordings</a></h2>
 <ol>
 <li>Sign in as an Administrator and open <strong>Recording integrity</strong>, then <strong>Maintenance</strong>.
@@ -286,8 +291,13 @@ object remains failed and reserved for inspection or recovery. <strong>Retry fai
 objects</strong> is available for those failures even when the job is cancelled. After
 restart, a previous worker’s pending objects report failed instead of indefinitely
 working; the checkpoint and reservations remain intact for authenticated retry.
-Automatic startup reconciliation of every interrupted filesystem/catalog
-combination remains a qualification requirement.</p>
+Before recording pipelines start, a bounded recovery pass settles catalog completion
+only when the original staging-directory checkpoint and absence checks prove that
+unlink has already completed. It does not move or delete present media. Other
+pending objects remain failed and reserved for an Administrator to inspect or retry.
+Each settled outcome is atomic, respects the original request deadline, and leaves
+any live executor untouched. If the pass cannot finish within its two-second budget,
+the server records a warning and retains unresolved claims.</p>
 <h2 id="audit-and-coordination"><a class="header" href="#audit-and-coordination">Audit and coordination</a></h2>
 <p>Maintenance admission shares the configuration-update lock used by restore and
 access configuration. An export retry cannot remove its existing job while
