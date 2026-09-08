@@ -46,6 +46,7 @@ message Request {
     NotificationRuleCommand notification_rule_command = 24;
     ConfigurationCommand configuration_command = 25;
     EventWorkflowCommand event_workflow_command = 26;
+    RecordingMaintenanceCommand recording_maintenance_command = 27;
   }
   reserved 19, 20;
   reserved "recording_command", "live_session_command";
@@ -773,6 +774,161 @@ message HealthCommand {
 }
 
 message GetHealth {}
+
+// Administrator-only maintenance. Clients must require keeppeek.recording-maintenance.v1.
+// A scope never contains host paths. Limits are 128 objects and 31 days; partial enumeration fails.
+message RecordingMaintenanceCommand {
+  oneof action {
+    PreviewRecordingDeletion preview = 1;
+    ConfirmRecordingDeletion confirm = 2;
+    GetRecordingDeletion get = 3;
+    CancelRecordingDeletion cancel = 4;
+    RetryRecordingDeletion retry = 5;
+    ListRecordingDeletions list = 6;
+    InspectRecordingCatalog inspect_catalog = 7;
+    ApplyRecordingRemedy apply_remedy = 8;
+  }
+}
+
+message RecordingMaintenanceRange {
+  int64 start_ms = 1;
+  int64 end_ms = 2;
+}
+
+message RecordingMaintenanceScope {
+  string source_id = 1;
+  string stream_id = 2;
+  oneof selection {
+    string recording_id = 3;
+    RecordingMaintenanceRange range = 4;
+  }
+}
+
+enum RecordingDeletionReason {
+  RECORDING_DELETION_REASON_UNSPECIFIED = 0;
+  RECORDING_DELETION_REASON_OPERATOR = 1;
+  RECORDING_DELETION_REASON_PRIVACY = 2;
+}
+
+message PreviewRecordingDeletion {
+  RecordingMaintenanceScope scope = 1;
+  RecordingDeletionReason reason = 2;
+}
+
+// Confirmation is actor-bound and idempotent for one plan. An expired or stale plan must be replaced.
+message ConfirmRecordingDeletion {
+  string job_id = 1;
+  uint64 expected_revision = 2;
+  string confirmation_nonce = 3;
+  string confirmation_text = 4;
+}
+
+message GetRecordingDeletion { string job_id = 1; }
+message CancelRecordingDeletion { string job_id = 1; }
+message RetryRecordingDeletion { string job_id = 1; }
+message ListRecordingDeletions { string after_job_id = 1; }
+
+enum RecordingDeletionStatus {
+  RECORDING_DELETION_STATUS_UNSPECIFIED = 0;
+  RECORDING_DELETION_STATUS_PREPARED = 1;
+  RECORDING_DELETION_STATUS_QUEUED = 2;
+  RECORDING_DELETION_STATUS_WORKING = 3;
+  RECORDING_DELETION_STATUS_STAGED = 4;
+  RECORDING_DELETION_STATUS_DELETED = 5;
+  RECORDING_DELETION_STATUS_FAILED = 6;
+  RECORDING_DELETION_STATUS_CANCELLED = 7;
+  RECORDING_DELETION_STATUS_BLOCKED = 8;
+  RECORDING_DELETION_STATUS_EXPIRED = 9;
+}
+
+message RecordingDeletionObject {
+  string recording_id = 1;
+  int64 start_ms = 2;
+  optional int64 end_ms = 3;
+  uint64 bytes = 4;
+  RecordingDeletionStatus status = 5;
+  optional string error = 6;
+  bool active = 7;
+  bool protected = 8;
+  bool retention_pending = 9;
+}
+
+// Preview retains whole-object bounds. Confirmation may never silently expand this selection.
+// Counts and file state are observations, not permission to remove a file without revalidation.
+message RecordingDeletionJob {
+  string job_id = 1;
+  RecordingMaintenanceScope scope = 2;
+  RecordingDeletionReason reason = 3;
+  uint64 revision = 4;
+  RecordingDeletionStatus status = 5;
+  repeated RecordingDeletionObject objects = 6;
+  uint64 bytes = 7;
+  int64 created_at_ms = 8;
+  int64 expires_at_ms = 9;
+  optional string confirmation_nonce = 10;
+  string required_confirmation_text = 11;
+  repeated RecordingMaintenanceRange gaps = 12;
+  repeated string bookmark_event_ids = 13;
+  repeated string related_export_ids = 14;
+  repeated string consequences = 15;
+  uint32 deleted_count = 16;
+  uint32 failed_count = 17;
+  bool cancelled = 18;
+}
+
+message RecordingDeletionJobList {
+  repeated RecordingDeletionJob jobs = 1;
+  string next_job_id = 2;
+}
+
+message InspectRecordingCatalog {}
+
+enum RecordingDriftKind {
+  RECORDING_DRIFT_KIND_UNSPECIFIED = 0;
+  RECORDING_DRIFT_KIND_MISSING_FILE = 1;
+  RECORDING_DRIFT_KIND_UNKNOWN_FILE = 2;
+  RECORDING_DRIFT_KIND_DUPLICATE_PATH = 3;
+  RECORDING_DRIFT_KIND_SIZE_MISMATCH = 4;
+  RECORDING_DRIFT_KIND_IDENTITY_MISMATCH = 5;
+  RECORDING_DRIFT_KIND_PATH_REJECTED = 6;
+  RECORDING_DRIFT_KIND_TEMPORARY_FILE = 7;
+  RECORDING_DRIFT_KIND_INTERRUPTED_WORK = 8;
+  RECORDING_DRIFT_KIND_INSPECTION_FAILED = 9;
+}
+
+enum RecordingRemedy {
+  RECORDING_REMEDY_UNSPECIFIED = 0;
+  RECORDING_REMEDY_IGNORE = 1;
+  RECORDING_REMEDY_RETAIN_TOMBSTONE = 2;
+}
+
+// The server resolves both IDs from a complete, unexpired, actor-owned dry run.
+// No remedy accepts a path, and no remedy adopts or deletes an unknown file.
+message ApplyRecordingRemedy {
+  string report_id = 1;
+  string item_id = 2;
+  RecordingRemedy remedy = 3;
+}
+
+message RecordingDriftItem {
+  string item_id = 1;
+  optional string recording_id = 2;
+  RecordingDriftKind kind = 3;
+  string label = 4;
+  optional uint64 bytes = 5;
+  repeated RecordingRemedy remedies = 6;
+  optional RecordingRemedy applied_remedy = 7;
+}
+
+// Inventories are bounded to 4,096 catalog rows and filesystem entries and 128 findings.
+// Incomplete inventories never authorize a remedy. Reports expire after ten minutes.
+message RecordingReconciliationReport {
+  string report_id = 1;
+  uint64 revision = 2;
+  bool complete = 3;
+  uint32 inspected = 4;
+  repeated RecordingDriftItem items = 5;
+}
 
 message ExportCommand {
   oneof action {
@@ -2253,6 +2409,9 @@ message Ok {
     AccessAuditResult access_audit_result = 35;
     ConfigurationResult configuration_result = 36;
     EventWorkflowResult event_workflow_result = 37;
+    RecordingDeletionJob recording_deletion_job = 38;
+    RecordingDeletionJobList recording_deletion_jobs = 39;
+    RecordingReconciliationReport recording_reconciliation_report = 40;
   }
   reserved 17, 18;
   reserved "recording_activity_result", "live_session_result";

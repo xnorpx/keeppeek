@@ -69,6 +69,17 @@ impl OpenCursorReservation<'_> {
                 "stored media session closed while the cursor was opening",
             ));
         }
+        if self
+            .state
+            .maintenance_active
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::Rejected,
+                409,
+                "recording maintenance is running",
+            ));
+        }
         cursors.insert(key, cursor);
         Ok(())
     }
@@ -101,6 +112,16 @@ fn reserve_open_cursor<'a>(
         .stored_media_cursor_reservations
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state
+        .maintenance_active
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ControlCommandError::new(
+            proto::ErrorCode::Rejected,
+            409,
+            "recording maintenance is running",
+        ));
+    }
     validate_open_cursor(
         cursors.keys().chain(reservations.iter()),
         session_id,

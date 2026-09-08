@@ -32,6 +32,7 @@
 
 	let snapshot = $state.raw<RecordingCoverageResponse | null>(null);
 	let loading = $state(true);
+	let administrator = $state(false);
 	let refreshing = $state(false);
 	let error: string | null = $state(null);
 	let search = $state('');
@@ -61,8 +62,12 @@
 	});
 
 	onMount(() => {
+		const unsubscribe = controlClient.onAccessState((access) => {
+			administrator = access.session?.role === 'administrator';
+		});
 		const timer = window.setInterval(() => (refreshRequest += 1), 30_000);
 		return () => {
+			unsubscribe();
 			window.clearInterval(timer);
 			requestController?.abort();
 		};
@@ -165,6 +170,11 @@
 			</p>
 		</div>
 		<div class="min-w-2 flex-1"></div>
+		{#if administrator}<a
+				href={resolve('/recordings/maintenance')}
+				class="inline-flex h-9 items-center gap-2 rounded-sm border border-hairline-strong px-3 text-xs text-text-muted"
+				>Maintenance</a
+			>{/if}
 		<a
 			href={resolve('/keep')}
 			class="inline-flex h-9 items-center gap-2 rounded-sm border border-hairline-strong px-3 text-xs text-text-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"

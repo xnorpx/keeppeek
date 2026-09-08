@@ -6,6 +6,10 @@ export type CapabilityAction = {
 };
 
 export const capabilityActions = {
+	deleteRecordings: {
+		action: 'Delete recordings',
+		capability: 'keeppeek.recording-maintenance.v1'
+	},
 	createExport: {
 		action: 'Create export',
 		capability: 'keeppeek.media-export.v1'

@@ -63,6 +63,7 @@
 	let loadedExportKey: string | null = null;
 	let appliedRangeOverride = '';
 	let exportSupported = $derived(capabilities.supports(capabilityActions.createExport.capability));
+	let maintenanceSupported = $derived(capabilities.supports('keeppeek.recording-maintenance.v1'));
 	let candidateMatch = $derived(exportCandidates(allowPartialDraft));
 	let job = $derived(selectedJob ?? candidateMatch.exactActive);
 	let partialSections = $derived(
@@ -415,6 +416,14 @@
 		<header class="flex h-12 items-center gap-2 border-b border-hairline px-4">
 			<DownloadIcon class="size-4 text-primary-soft" />
 			<h2 class="text-sm font-semibold">Export a range</h2>
+			{#if maintenanceSupported && range && !paperFrame}<a
+					class="ml-auto text-xs text-destructive"
+					href="{resolve('/recordings/maintenance')}?camera={encodeURIComponent(
+						sourceId
+					)}&stream={encodeURIComponent(
+						segment?.stream ?? 'sub'
+					)}&start={range.startMs}&end={range.endMs}">Review deletion</a
+				>{/if}
 		</header>
 	{/if}
 	{#if !paperFrame && (event?.workflow?.bookmark?.active || job?.eventSeed?.bookmarkRevision)}

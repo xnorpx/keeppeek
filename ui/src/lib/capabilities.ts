@@ -7,6 +7,16 @@ export type ServerCapabilityContract = {
 };
 
 export const serverCapabilityCatalog = {
+	'keeppeek.recording-maintenance.v1': {
+		delivery: 'required-mvp',
+		serverOwns:
+			'Bounded recording previews, confirmation, durable per-object deletion, cancellation, and recovery',
+		unlocks: 'Administrator recording maintenance',
+		whenMissing:
+			'Recording maintenance stays unavailable; playback and existing recordings remain unchanged',
+		failureGuarantee:
+			'Stale previews are rejected and partial outcomes remain visible; unknown files are never deleted implicitly'
+	},
 	'keeppeek.event-workflow.v1': {
 		delivery: 'ships',
 		serverOwns:

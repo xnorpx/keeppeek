@@ -347,7 +347,7 @@
 	$effect(() => {
 		if (accessState.status !== 'authenticated' || administrator) return;
 		if (
-			['/settings', '/cameras', '/system-health', '/setup'].some(
+			['/settings', '/cameras', '/system-health', '/setup', '/recordings/maintenance'].some(
 				(pathname) => page.url.pathname === pathname || page.url.pathname.startsWith(`${pathname}/`)
 			)
 		) {
