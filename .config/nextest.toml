@@ -1,0 +1,3 @@
+[[profile.default.overrides]]
+filter = 'package(=keeppeek) & test(=storage::catalog::maintenance::jobs::preflight::tests::maximum_preflight_is_complete_and_keeps_unknown_files_untouched)'
+threads-required = "num-test-threads"

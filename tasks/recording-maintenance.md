@@ -35,10 +35,19 @@ Build order: catalog-selection, deletion-jobs, reconciliation, maintenance-ui.
 
 Continue on `feat/recording-maintenance-workflow`, branched from foundation commit
 `9cbed56001b680b295da315b77f0f30a80435bfd` in
-[PR #229](https://github.com/xnorpx/keeppeek/pull/229). Keep the foundation branch
-unchanged. Rebase the continuation onto `main` only after #229 merges, preserving
-the continuation's commits and dropping the already-merged foundation history.
+[PR #229](https://github.com/xnorpx/keeppeek/pull/229). After #229 merged, the
+continuation was rebased onto `main` at
+`4a56c8d1000a6f5f7a9598e9eb056c0e9d83aa45`. The rebase preserved the continuation
+patch unchanged and retained the merged Windows test-startup fix. The original
+foundation branch remains unchanged.
 Issue #133 remains the completion tracker; its acceptance criteria are unchanged.
+
+The owner requested a completion PR after the remaining work is finished. Keep
+the book chapter synchronized with each implemented behavior and verify its final
+instructions before opening that PR. The completion PR must include every #133
+acceptance criterion, final-commit validation and performance evidence, and any
+remaining qualification limits. Do not claim completion or close #133 while any
+required outcome remains unimplemented or unverified.
 
 The existing capability map still governs the remaining implementation order:
 
@@ -92,7 +101,7 @@ executor requirements, not properties of this fingerprint.
 - [x] Fresh-context review is reconciled and the follow-up review finds no further issues.
 - [x] Strict Clippy, formatting, the function-size bound, and focused tests pass before rebasing.
 - [x] Thirty-run measurements retain the existing 2,000 ms budget.
-- [ ] Canonical validation passes on the rebased continuation.
+- [x] Canonical validation passes on the rebased continuation.
 
 Before rebasing, 55 maintenance unit tests and 20 public integration tests pass.
 The first review found that Serde errors could disclose malformed persisted
@@ -111,6 +120,40 @@ Rust 1.97.1, the default test profile, locked Turso 0.7.2, an in-memory catalog,
 and local synthetic 64-byte files. These separate-run observations do not isolate
 host contention or prove production throughput, cold-filesystem, or Windows
 performance. The existing 128-object harnesses below reproduce the measurements.
+
+### Rebased Validation
+
+The first full rebased gate timed out in file inspection during the 30-run
+maximum-preflight measurement. The failing log is retained locally in
+`target/issue133-rebased-check.log`. The same workload passed alone under Nextest
+with a 22.014 ms maximum, and all 55 maintenance tests also passed with the
+canonical macOS crypto feature and ordinary parallel scheduling.
+
+The latency workload now requests `num-test-threads` for its exact test name in
+`.config/nextest.toml`, following the
+[Nextest per-test scheduling contract](https://nexte.st/docs/configuration/threads-required/).
+This prevents unrelated tests in the same invocation from overlapping the
+measurement. It does not isolate other processes on the host. All 30 iterations,
+128 objects, assertions, and the 2,000 ms request budget remain unchanged; no test
+is skipped or retried. Ordinary maintenance correctness and deadline tests retain
+their parallel scheduling. Failure diagnostics now include the iteration and
+catalog/total elapsed times.
+
+Nextest 0.9.143 accepts the exact-test override. The maintenance group completed
+in 3.312 seconds with the override versus 2.726 seconds in the preceding parallel
+run, an observed 0.586-second scheduling cost; these separate runs do not isolate
+host noise. The fresh-context scheduling review found no issue in the override,
+tracking exception, diagnostics, or unchanged test requirements.
+
+The final `KEEPPEEK_RUN_SLOW_TESTS=1 ./check.sh` run passes on the rebased
+implementation and scheduling repair: 2,355 Rust tests (21 existing skips),
+297 Bun tests, 141 browser/visual tests, 57 compatibility tests, and 221 Playwright
+tests (two expected codec skips). The Rust suite completed in 103.887 seconds.
+The completion marker is `ISSUE133_REBASED_VERIFIED_CHECK_EXIT=0`; full local
+output is retained in `target/issue133-rebased-check-verified.log`.
+The validated tree is `ead13f016ad937b7cca24796722e3077ce813e7d`, based on
+`2e0c6c67a0c833e2f65321a6c127e653cc915c24`. Only this task record changes after
+that gate; its formatting is checked separately. The updated book chapter builds.
 
 ## Recorded Identity and File Pinning
 
