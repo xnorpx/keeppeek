@@ -22,19 +22,19 @@ impl Fixture {
     }
 
     async fn with_count(count: u32) -> Self {
-        Self::in_directory(count, std::env::temp_dir()).await
-    }
-
-    async fn in_directory(count: u32, parent: PathBuf) -> Self {
-        assert!((1..=2).contains(&count));
-        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
-        let connection = database.connect().unwrap();
-        initialize_schema(&connection).await.unwrap();
-        let root = parent.join(format!(
+        let root = std::env::temp_dir().join(format!(
             "keeppeek-execution-{:032x}",
             rand::random::<u128>()
         ));
         std::fs::create_dir(&root).unwrap();
+        Self::in_directory(count, root).await
+    }
+
+    async fn in_directory(count: u32, root: PathBuf) -> Self {
+        assert!((1..=2).contains(&count));
+        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let connection = database.connect().unwrap();
+        initialize_schema(&connection).await.unwrap();
         let media = root.join("recording.mp4");
         std::fs::write(&media, [42; 64]).unwrap();
         let identity = recording_file_identity(&media, &std::fs::metadata(&media).unwrap());
@@ -156,7 +156,11 @@ fn checkout_archive_stages_and_removes_the_selected_recording() {
     pollster::block_on(async {
         let parent = std::env::current_dir().unwrap().join("target");
         std::fs::create_dir_all(&parent).unwrap();
-        let fixture = Fixture::in_directory(1, parent).await;
+        let root = parent.join(format!(
+            "keeppeek-execution-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
         #[cfg(windows)]
         assert!(
             std::process::Command::new("powershell.exe")
@@ -166,11 +170,12 @@ fn checkout_archive_stages_and_removes_the_selected_recording() {
                     "/.github/scripts/protect-test-directory.ps1"
                 ))
                 .arg("-Directory")
-                .arg(&fixture.root)
+                .arg(&root)
                 .status()
                 .unwrap()
                 .success()
         );
+        let fixture = Fixture::in_directory(1, root).await;
         let archive = Archive::open(&fixture.root).unwrap();
         archive.validate_removal().unwrap();
         let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
