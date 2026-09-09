@@ -20,4 +20,4 @@ foreach ($identity in @($owner.Value, 'S-1-5-18', 'S-1-5-32-544')) {
     $security.AddAccessRule($rule)
 }
 
-Set-Acl -LiteralPath $Directory -AclObject $security
+[System.IO.Directory]::SetAccessControl($Directory, $security)
