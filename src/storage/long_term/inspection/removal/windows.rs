@@ -181,7 +181,14 @@ fn validate_security(object: HANDLE, private: bool) -> io::Result<()> {
     if acl.is_null() || owner.0.is_null() {
         return Err(super::super::denied());
     }
-    unsafe { Security::EqualSid(owner, token_sid(&user)) }.map_err(|_| super::super::denied())?;
+    unsafe { Security::EqualSid(owner, token_sid(&user)) }.map_err(|_| {
+        tracing::warn!(
+            name: "recording.maintenance.owner_rejected",
+            private,
+            "recording maintenance requires the current user to own the object"
+        );
+        super::super::denied()
+    })?;
     let mut control = 0;
     let mut revision = 0;
     unsafe { Security::GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) }
@@ -262,6 +269,12 @@ fn validate_ace(
         | GENERIC_WRITE.0
         | GENERIC_ALL.0;
     if !trusted && (private || mask & mutation != 0) {
+        tracing::warn!(
+            name: "recording.maintenance.acl_rejected",
+            private,
+            access_mask = mask,
+            "recording maintenance rejected an untrusted access rule"
+        );
         return Err(super::super::denied());
     }
     Ok(())

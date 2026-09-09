@@ -79,7 +79,9 @@ impl RecordingCatalogHandle {
         authorize: impl Fn(bool) -> anyhow::Result<()>,
     ) -> anyhow::Result<Report> {
         authorize(false)?;
-        archive.validate_removal()?;
+        archive.validate_removal().inspect_err(|error| {
+            report_io_failure("validate_archive", id, error);
+        })?;
         let claims = self.recording_deletion_claims(actor, id)?;
         let lease = Arc::new(());
         for claim in claims {
@@ -119,7 +121,8 @@ impl RecordingCatalogHandle {
                         Action::Staged(claim.clone(), staged.directory_identity()),
                     )?;
                     authorize(false)?;
-                    if staged.remove().is_err() {
+                    if let Err(error) = staged.remove() {
+                        report_io_failure("remove_recording", id, &error);
                         self.execution_action(actor, id, Action::Fail(claim))?;
                     } else {
                         self.execution_action(actor, id, Action::Finish(claim))?;
@@ -128,7 +131,8 @@ impl RecordingCatalogHandle {
                 Ok(None) => {
                     self.execution_action(actor, id, Action::Finish(claim))?;
                 }
-                Err(_) => {
+                Err(error) => {
+                    report_io_failure("stage_recording", id, &error);
                     self.execution_action(actor, id, Action::Fail(claim))?;
                 }
             }
@@ -195,6 +199,17 @@ impl RecordingCatalogHandle {
                     .into()
             })
     }
+}
+
+fn report_io_failure(operation: &str, job_id: &str, error: &std::io::Error) {
+    tracing::warn!(
+        name: "recording.maintenance.io_failed",
+        operation,
+        job_id,
+        error_kind = ?error.kind(),
+        os_error = error.raw_os_error(),
+        "recording maintenance filesystem operation failed"
+    );
 }
 
 pub(super) async fn initialize(connection: &turso::Connection) -> anyhow::Result<()> {
