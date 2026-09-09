@@ -22,11 +22,15 @@ impl Fixture {
     }
 
     async fn with_count(count: u32) -> Self {
+        Self::in_directory(count, std::env::temp_dir()).await
+    }
+
+    async fn in_directory(count: u32, parent: PathBuf) -> Self {
         assert!((1..=2).contains(&count));
         let database = turso::Builder::new_local(":memory:").build().await.unwrap();
         let connection = database.connect().unwrap();
         initialize_schema(&connection).await.unwrap();
-        let root = std::env::temp_dir().join(format!(
+        let root = parent.join(format!(
             "keeppeek-execution-{:032x}",
             rand::random::<u128>()
         ));
@@ -145,6 +149,27 @@ async fn confirm(connection: &turso::Connection, epoch: &Epoch) -> Job {
     )
     .await
     .unwrap()
+}
+
+#[test]
+fn checkout_archive_stages_and_removes_the_selected_recording() {
+    pollster::block_on(async {
+        let parent = std::env::current_dir().unwrap().join("target");
+        std::fs::create_dir_all(&parent).unwrap();
+        let fixture = Fixture::in_directory(1, parent).await;
+        let archive = Archive::open(&fixture.root).unwrap();
+        archive.validate_removal().unwrap();
+        let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
+        let checkpoint = staged.directory_identity();
+        staged.remove().unwrap();
+        assert!(!fixture.claim.path.exists());
+        assert!(
+            archive
+                .stage_claim(&fixture.claim, Some(checkpoint))
+                .unwrap()
+                .is_none()
+        );
+    });
 }
 
 #[test]
