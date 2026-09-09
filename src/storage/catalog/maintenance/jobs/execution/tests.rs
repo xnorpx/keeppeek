@@ -161,6 +161,12 @@ fn checkout_archive_stages_and_removes_the_selected_recording() {
             rand::random::<u128>()
         ));
         std::fs::create_dir(&root).unwrap();
+        let mut fixture = Fixture::in_directory(1, root).await;
+        let recording_directory = fixture.root.join("camera/sub/2026-09-09/01");
+        std::fs::create_dir_all(&recording_directory).unwrap();
+        let nested_recording = recording_directory.join("recording.mp4");
+        std::fs::rename(&fixture.claim.path, &nested_recording).unwrap();
+        fixture.claim.path = nested_recording;
         #[cfg(windows)]
         assert!(
             std::process::Command::new("powershell.exe")
@@ -170,12 +176,12 @@ fn checkout_archive_stages_and_removes_the_selected_recording() {
                     "/.github/scripts/protect-test-directory.ps1"
                 ))
                 .arg("-Directory")
-                .arg(&root)
+                .arg(&fixture.root)
+                .arg("-Recurse")
                 .status()
                 .unwrap()
                 .success()
         );
-        let fixture = Fixture::in_directory(1, root).await;
         let archive = Archive::open(&fixture.root).unwrap();
         archive.validate_removal().unwrap();
         let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
