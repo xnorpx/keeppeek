@@ -157,6 +157,20 @@ fn checkout_archive_stages_and_removes_the_selected_recording() {
         let parent = std::env::current_dir().unwrap().join("target");
         std::fs::create_dir_all(&parent).unwrap();
         let fixture = Fixture::in_directory(1, parent).await;
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/.github/scripts/protect-test-directory.ps1"
+                ))
+                .arg("-Directory")
+                .arg(&fixture.root)
+                .status()
+                .unwrap()
+                .success()
+        );
         let archive = Archive::open(&fixture.root).unwrap();
         archive.validate_removal().unwrap();
         let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
