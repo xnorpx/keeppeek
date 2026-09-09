@@ -113,6 +113,22 @@ async function startTestCamera(name: string, main: string, sub: string): Promise
 
 await rm(testRoot, { recursive: true, force: true });
 await mkdir(storageRoot, { recursive: true });
+if (process.platform === 'win32') {
+	const permissions = Bun.spawn(
+		[
+			'powershell.exe',
+			'-NoLogo',
+			'-NoProfile',
+			'-NonInteractive',
+			'-File',
+			path.join(repositoryRoot, '.github', 'scripts', 'protect-test-directory.ps1'),
+			'-Directory',
+			storageRoot
+		],
+		{ cwd: repositoryRoot, stdout: 'inherit', stderr: 'inherit' }
+	);
+	if ((await permissions.exited) !== 0) throw new Error('Unable to protect E2E recording storage');
+}
 
 const testCameras: TestCamera[] = [];
 try {
