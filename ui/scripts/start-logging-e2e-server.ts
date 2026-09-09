@@ -113,6 +113,7 @@ async function startTestCamera(name: string, main: string, sub: string): Promise
 
 await rm(testRoot, { recursive: true, force: true });
 await mkdir(storageRoot, { recursive: true });
+await protectRecordingStorage();
 
 const testCameras: TestCamera[] = [];
 try {
@@ -186,6 +187,7 @@ if (seedExitCode !== 0) {
 	await Promise.all(testCameras.map((camera) => camera.process.exited));
 	throw new Error(`Recording seed exited with code ${seedExitCode}`);
 }
+await protectRecordingStorage();
 
 const server = Bun.spawn([keeppeekBinary, `--config=${configPath}`], {
 	cwd: repositoryRoot,
@@ -235,4 +237,23 @@ function requiredBinary(binaryName: string): string {
 		);
 	}
 	return binaryPath;
+}
+
+async function protectRecordingStorage(): Promise<void> {
+	if (process.platform !== 'win32') return;
+	const permissions = Bun.spawn(
+		[
+			'powershell.exe',
+			'-NoLogo',
+			'-NoProfile',
+			'-NonInteractive',
+			'-File',
+			path.join(repositoryRoot, '.github', 'scripts', 'protect-test-directory.ps1'),
+			'-Directory',
+			storageRoot,
+			'-Recurse'
+		],
+		{ cwd: repositoryRoot, stdout: 'inherit', stderr: 'inherit' }
+	);
+	if ((await permissions.exited) !== 0) throw new Error('Unable to protect E2E recording storage');
 }

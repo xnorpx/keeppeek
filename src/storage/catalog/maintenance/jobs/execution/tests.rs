@@ -22,15 +22,19 @@ impl Fixture {
     }
 
     async fn with_count(count: u32) -> Self {
-        assert!((1..=2).contains(&count));
-        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
-        let connection = database.connect().unwrap();
-        initialize_schema(&connection).await.unwrap();
         let root = std::env::temp_dir().join(format!(
             "keeppeek-execution-{:032x}",
             rand::random::<u128>()
         ));
         std::fs::create_dir(&root).unwrap();
+        Self::in_directory(count, root).await
+    }
+
+    async fn in_directory(count: u32, root: PathBuf) -> Self {
+        assert!((1..=2).contains(&count));
+        let database = turso::Builder::new_local(":memory:").build().await.unwrap();
+        let connection = database.connect().unwrap();
+        initialize_schema(&connection).await.unwrap();
         let media = root.join("recording.mp4");
         std::fs::write(&media, [42; 64]).unwrap();
         let identity = recording_file_identity(&media, &std::fs::metadata(&media).unwrap());
@@ -145,6 +149,52 @@ async fn confirm(connection: &turso::Connection, epoch: &Epoch) -> Job {
     )
     .await
     .unwrap()
+}
+
+#[test]
+fn checkout_archive_stages_and_removes_the_selected_recording() {
+    pollster::block_on(async {
+        let parent = std::env::current_dir().unwrap().join("target");
+        std::fs::create_dir_all(&parent).unwrap();
+        let root = parent.join(format!(
+            "keeppeek-execution-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut fixture = Fixture::in_directory(1, root).await;
+        let recording_directory = fixture.root.join("camera/sub/2026-09-09/01");
+        std::fs::create_dir_all(&recording_directory).unwrap();
+        let nested_recording = recording_directory.join("recording.mp4");
+        std::fs::rename(&fixture.claim.path, &nested_recording).unwrap();
+        fixture.claim.path = nested_recording;
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/.github/scripts/protect-test-directory.ps1"
+                ))
+                .arg("-Directory")
+                .arg(&fixture.root)
+                .arg("-Recurse")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let archive = Archive::open(&fixture.root).unwrap();
+        archive.validate_removal().unwrap();
+        let staged = archive.stage_claim(&fixture.claim, None).unwrap().unwrap();
+        let checkpoint = staged.directory_identity();
+        staged.remove().unwrap();
+        assert!(!fixture.claim.path.exists());
+        assert!(
+            archive
+                .stage_claim(&fixture.claim, Some(checkpoint))
+                .unwrap()
+                .is_none()
+        );
+    });
 }
 
 #[test]

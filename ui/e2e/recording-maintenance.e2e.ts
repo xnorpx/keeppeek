@@ -59,6 +59,15 @@ test.afterAll(async () => {
 	await exited;
 });
 
+test.afterEach(async ({ browserName }, info) => {
+	if (info.status !== info.expectedStatus) {
+		await info.attach(`${browserName}-maintenance-server.log`, {
+			body: serverOutput,
+			contentType: 'text/plain'
+		});
+	}
+});
+
 test('previews, cancels and deletes exact synthetic recordings with desktop and mobile parity', async ({
 	page
 }, info) => {

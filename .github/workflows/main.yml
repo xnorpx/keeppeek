@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: main-extended
+  group: main-extended-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'automatic' }}
   cancel-in-progress: true
 
 permissions:
@@ -20,7 +20,7 @@ env:
 jobs:
   codeql-rust:
     name: CodeQL (Rust)
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -40,7 +40,7 @@ jobs:
 
   slow-rust:
     name: Slow Rust Tests
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -68,7 +68,7 @@ jobs:
 
   rust-coverage:
     name: Rust Coverage
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -105,7 +105,7 @@ jobs:
 
   platform-rust:
     name: Main Platform (${{ matrix.os }})
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -218,7 +218,7 @@ jobs:
 
   platform-ui-e2e:
     name: Main UI E2E (${{ matrix.os }})
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -256,7 +256,7 @@ jobs:
 
   main-gate:
     name: Main Extended Gate
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
     needs:
       [codeql-rust, slow-rust, rust-coverage, platform-rust, platform-ui-e2e]
     runs-on: ubuntu-latest
