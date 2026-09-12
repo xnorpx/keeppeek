@@ -199,6 +199,9 @@ test('event-image inspection leaves the source and evidence links unchanged and 
 async function seekRecordingStart(player: Locator) {
 	const position = player.getByRole('slider', { name: 'Recording position', exact: true });
 	await expect(position).toBeEnabled();
+	// Playback can reach the final slider step before the test pauses it.
+	await position.press('Home');
+	await expect(position).toHaveValue('0');
 	const initialMs = Number(await player.getAttribute('data-recording-playhead-ms'));
 	await position.press('ArrowRight');
 	await expect
