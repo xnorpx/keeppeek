@@ -1,6 +1,10 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import {
+	defaultPlaybackPreferences,
+	playbackPreferencesStorageKey
+} from '../src/lib/playback-preferences';
+import {
 	keepModeCameras,
 	keepModeDate,
 	keepModeDayStartMs,
@@ -473,9 +477,17 @@ test('real H.264 playback reopens the copied clock in a fresh session within one
 		timezoneId: 'America/Los_Angeles'
 	});
 	try {
+		// Measure the restored position without adding playback during browser polling.
+		const preferences = defaultPlaybackPreferences();
+		preferences.media.playing = false;
+		await fresh.addInitScript(
+			({ key, preferences }) => localStorage.setItem(key, JSON.stringify(preferences)),
+			{ key: playbackPreferencesStorageKey, preferences }
+		);
 		const receiver = await fresh.newPage();
 		await receiver.goto(link);
 		await waitForRecordedFrame(receiver);
+		await expect(receiver.locator('video')).toHaveJSProperty('paused', true);
 		const colors = await receiver.locator('video').evaluate((element) => {
 			const video = element as HTMLVideoElement;
 			video.pause();
