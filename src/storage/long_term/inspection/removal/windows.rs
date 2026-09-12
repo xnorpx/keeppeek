@@ -147,7 +147,7 @@ fn user_sid() -> io::Result<Vec<usize>> {
     Ok(buffer)
 }
 
-fn token_sid(buffer: &[usize]) -> Security::PSID {
+const fn token_sid(buffer: &[usize]) -> Security::PSID {
     unsafe { (*buffer.as_ptr().cast::<Security::TOKEN_USER>()).User.Sid }
 }
 
