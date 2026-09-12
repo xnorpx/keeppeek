@@ -191,6 +191,10 @@ impl LeaseClock {
         self.expires.saturating_duration_since(Instant::now())
     }
 
+    fn renewal_due(self, now: Instant) -> bool {
+        self.renew_at.saturating_duration_since(now) < REQUEST_MIN
+    }
+
     fn budget(self, maximum: Duration) -> anyhow::Result<Duration> {
         let timeout = maximum.min(self.remaining());
         anyhow::ensure!(
@@ -401,10 +405,11 @@ impl Producer {
         };
         let mut failures = 0;
         while !self.shutdown.is_cancelled() {
-            if Instant::now() >= clock.renew_at {
-                self.renew(client, subscription, clock)?;
-            }
             let started = Instant::now();
+            if clock.renewal_due(started) {
+                self.renew(client, subscription, clock)?;
+                continue;
+            }
             let budget = clock.budget(clock.renew_at.saturating_duration_since(started))?;
             let pull_timeout = wire_timeout(limits.timeout.min(budget / 2));
             if pull_timeout < REQUEST_MIN {

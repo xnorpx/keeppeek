@@ -35,6 +35,8 @@
 
 ### Fixed
 
+- Renew ONVIF event subscriptions when the remaining pull budget is too short for a request,
+  avoiding an unnecessary disconnect immediately before renewal.
 - Generate SvelteKit metadata before standalone Home Assistant card builds and serialize
   Cargo-triggered UI generation so concurrent builds cannot corrupt shared metadata.
 - Preserve newer BCUDP packets when cumulative acknowledgments cross the 32-bit sequence rollover.

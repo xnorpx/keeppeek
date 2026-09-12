@@ -146,7 +146,7 @@ fn pull_stall_is_capped_by_renewal_budget_and_unsubscribes() {
 
     assert!(finished, "pull request outlived its lease budget");
     assert!(result.is_err());
-    assert!(fake.renew_count() > 0);
+    assert!(fake.renew_count() > 0, "renewal did not occur: {result:?}");
     assert_eq!(fake.unsubscribe_count(), 1);
     assert_eq!(fake.active_subscriptions(), 0);
 }
