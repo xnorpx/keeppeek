@@ -153,6 +153,19 @@ fn pull_lease_can_shorten_but_never_extend_the_existing_deadline() {
 }
 
 #[test]
+fn renewal_starts_before_the_remaining_pull_budget_becomes_unusable() {
+    let now = Instant::now();
+    let clock = LeaseClock {
+        expires: now + Duration::from_secs(1),
+        renew_at: now + Duration::from_millis(1),
+    };
+    assert!(!clock.renewal_due(now));
+    assert!(clock.renewal_due(now + Duration::from_nanos(1)));
+    assert!(clock.renewal_due(clock.renew_at));
+    assert!(clock.renewal_due(clock.renew_at + Duration::from_nanos(1)));
+}
+
+#[test]
 fn spent_leases_and_sub_millisecond_request_budgets_are_rejected() {
     let lease = Lease::parse(&pull(Duration::from_millis(100), "")).unwrap();
     let spent = LeaseClock::new(lease, Instant::now() - Duration::from_millis(200));
