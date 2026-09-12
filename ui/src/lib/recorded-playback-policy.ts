@@ -1,4 +1,4 @@
-import type { CameraListItem, ProfileSummary } from '$lib/types';
+import type { CameraListItem, ProfileSummary } from './types';
 
 export type RecordedStreamId = 'main' | 'sub';
 export type RecordedQualityPreference = 'auto' | 'high' | 'low' | RecordedStreamId;
