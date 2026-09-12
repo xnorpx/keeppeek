@@ -2373,10 +2373,12 @@ pub(crate) fn write_private_file_atomically(path: &Path, bytes: &[u8]) -> std::i
                 MOVE_FILE_FLAGS(MOVEFILE_REPLACE_EXISTING.0 | MOVEFILE_WRITE_THROUGH.0),
             )
         }
-        .map_err(std::io::Error::other)?;
-        return Ok(());
+        .map_err(std::io::Error::other)
     }
-    std::fs::rename(temporary, path)
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(temporary, path)
+    }
 }
 
 #[cfg(test)]
