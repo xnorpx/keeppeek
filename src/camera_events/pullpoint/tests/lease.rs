@@ -2,14 +2,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use onvif::event::{Client, Endpoint, Lease, Operation};
-use onvif::soap::client::Credentials;
 use test_hikvision::{
     Reply,
     onvif::{FakeOnvif, notification},
 };
 
 use super::super::create_subscription;
-use super::{Input, LeaseClock, envelope, producer, soap, subscription};
+use super::{Input, LeaseClock, envelope, producer, soap, subscription, test_credentials};
 
 fn pull(remaining: Duration, notifications: &str) -> Vec<u8> {
     let current = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z").unwrap();
@@ -29,14 +28,7 @@ fn delayed_create_uses_request_start_for_its_delivery_deadline() {
         .start()
         .unwrap();
     let endpoint = Endpoint::new(fake.events_endpoint()).unwrap();
-    let mut client = Client::new(
-        endpoint.clone(),
-        Credentials {
-            username: "test".to_owned(),
-            password: "test".to_owned(),
-        },
-    )
-    .unwrap();
+    let mut client = Client::new(endpoint.clone(), test_credentials()).unwrap();
     let started = Instant::now();
     // The successful wire create advances application time without a scheduler-dependent sleep.
     let now = || {
