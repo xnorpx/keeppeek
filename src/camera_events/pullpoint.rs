@@ -215,6 +215,21 @@ impl LeaseClock {
     }
 }
 
+fn create_subscription(
+    client: &mut Client,
+    endpoint: &Endpoint,
+    now: impl Fn() -> Instant,
+) -> anyhow::Result<(Subscription, LeaseClock)> {
+    let started = now();
+    let created = client.execute(
+        &Request::create(endpoint, SUBSCRIPTION_LIFETIME)?,
+        REQUEST_TIMEOUT,
+    )?;
+    let subscription = Subscription::parse(endpoint, &created)?;
+    let clock = LeaseClock::new(subscription.lease(), started);
+    Ok((subscription, clock))
+}
+
 fn wire_timeout(timeout: Duration) -> Duration {
     Duration::from_millis(
         u64::try_from(timeout.as_millis()).expect("bounded pull timeout fits milliseconds"),
@@ -353,13 +368,8 @@ impl Producer {
         if !service.pull_supported() {
             return Err(Unsupported.into());
         }
-        let started = Instant::now();
-        let created = client.execute(
-            &Request::create(service.endpoint(), SUBSCRIPTION_LIFETIME)?,
-            REQUEST_TIMEOUT,
-        )?;
-        let subscription = Subscription::parse(service.endpoint(), &created)?;
-        let mut clock = LeaseClock::new(subscription.lease(), started);
+        let (subscription, mut clock) =
+            create_subscription(&mut client, service.endpoint(), Instant::now)?;
         self.slot.update(|evidence| {
             evidence.pull_capable = true;
             evidence.unsubscribed = false;

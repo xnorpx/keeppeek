@@ -996,7 +996,7 @@ Evidence: `target/alpha-audit/mobile-midnight-red.log` and `mobile-midnight-gree
 
 #### KP-QA-017 [P2] Revocation during request dispatch can leave an invalid API transport open
 
-**Status:** Fix implemented; focused regressions pass, full validation pending.
+**Status:** Fix implemented; focused regressions and full canonical validation pass.
 **Owner area:** Access/session lifecycle and CI reliability.
 
 Changing camera grants or revoking a credential while its dashboard initializes can leave
@@ -1028,6 +1028,109 @@ Evidence: `target/alpha-fixes/session-authorization-red-final.log`,
 `camera-access-isolated.log`. Main's separate ZIP-inspection timeout remains a diagnostic
 uncertainty: explicit Python selection and redacted process diagnostics improve reproducibility,
 while the ten-second timeout and archive-content assertions remain unchanged.
+
+#### KP-QA-018 [P2] A cold recording seek can count the previous video offset twice
+
+**Status:** Fix implemented; deterministic regressions and full canonical validation pass.
+**Owner area:** Keep recording playback, keyboard navigation, and export marks.
+
+When a seek needs a new recording fragment, the same-segment path applies the requested video
+offset against the old fragment before awaiting the new fragment. It then replaces the absolute
+anchor without applying the new fragment's relative offset. A queued `timeupdate` can therefore
+combine the old offset with the new anchor and move the playhead beyond the requested frame.
+
+The keyboard trace shows a first 40 ms step becoming 80 ms without another key press. A second
+step reaches 120 ms and then 200 ms, and the export end mark captures the incorrect timestamp.
+The fixture returns a fragment anchored at the requested timestamp, making the extra offset
+observable. Real decoded-media impact still requires validation; the trace establishes the
+route's incorrect timestamp transition with the controlled media fixture.
+
+The same-segment seek now applies the new fragment's relative offset after accepting its response.
+A version-owned guard suppresses obsolete media-clock updates only while the source and offset
+are being committed; normal updates continue during the network wait. A controlled regression
+holds the seek response and delivers `timeupdate` at source replacement. Its first version failed
+with an 80 ms playhead after one 40 ms step. A second case with a preexisting 500 ms offset exposed
+a transient extra 500 ms in the published DOM, requiring the commit guard as well as the offset fix.
+
+The final regression checks the transient and settled timestamps, a paused player, the reset
+relative video offset, and exactly one seek request. The existing keyboard/export test now requires
+exact 40 ms frame steps and a 40 ms marked interval. The final source passes full canonical
+validation, including all 258 runnable browser E2E cases. An earlier decoded-media case stalled
+during `/create`, before any player or seek existed; that case passes in the final run, but the
+earlier stall's cause remains unproven.
+
+Evidence: `target/alpha-fixes/e2e-trace-red/` and `ci-followup-e2e-trace.log`, keyboard test
+`controls Keep transport, exact frames, live follow, and export range from the keyboard`.
+Deterministic evidence is in `cold-seek-red-artifacts`, `cold-seek-nonzero-red-artifacts`, and
+`cold-seek-trace-green-artifacts` under the same `target/alpha-fixes` directory.
+
+#### KP-QA-019 [P2] Browser timing assertions include unrelated test-runner delays
+
+**Status:** Timing corrections implemented; focused and full canonical validation pass.
+**Owner area:** Events performance measurement and Keep startup regression tests.
+
+The dense Events test measures first-page time after Playwright's card-count assertion finishes.
+In the failing trace the results are visible at navigation +1,699 ms, within the unchanged
+2,000 ms budget. The count assertion samples zero at +1,569 ms and does not observe the populated
+page until +2,202 ms; the runner then records 2,231 ms. This measures observer latency as part of
+render time. A test helper now records the first completed card render with the browser's
+navigation clock. A delayed-consumer regression independently observes the populated page, waits
+longer than the budget, then checks the recorded render timestamp against that earlier observation.
+Replacing the saved timestamp with readout time makes this regression fail.
+
+A subsequent trace measured a real 2,574 ms render, dominated by Vite's initial module transforms:
+229 successful requests, with session creation not starting until 2,365 ms. The same fixture and
+assertions against the recorder's built UI rendered in 540 ms with 63 successful requests and no
+long task. The two Events performance tests therefore target the already-running built UI. Their
+1,000/2,000 ms render budgets, 50/150 ms long-task budgets, and card-count, transfer, and DOM checks
+remain intact. Other browser tests still use Vite. These measurements compare test-serving modes;
+they do not claim an application runtime speedup.
+
+The Keep fallback test starts its five-second observation window immediately after navigation.
+In the failing trace session creation completes about 2.077 seconds into that window, before the
+stored open can establish the product's three-second startup timer. The assertion stops at least
+73 ms before that timer could expire. Start the fallback observation at the playback operation it
+measures, retaining both the three-second product deadline and five-second test bound.
+
+Evidence: `target/alpha-fixes/e2e-trace-red/`, including `frame-1699ms.jpeg` in the Events failure
+directory, and `ci-followup-e2e-trace.log`. These diagnoses do not explain the earlier isolated
+frontend-startup timeout or the three initial-page failures whose subsequent trace run passed.
+
+#### KP-QA-020 [P2] Create-lease regression infers a deadline from unrelated worker duration
+
+**Status:** Test correction implemented; all 25 focused PullPoint tests and full canonical validation pass.
+**Owner area:** Native ONVIF event subscriptions and CI reliability.
+
+Main CI run `34736789426` on `1b4e5c0` failed on macOS in
+`delayed_create_uses_request_start_for_its_delivery_deadline`. Its 900 ms watchdog began at worker
+spawn and included discovery, Digest authentication, two capability exchanges, a scripted 400 ms
+response delay, queue pressure, and unsubscribe. The failure did not identify which phase consumed
+the margin and does not establish a production lease-calculation regression.
+
+A private helper preserves the production request-start, HTTP execution, parsing, and lease-clock
+ordering. The replacement regression keeps the real authenticated HTTP create and unsubscribe,
+but advances a controlled application clock by exactly 400 ms when the response returns. It checks
+expiry at the request start plus one second, renewal at plus 666,666,667 ns, and 600 ms remaining.
+Capturing the timestamp after the response must fail these exact assertions.
+
+Existing real queue-pressure, delivery-timeout, reset, recovery, and cleanup tests remain. The
+full-pressure test retains its 1.6-second bound, one pull, error, unsubscribe, no active subscription,
+stall, and drop assertions, and now explicitly checks that no renewal occurs. This separates exact
+lease arithmetic from real delivery and cleanup behavior without increasing a watchdog.
+
+The timestamp-after-response mutation failed by exactly 400 ms. Restoring request-start capture
+passes all 25 PullPoint tests in 13.81 seconds, including the real pressure and cleanup cases.
+This is focused regression evidence; canonical and hosted qualification are recorded in the PR.
+
+Evidence: `target/alpha-fixes/main-1b4-ci-34736789426-macos-rust.log`, lines 2796–2808,
+`lease-create-order-final-mutation-red.log`, and `pullpoint-final-green.log`.
+
+Final Windows validation for KP-QA-017 through KP-QA-020 passed with slow tests enabled:
+2,420 Rust tests, 617 UI tests, and 258 E2E tests with six workers and zero retries. The existing
+21 ignored Rust tests and two codec skips remain. Formatting, lint, static analysis, type checks,
+and builds passed. All 1,987 source files matched the validation checkout and remained unchanged
+during the run. Evidence: `target/alpha-fixes/ci-regressions-canonical-20260913.log` and
+`ci-regressions-post-validation-integrity.json`. Hosted qualification is recorded in the PR.
 
 ### Release-contract discrepancies requiring an owner decision
 

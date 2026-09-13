@@ -286,6 +286,13 @@ test('tries one visible compatible fallback after startup failure', async ({ pag
 test('starts one visible fallback within the bounded startup deadline', async ({ page }) => {
 	const requests = await mockKeepTimeline(page, { emitLoadedData: false });
 	await page.goto(`/keep?camera=front-door&date=${date}`);
+	await expect
+		.poll(() => requests.storedOpens.map((request) => request.streamId))
+		.toEqual(['main']);
+	await expect(page.locator('[data-keep-player]')).toHaveAttribute(
+		'data-recording-startup-phase',
+		'metadata'
+	);
 
 	await expect
 		.poll(() => requests.storedOpens.map((request) => request.streamId), { timeout: 5_000 })
