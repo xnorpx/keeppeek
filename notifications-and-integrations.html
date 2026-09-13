@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -196,6 +196,27 @@ and support active windows and quiet hours, including daylight-saving transition
 conflict or invalid draft leaves the previous active revision unchanged. Use the test action before
 depending on a new destination. Test sends have separate rate accounting but still use the saved
 credentials and provider configuration.</p>
+<p>Start with one camera, one event kind and one destination. Verify a real matching event in
+<strong>Events</strong> after the test send succeeds: a provider test proves the delivery path, not that your
+camera, schedule or rule filters will produce an alert. Rules and active revisions survive restart
+in <code>config.toml</code>; delivery queues and inbox history do not.</p>
+<h2 id="browser-alerts-inbox-and-webhooks"><a class="header" href="#browser-alerts-inbox-and-webhooks">Browser alerts, inbox and webhooks</a></h2>
+<p><strong>Settings &gt; Notifications</strong> has <strong>Rules</strong>, <strong>Inbox</strong> and <strong>History</strong> views. Use Inbox to mark a
+notification seen, acknowledge it or clear it. <strong>Clear all</strong> requires a second confirmation.
+These actions change notification receipts, not the event’s reviewed/dismissed state or the
+camera’s health. History shows delivery attempts and suppression reasons.</p>
+<p>For desktop notifications, add a Browser action and select <strong>Enable browser alerts</strong> when offered.
+Browser permission is separate from KeepPeek access and server inbox delivery. The browser’s
+current permission and an active frontend determine whether it can display a system alert; this
+is not an offline push service for a closed application. Use Pushover when you need the supported
+external push channel.</p>
+<p>Webhook actions send to the configured URL with a five-second timeout. They do not follow
+redirects, accept arbitrary request headers or allow credentials in the URL. Configure an endpoint
+that can accept the supported payload and inspect History after testing it. Enrichment can create
+a second webhook delivery only when the action enables that behavior.</p>
+<p>The rule editor also exposes a <strong>Forwarder</strong> action, but its current provider returns
+<code>channel_unavailable</code>. It is not the MQTT event forwarder. Configure MQTT independently under
+<strong>Settings &gt; Integrations</strong>, as described below.</p>
 <h2 id="avoid-duplicate-and-noisy-alerts"><a class="header" href="#avoid-duplicate-and-noisy-alerts">Avoid duplicate and noisy alerts</a></h2>
 <p>KeepPeek gives one logical notification a stable identity derived from its rule, source, event or
 outage, and lifecycle. Event revisions, retries, enrichment, and recovery retain that identity while
@@ -232,6 +253,10 @@ expiry values and records provider acknowledgement separately from KeepPeek ackn
 in-memory retry policy. Invalid credentials and other permanent provider failures do not retry
 indefinitely. Restarting KeepPeek discards pending attempts. Disabling a rule or Push action stops
 new work and expires its pending attempts.</p>
+<p>The notification outbox holds at most 10,000 pending/retrying actions in process memory. A full
+queue records <code>expired</code> with reason <code>outbox_full</code>. Each action also has its own attempt, retry and
+expiry bounds. Restart is not a recovery strategy for pending delivery: it discards that work and
+can allow replayed events to notify again after deduplication state is cleared.</p>
 <h2 id="forward-events-through-mqtt"><a class="header" href="#forward-events-through-mqtt">Forward events through MQTT</a></h2>
 <p>Open <strong>Settings &gt; Integrations</strong> to configure, test, observe, or disable the MQTT event forwarder.
 It requires an MQTT 5 broker; MQTT 3.1 and 3.1.1 are not fallback protocols.</p>
@@ -256,20 +281,43 @@ Restarting KeepPeek discards pending publications and deduplication history. Whe
 forwarding fails visibly while event persistence and recording continue.</p>
 <p>Settings and Prometheus expose connection state, bounded error detail, pending items and bytes,
 retry and duplicate counts, last received and delivered times, and oldest unacknowledged work.</p>
-<p>See the detailed <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/notifications.md">notification rule</a>,
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/pushover.md">Pushover</a>, and
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-forwarder.md">MQTT 5 forwarder</a>
+<h2 id="troubleshoot-a-missing-alert"><a class="header" href="#troubleshoot-a-missing-alert">Troubleshoot a missing alert</a></h2>
+<p>Check the chain in order: the source event exists, the active rule matches it, its schedule and
+cooldown permit delivery, the action is available, and the provider or broker accepted the work.
+A missing image, an acknowledged inbox item and a failed provider request are separate outcomes.
+Changing one does not repair the others.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Evidence</th><th>Next step</th></tr>
+</thead>
+<tbody>
+<tr><td>No event in Events</td><td>Check <a href="./native-camera-events.html">native events</a> or the <a href="./external-analysis.html">external analysis service</a>, camera scope and UTC date.</td></tr>
+<tr><td>Rule is saved but not active</td><td>Activate the intended draft and resolve any validation or revision conflict.</td></tr>
+<tr><td><code>suppressed</code>, <code>collapsed</code> or <code>rate_limited</code></td><td>Inspect the active filter, schedule, cooldown and next eligible time.</td></tr>
+<tr><td>Push fails permanently</td><td>Verify both configured credentials and destination in a controlled test; do not repeatedly retry invalid credentials.</td></tr>
+<tr><td>MQTT pending bytes keep growing</td><td>Check MQTT 5 broker availability, TLS trust, authentication and acknowledgements before the bounded outbox fills.</td></tr>
+<tr><td>Inbox or queued work disappears after restart</td><td>This is process-local delivery state. The stored event and configured rule remain separate.</td></tr>
+</tbody>
+</table>
+</div>
+<p>For Home Assistant, the <a href="./home-assistant.html">direct camera card</a> displays live video. It does not
+create entities or subscribe to these events for you. MQTT consumers and Home Assistant
+automations need their own topic, payload and deduplication configuration.</p>
+<p>See the detailed <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/notifications.md">notification rule</a>,
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/pushover.md">Pushover</a>, and
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/event-forwarder.md">MQTT 5 forwarder</a>
 references for every field, payload, metric, and failure state.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="recording-maintenance.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="external-analysis.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="external-analysis.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="home-assistant.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -279,11 +327,11 @@ references for every field, payload, metric, and failure state.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="recording-maintenance.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="external-analysis.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="external-analysis.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="home-assistant.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

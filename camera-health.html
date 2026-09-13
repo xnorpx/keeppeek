@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,6 +178,26 @@
 <p>KeepPeek computes camera and stream health on the server. Peek, Cameras, Health, camera
 diagnosis, fleet counts, the control API, and Prometheus metrics consume that same projection.
 Clients do not infer health from display text, local video playback, or issue severity.</p>
+<h2 id="investigate-an-unhealthy-camera"><a class="header" href="#investigate-an-unhealthy-camera">Investigate an unhealthy camera</a></h2>
+<ol>
+<li>Open <strong>Cameras</strong> and use <strong>Not healthy</strong> to narrow the fleet. Select the camera for its current
+state, primary reason, stream profiles and recording evidence.</li>
+<li>Open <strong>Health</strong> for fleet findings. Refresh to request a current snapshot, then follow a
+finding’s camera or timeline link to the affected source and time.</li>
+<li>Compare transport, advancing frames, keyframes and recording progress. A connected socket can
+still deliver stale or undecodable video; a decoded live picture does not prove recording.</li>
+<li>Use <strong>Recording integrity</strong> when the question is whether footage was retained. Its historical
+coverage and gaps answer a different question from current-process health counters.</li>
+<li>Check native event and external service status separately when only detections or alerts are
+missing. Their failures do not make otherwise healthy camera media offline.</li>
+</ol>
+<p>An active health finding clears when new evidence shows recovery. It has no dismiss action that
+changes the underlying state. Acknowledging an alert or marking an event reviewed is a separate
+workflow. See <a href="./notifications-and-integrations.html">Notifications and integrations</a> and
+<a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
+<p>Health and administrative diagnostics depend on your role. If a User can view video but cannot
+load fleet health, check <a href="./authentication.html">access permissions</a> before treating the unavailable
+diagnostic panel as a camera failure.</p>
 <p>The current health contract version is <code>1</code>. A client that cannot understand a state or reason must
 treat it as <code>unknown</code>, never as healthy.</p>
 <h2 id="evidence-dimensions"><a class="header" href="#evidence-dimensions">Evidence dimensions</a></h2>
@@ -403,11 +423,11 @@ operational transitions without coupling providers or brokers to camera ingest.<
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="authentication.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="digital-zoom.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="camera-controls.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="configuration-management.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -417,11 +437,11 @@ operational transitions without coupling providers or brokers to camera ingest.<
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="authentication.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="digital-zoom.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="camera-controls.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="configuration-management.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

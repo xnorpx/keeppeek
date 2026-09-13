@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Backup and restore - The KeepPeek Book</title>
+        <title>How KeepPeek works - The KeepPeek Book</title>
 
 
         <!-- Custom HTML head -->
@@ -174,90 +174,108 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="backup-and-restore"><a class="header" href="#backup-and-restore">Backup and restore</a></h1>
-<p>KeepPeek can create and validate a configuration bundle while recording continues. A format-3 ZIP
-contains exactly <code>config.toml</code> and plaintext <code>secrets.toml</code>; it contains no database or media.</p>
-<p>For a step-by-step walkthrough, see
-<a href="./configuration-export-import.html">Export and import configuration</a>.</p>
-<p>Open <strong>Settings → Backup and restore</strong> as an Administrator. <strong>Export ZIP</strong> downloads the two files
-directly. Select a <strong>Configuration ZIP</strong>, confirm replacement, and choose <strong>Apply configuration</strong>.
-After the upload succeeds, choose <strong>Restart to apply</strong>.</p>
-<p>The HTTP surface is <code>GET /config/export</code> for download and <code>POST /config/apply</code> for a ZIP upload.
-There are no retained server backups, upload reservations, or separate dry-run requests. The old
-<code>/api/backups</code> routes are retired.</p>
-<h2 id="secrets-and-media"><a class="header" href="#secrets-and-media">Secrets and media</a></h2>
-<p>The ZIP includes the complete file-backed <code>secrets.toml</code> in plaintext. It may contain camera
-passwords, access keys, MQTT credentials, webhook URLs, and notification-provider destinations.
-Restrict the ZIP like the live secrets file and delete copies that are no longer needed. Environment
-secret overrides are not copied into the bundle.</p>
-<p><code>recordings.db</code>, MP4 recordings, thumbnail JPEGs, sessions, caches, audit activity, and in-memory
-notification/MQTT work are excluded. The target recorder keeps its local storage paths during
-restore. Protect the recording tree with a separate archive policy when it needs recovery.</p>
-<h2 id="what-survives-a-restart"><a class="header" href="#what-survives-a-restart">What survives a restart</a></h2>
+                        <h1 id="how-keeppeek-works"><a class="header" href="#how-keeppeek-works">How KeepPeek works</a></h1>
+<p>KeepPeek puts recording, live media, event storage, and investigation in one local service. The
+browser is a client of that service. Closing a tab ends its viewing work; it does not stop the
+server’s configured recording policy.</p>
+<p>This chapter explains the current boundaries. <a href="./users-and-design-choices.html">Users and design choices</a>
+contains the product rationale, while the feature chapters provide operational instructions.</p>
+<h2 id="media-and-event-paths"><a class="header" href="#media-and-event-paths">Media and event paths</a></h2>
+<pre class="mermaid">flowchart TB
+    Camera[IP camera] --&gt;|Encoded media| Core[KeepPeek]
+    Core --&gt;|Record| MP4[MP4 and catalog]
+    Core --&gt;|Live WebRTC| Browser[Client]
+    MP4 --&gt;|Playback via KeepPeek| Browser
+</pre>
+
+<p>The camera supplies encoded media. KeepPeek understands codecs and timing well enough to route,
+package, and record those streams without decoding and re-encoding their video in the core. The
+browser or an external service performs the decoding it needs. Camera control, native events, and
+media can use different protocol connections, so success on one path does not prove the others
+are healthy.</p>
+<p>Supported native adapters and optional analysis services publish events through a separate path:</p>
+<pre class="mermaid">flowchart TB
+    Source[Camera or analysis service] --&gt; Events[Validate and store event]
+    Events --&gt; Review[Review in KeepPeek]
+    Events --&gt; Delivery[Rules and MQTT]
+</pre>
+
+<p>The server separates camera/media work, storage work, WebRTC sessions, and integration delivery.
+Health and queue evidence make stalls and pressure visible. Optional analysis and notification
+delivery do not become a prerequisite for ordinary recording. Resource exhaustion or failure of
+the recorder’s own storage and network still needs operational attention.</p>
+<h2 id="persistent-data-and-live-state"><a class="header" href="#persistent-data-and-live-state">Persistent data and live state</a></h2>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>State</th><th>Persistence and recovery boundary</th></tr>
+<tr><th>Data</th><th>Owner and purpose</th><th>Operational consequence</th></tr>
 </thead>
 <tbody>
-<tr><td>Camera settings, access credentials and grants, dashboards and selections, templates, notification rules, MQTT settings</td><td>Durable configuration in <code>config.toml</code>; included in a configuration ZIP.</td></tr>
-<tr><td>File-backed secrets</td><td>Durable sibling <code>secrets.toml</code>; included in plaintext. Environment overrides remain outside the ZIP.</td></tr>
-<tr><td>Recording metadata, events, coverage and maintenance intent</td><td>Recording catalog data; recover with a consistent catalog and media archive.</td></tr>
-<tr><td>MP4 recordings and event images</td><td>Files in configured storage locations; not part of a configuration ZIP.</td></tr>
-<tr><td>Evidence-export history and artifacts</td><td>Stored in <code>.exports</code> under the long-term recording root, with separate history and artifact expiry; not part of the ZIP.</td></tr>
-<tr><td>Diagnostic log filter</td><td>The existing sibling <code>log-filter</code> file persists separately and is not in the two-TOML ZIP.</td></tr>
-<tr><td>Notification delivery jobs, retries, inbox/history, cooldowns and delivery counters</td><td>Runtime memory; reset on restart. Saved rule drafts and active rules remain.</td></tr>
-<tr><td>MQTT pending publications, retries and deduplication history</td><td>Runtime memory; reset on restart. Stored source events are not an automatic replay queue.</td></tr>
-<tr><td>Access audit, credential last-use activity and active sessions</td><td>Runtime memory; reset on restart. Durable identities and grants remain.</td></tr>
-<tr><td>Browser sign-in key, media handles and active wake lock</td><td>Page/browser runtime state; reload or reconnect as required. Saved dashboard wake-lock intent remains configuration.</td></tr>
+<tr><td>Application configuration</td><td>The existing <code>config.toml</code> holds supported settings, policies, layouts, and access configuration.</td><td>Use validated saves or configuration import and preserve the file across upgrades.</td></tr>
+<tr><td>Reusable private strings</td><td>The companion <code>secrets.toml</code> supplies supported secret references.</td><td>Preserve references and protect configuration archives and private restore material.</td></tr>
+<tr><td>Encoded recordings</td><td>MP4 files in the configured storage paths.</td><td>Retention, recording policy, storage pressure, and file integrity determine what remains.</td></tr>
+<tr><td>Recording and event catalog</td><td>Indexed recording identity, coverage, events, and related durable investigation state.</td><td>Recover it consistently with the media and the documented archive procedures.</td></tr>
+<tr><td>Images and exports</td><td>Feature-owned data under configured paths and retention policies.</td><td>A playable recording does not imply that an event thumbnail or export is retained.</td></tr>
+<tr><td>Notification and MQTT runtime state</td><td>Bounded process memory for pending work and related runtime history or deduplication.</td><td>A restart does not replay this work. Persisted rules and provider configuration are separate from delivery state.</td></tr>
+<tr><td>Active connections and subscriptions</td><td>The running server and each client connection.</td><td>Reconnect and resolve current capabilities; a stored preference does not prove a stream is live.</td></tr>
 </tbody>
 </table>
 </div>
-<p>Restart is therefore a recording interruption and a runtime-state reset, even when every saved
-setting returns correctly. Collect required audit and delivery evidence before restart. A queue
-that was pending before shutdown is not proof of later provider delivery.</p>
-<p>See <a href="./recording-archive-recovery.html">Recording archive recovery</a> for consistent offline copies and
-recovery rehearsals, and <a href="./upgrades-and-migrations.html">Upgrades and migrations</a> for version changes.</p>
-<h2 id="safe-activation"><a class="header" href="#safe-activation">Safe activation</a></h2>
-<p>Apply accepts a current format-3 ZIP, including its manifest comment, and validates paths, checksums,
-both TOMLs, permissions, and capacity before staging. It returns <code>202</code> with
-<code>RESTORE_STATE_AWAITING_RESTART</code>; this is not an immediate replacement of the live files.</p>
-<p>Staging writes owner-only copies beside both target files. Recovery runs before configuration or
-databases open, and completion requires successful configuration, HTTP, and camera-worker startup.
-KeepPeek restores the prior pair automatically if startup health fails. A pending apply blocks a
-second upload from replacing it; a healthy completed restore can be superseded by the next apply.
-To return to an older configuration, apply a ZIP exported before the change.</p>
-<p>Do not edit <code>.backups/restore-journal.json</code> or its staging files manually. The detailed HTTP, limit,
-crash-recovery, and CLI contract is in the
-<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/backup-and-restore.md">backup and restore engineering guide</a>.</p>
-<h2 id="automation"><a class="header" href="#automation">Automation</a></h2>
-<p>The <code>keeppeek config</code> commands call the same Administrator-only HTTP endpoints. Commands print
-machine-readable JSON to stdout. Supply remote authentication only through
-<code>KEEPPEEK_ACCESS_KEY</code>; never put it in a URL or command argument.</p>
-<p>CLI exports create a new private file before writing archive bytes. On Unix, the file mode is
-<code>0600</code>. On Windows, a protected access list permits the current user, SYSTEM, and Administrators;
-the CLI verifies that protection before writing. A destination that cannot provide this protection
-is rejected. Existing files and Windows alternate data streams are not export destinations.
-Browser downloads use the browser’s destination permissions; restrict those copies separately.</p>
-<pre><code class="language-sh">keeppeek config --server http://localhost:8081 export --output keeppeek-config.zip
-keeppeek config --server http://localhost:8081 apply keeppeek-config.zip --confirm
-</code></pre>
-<p>Use your recorder’s configured port if it differs from the default <code>8081</code>. Export does not overwrite
-an existing file. Apply does not restart the recorder automatically; check its exit status and
-<code>RESTORE_STATE_AWAITING_RESTART</code> result before restarting. Exit code <code>2</code> means invalid CLI usage,
-<code>3</code> means a stable server 4xx rejection, and <code>4</code> means a transport, protocol, or server failure.</p>
-<p>Keep <code>--server</code> explicit in automation: the config CLI currently uses port <code>3000</code> if it is omitted,
-which differs from a new recorder’s default listener port.</p>
+<p>The <a href="./configuration-reference.html">configuration reference</a> is the authority for serialized fields,
+defaults, and paths. Do not create separate settings files for layouts or permissions. For a
+consistent recovery plan, use <a href="./backup-and-restore.html">Backup and restore</a>; configuration export
+and a full recording archive serve different purposes.</p>
+<h2 id="control-media-and-access"><a class="header" href="#control-media-and-access">Control, media, and access</a></h2>
+<p>HTTP creates and deletes API sessions and provides dedicated administration and diagnostic
+operations. WebRTC carries typed control messages, data messages, and media. Clients must use the
+negotiated capabilities and source identities instead of assuming that every camera has the same
+streams, codecs, events, or controls.</p>
+<p>Authentication identifies the caller; authorization determines the operations and cameras that
+caller may use. The same restrictions apply through a dashboard, deep link, or integration. A
+hidden UI control is not the security boundary. See <a href="./authentication.html">Authentication</a> for
+local trust, named credentials, roles, camera grants, reverse proxies, and revocation.</p>
+<p>The server exposes configuration export/apply, backups, recording coverage, logs, and metrics on
+dedicated HTTP routes. Their methods and authentication requirements are defined by the
+<a href="https://github.com/xnorpx/keeppeek/blob/main/api/openapi.yaml">HTTP contract</a> and implementation;
+they are not a general REST replacement for the WebRTC control protocol. Custom clients should
+start with the <a href="https://github.com/xnorpx/keeppeek/blob/main/api/README.md">API overview</a> and verify
+runtime support for each command they need. The API is pre-1.0 and does not yet promise stable
+compatibility across versions.</p>
+<h2 id="recording-truth-and-investigation"><a class="header" href="#recording-truth-and-investigation">Recording truth and investigation</a></h2>
+<p>Live frames, stored coverage, event timestamps, and exported evidence answer different questions.
+A connected camera can fail to record; a retained event can outlive its image or video; a
+successful seek does not prove that the surrounding day has no gaps.</p>
+<p>Keep combines recorded coverage, selected time, camera identity, and event context. Health screens
+explain stream progress and recorder evidence. Maintenance inspects persisted files and catalog
+state. Keep these layers separate when diagnosing an incident so that a browser playback problem
+does not become an unnecessary archive repair.</p>
+<p>Start with <a href="./recording-and-evidence.html">Recording and evidence</a> and
+<a href="./camera-health.html">Camera and stream health</a>. Use <a href="./recording-maintenance.html">Recording maintenance</a>
+when stored-data evidence warrants it.</p>
+<h2 id="extension-boundaries"><a class="header" href="#extension-boundaries">Extension boundaries</a></h2>
+<p>External services consume media and publish supported events without becoming part of the core
+recorder. Camera-native adapters provide another event source. Notifications and MQTT consume
+committed events and maintain their own delivery evidence. Home Assistant’s card connects the
+browser directly to KeepPeek rather than proxying video through Home Assistant.</p>
+<p>Some broader protocol scenarios are implemented only in part. Live <a href="./groups.html">participant groups</a>
+currently have declarations and a UI explanation without a runtime handler. Consult the feature’s
+availability statement before designing a deployment around it.</p>
+<p>Implementation entry points include
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/app.rs"><code>src/app.rs</code></a> for startup,
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/server.rs"><code>src/server.rs</code></a> for request handling,
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/webrtc.rs"><code>src/webrtc.rs</code></a> for sessions and media,
+and <a href="https://github.com/xnorpx/keeppeek/tree/main/src/storage"><code>src/storage</code></a> for recording and
+catalog behavior. Development and verification instructions are in <a href="./contributing.html">Contributing</a>.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="configuration-export-import.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="groups.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="upgrades-and-migrations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="users-and-design-choices.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -267,11 +285,11 @@ which differs from a new recorder’s default listener port.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="configuration-export-import.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="groups.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="upgrades-and-migrations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="users-and-design-choices.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

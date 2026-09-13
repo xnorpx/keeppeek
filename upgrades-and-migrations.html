@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,16 +174,141 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        
+                        <h1 id="upgrades-and-migrations"><a class="header" href="#upgrades-and-migrations">Upgrades and migrations</a></h1>
+<p>Upgrade the application separately from moving storage or importing configuration. Each operation
+has a different recovery boundary. KeepPeek is in Alpha qualification; keep a tested recovery copy
+and rehearse upgrades on an isolated installation before changing a recorder you depend on.</p>
+<h2 id="prepare-an-upgrade"><a class="header" href="#prepare-an-upgrade">Prepare an upgrade</a></h2>
+<ol>
+<li>Record the running version, installation method, service account, listener address, and effective
+configuration, catalog, recording, and thumbnail locations. A service account can use a different
+configuration directory from your interactive login.</li>
+<li>Read the target release notes and <a href="./release-readiness.html">known limitations</a>. Retain the exact
+previous package or container image so you can identify what was running.</li>
+<li>Export a <a href="./configuration-export-import.html">configuration ZIP</a>. Keep it private: it contains
+plaintext file-backed secrets. Record any environment-only secrets and external dependencies in
+your existing secure operations system; the ZIP does not include them.</li>
+<li>Arrange a consistent <a href="./recording-archive-recovery.html">recording archive recovery copy</a>, including
+the catalog and media. A ZIP alone cannot restore these after a failed disk or catalog migration.</li>
+<li>Complete any already-staged configuration apply or storage move before starting a separate
+upgrade. Finish or cancel active exports and maintenance jobs where possible. Preserve reports for any
+unresolved maintenance work. Record the expected recording interruption and notify the people
+who rely on the installation through your normal process.</li>
+<li>Stop the recorder through its service manager before replacing application files or taking an
+offline archive copy. Confirm it is stopped; do not run two versions against the same directories.</li>
+</ol>
+<p>Do not upgrade by replacing <code>config.toml</code> with a sample. Server-managed credentials, camera grants,
+layouts, templates, and notification rules live in that file alongside ordinary settings.</p>
+<h2 id="replace-the-application"><a class="header" href="#replace-the-application">Replace the application</a></h2>
+<h3 id="docker-on-linux"><a class="header" href="#docker-on-linux">Docker on Linux</a></h3>
+<p>Keep the existing <code>/config</code> mount and any additional recording mounts. Pull the selected release
+image, stop the old container, and create its replacement with the same mounts, ports, user access,
+and environment. Record the image digest if you need to reproduce the installation; <code>latest</code> can
+refer to a different build later.</p>
+<p>Container replacement does not preserve data that was left only in the container’s writable layer.
+Do not delete a named volume or host recording directory during an application upgrade. The image
+runs as user <code>65532</code>; the replacement must still be able to write its mounted directories.
+See <a href="./get-started.html#linux-with-docker">Get started</a> for the basic mount contract.</p>
+<h3 id="macos"><a class="header" href="#macos">macOS</a></h3>
+<p>Download the Apple Silicon DMG and its matching checksum file. Verify the checksum, replace
+<code>/Applications/KeepPeek.app</code>, then open the new application once. The launcher reinstalls and starts
+the per-user <code>com.keeppeek</code> launch agent. It starts after that user logs in; it is not a system-wide
+boot daemon.</p>
+<p>Check the loaded service and logs:</p>
+<pre><code class="language-sh">launchctl print gui/"$(id -u)"/com.keeppeek
+tail -n 100 ~/Library/Logs/KeepPeek/keeppeek.log ~/Library/Logs/KeepPeek/keeppeek-error.log
+</code></pre>
+<p>Keep the existing configuration directory. The launcher writes its launch-agent definition again,
+so preserve and recheck any deliberate local service customizations. Package-signing and
+notarization details are in the
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a>.</p>
+<h3 id="windows"><a class="header" href="#windows">Windows</a></h3>
+<p>Run the installer for the host architecture. An existing <code>KeepPeekService</code> selects the service
+component by default. The installer stops and removes that registration before replacing binaries,
+then recreates and starts it when the service component is selected.</p>
+<p>Record custom service identity, startup, recovery, and environment settings before upgrading;
+recreating the service is not a promise to preserve SCM customizations. Recheck them before relying
+on unattended operation. Configuration paths resolve in the process account’s environment.</p>
+<p>Use an elevated prompt for service operations:</p>
+<pre><code class="language-powershell">sc.exe query KeepPeekService
+sc.exe qc KeepPeekService
+</code></pre>
+<p>For a planned manual stop and start, use <code>sc.exe stop KeepPeekService</code> and
+<code>sc.exe start KeepPeekService</code>, checking <code>sc.exe query KeepPeekService</code> between operations. A stop
+request can return before the service has finished stopping. The installer manages these steps
+when performing its own service upgrade.</p>
+<p>If the installer cannot stop the old service, resolve that failure before retrying the installer.
+If startup fails, inspect the service account’s configuration and logs. The default destination is
+<code>keeppeek-service.log</code> beside its configuration; <code>[logging] service = "event_log"</code> uses the Windows
+Application log after the source has been registered. See the
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md">Windows service guide</a>.</p>
+<h3 id="standalone-binary"><a class="header" href="#standalone-binary">Standalone binary</a></h3>
+<p>Stop the current process, replace the executable with the intended build, and start it with the same
+configuration selection and environment. The <code>--config &lt;path&gt;</code> option selects the TOML file and its
+sibling <code>secrets.toml</code>; it does not automatically relocate omitted recording paths.</p>
+<h2 id="what-startup-migrates"><a class="header" href="#what-startup-migrates">What startup migrates</a></h2>
+<p>Current KeepPeek loads durable settings from <code>config.toml</code>. Older installations may still have
+separate subsystem files. Startup imports their supported settings when the corresponding current
+section is absent, writes the current configuration, and removes the retired file after successful
+migration. Preserve an offline pre-upgrade copy if you need the original inputs.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Legacy input</th><th>Current location or behavior</th></tr>
+</thead>
+<tbody>
+<tr><td><code>access.toml</code></td><td>Credential identities, verifiers, roles, revisions, and grants move to <code>[access_credentials]</code>.</td></tr>
+<tr><td><code>peek-layouts.json</code></td><td>Layouts and per-user selection move to <code>[peek_layouts]</code>. Legacy private layouts become server-owned dashboards with restricted audiences.</td></tr>
+<tr><td><code>configuration-templates.json</code></td><td>Camera templates move to <code>[configuration_templates]</code>.</td></tr>
+<tr><td><code>notifications.db</code> and its database sidecars</td><td>Rule drafts and active rules move to <code>[notifications]</code>; delivery history and pending runtime work are not a replay queue.</td></tr>
+<tr><td><code>mqtt-forwarder.db</code> and its database sidecars</td><td>Retired and removed. Current MQTT pending work and deduplication are in memory and are not replayed from this file.</td></tr>
+</tbody>
+</table>
+</div>
+<p>When a current configuration section already exists, it is authoritative; do not expect an old file
+to merge additional settings into it. Do not recreate retired files to change settings.</p>
+<p>The recording catalog also performs schema and index migrations as it opens. There is no supported
+general-purpose downgrade command or guarantee that an older binary can read a catalog after a newer
+binary has used it. Keep the pre-upgrade catalog and media together if a downgrade might be needed.</p>
+<p>See the <a href="./configuration-reference.html">configuration reference</a> for current fields and
+<a href="./backup-and-restore.html#what-survives-a-restart">Backup and restore</a> for durable versus runtime state.</p>
+<h2 id="move-storage-deliberately"><a class="header" href="#move-storage-deliberately">Move storage deliberately</a></h2>
+<p>Use <strong>Settings</strong> and its storage editor. Set the new locations, then choose whether to leave existing
+recordings where they are or <strong>Move existing storage during restart</strong>. Review all changes and the
+space assessment before saving. A leave choice is not a media transfer: retain access to the old
+locations, and verify how the selected catalog will expose existing recordings.</p>
+<p>For a move, KeepPeek writes a pending <code>[storage_migration]</code> journal into the existing configuration.
+On restart it moves the selected recording roots and separately configured catalog and thumbnail
+paths, including catalog sidecars when needed, and updates stored recording paths. Overlapping or
+conflicting destinations are rejected. Cross-filesystem moves can require copying the data and
+therefore take longer than a rename.</p>
+<p>Reserve a maintenance window and enough destination capacity. If startup reports a different file
+already at a destination, stop and inspect both copies; do not overwrite one to bypass the check.
+Do not edit the migration journal or remove partial files to force progress. Preserve source,
+destination, configuration, and logs before requesting recovery help. This workflow is a storage
+move, not an importer for an unrelated recording archive.</p>
+<h2 id="verify-and-recover"><a class="header" href="#verify-and-recover">Verify and recover</a></h2>
+<p>After startup, check the version, expected camera count, credentials and grants, dashboards, storage
+locations, and provider settings. Test live playback, a finalized new recording, and an older known
+recording. Check recording integrity and any pending maintenance or export history. Reconnect remote
+clients; sessions and their browser keys are not restored across a reload or restart.</p>
+<p>An accepted configuration ZIP has its own automatic two-file startup rollback. That mechanism does
+not roll back an application binary, catalog schema, or storage move. If an application upgrade
+fails, stop the recorder and preserve its failed state before recovery. Restore an isolated copy of
+the previous complete installation and verify it before replacing the failed deployment. Do not
+run the older binary against the only copy of a possibly migrated catalog.</p>
+<p>Record the result, interruption, recovered data, and any remaining gap in the installation’s
+<a href="./release-readiness.html#promotion-record">qualification record</a>.</p>
+
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="get-started.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="backup-and-restore.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="authentication.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="recording-maintenance.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -193,11 +318,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="get-started.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="backup-and-restore.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="authentication.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="recording-maintenance.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

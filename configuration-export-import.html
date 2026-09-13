@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -250,12 +250,19 @@ See <a href="./backup-and-restore.html#safe-activation">Backup and restore</a> f
 <h2 id="use-the-cli"><a class="header" href="#use-the-cli">Use the CLI</a></h2>
 <p>The CLI performs the same export and apply operations as Settings. These examples connect to a
 recorder on the local machine:</p>
-<pre><code class="language-sh">keeppeek config --server http://localhost:3000 export --output keeppeek-config.zip
-keeppeek config --server http://localhost:3000 apply keeppeek-config.zip --confirm
+<pre><code class="language-sh">keeppeek config --server http://localhost:8081 export --output keeppeek-config.zip
+keeppeek config --server http://localhost:8081 apply keeppeek-config.zip --confirm
 </code></pre>
 <p>Export requires an output path and creates a new, owner-only file; choose a different filename if it
 already exists. Apply requires <code>--confirm</code>. Commands write machine-readable JSON to standard output
 and diagnostics to standard error.</p>
+<p>Keep <code>--server</code> explicit: a new recorder defaults to <code>8081</code>, while this CLI subcommand currently
+defaults to <code>http://localhost:3000</code> when the option is omitted. Use the recorder’s actual address.
+On Windows, export protects
+the new file for the current user, SYSTEM, and Administrators and verifies those permissions before
+writing any ZIP bytes. On Unix, it creates the file with mode <code>0600</code>. A destination whose required
+protection cannot be verified is rejected; choose a private filesystem destination. Browser
+downloads and direct HTTP clients use their own destination permissions.</p>
 <p>Check the command’s exit status and returned state. A successful apply reports
 <code>RESTORE_STATE_AWAITING_RESTART</code>; restart the service through your normal service manager, or use
 <strong>Restart to apply</strong> in Settings. The CLI does not restart the recorder automatically.</p>
@@ -276,9 +283,9 @@ argument.</p>
 </div>
 <p>For a local recorder, a POSIX shell example is:</p>
 <pre><code class="language-sh">umask 077
-curl --fail http://localhost:3000/config/export --output keeppeek-config.zip
+curl --fail http://localhost:8081/config/export --output keeppeek-config.zip
 curl --fail -H 'Content-Type: application/zip' \
-  --data-binary @keeppeek-config.zip http://localhost:3000/config/apply
+  --data-binary @keeppeek-config.zip http://localhost:8081/config/apply
 </code></pre>
 <p>Send the ZIP as the request body, not as a multipart form. Apply requires <code>Content-Length</code>; the curl
 command above supplies it for the file upload. Both endpoints require Administrator access and use
@@ -305,6 +312,14 @@ response. There is no separate public dry-run, section selection, or path-mappin
 <p>A rejected upload does not replace the live configuration. In Settings, the selected filename remains
 available after a validation error so you can correct the selection and retry. Do not restart in
 response to a failed upload as though it had been accepted.</p>
+<p>If startup fails after a successful apply, preserve its logs and allow the documented automatic
+two-file recovery to run. If both activation and rollback fail, preserve the full configuration
+directory, including its journal and staged files, before manual recovery. Do not clear a pending
+apply by deleting the journal. See <a href="./backup-and-restore.html#safe-activation">Safe activation</a>.</p>
+<p>For a recorder upgrade or disk failure, also use
+<a href="./upgrades-and-migrations.html">Upgrades and migrations</a> and
+<a href="./recording-archive-recovery.html">Recording archive recovery</a>. Applying settings cannot restore
+missing recording bytes.</p>
 
                     </main>
 

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,16 +174,107 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        
+                        <h1 id="native-camera-events"><a class="header" href="#native-camera-events">Native camera events</a></h1>
+<p>Native events are detections and status changes reported by the camera itself. KeepPeek consumes
+Reolink notifications, Hikvision/Annke ISAPI events, generic ONVIF PullPoint notifications and
+metadata carried by RTSP. These do not require an external inference service.</p>
+<p>Supported observations enter the same event catalog as other events and can appear in <strong>Events</strong>,
+Keep’s history, notification rules and MQTT. Event processing is independent of media ingest: an
+event-service failure does not restart healthy video or audio. Compare its status with
+<a href="./camera-health.html">camera and stream health</a> instead of treating them as one signal.</p>
+<h2 id="enable-and-verify-events"><a class="header" href="#enable-and-verify-events">Enable and verify events</a></h2>
+<ol>
+<li>Add the camera and verify its video and recording independently.</li>
+<li>In the camera’s own interface, enable the intended detection rule, schedule, region and event
+notification linkage. KeepPeek discovery does not configure these on the device.</li>
+<li>Use the default native event mode, <code>auto</code>, unless there is a reason to select a specific path.</li>
+<li>If the camera reports only unclassified motion, enable <strong>Store generic motion events</strong> in its
+KeepPeek settings. The default is off; explicit person or vehicle detections remain distinct.</li>
+<li>Trigger one known event, then open <strong>Events</strong>, choose that camera and the correct UTC date, and
+inspect its kind, source, timestamp and available image. Verify the corresponding recording in
+Keep before enabling an alert rule.</li>
+</ol>
+<p>A detector-enabled switch is not an activity indicator. A camera reporting a motion rule with a
+human-only filter also does not prove that every notification contains a person classification.
+KeepPeek uses the explicit evidence in each notification.</p>
+<h2 id="select-the-event-transport"><a class="header" href="#select-the-event-transport">Select the event transport</a></h2>
+<p>The optional <code>[cameras.&lt;name&gt;.events]</code> table belongs in the existing <code>config.toml</code>. These transport
+fields are file-only; ordinary camera edits preserve them. Apply file changes through the existing
+configuration/restart workflow. For example, to force generic ONVIF for an existing camera:</p>
+<pre><code class="language-toml">[cameras.front.events]
+mode = "onvif-pullpoint"
+metadata_stream = "auto"
+snapshots = true
+</code></pre>
+<p>Replace <code>front</code> with the existing camera entry’s name. Do not add a second entry for the same
+device merely to change its event path.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Mode</th><th>Behavior</th></tr>
+</thead>
+<tbody>
+<tr><td><code>auto</code></td><td>Prefer an eligible Reolink or ISAPI adapter; otherwise use generic ONVIF and permit RTSP metadata. Unsupported ISAPI HTTP 404/405 can hand over to generic ONVIF.</td></tr>
+<tr><td><code>vendor</code></td><td>Use the eligible vendor adapter without generic fallback.</td></tr>
+<tr><td><code>onvif-pullpoint</code></td><td>Use generic ONVIF independently of the video backend; metadata remains permitted unless disabled.</td></tr>
+<tr><td><code>rtsp-metadata</code></td><td>Consume metadata from the existing RTSP workers without contacting an ONVIF Event Service.</td></tr>
+<tr><td><code>disabled</code></td><td>Disable native events while leaving camera media independent.</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>metadata_stream</code> accepts <code>auto</code>, <code>enabled</code>, or <code>disabled</code>; it does not override <code>vendor</code> or
+<code>disabled</code> mode. Authentication failure is reported rather than bypassed through another
+authentication policy. The full field bounds and secret-reference rules are in the
+<a href="./configuration-reference.html">Configuration reference</a>.</p>
+<p>Multi-channel devices need exact channel evidence. ISAPI main/sub URLs ending in <code>101/102</code> select
+input 1; <code>201/202</code> select input 2. Both URLs must agree. Generic ONVIF <code>source_tokens</code> are opaque
+camera-supplied identifiers, not profile indexes. Topic filters use expanded XML names, with
+exclusions taking precedence. Use the detailed protocol guides when narrowing either field.</p>
+<h2 id="understand-event-times-and-images"><a class="header" href="#understand-event-times-and-images">Understand event times and images</a></h2>
+<p>Repeated active observations update a logical event instead of creating one event for each
+notification. An explicit clear closes the matching observation. Generic ONVIF initialization
+establishes a baseline without notifying the user; an already-active baseline must clear before
+opening a new interval. Matching PullPoint and metadata evidence is deduplicated.</p>
+<p>Timestamp rules depend on the source. Generic ONVIF uses valid camera UTC from the preceding five
+minutes; invalid, missing or future notification times use receipt time with an explanation in the
+event metadata. ISAPI’s recording timeline uses server receipt time and retains the original
+camera time as metadata. Correct the device clock when investigating inconsistent event timing.</p>
+<p>ISAPI disconnects or a 30-second active-observation timeout close an observed span at its last
+evidence. That is not proof of the instant physical motion stopped. Unknown topics and heartbeats
+do not become invented motion events.</p>
+<p>An event can be useful without an image. KeepPeek attaches explicitly associated snapshots and
+retains metadata when image capture is unavailable. Boxes are drawn only on their matching image;
+an unavailable canonical image is reported instead of replaced with unrelated footage.</p>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>What to check</th></tr>
+</thead>
+<tbody>
+<tr><td>Video works, events do not</td><td>Native event status, the device event service, credentials, rule schedule and channel selection. Video and event protocols are separate.</td></tr>
+<tr><td>Only heartbeats arrive</td><td>Enable the desired camera rule and notification linkage. Check generic-motion retention for unclassified VMD.</td></tr>
+<tr><td>Generic service is unsupported</td><td>Confirm the camera exposes ONVIF events or RTSP metadata; an ONVIF video profile alone is insufficient.</td></tr>
+<tr><td>Repeated authentication failure</td><td>Correct the saved credentials and device permissions. Do not weaken authentication or repeatedly guess passwords.</td></tr>
+<tr><td>Events have no thumbnail</td><td>Inspect the attachment state and snapshot support; metadata delivery can succeed independently.</td></tr>
+<tr><td>Duplicate-looking cards</td><td>Compare source, event ID, rule, object and revision. Similar text can describe independent observations.</td></tr>
+</tbody>
+</table>
+</div>
+<p>For protocol details, see <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/onvif-events.md">ONVIF events</a>
+and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/hikvision-isapi.md">Hikvision ISAPI</a>.
+For model-generated detections, see <a href="./external-analysis.html">External analysis</a>. For delivery,
+see <a href="./notifications-and-integrations.html">Notifications and integrations</a>.</p>
+
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="camera-controls.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="recording-archive-recovery.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="live-wall.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="external-analysis.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -193,11 +284,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="camera-controls.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="recording-archive-recovery.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="live-wall.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="external-analysis.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

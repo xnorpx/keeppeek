@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -204,6 +204,10 @@ validated export and import.</p>
 <p><code>--config &lt;path&gt;</code>, <code>--config=&lt;path&gt;</code>, or <code>-c &lt;path&gt;</code> selects another file. Its companion secrets
 file is always named <code>secrets.toml</code> in the same directory. These flags do not create a second
 settings store.</p>
+<p>Default paths belong to the account running the process. A Windows service can resolve a different
+<code>%APPDATA%</code> from an interactive launch; the macOS package runs a per-user launch agent. Confirm the
+service identity and effective paths before transferring an installation. See
+<a href="./upgrades-and-migrations.html">Upgrades and migrations</a>.</p>
 <p>Use the UI and typed configuration operations while KeepPeek runs. Stop the server before manual
 edits so a concurrent settings update cannot overwrite them. Server writers validate candidates,
 preserve unrelated sections and secret references, and replace the file atomically under the shared
@@ -499,6 +503,11 @@ If <code>warning_free_gb</code> is zero while the effective critical threshold i
 threshold is derived as critical plus hysteresis. Otherwise, warning must be at least critical.
 Use the storage editor’s validated path-migration workflow for moves; do not repoint a live
 recording catalog by editing a path alone.</p>
+<p>These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
+must suit the actual disks and camera bitrates. A configuration ZIP preserves the target’s existing
+storage paths on apply; it does not move a recording archive. See
+<a href="./upgrades-and-migrations.html#move-storage-deliberately">storage migration</a> and
+<a href="./recording-archive-recovery.html">recording archive recovery</a>.</p>
 <h2 id="battery-wake"><a class="header" href="#battery-wake">Battery wake</a></h2>
 <p>Type: <code>BatteryWakeConfig</code>, section <code>[battery_wake]</code>. This is the Reolink wake middleman service,
 not a general Wake-on-LAN or scheduled privacy configuration.</p>
@@ -530,6 +539,13 @@ not a general Wake-on-LAN or scheduled privacy configuration.</p>
 </table>
 </div>
 <p>This section does not define arbitrary tracing filters, log payloads, or a diagnostics archive.</p>
+<p>The existing diagnostic log-filter control uses a separate sibling file named <code>log-filter</code>, not
+another TOML section. The logging service saves and reloads that filter atomically. At startup a
+valid saved filter takes precedence over <code>RUST_LOG</code>; the built-in fallback is
+<code>info,keeppeek=debug</code>. A bad saved or environment filter is reported and falls back to the next
+usable source. This diagnostic setting is outside the two-file configuration ZIP. Preserve it with
+the configuration directory if you need it during a recovery rehearsal. Source:
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs">logging service</a>.</p>
 <h2 id="operational-events"><a class="header" href="#operational-events">Operational events</a></h2>
 <p>Type: <code>OperationalEventsConfig</code>, section <code>[operational_events]</code>.</p>
 <div class="table-wrapper">
@@ -593,8 +609,10 @@ nonempty check. The stable camera ID takes precedence over an IP-keyed override.
 </table>
 </div>
 <p>Client, instance, and forwarder IDs each contain 1 to 128 bytes without NUL, <code>/</code>, <code>+</code>, or <code>#</code>.
-Do not embed credentials in <code>broker_url</code>; use the dedicated fields. MQTT’s durable outbox is
-runtime delivery data, not another settings file.</p>
+Do not embed credentials in <code>broker_url</code>; use the dedicated fields. MQTT’s bounded outbox and
+deduplication state are in memory and reset on restart. <code>outbox_max_mb</code> is a runtime memory budget;
+it does not enable persistence. The retired <code>mqtt-forwarder.db</code> is removed during startup and is
+not replayed. See <a href="./notifications-and-integrations.html">Notifications and integrations</a>.</p>
 <h2 id="credential-records"><a class="header" href="#credential-records">Credential records</a></h2>
 <p>Source: <a href="https://github.com/xnorpx/keeppeek/blob/main/src/access.rs">access persistence</a>.
 Use the Administrator credential controls, not hand-written verifiers or revision changes.</p>
@@ -1029,6 +1047,9 @@ companion secret store.</li>
 <li>When a serialized struct, section name, default, limit, enum, or migration changes, update this
 reference in the same change and verify both load and write paths with synthetic fixtures.</li>
 </ul>
+<p>For an upgrade from separate legacy stores, follow
+<a href="./upgrades-and-migrations.html#what-startup-migrates">What startup migrates</a>. For retention of runtime
+and recording data, see <a href="./backup-and-restore.html#what-survives-a-restart">Backup and restore</a>.</p>
 
                     </main>
 

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,16 +174,98 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        
+                        <h1 id="camera-controls"><a class="header" href="#camera-controls">Camera controls</a></h1>
+<p>As an Administrator, open <strong>Cameras</strong>, select a camera, and use its overview and control panels to inspect capabilities
+and operate supported devices. A live picture, a manufacturer name, or a capability badge alone
+does not prove that a camera command will succeed. KeepPeek reports command failures separately
+from <a href="./camera-health.html">camera and stream health</a>.</p>
+<p>The Cameras navigation and configuration editors are Administrator workflows. The API also allows
+authorized Users to read motion-detection status and issue supported PTZ commands for their granted
+cameras. Changing detector configuration requires Administrator access. Camera grants and advertised
+capabilities still apply to each operation. See
+<a href="./authentication.html">Authentication and access</a> for the trusted-local policy and camera grants.</p>
+<h2 id="move-a-ptz-camera"><a class="header" href="#move-a-ptz-camera">Move a PTZ camera</a></h2>
+<p>On a supported camera, the PTZ panel provides directional movement, optical zoom, <strong>Stop PTZ</strong>, and
+existing presets.</p>
+<ol>
+<li>Check the live image and select the intended camera.</li>
+<li>Press and hold a direction or optical zoom control. Release it to request a stop. Keyboard users
+can focus a movement button and hold Space or Enter.</li>
+<li>Use <strong>Stop PTZ</strong> to stop movement explicitly.</li>
+<li>Select an existing preset to recall that device position. Preset creation and deletion are not
+available through the shared KeepPeek controls; manage them in the camera’s own interface.</li>
+</ol>
+<p>Continuous movement belongs to the controlling WebRTC connection. KeepPeek requests a stop on
+disconnect and after an uncertain movement acknowledgement. If a stop cannot be confirmed, it
+reports the failure and retains ownership instead of treating the camera as safely idle. Check
+the camera directly before another operation. Keep the device’s own movement timeout enabled.</p>
+<p>Hikvision/Annke controls use ISAPI HTTP. The current Reolink control adapter uses Reolink HTTP even
+when the recording backend is <code>reo-proto</code>. Their movement speed scales differ. Reolink HTTP controls
+currently address channel 0; do not assume arbitrary NVR channel control is supported. A missing
+PTZ axis or unavailable preset is not supplied by software emulation.</p>
+<p>For magnifying a picture without moving the device, use <a href="./digital-zoom.html">Digital zoom and pan</a>.
+Digital zoom also works on recordings and event images.</p>
+<h2 id="enable-or-disable-motion-detection"><a class="header" href="#enable-or-disable-motion-detection">Enable or disable motion detection</a></h2>
+<p>The camera detail page’s <strong>Motion detection &gt; Enabled</strong> switch changes the camera’s detector
+configuration. It is independent of whether motion is occurring at this instant.</p>
+<p>KeepPeek reads the current alarm configuration, changes the enabled field, and reads it back.
+Unrelated settings such as masks and sensitivity remain intact. Wait for the result before
+making another change. An error or mismatched read-back is a failed operation, and KeepPeek does
+not automatically reboot the camera to apply it.</p>
+<p>Three settings have different purposes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td>Motion detection enabled</td><td>Turns the device’s detector on or off where supported.</td></tr>
+<tr><td>Store generic motion events</td><td>Controls whether KeepPeek stores unclassified motion notifications.</td></tr>
+<tr><td>Camera recording policy</td><td>Chooses which stream KeepPeek records and whether events boost quality.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Turning off generic motion retention does not turn off the detector or native subscriptions.
+Smart person or vehicle classifications may still depend on those subscriptions. Configure
+detector regions, schedules and vendor-specific target filters in the camera interface. See
+<a href="./native-camera-events.html">Native camera events</a> and
+<a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
+<h2 id="audio-and-unsupported-controls"><a class="header" href="#audio-and-unsupported-controls">Audio and unsupported controls</a></h2>
+<p>Listening to an available camera audio stream is separate from sending microphone audio back to
+its speaker. <strong>Talk is not implemented in the browser application</strong>, including on devices that
+advertise a speaker or two-way-audio capability. KeepPeek’s reusable vendor libraries contain
+audio transport support, but this does not provide an application talk session.</p>
+<p>Relative PTZ movement, preset save/delete and vendor-specific focus, guard, sensitivity or smart
+rule editing are not shared browser controls. Disabled controls describe unavailable application
+operations; they are not a reason to grant broader access or enable an unsupported protocol.</p>
+<h2 id="troubleshooting"><a class="header" href="#troubleshooting">Troubleshooting</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>What to check</th></tr>
+</thead>
+<tbody>
+<tr><td>Controls are disabled</td><td>The operation’s role requirement, camera grant, capability evidence and current connection state.</td></tr>
+<tr><td>PTZ works in the vendor app only</td><td>The configured HTTP port, device credentials, selected channel and supported KeepPeek adapter. RTSP playback alone does not validate these.</td></tr>
+<tr><td>Motion is enabled but no events appear</td><td>Camera schedule, regions, notification linkage and generic-motion retention; then inspect native event status.</td></tr>
+<tr><td>A capability appears but its command fails</td><td>Reachability and the command’s error. Cached discovery evidence is not a current successful command.</td></tr>
+<tr><td>Zoom changes only the displayed crop</td><td>You are using Digital zoom. Optical zoom is a separate PTZ operation.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/camera-controls.md">camera control reference</a>
+details vendor differences and synthetic test coverage. Physical support still depends on the
+camera model, firmware, account permissions and channel mapping.</p>
+
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="camera-health.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="authentication.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="native-camera-events.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="demo-videos.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -193,11 +275,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="camera-health.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="authentication.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="native-camera-events.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="demo-videos.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

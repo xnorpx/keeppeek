@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -278,7 +278,9 @@ ensure their address is not in <code>access.local_networks</code> and have them 
 browser keeps the key only in memory for the current page session. It is not placed in the URL,
 rendered as hidden text, logged, or written to <code>localStorage</code> or <code>sessionStorage</code>.</p>
 <p>Reloading or closing the page discards the key and requires sign-in again. Expired or revoked
-sessions return to the sign-in screen without displaying the requested resource.</p>
+sessions cannot retrieve protected resources. The browser normally returns to sign-in; if a
+session change during page initialization leaves an expired-session error visible, reload and
+sign in again. See <a href="#session-expired-after-a-permission-change">Session expired after a permission change</a>.</p>
 <p>API clients send the same credential in the HTTP header:</p>
 <pre><code class="language-http">Authorization: Bearer 550e8400-e29b-41d4-a716-446655440000
 </code></pre>
@@ -373,7 +375,10 @@ untrusted peer intentionally forces remote classification. If a proxy is involve
 exact address in <code>trusted_proxies</code> and send only the supported <code>X-Forwarded-For</code> contract.</p>
 <h3 id="remote-access-returns-http-426"><a class="header" href="#remote-access-returns-http-426">Remote access returns HTTP 426</a></h3>
 <p>The request reached KeepPeek over unprotected direct HTTP while <code>require_secure_remote</code> is enabled.
-Use HTTPS through a configured trusted proxy or connect through a VPN.</p>
+Use HTTPS through a configured trusted proxy. A VPN does not by itself change the server’s address
+classification or secure-transport check. A VPN client kept outside <code>local_networks</code> still needs the
+supported secure boundary for remote sign-in; adding its range to <code>local_networks</code> instead grants
+Administrator access to that range.</p>
 <h3 id="remote-sign-in-is-temporarily-limited"><a class="header" href="#remote-sign-in-is-temporarily-limited">Remote sign-in is temporarily limited</a></h3>
 <p>Five failed attempts from one effective address within 60 seconds are rejected by default. Wait for
 the window to expire, verify the key, and confirm the credential is enabled, unexpired, and not
@@ -381,19 +386,49 @@ revoked.</p>
 <h3 id="a-credential-works-for-viewing-but-not-settings"><a class="header" href="#a-credential-works-for-viewing-but-not-settings">A credential works for viewing but not Settings</a></h3>
 <p>It has the User role. Issue an Administrator credential only when that client must change recorder
 configuration or manage security.</p>
+<h3 id="session-expired-after-a-permission-change"><a class="header" href="#session-expired-after-a-permission-change">Session expired after a permission change</a></h3>
+<p>Saving User camera grants deliberately closes that credential’s existing sessions. Rotation,
+disable, revoke, and expiry also invalidate authenticated work. If a dashboard opened during that
+change remains at <strong>API session expired or was revoked</strong>, reload the page and sign in again with
+the current key. The current UI can retain this error during initialization even though the server
+continues to deny requests from the invalid session.</p>
+<p>For a rotated credential, use the replacement key. A disabled, expired, or revoked credential will
+not work merely because the page was reloaded. Ask the recorder Administrator to inspect its status.</p>
+<h3 id="a-shared-dashboard-is-empty-or-has-fewer-cameras"><a class="header" href="#a-shared-dashboard-is-empty-or-has-fewer-cameras">A shared dashboard is empty or has fewer cameras</a></h3>
+<p>Check both the dashboard audience and the User’s camera grants. Audience membership makes the
+dashboard visible; it does not grant cameras. Verify the intended group or individual cameras in
+<strong>User access</strong>, save the current revision, then sign the User in again. The Administrator’s complete
+layout is retained even when the User sees fewer tiles.</p>
+<h3 id="a-supposedly-restricted-person-still-has-administrator-access"><a class="header" href="#a-supposedly-restricted-person-still-has-administrator-access">A supposedly restricted person still has Administrator access</a></h3>
+<p>Check their effective source address first. A trusted-local request receives Administrator access
+before a remote key is considered. Exclude that client’s network from <code>local_networks</code> if it must
+use a restricted User credential, while retaining the local recovery access you need.</p>
 <h3 id="a-key-was-lost-or-exposed"><a class="header" href="#a-key-was-lost-or-exposed">A key was lost or exposed</a></h3>
 <p>From a local Administrator session, rotate the affected credential. Store the replacement key
 before hiding it, then update only the client or integration that owns that named credential.</p>
+<h2 id="verify-access-before-deployment"><a class="header" href="#verify-access-before-deployment">Verify access before deployment</a></h2>
+<p>Create a disposable User credential and test from a genuinely remote-classified address. Check an
+allowed camera and a denied camera through live view, Keep, event images, and controls. Confirm that
+Settings, exports, and diagnostics remain unavailable to that User. Test a dashboard whose audience
+includes the User but whose tiles include a denied camera.</p>
+<p>Change the grants and confirm the old session loses access. Reconnect and verify the new scope,
+then disable or revoke the test credential when finished. A successful local browser check does
+not test remote restrictions. Record the proxy or VPN topology with your
+<a href="./release-readiness.html#representative-deployment-matrix">release qualification evidence</a>.</p>
+<p>Credentials and grants are included in configuration ZIPs. Before applying a ZIP from another
+recorder, ensure you can use its restored access policy and retain a local recovery path. Sessions,
+last-use activity, and audit history are not restored by that ZIP. See
+<a href="./backup-and-restore.html#what-survives-a-restart">what survives a restart</a>.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="upgrades-and-migrations.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="get-started.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="camera-health.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="camera-controls.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -403,11 +438,11 @@ before hiding it, then update only the client or integration that owns that name
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="upgrades-and-migrations.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="get-started.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="camera-health.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="camera-controls.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

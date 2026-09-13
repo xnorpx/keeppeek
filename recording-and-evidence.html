@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,6 +179,52 @@
 A connected camera or an MP4 filename alone does not prove that the requested interval can be
 reviewed later. The underlying live evidence dimensions are defined in
 <a href="./camera-health.html">Camera and stream health</a>.</p>
+<h2 id="find-and-play-a-recording"><a class="header" href="#find-and-play-a-recording">Find and play a recording</a></h2>
+<p>Open <strong>Keep</strong>, choose the camera and recorded day, then select footage or an event on the timeline.
+The four modes serve different investigations:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Mode</th><th>Use it for</th></tr>
+</thead>
+<tbody>
+<tr><td>Timeline</td><td>Follow footage and event intervals around the selected playback time.</td></tr>
+<tr><td>Stories</td><td>Review available event stories and their associated media.</td></tr>
+<tr><td>Swimlanes</td><td>Compare the available camera histories around a common time.</td></tr>
+<tr><td>Export</td><td>Prepare and inspect an evidence-export job; creation requires Administrator access.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Use play/pause, skip, the recording-position slider, volume/mute, speed and fullscreen controls
+below the image. Available stream quality depends on retained media and browser codec support.
+Changing the quality preference is separate from <a href="./digital-zoom.html">digital zoom</a>. Stored
+playback does not provide automatic transcoding for an unsupported codec; retain a compatible
+H.264 stream when your viewing devices need one.</p>
+<p>With the recorded player focused, Left and Right step frames. Space toggles playback; J, K and L
+provide shuttle/pause controls. <code>[</code> and <code>]</code> set export boundaries. Form fields keep their normal
+keyboard behavior, and arrow keys pan a focused digitally zoomed image instead of stepping frames.</p>
+<h3 id="use-keep-on-a-phone"><a class="header" href="#use-keep-on-a-phone">Use Keep on a phone</a></h3>
+<p>In portrait, Keep keeps a compact camera/date row, the player and a horizontal history timeline
+in the main view. Tap the camera name or date to open <strong>Camera and date</strong>. Search for a camera or
+use previous/next camera; camera navigation wraps at the ends. The recorded-day selector and its
+arrows choose available days, with unavailable directions disabled.</p>
+<p>Tap <strong>Playback options</strong> for volume, playback speed, quality, <strong>Copy link to this moment</strong>, and
+<strong>Refresh recordings</strong>. Changes apply immediately. <strong>Done</strong>, the close button, Escape or browser
+Back closes the sheet and returns focus to a visible control. Opening a sheet keeps the player
+open. In recording fullscreen, rate and volume remain available beside the player controls.</p>
+<p>The compact controls do not remove Timeline, Stories, Swimlanes or Export. Rotate the device or
+close the sheet to return to the history view. The timeline changes recording time; the separate
+Digital controls above the image change only the inspection crop.</p>
+<h3 id="keep-the-requested-utc-time-explicit"><a class="header" href="#keep-the-requested-utc-time-explicit">Keep the requested UTC time explicit</a></h3>
+<p>Recorded days and event time filters use UTC. Switching cameras preserves the selected absolute
+moment, including when the destination camera has no footage there. Choosing another recorded day
+keeps the UTC clock time on that chosen day. At midnight this means midnight of the selected day,
+not the following day.</p>
+<p>A gap stays visible until you explicitly choose available footage. Use <strong>Previous recording</strong> or
+<strong>Next recording</strong> when offered, or select a recorded interval on the timeline. KeepPeek does not
+silently move an unavailable requested moment to the latest clip. Loading, no recorded days,
+unavailable footage and decode failure are distinct states; use the displayed action or refresh
+after checking the camera’s recording policy and retained coverage.</p>
 <h2 id="choose-what-each-camera-records"><a class="header" href="#choose-what-each-camera-records">Choose what each camera records</a></h2>
 <p>Each camera has one recording policy:</p>
 <div class="table-wrapper">
@@ -236,14 +282,35 @@ and an explicit unknown state. Gap actions open nearby footage, camera health, o
 at most 256 ranges per stream, and longer periods use deterministic time buckets while retaining
 exact totals.</p>
 <h2 id="review-events-consistently"><a class="header" href="#review-events-consistently">Review events consistently</a></h2>
+<p>Open <strong>Events</strong> to search across authorized cameras. Choose the UTC date and optional start/end
+times, then narrow by camera, event kind, origin, zone, confidence, image availability or text.
+Review and bookmark filters compose with the same search. If a filter reports unavailable
+support, check the server capability instead of assuming that an empty result means no events.</p>
+<p>Select a card to inspect its canonical image, description, timestamps and revision. Use <strong>Open at
+this moment</strong> to investigate recorded footage or the export action to prepare a clip. The return
+link restores the selected event and supported filter context. For an empty result, check the
+effective filters and UTC date before broadening the search.</p>
 <p>Mark events reviewed or dismissed without deleting evidence. Those flags belong to your authenticated
 identity, or to a persistent <strong>Local workspace</strong> in trusted-LAN use. Event updates do not reset them.
 Use the visible or selected count on bulk actions; undo applies only to the acknowledged targets.
 Review and bookmark filters use server-computed counts, not the current page length.</p>
+<p><strong>Reviewed</strong> and <strong>Dismissed</strong> are independent flags. <strong>Unreviewed</strong> means neither flag is set;
+dismissal removes an event from that review queue without deleting its attachments or recording.
+<strong>Mark N visible reviewed</strong> affects the rendered page, while <strong>Mark N selected reviewed</strong> sends
+the explicit selection, which may span pages. The selection limit is 128 events. A stale or
+unconfirmed write requires <strong>Reload and retry</strong>; note drafts and action intent remain available.</p>
+<p>Named credentials retain their review identity across credential rotation. A trusted-local
+browser uses a persistent Local workspace identity rather than attributing work to a person.
+Clearing that site’s browser storage creates a new workspace; unavailable persistent storage
+disables its mutations instead of silently using a temporary identity.</p>
 <p>Bookmarks are shared with authorized camera viewers. Their creator or an Administrator can edit
 the bounded note or remove the bookmark. <strong>Saved bookmarks</strong> retains honest metadata-only references
 when media, events, or sources are unavailable. A bookmark does not pin video through retention.
 Exports keep their source event/bookmark revision relationship without creating a retention hold.</p>
+<p>Bookmark notes are plain text, limited to 1,024 UTF-8 bytes. The bookmark library has its own
+source, date and creator scope, independent of the main Events filters. Recording retention can
+remove footage without removing the bookmark. References for deleted events are retained for
+90 days and explicitly identify missing event, source or media.</p>
 <p>Events, Keep, notifications, MQTT, and export entry points use the same event revision and canonical
 preview. An authorized producer may name the canonical attachment. Otherwise KeepPeek chooses a
 supported snapshot, then a story frame, then a retained thumbnail using stable ordinal, capture
@@ -316,22 +383,27 @@ camera, stream, timestamp, event revision, filters, and return route.</p>
 <p>Ready files remain available for 24 hours. Bounded job history remains for 30 days, up to 500 jobs,
 so an expired or missing artifact can still explain what happened and support an explicit retry.
 History and files remain scoped to the Administrator identity that created them.</p>
+<p>Check the completed job’s interval, stream and missing-range explanation before downloading. A
+partial artifact contains only its available intervals and must not be described as continuous
+coverage of the whole selection. Cancellation and retry are explicit actions; opening another
+page does not turn a running job into a completed download. Download integrity failure or an
+expired artifact requires a fresh job if the original recordings are still available.</p>
 <p>Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
 normal export path preserves source frames and timestamps without re-encoding.</p>
 <p>For the availability and safety limits of manual deletion and catalog drift checks,
 see <a href="./recording-maintenance.html">Recording maintenance</a>. The Administrator workflow
 is under qualification; confirmed jobs can remove selected recordings permanently.</p>
 <p>For the detailed coverage model and export lifecycle, see the
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/recording-integrity.md">recording integrity</a>,
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/event-presentation.md">event presentation</a>,
-and <a href="https://github.com/xnorpx/keeppeek/blob/master/docs/evidence-exports.md">evidence export</a>
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/recording-integrity.md">recording integrity</a>,
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/event-presentation.md">event presentation</a>,
+and <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/evidence-exports.md">evidence export</a>
 references.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="recording-archive-recovery.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="live-wall.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -345,7 +417,7 @@ references.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="recording-archive-recovery.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="live-wall.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,16 +174,92 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        
+                        <h1 id="external-analysis"><a class="header" href="#external-analysis">External analysis</a></h1>
+<p>An external analysis service consumes KeepPeek camera video, runs its own detector or model, and
+publishes events back through the public API. KeepPeek stores accepted event revisions and
+attachments and makes them available in Events, Keep, notifications and integrations.</p>
+<p>KeepPeek does not install, host or select an inference product for you. Model execution, decoding,
+sampling, deployment and model licensing belong to the independent service. The repository’s
+Python object-detection example demonstrates the integration and supports CI; it is not a
+production detector product. Camera-native detections are covered separately in
+<a href="./native-camera-events.html">Native camera events</a>.</p>
+<h2 id="prepare-the-integration"><a class="header" href="#prepare-the-integration">Prepare the integration</a></h2>
+<ol>
+<li>Verify that the camera is available in KeepPeek and that its configured stream can be decoded
+by the service. A low-resolution stream is usually sufficient for an initial interoperability
+check; choose it explicitly in the service.</li>
+<li>Obtain the camera’s stable source ID from its camera details. A display name, a current session
+ID or a Home Assistant entity ID is not a substitute.</li>
+<li>Provide a dedicated KeepPeek credential through the service’s supported secret mechanism.
+Event publication currently requires Administrator authority; a viewing-only User key cannot
+publish events. Apply the <a href="./authentication.html">access policy</a> appropriate to that service.</li>
+<li>Confirm the server advertises <code>keeppeek.event-publication.v1</code>, the intended source, a supported
+media variant and the event types the service will publish. An unadvertised event type is not
+accepted merely because a model can produce it.</li>
+<li>Start the service and verify one committed event before depending on its alerts or automation.</li>
+</ol>
+<p>The browser has no general model-installation or external-service deployment wizard. Configuration
+for a particular service belongs to that client; do not invent extra KeepPeek TOML sections from
+the conceptual computer-vision scenario.</p>
+<h2 id="try-the-reference-example"><a class="header" href="#try-the-reference-example">Try the reference example</a></h2>
+<p>The <a href="https://github.com/xnorpx/keeppeek/tree/main/examples/object_detection_service">object-detection example</a>
+includes the complete platform-specific setup and commands. It requires Python 3.12 or newer,
+FFmpeg on <code>PATH</code>, an active H.264 or H.265 source and a compatible KeepPeek server. Install its
+requirements into the selected interpreter directly; the repository does not use Python virtual
+environments. Generate its bindings from the checked-in protocol before running it.</p>
+<p>Use <code>KEEPPEEK_ACCESS_KEY_FILE</code> with an owner-only key file or the supported environment variable
+for authentication. Keep the key out of command arguments, endpoint URLs and committed files.
+The example accepts non-secret settings including <code>KEEPPEEK_URL</code>, <code>KEEPPEEK_SOURCE_ID</code>, stream,
+model, confidence, cooldown and inference-frame-rate choices.</p>
+<p>The default example loads Ultralytics <code>yolo11n.pt</code> after authentication and media subscription
+succeed. Missing weights may be downloaded by Ultralytics. Review that provider’s licensing and
+deployment requirements independently. KeepPeek does not distribute the model weights.</p>
+<h2 id="verify-the-result-in-keeppeek"><a class="header" href="#verify-the-result-in-keeppeek">Verify the result in KeepPeek</a></h2>
+<p>Open <strong>Events</strong> and select the source and UTC date. Inspect the event kind, confidence, text,
+revision and canonical image. A later model result may enrich or close the same event; it should
+not be interpreted as a new detection solely because its revision increased.</p>
+<p>Use <strong>Open at this moment</strong> to compare the event with recorded video, and <strong>Back to event</strong> to
+return to the investigation. Review state and shared bookmarks work the same way for external
+and native events. A JPEG, story or description is an event attachment; it does not prove that
+continuous video was retained. Check <a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
+<p>An attachment upload becomes visible only after the publication commits. A failed or unfinished
+upload must not appear as a complete event. Consumers use stable source/event IDs and revisions
+to recognize updates and retries. The service must use the API rather than writing KeepPeek’s
+catalog or attachment directories directly.</p>
+<h2 id="failure-and-capacity-checks"><a class="header" href="#failure-and-capacity-checks">Failure and capacity checks</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>What to check</th></tr>
+</thead>
+<tbody>
+<tr><td>Subscription is rejected</td><td>Source visibility, advertised stream/codec and the service’s media capability checks.</td></tr>
+<tr><td>Publication is denied</td><td>Administrator authority, enabled credential, current source identity and advertised event type.</td></tr>
+<tr><td>Processing falls behind</td><td>Service decode/inference rate and bounded queues. Reduce sampling or use a suitable stream instead of accumulating old frames.</td></tr>
+<tr><td>Events appear without images</td><td>Publication/attachment completion and image limits; inspect the event’s explicit availability state.</td></tr>
+<tr><td>Recording continues while detections stop</td><td>Check the external process and its session. Inference failure does not imply recording failure.</td></tr>
+<tr><td>Reconnection produces duplicates</td><td>Preserve logical event identity and increment revisions correctly; inspect commit/retry handling in the service.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Source restarts change session identity. A service must rediscover the current source session and
+replace its media subscription, while preserving the stable source ID used for event history.
+The reference example’s checks demonstrate interoperability, not long-duration operation or
+certification of a third-party model deployment.</p>
+<p>Developers should start with the <a href="https://github.com/xnorpx/keeppeek/tree/main/api">public API</a>
+and the <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/computer-vision.md">computer-vision scenario</a>.
+The latter explains the wider service architecture; check advertised capabilities and current
+examples before treating a described workload as an installed KeepPeek feature.</p>
+
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="notifications-and-integrations.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="native-camera-events.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="home-assistant.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="notifications-and-integrations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -193,11 +269,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="notifications-and-integrations.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="native-camera-events.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="home-assistant.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="notifications-and-integrations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

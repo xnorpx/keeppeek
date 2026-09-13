@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,16 +174,142 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        
+                        <h1 id="recording-archive-recovery"><a class="header" href="#recording-archive-recovery">Recording archive recovery</a></h1>
+<p>A configuration ZIP restores settings and file-backed secrets. Recording recovery also needs the
+recording catalog and the files that it indexes. KeepPeek does not provide a public recording-archive
+importer, a button to merge another recorder’s database, or automatic adoption of unknown MP4 files.</p>
+<p>Use this chapter to plan and rehearse an operator-managed filesystem recovery. It describes the
+current boundaries; it does not qualify every filesystem, backup product, or crash scenario.</p>
+<h2 id="inventory-the-recovery-set"><a class="header" href="#inventory-the-recovery-set">Inventory the recovery set</a></h2>
+<p>Open the storage settings as an Administrator and record the effective paths. Defaults can differ
+from a custom <code>--config</code> directory, and catalog or thumbnail paths can sit outside recording roots.
+Record the operating-system account that owns and runs the recorder.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Item</th><th>Why it matters</th></tr>
+</thead>
+<tbody>
+<tr><td><code>config.toml</code> and sibling <code>secrets.toml</code></td><td>Cameras, stable identities, policies, credentials, grants, dashboards, and integration settings. A configuration ZIP can preserve this pair.</td></tr>
+<tr><td>The configured recording catalog, normally <code>recordings.db</code>, and any accompanying <code>-wal</code> and <code>-shm</code> files</td><td>Recording identities, paths, indexes, event data, coverage/deletion evidence, and maintenance intent. Copy the database family consistently.</td></tr>
+<tr><td>Both medium-term and long-term recording roots</td><td>The MP4 bytes referenced by the catalog. The roots may be the same directory. Preserve relative structure and file names.</td></tr>
+<tr><td>The configured event-thumbnail directory</td><td>Event-image bytes. It may be outside the recording root.</td></tr>
+<tr><td>Hidden <code>.exports</code> under the long-term root</td><td>Export history and artifacts, if you need to retain that local history. Artifacts still have independent expiry rules.</td></tr>
+<tr><td>Service definitions, environment-only secrets, certificates, and external service configuration</td><td>Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.</td></tr>
+<tr><td>The existing sibling <code>log-filter</code> and retained service logs</td><td>Diagnostic configuration and investigation evidence outside the configuration ZIP.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Copy the entire selected recording roots, including hidden and interrupted-work entries, rather than
+selecting only files ending in <code>.mp4</code>. Maintenance checkpoints can depend on private staging entries.
+Copying them is preservation, not permission to retry destructive work after a move: filesystem
+identities can change when data is copied.</p>
+<p>Do not include only the default paths if Settings shows overrides. Do not treat an exported evidence
+clip as a full recording backup. Clips cover selected ranges and do not contain the recorder catalog.</p>
+<h2 id="make-a-consistent-offline-copy"><a class="header" href="#make-a-consistent-offline-copy">Make a consistent offline copy</a></h2>
+<ol>
+<li>Finish any pending configuration apply or storage move, then export the current configuration
+ZIP and save it privately. Finish or cancel active exports and maintenance jobs where possible;
+retain reports for unresolved work. If this is failure preservation instead, keep the unfinished
+journals with the copy and do not treat it as an ordinary clean recovery point.</li>
+<li>Stop KeepPeek through its normal service manager. Confirm the process has exited and no second
+recorder is using the same paths. Recording stops for this maintenance window.</li>
+<li>Copy the configuration directory and complete archive set while they remain stopped. Include any
+database sidecars that exist; do not manually delete them to make the copy simpler.</li>
+<li>Preserve ownership and access restrictions, record the source version and paths, and verify the
+copied files using your backup tool’s integrity checks. Keep the copy separately from the source
+disk.</li>
+<li>Start the source recorder again and verify that new recordings finalize normally.</li>
+</ol>
+<p>A live copy of just <code>recordings.db</code> can disagree with its journal or recording files. KeepPeek’s
+configuration export lock does not create an atomic snapshot of the catalog, media, and export tree.
+If you use storage snapshots instead of a stopped copy, establish and test a consistent capture
+procedure for every involved volume and writer. This book does not claim that an arbitrary live
+filesystem copy is recoverable.</p>
+<h2 id="rehearse-on-an-isolated-host"><a class="header" href="#rehearse-on-an-isolated-host">Rehearse on an isolated host</a></h2>
+<ol>
+<li>Keep the original backup unchanged. Restore a working copy into an isolated environment with
+enough space and compatible file permissions. Start with the same KeepPeek build that created it.</li>
+<li>Prevent the rehearsal from reaching real notification providers, MQTT consumers, and cameras
+until you deliberately test those connections. Imported credentials and rules are real settings;
+a duplicate recorder can otherwise act on the same devices or send duplicate notifications.</li>
+<li>Restore the catalog family and recording tree together at the original configured paths where
+practical. Restore the configuration pair and any required environment separately. Do not start
+with missing archive mounts and expect later attachment to be harmless.</li>
+<li>Confirm the service account can access every path, then start KeepPeek. Preserve startup errors
+and stop if a catalog, path, or migration failure occurs.</li>
+<li>Verify the expected cameras and access grants. Review a known older interval in Keep, inspect its
+coverage and event images, and play a finalized recording. Create a small evidence export and
+verify that its downloaded media decodes independently.</li>
+<li>Inspect recording integrity and reconciliation, including missing, unknown, interrupted, and
+protected recordings. Check old maintenance jobs before any retry. Record discrepancies rather
+than treating successful server startup as proof that every recording was recovered.</li>
+</ol>
+<p>Catalog paths are meaningful. A same-path recovery avoids inventing a path rewrite. For a deliberate
+move on a working installation, use the
+<a href="./upgrades-and-migrations.html#move-storage-deliberately">validated storage migration</a>. Do not manually
+rewrite catalog SQL or assume a configuration ZIP maps old recording paths: configuration apply
+keeps the target’s current recording, catalog, and thumbnail paths.</p>
+<p>Once the isolated copy is verified, plan the production cutover and repeat the checks. Keep the old
+copy until the new recorder has completed the installation’s recovery acceptance test.</p>
+<h2 id="understand-startup-recovery"><a class="header" href="#understand-startup-recovery">Understand startup recovery</a></h2>
+<p>Startup can reconcile specific interrupted states for recordings, automatic cleanup, export jobs,
+and maintenance. It is not an exhaustive media scan or a replacement for a consistent backup.</p>
+<ul>
+<li>An interrupted recording finalization can reconnect a catalog row to its finalized sibling.
+Existing <code>.active</code> files are preserved rather than truncated or deleted merely because of their
+extension.</li>
+<li>Missing cataloged recordings can lose stale rows when their parent directory is available.
+When the parent itself is unavailable, startup retains metadata and reports the unavailable
+storage. Restore the complete tree before starting; an empty mounted directory is different from
+an unavailable mount.</li>
+<li>Export work that was running becomes failed and retryable. Missing ready artifacts also become
+failed. Partial export artifacts are cleaned within the owned export area.</li>
+<li>Maintenance recovery only settles outcomes supported by its retained identity and checkpoint
+evidence. Other interrupted objects remain failed and reserved for Administrator inspection or
+retry. Copying files can change their identity, so a restored checkpoint may properly refuse work.</li>
+</ul>
+<p>See <a href="./recording-maintenance.html">Recording maintenance</a> for exact mutation and retry boundaries, and
+<a href="./recording-and-evidence.html">Recording and evidence</a> for coverage and export behavior.</p>
+<h2 id="diagnose-incomplete-recovery"><a class="header" href="#diagnose-incomplete-recovery">Diagnose incomplete recovery</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Symptom</th><th>Next action</th></tr>
+</thead>
+<tbody>
+<tr><td>Settings returned, recordings did not</td><td>Confirm that a catalog and media archive were restored. The configuration ZIP excludes both.</td></tr>
+<tr><td>Recordings appear missing after a path change</td><td>Check mount availability, service identity, effective paths, and the catalog’s original locations before changing files.</td></tr>
+<tr><td>MP4 files exist but do not appear in Keep</td><td>Inspect reconciliation. Unknown files are not automatically adopted; <strong>Rebuild index</strong> only applies to eligible existing catalog recordings.</td></tr>
+<tr><td>A cataloged recording has a valid container but a wrong index</td><td>Use the previewed <strong>Rebuild index</strong> remedy if offered. It changes indexes, not media bytes.</td></tr>
+<tr><td>Reconciliation reports corruption</td><td>Preserve the original file and report. Structural validation is not a full decode or an end-to-end content checksum guarantee.</td></tr>
+<tr><td>A copied maintenance job refuses retry</td><td>Preserve the job report and original checkpoint evidence. Do not delete private staging or manually clear reservations.</td></tr>
+<tr><td>An old ready export is unavailable</td><td>Check expiry and artifact presence. Export metadata can outlive its bytes; retry requires source recordings still to exist.</td></tr>
+<tr><td>Both configuration activation and rollback fail</td><td>Preserve the complete configuration directory, its restore journal and staged files, and service logs before manual recovery.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Never delete unknown media, database sidecars, restore journals, or maintenance staging merely to
+clear an error. A missing file cannot be recovered by retaining a tombstone; that remedy records
+catalog cleanup, not restoration. Quarantine, arbitrary archive import, and automatic adoption of
+unknown files remain unsupported.</p>
+<h2 id="record-the-recovery-result"><a class="header" href="#record-the-recovery-result">Record the recovery result</a></h2>
+<p>Keep the exact build, platform, filesystem, source and destination layout, backup time, interruption,
+commands, checksums, recovered interval, missing data, and observed errors with the recovery report.
+Include a known recording before and after the backup boundary and any interrupted work you tested.
+The <a href="./release-readiness.html">Alpha qualification matrix</a> still requires representative recovery and
+sustained-operation evidence. One successful rehearsal does not establish every deployment’s
+recovery behavior.</p>
+
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="backup-and-restore.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="recording-maintenance.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="recording-and-evidence.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="native-camera-events.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -193,11 +319,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="backup-and-restore.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="recording-maintenance.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="recording-and-evidence.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="native-camera-events.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

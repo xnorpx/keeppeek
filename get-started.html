@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,6 +181,14 @@ The active <a href="https://github.com/xnorpx/keeppeek/issues/145">Alpha gate</a
 </blockquote>
 <p>Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
 use native packages and service integration.</p>
+<h2 id="before-installation"><a class="header" href="#before-installation">Before installation</a></h2>
+<p>Choose a host with enough disk capacity for the camera bitrates and retention you need. KeepPeek
+stores camera media without transcoding; a browser still needs to support the selected codec.
+Start with a small camera set and measure it before increasing the workload.</p>
+<p>Use the <a href="https://github.com/xnorpx/keeppeek/releases">release page</a> to select a build for the host.
+Record that version and retain its checksum information. By default, clients on private and local
+networks receive Administrator access without signing in; review
+<a href="./authentication.html">the access policy</a> before exposing the listener to other devices.</p>
 <h2 id="linux-with-docker"><a class="header" href="#linux-with-docker">Linux with Docker</a></h2>
 <p>The published image supports <code>linux/amd64</code> and <code>linux/arm64</code>. It runs KeepPeek directly as the
 non-root user <code>65532</code> and listens on port <code>8081</code>.</p>
@@ -188,26 +196,46 @@ non-root user <code>65532</code> and listens on port <code>8081</code>.</p>
 and logging settings under <code>/config/keeppeek</code> in the container. Mount <code>/config</code> from the host so
 that data survives container replacement:</p>
 <pre><code class="language-sh">mkdir -p keeppeek-data
+sudo chown 65532:65532 keeppeek-data
 docker run --rm --name keeppeek -p 8081:8081 \
 	-v "$(pwd)/keeppeek-data:/config" \
 	ghcr.io/xnorpx/keeppeek:latest
 </code></pre>
-<p>On Linux, make the mounted directory writable by the container user when necessary:</p>
-<pre><code class="language-sh">sudo chown 65532:65532 keeppeek-data
-</code></pre>
-<p>Open <code>http://localhost:8081</code> after the server starts.</p>
+<p>The ownership command is for the newly created Linux directory. Use the permissions appropriate
+to your existing storage if the directory already contains data. This example runs in the foreground
+and removes the container when it stops; the mounted host data remains. Configure your deployment’s
+restart policy for unattended operation. Select an explicit release tag or digest instead of the
+moving <code>latest</code> tag when you need to reproduce the installation.</p>
+<p>Open <code>http://localhost:8081</code> after startup. If the container cannot create its configuration or
+recordings, check the host mount and permissions for user <code>65532</code>.</p>
 <h2 id="macos"><a class="header" href="#macos">macOS</a></h2>
-<p>Current macOS releases target Apple Silicon and use a signed and notarized application in a DMG.
-Drag <code>KeepPeek.app</code> into Applications and open it once to install and start the per-user <code>launchd</code>
-service. See the
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/macos-installation.md">macOS installation guide</a>
-for checksums, service operation, upgrades, and removal.</p>
+<p>macOS packages target Apple Silicon (<code>arm64</code>). Download the release DMG and its matching <code>.sha256</code>
+file, then verify the checksum:</p>
+<pre><code class="language-sh">shasum -a 256 -c keeppeek-&lt;version&gt;-macos-aarch64.dmg.sha256
+</code></pre>
+<p>Replace <code>&lt;version&gt;</code> with the downloaded version. Drag <code>KeepPeek.app</code> into <code>/Applications</code> and open
+it once. The application installs and starts the per-user <code>com.keeppeek</code> launch agent, which starts
+after that user logs in. Open <code>http://localhost:8081</code> in a browser.</p>
+<p>Signing and notarization depend on the release workflow’s configured credentials; check the chosen
+artifact rather than assuming every DMG has both. The
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/macos-installation.md">macOS installation guide</a>
+explains packaging and service logs. Use <a href="./upgrades-and-migrations.html#macos">Upgrades and migrations</a>
+when replacing an existing installation.</p>
 <h2 id="windows"><a class="header" href="#windows">Windows</a></h2>
-<p>Windows releases provide signed x86-64 and ARM64 binaries and a signed NSIS installer. The installer
-can register KeepPeek with the Windows Service Control Manager and manages service upgrades and
-removal. See the
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/windows-service.md">Windows service guide</a> for
-service commands and logging options.</p>
+<p>Windows releases provide signed x86-64 and ARM64 binaries and an installer. Choose the architecture
+that matches the host and run the installer. Select <strong>Run KeepPeek as a Windows service</strong> for
+background operation through the Service Control Manager. The service is named <code>KeepPeekService</code>.
+Without that component, run the installed <code>keeppeek.exe</code> as a standalone process.</p>
+<p>Open <code>http://localhost:8081</code> after startup. To inspect the service from PowerShell:</p>
+<pre><code class="language-powershell">sc.exe query KeepPeekService
+sc.exe qc KeepPeekService
+</code></pre>
+<p>The service reads configuration in its own process account’s environment, which can differ from
+your interactive <code>%APPDATA%</code>. Inspect the service identity and actual configuration location before
+moving data between standalone and service operation. See
+<a href="./upgrades-and-migrations.html#windows">Upgrades and migrations</a> and the
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/windows-service.md">Windows service guide</a> for
+service lifecycle and logging.</p>
 <h2 id="configuration-and-secrets"><a class="header" href="#configuration-and-secrets">Configuration and secrets</a></h2>
 <p>The first start creates the KeepPeek configuration directory for the selected installation. Reusable
 private values belong in owner-only <code>secrets.toml</code> beside <code>config.toml</code>:</p>
@@ -227,9 +255,19 @@ private values belong in owner-only <code>secrets.toml</code> beside <code>confi
 <p>Never add <code>secrets.toml</code> to source control, logs, screenshots, support bundles, or command
 arguments. Enter camera credentials and other private values directly on the machine running
 KeepPeek. See the
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/secrets.md">secrets guide</a> for references,
+<a href="./configuration-reference.html#passwords-and-secret-references">configuration reference</a> for references,
 precedence, and migration behavior.</p>
+<p>These paths belong to the account running KeepPeek. <code>--config &lt;path&gt;</code> selects a different
+configuration file with <code>secrets.toml</code> beside it. Inspect the effective recording paths separately;
+omitted storage paths still use the operating system’s default KeepPeek directory.</p>
+<p>On first startup, use a trusted-local browser to retrieve and save the <strong>Initial Administrator</strong> key
+if you need remote access. The browser shows it once. Create named credentials for individual remote
+users or integrations in <strong>Settings &gt; Access &amp; roles</strong>. See
+<a href="./authentication.html#first-run">Authentication and access control</a>.</p>
 <h2 id="create-a-recovery-backup"><a class="header" href="#create-a-recovery-backup">Create a recovery backup</a></h2>
+<p>Review <strong>Settings</strong> storage and retention values before relying on the recorder. Confirm the actual
+recording, catalog, and thumbnail paths, available space, and retention policy. Defaults are starting
+values, not a sizing recommendation for every camera fleet.</p>
 <p>Open <strong>Settings → Backup and restore</strong> as an Administrator and create a validated configuration
 bundle before relying on the recorder. Download the ZIP and retain it separately from the recorder.
 The ZIP contains exactly <code>config.toml</code> and plaintext <code>secrets.toml</code>, so handle it as sensitive data.
@@ -238,28 +276,45 @@ It intentionally omits <code>recordings.db</code>, sessions, MP4 recordings, and
 <code>POST /config/apply</code> with the ZIP body. Apply validates both files, capacity, and target paths before
 staging. Live files change only after a controlled restart. See
 <a href="./backup-and-restore.html">Backup and restore</a> for the complete workflow and limits.</p>
+<p>For footage recovery, also create and test a
+<a href="./recording-archive-recovery.html">separate catalog and media archive</a>. A successful ZIP export alone
+does not prove recordings can be recovered after disk loss.</p>
 <h2 id="add-the-first-camera"><a class="header" href="#add-the-first-camera">Add the first camera</a></h2>
 <p>Open <strong>Cameras</strong> and use <strong>Add camera</strong>. KeepPeek discovers common cameras where possible and keeps
 manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or
 sub streams, keyframes, finalized MP4 recordings, and playback all need to validate.</p>
 <p>Edit an existing camera from its <strong>Camera</strong> page. Use <strong>Settings</strong> only for server-wide
 configuration. Camera-specific credentials and stream choices belong with the camera.</p>
+<p>Set a recording policy that matches the footage you need: the built-in default is <code>event-boost</code>, not
+continuous recording of both streams. Open live view, then review a new finalized interval in
+<strong>Keep</strong>. An incompatible browser codec is different from absent footage; retain a compatible
+substream when the camera provides one.</p>
 <p>The <a href="./users-and-design-choices.html#cameras-brands-and-protocols">Users and design choices</a> chapter
 describes supported vendor paths and the pragmatic camera compatibility policy.</p>
 <p>After the first stream is verified, continue with <a href="./camera-health.html">Camera and stream health</a> and
 <a href="./recording-and-evidence.html">Recording and evidence</a>. Review
 <a href="./release-readiness.html">Release readiness and known limitations</a> before relying on the installation
 for evidence.</p>
+<h2 id="complete-the-first-use-check"><a class="header" href="#complete-the-first-use-check">Complete the first-use check</a></h2>
+<ul>
+<li>Verify live view, recorded playback, recording integrity, and a small downloaded evidence export.</li>
+<li>Test each remote credential from an address that is not trusted-local. Check allowed and denied
+cameras, and the separate dashboard audience.</li>
+<li>If you enable native events, external analysis, notifications, or MQTT, test a controlled event
+through its intended destination and inspect failures.</li>
+<li>Restart once and confirm recording resumes, durable settings remain, and remote users can sign
+in again. Pending notification and MQTT work does not survive that restart.</li>
+</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="reporting-bugs.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="feature-guide.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="upgrades-and-migrations.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="authentication.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -269,11 +324,11 @@ for evidence.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="reporting-bugs.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="feature-guide.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="upgrades-and-migrations.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="authentication.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

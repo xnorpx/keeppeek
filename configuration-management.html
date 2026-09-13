@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,12 +175,55 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="visual-configuration-management"><a class="header" href="#visual-configuration-management">Visual configuration management</a></h1>
-<p>The Cameras page can inspect and change shared camera defaults, effective inherited values,
-versioned templates, and explicit camera sets when the server advertises
-<code>keeppeek.configuration.v1</code>.</p>
+<p>Use <strong>Cameras</strong> to inspect and change shared camera defaults, effective inherited values, versioned
+templates, and explicit camera sets. These operations require Administrator access and the server’s
+<code>keeppeek.configuration.v1</code> capability. If it is unavailable, the fleet remains readable and the
+unsupported actions stay disabled.</p>
+<h2 id="choose-the-right-editor"><a class="header" href="#choose-the-right-editor">Choose the right editor</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Task</th><th>Location</th></tr>
+</thead>
+<tbody>
+<tr><td>Change one camera’s connection, streams, or recording policy</td><td>Open its Camera page and edit its configuration.</td></tr>
+<tr><td>Change inherited policy, manage templates, or preview a fleet change</td><td>Open the Cameras fleet configuration controls.</td></tr>
+<tr><td>Change storage, retention, or listener settings</td><td>Settings. Use the storage editor’s move/restart review when changing paths.</td></tr>
+<tr><td>Change a dashboard or its display and audience</td><td>The <a href="./live-wall.html">live-wall layout controls</a>.</td></tr>
+<tr><td>Change User camera grants or credentials</td><td><a href="./authentication.html#camera-and-dashboard-access">Settings &gt; Access &amp; roles</a>.</td></tr>
+<tr><td>Change notification rules or MQTT</td><td>The <a href="./notifications-and-integrations.html">notification and integration editors</a>.</td></tr>
+<tr><td>Transfer the complete settings and file-backed secrets</td><td><a href="./configuration-export-import.html">Configuration ZIP export and apply</a>.</td></tr>
+<tr><td>Configure file-only native event policy</td><td>Stop the server and edit the <a href="./configuration-reference.html#native-camera-events">supported camera event table</a>.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The browser has no general secret editor or raw TOML editor. Use the
+<a href="./configuration-reference.html">configuration reference</a> for supported file fields. Preserve unrelated
+sections and existing secret references when editing a stopped installation.</p>
+<h2 id="inspect-inheritance-before-changing-it"><a class="header" href="#inspect-inheritance-before-changing-it">Inspect inheritance before changing it</a></h2>
 <p>Every inheritable policy shows its configured default, camera override, final effective value,
 source, and current runtime state. <strong>Use inherited value</strong> removes an override so future default
 changes continue to flow to that camera.</p>
+<p>A built-in value is the fallback shipped by KeepPeek. A shared default changes the fallback for
+cameras without that override. An explicit camera value takes precedence. <strong>Use built-in value</strong>
+removes a shared default. Removing an override does not freeze the current value into the camera.</p>
+<p>For example, changing a shared recording mode affects cameras that inherit it. A camera with an
+explicit <code>main</code> override keeps that policy. Check both the effective value and runtime status after
+applying a change, especially if a camera is disconnected.</p>
+<h2 id="preview-and-apply-a-fleet-change"><a class="header" href="#preview-and-apply-a-fleet-change">Preview and apply a fleet change</a></h2>
+<ol>
+<li>Open the shared-default or bulk-change view and choose the fields to change.</li>
+<li>For bulk changes, select explicit camera IDs, the complete filtered result, one configured group,
+or all configured cameras. The all-cameras scope requires explicit confirmation.</li>
+<li>Request a preview. Confirm the server’s authoritative camera count, old and new values, skipped
+targets, validation issues, and reconnect or restart consequences.</li>
+<li>Resolve issues before applying. A missing target makes the plan invalid; an oversized preview
+requires a smaller selection or fewer changed fields.</li>
+<li>Apply the current preview, then check the per-camera activation result and camera health.</li>
+</ol>
+<p>The filtered scope means the complete filter result, including rows outside the visible viewport.
+One plan includes at most 64 cameras and expires after ten minutes. The server retains at most 128
+plans and bounds control responses to 64 KiB. A preview that cannot fit fails explicitly.</p>
 <p>Template and bulk operations always produce a server-owned preview before apply. The preview lists
 the exact authoritative cameras, semantic old and new values, skipped targets, validation issues,
 and reconnect or restart consequences. Applying a template creates explicit overrides; later
@@ -189,17 +232,50 @@ template edits or deletion do not silently change cameras.</p>
 unrelated fields and secret references, and replace the configuration atomically. A conflict
 reloads current evidence without discarding the local draft. If a committed change cannot activate
 on one camera worker, KeepPeek reports that camera and the required restart recovery action.</p>
-<p>Templates exchange versioned JSON with secret references only. KeepPeek validates an import and
-shows its complete contents before mutation. General browser secret editing and raw TOML editing
-are not available.</p>
+<h2 id="create-and-reuse-a-camera-template"><a class="header" href="#create-and-reuse-a-camera-template">Create and reuse a camera template</a></h2>
+<p>In the templates view, create a named template with supported connection or recording-policy fields
+you want to reuse. Templates can be edited, duplicated, deleted, imported, and exported. They do not
+include notification rules; manage those in their own editor.</p>
+<p>Credential fields accept complete references such as <code>{secret:CAMERA_PASSWORD}</code>. Create the
+corresponding secret in the existing companion <code>secrets.toml</code> through your protected local workflow.
+A template does not carry the secret value to another recorder.</p>
+<p>To use a template, choose it for a bulk target set, review the server preview, then apply. Applying
+creates explicit camera overrides. Later template edits or deletion do not change cameras that
+previously used it. To return a camera to shared defaults, remove the relevant overrides with
+<strong>Use inherited value</strong>.</p>
+<p>Template exchange uses versioned JSON, not a configuration ZIP or raw TOML. Export the template
+document, choose it for import on the target, review its validated contents, and apply the preview.
+Unsupported versions, unknown fields, duplicate IDs or names, inline credentials, invalid values,
+and oversized documents are rejected before mutation. Documents are limited to 16 KiB and contain
+at most 64 templates. Template names are unique ignoring case.</p>
+<h2 id="resolve-conflicts-and-activation-failures"><a class="header" href="#resolve-conflicts-and-activation-failures">Resolve conflicts and activation failures</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Result</th><th>What to do</th></tr>
+</thead>
+<tbody>
+<tr><td>The configuration changed while you were editing</td><td>Read the refreshed evidence, compare it with the retained draft, and request a new preview. There is no blind overwrite.</td></tr>
+<tr><td>A preview expired</td><td>Request and review a new preview. A ten-minute-old target set may no longer be valid.</td></tr>
+<tr><td>A target is missing or the preview is too large</td><td>Correct the target selection or split it into smaller explicit batches.</td></tr>
+<tr><td>A value fails validation</td><td>Correct the indicated field. Check the reference for units, bounds, inheritance, and supported secret syntax.</td></tr>
+<tr><td>Saved values differ from runtime</td><td>Follow the reported per-camera reconnect or restart action, then verify health and effective values again.</td></tr>
+<tr><td>The capability is unavailable</td><td>Check the connected server version. The visible fleet does not imply configuration writes are supported.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Conflicts retain the complete local draft while reloading current evidence. Single-camera edits use
+the configuration revision; template transactions also account for the template document. A
+template-only edit therefore does not create a false conflict for an unrelated camera draft.</p>
 <p>The detailed contract, limits, and ownership boundaries are in
-<a href="https://github.com/xnorpx/keeppeek/blob/master/docs/configuration-management.md">Visual configuration management</a>.</p>
+<a href="https://github.com/xnorpx/keeppeek/blob/main/docs/configuration-management.md">configuration engineering guide</a>.
+Use <a href="./configuration-export-import.html">configuration exchange</a> for full-recorder settings recovery.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="live-wall.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="camera-health.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -213,7 +289,7 @@ are not available.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="live-wall.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="camera-health.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

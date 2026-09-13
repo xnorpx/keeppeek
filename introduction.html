@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -204,26 +204,37 @@ pack into the core service.</p>
 <p>KeepPeek is developed with AI assistance through a human-directed process. AI is used as a tool for
 implementation, validation, documentation, and review; design decisions and accountability remain
 with people.</p>
-<blockquote>
-<p><strong>Small on purpose:</strong> The current release binary is under 40 MB. KeepPeek aims to remain a compact
-native service, not a two-gigabyte spaghetti-script bundle held together by Python and JavaScript
-runtimes. Those ecosystems are welcome in optional services where they fit; the core should not
-make every installation carry them.</p>
-</blockquote>
+<p>KeepPeek aims to remain a compact native service. Optional services own their detector runtimes,
+models, and codec dependencies, so an installation can choose the extra work it needs.</p>
 <h2 id="reading-the-book"><a class="header" href="#reading-the-book">Reading the book</a></h2>
 <ul>
+<li><a href="./feature-guide.html">Feature guide and navigation</a> maps the current screens and settings to
+everyday tasks and distinguishes implemented features from unavailable controls.</li>
+<li><a href="./how-it-works.html">How KeepPeek works</a> connects media, recording, events, persistent state,
+clients, and integrations in one overview.</li>
 <li><a href="./users-and-design-choices.html">Users and design choices</a> explains who KeepPeek is for and why its
 product, protocol, platform, licensing, and integration boundaries exist.</li>
 <li><a href="./reporting-bugs.html">Reporting bugs</a> describes how to file a reproducible defect and where to
 take setup questions or feature proposals.</li>
 <li><a href="./get-started.html">Get started</a> covers installation, persistent data, secrets, and the first
 camera.</li>
+<li><a href="./authentication.html">Authentication</a> explains roles, credentials, and camera access;
+<a href="./camera-controls.html">Camera controls</a> covers discovery, setup, editing, and device operations.</li>
+<li><a href="./live-wall.html">Live wall</a> covers saved dashboards, layout sharing, kiosk display, and browser
+resource choices. <a href="./digital-zoom.html">Digital zoom</a> explains local inspection controls.</li>
 <li><a href="./camera-health.html">Camera and stream health</a> defines the authoritative health model and evidence
 used across the server, API, metrics, and interface.</li>
 <li><a href="./recording-and-evidence.html">Recording and evidence</a> explains recording policies, coverage,
 event presentation, and durable evidence exports.</li>
 <li><a href="./notifications-and-integrations.html">Notifications and integrations</a> covers server-owned rules,
 Pushover delivery, MQTT 5 forwarding, retries, and failure isolation.</li>
+<li><a href="./native-camera-events.html">Native camera events</a>, <a href="./external-analysis.html">External analysis</a>,
+and <a href="./home-assistant.html">Home Assistant</a> explain the independent integration paths.</li>
+<li><a href="./configuration-management.html">Visual configuration management</a> and the
+<a href="./configuration-reference.html">configuration reference</a> cover supported settings and safe edits.</li>
+<li><a href="./backup-and-restore.html">Backup and restore</a>, <a href="./upgrades-and-migrations.html">Upgrades</a>,
+<a href="./recording-maintenance.html">Recording maintenance</a>, and
+<a href="./recording-archive-recovery.html">Archive recovery</a> cover ongoing operation and recovery.</li>
 <li><a href="./release-readiness.html">Release readiness and known limitations</a> separates automated checks from
 the physical mixed-fleet, recovery, and soak evidence required for Alpha promotion.</li>
 <li><a href="./demo-videos.html">Demo videos</a> shows complete workflows against the real application.</li>
@@ -238,7 +249,7 @@ AI-assisted work, pull requests, and validation.</li>
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
 
-                            <a rel="next prefetch" href="users-and-design-choices.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="feature-guide.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -249,7 +260,7 @@ AI-assisted work, pull requests, and validation.</li>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
 
-                    <a rel="next prefetch" href="users-and-design-choices.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="feature-guide.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

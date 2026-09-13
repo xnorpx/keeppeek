@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -249,7 +249,7 @@ submitter cannot defend. Reviewers may ask the submitter to explain control flow
 protocol behavior, tests, or individual lines. If they cannot, the contribution is not ready.</p>
 <h2 id="pull-request-shape"><a class="header" href="#pull-request-shape">Pull request shape</a></h2>
 <p>Use the repository’s
-<a href="https://github.com/xnorpx/keeppeek/blob/master/.github/pull_request_template.md">pull request template</a>
+<a href="https://github.com/xnorpx/keeppeek/blob/main/.github/pull_request_template.md">pull request template</a>
 as the canonical shape for every pull request. Complete its summary, linked Discussion, acceptance
 criteria verification, performance evidence, validation, and review evidence before requesting
 review. A bug-fix pull request may link its reproducible bug issue instead of a feature Discussion.</p>
@@ -267,12 +267,10 @@ existing pull request is enough; do not open a second Discussion or duplicate pu
 versions live in <code>ui/.bun-version</code> and <code>examples/object_detection_service/.python-version</code>.</p>
 <p>Formatting and validation require the Python packages in
 <code>examples/object_detection_service/requirements.txt</code>, including Black. The root <code>fix</code> and <code>check</code>
-scripts resolve Python in this order:</p>
-<ol>
-<li><code>KEEPPEEK_PYTHON</code>, when set;</li>
-<li><code>python3.12</code>;</li>
-<li><code>python3</code>.</li>
-</ol>
+scripts use an absolute interpreter path from <code>KEEPPEEK_PYTHON</code> when set. Otherwise, macOS/Linux
+scripts try <code>python3.12</code> and then <code>python3</code>; Windows scripts resolve <code>python</code> from <code>PATH</code>. The
+selected interpreter must be Python 3.12. Set <code>KEEPPEEK_PYTHON</code> explicitly if another Python
+installation wins that lookup.</p>
 <p>Do not use a Python virtual environment. <code>fix.sh</code> and <code>fix.bat</code> install the requirements into the
 resolved interpreter, retrying with <code>--break-system-packages</code> when that interpreter is externally
 managed.</p>
@@ -299,6 +297,31 @@ that cannot run in the pull request and explain why.</p>
 <p>Camera changes should also be validated against the affected device and independent MP4 tooling.
 Passing a unit test does not prove that a real camera authenticates, advances frames and keyframes,
 finalizes recordings, and produces decodable output.</p>
+<h2 id="update-the-book-and-design-evidence"><a class="header" href="#update-the-book-and-design-evidence">Update the book and design evidence</a></h2>
+<p>The book lives in <code>book/src</code>; <code>SUMMARY.md</code> controls its navigation. Document the current behavior
+and the practical task it enables, including authorization, persistence, limits, and failure
+recovery. Update the <a href="./feature-guide.html">feature guide</a> when adding a screen or changing where a
+task starts. Fill operational chapters with instructions rather than leaving empty placeholders.</p>
+<p>Keep serialized fields, defaults, and examples synchronized with the
+<a href="./configuration-reference.html">configuration reference</a>. Protocol declarations and engineering
+scenarios can describe capabilities that do not yet have a runtime handler. Check the server and
+client implementation before presenting those capabilities as available.</p>
+<p>From the repository root, validate documentation with:</p>
+<pre><code class="language-sh">bun run --cwd ui format:markdown:check
+mdbook build book
+</code></pre>
+<p>Install <code>mdbook</code> and <code>mdbook-mermaid</code> and make both available on <code>PATH</code>; the book’s configuration
+uses the Mermaid preprocessor. After building, open the generated book, follow the changed
+navigation and cross-links, and check diagrams and long tables at desktop and narrow widths.
+These focused documentation checks complement the repository validation above.</p>
+<p>The first-party interface has versioned Paper references and scenario-based browser evidence under
+<a href="https://github.com/xnorpx/keeppeek/tree/main/ui/design/paper"><code>ui/design/paper</code></a>. Use the active reference’s
+README and manifests to identify its scope. The active NVR design is <code>keeppeek-nvr-alpha</code>;
+<code>keeppeek-nvr-v34</code> remains the historical input to the existing visual harness and Linux Loki
+baselines. A new Paper export does not approve a replacement baseline. A reference image records design intent; browser
+interaction tests prove working behavior. Keep unavailable, loading, denied, empty, and error
+states explicit, and preserve the actual evidence when updating a reference. Do not infer current
+feature availability from a mockup or a demonstration video.</p>
 <h2 id="licensing"><a class="header" href="#licensing">Licensing</a></h2>
 <p>See <a href="./open-source-and-licensing.html#licensing-model">Open source and licensing</a> for the project-wide
 license model. Contributions are accepted under the license of the area they modify. Submit only

@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -184,12 +184,20 @@ decision belongs to the tested release build and representative deployment recor
 <h2 id="what-automated-validation-proves"><a class="header" href="#what-automated-validation-proves">What automated validation proves</a></h2>
 <p>The repository gate builds the Rust workspace and browser application, runs Rust, TypeScript,
 Svelte, browser, real-media, and Playwright tests, checks formatting and dependencies, and validates
-the versioned Paper scenario and visual-harness manifests. Focused benchmarks enforce latency and
-memory budgets for recording coverage, operational events, notifications, MQTT enqueue, storage,
-and event lookup.</p>
+the versioned Paper scenario and visual-harness manifests.</p>
+<p>Focused benchmarks cover latency and memory budgets for recording coverage, operational events,
+notifications, MQTT enqueue, storage, and event lookup. Some are ignored tests or standalone Cargo
+benchmarks and require separate explicit runs; a green ordinary check or CI run does not establish
+their results. Record the exact benchmark command, build, workload, host, and measurements with the
+qualification evidence.</p>
 <p>Those checks prove deterministic contracts and regression fixtures. They do not prove that a
 particular camera firmware, network, disk, browser, reverse proxy, notification account, or broker
 will behave correctly under sustained load.</p>
+<p>Paper reference integrity tests check the exported design bundle, scenario identities, assets,
+dimensions, hashes, and shared tokens. They do not by themselves compare every production page
+with every Paper artboard. Story-based visual checks and route-level browser checks cover their
+declared fixtures. Treat the accepted mobile Keep proposal as a design reference and verify the
+implemented workflow on the target device; a reference file is not deployment evidence.</p>
 <h2 id="release-and-dependency-integrity"><a class="header" href="#release-and-dependency-integrity">Release and dependency integrity</a></h2>
 <p><code>Cargo.lock</code> is a tracked release input. Direct Cargo requirements name a compatible version, and
 repository build, test, benchmark, container, and release commands use <code>--locked</code>. CI runs
@@ -261,7 +269,22 @@ transcoding remains separate work.</p>
 <code>secrets.toml</code>, with restart activation and automatic startup recovery. <code>recordings.db</code>, recording MP4s, and thumbnail
 JPEGs remain a separate archive responsibility. A recovery rehearsal must test both the sensitive
 KeepPeek configuration bundle and the recording archive. See
-<a href="./backup-and-restore.html">Backup and restore</a>.</p>
+<a href="./backup-and-restore.html">Backup and restore</a> and the
+<a href="./recording-archive-recovery.html">recording archive recovery procedure</a>. There is no public importer
+for an unrelated recording archive, no general catalog downgrade command, and no automatic adoption
+of unknown MP4s. A validated index rebuild applies only to eligible existing catalog recordings.</p>
+<h3 id="restart-resets-runtime-work"><a class="header" href="#restart-resets-runtime-work">Restart resets runtime work</a></h3>
+<p>Notification inbox/history, retry work and delivery counters; MQTT pending publications and
+deduplication; and access sessions, audit history and last-use activity are not durable. Restart
+does not replay those queues. Capture required operational evidence before restarting and verify
+the intended behavior afterward. Durable recording events and settings have separate recovery
+contracts; see <a href="./backup-and-restore.html#what-survives-a-restart">What survives a restart</a>.</p>
+<h3 id="maintenance-has-filesystem-and-recovery-boundaries"><a class="header" href="#maintenance-has-filesystem-and-recovery-boundaries">Maintenance has filesystem and recovery boundaries</a></h3>
+<p>Manual maintenance is destructive and uses confirmed whole-recording selections. Native Windows
+mutation targets NTFS with persistent ACLs; ReFS is rejected. Structural container inspection does
+not certify complete media decodability or immutable content. Unknown files are not adopted or
+deleted automatically. Review <a href="./recording-maintenance.html">Recording maintenance</a> for cooperative
+deadlines, same-account interference limits, interrupted-work handling, and unqualified scenarios.</p>
 <h3 id="access-roles-are-intentionally-fixed"><a class="header" href="#access-roles-are-intentionally-fixed">Access roles are intentionally fixed</a></h3>
 <p>Remote access supports Administrator and User; custom roles are not available. Administrators can
 restrict a User credential to selected camera groups and individual cameras in <strong>Settings → Access
@@ -272,6 +295,10 @@ conflict. The default grant includes all current and future cameras.</p>
 <p>Trusted-local clients remain Administrators. Exclude an address from <code>access.local_networks</code> and
 require a User credential when that client needs camera restrictions. Hidden navigation is not
 an authorization boundary. See <a href="./authentication.html#camera-and-dashboard-access">Camera and dashboard access</a>.</p>
+<p>An access change during dashboard initialization can leave an expired-session error visible until
+the page is reloaded. The invalid session remains denied by the server. Follow
+<a href="./authentication.html#session-expired-after-a-permission-change">the reconnect steps</a> and verify
+the new grants after sign-in; this does not establish that the UI race has been resolved.</p>
 <h3 id="detection-remains-external"><a class="header" href="#detection-remains-external">Detection remains external</a></h3>
 <p>KeepPeek records and presents camera-native or externally published events. It does not own object,
 face, or license-plate detection, model management, zones, masks, or training. Recording and health
@@ -281,16 +308,36 @@ must remain useful when an external analysis service is absent.</p>
 network topology, storage configuration, test commands, soak duration, observed limits, known
 workarounds, and a promote or reject decision. Unverified items stay explicit; a green build never
 silently checks a deployment-specific criterion.</p>
+<p>Use a record with the following concrete results:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Evidence</th><th>Record</th></tr>
+</thead>
+<tbody>
+<tr><td>Build and deployment</td><td>Exact version/commit or image digest, host architecture, filesystem, service identity, browser versions, and proxy/VPN topology.</td></tr>
+<tr><td>Camera matrix</td><td>Camera model and firmware, transport, main/sub codecs, finalized recording and independent decode results.</td></tr>
+<tr><td>Access</td><td>Allowed and denied camera checks, dashboard audiences, expired/revoked sessions, and local versus remote classification.</td></tr>
+<tr><td>Sustained operation</td><td>Start/end times, workload, recording gaps and explanations, memory/storage growth, cleanup and reconnect results.</td></tr>
+<tr><td>Recovery</td><td>Configuration ZIP apply, stopped catalog/media copy, restart, upgrade rehearsal, and recovered/missing intervals.</td></tr>
+<tr><td>Integrations and evidence</td><td>Provider/broker outage and restart behavior, completed/failed/cancelled exports, and verified downloaded bytes.</td></tr>
+<tr><td>Decision</td><td>Remaining issues and workarounds, evidence location, and an explicit promote or reject decision.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Use <a href="./upgrades-and-migrations.html">Upgrades and migrations</a> to plan a version change, and
+<a href="./reporting-bugs.html">Reporting bugs</a> for reproducible failures. This guide does not close the Alpha
+gate, its feature-freeze decision, or the installation’s long-running qualification work.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="home-assistant.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="users-and-design-choices.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="demo-videos.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="reporting-bugs.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -300,11 +347,11 @@ silently checks a deployment-specific criterion.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="home-assistant.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="users-and-design-choices.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="demo-videos.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="reporting-bugs.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

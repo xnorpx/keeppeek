@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
+            window.path_to_searchindex_js = "searchindex-f7cb9e2b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-8917b401.js"></script>
+        <script src="toc-53d99c1d.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -178,6 +178,33 @@
 <p>The Dashboard is KeepPeek’s multi-camera live wall. Open <strong>Wall display settings</strong> with the
 sliders icon in the upper-right corner to change its presentation and resource policy. These
 choices belong to the selected dashboard on the server, not to camera recording or detection.</p>
+<h2 id="choose-a-dashboard-or-focus-a-camera"><a class="header" href="#choose-a-dashboard-or-focus-a-camera">Choose a dashboard or focus a camera</a></h2>
+<p>Use the dashboard-name selector to choose a saved layout. <strong>All cameras</strong> is the automatic fleet
+view; changing camera configuration updates its generated grid. A saved dashboard can arrange a
+subset of cameras for a room, entrance or display.</p>
+<p>Select a camera tile to open the focused <strong>Viewer</strong>. Use its camera selector or filmstrip to
+change the focused camera. Live and History are viewing modes; pausing or leaving a browser view
+does not stop server recording. Open <strong>Keep</strong> for a recorded-day investigation, event context or
+evidence export. See <a href="./recording-and-evidence.html">Recording and evidence</a>.</p>
+<p>The information control on a tile opens camera evidence without making a paused browser preview
+look like a server outage. For detailed device settings and supported PTZ or detector operations,
+open the camera from <strong>Cameras</strong>. See <a href="./camera-controls.html">Camera controls</a>.</p>
+<h2 id="arrange-and-share-a-dashboard"><a class="header" href="#arrange-and-share-a-dashboard">Arrange and share a dashboard</a></h2>
+<p>An Administrator can create, duplicate and edit dashboards. In the layout editor, add available
+cameras, select a tile, and move or resize it in the grid. Keyboard controls support moving the
+selected tile; the editor’s hints identify the available actions. Save the draft to publish the
+layout. Cancel or discard to leave the saved layout intact. The automatic All cameras grid cannot
+be rearranged like a custom dashboard; create a custom layout for that purpose.</p>
+<p>The dashboard audience determines who can see a saved layout. It does not grant access to the
+cameras in it. Camera groups are labels used for organization and access grants; the server
+filters each viewer’s layout to the cameras that identity is allowed to see. A shared layout can
+therefore be empty for one User while containing cameras for another. Do not broaden camera
+permissions merely to make a layout match another person’s screen.</p>
+<p>Layout export/import carries dashboard definitions, not camera credentials or media. Review the
+imported camera references and audience before use on another recorder. A stale save is rejected
+instead of overwriting a newer revision; reload the current saved layout before trying again.
+See <a href="./authentication.html">Authentication and access</a> and
+<a href="./configuration-export-import.html">Configuration export and import</a>.</p>
 <h2 id="defaults-and-ownership"><a class="header" href="#defaults-and-ownership">Defaults and ownership</a></h2>
 <div class="table-wrapper">
 <table>
@@ -314,11 +341,11 @@ and does not guarantee that a device can never sleep.</p>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="native-camera-events.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="demo-videos.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="configuration-management.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="recording-and-evidence.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -328,11 +355,11 @@ and does not guarantee that a device can never sleep.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="native-camera-events.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="demo-videos.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="configuration-management.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="recording-and-evidence.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>
