@@ -11,13 +11,23 @@ decision belongs to the tested release build and representative deployment recor
 
 The repository gate builds the Rust workspace and browser application, runs Rust, TypeScript,
 Svelte, browser, real-media, and Playwright tests, checks formatting and dependencies, and validates
-the versioned Paper scenario and visual-harness manifests. Focused benchmarks enforce latency and
-memory budgets for recording coverage, operational events, notifications, MQTT enqueue, storage,
-and event lookup.
+the versioned Paper scenario and visual-harness manifests.
+
+Focused benchmarks cover latency and memory budgets for recording coverage, operational events,
+notifications, MQTT enqueue, storage, and event lookup. Some are ignored tests or standalone Cargo
+benchmarks and require separate explicit runs; a green ordinary check or CI run does not establish
+their results. Record the exact benchmark command, build, workload, host, and measurements with the
+qualification evidence.
 
 Those checks prove deterministic contracts and regression fixtures. They do not prove that a
 particular camera firmware, network, disk, browser, reverse proxy, notification account, or broker
 will behave correctly under sustained load.
+
+Paper reference integrity tests check the exported design bundle, scenario identities, assets,
+dimensions, hashes, and shared tokens. They do not by themselves compare every production page
+with every Paper artboard. Story-based visual checks and route-level browser checks cover their
+declared fixtures. Treat the accepted mobile Keep proposal as a design reference and verify the
+implemented workflow on the target device; a reference file is not deployment evidence.
 
 ## Release and dependency integrity
 
@@ -107,7 +117,26 @@ KeepPeek provides direct ZIP export and validated application of `config.toml` a
 `secrets.toml`, with restart activation and automatic startup recovery. `recordings.db`, recording MP4s, and thumbnail
 JPEGs remain a separate archive responsibility. A recovery rehearsal must test both the sensitive
 KeepPeek configuration bundle and the recording archive. See
-[Backup and restore](./backup-and-restore.md).
+[Backup and restore](./backup-and-restore.md) and the
+[recording archive recovery procedure](./recording-archive-recovery.md). There is no public importer
+for an unrelated recording archive, no general catalog downgrade command, and no automatic adoption
+of unknown MP4s. A validated index rebuild applies only to eligible existing catalog recordings.
+
+### Restart resets runtime work
+
+Notification inbox/history, retry work and delivery counters; MQTT pending publications and
+deduplication; and access sessions, audit history and last-use activity are not durable. Restart
+does not replay those queues. Capture required operational evidence before restarting and verify
+the intended behavior afterward. Durable recording events and settings have separate recovery
+contracts; see [What survives a restart](./backup-and-restore.md#what-survives-a-restart).
+
+### Maintenance has filesystem and recovery boundaries
+
+Manual maintenance is destructive and uses confirmed whole-recording selections. Native Windows
+mutation targets NTFS with persistent ACLs; ReFS is rejected. Structural container inspection does
+not certify complete media decodability or immutable content. Unknown files are not adopted or
+deleted automatically. Review [Recording maintenance](./recording-maintenance.md) for cooperative
+deadlines, same-account interference limits, interrupted-work handling, and unqualified scenarios.
 
 ### Access roles are intentionally fixed
 
@@ -122,6 +151,11 @@ Trusted-local clients remain Administrators. Exclude an address from `access.loc
 require a User credential when that client needs camera restrictions. Hidden navigation is not
 an authorization boundary. See [Camera and dashboard access](./authentication.md#camera-and-dashboard-access).
 
+An access change during dashboard initialization can leave an expired-session error visible until
+the page is reloaded. The invalid session remains denied by the server. Follow
+[the reconnect steps](./authentication.md#session-expired-after-a-permission-change) and verify
+the new grants after sign-in; this does not establish that the UI race has been resolved.
+
 ### Detection remains external
 
 KeepPeek records and presents camera-native or externally published events. It does not own object,
@@ -134,3 +168,19 @@ The owner records the exact release commit, platform and browser versions, camer
 network topology, storage configuration, test commands, soak duration, observed limits, known
 workarounds, and a promote or reject decision. Unverified items stay explicit; a green build never
 silently checks a deployment-specific criterion.
+
+Use a record with the following concrete results:
+
+| Evidence                  | Record                                                                                                                           |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Build and deployment      | Exact version/commit or image digest, host architecture, filesystem, service identity, browser versions, and proxy/VPN topology. |
+| Camera matrix             | Camera model and firmware, transport, main/sub codecs, finalized recording and independent decode results.                       |
+| Access                    | Allowed and denied camera checks, dashboard audiences, expired/revoked sessions, and local versus remote classification.         |
+| Sustained operation       | Start/end times, workload, recording gaps and explanations, memory/storage growth, cleanup and reconnect results.                |
+| Recovery                  | Configuration ZIP apply, stopped catalog/media copy, restart, upgrade rehearsal, and recovered/missing intervals.                |
+| Integrations and evidence | Provider/broker outage and restart behavior, completed/failed/cancelled exports, and verified downloaded bytes.                  |
+| Decision                  | Remaining issues and workarounds, evidence location, and an explicit promote or reject decision.                                 |
+
+Use [Upgrades and migrations](./upgrades-and-migrations.md) to plan a version change, and
+[Reporting bugs](./reporting-bugs.md) for reproducible failures. This guide does not close the Alpha
+gate, its feature-freeze decision, or the installation's long-running qualification work.

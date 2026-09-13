@@ -25,6 +25,28 @@ secret overrides are not copied into the bundle.
 notification/MQTT work are excluded. The target recorder keeps its local storage paths during
 restore. Protect the recording tree with a separate archive policy when it needs recovery.
 
+## What survives a restart
+
+| State                                                                                                                   | Persistence and recovery boundary                                                                                        |
+| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Camera settings, access credentials and grants, dashboards and selections, templates, notification rules, MQTT settings | Durable configuration in `config.toml`; included in a configuration ZIP.                                                 |
+| File-backed secrets                                                                                                     | Durable sibling `secrets.toml`; included in plaintext. Environment overrides remain outside the ZIP.                     |
+| Recording metadata, events, coverage and maintenance intent                                                             | Recording catalog data; recover with a consistent catalog and media archive.                                             |
+| MP4 recordings and event images                                                                                         | Files in configured storage locations; not part of a configuration ZIP.                                                  |
+| Evidence-export history and artifacts                                                                                   | Stored in `.exports` under the long-term recording root, with separate history and artifact expiry; not part of the ZIP. |
+| Diagnostic log filter                                                                                                   | The existing sibling `log-filter` file persists separately and is not in the two-TOML ZIP.                               |
+| Notification delivery jobs, retries, inbox/history, cooldowns and delivery counters                                     | Runtime memory; reset on restart. Saved rule drafts and active rules remain.                                             |
+| MQTT pending publications, retries and deduplication history                                                            | Runtime memory; reset on restart. Stored source events are not an automatic replay queue.                                |
+| Access audit, credential last-use activity and active sessions                                                          | Runtime memory; reset on restart. Durable identities and grants remain.                                                  |
+| Browser sign-in key, media handles and active wake lock                                                                 | Page/browser runtime state; reload or reconnect as required. Saved dashboard wake-lock intent remains configuration.     |
+
+Restart is therefore a recording interruption and a runtime-state reset, even when every saved
+setting returns correctly. Collect required audit and delivery evidence before restart. A queue
+that was pending before shutdown is not proof of later provider delivery.
+
+See [Recording archive recovery](./recording-archive-recovery.md) for consistent offline copies and
+recovery rehearsals, and [Upgrades and migrations](./upgrades-and-migrations.md) for version changes.
+
 ## Safe activation
 
 Apply accepts a current format-3 ZIP, including its manifest comment, and validates paths, checksums,
@@ -39,7 +61,7 @@ To return to an older configuration, apply a ZIP exported before the change.
 
 Do not edit `.backups/restore-journal.json` or its staging files manually. The detailed HTTP, limit,
 crash-recovery, and CLI contract is in the
-[backup and restore operator guide](https://github.com/xnorpx/keeppeek/blob/master/docs/backup-and-restore.md).
+[backup and restore engineering guide](https://github.com/xnorpx/keeppeek/blob/main/docs/backup-and-restore.md).
 
 ## Automation
 
@@ -54,6 +76,14 @@ is rejected. Existing files and Windows alternate data streams are not export de
 Browser downloads use the browser's destination permissions; restrict those copies separately.
 
 ```sh
-keeppeek config --server http://localhost:3000 export --output keeppeek-config.zip
-keeppeek config --server http://localhost:3000 apply keeppeek-config.zip --confirm
+keeppeek config --server http://localhost:8081 export --output keeppeek-config.zip
+keeppeek config --server http://localhost:8081 apply keeppeek-config.zip --confirm
 ```
+
+Use your recorder's configured port if it differs from the default `8081`. Export does not overwrite
+an existing file. Apply does not restart the recorder automatically; check its exit status and
+`RESTORE_STATE_AWAITING_RESTART` result before restarting. Exit code `2` means invalid CLI usage,
+`3` means a stable server 4xx rejection, and `4` means a transport, protocol, or server failure.
+
+Keep `--server` explicit in automation: the config CLI currently uses port `3000` if it is omitted,
+which differs from a new recorder's default listener port.

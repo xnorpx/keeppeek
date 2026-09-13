@@ -36,6 +36,11 @@ creation fails without truncating or replacing the existing file.
    and **Download report** to retain the result. Reports contain no confirmation
    nonce or host filesystem path.
 
+Before deleting irreplaceable footage, retain the required evidence export or
+[archive recovery copy](./recording-archive-recovery.md) and verify it separately. A configuration
+ZIP contains neither the media nor its catalog. A bookmark does not protect media from deletion;
+check the preview's explicit protection and relationship evidence.
+
 One deletion worker runs at a time. Close stored playback and wait for active
 exports before confirming. The server rechecks authorization during execution;
 revoking the session can leave a recoverable staged object rather than granting
@@ -283,6 +288,13 @@ tree `4df9a94e` (equivalent to `4bc3ab18`). This establishes automated coverage 
 the exercised fixtures, not every NTFS race, crash boundary, device, or deployment.
 
 ## Qualification still required
+
+For day-to-day operation, treat an unresolved reservation, missing staging identity, or incomplete
+reconciliation report as an inspection task. Preserve the report and the original files, close
+competing playback or exports when directed, and refresh the authoritative preview. Do not clear
+catalog rows or hidden staging entries manually to make a retry available. See
+[Recording archive recovery](./recording-archive-recovery.md#diagnose-incomplete-recovery) for the
+difference between index repair, tombstones, and recovering missing bytes.
 
 For a deployment and final release candidate, retain explicit evidence for:
 

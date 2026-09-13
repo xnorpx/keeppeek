@@ -83,13 +83,21 @@ The CLI performs the same export and apply operations as Settings. These example
 recorder on the local machine:
 
 ```sh
-keeppeek config --server http://localhost:3000 export --output keeppeek-config.zip
-keeppeek config --server http://localhost:3000 apply keeppeek-config.zip --confirm
+keeppeek config --server http://localhost:8081 export --output keeppeek-config.zip
+keeppeek config --server http://localhost:8081 apply keeppeek-config.zip --confirm
 ```
 
 Export requires an output path and creates a new, owner-only file; choose a different filename if it
 already exists. Apply requires `--confirm`. Commands write machine-readable JSON to standard output
 and diagnostics to standard error.
+
+Keep `--server` explicit: a new recorder defaults to `8081`, while this CLI subcommand currently
+defaults to `http://localhost:3000` when the option is omitted. Use the recorder's actual address.
+On Windows, export protects
+the new file for the current user, SYSTEM, and Administrators and verifies those permissions before
+writing any ZIP bytes. On Unix, it creates the file with mode `0600`. A destination whose required
+protection cannot be verified is rejected; choose a private filesystem destination. Browser
+downloads and direct HTTP clients use their own destination permissions.
 
 Check the command's exit status and returned state. A successful apply reports
 `RESTORE_STATE_AWAITING_RESTART`; restart the service through your normal service manager, or use
@@ -110,9 +118,9 @@ For a local recorder, a POSIX shell example is:
 
 ```sh
 umask 077
-curl --fail http://localhost:3000/config/export --output keeppeek-config.zip
+curl --fail http://localhost:8081/config/export --output keeppeek-config.zip
 curl --fail -H 'Content-Type: application/zip' \
-  --data-binary @keeppeek-config.zip http://localhost:3000/config/apply
+  --data-binary @keeppeek-config.zip http://localhost:8081/config/apply
 ```
 
 Send the ZIP as the request body, not as a multipart form. Apply requires `Content-Length`; the curl
@@ -137,3 +145,13 @@ response. There is no separate public dry-run, section selection, or path-mappin
 A rejected upload does not replace the live configuration. In Settings, the selected filename remains
 available after a validation error so you can correct the selection and retry. Do not restart in
 response to a failed upload as though it had been accepted.
+
+If startup fails after a successful apply, preserve its logs and allow the documented automatic
+two-file recovery to run. If both activation and rollback fail, preserve the full configuration
+directory, including its journal and staged files, before manual recovery. Do not clear a pending
+apply by deleting the journal. See [Safe activation](./backup-and-restore.md#safe-activation).
+
+For a recorder upgrade or disk failure, also use
+[Upgrades and migrations](./upgrades-and-migrations.md) and
+[Recording archive recovery](./recording-archive-recovery.md). Applying settings cannot restore
+missing recording bytes.

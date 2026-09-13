@@ -26,6 +26,33 @@ conflict or invalid draft leaves the previous active revision unchanged. Use the
 depending on a new destination. Test sends have separate rate accounting but still use the saved
 credentials and provider configuration.
 
+Start with one camera, one event kind and one destination. Verify a real matching event in
+**Events** after the test send succeeds: a provider test proves the delivery path, not that your
+camera, schedule or rule filters will produce an alert. Rules and active revisions survive restart
+in `config.toml`; delivery queues and inbox history do not.
+
+## Browser alerts, inbox and webhooks
+
+**Settings > Notifications** has **Rules**, **Inbox** and **History** views. Use Inbox to mark a
+notification seen, acknowledge it or clear it. **Clear all** requires a second confirmation.
+These actions change notification receipts, not the event's reviewed/dismissed state or the
+camera's health. History shows delivery attempts and suppression reasons.
+
+For desktop notifications, add a Browser action and select **Enable browser alerts** when offered.
+Browser permission is separate from KeepPeek access and server inbox delivery. The browser's
+current permission and an active frontend determine whether it can display a system alert; this
+is not an offline push service for a closed application. Use Pushover when you need the supported
+external push channel.
+
+Webhook actions send to the configured URL with a five-second timeout. They do not follow
+redirects, accept arbitrary request headers or allow credentials in the URL. Configure an endpoint
+that can accept the supported payload and inspect History after testing it. Enrichment can create
+a second webhook delivery only when the action enables that behavior.
+
+The rule editor also exposes a **Forwarder** action, but its current provider returns
+`channel_unavailable`. It is not the MQTT event forwarder. Configure MQTT independently under
+**Settings > Integrations**, as described below.
+
 ## Avoid duplicate and noisy alerts
 
 KeepPeek gives one logical notification a stable identity derived from its rule, source, event or
@@ -71,6 +98,11 @@ in-memory retry policy. Invalid credentials and other permanent provider failure
 indefinitely. Restarting KeepPeek discards pending attempts. Disabling a rule or Push action stops
 new work and expires its pending attempts.
 
+The notification outbox holds at most 10,000 pending/retrying actions in process memory. A full
+queue records `expired` with reason `outbox_full`. Each action also has its own attempt, retry and
+expiry bounds. Restart is not a recovery strategy for pending delivery: it discards that work and
+can allow replayed events to notify again after deduplication state is cleared.
+
 ## Forward events through MQTT
 
 Open **Settings > Integrations** to configure, test, observe, or disable the MQTT event forwarder.
@@ -105,7 +137,27 @@ forwarding fails visibly while event persistence and recording continue.
 Settings and Prometheus expose connection state, bounded error detail, pending items and bytes,
 retry and duplicate counts, last received and delivered times, and oldest unacknowledged work.
 
-See the detailed [notification rule](https://github.com/xnorpx/keeppeek/blob/master/docs/notifications.md),
-[Pushover](https://github.com/xnorpx/keeppeek/blob/master/docs/pushover.md), and
-[MQTT 5 forwarder](https://github.com/xnorpx/keeppeek/blob/master/docs/event-forwarder.md)
+## Troubleshoot a missing alert
+
+Check the chain in order: the source event exists, the active rule matches it, its schedule and
+cooldown permit delivery, the action is available, and the provider or broker accepted the work.
+A missing image, an acknowledged inbox item and a failed provider request are separate outcomes.
+Changing one does not repair the others.
+
+| Evidence                                      | Next step                                                                                                                               |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| No event in Events                            | Check [native events](./native-camera-events.md) or the [external analysis service](./external-analysis.md), camera scope and UTC date. |
+| Rule is saved but not active                  | Activate the intended draft and resolve any validation or revision conflict.                                                            |
+| `suppressed`, `collapsed` or `rate_limited`   | Inspect the active filter, schedule, cooldown and next eligible time.                                                                   |
+| Push fails permanently                        | Verify both configured credentials and destination in a controlled test; do not repeatedly retry invalid credentials.                   |
+| MQTT pending bytes keep growing               | Check MQTT 5 broker availability, TLS trust, authentication and acknowledgements before the bounded outbox fills.                       |
+| Inbox or queued work disappears after restart | This is process-local delivery state. The stored event and configured rule remain separate.                                             |
+
+For Home Assistant, the [direct camera card](./home-assistant.md) displays live video. It does not
+create entities or subscribe to these events for you. MQTT consumers and Home Assistant
+automations need their own topic, payload and deduplication configuration.
+
+See the detailed [notification rule](https://github.com/xnorpx/keeppeek/blob/main/docs/notifications.md),
+[Pushover](https://github.com/xnorpx/keeppeek/blob/main/docs/pushover.md), and
+[MQTT 5 forwarder](https://github.com/xnorpx/keeppeek/blob/main/docs/event-forwarder.md)
 references for every field, payload, metric, and failure state.

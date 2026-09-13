@@ -4,6 +4,11 @@ These audio-paced H.264/AAC recordings exercise KeepPeek's production controls a
 from the canonical Paper scenarios. Azure OpenAI narration controls each visual phase, and captions
 are available from every player.
 
+These are recorded demonstrations, not a live preview of the current release. Use the source
+commit and generation timestamp in the manifest below to identify the version shown. Labels,
+layout, and available controls may differ from the current application; the
+[feature guide](./feature-guide.md) and workflow chapters describe current behavior.
+
 ## Add nine cameras in Settings
 
 Begin with an empty KeepPeek server, enter nine real-time RTSP camera configurations through
