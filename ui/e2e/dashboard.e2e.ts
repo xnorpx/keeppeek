@@ -58,7 +58,7 @@ test('renders the KeepPeek dashboard without configured cameras', async ({ page 
 	await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toHaveCount(1);
 	await expect(page.getByRole('heading', { name: 'Peek', exact: true })).toHaveCount(0);
 	await expect(page.locator('[data-shell-status-indicator="cameras"]')).toHaveText('0/0');
-	await expect(page.getByText('No cameras configured.')).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'No cameras yet' })).toBeVisible();
 });
 
 test('Board 6 renders healthy, degraded, stale, and offline Paper tile states', async ({
