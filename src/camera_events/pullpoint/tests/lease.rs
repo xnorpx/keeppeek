@@ -1,14 +1,15 @@
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 
-use onvif::event::Lease;
+use onvif::event::{Client, Endpoint, Lease, Operation};
+use onvif::soap::client::Credentials;
 use test_hikvision::{
     Reply,
     onvif::{FakeOnvif, notification},
 };
 
-use super::{Input, LeaseClock, envelope, finish, producer, soap, subscription};
+use super::super::create_subscription;
+use super::{Input, LeaseClock, envelope, producer, soap, subscription};
 
 fn pull(remaining: Duration, notifications: &str) -> Vec<u8> {
     let current = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z").unwrap();
@@ -24,42 +25,39 @@ fn delayed_xml(delay: Duration, body: Vec<u8>) -> Reply {
 #[test]
 fn delayed_create_uses_request_start_for_its_delivery_deadline() {
     let fake = FakeOnvif::builder()
-        .lease(Duration::from_secs(2))
-        .notifications(vec![notification(
-            "VideoSource/MotionAlarm",
-            true,
-            "Changed",
-            "2000-01-01T00:00:00Z",
-            "source-1",
-        )])
+        .lease(Duration::from_secs(1))
         .start()
         .unwrap();
-    let (_client, existing, _) = subscription(&fake);
-    fake.next_response(soap(200, "<e:GetServiceCapabilitiesResponse><e:Capabilities MaxPullPoints='1'/></e:GetServiceCapabilitiesResponse>"))
-        .unwrap();
-    fake.next_response(soap(200, "<e:GetEventPropertiesResponse/>"))
-        .unwrap();
-    let created = envelope(&format!(
-        "<e:CreatePullPointSubscriptionResponse><e:SubscriptionReference xmlns:a='http://www.w3.org/2005/08/addressing'><a:Address>{}</a:Address><a:ReferenceParameters><f:Identifier xmlns:f='urn:test-hikvision:onvif'>1</f:Identifier></a:ReferenceParameters></e:SubscriptionReference><n:CurrentTime>2000-01-01T00:00:00Z</n:CurrentTime><n:TerminationTime>2000-01-01T00:00:01Z</n:TerminationTime></e:CreatePullPointSubscriptionResponse>",
-        existing.endpoint().as_str()
-    ));
-    fake.next_response(delayed_xml(
-        Duration::from_millis(400),
-        created.into_bytes(),
-    ))
+    let endpoint = Endpoint::new(fake.events_endpoint()).unwrap();
+    let mut client = Client::new(
+        endpoint.clone(),
+        Credentials {
+            username: "test".to_owned(),
+            password: "test".to_owned(),
+        },
+    )
     .unwrap();
-    let (mut producer, _received) = producer(&fake);
-    producer.camera.events.event_service_url = Some(fake.events_endpoint());
-    for _ in 0..32 {
-        assert!(producer.slot.try_send(Input::MetadataLost).is_ok());
-    }
-    let shutdown = producer.shutdown.clone();
-    let handle = thread::spawn(move || producer.subscribe());
-    let (finished, result) = finish(handle, &shutdown, Duration::from_millis(900));
+    let started = Instant::now();
+    // The successful wire create advances application time without a scheduler-dependent sleep.
+    let now = || {
+        if fake.subscription_count() == 0 {
+            started
+        } else {
+            started + Duration::from_millis(400)
+        }
+    };
+    let (subscription, clock) = create_subscription(&mut client, &endpoint, now).unwrap();
+    client
+        .execute(
+            &subscription.request(Operation::Unsubscribe).unwrap(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
 
-    assert!(finished, "create response time was added back to the lease");
-    assert!(result.is_err());
-    assert_eq!(fake.pull_count(), 1);
+    assert_eq!(clock.expires, started + Duration::from_secs(1));
+    assert_eq!(clock.renew_at, started + Duration::from_nanos(666_666_667));
+    assert_eq!(clock.expires - now(), Duration::from_millis(600));
+    assert_eq!(fake.subscription_count(), 1);
     assert_eq!(fake.renew_count(), 0);
     assert_eq!(fake.unsubscribe_count(), 1);
     assert_eq!(fake.active_subscriptions(), 0);

@@ -2,6 +2,11 @@ import { expect, test } from '@playwright/test';
 import type { CameraListItem, RecordingEvent } from '../src/lib/types';
 import { mockControlPeer, type StoredEventFixture } from './fixtures/control-peer';
 import {
+	installEventPerformance,
+	openBuiltEventsPage,
+	readEventPerformance
+} from './fixtures/event-performance';
+import {
 	eventDate,
 	mockDenseEvents,
 	mockEvents,
@@ -106,29 +111,10 @@ test('bounds lazy preview concurrency and cancels media on route exit', async ({
 test('meets dense metadata-first DOM, transfer, and long-task budgets', async ({
 	page
 }, testInfo) => {
-	await page.addInitScript(() => {
-		const state = { activeObjectUrls: new Set<string>(), longTasks: [] as number[] };
-		(window as unknown as { __eventPerformance: typeof state }).__eventPerformance = state;
-		const createObjectUrl = URL.createObjectURL.bind(URL);
-		const revokeObjectUrl = URL.revokeObjectURL.bind(URL);
-		URL.createObjectURL = (object) => {
-			const url = createObjectUrl(object);
-			state.activeObjectUrls.add(url);
-			return url;
-		};
-		URL.revokeObjectURL = (url) => {
-			state.activeObjectUrls.delete(url);
-			revokeObjectUrl(url);
-		};
-		new PerformanceObserver((list) => {
-			state.longTasks.push(...list.getEntries().map((entry) => entry.duration));
-		}).observe({ type: 'longtask', buffered: true });
-	});
+	await installEventPerformance(page);
 	const requests = await mockDenseEvents(page);
-	const startedAt = performance.now();
-	await page.goto(`/events?date=${eventDate}`);
+	await openBuiltEventsPage(page, eventDate);
 	await expect(page.locator('[data-event-card]')).toHaveCount(18);
-	const firstPageMs = performance.now() - startedAt;
 	const viewGeometry = await page.evaluate(() => {
 		const main = document.querySelector<HTMLElement>('[data-shell-main]');
 		const results = document.querySelector<HTMLElement>('[data-event-results-scroll]');
@@ -151,29 +137,45 @@ test('meets dense metadata-first DOM, transfer, and long-task budgets', async ({
 		element.scrollTop = element.scrollHeight;
 	});
 	await expect(page.locator('[data-event-card]')).toHaveCount(18);
-	const metrics = await page.evaluate(() => {
-		const state = (
-			window as unknown as {
-				__eventPerformance: { activeObjectUrls: Set<string>; longTasks: number[] };
-			}
-		).__eventPerformance;
-		return {
-			activeObjectUrls: state.activeObjectUrls.size,
-			maxLongTaskMs: Math.max(0, ...state.longTasks),
-			eventCards: document.querySelectorAll('[data-event-card]').length
-		};
-	});
+	const metrics = await readEventPerformance(page);
 	await testInfo.attach('event-performance.json', {
-		body: JSON.stringify({ firstPageMs, ...metrics }, null, 2),
+		body: JSON.stringify(metrics, null, 2),
 		contentType: 'application/json'
 	});
 	const contendedRunner = Boolean(process.env.CI) || testInfo.config.workers > 1;
 	const firstPageBudgetMs = contendedRunner ? 2_000 : 1_000;
 	const longTaskBudgetMs = contendedRunner ? 150 : 50;
-	expect(firstPageMs).toBeLessThan(firstPageBudgetMs);
+	expect(metrics.firstPageMs).toBeLessThan(firstPageBudgetMs);
 	expect(metrics.eventCards).toBe(18);
 	expect(metrics.activeObjectUrls).toBe(0);
 	expect(metrics.maxLongTaskMs).toBeLessThanOrEqual(longTaskBudgetMs);
+});
+
+test('keeps Events render timing independent of delayed assertion polling', async ({ page }) => {
+	await installEventPerformance(page);
+	await mockDenseEvents(page);
+	await openBuiltEventsPage(page, eventDate);
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	await expect(page.locator('[data-event-card]').last()).toBeVisible();
+	const renderedByMs = await page.evaluate(
+		() =>
+			new Promise<number>((resolve) => {
+				requestAnimationFrame(() => {
+					requestAnimationFrame(() => {
+						requestAnimationFrame(() => resolve(performance.now()));
+					});
+				});
+			})
+	);
+
+	// Delay the metric consumer beyond the budget to reproduce a late assertion poll.
+	await page.waitForTimeout(2_100);
+	await expect(page.locator('[data-event-card]')).toHaveCount(18);
+	const delayed = await readEventPerformance(page);
+	const observedAtMs = await page.evaluate(() => performance.now());
+	expect(observedAtMs - renderedByMs).toBeGreaterThan(2_000);
+	expect(delayed.firstPageMs).toBeGreaterThan(0);
+	expect(delayed.firstPageMs).toBeLessThanOrEqual(renderedByMs);
 });
 
 test('continues Events with an opaque server page token', async ({ page }) => {

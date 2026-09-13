@@ -121,6 +121,7 @@
 	let playbackUrl: string | null = $state(null);
 	let playbackAnchorMs = 0;
 	let playbackVersion = 0;
+	let playbackSourceCommitVersion: number | null = null;
 	let playbackPreferences = $state.raw(defaultPlaybackPreferences());
 	let playbackMuted = $state(false);
 	let playbackNotice = $state<string | null>(null);
@@ -1595,35 +1596,7 @@
 		const requestedOffsetSeconds = (requestedTimestampMs - segment.start_time_ms) / 1_000;
 		playerError = null;
 		if (sameSegment) {
-			const playback = storedPlayback;
-			if (!playback) return;
-			const canSeekLocally = playback.canSeekLocally(requestedTimestampMs);
-			selected = segment;
-			pendingPlay = play;
-			playing = play;
-			playheadMs = requestedTimestampMs;
-			pendingSeekSeconds = Math.max(0, (playheadMs - playbackAnchorMs) / 1_000);
-			await tick();
-			applyPendingSeek();
-			if (!canSeekLocally) {
-				const version = ++playbackVersion;
-				coldSeekTimestampMs = requestedTimestampMs;
-				coldSeekElapsedMs = 0;
-				coldSeekStartedAt = performance.now();
-				try {
-					await playback.seek(requestedTimestampMs);
-				} catch (cause) {
-					clearColdSeek();
-					if (version === playbackVersion) {
-						playerError = storedPlaybackError(cause);
-					}
-					return;
-				}
-				if (version !== playbackVersion || playback !== storedPlayback) return;
-				playbackUrl = playback.url;
-				playbackAnchorMs = playback.anchorTimeMs;
-				pendingSeekSeconds = playback.initialOffsetSeconds;
-			}
+			await seekWithinSelectedSegment(segment, requestedTimestampMs, play);
 			return;
 		}
 		const version = ++playbackVersion;
@@ -1707,6 +1680,47 @@
 		applyPendingSeek();
 		if (previousPlayback && previousPlayback !== playback) {
 			await previousPlayback.close().catch(() => undefined);
+		}
+	}
+
+	async function seekWithinSelectedSegment(
+		segment: RecordingSegment,
+		requestedTimestampMs: number,
+		play: boolean
+	): Promise<void> {
+		const playback = storedPlayback;
+		if (!playback) return;
+		const canSeekLocally = playback.canSeekLocally(requestedTimestampMs);
+		const version = canSeekLocally ? playbackVersion : ++playbackVersion;
+		selected = segment;
+		pendingPlay = play;
+		playing = play;
+		playheadMs = requestedTimestampMs;
+		pendingSeekSeconds = Math.max(0, (requestedTimestampMs - playbackAnchorMs) / 1_000);
+		if (!canSeekLocally) {
+			coldSeekTimestampMs = requestedTimestampMs;
+			coldSeekElapsedMs = 0;
+			coldSeekStartedAt = performance.now();
+			try {
+				await playback.seek(requestedTimestampMs);
+			} catch (cause) {
+				if (version !== playbackVersion || playback !== storedPlayback) return;
+				clearColdSeek();
+				playerError = storedPlaybackError(cause);
+				return;
+			}
+			if (version !== playbackVersion || playback !== storedPlayback) return;
+			playbackSourceCommitVersion = version;
+			playbackUrl = playback.url;
+			playbackAnchorMs = playback.anchorTimeMs;
+			pendingSeekSeconds = playback.initialOffsetSeconds;
+		}
+		try {
+			await tick();
+			if (version !== playbackVersion || playback !== storedPlayback) return;
+			applyPendingSeek();
+		} finally {
+			if (playbackSourceCommitVersion === version) playbackSourceCommitVersion = null;
 		}
 	}
 
@@ -1972,7 +1986,7 @@
 	}
 
 	function updatePlayhead() {
-		if (!video || !selected) return;
+		if (!video || !selected || playbackSourceCommitVersion !== null) return;
 		playheadMs = playbackAnchorMs + video.currentTime * 1_000;
 		storedPlayback?.observe(video.currentTime);
 	}

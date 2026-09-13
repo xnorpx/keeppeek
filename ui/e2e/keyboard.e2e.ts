@@ -174,6 +174,65 @@ test('moves through Dashboard and Focus with arrows and opens cameras with Space
 	await expect(page.locator('[data-peek-wall]')).toBeVisible();
 });
 
+test('keeps a paused cold seek at its exact frame after the media source changes', async ({
+	page
+}) => {
+	let releaseSeek!: () => void;
+	const seekGate = new Promise<void>((resolve) => {
+		releaseSeek = resolve;
+	});
+	const controls = await mockKeepModes(page, 10, {
+		storedOpenGates: [Promise.resolve(), seekGate]
+	});
+	await page.goto(`/keep?camera=front-door&stream=main&date=${keepModeDate}`);
+	await waitForKeyboard(page);
+	const player = page.locator('[data-keep-player]');
+	const video = player.locator('video');
+	await expect(video).toBeVisible();
+	await video.focus();
+	await page.keyboard.press('k');
+	await expect(player).toHaveAttribute('data-keyboard-playing', 'false');
+	await video.evaluate((element) => {
+		if (!(element instanceof HTMLVideoElement)) throw new Error('Expected the recorded video');
+		element.currentTime = 0.5;
+		element.dispatchEvent(new Event('timeupdate'));
+	});
+	const beforeFrame = Number(await player.getAttribute('data-recording-playhead-ms'));
+	const originalSource = await video.getAttribute('src');
+	await video.evaluate((element) => {
+		const observer = new MutationObserver((records) => {
+			if (!records.some((record) => record.attributeName === 'src')) return;
+			observer.disconnect();
+			element.dispatchEvent(new Event('timeupdate'));
+			element.dataset.coldSeekTimeupdate = 'delivered';
+			queueMicrotask(() => {
+				element.dataset.coldSeekPublishedPlayhead = element
+					.closest('[data-keep-player]')!
+					.getAttribute('data-recording-playhead-ms')!;
+			});
+		});
+		observer.observe(element, { attributes: true, attributeFilter: ['src'] });
+	});
+	try {
+		await page.keyboard.press('ArrowRight');
+		await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 40));
+		releaseSeek();
+		await expect.poll(() => controls.storedSeeks.at(-1)?.timestampMs).toBe(beforeFrame + 40);
+		await expect(video).not.toHaveAttribute('src', originalSource!);
+		await expect(video).toHaveAttribute('data-cold-seek-timeupdate', 'delivered');
+		await expect(video).toHaveAttribute(
+			'data-cold-seek-published-playhead',
+			String(beforeFrame + 40)
+		);
+		await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 40));
+		await expect(video).toHaveJSProperty('currentTime', 0);
+		await expect(player).toHaveAttribute('data-keyboard-playing', 'false');
+		expect(controls.storedSeeks).toHaveLength(1);
+	} finally {
+		releaseSeek();
+	}
+});
+
 test('controls Keep transport, exact frames, live follow, and export range from the keyboard', async ({
 	page
 }) => {
@@ -213,10 +272,10 @@ test('controls Keep transport, exact frames, live follow, and export range from 
 		.poll(async () => Number(await player.getAttribute('data-recording-playhead-ms')))
 		.toBeGreaterThan(beforeFrame);
 	const steppedFrame = Number(await player.getAttribute('data-recording-playhead-ms'));
-	expect((steppedFrame - beforeFrame) % 40).toBe(0);
-	expect(steppedFrame - beforeFrame).toBeLessThanOrEqual(80);
+	expect(steppedFrame - beforeFrame).toBe(40);
 	await page.keyboard.press('[');
 	await page.keyboard.press('ArrowRight');
+	await expect(player).toHaveAttribute('data-recording-playhead-ms', String(beforeFrame + 80));
 	await page.keyboard.press(']');
 
 	const timeline = page.getByRole('region', { name: 'Recording timeline', exact: true });
@@ -232,10 +291,9 @@ test('controls Keep transport, exact frames, live follow, and export range from 
 	const exportPanel = page.locator('[data-keep-export]');
 	const exportStartMs = Number(await exportPanel.getAttribute('data-export-start-ms'));
 	const exportEndMs = Number(await exportPanel.getAttribute('data-export-end-ms'));
-	expect([beforeFrame + 40, beforeFrame + 80]).toContain(exportStartMs);
-	expect([beforeFrame + 80, beforeFrame + 120]).toContain(exportEndMs);
-	expect(exportEndMs - exportStartMs).toBeGreaterThanOrEqual(40);
-	expect(exportEndMs - exportStartMs).toBeLessThanOrEqual(80);
+	expect(exportStartMs).toBe(beforeFrame + 40);
+	expect(exportEndMs).toBe(beforeFrame + 80);
+	expect(exportEndMs - exportStartMs).toBe(40);
 });
 
 test('moves Event card focus and opens only the selected card with Enter', async ({ page }) => {
