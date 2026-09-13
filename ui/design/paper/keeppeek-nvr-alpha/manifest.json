@@ -1,0 +1,1144 @@
+{
+	"schemaVersion": 1,
+	"exportedAt": "2026-09-13T00:27:09.9268456Z",
+	"source": {
+		"fileId": "01M0B0VBH78TMTX40GCYYQ37SG",
+		"url": "https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0",
+		"pageId": "1-0",
+		"tokenHash": "b35ec365",
+		"tokenCount": 82,
+		"artboardCount": 82
+	},
+	"scope": {
+		"product": "KeepPeek NVR",
+		"boardNumbers": [
+			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+			27, 28, 29, 30, 31, 32, 33, 34, 45, 46
+		],
+		"excludedProducts": ["Native iOS and Android viewers", "KeepPeek Vision", "KeepPeek Service"]
+	},
+	"tokens": {
+		"source": "tokens.json",
+		"bytes": 12341,
+		"sha256": "1ea07e3c1fff3f37517fd57d627de2c145e5308bdbbd1163db7be8f7eadde02f"
+	},
+	"boards": [
+		{
+			"number": 1,
+			"nodeId": "1-0",
+			"name": "01 — Brief \u0026 Positioning",
+			"width": 1440,
+			"height": 1255,
+			"jsx": {
+				"source": "boards/01-brief-positioning.jsx.txt",
+				"bytes": 15770,
+				"sha256": "340a93d127a1a9ec28abccb7a230dfcfcf689cc302ca85d5b8b071eb5ffd45d1"
+			},
+			"references": []
+		},
+		{
+			"number": 2,
+			"nodeId": "20-0",
+			"name": "02 — Design Tokens",
+			"width": 1440,
+			"height": 1933,
+			"jsx": {
+				"source": "boards/02-design-tokens.jsx.txt",
+				"bytes": 36344,
+				"sha256": "f73fe0338004392b739a13bcf398c5d672638809beded60902697501bfdcf29e"
+			},
+			"references": []
+		},
+		{
+			"number": 3,
+			"nodeId": "5Q-0",
+			"name": "03 — Information Architecture",
+			"width": 1440,
+			"height": 1185,
+			"jsx": {
+				"source": "boards/03-information-architecture.jsx.txt",
+				"bytes": 56017,
+				"sha256": "c733d2a16c585bcd4bec8bc697a02fbdb60b7f5cc3b7956e9d1c21d2908c6d9a"
+			},
+			"references": []
+		},
+		{
+			"number": 4,
+			"nodeId": "C4-0",
+			"name": "04 — Keep: Timeline Anatomy",
+			"width": 1440,
+			"height": 3050,
+			"jsx": {
+				"source": "boards/04-keep-timeline-anatomy.jsx.txt",
+				"bytes": 97592,
+				"sha256": "b0242e6a30071cfa338fc710f9db6e118c1429fd25fea58a72510e282c5bc343"
+			},
+			"references": [
+				{
+					"scenarioId": "keep.desktop.timeline-anatomy",
+					"nodeId": "CE-0",
+					"source": "references/04-keep-timeline-anatomy.png",
+					"width": 1280,
+					"height": 720,
+					"scale": 1,
+					"bytes": 117499,
+					"sha256": "f04993abef2c23cacb9eb5099af307a81db1210970f5f0920b34c083c05f1d8a",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 5,
+			"nodeId": "II-0",
+			"name": "05 — Handoff: What To Design Next",
+			"width": 1440,
+			"height": 2140,
+			"jsx": {
+				"source": "boards/05-handoff-what-to-design-next.jsx.txt",
+				"bytes": 47534,
+				"sha256": "3b18e15afcc3961b0e12d0a2e1c15f4df11f22083e664be34c74c8479f9bd794"
+			},
+			"references": []
+		},
+		{
+			"number": 6,
+			"nodeId": "MX-0",
+			"name": "06 — App Shell \u0026 Dashboard",
+			"width": 1600,
+			"height": 1210,
+			"jsx": {
+				"source": "boards/06-app-shell-amp-peek-live.jsx.txt",
+				"bytes": 53338,
+				"sha256": "7e827c07bc97aad5be89d7006c6c8cdeaecd59101898d3866c941740eb986f1b"
+			},
+			"references": [
+				{
+					"scenarioId": "peek.desktop.live-wall",
+					"nodeId": "N7-0",
+					"source": "references/06-peek-live-wall.png",
+					"width": 1440,
+					"height": 860,
+					"scale": 1,
+					"bytes": 101775,
+					"sha256": "0cdd6e379ed2c4fa7966b6067c0a296acebd76c37e18ec07c51808348735280d",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 7,
+			"nodeId": "TS-0",
+			"name": "07 — Camera page \u0026amp; PTZ",
+			"width": 1600,
+			"height": 2409,
+			"jsx": {
+				"source": "boards/07-camera-page-amp-ptz.jsx.txt",
+				"bytes": 94293,
+				"sha256": "3ff4c2e7ed2a2d1b39ad4851208b9ada638b1b64f6f5c993404ee4030484a697"
+			},
+			"references": [
+				{
+					"scenarioId": "camera.desktop.details-ptz",
+					"nodeId": "U2-0",
+					"source": "references/07-camera-details-ptz.png",
+					"width": 1440,
+					"height": 2059,
+					"scale": 1,
+					"bytes": 339174,
+					"sha256": "7eb2812818e040d79e4cfc36728b97a1600e487ebca3a9cfb680e8c315713ea1",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 8,
+			"nodeId": "15P-0",
+			"name": "08 — Settings: dashboard grids",
+			"width": 1600,
+			"height": 1538,
+			"jsx": {
+				"source": "boards/08-layout-editor.jsx.txt",
+				"bytes": 49735,
+				"sha256": "00b460456031e4e7a20b78a95bb556f69be93a3c05c86ca35e3f1c3f6fcb47e6"
+			},
+			"references": [
+				{
+					"scenarioId": "peek.desktop.layout-editor",
+					"nodeId": "15Z-0",
+					"source": "references/08-layout-editor.png",
+					"width": 1440,
+					"height": 840,
+					"scale": 1,
+					"bytes": 99223,
+					"sha256": "78db20533895bea132741d922e6130a5ffdac0c5488c4dce22f4e6780f778b10",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "peek.desktop.layout-registry",
+					"nodeId": "1AE-0",
+					"source": "references/08-layout-registry-dialogs.png",
+					"width": 1440,
+					"height": 356,
+					"scale": 1,
+					"bytes": 78855,
+					"sha256": "9b29c0e40c4555317c8cca7049bccb7bc38756c9737f1ba8c100c3408fa201b1",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 9,
+			"nodeId": "1BV-0",
+			"name": "09 — Keep: stories, export, swimlanes",
+			"width": 1600,
+			"height": 1166,
+			"jsx": {
+				"source": "boards/09-keep-stories-export-swimlanes.jsx.txt",
+				"bytes": 39382,
+				"sha256": "2ec36e8d0be81e2076a95932508826991e6127e9a72631f37c4a7856257a9697"
+			},
+			"references": [
+				{
+					"scenarioId": "keep.desktop.stories",
+					"nodeId": "1C6-0",
+					"source": "references/09-keep-stories.png",
+					"width": 467,
+					"height": 413,
+					"scale": 1,
+					"bytes": 29194,
+					"sha256": "5c7e3d6a4c8c6ec4c3229b737b275c81a46c8a765ba09b1385d04d767d7f7802",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "keep.desktop.calendar",
+					"nodeId": "1DV-0",
+					"source": "references/09-keep-calendar.png",
+					"width": 467,
+					"height": 413,
+					"scale": 1,
+					"bytes": 26484,
+					"sha256": "424764754d56984babb39fb699551f57ed603edc15e4099d441ad7e5386f26f8",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "keep.desktop.export-gated",
+					"nodeId": "1CX-0",
+					"source": "references/09-keep-export-gated.png",
+					"width": 467,
+					"height": 413,
+					"scale": 1,
+					"bytes": 41532,
+					"sha256": "920762701c9ba8a9a50677494907ddac1c3f375f97269306ce87ad6bfc29ba68",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "keep.desktop.swimlanes",
+					"nodeId": "1FB-0",
+					"source": "references/09-keep-swimlanes.png",
+					"width": 1440,
+					"height": 363,
+					"scale": 1,
+					"bytes": 58721,
+					"sha256": "415e8a94f07b189703b1ddc25d47fb0a2a89dc33456a0254682df123fb59d068",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 10,
+			"nodeId": "1GP-0",
+			"name": "10 — Events: browse, search, detail",
+			"width": 1600,
+			"height": 1879,
+			"jsx": {
+				"source": "boards/10-events-browse-search-detail.jsx.txt",
+				"bytes": 56821,
+				"sha256": "01be05d064d510ac47cb3af81edbd373b0014199b7e146e2f5ba703000b81f39"
+			},
+			"references": [
+				{
+					"scenarioId": "events.desktop.browse",
+					"nodeId": "1GZ-0",
+					"source": "references/10-events-browse.png",
+					"width": 1440,
+					"height": 820,
+					"scale": 1,
+					"bytes": 112131,
+					"sha256": "da4d7831437fcc0d947b8459b34754504f28940fa6dc2450c03721642f49aa42",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "events.desktop.detail",
+					"nodeId": "1LM-0",
+					"source": "references/10-event-detail.png",
+					"width": 1440,
+					"height": 669,
+					"scale": 1,
+					"bytes": 119325,
+					"sha256": "36d71377fbd83eb32bbf795964a46adbd05a7303a96ce2241ec23b3fdfb7bd62",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 11,
+			"nodeId": "1NF-0",
+			"name": "11 — Cameras: fleet list",
+			"width": 1600,
+			"height": 1174,
+			"jsx": {
+				"source": "boards/11-cameras-fleet-list.jsx.txt",
+				"bytes": 62090,
+				"sha256": "112937b3d675ce9f15dff4e79b17b084b67d7cd46b1d378b96dbf9758924be47"
+			},
+			"references": [
+				{
+					"scenarioId": "cameras.desktop.fleet",
+					"nodeId": "1NP-0",
+					"source": "references/11-camera-fleet.png",
+					"width": 1440,
+					"height": 624,
+					"scale": 1,
+					"bytes": 132773,
+					"sha256": "99d5b32acaa0bd7fa52cc667714d3a612014a18e5eb693c122143a508966ff25",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 12,
+			"nodeId": "1VG-0",
+			"name": "12 — Add camera wizard",
+			"width": 1600,
+			"height": 1548,
+			"jsx": {
+				"source": "boards/12-add-camera-wizard.jsx.txt",
+				"bytes": 59959,
+				"sha256": "2196b5747d94318579e38812630b434e58996d92c20b9e59de5640020434413b"
+			},
+			"references": [
+				{
+					"scenarioId": "cameras.desktop.add-wizard",
+					"nodeId": "1VQ-0",
+					"source": "references/12-add-camera-stream-evidence.png",
+					"width": 1440,
+					"height": 663,
+					"scale": 1,
+					"bytes": 293646,
+					"sha256": "93bfb65724361b15c6edbcc7bdc60082c0f34eb1a457d4002b832c882bae98bd",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 13,
+			"nodeId": "233-0",
+			"name": "13 — Settings: storage \u0026amp; retention",
+			"width": 1600,
+			"height": 2636,
+			"jsx": {
+				"source": "boards/13-settings-storage-amp-retention.jsx.txt",
+				"bytes": 92569,
+				"sha256": "79ef3c6aa60e7e99226ce5e046574df14f60050c932b4415d2edb832baa7d427"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.storage-retention",
+					"nodeId": "23D-0",
+					"source": "references/13-storage-retention.png",
+					"width": 1440,
+					"height": 1163,
+					"scale": 1,
+					"bytes": 253785,
+					"sha256": "c9ba5c455a767b671b01cffe60ca57249ffc7018251ddfcbc72c4ba7e4eb8db4",
+					"status": "historical",
+					"supersededBy": "settings.desktop.storage-setup-reviewed"
+				},
+				{
+					"scenarioId": "settings.desktop.storage-setup-reviewed",
+					"nodeId": "9FQ-0",
+					"source": "references/13-storage-setup-reviewed.png",
+					"width": 1440,
+					"height": 940,
+					"scale": 1,
+					"bytes": 194865,
+					"sha256": "260ea0507c5fe32032e48c96cdfbfc99f4d7a027c9917e43120f1fd955abfca6",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 14,
+			"nodeId": "29O-0",
+			"name": "14 — Settings: event sources",
+			"width": 1600,
+			"height": 1404,
+			"jsx": {
+				"source": "boards/14-settings-event-sources.jsx.txt",
+				"bytes": 56393,
+				"sha256": "eb932e6c95114c19f0c27fc085691d009feca0f1abb2f4cf1a6802dfc4e8a9d7"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.event-sources",
+					"nodeId": "29Y-0",
+					"source": "references/14-event-sources.png",
+					"width": 1440,
+					"height": 1048,
+					"scale": 1,
+					"bytes": 221244,
+					"sha256": "d9eebb7845f1c54b5c3beec66873831c831e149388c6d100cc1504587913c52e",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 15,
+			"nodeId": "2GO-0",
+			"name": "15 — Health: server \u0026amp; client",
+			"width": 1600,
+			"height": 1599,
+			"jsx": {
+				"source": "boards/15-health-server-amp-client.jsx.txt",
+				"bytes": 61663,
+				"sha256": "56e9d7146afe0a40162a6a548dc850a6b68655bbfd21910d5c84e79da369a6de"
+			},
+			"references": [
+				{
+					"scenarioId": "health.desktop.overview",
+					"nodeId": "2GY-0",
+					"source": "references/15-health-server-client.png",
+					"width": 1440,
+					"height": 1302,
+					"scale": 1,
+					"bytes": 257078,
+					"sha256": "1f6a000b1b0fe643c2f4037e874a249798d4b8dd5ad47c47afa6968de16d2089",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 16,
+			"nodeId": "2O3-0",
+			"name": "16 — Settings: access \u0026amp; roles",
+			"width": 1600,
+			"height": 2763,
+			"jsx": {
+				"source": "boards/16-settings-access-amp-roles.jsx.txt",
+				"bytes": 87594,
+				"sha256": "6b5f6bcdcf3bec9ba7620c36d4ece0fe459da7dacedab52ec2ccf3aac8899ed9"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.access",
+					"nodeId": "2OD-0",
+					"source": "references/16-access-roles.png",
+					"width": 1440,
+					"height": 1249,
+					"scale": 1,
+					"bytes": 260680,
+					"sha256": "8c5a8c4c4c98f5bf7c8d35cd85c389f01d3c06f04dd3bcff3239d85c94ee2604",
+					"status": "historical",
+					"supersededBy": "settings.access.user-states"
+				},
+				{
+					"scenarioId": "settings.access.user-states",
+					"nodeId": "AR2-0",
+					"source": "references/16-user-access-states.png",
+					"width": 1440,
+					"height": 1110,
+					"scale": 1,
+					"bytes": 161404,
+					"sha256": "e62924a15f5aaacd885fed6a6601b86f353e809ea341d9219bd1e2289f2ce490",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 17,
+			"nodeId": "2UB-0",
+			"name": "17 — Settings: integrations",
+			"width": 1600,
+			"height": 1225,
+			"jsx": {
+				"source": "boards/17-settings-integrations.jsx.txt",
+				"bytes": 36476,
+				"sha256": "c01e7bbfc09b4c66a90df67f32a285e9d9a9ddc7e7ff8df43f79acffa21ff6d6"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.integrations",
+					"nodeId": "2UL-0",
+					"source": "references/17-integrations.png",
+					"width": 1440,
+					"height": 869,
+					"scale": 1,
+					"bytes": 185002,
+					"sha256": "2787ea23321ca054f1c1f3637db80159f41c3f497305daee8dbb800329f04721",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 18,
+			"nodeId": "2YM-0",
+			"name": "18 — Settings: notifications",
+			"width": 1600,
+			"height": 1431,
+			"jsx": {
+				"source": "boards/18-settings-notifications.jsx.txt",
+				"bytes": 52550,
+				"sha256": "e5d03a1b618d72dae2bae1018d8cbc2a2b3e73b132599e149b4cec8b4a7da310"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.notifications",
+					"nodeId": "2YW-0",
+					"source": "references/18-notifications.png",
+					"width": 1440,
+					"height": 1075,
+					"scale": 1,
+					"bytes": 264067,
+					"sha256": "18cbcb2e0ab37084f866439e1eddcb4d45cd8f97bad7a69e7a3cef4361db1ed9",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 19,
+			"nodeId": "35C-0",
+			"name": "19 — Groups \u0026amp; two-way audio",
+			"width": 1600,
+			"height": 1208,
+			"jsx": {
+				"source": "boards/19-groups-amp-two-way-audio.jsx.txt",
+				"bytes": 36253,
+				"sha256": "4fa3dbcb505e2ae2bc55153c422e024af59e6da794edeed641c1cb44f2773f8d"
+			},
+			"references": [
+				{
+					"scenarioId": "groups.desktop.administration",
+					"nodeId": "35M-0",
+					"source": "references/19-groups-administration.png",
+					"width": 1440,
+					"height": 416,
+					"scale": 1,
+					"bytes": 62051,
+					"sha256": "c951e2313e56309290ff45a8547cf6d5fa3c596aca0af7f0ff03cd7cad24242c",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "groups.desktop.participant",
+					"nodeId": "380-0",
+					"source": "references/19-groups-participant.png",
+					"width": 1440,
+					"height": 420,
+					"scale": 1,
+					"bytes": 120978,
+					"sha256": "c540b5c5bb8eea788946c510451de0ef96cb76fc7883139b27ff8014563bc62a",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 20,
+			"nodeId": "39R-0",
+			"name": "20 - Settings: system, logs \u0026 configuration ZIP",
+			"width": 1600,
+			"height": 1499,
+			"jsx": {
+				"source": "boards/20-settings-appearance-system-logs.jsx.txt",
+				"bytes": 53315,
+				"sha256": "54f99d00dff4daee9c8a42ed21d52e64f066ec171f0bd1cd10b7fae73cbc5524"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.desktop.appearance-system-logs",
+					"nodeId": "3A1-0",
+					"source": "references/20-appearance-system-logs.png",
+					"width": 1440,
+					"height": 581,
+					"scale": 1,
+					"bytes": 163619,
+					"sha256": "abfd0a66e572017aeba6ff8d7a4c48c9125d6801b7d8b0b1d898596da00a35e8",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "settings.backup.configuration-zip-states",
+					"nodeId": "ANO-0",
+					"source": "references/20-configuration-zip-states.png",
+					"width": 1440,
+					"height": 570,
+					"scale": 1,
+					"bytes": 112993,
+					"sha256": "5063ecf82493f846b027d01f372c9801b4bc1981cf556446e24b8ae47031ff70",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 21,
+			"nodeId": "3CX-0",
+			"name": "21 — First run \u0026amp; empty states",
+			"width": 1600,
+			"height": 1141,
+			"jsx": {
+				"source": "boards/21-first-run-amp-empty-states.jsx.txt",
+				"bytes": 22369,
+				"sha256": "d7fe39155b180a7b86ce05cf7bdbf58023cb0d68a5e3b89391c31c5941c7e61e"
+			},
+			"references": [
+				{
+					"scenarioId": "setup.desktop.first-run",
+					"nodeId": "3D7-0",
+					"source": "references/21-first-run-empty-states.png",
+					"width": 1440,
+					"height": 785,
+					"scale": 1,
+					"bytes": 176294,
+					"sha256": "8f2ba7a7fac78935d9aa0c45afc3f62de97a2abaa2de7215f4997d6697281328",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 22,
+			"nodeId": "3FF-0",
+			"name": "22 — Mobile: Peek, Keep, Events",
+			"width": 1600,
+			"height": 1200,
+			"jsx": {
+				"source": "boards/22-mobile-peek-keep-events.jsx.txt",
+				"bytes": 64181,
+				"sha256": "83d8f33c642220c5bad444ecd0da8e2842cf22c95546b84bfb27716d940a74c5"
+			},
+			"references": [
+				{
+					"scenarioId": "peek.mobile.live",
+					"nodeId": "3FQ-0",
+					"source": "references/22-mobile-peek.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 180363,
+					"sha256": "c8963713cdbd07695527c62bcc22aa6a746d4d0e65d0c5b8710d19ab340ad20d",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "keep.mobile.timeline",
+					"nodeId": "3HN-0",
+					"source": "references/22-mobile-keep.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 124171,
+					"sha256": "cf2de469bf7331424c56599a5b4cdb0b8016c07e68de0efbe2d62a7e02f4001a",
+					"status": "historical",
+					"supersededBy": "keep.mobile.compact-default"
+				},
+				{
+					"scenarioId": "events.mobile.browse",
+					"nodeId": "3K0-0",
+					"source": "references/22-mobile-events.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 127423,
+					"sha256": "43fa3223d4bbb10c236ffb002423f113453810916e88771e9d2f452bca2659a2",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 23,
+			"nodeId": "3VQ-0",
+			"name": "23 — Camera: configuration",
+			"width": 1600,
+			"height": 1160,
+			"jsx": {
+				"source": "boards/23-camera-configuration.jsx.txt",
+				"bytes": 44909,
+				"sha256": "7de09fcab8928a4b26cbc59591458161cf2067a625ef4f3f5be881b9c6be9491"
+			},
+			"references": [
+				{
+					"scenarioId": "camera.desktop.configuration",
+					"nodeId": "9KT-0",
+					"source": "references/23-camera-configuration.png",
+					"width": 1374,
+					"height": 806,
+					"scale": 1,
+					"bytes": 113925,
+					"sha256": "5cea708420bcfc01ba2917699aead183ca11c552da1c7cc77e414a7c58dd0b83",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 24,
+			"nodeId": "40G-0",
+			"name": "24 — Mobile: Camera \u0026 PTZ",
+			"width": 1600,
+			"height": 1144,
+			"jsx": {
+				"source": "boards/24-mobile-camera-ptz.jsx.txt",
+				"bytes": 57363,
+				"sha256": "a16edc33d6e3f279f1989c9a25a4301835e8d0b48f78f2821699fa6ceae9ae71"
+			},
+			"references": [
+				{
+					"scenarioId": "camera.mobile.details-ptz",
+					"nodeId": "41Z-0",
+					"source": "references/24-mobile-camera-live.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 123425,
+					"sha256": "abd0b672f2d7926703f496bd2a4e68c06b870636445a747128434a11414b2923",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "camera.mobile.ptz",
+					"nodeId": "42R-0",
+					"source": "references/24-mobile-camera-ptz.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 105774,
+					"sha256": "843988be644a667b61f21d18493ca61b3ed4d2d8a721b4deee913e157b4cd821",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "camera.mobile.settings",
+					"nodeId": "43E-0",
+					"source": "references/24-mobile-camera-settings.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 56965,
+					"sha256": "0c51b7174372ecffd64fe6c3959c51f8fe8894bf99e7b6ea102f27ec275b798a",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 25,
+			"nodeId": "40H-0",
+			"name": "25 — Mobile: Add camera",
+			"width": 1600,
+			"height": 1144,
+			"jsx": {
+				"source": "boards/25-mobile-add-camera.jsx.txt",
+				"bytes": 43381,
+				"sha256": "bdcbd162b2223b3b1c2de711abb997ba28f0300a6c4947beb66543c3e53837f6"
+			},
+			"references": [
+				{
+					"scenarioId": "cameras.mobile.add-wizard",
+					"nodeId": "481-0",
+					"source": "references/25-mobile-find-connect.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 49419,
+					"sha256": "2258c328948b340bfd6319768c84e77714bfa218470b46653cec213096f4f6dd",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "cameras.mobile.add-streams",
+					"nodeId": "49K-0",
+					"source": "references/25-mobile-streams.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 110239,
+					"sha256": "7e4569fdd54c6b2912dbb5d0c210144e6a4483fb9fba117c6dbe5f04472d0ee6",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "cameras.mobile.add-review",
+					"nodeId": "4B5-0",
+					"source": "references/25-mobile-review.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 57315,
+					"sha256": "35420e5d802deca8bfb7efda7d2fa685e6e76a5226ad4e3634c6e8e6d8b3f685",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 26,
+			"nodeId": "40I-0",
+			"name": "26 — Mobile: Health",
+			"width": 1600,
+			"height": 1200,
+			"jsx": {
+				"source": "boards/26-mobile-health.jsx.txt",
+				"bytes": 50539,
+				"sha256": "e06a7f765acd095b8c410b233eff4eac793d3641cede7f31a4959a4fb32dba3a"
+			},
+			"references": [
+				{
+					"scenarioId": "health.mobile.overview",
+					"nodeId": "4CM-0",
+					"source": "references/26-mobile-health-overview.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 57943,
+					"sha256": "b045f365faa36cd709a9d545481e1cd1c777d490888a48fd43f302e2be1b0257",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "health.mobile.camera-issue",
+					"nodeId": "4EU-0",
+					"source": "references/26-mobile-health-issue.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 71961,
+					"sha256": "379d108fb32be4f1876de6c7a90d68bcfec91fe179e8c75878784311e6d285a5",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "health.mobile.stream-evidence",
+					"nodeId": "4GF-0",
+					"source": "references/26-mobile-stream-evidence.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 47944,
+					"sha256": "7935853bedb8c39289dbb22e4ef88264f08407b7e4ffea61035bc547d232e260",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 27,
+			"nodeId": "40J-0",
+			"name": "27 — Mobile: Administration",
+			"width": 1600,
+			"height": 1144,
+			"jsx": {
+				"source": "boards/27-mobile-administration.jsx.txt",
+				"bytes": 39393,
+				"sha256": "1755b351ba4746cd5765214ac1de8231e8f36f81cb5f95f741e108a713c06bdc"
+			},
+			"references": [
+				{
+					"scenarioId": "settings.mobile.administration",
+					"nodeId": "4I6-0",
+					"source": "references/27-mobile-administration-index.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 49788,
+					"sha256": "2628363ee6cb6a500a3ed70e8ee0085e192b8846ee2fe69635dd3b541722d1ef",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "settings.mobile.access",
+					"nodeId": "4M9-0",
+					"source": "references/27-mobile-access.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 62568,
+					"sha256": "127a642aef9ab21511841b88386d71a13ee187e73a7fdb132f5d9045ea8eb668",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 28,
+			"nodeId": "40K-0",
+			"name": "28 — Backend capability contract",
+			"width": 1600,
+			"height": 1205,
+			"jsx": {
+				"source": "boards/28-backend-capability-contract.jsx.txt",
+				"bytes": 28961,
+				"sha256": "86650275ed21e49fbcce5aaa707be490692d7ad83e3ad68ae8721a30f9736d0c"
+			},
+			"references": []
+		},
+		{
+			"number": 29,
+			"nodeId": "4VX-0",
+			"name": "29 — Keep: export job lifecycle",
+			"width": 1600,
+			"height": 1060,
+			"jsx": {
+				"source": "boards/29-keep-export-job-lifecycle.jsx.txt",
+				"bytes": 32699,
+				"sha256": "d746f92688fb269e5434691885583f1af2b15cb301c2388c16691241e031e738"
+			},
+			"references": [
+				{
+					"scenarioId": "keep.desktop.export-lifecycle",
+					"nodeId": "4WA-0",
+					"source": "references/29-export-job-lifecycle-states.png",
+					"width": 1440,
+					"height": 369,
+					"scale": 1,
+					"bytes": 118147,
+					"sha256": "2f8dad3bf5b30790a01e6f203de5b5ff392f1fa40b9d8241a3160b157d51c8b5",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 30,
+			"nodeId": "4ZU-0",
+			"name": "30 — Health: diagnose a camera (desktop)",
+			"width": 1600,
+			"height": 1128,
+			"jsx": {
+				"source": "boards/30-health-diagnose-a-camera-desktop.jsx.txt",
+				"bytes": 39908,
+				"sha256": "065e51cc653fce39d257d334a0b36d49bba5d430d6b404c96592a0af4f21f180"
+			},
+			"references": [
+				{
+					"scenarioId": "health.desktop.camera-diagnosis",
+					"nodeId": "507-0",
+					"source": "references/30-camera-diagnosis.png",
+					"width": 1440,
+					"height": 776,
+					"scale": 1,
+					"bytes": 192394,
+					"sha256": "353068134103c7cba6d4677152402aab7a811ebf62ae2fe6319033603757dcdd",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 31,
+			"nodeId": "5GD-0",
+			"name": "31 — Viewer → Keep: focused history",
+			"width": 1600,
+			"height": 981,
+			"jsx": {
+				"source": "boards/31-peek-keep-focused-history.jsx.txt",
+				"bytes": 26611,
+				"sha256": "1bcfb827a1aa05ee3a6fd1fe185983bfbe930e246932fb8f11a8300051b34b05"
+			},
+			"references": [
+				{
+					"scenarioId": "peek.desktop.focus-history",
+					"nodeId": "5GV-0",
+					"source": "references/31-focus-history.png",
+					"width": 464,
+					"height": 262,
+					"scale": 1,
+					"bytes": 15345,
+					"sha256": "7a366b8453c9c22af92290bf9e1be3ff2e6de7df23a197e30f8e40db8d335e52",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "peek.desktop.history-keep",
+					"nodeId": "5I0-0",
+					"source": "references/31-history-keep.png",
+					"width": 464,
+					"height": 262,
+					"scale": 1,
+					"bytes": 10587,
+					"sha256": "aa69a93de4e46e61871a777bd29b0f1ec52720b77889f4a68aa0264357077206",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 32,
+			"nodeId": "5JK-0",
+			"name": "32 — Keyboard: the whole model",
+			"width": 1600,
+			"height": 1190,
+			"jsx": {
+				"source": "boards/32-keyboard-the-whole-model.jsx.txt",
+				"bytes": 47694,
+				"sha256": "15e9724f4bda66a3e36b33bf6bbc397ffd64dc8387ffbcf42a2b9cbbb75f6a2e"
+			},
+			"references": []
+		},
+		{
+			"number": 33,
+			"nodeId": "5P3-0",
+			"name": "33 — Waiting, empty and nothing-found",
+			"width": 1600,
+			"height": 1206,
+			"jsx": {
+				"source": "boards/33-waiting-empty-and-nothing-found.jsx.txt",
+				"bytes": 31701,
+				"sha256": "9456813095025270110e6740c5225a2a61ec38868a477145992f822323ad37d5"
+			},
+			"references": [
+				{
+					"scenarioId": "peek.waiting.first-keyframe",
+					"nodeId": "5PL-0",
+					"source": "references/33-first-keyframe.png",
+					"width": 462,
+					"height": 172,
+					"scale": 1,
+					"bytes": 7197,
+					"sha256": "4bf46075b0d2e75d301a59a09a61b82977d2807ea5d16dc75b7fb803af02007e",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "keep.waiting.cold-seek",
+					"nodeId": "5Q0-0",
+					"source": "references/33-cold-seek.png",
+					"width": 462,
+					"height": 172,
+					"scale": 1,
+					"bytes": 12674,
+					"sha256": "eaf11034b10669e5d257a307f407600440838f649ff520fb8c7594e1a19aaf8a",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "cameras.waiting.discovery",
+					"nodeId": "5QA-0",
+					"source": "references/33-discovery-progress.png",
+					"width": 462,
+					"height": 172,
+					"scale": 1,
+					"bytes": 8641,
+					"sha256": "95138bc84a9aff210281637cab98d11876c6ce7bdcf757f78cd814407fc71600",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "events.empty.no-results",
+					"nodeId": "5QR-0",
+					"source": "references/33-no-results.png",
+					"width": 462,
+					"height": 238,
+					"scale": 1,
+					"bytes": 31929,
+					"sha256": "01fec1cd2c98552a5de0656581f04b5adb7e5ca0872a93c63fb91171304baa1f",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "settings.waiting.applying",
+					"nodeId": "5RE-0",
+					"source": "references/33-settings-applying.png",
+					"width": 462,
+					"height": 238,
+					"scale": 1,
+					"bytes": 21130,
+					"sha256": "13f6269c76608b618e19497f1f04858ab6894bb9336eca71cbf29a717cd86267",
+					"status": "reference"
+				},
+				{
+					"scenarioId": "cameras.waiting.fleet-skeleton",
+					"nodeId": "5RW-0",
+					"source": "references/33-fleet-skeleton.png",
+					"width": 462,
+					"height": 238,
+					"scale": 1,
+					"bytes": 9132,
+					"sha256": "a6f3aea04bb9555dd13644847eab506c0d847913fe8ea7518c09d05602c83819",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 34,
+			"nodeId": "5SM-0",
+			"name": "34 — Light theme",
+			"width": 1600,
+			"height": 1203,
+			"jsx": {
+				"source": "boards/34-light-theme.jsx.txt",
+				"bytes": 41326,
+				"sha256": "294aec198f62be43465ef6bb0b15d53c7c1c755d1f1aa44554055bed66b2b5f7"
+			},
+			"references": [
+				{
+					"scenarioId": "peek.desktop.light-theme",
+					"nodeId": "5SZ-0",
+					"source": "references/34-light-theme-peek.png",
+					"width": 1440,
+					"height": 294,
+					"scale": 1,
+					"bytes": 37385,
+					"sha256": "ce357b01c3ee86f6abf0d52858aca030f5f9b8e592768af514bd27d47f2464ea",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 45,
+			"nodeId": "9TT-0",
+			"name": "45 — Recording integrity \u0026 coverage",
+			"width": 1600,
+			"height": 1397,
+			"jsx": {
+				"source": "boards/45-recording-integrity.jsx.txt",
+				"bytes": 4930,
+				"sha256": "0427cb82350e22f048291aa3d515d706ca91a3543b7d88c79a38b4e6d1152cc6"
+			},
+			"references": [
+				{
+					"scenarioId": "recordings.desktop.integrity",
+					"nodeId": "9UH-0",
+					"source": "references/45-recording-integrity.png",
+					"width": 1440,
+					"height": 900,
+					"scale": 1,
+					"bytes": 157693,
+					"sha256": "9e75cf369ae00066c0dccb0a8ec776c5aa81cc08bec4ae39d2a24a7e219c614f",
+					"status": "reference"
+				}
+			]
+		},
+		{
+			"number": 46,
+			"nodeId": "AW0-0",
+			"name": "46 — Mobile Keep · compact investigation",
+			"width": 1420,
+			"height": 1160,
+			"jsx": {
+				"source": "boards/46-mobile-keep-compact.jsx.txt",
+				"bytes": 109687,
+				"sha256": "4ba39f9679f5ddf15eb8e8d076dc166f7abeef59d67618233055796bcb70f0b5"
+			},
+			"references": [
+				{
+					"scenarioId": "keep.mobile.compact-default",
+					"nodeId": "AW8-0",
+					"source": "references/46-keep-mobile-compact-default.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 53540,
+					"sha256": "090f8930be2a25a750cbd51094965e453ae6bb01fdb2d3b09a62cdbd692bcddb",
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "keep.mobile.playback-options",
+					"nodeId": "B09-0",
+					"source": "references/46-keep-mobile-playback-options.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 57828,
+					"sha256": "bfb98e4f424f353761c1e06a79decf0793c00ac9ea545b8ca9011e66776705d5",
+					"status": "proposal"
+				},
+				{
+					"scenarioId": "keep.mobile.camera-date",
+					"nodeId": "B3V-0",
+					"source": "references/46-keep-mobile-camera-date.png",
+					"width": 390,
+					"height": 844,
+					"scale": 1,
+					"bytes": 61952,
+					"sha256": "33594a65b5b2d0f895435f7e545d849643b4bdb794d7f510f3a466e4c1021f86",
+					"status": "proposal"
+				}
+			]
+		}
+	]
+}

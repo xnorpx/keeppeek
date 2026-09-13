@@ -10,7 +10,7 @@
 		},
 		{
 			"source": "README.md",
-			"contains": "KeepPeek is currently a proof of concept (POC) and is not yet production-ready."
+			"contains": "KeepPeek is in Alpha qualification and is not yet production-ready."
 		},
 		{
 			"source": "ui/PRODUCT.md",

@@ -92,8 +92,12 @@ only the staged pair and restart journal remain.
 
 ## Automation
 
-The CLI uses the same endpoints as Settings. Export requires a destination and writes an owner-only
-file; apply requires `--confirm`. Commands print one machine-readable JSON result to stdout and
+The CLI uses the same endpoints as Settings. Export requires a new destination and creates its
+private permissions before writing archive bytes. Unix files use mode `0600`. Windows files use a
+protected DACL for the current user, SYSTEM, and Administrators, verified on the open file before
+the first write. The CLI rejects destinations whose protection cannot be verified, existing files,
+and Windows alternate data streams. Browser and direct HTTP downloads require the caller to protect
+their destination. Apply requires `--confirm`. Commands print one machine-readable JSON result to stdout and
 diagnostics to stderr. Remote credentials come only from `KEEPPEEK_ACCESS_KEY` and require HTTPS
 unless the server is loopback.
 

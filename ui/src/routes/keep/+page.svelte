@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { afterNavigate, replaceState } from '$app/navigation';
+	import { afterNavigate, pushState, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { navigating } from '$app/state';
-	import { onMount, tick } from 'svelte';
+	import { navigating, page } from '$app/state';
+	import { onMount, tick, untrack } from 'svelte';
 	import { useControlClient } from '$lib/control-context';
 	import { EVENT_WORKFLOW_CAPABILITY, type EventWorkflowIdentity } from '$lib/event-workflow';
 	import { EventWorkflow } from '$lib/event-workflow.svelte';
@@ -10,6 +10,7 @@
 	import EventWorkflowNotice from '$lib/components/EventWorkflowNotice.svelte';
 	import FocusedMediaViewport from '$lib/components/FocusedMediaViewport.svelte';
 	import RecordedPlaybackControls from '$lib/components/RecordedPlaybackControls.svelte';
+	import KeepMobileControls from '$lib/components/KeepMobileControls.svelte';
 	import type {
 		EventPreviewHit,
 		StoredMediaKeyFramePreview,
@@ -179,6 +180,27 @@
 	let scrubOpenController: AbortController | null = null;
 	let ignoreNextPauseEvent = false;
 	let mobilePortrait = $state(false);
+	type MobilePanel = 'playback' | 'camera-date';
+	let mobilePanel = $derived(
+		(page.state as { keepMobilePanel?: MobilePanel }).keepMobilePanel ?? null
+	);
+	let mobileReturnFocus = $state.raw<HTMLElement | null>(null);
+	let previousMobilePanel: MobilePanel | null = null;
+	$effect(() => {
+		const panel = mobilePanel;
+		if (previousMobilePanel && !panel) untrack(updateUrl);
+		previousMobilePanel = panel;
+	});
+
+	function openMobilePanel(panel: MobilePanel): void {
+		mobileReturnFocus =
+			document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		pushState('', { ...page.state, keepMobilePanel: panel });
+	}
+
+	function closeMobilePanel(): void {
+		if (mobilePanel) history.back();
+	}
 	let capabilitiesSeen = false;
 	let reconnectPending = false;
 	let scrubUsesFragmentFallback = false;
@@ -834,6 +856,8 @@
 		if (mode !== 'timeline') {
 			recordingDatesPending = false;
 			void discoverRecordingDates(false);
+		} else if (secondaryLoadsReady && latestTimelineViewport) {
+			void loadTimelineViewport(latestTimelineViewport);
 		}
 	}
 
@@ -1417,11 +1441,10 @@
 		const play = playbackIntent();
 		beginCameraSwitch(direction);
 		timelineRepository.deactivate();
-		latestTimelineViewport = null;
 		cameraId = nextCameraId;
-		void loadRecordings(selectedDate || undefined, timestampMs, play).then(
-			scheduleRecordingDateDiscovery
-		);
+		void loadRecordings(selectedDate || undefined, timestampMs, play, null, {
+			exactMoment: timestampMs !== undefined
+		}).then(scheduleRecordingDateDiscovery);
 	}
 
 	function openTimestamp(timestampMs: number): void {
@@ -1453,8 +1476,13 @@
 
 	function changeDate(date: string) {
 		if (!date || date === selectedDate) return;
+		const clockMs =
+			playheadMs === null ? null : ((playheadMs % 86_400_000) + 86_400_000) % 86_400_000;
+		const timestampMs = clockMs === null ? undefined : Date.parse(`${date}T00:00:00Z`) + clockMs;
 		latestTimelineViewport = null;
-		void loadRecordings(date, undefined, playbackIntent());
+		void loadRecordings(date, timestampMs, playbackIntent(), null, {
+			exactMoment: timestampMs !== undefined
+		});
 	}
 
 	function changeRecordedQuality(next: RecordedQualityPreference): void {
@@ -1893,6 +1921,7 @@
 			return;
 		}
 		const target = event.target instanceof Element ? event.target : null;
+		if (target?.closest('[role="dialog"], dialog')) return;
 		if (target?.closest('[data-recorded-playback-controls]')) return;
 		if (event.key.startsWith('Arrow') && target?.closest('[data-digital-pan-active]')) return;
 		const playerFocused = target?.closest('[data-keep-player]') !== null;
@@ -2046,7 +2075,7 @@
 					});
 		// The base path is resolved before the query string is appended.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		replaceState(`${resolve('/keep')}?${search}`, {});
+		replaceState(`${resolve('/keep')}?${search}`, page.state);
 		appliedSearch = `?${search}`;
 	}
 
@@ -2133,19 +2162,20 @@
 			</div>
 			<div
 				data-keep-mode-switcher
-				class="flex rounded-sm border border-hairline bg-raised p-0.5"
+				class="flex overflow-x-auto rounded-sm border border-hairline bg-raised p-0.5"
 				aria-label="Keep modes"
 			>
 				<a
 					href={resolve('/recordings')}
-					class="inline-flex h-11 items-center rounded-xs px-2.5 text-2xs font-semibold text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-7"
+					class="inline-flex h-11 min-w-11 shrink-0 items-center rounded-xs px-2.5 text-2xs font-semibold text-text-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none md:h-7"
 				>
 					Coverage
 				</a>
 				{#each ['timeline', 'stories', 'swimlanes', 'export'] as nextMode (nextMode)}
 					<button
 						type="button"
-						class="h-11 rounded-xs px-2.5 text-2xs font-semibold md:h-7 {mode === nextMode
+						class="h-11 min-w-11 shrink-0 rounded-xs px-2.5 text-2xs font-semibold md:h-7 {mode ===
+						nextMode
 							? 'bg-primary text-on-primary'
 							: 'text-text-muted hover:text-foreground'} focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 						aria-pressed={mode === nextMode}
@@ -2157,87 +2187,119 @@
 			</div>
 		</div>
 
-		<div class="keep-command-secondary">
-			<KeepCameraSwitcher
-				{cameras}
-				selectedCameraId={cameraId}
-				switching={cameraSwitchPending}
-				onselect={selectCamera}
-			/>
+		<KeepMobileControls
+			compact={mobilePortrait}
+			{cameras}
+			{cameraId}
+			switching={cameraSwitchPending}
+			{dates}
+			date={selectedDate}
+			olderDate={olderDate ?? null}
+			newerDate={newerDate ?? null}
+			panel={mobilePanel}
+			returnFocus={mobileReturnFocus}
+			volume={playbackVolume}
+			rate={playbackRate}
+			quality={recordedPreference(playbackPreferences, cameraId)}
+			qualityOptions={availableStreams.size > 0 ? recordedQualityOptions : []}
+			mediaDisabled={!selected}
+			{loading}
+			copyDisabled={!cameraId || playheadMs === null || loading}
+			getLink={currentMomentLink}
+			{formatDate}
+			onpanel={openMobilePanel}
+			onclose={closeMobilePanel}
+			oncamera={selectCamera}
+			ondate={changeDate}
+			onvolume={(volume) => (playbackVolume = volume)}
+			onrate={setPlaybackSpeed}
+			onquality={handleRecordedQualityChange}
+			onrefresh={() => void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
+		/>
+		{#if !mobilePortrait}<div class="keep-command-secondary">
+				<KeepCameraSwitcher
+					{cameras}
+					selectedCameraId={cameraId}
+					switching={cameraSwitchPending}
+					onselect={selectCamera}
+				/>
 
-			<div data-keep-date-control class="grid min-w-0 gap-1">
-				<span class="text-xs font-medium text-muted-foreground">Date</span>
-				<div class="flex items-center rounded-md border bg-background">
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-11 md:size-9"
-						title="Previous recorded day"
-						disabled={!olderDate}
-						onclick={() => olderDate && changeDate(olderDate)}
-					>
-						<ChevronLeftIcon />
-					</Button>
-					<label class="relative flex h-11 min-w-0 flex-1 items-center gap-2 border-x px-2 md:h-9">
-						<CalendarDaysIcon class="size-4 text-muted-foreground" />
-						<select
-							value={selectedDate}
-							disabled={dates.length === 0}
-							class="min-w-0 flex-1 appearance-none bg-transparent pr-4 text-sm outline-none"
-							onchange={(event) => changeDate(event.currentTarget.value)}
+				<div data-keep-date-control class="grid min-w-0 gap-1">
+					<span class="text-xs font-medium text-muted-foreground">Date</span>
+					<div class="flex items-center rounded-md border bg-background">
+						<Button
+							variant="ghost"
+							size="icon"
+							class="size-11 md:size-9"
+							title="Previous recorded day"
+							disabled={!olderDate}
+							onclick={() => olderDate && changeDate(olderDate)}
 						>
-							{#each dates as date (date)}
-								<option value={date}>{formatDate(date)}</option>
+							<ChevronLeftIcon />
+						</Button>
+						<label
+							class="relative flex h-11 min-w-0 flex-1 items-center gap-2 border-x px-2 md:h-9"
+						>
+							<CalendarDaysIcon class="size-4 text-muted-foreground" />
+							<select
+								value={selectedDate}
+								disabled={dates.length === 0}
+								class="min-w-0 flex-1 appearance-none bg-transparent pr-4 text-sm outline-none"
+								onchange={(event) => changeDate(event.currentTarget.value)}
+							>
+								{#each dates as date (date)}
+									<option value={date}>{formatDate(date)}</option>
+								{/each}
+							</select>
+						</label>
+						<Button
+							variant="ghost"
+							size="icon"
+							class="size-11 md:size-9"
+							title="Next recorded day"
+							disabled={!newerDate}
+							onclick={() => newerDate && changeDate(newerDate)}
+						>
+							<ChevronRightIcon />
+						</Button>
+					</div>
+				</div>
+
+				{#if availableStreams.size > 0}
+					<div data-keep-quality-control class="grid min-w-0 gap-1">
+						<label for="recorded-quality" class="text-xs font-medium text-muted-foreground">
+							Quality
+						</label>
+						<select
+							id="recorded-quality"
+							value={recordedPreference(playbackPreferences, cameraId)}
+							class="h-11 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring md:h-9"
+							onchange={handleRecordedQualityChange}
+						>
+							{#each recordedQualityOptions as option (option.value)}
+								<option value={option.value}>{option.label}</option>
 							{/each}
 						</select>
-					</label>
-					<Button
-						variant="ghost"
-						size="icon"
-						class="size-11 md:size-9"
-						title="Next recorded day"
-						disabled={!newerDate}
-						onclick={() => newerDate && changeDate(newerDate)}
-					>
-						<ChevronRightIcon />
-					</Button>
-				</div>
-			</div>
+					</div>
+				{/if}
 
-			{#if availableStreams.size > 0}
-				<div data-keep-quality-control class="grid min-w-0 gap-1">
-					<label for="recorded-quality" class="text-xs font-medium text-muted-foreground">
-						Quality
-					</label>
-					<select
-						id="recorded-quality"
-						value={recordedPreference(playbackPreferences, cameraId)}
-						class="h-11 rounded-md border bg-background px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring md:h-9"
-						onchange={handleRecordedQualityChange}
-					>
-						{#each recordedQualityOptions as option (option.value)}
-							<option value={option.value}>{option.label}</option>
-						{/each}
-					</select>
-				</div>
-			{/if}
-
-			<Button
-				data-keep-refresh
-				variant="outline"
-				size="icon"
-				class="size-11 md:size-9"
-				title="Refresh recordings"
-				disabled={!cameraId || loading}
-				onclick={() => void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
-			>
-				<RefreshCwIcon class={loading ? 'animate-spin' : ''} />
-			</Button>
-			<CopyMomentLink
-				getLink={currentMomentLink}
-				disabled={!cameraId || playheadMs === null || loading}
-			/>
-		</div>
+				<Button
+					data-keep-refresh
+					variant="outline"
+					size="icon"
+					class="size-11 md:size-9"
+					title="Refresh recordings"
+					disabled={!cameraId || loading}
+					onclick={() =>
+						void loadRecordings(selectedDate || undefined, undefined, playbackIntent())}
+				>
+					<RefreshCwIcon class={loading ? 'animate-spin' : ''} />
+				</Button>
+				<CopyMomentLink
+					getLink={currentMomentLink}
+					disabled={!cameraId || playheadMs === null || loading}
+				/>
+			</div>{/if}
 	</header>
 
 	<div data-keep-view-content class="keep-view-content min-h-0 overflow-y-auto">
@@ -2293,6 +2355,7 @@
 			</div>
 		{:else}
 			<div
+				data-keep-timeline-layout
 				class="grid h-full min-h-0 items-start gap-4 overflow-hidden lg:grid-cols-[minmax(0,1fr)_18rem]"
 			>
 				<section
@@ -2414,6 +2477,7 @@
 					{/if}
 
 					<RecordedPlaybackControls
+						onoptions={mobilePortrait ? () => openMobilePanel('playback') : undefined}
 						{playing}
 						muted={playbackMuted}
 						volume={playbackVolume}
@@ -2499,6 +2563,30 @@
 {/if}
 
 <style>
+	@media (max-width: 47.999rem) and (orientation: portrait) {
+		.keep-view {
+			display: flex;
+			flex-direction: column;
+		}
+		.keep-command-bar {
+			flex-shrink: 0;
+		}
+		.keep-view-content {
+			flex: 1;
+		}
+		[data-keep-timeline-layout] {
+			display: flex;
+			height: auto;
+			flex-direction: column;
+			gap: 0.5rem;
+			overflow: visible;
+		}
+		[data-keep-timeline-layout] > :global(*) {
+			width: 100%;
+			flex-shrink: 0;
+		}
+	}
+
 	[data-keep-player]:fullscreen {
 		display: flex;
 		width: 100%;

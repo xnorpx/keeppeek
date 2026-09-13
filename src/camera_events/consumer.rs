@@ -14,6 +14,8 @@ use crate::{cameras::Camera, keeppeek::KeepPeekEvent, shutdown::Shutdown};
 const PENDING_MAX: usize = 1024;
 const PENDING_INPUT_MAX: usize = 256;
 const SNAPSHOT_BYTES_MAX: usize = 4 * 1024 * 1024;
+// Allow pending native events to commit without blocking recorder shutdown.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 const _: () = assert!(
     PENDING_INPUT_MAX + 128 * 4 <= PENDING_MAX,
@@ -129,19 +131,30 @@ impl Consumer {
     }
 
     fn finish(&mut self) {
+        self.finish_with_clock(Instant::now, std::thread::park_timeout);
+    }
+
+    fn finish_with_clock(&mut self, now: impl Fn() -> Instant, mut park: impl FnMut(Duration)) {
         self.pending.extend(self.tracker.disconnect("shutdown"));
         self.pending
-            .extend(self.tracker.expire(Instant::now() + Duration::from_secs(1)));
+            .extend(self.tracker.expire(now() + Duration::from_secs(1)));
         assert!(
             self.pending.len() <= PENDING_MAX,
             "shutdown endings must fit the lifecycle reserve"
         );
-        let until = Instant::now() + Duration::from_secs(5);
-        while !self.pending.is_empty() && Instant::now() < until {
+        let until = now() + SHUTDOWN_DRAIN_TIMEOUT;
+        while !self.pending.is_empty() && now() < until {
             if !self.flush() {
                 break;
             }
-            std::thread::park_timeout(Duration::from_millis(10));
+            if self.pending.is_empty() {
+                break;
+            }
+            park(
+                until
+                    .saturating_duration_since(now())
+                    .min(Duration::from_millis(10)),
+            );
         }
         self.slot.update(|evidence| {
             evidence.state = "stopped";

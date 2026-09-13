@@ -1,0 +1,51 @@
+(
+    <div style={{ backgroundColor: 'var(--color-ground)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', fontSynthesis: 'none', gap: '56px', MozOsxFontSmoothing: 'grayscale', overflow: 'clip', overflowWrap: 'anywhere', padding: '80px', WebkitFontSmoothing: 'antialiased' }}>
+      <div style={{ alignItems: 'flex-start', boxSizing: 'border-box', display: 'flex', flexShrink: '0', gap: '40px', justifyContent: 'space-between', width: '1440px' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '16px', width: '700px' }}>
+          <div style={{ alignItems: 'center', boxSizing: 'border-box', display: 'flex', gap: '12px' }}>
+            <div style={{ backgroundColor: 'var(--color-primary)', boxSizing: 'border-box', flexShrink: '0', height: '3px', width: '28px' }} />
+            <div style={{ boxSizing: 'border-box', color: 'var(--color-text-faint)', fontFamily: '"IBM Plex Mono", system-ui, sans-serif', fontSize: '10px', letterSpacing: '0.16em', lineHeight: '14px' }}>
+              45 · RECORDING INTEGRITY · COVERAGE
+            </div>
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '56px', fontWeight: 700, letterSpacing: '-0.03em', lineHeight: '59px' }}>
+            Prove every requested recording.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexShrink: '0', paddingTop: '44px', width: '700px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '15px', lineHeight: '23px' }}>
+            Current writer truth, retained bounds, byte attribution, selected-range coverage, and evidence-backed gaps share one catalog revision. Policy-disabled streams remain distinct from failures.
+          </div>
+        </div>
+      </div>
+      <div style={{ backgroundColor: 'var(--color-surface)', borderColor: 'var(--color-hairline)', borderRadius: 'var(--radius-md)', borderStyle: 'solid', borderWidth: '1px', boxSizing: 'border-box', display: 'flex', flexShrink: '0', height: '900px', overflow: 'clip', width: '1440px' }}>
+        <div style={{ backgroundImage: 'url(https://app.paper.design/file-assets/01M0B0VBH78TMTX40GCYYQ37SG/3BJHJKDZR8H75D7F0DBVKN048J.png)', backgroundPosition: '50%', backgroundSize: 'cover', boxSizing: 'border-box', flexShrink: '0', height: '900px', width: '1440px' }} />
+      </div>
+      <div style={{ alignItems: 'flex-start', borderTopColor: 'var(--color-hairline)', borderTopStyle: 'solid', borderTopWidth: '1px', boxSizing: 'border-box', display: 'flex', gap: '48px', paddingTop: '8px', width: '1440px' }}>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '448px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+            One revision, every surface
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+            API, dashboard, Prometheus values, and rule inputs use the same finalized, indexed, playable intervals.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '448px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+            Gaps carry bounded evidence
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+            Open intervals never claim an end. Durable outages, writer failures, disk pressure, deletion, and unknown causes remain explicit.
+          </div>
+        </div>
+        <div style={{ boxSizing: 'border-box', display: 'flex', flexDirection: 'column', flexShrink: '0', gap: '8px', width: '448px' }}>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '16px', fontWeight: 600, lineHeight: '20px' }}>
+            Fleet scale stays bounded
+          </div>
+          <div style={{ boxSizing: 'border-box', color: 'var(--color-text-muted)', fontFamily: '"Archivo", system-ui, sans-serif', fontSize: '13px', lineHeight: '20px' }}>
+            Pages retain 25 camera rows in the DOM. Each stream keeps exact totals with at most 256 recent interval details.
+          </div>
+        </div>
+      </div>
+    </div>
+  )

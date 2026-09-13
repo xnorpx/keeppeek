@@ -47,6 +47,12 @@ The `keeppeek config` commands call the same Administrator-only HTTP endpoints. 
 machine-readable JSON to stdout. Supply remote authentication only through
 `KEEPPEEK_ACCESS_KEY`; never put it in a URL or command argument.
 
+CLI exports create a new private file before writing archive bytes. On Unix, the file mode is
+`0600`. On Windows, a protected access list permits the current user, SYSTEM, and Administrators;
+the CLI verifies that protection before writing. A destination that cannot provide this protection
+is rejected. Existing files and Windows alternate data streams are not export destinations.
+Browser downloads use the browser's destination permissions; restrict those copies separately.
+
 ```sh
 keeppeek config --server http://localhost:3000 export --output keeppeek-config.zip
 keeppeek config --server http://localhost:3000 apply keeppeek-config.zip --confirm

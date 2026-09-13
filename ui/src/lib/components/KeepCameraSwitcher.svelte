@@ -15,10 +15,12 @@
 		cameras: CameraListItem[];
 		selectedCameraId: string;
 		switching?: boolean;
+		touch?: boolean;
 		onselect: (cameraId: string, direction: CameraSwitchDirection) => void;
 	};
 
-	let { cameras, selectedCameraId, switching = false, onselect }: Props = $props();
+	let { cameras, selectedCameraId, switching = false, touch = false, onselect }: Props = $props();
+	const id = $props.id();
 	let open = $state(false);
 	let query = $state('');
 	let activeIndex = $state(0);
@@ -90,17 +92,19 @@
 </script>
 
 <div class="grid min-w-0 gap-1" data-camera-switcher data-selected-camera={selectedCameraId}>
-	<span id="keep-camera-switcher-label" class="text-xs font-medium text-muted-foreground">
-		Camera
-	</span>
+	<span id={`${id}-label`} class="text-xs font-medium text-muted-foreground"> Camera </span>
 	<div
-		class="flex h-[46px] items-stretch overflow-hidden rounded-md border bg-background shadow-xs md:h-9"
+		class="flex h-[46px] items-stretch overflow-hidden rounded-md border bg-background shadow-xs {touch
+			? ''
+			: 'md:h-9'}"
 		role="group"
-		aria-labelledby="keep-camera-switcher-label"
+		aria-labelledby={`${id}-label`}
 	>
 		<button
 			type="button"
-			class="grid w-11 shrink-0 place-items-center border-r text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 md:w-9"
+			class="grid w-11 shrink-0 place-items-center border-r text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 {touch
+				? ''
+				: 'md:w-9'}"
 			disabled={cameras.length <= 1 || switching}
 			title={`Previous camera: ${cameraName(cameraAtOffset(-1))}`}
 			aria-label={`Previous camera, ${cameraName(cameraAtOffset(-1))}`}
@@ -143,7 +147,7 @@
 					trapFocus={false}
 					class="z-50 w-80 max-w-[calc(100vw-1rem)] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-xl"
 				>
-					<div class="flex h-10 items-center gap-2 border-b px-3">
+					<div class="flex items-center gap-2 border-b px-3 {touch ? 'h-11' : 'h-10'}">
 						<SearchIcon class="size-3.5 shrink-0 text-muted-foreground" />
 						<input
 							bind:this={searchInput}
@@ -152,18 +156,18 @@
 							placeholder="Find a camera..."
 							class="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
 							aria-label="Find a Keep camera"
-							aria-controls="keep-camera-options"
+							aria-controls={`${id}-options`}
 							aria-activedescendant={filteredCameras[activeIndex]
-								? `keep-camera-option-${activeIndex}`
+								? `${id}-option-${activeIndex}`
 								: undefined}
 							oninput={updateQuery}
 							onkeydown={handleSearchKeydown}
 						/>
 					</div>
-					<div id="keep-camera-options" class="max-h-72 overflow-y-auto py-1" role="listbox">
+					<div id={`${id}-options`} class="max-h-72 overflow-y-auto py-1" role="listbox">
 						{#each filteredCameras as camera, index (camera.id)}
 							<button
-								id={`keep-camera-option-${index}`}
+								id={`${id}-option-${index}`}
 								data-camera-option={camera.id}
 								data-camera-label={cameraName(camera)}
 								type="button"
@@ -201,7 +205,9 @@
 
 		<button
 			type="button"
-			class="grid w-11 shrink-0 place-items-center border-l text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 md:w-9"
+			class="grid w-11 shrink-0 place-items-center border-l text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40 {touch
+				? ''
+				: 'md:w-9'}"
 			disabled={cameras.length <= 1 || switching}
 			title={`Next camera: ${cameraName(cameraAtOffset(1))}`}
 			aria-label={`Next camera, ${cameraName(cameraAtOffset(1))}`}

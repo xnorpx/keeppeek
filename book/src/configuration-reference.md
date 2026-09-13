@@ -58,6 +58,7 @@ Root fields must appear before a table header or they belong to that table.
 | `[event_forwarder.mqtt]`                           | `MqttForwarderConfig` inside `EventForwarderConfig` | MQTT configuration; server-owned revision     |
 | `[camera_defaults]`                                | `CameraCredentialDefaults`                          | Shared camera defaults                        |
 | `[<namespace>.<camera-key>]`                       | `CameraConfig`                                      | Camera settings                               |
+| `[<namespace>.<camera-key>.events]`                | `EventConfig`                                       | Native camera event selection and filters     |
 | `[access_credentials]`                             | `PersistedAccessCatalog`                            | Server-managed credential records             |
 | `[peek_layouts]`                                   | `StoredRegistry`                                    | Server-managed layouts and per-user selection |
 | `[configuration_templates]`                        | `StoredTemplateDocument`                            | Server-managed camera templates               |
@@ -233,10 +234,42 @@ Type: `CameraConfig`, section `[<namespace>.<camera-key>]`, usually `[cameras.fr
 | `record_generic_motion_events`  | `bool`                | Shared default or `false`         | Opt in to supported generic motion events.                                                                                      |
 | `recording_mode`                | `CameraRecordingMode` | Shared default or `"event-boost"` | `"off"`, `"sub"`, `"main"`, `"both"`, or `"event-boost"`.                                                                       |
 | `event_recording_duration_secs` | `u64`                 | Shared default or `60`            | Event-triggered recording duration; typed configuration operations use `1..3600` seconds.                                       |
+| `events`                        | `EventConfig`         | Defaults below                    | Camera-native event policy, independent of video backend; configured through the file.                                          |
 
 These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as `CameraCapabilities`, `CameraPorts`,
 `MediaProfile`, `VideoConfig`, and `AudioConfig` are not additional editable camera tables.
+
+### Native camera events
+
+Type: `EventConfig`, section `[<namespace>.<camera-key>.events]`, for example
+`[cameras.front_door.events]`. Source:
+[camera event policy](https://github.com/xnorpx/keeppeek/blob/main/src/cameras/events.rs).
+These settings are not part of `CameraCredentialDefaults` and are not exposed by the fixed
+protobuf camera-settings form. Ordinary camera API edits preserve the saved event table.
+
+| Field               | Type              | Default                | Values and limits                                                                                                                                                                                                   |
+| ------------------- | ----------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`              | `EventMode`       | `"auto"`               | `"auto"`, `"vendor"`, `"onvif-pullpoint"`, `"rtsp-metadata"`, or `"disabled"`.                                                                                                                                      |
+| `metadata_stream`   | `MetadataMode`    | `"auto"`               | `"auto"`, `"enabled"`, or `"disabled"`. Enabling metadata does not override `vendor` or `disabled` event mode.                                                                                                      |
+| `event_service_url` | Optional `String` | None; discover service | HTTP(S) URL of at most 4,096 UTF-8 bytes using the exact configured camera IP. No hostname alias, wildcard/multicast address, port zero, credentials, query, fragment, backslash, whitespace, or control character. |
+| `source_tokens`     | `Vec<String>`     | `[]`                   | At most 32 exact opaque tokens, each at most 256 UTF-8 bytes. Empty or control-character entries are rejected.                                                                                                      |
+| `include_topics`    | `Vec<String>`     | `[]`                   | Expanded namespace root plus slash-separated local path. Up to 32 filters combined with exclusions, each at most 1,024 UTF-8 bytes.                                                                                 |
+| `exclude_topics`    | `Vec<String>`     | `[]`                   | Same syntax and shared count/byte limits as inclusions; exclusions take precedence.                                                                                                                                 |
+| `snapshots`         | `bool`            | `true`                 | Allow optional camera snapshots; a missing or failed image does not discard the event.                                                                                                                              |
+
+An empty inclusion list permits recognized topics. An example filter is
+`{http://www.onvif.org/ver10/topics}VideoSource/MotionAlarm`; unstable document prefixes such as
+`tns1:VideoSource/MotionAlarm` are rejected. Source tokens retain their exact text. Filters require
+nonempty namespace and path segments without whitespace, embedded prefixes, or control characters.
+
+The loader resolves supported `{secret:KEY}` and `{secret:KEY|url}` references in event strings
+before validation. Preserve those references in `config.toml` and keep reusable private values
+in `secrets.toml`; URL escaping does not relax endpoint restrictions. Direct file edits require
+the existing configuration activation/restart path; there is no automatic file watcher. Generic
+motion recording still requires `record_generic_motion_events = true`, independently of event mode.
+The [native event operator guide](https://github.com/xnorpx/keeppeek/blob/main/docs/onvif-events.md)
+describes transport selection, health evidence, and verification.
 
 ## Recording storage
 

@@ -1,11 +1,11 @@
 # Recording maintenance
 
 Recording maintenance provides Administrator previews, confirmed deletion jobs,
-and bounded catalog reconciliation over the WebRTC control connection. It is
-under qualification in [issue #133](https://github.com/xnorpx/keeppeek/issues/133),
-not yet a completed or production-qualified feature. The synthetic-media workflow
-and native Windows, macOS, and Linux checks have passed; remaining acceptance
-criteria are tracked in the issue.
+and bounded catalog reconciliation over the WebRTC control connection.
+[Implementation issue #133](https://github.com/xnorpx/keeppeek/issues/133) closed on
+2026-09-08. The synthetic-media workflow and native Windows, macOS, and Linux checks
+have passed. Deployment-specific recovery and the wider release decision remain
+part of the [Alpha gate #145](https://github.com/xnorpx/keeppeek/issues/145).
 
 Automatic storage retention remains separate from manual deletion. Manual claims
 exclude their recordings from retention and new playback/export resolution until
@@ -275,13 +275,16 @@ The native Windows implementation targets NTFS with persistent ACLs, checked
 directory flushes, and handle-based rename/disposition. Other filesystems,
 including ReFS, are rejected before source-file mutation. ReFS requires a full
 128-bit file identity and a separately justified namespace-durability strategy;
-a successful directory-flush call alone is not sufficient. Windows compilation,
-ACL/race tests, and crash-boundary execution remain unverified in the current
-local environment.
+a successful directory-flush call alone is not sufficient. The
+[PR CI run](https://github.com/xnorpx/keeppeek/actions/runs/34722005032) and
+[extended Main run](https://github.com/xnorpx/keeppeek/actions/runs/34722240086)
+exercise the implementation, including Windows and synthetic deletion, on production
+tree `4df9a94e` (equivalent to `4bc3ab18`). This establishes automated coverage of
+the exercised fixtures, not every NTFS race, crash boundary, device, or deployment.
 
 ## Qualification still required
 
-Before issue #133 can be completed, qualification must cover:
+For a deployment and final release candidate, retain explicit evidence for:
 
 - exact object ownership and adversarial replacement at every mutation boundary;
 - Windows NTFS and Linux runtime tests, plus supported-filesystem failure behavior;

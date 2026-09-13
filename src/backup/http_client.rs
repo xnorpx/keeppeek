@@ -4,6 +4,11 @@ use std::{fmt, fs::File, path::Path, time::Duration};
 use ureq::{Agent, Body, http::Response};
 use url::{Host, Url};
 
+#[cfg(test)]
+mod tests;
+#[cfg(windows)]
+mod windows;
+
 const CONTROL_BODY_BYTES_MAX: u64 = 16 * 1024 * 1024;
 const ERROR_BODY_BYTES_MAX: u64 = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
@@ -220,6 +225,15 @@ fn decode_api_error(mut response: Response<Body>) -> BackupClientError {
 }
 
 fn create_private_file(path: &Path) -> Result<File, BackupClientError> {
+    #[cfg(windows)]
+    let result = windows::create_private(path);
+    #[cfg(not(windows))]
+    let result = create_private_portable(path);
+    result.map_err(|_| BackupClientError::Protocol("backup destination could not be created"))
+}
+
+#[cfg(not(windows))]
+fn create_private_portable(path: &Path) -> std::io::Result<File> {
     let mut options = File::options();
     options.create_new(true).write(true);
     #[cfg(unix)]
@@ -227,9 +241,7 @@ fn create_private_file(path: &Path) -> Result<File, BackupClientError> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    options
-        .open(path)
-        .map_err(|_| BackupClientError::Protocol("backup destination could not be created"))
+    options.open(path)
 }
 
 fn is_loopback(url: &Url) -> bool {

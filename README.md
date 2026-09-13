@@ -2,7 +2,9 @@
 	<img src="assets/readme_logo.jpeg" alt="KeepPeek logo" width="480">
 </div>
 
-> **Status:** KeepPeek is currently a proof of concept (POC) and is not yet production-ready.
+> **Status:** KeepPeek is in Alpha qualification and is not yet production-ready.
+> The active [Alpha gate](https://github.com/xnorpx/keeppeek/issues/145) tracks the remaining
+> early-adopter, recovery, and feature-freeze evidence.
 
 KeepPeek is a local-first network video recorder (NVR) and Media Gateway for IP cameras. The
 focused Rust service records camera streams as MP4, serves the Svelte browser interface, and lets

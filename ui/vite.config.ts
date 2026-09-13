@@ -95,6 +95,8 @@ export default defineConfig({
 				extends: './vite.config.ts',
 				test: {
 					name: 'client',
+					// Browser projects own separate pools, so each pool needs an explicit limit.
+					maxWorkers: 1,
 					browser: {
 						enabled: true,
 						provider: playwright(),
@@ -108,6 +110,7 @@ export default defineConfig({
 				extends: './vite.config.ts',
 				test: {
 					name: 'visual',
+					maxWorkers: 1,
 					browser: {
 						enabled: true,
 						provider: playwright(),

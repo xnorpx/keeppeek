@@ -234,8 +234,16 @@ Each record includes the principal, role, action, target, result, client classif
 timestamp. It never contains a raw key, verifier, Authorization header, cookie, SDP, log payload, or
 media.
 
-New records appear in memory immediately and are written atomically to `config.toml` within one
-second and during graceful shutdown.
+Audit history, active sessions, and credential last-use activity stay in memory and reset on
+restart. Graceful shutdown does not persist them. Credential identities, verifiers, roles,
+revisions, lifecycle metadata, and camera grants persist atomically in `config.toml`; this does
+not make audit records durable.
+
+If an installation requires durable security evidence, retain protected service logs outside the
+recorder and verify that the required actions are represented. Logs are not a guaranteed complete
+copy of the bounded audit. Collect required audit records before eviction or restart using an
+Administrator client and retain them in the installation's external evidence system. Without
+that collection, the pre-restart audit cannot be recovered from a configuration backup.
 
 `GET /metrics` exposes label-free counters and gauges for authentication successes and failures,
 authorization denials, session creation and revocation, active sessions, and active credentials.
