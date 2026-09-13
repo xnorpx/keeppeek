@@ -132,9 +132,11 @@ does not prove recordings can be recovered after disk loss.
 
 ## Add the first camera
 
-Open **Cameras** and use **Add camera**. KeepPeek discovers common cameras where possible and keeps
-manual RTSP entry available. Do not trust discovery alone: authentication, the requested main or
-sub streams, keyframes, finalized MP4 recordings, and playback all need to validate.
+With no cameras configured, an Administrator can select **Add camera** directly from the
+Dashboard's **No cameras yet** message. The same wizard is available from **Cameras → Add camera**.
+KeepPeek discovers common cameras where possible and keeps manual RTSP entry available. Do not
+trust discovery alone: authentication, the requested main or sub streams, keyframes, finalized MP4
+recordings, and playback all need to validate.
 
 Edit an existing camera from its **Camera** page. Use **Settings** only for server-wide
 configuration. Camera-specific credentials and stream choices belong with the camera.

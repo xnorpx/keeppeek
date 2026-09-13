@@ -4,6 +4,10 @@ The Dashboard is KeepPeek's multi-camera live wall. Open **Wall display settings
 sliders icon in the upper-right corner to change its presentation and resource policy. These
 choices belong to the selected dashboard on the server, not to camera recording or detection.
 
+When no cameras are configured, Administrators see **No cameras yet** and an **Add camera**
+action that opens the camera wizard. Users with no available cameras see a message to ask their
+administrator for access.
+
 ## Choose a dashboard or focus a camera
 
 Use the dashboard-name selector to choose a saved layout. **All cameras** is the automatic fleet
