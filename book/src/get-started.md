@@ -1,7 +1,7 @@
 # Get started
 
-> **Status:** KeepPeek has completed its proof-of-concept gate and is undergoing MVP
-> qualification. It is not yet production-ready.
+> **Status:** KeepPeek is in Alpha qualification and is not yet production-ready.
+> The active [Alpha gate](https://github.com/xnorpx/keeppeek/issues/145) tracks promotion evidence.
 
 Choose the installation that fits the host. Linux has first-class Docker support; macOS and Windows
 use native packages and service integration.

@@ -1,7 +1,7 @@
 # KeepPeek
 
-> **Status:** KeepPeek has completed its proof-of-concept gate and is undergoing MVP
-> qualification. It is not yet production-ready.
+> **Status:** KeepPeek is in Alpha qualification and is not yet production-ready.
+> The active [Alpha gate](https://github.com/xnorpx/keeppeek/issues/145) tracks promotion evidence.
 
 KeepPeek is a local-first network video recorder and WebRTC media gateway for IP cameras. It runs
 on Linux, macOS, and Windows and keeps camera media on hardware controlled by the user without
@@ -52,7 +52,7 @@ with people.
 - [Notifications and integrations](./notifications-and-integrations.md) covers server-owned rules,
   Pushover delivery, MQTT 5 forwarding, retries, and failure isolation.
 - [Release readiness and known limitations](./release-readiness.md) separates automated checks from
-  the physical mixed-fleet and soak evidence required for MVP promotion.
+  the physical mixed-fleet, recovery, and soak evidence required for Alpha promotion.
 - [Demo videos](./demo-videos.md) shows complete workflows against the real application.
 - [Open source and licensing](./open-source-and-licensing.md) credits the projects KeepPeek builds
   on and explains the AGPL server and MIT API split.

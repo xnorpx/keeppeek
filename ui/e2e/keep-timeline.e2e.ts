@@ -635,8 +635,8 @@ test('contains the Paper timeline lanes at the authored mobile viewport', async 
 		page.getByRole('button', { name: 'Stories', exact: true }),
 		page.getByRole('button', { name: 'Swimlanes', exact: true }),
 		page.getByRole('button', { name: 'Export', exact: true }),
-		page.getByRole('button', { name: /^Previous camera,/ }),
-		page.getByRole('button', { name: /^Next camera,/ }),
+		page.getByRole('button', { name: /^Camera and date,/ }),
+		page.getByRole('button', { name: 'Playback options', exact: true }),
 		page.getByRole('button', { name: 'Back 10 seconds' }),
 		page.getByRole('button', { name: 'Forward 10 seconds' }),
 		page.getByRole('button', { name: 'Zoom timeline out' }),
@@ -648,6 +648,13 @@ test('contains the Paper timeline lanes at the authored mobile viewport', async 
 		expect(bounds).not.toBeNull();
 		expect(bounds!.width, label).toBeGreaterThanOrEqual(44);
 		expect(bounds!.height, label).toBeGreaterThanOrEqual(44);
+	}
+	await page.getByRole('button', { name: /^Camera and date,/ }).click();
+	for (const name of [/^Previous camera,/, /^Next camera,/]) {
+		const bounds = await page.getByRole('button', { name }).boundingBox();
+		expect(bounds).not.toBeNull();
+		expect(bounds!.width, String(name)).toBeGreaterThanOrEqual(44);
+		expect(bounds!.height, String(name)).toBeGreaterThanOrEqual(44);
 	}
 });
 

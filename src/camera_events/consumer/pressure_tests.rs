@@ -216,20 +216,122 @@ fn shutdown_finishes_within_six_seconds_when_native_ack_is_withheld() {
     let slot = Arc::clone(&consumer.slot);
     consumer.shutdown.cancel();
     let (finished, completion) = mpsc::sync_channel(1);
-    let started = Instant::now();
     let worker = std::thread::spawn(move || {
+        let started = Instant::now();
         consumer.run();
-        finished.send(()).unwrap();
+        finished.send(started.elapsed()).unwrap();
     });
 
-    completion.recv_timeout(Duration::from_secs(6)).unwrap();
+    let elapsed = completion.recv_timeout(Duration::from_secs(6)).unwrap();
     worker.join().unwrap();
 
-    assert!(started.elapsed() < Duration::from_secs(6));
+    assert!(elapsed >= Duration::from_secs(5), "elapsed: {elapsed:?}");
+    assert!(elapsed < Duration::from_secs(6), "elapsed: {elapsed:?}");
     assert!(!lifetime.load(std::sync::atomic::Ordering::Acquire));
     assert!(reply.send(0).is_err());
     let evidence = slot.evidence.lock().unwrap().clone();
     assert_eq!(evidence.active, 0);
     assert_eq!(evidence.state, "stopped");
     assert_eq!(evidence.dropped, 2);
+}
+
+#[test]
+fn shutdown_drain_expires_at_five_seconds_with_the_ack_still_live() {
+    let (mut consumer, output) = consumer();
+    apply_frame(&mut consumer, Instant::now(), 1000, "Human", "0.8");
+    assert!(consumer.flush());
+    let KeepPeekEvent::NativeBatch {
+        reply, lifetime, ..
+    } = output.try_recv().unwrap()
+    else {
+        panic!("native persistence batch expected");
+    };
+    let slot = Arc::clone(&consumer.slot);
+    let started = Instant::now();
+    let now = std::cell::Cell::new(started);
+    let mut waits = 0;
+    consumer.shutdown.cancel();
+    consumer.finish_with_clock(
+        || now.get(),
+        |duration| {
+            assert!(duration <= Duration::from_millis(10));
+            assert!(lifetime.load(std::sync::atomic::Ordering::Acquire));
+            assert_eq!(slot.evidence.lock().unwrap().state, "starting");
+            waits += 1;
+            assert!(waits <= 500, "shutdown drain exceeded five seconds");
+            now.set(now.get() + duration);
+        },
+    );
+    assert_eq!(now.get().duration_since(started), Duration::from_secs(5));
+    assert_eq!(waits, 500);
+    assert_eq!(consumer.pending.len(), 256);
+    drop(consumer);
+    assert!(!lifetime.load(std::sync::atomic::Ordering::Acquire));
+    assert!(reply.send(0).is_err());
+    let evidence = slot.evidence.lock().unwrap().clone();
+    assert_eq!(evidence.active, 0);
+    assert_eq!(evidence.state, "stopped");
+    assert_eq!(evidence.dropped, 256);
+}
+
+#[test]
+fn shutdown_drain_accepts_acknowledgements_just_before_expiry() {
+    let (mut consumer, output) = consumer();
+    consumer.work.push_back(Work::Frame(
+        frame(1000, 1, "Human", "0.8"),
+        Instant::now(),
+        1000,
+    ));
+    assert!(consumer.advance());
+    assert!(consumer.flush());
+    let KeepPeekEvent::NativeBatch {
+        reply, lifetime, ..
+    } = output.try_recv().unwrap()
+    else {
+        panic!("native persistence batch expected");
+    };
+    let slot = Arc::clone(&consumer.slot);
+    let started = Instant::now();
+    let now = std::cell::Cell::new(started);
+    let mut waits = 0;
+    consumer.shutdown.cancel();
+    consumer.finish_with_clock(
+        || now.get(),
+        |duration| {
+            waits += 1;
+            assert!(
+                waits <= 499,
+                "acknowledged shutdown must finish before expiry"
+            );
+            now.set(now.get() + duration);
+            if waits == 498 {
+                reply.send(1).unwrap();
+            } else if waits == 499 {
+                let KeepPeekEvent::NativeBatch { changes, reply, .. } = output.try_recv().unwrap()
+                else {
+                    panic!("shutdown ending expected");
+                };
+                assert!(matches!(
+                    changes.as_slice(),
+                    [KeepPeekEvent::TimelineEventEnded {
+                        end_time_ms: 1000,
+                        ..
+                    }]
+                ));
+                reply.send(1).unwrap();
+            }
+        },
+    );
+    assert_eq!(
+        now.get().duration_since(started),
+        Duration::from_millis(4990)
+    );
+    assert!(consumer.pending.is_empty());
+    drop(consumer);
+    assert!(!lifetime.load(std::sync::atomic::Ordering::Acquire));
+    assert!(reply.send(0).is_err());
+    let evidence = slot.evidence.lock().unwrap().clone();
+    assert_eq!(evidence.active, 0);
+    assert_eq!(evidence.state, "stopped");
+    assert_eq!(evidence.dropped, 0);
 }

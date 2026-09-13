@@ -1,9 +1,11 @@
 # Release readiness and known limitations
 
-KeepPeek has completed its proof-of-concept gate and is undergoing MVP qualification. Passing
-automated tests is necessary, but it is not enough to call a camera recorder production-ready. The
-MVP decision belongs to the tested release build and representative deployment recorded in
-[issue #144](https://github.com/xnorpx/keeppeek/issues/144).
+KeepPeek is in Alpha qualification. POC and MVP gates are complete; Alpha implementation issue
+closure does not establish the early-adopter matrix or a feature freeze. Passing automated tests
+is necessary, but it is not enough to call a camera recorder production-ready. The promotion
+decision belongs to the tested release build and representative deployment recorded in the active
+[Alpha gate #145](https://github.com/xnorpx/keeppeek/issues/145). The
+[roadmap](https://github.com/xnorpx/keeppeek/issues/147) describes the subsequent release phases.
 
 ## What automated validation proves
 
@@ -65,12 +67,23 @@ camera reconnect, provider retry, and storage cleanup cycles. During the soak:
 - verify primary recorded playback remains at source rate while timelines refresh and exports run;
 - monitor memory, recording databases, thumbnails, export jobs, the in-memory notification outbox, MQTT outbox, logs,
   threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;
-- restart and verify notification state resets while durable operational events, the MQTT outbox,
-  export jobs, coverage summaries, and sessions recover according to their documented contracts;
+- restart and verify that notification runtime state, the MQTT outbox and deduplication history,
+  access audit/activity, and active sessions reset; credentials and grants, durable operational
+  events, export jobs, and recording catalog state recover according to their documented contracts;
 - rerun the complete workflow without manual database or recording-file edits.
 
 Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
 indefinitely running job, or open release-blocking defect.
+
+### MQTT restart rehearsal
+
+Use a disposable broker and synthetic event on an isolated installation. Interrupt broker access,
+publish the event, and observe the pending count before restarting KeepPeek. After restart,
+verify that the pending outbox is empty. Restore broker access and confirm that the old pending
+publication is not replayed. Emit a new event and verify delivery and consumer deduplication by
+`(instance_id, event_id, revision)`. Confirm that the original durable event is still available
+in KeepPeek and that recording continued independently. QoS does not make this outbox durable;
+downstream recovery must not assume replay across a KeepPeek restart.
 
 ## Current limitations
 
@@ -98,9 +111,16 @@ KeepPeek configuration bundle and the recording archive. See
 
 ### Access roles are intentionally fixed
 
-Remote access supports Administrator and User. Custom roles and per-camera permissions are not
-available. Use network separation or separate servers when a person must not see every configured
-camera; hiding a control in the browser is not an authorization boundary.
+Remote access supports Administrator and User; custom roles are not available. Administrators can
+restrict a User credential to selected camera groups and individual cameras in **Settings → Access
+& roles → User access**. The server enforces these grants for media, events, coverage, and camera
+controls. Dashboard audiences remain separate and do not grant camera access. Saving a grant
+change closes the affected User's existing sessions; stale saves retain the draft and report a
+conflict. The default grant includes all current and future cameras.
+
+Trusted-local clients remain Administrators. Exclude an address from `access.local_networks` and
+require a User credential when that client needs camera restrictions. Hidden navigation is not
+an authorization boundary. See [Camera and dashboard access](./authentication.md#camera-and-dashboard-access).
 
 ### Detection remains external
 

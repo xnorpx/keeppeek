@@ -1,6 +1,9 @@
 //! Bounded parsing for ONVIF WS-Notification event messages.
 
 mod client;
+mod deadline;
+#[cfg(test)]
+mod deadline_tests;
 mod endpoint;
 mod metadata;
 mod normalize;

@@ -5,7 +5,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
 	testDir: './performance',
-	testMatch: '**/*.performance.ts',
+	testMatch: '**/timeline.performance.ts',
 	fullyParallel: false,
 	workers: 1,
 	retries: 0,

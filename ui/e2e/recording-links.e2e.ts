@@ -409,7 +409,6 @@ test('copy controls and manual fallback fit desktop, tablet, and phone viewports
 		{ width: 390, height: 844 }
 	]) {
 		await page.setViewportSize(viewport);
-		await expect(command).toBeInViewport({ ratio: 1 });
 		const modes = page.locator('[data-keep-mode-switcher] button');
 		for (const modeButton of await modes.all()) {
 			await expect(modeButton).toBeInViewport({ ratio: 1 });
@@ -426,6 +425,10 @@ test('copy controls and manual fallback fit desktop, tablet, and phone viewports
 			).toBe(true);
 		}
 		await attachScreenshot(page, testInfo, `recording-link-${viewport.width}.png`);
+		if (viewport.width < 768) {
+			await page.getByRole('button', { name: 'Playback options', exact: true }).click();
+		}
+		await expect(command).toBeInViewport({ ratio: 1 });
 		await command.click();
 		const dialog = page.getByRole('dialog', { name: 'Copy recording link' });
 		await expect(dialog).toBeVisible();
@@ -437,6 +440,7 @@ test('copy controls and manual fallback fit desktop, tablet, and phone viewports
 		await attachScreenshot(page, testInfo, `recording-link-fallback-${viewport.width}.png`);
 		await page.getByRole('button', { name: 'Close copy dialog' }).click();
 		await expect(command).toBeFocused();
+		if (viewport.width < 768) await page.getByRole('button', { name: 'Done', exact: true }).click();
 	}
 });
 

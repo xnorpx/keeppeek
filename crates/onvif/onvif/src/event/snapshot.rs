@@ -7,6 +7,7 @@ use super::Endpoint;
 use super::client::{
     AUTH_ATTEMPTS_MAX, Client, ClientError, Failure, validate_body_headers, validate_unique_headers,
 };
+use super::deadline::Deadline;
 
 const JPEG_SIZE_BYTES_MAX: u64 = 1024 * 1024;
 const TIMEOUT_MAX: Duration = Duration::from_secs(5);
@@ -29,24 +30,33 @@ impl Client {
         endpoint: &Endpoint,
         timeout: Duration,
     ) -> Result<Vec<u8>, ClientError> {
+        self.snapshot_with_clock(endpoint, timeout, Instant::now)
+    }
+
+    pub(super) fn snapshot_with_clock(
+        &mut self,
+        endpoint: &Endpoint,
+        timeout: Duration,
+        now: impl Fn() -> Instant,
+    ) -> Result<Vec<u8>, ClientError> {
         if timeout.is_zero() || timeout > TIMEOUT_MAX {
             return Err(ClientError(Failure::Protocol));
         }
-        let deadline = Instant::now() + timeout;
+        let deadline = Deadline::new(timeout, now);
         self.camera
             .resolve(endpoint.as_str())
             .map_err(|_| ClientError(Failure::Protocol))?;
         let url = self.prepare_auth(endpoint)?;
         let target = &url[url::Position::BeforePath..url::Position::AfterQuery];
         for attempt in 0..AUTH_ATTEMPTS_MAX {
-            let response = self.snapshot_get(endpoint, target, deadline)?;
+            let response = self.snapshot_get(endpoint, target, &deadline)?;
             validate_unique_headers(response.headers())?;
-            remaining(deadline)?;
+            deadline.remaining()?;
             if response.status().as_u16() == 401 {
                 self.accept_challenge(response.headers(), attempt)?;
                 continue;
             }
-            return read_jpeg(response, deadline);
+            return read_jpeg(response, &deadline);
         }
         Err(ClientError(Failure::Authentication))
     }
@@ -55,7 +65,7 @@ impl Client {
         &mut self,
         endpoint: &Endpoint,
         target: &str,
-        deadline: Instant,
+        deadline: &Deadline<impl Fn() -> Instant>,
     ) -> Result<Response<ureq::Body>, ClientError> {
         let mut request = self
             .agent
@@ -80,21 +90,17 @@ impl Client {
             .config()
             .max_redirects(0)
             .max_redirects_will_error(false)
-            .timeout_global(Some(remaining(deadline)?))
+            .timeout_global(Some(deadline.remaining()?))
             .build()
             .call()
             .map_err(|_| ClientError(Failure::Network))
     }
 }
 
-fn remaining(deadline: Instant) -> Result<Duration, ClientError> {
-    deadline
-        .checked_duration_since(Instant::now())
-        .filter(|duration| !duration.is_zero())
-        .ok_or(ClientError(Failure::Network))
-}
-
-fn read_jpeg(response: Response<ureq::Body>, deadline: Instant) -> Result<Vec<u8>, ClientError> {
+fn read_jpeg(
+    response: Response<ureq::Body>,
+    deadline: &Deadline<impl Fn() -> Instant>,
+) -> Result<Vec<u8>, ClientError> {
     let status = response.status().as_u16();
     if status != 200 {
         return Err(ClientError(Failure::Http(status)));
@@ -111,7 +117,7 @@ fn read_jpeg(response: Response<ureq::Body>, deadline: Instant) -> Result<Vec<u8
                 _ => Failure::Network,
             })
         })?;
-    remaining(deadline)?;
+    deadline.remaining()?;
     if bytes.len() as u64 > JPEG_SIZE_BYTES_MAX
         || !bytes.starts_with(&[0xff, 0xd8])
         || !bytes.ends_with(&[0xff, 0xd9])

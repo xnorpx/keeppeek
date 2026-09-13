@@ -1,5 +1,8 @@
 # KeepPeek Release QA Bugs
 
+The original findings below remain as historical regression evidence. The current audit is in
+[Alpha audit, 2026-09-12](#alpha-audit-2026-09-12).
+
 Tested 2026-08-23 against the local `v0.1.0` release build on macOS 26.6.1 with
 nine real cameras. Browser checks used Chromium at the authored Paper viewports of
 1440 x 900 and 390 x 844. Visual expectations came from `KeepPeek - NVR Design
@@ -596,3 +599,601 @@ decoded H.264 in 1.10 seconds and HEVC in 319 ms without a media error or stale 
 - Focus quality changes were responsive: Deck switched to 640 x 360 low in 688 ms and back
   to 3840 x 2160 high in 1.01 seconds.
 - Dark/light theme switching and the core mobile bottom navigation remained functional.
+
+## Alpha audit, 2026-09-12
+
+**Decision: do not close #145 or declare a feature freeze from this audit.** The original audit
+found a security defect, and the release gate promises workflows outside the documented shipped
+scope. Physical-camera, clean-host recovery, cross-browser/device, and soak evidence is incomplete.
+The subsequent fixes and their verification are recorded below.
+
+Audited main `4bc3ab18f3240bb0777c84c45a4c48dcb0829dae`. Runtime checkout
+`4df9a94e2a09fbc02346af363ea79f6b8027d8a2` has the identical Git tree. Environment: Windows 11
+build 26200 x64, Ryzen 5 5600G, 12 logical CPUs, 15.34 GiB RAM, Bun 1.4.0, Chromium
+151.0.7922.34. Runtime fixtures lived on NTFS. Changes include audit tests, this ledger, empty book
+chapters and their contents entries, and the subsequently authorized Paper design/reference update.
+The original audit did not change application implementation, protected contracts, or approved
+Loki baselines. The subsequent authorized remediation changes implementation and adds regressions;
+protected contracts and approved Loki baselines remain unchanged.
+
+The baseline is the complete successful [PR CI run](https://github.com/xnorpx/keeppeek/actions/runs/34722005032)
+and [nine-job extended Main run](https://github.com/xnorpx/keeppeek/actions/runs/34722240086)
+on that equivalent production tree. The previous canonical Windows check passed 2,398 Rust tests,
+611 UI unit tests, and 242 browser tests. Its 21 Rust and two browser skips were pre-existing.
+New checks below distinguish a current reproducer from inherited baseline evidence.
+
+The initial `check.bat` attempts failed in existing Rust deadline tests (KP-QA-010 and
+KP-QA-011). A subsequent serial `cargo nextest run --all --no-fail-fast` completed with
+2,398 passed and 21 pre-existing skips in 453.144 seconds. Both intermittent cases passed
+in that run; this does not resolve their earlier failures or make the canonical check green.
+Clippy with warnings denied, unused-dependency checks, Rust/TOML/Python formatting, and the
+book build passed separately. The book used CI's mdBook 0.5.4 and Mermaid preprocessor 0.17.1.
+The fresh end-to-end run passed 242 tests with the two pre-existing codec skips in 4.5 minutes,
+using two workers and the unchanged release binaries. UI static checks passed. The normal UI
+quality command failed as recorded in KP-QA-012; Bun and compatibility phases independently
+passed 361 and 57 tests respectively. Serial browser-unit diagnostics passed 125 client and
+68 visual tests, completing all 611 UI unit cases across the separate runs. This preserves
+coverage but does not make the default quality command reliable. Logs are retained under
+`target/alpha-audit/`. The final canonical rerun stopped at the native-event shutdown bound
+(KP-QA-014). Fresh UI static validation then passed separately, including Svelte's zero-error,
+zero-warning check and E2E type checks. The complete Bun unit phase passed 366 tests across
+64 files, including all five new reference tests. Logs: `ui-reference-static.log` and
+`ui-reference-bun.log`. That audit candidate did not pass the complete canonical gate.
+
+### Remediation verification
+
+The user subsequently authorized implementation fixes and regression tests. All 14 original
+findings have fixes; two additional camera-navigation defects were reproduced and fixed during
+this work. The final Windows `check.bat` passes: **2,417 Rust tests**, **617 UI unit tests**
+(367 Bun, 193 browser, 57 compatibility), and **255 E2E tests**. The 21 existing Rust skips and
+two existing HEVC browser skips remain unchanged. Clippy, dependency, Rust/TOML/Python formatting,
+UI lint/types/formatting, and Paper checks also pass.
+
+Validation used the hash-matched NTFS checkout described above, two Cargo build jobs, and serial
+Rust tests. E2E used its default six workers with no retries; all 13 new mobile cases pass,
+including exact-midnight selection. Evidence: `target/alpha-fixes/canonical.log` and the source
+SHA-256 manifest `candidate-files.json`. The Rust suite passed in 313.596 s and E2E in 1.8 min.
+
+Earlier integrated attempts caught a stale Paper positioning evidence string and an inherited
+Bun worker marker in the new Playwright collection regression. Both are corrected: the active
+evidence matches README's Alpha status, and the standalone child CLI excludes `JEST_WORKER_ID`
+while retaining all four collection assertions. The parallel Bun reproduction and passing rerun
+are recorded in `target/alpha-fixes/bun-collector-red.log` and `bun-collector-green.log`.
+The rows below describe focused verification.
+
+| Finding       | Fix and regression evidence                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| KP-QA-001     | Protected Windows file creation and handle-based ACL verification before writes. Twelve Windows tests pass, including inherited readers, incomplete transfer cleanup, existing files, long paths, alternate streams, malformed ACLs, and SYSTEM ownership. Restoring the old implementation makes the before-write test fail. Unix `0600` behavior has an added regression; Unix and SMB runtime were not exercised locally.          |
+| KP-QA-002     | Cancel has a 44×44 px hit area. The default E2E test measures the button and taps it to verify cancellation.                                                                                                                                                                                                                                                                                                                          |
+| KP-QA-003     | The timeline config selects only `timeline.performance.ts`. A normal Bun regression runs the actual Playwright collector. Unqualified `bun run perf:timeline` passes its 150 ms p95 budget and 1,600-node guard.                                                                                                                                                                                                                      |
+| KP-QA-004–009 | Corrected audit/session and MQTT restart contracts, camera grants, all seven native event fields and limits, Alpha status, and maintenance qualification evidence. Independently checked against source and existing operator guides; mdBook 0.5.4 with Mermaid 0.17.1 builds. Roadmap #147 prose now records all 12 core Alpha issues closed while #145 stays open; no gate checkboxes changed.                                      |
+| KP-QA-010–011 | Controlled transport tests exercise actual authentication and ureq timeout configuration, asserting exact 1,000→800→600 ms snapshot budgets, 150 ms SOAP budgets, and exact-expiry rejection. Real three-request authentication and stalled header/body cases retain completion watchdogs. ONVIF focused validation passes 56 tests with one pre-existing ignored test; removing the new late-body guard makes its regression fail.   |
+| KP-QA-012     | Each browser project has one worker, bounding the two pools to two workers total. The unchanged standard command passes all 193 browser-unit tests in 25.35 s; the original default run had 12 failures in 48.87 s. Tests and deadlines are unchanged. These single runs demonstrate the observed result, not a statistical flake-rate claim.                                                                                         |
+| KP-QA-013     | Compact mobile Keep follows Board 46. Default E2E tests cover initial event intersection at 320/390 px, healthy decoded footage, all rates and volume, camera/day sheets, Back/Forward, focus, copy failure, quality/refresh, rotation, and real fullscreen. Media identity and open/close/seek counts verify player and session continuity during sheets and resizing; those mocked transitions do not prove uninterrupted decoding. |
+| KP-QA-014     | A private clock/wait seam verifies the exact five-second drain and a 4.99-second acknowledgement. The real worker still must finish in five to six seconds, with acknowledgement lifetime, stopped state, and dropped counts intact. All five consumer pressure tests pass in 5.33 s.                                                                                                                                                 |
+| KP-QA-015–016 | Same-clock camera changes retain timeline viewport information and issue new-camera event/day queries. Camera/day selection uses the existing exact-moment policy, showing gaps instead of silently jumping. Request-level and timestamp regressions failed before their fixes and pass afterward; explicit next-recording recovery remains tested.                                                                                   |
+
+The standalone timeline run used the recorded Windows/Bun/Chromium environment with a concurrent
+Rust compile: desktop initial-render p95 94 ms, maximum interaction p95 48.9 ms, and 1,430 peak
+nodes; mobile initial-render p95 34.1 ms, maximum interaction p95 49.2 ms, and 205 peak nodes.
+It passed in 14.7 s. This verifies the repaired command against its budgets; it is not an isolated
+before/after comparison of application performance. Evidence: `target/alpha-fixes/timeline-performance.log`
+and `browser-bounded.log`. Focused Rust and mobile evidence remains under `target/alpha-audit/`.
+
+The final release CLI export check also passes: a complete 266-byte synthetic archive, exit zero,
+and no broad inherited read rules. Evidence: `target/alpha-fixes/windows-export-acl.json`,
+binary SHA-256 `6215b0fba41079cbd86c38480b47f65856cae00944dfd56efcf8a0e62ebded7f`.
+The final opt-in render audit passes all 39 cases in 44.7 s; evidence:
+`target/alpha-fixes/render-audit.log`.
+
+### Findings and fixes
+
+The following descriptions retain the original failure evidence. Resolution status refers to the
+working-tree fixes above. Owning areas are triage destinations, not assigned people.
+
+#### KP-QA-001 [P1] Windows configuration export leaves plaintext secrets readable through inherited ACLs
+
+**Status:** Resolved in the working tree. **Owner area:** Backup/security. **Target:** Alpha blocker.
+
+1. On Windows, create an NTFS directory with an inheritable `BUILTIN\Users` read permission.
+2. Run `keeppeek config --server http://127.0.0.1:<fixture-port> export --output <directory>/configuration.zip`.
+3. Inspect the exported file's ACL. Use the synthetic reproducer below; real secrets are unnecessary.
+
+The command exits zero and writes the complete archive, but the file retains inherited
+`S-1-5-32-545` `ReadAndExecute, Synchronize`. The format contains plaintext `secrets.toml`.
+`src/backup/http_client.rs:222` applies private permissions only under `cfg(unix)`;
+`docs/backup-and-restore.md` promises an owner-only CLI export. A readable destination therefore
+exposes secrets to other local users despite a successful export.
+
+**Expected:** Establish restrictive Windows permissions at file creation, or reject an unsafe
+destination without leaving readable secret content. Verify both successful private export and
+failure cleanup. Until fixed, export only into an independently verified private directory.
+
+**Reproducer:** `powershell -NoProfile -ExecutionPolicy Bypass -File tests/qa/windows-export-acl.ps1`.
+It creates synthetic ZIP data, uses loopback only, checks the successful CLI result before the
+security assertion, and cleans its files and processes. It failed on the original audit candidate.
+Evidence: `target/alpha-audit/windows-export-acl.json`, including the tested binary SHA256.
+
+#### KP-QA-002 [P2] Mobile Add Camera cancellation has an 18 px touch target
+
+**Status:** Resolved in the working tree. **Owner area:** Onboarding/accessibility. **Target:** Alpha usability.
+
+Open `/cameras/new` at 390 x 844 and inspect **Cancel add camera**. The button's actual bounding
+box is 18 x 18 CSS px; `MobileAddCameraWizard.svelte:175` explicitly uses `size-[18px]` without
+a larger hit-area wrapper. It is unnecessarily difficult to cancel the wizard with a finger.
+This is below the design audit's 44 x 44 touch-target guideline; this finding does not claim
+a WCAG failure without evaluating that standard's spacing exceptions.
+
+**Expected:** Keep the icon compact while giving its button at least a 44 x 44 hit area.
+**Regression:** From `ui/`, run `bunx playwright test mobile-keep.e2e.ts --grep 44px`.
+The assertion reports `Expected >=44, Received 18`. Screenshot and geometry are in
+`target/alpha-audit/ui-surfaces-verified/` and `target/alpha-audit/ui-surfaces.json`.
+
+#### KP-QA-003 [P2] The documented timeline benchmark selects incompatible live-wall tests
+
+**Status:** Resolved in the working tree. **Owner area:** Performance QA. **Target:** Before Beta measurements.
+
+From `ui/`, run `bunx playwright test --config playwright.timeline-performance.config.ts --list`.
+It selects the timeline, Peek transitions, and Peek wall tests. The config's
+`testMatch: '**/*.performance.ts'` is broader than its setup: it starts only the static timeline
+preview, while Peek needs a nine-camera backend and the production UI. Consequently the documented
+`bun run perf:timeline` is not an isolated, reproducible timeline gate.
+
+**Expected:** The command selects exactly the workload its servers and fixtures support.
+**Workaround used for measurement:** Append `timeline.performance.ts` explicitly.
+
+#### KP-QA-004 [P2] The book promises access audit persistence that the server deliberately does not provide
+
+**Status:** Resolved in the working tree. **Owner area:** Access documentation. **Target:** Alpha.
+
+`book/src/authentication.md:237` promises atomic audit writes to `config.toml` within one second
+and on shutdown. `docs/access-control.md:187` states that audit history, sessions, and last-use
+activity reset on restart. The implementation agrees with the latter: `src/access.rs` clears
+audit on open, has a no-op `flush_audit`, and tests `credential_lifecycle_persists_in_config_and_audit_resets_on_reopen`.
+Operators could rely on evidence that will not survive restart.
+
+**Expected:** The book distinguishes persistent credentials/grants from transient audit/activity
+and explains the external log retention needed for durable evidence. No audit persistence claim
+should remain without a restart test proving it.
+
+#### KP-QA-005 [P2] Release guidance incorrectly promises MQTT outbox recovery after restart
+
+**Status:** Resolved in the working tree. **Owner area:** Integrations documentation. **Target:** Alpha.
+
+`book/src/release-readiness.md:68` groups MQTT outbox state with durable recovery checks.
+`book/src/notifications-and-integrations.md:102` and `docs/event-forwarder.md` explicitly discard
+pending publications and deduplication history on restart. `src/event_forwarder/outbox.rs` tests
+the new empty outbox. This creates an incorrect delivery/recovery expectation.
+
+**Expected:** State the actual loss/replay boundary and a reproducible restart procedure without
+claiming durable pending delivery. Keep durable operational event records distinct from transient
+notification and MQTT runtime state.
+
+#### KP-QA-006 [P2] Release limitations say per-camera permissions are unavailable
+
+**Status:** Resolved in the working tree. **Owner area:** Access documentation. **Target:** Alpha.
+
+`book/src/release-readiness.md:101` recommends separate instances because per-camera permissions
+are supposedly unavailable. `book/src/authentication.md:89` documents shipped server-enforced
+camera grants and dashboard audiences. Server tests cover camera filtering, guarded direct
+subscriptions, revocation, and revision-bound persistent grants. The limitation directs operators
+away from a supported security workflow.
+
+**Expected:** Describe the tested camera-grant model and its actual limits consistently.
+
+#### KP-QA-007 [P2] The configuration reference omits native camera event settings
+
+**Status:** Resolved in the working tree. **Owner area:** Camera-event documentation. **Target:** Alpha.
+
+The `CameraConfig` field table in `book/src/configuration-reference.md:215` omits the `events`
+table and its mode, metadata-stream, source/topic/endpoint, and snapshot fields. These fields
+are documented in `docs/onvif-events.md` and `docs/configuration-management.md:99`, and some are
+file-only. An operator using the advertised complete reference cannot configure this feature.
+
+**Expected:** Synchronize the existing reference with supported fields, defaults, limits, and
+secret-reference behavior. The empty `native-camera-events.md` placeholder is for the missing
+operator workflow; it does not repair this existing reference.
+
+#### KP-QA-008 [P3] Release phase guidance and roadmap prose are stale
+
+**Status:** Resolved in the working tree. **Owner area:** Release documentation. **Target:** Alpha.
+
+The book introduction, get-started, and release-readiness chapters still discuss MVP/#144;
+README still says POC, while #147 says Alpha. #147 also checks #133/#114 complete but calls them
+remaining implementation work in its prose. Readers cannot identify the current gate reliably.
+
+**Expected:** Use one evidence-backed phase and link #145 as the active gate. Do not imply that
+Alpha qualification is complete merely because implementation issues are closed.
+
+#### KP-QA-009 [P3] Recording-maintenance qualification notes retain obsolete status
+
+**Status:** Documentation resolved; remaining hardware limits still need qualification.
+**Owner area:** Maintenance documentation. **Target:** Alpha.
+
+`book/src/recording-maintenance.md:5` labels #133 incomplete, although it closed September 8.
+Its closing verification section also says Windows compilation/runtime remain unverified.
+The linked current Main run and local canonical run now exercise Windows implementation and
+synthetic deletion. The book should link that evidence while retaining any untested real-filesystem
+or physical deployment limits; synthetic tests alone do not establish every storage claim.
+
+#### KP-QA-010 [P2] Snapshot deadline regression assumes authentication progress under scheduling contention
+
+**Status:** Resolved in the working tree. **Owner area:** ONVIF test reliability.
+**Target:** Before release qualification can rely on repeatable full-suite results.
+
+During canonical `check.bat` with two concurrent Rust tests, `onvif::event_snapshot_deadline`
+failed `snapshot_uses_one_deadline_across_challenges_and_the_body` at line 56: expected three
+requests, observed one. The error and one-second deadline assertions passed. An immediate isolated
+run of the same compiled test passed in 1.03 seconds. This is scheduling-sensitive test evidence,
+not a demonstrated snapshot timeout violation.
+
+The fixture sleeps 200 ms before each of two challenges and assumes both finish within the
+overall one-second request budget. Contention can consume that budget before the second request.
+The full run stopped after 1,388 passes, leaving 1,009 tests unrun. Raw evidence is in
+`target/alpha-audit/alpha-audit-canonical.log`.
+
+**Expected:** Preserve proof of one deadline across authentication and body reads while making
+protocol-stage progress independent of scheduler slack. Keep the deadline assertion; do not fix
+this by simply deleting the three-request coverage or broadly extending timeouts. A full serial
+rerun is recorded separately and does not erase the failure.
+
+#### KP-QA-011 [P2] SOAP deadline test exceeds its wall-clock bound in the serial suite
+
+**Status:** Resolved in the working tree. **Owner area:** ONVIF deadlines/test reliability.
+**Target:** Before release qualification relies on repeatable timing evidence.
+
+`onvif::event_client::soap_deadline_covers_stalled_headers_and_body` failed at
+`crates/onvif/onvif/tests/event_client.rs:58`: elapsed 470.2203 ms against a 150 ms request timeout
+plus 150 ms allowed overhead. The serial canonical run stopped after 1,269 passes, leaving 1,128
+tests unrun. The same compiled test immediately passed alone in 0.31 seconds.
+
+This establishes unreliable wall-clock qualification on this Windows host. It does not establish
+whether the overrun comes from application deadline accounting, Windows socket behavior, or
+scheduler delay. Preserve both stalled-header and stalled-body cases and profile the deadline path
+under load before choosing a fix. Do not simply raise its limit or remove the assertion.
+Evidence: `target/alpha-audit/alpha-audit-canonical-final.log`.
+
+#### KP-QA-012 [P2] Default Windows browser-unit validation times out across unrelated features
+
+**Status:** Resolved in the working tree. **Owner area:** UI test infrastructure.
+**Target:** Reliable Alpha validation.
+
+Run `bun run quality:check` from `ui/` on this 12-thread Windows host. Static checks and all
+361 Bun tests passed, then the Chromium client/visual phase reported 181 passed and 12 failed
+across 57 files in 48.87 seconds. Every failure hit the existing 15,000 ms test deadline;
+there were no assertion mismatches. The compatibility phase did not start because the command
+stopped on the browser failures.
+
+Affected files: `CameraAccessDialog`, `CopyMomentLink`, `EventPreview`, `FocusedMediaViewport`,
+`HorizontalTimeline`, `NotificationsRuntime`, `PeekWallSettings`, `RecordedPlaybackControls`,
+`VerticalTimeline`, Home Assistant `elements`, `Board06PeekLiveWall`, and `Board13StorageRetention`.
+These are one observed validation problem, not twelve established production defects.
+
+`ui/vite.config.ts` leaves browser workers at their default. Installed Vitest 4.1.11 creates
+separate concurrent pools for the client and visual projects; on this host each can use 11
+workers. Nearby passing interaction tests took 8–14 seconds while many static checks took
+less than 200 ms. Excess concurrency is a supported hypothesis, not a proven root cause.
+An attempted `bun run test:unit:browser --maxWorkers=2` diagnostic still reported 187 passed
+and six timeouts. Installed Vitest does not forward that root option to these project browser
+pools, so it did not establish the intended concurrency limit. A valid controlled diagnostic
+runs `bun run test:unit run --project client --no-file-parallelism` and then the corresponding
+`--project visual` command separately, retaining every test, assertion, and original deadline.
+Those runs passed all 125 client tests in 25.79 seconds and all 68 visual tests in 18.06 seconds.
+This supported browser-pool contention as the cause hypothesis. The subsequent project-level worker limits and standard-command pass are recorded in the remediation table.
+
+**Expected:** The documented quality command completes reliably on supported development/CI
+hosts with bounded browser concurrency. Preserve functional coverage and timing assertions
+while diagnosing scheduling and browser interaction readiness.
+Evidence: `target/alpha-audit/ui-quality.log` and `target/alpha-audit/ui-browser-bounded.log`.
+The successful diagnostics are `target/alpha-audit/ui-client-serial.log` and
+`target/alpha-audit/ui-visual-serial.log`. The independently completed compatibility phase
+passed all 57 tests.
+
+#### KP-QA-013 [P2] Mobile Keep pushes recording history below the initial viewport
+
+**Status:** Resolved in the working tree. **Owner area:** Keep/mobile design.
+**Target:** Alpha usability.
+
+Open a populated camera/day in Keep at 390 x 844. The stacked mode, camera, date, quality,
+refresh, and copy controls consume the space above the player. Playback controls then push
+the timeline's event row below the fixed bottom navigation. The first screen provides almost
+no recording history to browse. Scrolling reaches it; this is not a demonstrated playback or
+seek failure.
+
+**Evidence:** `target/alpha-audit/ui-surfaces-verified/alpha-audit-keep-fixture-r-f995e-low-or-page-errors-at-390px/surface.png`.
+From `ui/`, capture it with
+`bunx playwright test --config playwright.alpha-audit.config.ts --grep 'keep fixture.*390px'`.
+That render check currently passes because it checks overflow/errors, not initial history visibility.
+The existing mobile case at `ui/e2e/keep-timeline.e2e.ts:609` verifies event-card containment
+and 44 px controls but also lacks an assertion that history appears above bottom navigation.
+
+The added touch regression `mobile Keep shows recording history above navigation without scrolling`
+checks the first event card against the navigation boundary without scrolling. The focused NTFS
+run fails at the intended assertion: event bottom 902.47 px, navigation top 766 px, and page/main/
+content scroll positions all zero. Its metadata-only fixture displays the existing media
+initialization error, so this result qualifies initial history geometry in that state, not decoded
+playback. The earlier render capture also shows the crowded layout. Evidence:
+`target/alpha-audit/keep-mobile-initial-viewport-ntfs.log`, `keep-mobile-initial-geometry.json`,
+and `keep-mobile-initial-viewport.png`. Preserve a healthy decoded-media case when fixing this.
+
+The horizontal portrait timeline is deliberate: commit `e6137adf` introduced it, and
+`ui/src/routes/keep/+page.svelte:365` selects it below 768 px in portrait. The older Board 22
+Paper story still forces `VerticalTimeline` and uses a decorative player. Orientation alone
+is not a defect, and a compact replacement Paper reference does not implement a production fix.
+
+**Expected:** Keep the horizontal timeline and group the command area so the default 390 x 844
+view shows footage, primary playback controls, and the timeline event row above bottom navigation.
+Preserve camera/day navigation, all modes, quality, refresh, copy, transport, volume, speed,
+fullscreen, and digital zoom; secondary controls can use an accessible menu or sheet. Retain
+44 x 44 touch targets, keyboard access, focus/error states, and zoom controls outside the image.
+Keep the added initial-viewport geometry assertion alongside interaction coverage.
+
+#### KP-QA-014 [P2] Native-event shutdown deadline fails in the canonical Windows check
+
+**Status:** Resolved in the working tree. **Owner area:** Native events/test
+reliability. **Target:** Reliable Alpha qualification.
+
+After a fresh Windows debug build, `check.bat` failed
+`camera_events::consumer::pressure_tests::shutdown_finishes_within_six_seconds_when_native_ack_is_withheld`.
+Nextest reported 11.214 seconds for the test process. The failure is the post-join
+`started.elapsed() < Duration::from_secs(6)` assertion at
+`src/camera_events/consumer/pressure_tests.rs:228`, not its channel-receive assertion.
+The production consumer has a five-second pending-event drain deadline in
+`src/camera_events/consumer.rs:139`. This evidence does not isolate runtime shutdown behavior
+from Windows scheduling delays; investigate both before treating the failure as harmless.
+
+The run used one nextest thread and stopped after 181 passes and this failure; 2,216 tests did
+not run, and the canonical script did not reach its later quality stages. The earlier complete
+2,398-test pass remains separate evidence. Preserve the shutdown bound, acknowledgement lifetime,
+stopped state, and dropped-event assertions when diagnosing this failure.
+
+**Evidence:** `target/alpha-audit/canonical-reference-update.log`.
+Focused follow-up: `cargo nextest run --all -E 'test(shutdown_finishes_within_six_seconds_when_native_ack_is_withheld)' --no-fail-fast`.
+That isolated follow-up passed in 5.595 seconds without assertion changes. Its log is
+`target/alpha-audit/native-ack-shutdown-isolated.log`. The narrow remaining margin and earlier
+failure warrant investigation; one passing rerun does not resolve the canonical failure.
+
+#### KP-QA-015 [P2] Same-clock camera switches can omit timeline events and recorded days
+
+**Status:** Resolved in the working tree. **Owner area:** Keep navigation.
+
+Open a populated camera at 06:07, wait for its timeline metadata, and select another camera at
+the same day and clock position. The camera's video changes, but event and recorded-day queries
+for the new camera can remain absent. Previous-day navigation then stays disabled even when
+the new camera has older recordings.
+
+`selectCamera` cleared `latestTimelineViewport`, while the horizontal timeline reports its
+viewport again only when its geometry or day changes. A same-clock switch changes neither.
+Recording-day discovery also needs to consume pending work when secondary loading has already
+been released. Retain the current viewport and let the existing bounded query scheduling use
+the new camera identity.
+
+The new default E2E regression observes outgoing event and day-bucket queries after a switch.
+Removing the minimal fix makes both remain absent for the full ten-second assertion deadline;
+it does not merely inspect a mocked button state. Evidence:
+`target/alpha-audit/mobile-camera-metadata-red.log`.
+
+#### KP-QA-016 [P2] Camera selection can silently jump away from an unavailable recording moment
+
+**Status:** Resolved in the working tree. **Owner area:** Keep navigation.
+
+Select 06:04 on one camera, then switch to a camera whose nearest recording starts at 06:06:40.
+The original path silently changes the playhead from `1787033040000` to `1787033200000` instead
+of keeping the investigation moment and showing the gap. The new regression failed on this
+exact timestamp mismatch in `target/alpha-audit/mobile-keep-expanded-retry.log`.
+
+Camera and recorded-day navigation must preserve the selected UTC clock position. When the
+destination has no footage there, retain that moment, show the gap, and keep explicit previous/
+next-recording actions available. Forward the existing exact-moment policy through these
+selection paths; do not add a second seeking policy or fabricate footage.
+
+The exact playback-end boundary also needs normalized UTC time-of-day. At midnight, subtracting
+the old selected day's start produced a full-day offset and selected the day after the user's
+chosen date. A regression drives the route's `timeupdate` and `ended` handlers, changes to an
+older recorded day, and checks that day's midnight and explicit gap. It failed before the modulo
+fix and passes afterward, alongside the existing date/navigation test (2/2 in 10.3 s).
+Evidence: `target/alpha-audit/mobile-midnight-red.log` and `mobile-midnight-green.log`.
+
+### Release-contract discrepancies requiring an owner decision
+
+These are not mislabelled runtime failures. Current behavior is intentionally documented, but
+it cannot satisfy #145 as written. Keep the gate open until implementation or an explicit,
+reviewed gate change resolves each discrepancy.
+
+| Gate requirement                                                     | Shipped/documented behavior                                                                                              | Required decision or evidence                                                                       |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| Dry-run recovery and clean-host playback/export of restored metadata | Format-3 export contains exactly configuration and plaintext secrets; no databases/media and no separate dry-run request | Define and rehearse a consistent recording archive recovery workflow, or explicitly revise the gate |
+| Home Assistant live/event/recorded navigation                        | Direct card supports live only; event ribbon and timeline playback are not implemented                                   | Implement the promised navigation or explicitly narrow the Alpha claim                              |
+| No normal Alpha feature requires manual configuration editing        | Native camera event policy and direct-card allowed origins still require file edits                                      | Supply the intended visual workflows or record deliberate scope exceptions with consequences        |
+
+### Evidence and feature coverage
+
+The new visual suite captures 13 surfaces at 1440 x 900, 390 x 844, and 320 x 844: Dashboard,
+Viewer, Cameras, onboarding, Keep, Events, Health, Settings, storage, access, integrations, logs,
+and maintenance. **39/39** fixture cases passed document-overflow and uncaught-error checks after
+correcting the audit fixtures. Accessibility trees, screenshots, and control geometry are retained.
+This uses desktop pointer behavior at each width and checks rendering and navigation structure,
+not every mutation, decoded media, touch gesture, or WCAG compliance. The separate touch-target
+test enables mobile and touch emulation; existing end-to-end tests cover coarse-pointer zoom
+controls and horizontal toolbar scrolling.
+The original separate mobile target assertion failed; its fix now has a default touch regression.
+The mechanical design detector's one border-accent
+warning was rejected as a false positive: it marks an intentional retention warning, not a defect.
+
+The visual review found a coherent shell, consistent camera-health states, readable desktop/mobile
+hierarchy, and no horizontal document overflow in the checked states. The mobile hit area is fixed;
+complete contrast and screen-reader verification remain outstanding. Theming has
+existing regression tests, but this added screenshot sweep is not a complete light-theme certification.
+
+| Feature family                                    | Available verification                                                                                                  | Remaining Alpha qualification                                                    |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Installation and onboarding/catalog               | Existing wizard, authentication, probe, manual RTSP, catalog, real-video/keyframe tests; new three-width captures       | Physical mixed-fleet onboarding and packaged clean installation                  |
+| Configuration, inheritance, templates, bulk edits | Existing revision/secret/conflict/draft/restart tests and full browser baseline                                         | Real device activation and every file-only policy                                |
+| Dashboards, layouts, Viewer, kiosk                | Existing persistence/import/audience/admission/keyboard/browser tests and captures                                      | Measured nine-camera wall on representative devices and long-running kiosk       |
+| Keep, codecs, zoom, moment links                  | Existing real H.264/mixed-codec/seek/pixel tests; measured zoom/copy; captures                                          | Current physical-camera cold seek, supported browser codecs and low-end devices  |
+| Events, reviewed/dismissed/bookmarks, exports     | Existing paging, conflict, held evidence, canonical media and export lifecycle tests                                    | Real export throughput/memory and recovery of restored review metadata           |
+| Access, roles, camera grants                      | Existing server filtering/revocation/origin tests and browser role tests; passing Windows export ACL regressions        | Actual remote proxy/VPN topology and other supported-platform security matrices  |
+| Health, logging, diagnostics                      | Existing stale/fresh/recovery/redaction tests; captures; measured diagnostics                                           | External durable audit/log retention rehearsal                                   |
+| Backup, restart, migration                        | Existing malformed archive, atomic two-file activation and rollback tests; passing ACL tests and rebuilt CLI check      | Recording archive recovery on a clean host and version upgrade/rollback matrix   |
+| Deletion and reconciliation                       | Existing durable job, confinement, held evidence, race/restart tests and real-media browser deletion                    | Real deployment filesystem crash/recovery rehearsal                              |
+| Native events and external analysis               | Existing renewal/dedupe/saturation/recorder-isolation tests; focused Python tests: 28 passed, one existing Windows skip | Physical generic/native sources and real model start/fail/restart                |
+| Notifications, MQTT, integrations                 | Existing authorization, retry, resource-bound and secret-safety coverage; corrected restart documentation               | Provider/network failure and MQTT restart rehearsal                              |
+| Home Assistant                                    | Existing direct-card pixels, sharing/reconnect/origin and real-container CI                                             | Published install/upgrade/rollback; gate's unsupported event/recorded navigation |
+
+### Performance measurements
+
+Sequential runs used existing budgets without production changes. Full workloads, commands,
+environment, and JSON reports are in `target/alpha-audit/performance/report.md`.
+
+| Workload                                                 | Samples                                | Measured p95                          | Existing budget |
+| -------------------------------------------------------- | -------------------------------------- | ------------------------------------- | --------------- |
+| Diagnostics, 10,000 server and 2,000 browser logs        | 3 warmups + 15 measured                | 283.33 ms                             | 1,500 ms        |
+| Dense timeline initial render, 1,440 segments/600 events | 10 per viewport                        | Desktop 82.4 ms; mobile 26.6 ms       | 150 ms          |
+| Timeline zoom/pan/seek/drag/filter                       | 20 per operation                       | Worst desktop 48.9 ms; mobile 49.3 ms | 150 ms          |
+| Live digital zoom, H.264 640 x 360 at 15 fps             | 3 x 120 frames, 20 pointer moves/frame | Input 1.0 ms                          | 8 ms            |
+| Copy recording link                                      | 20 baseline + 20 copy                  | Copy 17.8 ms; baseline 18.4 ms        | 250 ms          |
+
+Timeline DOM remained bounded at 1,430 desktop/205 mobile nodes against 1,600. Copy added no
+session/open/close/seek/subscription work. Desktop timeline startup recorded a descriptive 102 ms
+long-task p95; interaction budgets passed, so profile startup separately before calling it an
+interaction regression. No real-user Core Web Vitals claim is made.
+
+Additional **hosted evidence**, not fresh local measurements, came from the successful PR CI on
+the same `4df9a94e` production tree:
+
+- External analysis, 20 samples: commit p95 60.472 ms against 2,000 ms; fanout p95 131.323 ms
+  against 2,500 ms. Resident-memory delta p95 was 93,687,808 bytes over 61 observations against
+  134,217,728 bytes. Queue high-water marks were one of 64 items and 439,108 of 8,454,144 bytes.
+  Evidence used H.264/H.265 640 x 360 low streams and a 3840 x 2160 JPEG of 438,622 bytes.
+- Home Assistant, ten paired samples: shared bootstrap p95 1,895.5 ms against 10,000 ms;
+  isolated bootstrap was 1,079.2 ms. Sharing reduced sessions and subscriptions from three to one,
+  with a measured startup-latency tradeoff. All five real-container tests passed.
+- Backup/configuration benchmarks were explicitly ignored in the coverage job. The Slow Rust job
+  ran six stream/storage tests and supplied no backup or 127-camera benchmark measurements.
+
+Downloaded hosted artifacts and the extraction report are under `target/alpha-audit/performance/`.
+
+Unmeasured in this audit: nine-camera wall/transition fixture (derivatives absent and FFmpeg not
+available), real historical seek latency, large-fleet browser latency/memory, large export resource
+use, physical cameras, hardware/browser matrix, cold disks, remote networks, and sustained soak.
+Existing virtualization bounds and old measurements do not substitute for those current measurements.
+
+### Paper reference comparison and update
+
+The live [Paper reference](https://app.paper.design/file/01M0B0VBH78TMTX40GCYYQ37SG/1-0) was inspected
+and updated after the user authorized reference-design changes. The current export is
+[`ui/design/paper/keeppeek-nvr-alpha`](ui/design/paper/keeppeek-nvr-alpha/README.md): 36 NVR boards
+(01–34, 45, 46), 56 lossless 1× PNGs, original board JSX, and all 82 live tokens at revision
+`b35ec365`. The file's other products are excluded. All 80 shared token values still match the
+application; no runtime theme change was needed.
+
+Board 46 now specifies a compact mobile Keep default, playback-options sheet, and camera/date
+sheet. It preserves horizontal history, every existing playback rate, direct seeking, quality,
+camera/day navigation, moment links, refresh, mute/volume, fullscreen, and external zoom controls.
+The compact implementation now follows that proposal, with the route and interaction regressions
+listed above. Complete device/accessibility and pixel qualification remain separate. The current storage, access,
+ZIP, and recording-integrity supplements are also captured. The
+[design decisions](ui/design/paper/keeppeek-nvr-alpha/DESIGN-DECISIONS.md) distinguish deliberate
+implementation choices, historical frames, proposed improvements, and required runtime acceptance.
+
+Five new tests in the normal Bun unit suite pass with 3,366 assertions. They require all 36 boards
+and 56 scenario IDs, verify export hashes and PNG dimensions, and compare shared token values.
+They detect incomplete exports; they do not establish production pixel parity or live-file freshness.
+The historical v34 generated exports and existing approved Loki pixels were preserved. Its active positioning-evidence string now checks the corrected Alpha README status. Synthetic story diffs
+remain descriptive comparison artifacts and must not be treated as real-route acceptance.
+
+### Missing UI and automation coverage
+
+These are coverage gaps, not additional confirmed product defects. Existing unit, mocked-browser,
+real-server, and performance evidence above remains valid within its tested boundary.
+
+- **Opt-in render audit:** The 39 render cases remain under `ui/qa/`, selected only by
+  `playwright.alpha-audit.config.ts`. The two touch/history regressions moved into default
+  `e2e/mobile-keep.e2e.ts`, alongside eleven additional touch regressions. Windows export ACL
+  coverage is now part of normal Rust tests; the separate CLI reproducer remains available.
+- **Unreviewed Paper baselines:** The preserved v34 inventory lists 49 references, with 11 approved
+  Linux Loki baselines and 38 capability-gated candidates (`ui/design/paper/keeppeek-nvr-v34/COVERAGE.md:8`).
+  Loki uses `--requireReference=false`; missing references produce review artifacts rather than
+  approved comparisons (`ui/visual-harness/README.md:21`). The new Alpha reference tests validate
+  exported hashes, dimensions, scope, and shared tokens, not actual-route visual parity. Review
+  candidate overlays and test real-route geometry and expanded/error states before claiming parity.
+- **Missing live authorization transition:** Rotate, disable, and revoke an actual remote
+  credential while live and recorded media are decoding; assert media stops and the old key cannot
+  reconnect. `ui/e2e/access-auth.e2e.ts:27` simulates control-channel closure. The real-server grant
+  test at `ui/e2e/camera-access.e2e.ts:31` verifies camera filtering and denied control, but revokes
+  only after closing the user context, without a decoding-media assertion.
+- **Missing role/URL combinations:** Exercise a real remote User opening protected nested URLs
+  directly, plus a remote Admin signing in and completing a real mutation. Existing role tests
+  check hidden navigation and camera grants, not every restricted-prefix redirect in
+  `ui/src/routes/+layout.svelte:347`. Existing route tests cover Viewer, setup, diagnosis, and
+  maintenance; this is a role/state matrix gap, not an absence of those routes from all tests.
+- **Missing browser-to-restart persistence:** Save fleet settings/templates and dashboard imports
+  through the UI, restart the real server, and read them from a fresh browser. Configuration tests
+  (`ui/e2e/configuration.e2e.ts:112`) mock activation; dashboard CRUD/import tests
+  (`ui/e2e/peek-layout.e2e.ts:362`) reload a mocked registry. Backend persistence tests already
+  exist, but do not join the complete browser workflow to restart and reload.
+- **Missing complete storage move:** Stage a storage change through the UI, execute the actual
+  restart/move, then decode an existing recording, export it, and verify recording resumes.
+  `ui/e2e/settings.e2e.ts:584` checks staging with a mocked server and intentionally expects no
+  restart. `ui/e2e/backup.e2e.ts:170` performs a real configuration restart while preserving local
+  storage paths; neither is an end-to-end storage migration rehearsal.
+- **Missing dirty-state reconnect:** Disconnect the actual transport during a dirty editor or
+  pending mutation, reconnect, and verify draft, revision/conflict, completion, and error states.
+  `ui/e2e/configuration.e2e.ts:344` withdraws and restores capabilities on a living mock channel;
+  separate conflict/navigation tests do not exercise authentication loss and layout teardown.
+- **Browser and accessibility qualification:** The automated browser projects use Chromium;
+  Firefox/WebKit projects and corresponding codec/fullscreen/touch workflows remain absent.
+  Chromium on macOS does not qualify Safari. Named controls, keyboard, and touch-target tests
+  exist, but complete contrast, focus/dialog traversal, zoom/reflow, and screen-reader workflows
+  across themes and supported browsers remain unqualified. The 39 render captures do not supply
+  those assertions.
+- **Performance automation and workload gaps:** Dedicated timeline, diagnostics, digital-zoom,
+  nine-camera wall, and transition benchmarks exist but their dedicated runners are not invoked
+  by current workflows. Backup/configuration benchmarks are ignored, and the 127-camera catalog
+  benchmark is separate. Current fleet interaction latency/memory and sustained export
+  throughput/memory measurements remain missing despite lifecycle and virtualization coverage.
+  Nine-camera demo generation already runs on main pushes; external-analysis isolation and real
+  Home Assistant container checks are already enforced and passed in the inspected CI evidence.
+- **Soak and clean-host recovery qualification:** No automated combined recording/export/cleanup/
+  reconnect soak with memory-growth bounds was found. A sustained run and restore onto a clean
+  host, followed by independent playback/export verification, remain open release-gate work.
+  Existing atomic configuration restore/restart tests do not restore the media/catalog archive;
+  resolve the release-contract discrepancy above before treating a configuration ZIP as that test.
+
+### Empty book placeholders
+
+These files are deliberately zero bytes and linked from `SUMMARY.md`. They mark missing work;
+they are not finished documentation or evidence for closing the gate.
+
+- `book/src/native-camera-events.md`
+- `book/src/external-analysis.md`
+- `book/src/upgrades-and-migrations.md`
+- `book/src/recording-archive-recovery.md`
+- `book/src/camera-controls.md`
+
+### Reproducing the audit
+
+Install UI dependencies with `bun install --no-save` from `ui/` and install Chromium with
+`bunx playwright install chromium`. The Windows ACL reproducer requires a release executable at
+`target/release/keeppeek.exe`, or pass its absolute path with `-KeepPeekBinary`.
+
+Performance commands from `ui/`. The zoom and recording-link checks require the `keeppeek`
+and `test_camera` release binaries; prepare them with `bun run test:e2e:prepare` first.
+
+```powershell
+bun scripts/benchmark-diagnostics-bundle.ts
+bun run perf:timeline
+bunx playwright test --config playwright.digital-zoom-performance.config.ts
+bunx playwright test recording-links.e2e.ts -g 'copy has bounded latency' --workers=1
+```
+
+From `ui/`, `bunx playwright test --config playwright.alpha-audit.config.ts` runs the 39 opt-in
+render cases. `bunx playwright test mobile-keep.e2e.ts` runs the default mobile regressions.
+From the repository root,
+`powershell -NoProfile -ExecutionPolicy Bypass -File tests/qa/windows-export-acl.ps1` checks CLI
+export permissions. Rebuild first or pass a freshly built executable with `-KeepPeekBinary`;
+the old audit binary retains the reproduced defect. These assertions are enforced through the
+default E2E and Rust suites without skips or changed application limits.
+
+Local ignored evidence is under `target/alpha-audit/`; commands and observed values above remain
+in this tracked ledger so a clean checkout can reproduce findings without those local artifacts.

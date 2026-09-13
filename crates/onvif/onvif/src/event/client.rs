@@ -6,6 +6,7 @@ use digest_auth::{AuthContext, HttpMethod, WwwAuthenticateHeader};
 use ureq::http::HeaderMap;
 use url::Url;
 
+use super::deadline::Deadline;
 use super::{Endpoint, NOTIFICATION_XML_SIZE_BYTES_MAX, ProtocolError, Request, xml};
 use crate::soap::{auth::username_token::UsernameToken, client::Credentials};
 
@@ -151,62 +152,78 @@ impl Client {
         request: &Request,
         timeout: Duration,
     ) -> Result<Vec<u8>, ClientError> {
+        self.execute_with_clock(request, timeout, Instant::now)
+    }
+
+    pub(super) fn execute_with_clock(
+        &mut self,
+        request: &Request,
+        timeout: Duration,
+        now: impl Fn() -> Instant,
+    ) -> Result<Vec<u8>, ClientError> {
         if timeout.is_zero()
             || timeout > Duration::from_secs(15)
             || self.camera.resolve(request.endpoint.as_str()).is_err()
         {
             return Err(ClientError(Failure::Protocol));
         }
-        let deadline = Instant::now() + timeout;
+        let deadline = Deadline::new(timeout, now);
         let url = self.prepare_auth(&request.endpoint)?;
         for attempt in 0..AUTH_ATTEMPTS_MAX {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or(ClientError(Failure::Network))?;
-            let token =
-                UsernameToken::new(&self.credentials.username, &self.credentials.password, None);
-            let body =
-                request.envelope(Some(&token), &format!("urn:uuid:{}", uuid::Uuid::new_v4()))?;
-            let mut wire = self
-                .agent
-                .post(request.endpoint.as_str())
-                .header(
-                    "Content-Type",
-                    format!(
-                        "application/soap+xml; charset=utf-8; action=\"{}\"",
-                        request.action
-                    ),
-                )
-                .header("accept-encoding", "identity");
-            if let Some(challenge) = &mut self.challenge {
-                let target = &url[url::Position::BeforePath..url::Position::AfterQuery];
-                let mut context = AuthContext::new_with_method(
-                    self.credentials.username.as_str(),
-                    self.credentials.password.as_str(),
-                    target,
-                    Some(body.as_bytes()),
-                    HttpMethod::POST,
-                );
-                context.set_custom_cnonce(self.nonce.clone());
-                let authorization = challenge
-                    .respond(&context)
-                    .map_err(|_| ClientError(Failure::Authentication))?;
-                wire = wire.header("Authorization", authorization.to_string());
-            }
-            let response = wire
-                .config()
-                .timeout_global(Some(remaining))
-                .build()
-                .send(&body)
-                .map_err(|_| ClientError(Failure::Network))?;
+            let response = self.execute_post(request, &url, &deadline)?;
             validate_unique_headers(response.headers())?;
+            deadline.remaining()?;
             if response.status().as_u16() == 401 {
                 self.accept_challenge(response.headers(), attempt)?;
                 continue;
             }
-            return read_response(response);
+            let body = read_response(response)?;
+            deadline.remaining()?;
+            return Ok(body);
         }
         Err(ClientError(Failure::Authentication))
+    }
+
+    fn execute_post(
+        &mut self,
+        request: &Request,
+        url: &Url,
+        deadline: &Deadline<impl Fn() -> Instant>,
+    ) -> Result<ureq::http::Response<ureq::Body>, ClientError> {
+        let token =
+            UsernameToken::new(&self.credentials.username, &self.credentials.password, None);
+        let body = request.envelope(Some(&token), &format!("urn:uuid:{}", uuid::Uuid::new_v4()))?;
+        let mut wire = self
+            .agent
+            .post(request.endpoint.as_str())
+            .header(
+                "Content-Type",
+                format!(
+                    "application/soap+xml; charset=utf-8; action=\"{}\"",
+                    request.action
+                ),
+            )
+            .header("accept-encoding", "identity");
+        if let Some(challenge) = &mut self.challenge {
+            let target = &url[url::Position::BeforePath..url::Position::AfterQuery];
+            let mut context = AuthContext::new_with_method(
+                self.credentials.username.as_str(),
+                self.credentials.password.as_str(),
+                target,
+                Some(body.as_bytes()),
+                HttpMethod::POST,
+            );
+            context.set_custom_cnonce(self.nonce.clone());
+            let authorization = challenge
+                .respond(&context)
+                .map_err(|_| ClientError(Failure::Authentication))?;
+            wire = wire.header("Authorization", authorization.to_string());
+        }
+        wire.config()
+            .timeout_global(Some(deadline.remaining()?))
+            .build()
+            .send(&body)
+            .map_err(|_| ClientError(Failure::Network))
     }
 
     pub(super) fn prepare_auth(&mut self, endpoint: &Endpoint) -> Result<Url, ClientError> {

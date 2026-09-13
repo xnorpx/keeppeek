@@ -1,3 +1,7 @@
+<script lang="ts" module>
+	export const recordedPlaybackRates = [0.25, 0.5, 1, 1.5, 2, 4, 8];
+</script>
+
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Button } from './ui/button/index.js';
@@ -25,6 +29,7 @@
 		onskip: (seconds: number) => void;
 		onvolumechange: (volume: number) => void;
 		onratechange: (rate: number) => void;
+		onoptions?: () => void;
 	};
 
 	let {
@@ -41,9 +46,9 @@
 		onseek,
 		onskip,
 		onvolumechange,
-		onratechange
+		onratechange,
+		onoptions
 	}: Props = $props();
-	const rates = [0.25, 0.5, 1, 1.5, 2, 4, 8];
 	let fullscreen = $state(false);
 	let fullscreenAvailable = $state(false);
 	let fullscreenError = $state('');
@@ -139,29 +144,36 @@
 		>
 			{#if muted || volume === 0}<VolumeOffIcon />{:else}<VolumeIcon />{/if}
 		</Button>
-		<input
-			type="range"
-			aria-label="Recording volume"
-			title="Recording volume"
-			min="0"
-			max="1"
-			step="0.05"
-			value={volume}
-			{disabled}
-			class="h-11 w-16 min-w-0 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
-			oninput={(event) => onvolumechange(Number(event.currentTarget.value))}
-		/>
-		<select
-			aria-label="Playback speed"
-			title="Playback speed"
-			value={rate}
-			{disabled}
-			class="h-11 w-16 rounded-sm border border-input bg-background px-1 text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-			onchange={(event) => onratechange(Number(event.currentTarget.value))}
-		>
-			{#if !rates.includes(rate)}<option value={rate}>{rate}x</option>{/if}
-			{#each rates as speed (speed)}<option value={speed}>{speed}x</option>{/each}
-		</select>
+		{#if !onoptions || fullscreen}<input
+				type="range"
+				aria-label="Recording volume"
+				title="Recording volume"
+				min="0"
+				max="1"
+				step="0.05"
+				value={volume}
+				{disabled}
+				class="h-11 w-16 min-w-0 accent-primary focus-visible:outline-2 focus-visible:outline-ring"
+				oninput={(event) => onvolumechange(Number(event.currentTarget.value))}
+			/>{/if}
+		{#if onoptions && !fullscreen}
+			<Button
+				variant="outline"
+				class="h-11 min-w-11 px-2"
+				aria-label={`Playback speed ${rate}x, open playback options`}
+				onclick={onoptions}>{rate}x</Button
+			>
+		{:else}<select
+				aria-label="Playback speed"
+				title="Playback speed"
+				value={rate}
+				{disabled}
+				class="h-11 w-16 rounded-sm border border-input bg-background px-1 text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				onchange={(event) => onratechange(Number(event.currentTarget.value))}
+			>
+				{#if !recordedPlaybackRates.includes(rate)}<option value={rate}>{rate}x</option>{/if}
+				{#each recordedPlaybackRates as speed (speed)}<option value={speed}>{speed}x</option>{/each}
+			</select>{/if}
 		<Button
 			variant="outline"
 			size="icon"
