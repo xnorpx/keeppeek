@@ -28,6 +28,22 @@ async function startProbe(page: Page, accessKey?: string): Promise<void> {
 	}, accessKey);
 }
 
+async function signInUser(page: Page, key: string, cameraIds: readonly string[]): Promise<void> {
+	await page.getByLabel('Access key').fill(key);
+	await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: /^Choose dashboard,/ })).toBeEnabled();
+	await expect
+		.poll(() =>
+			page
+				.locator('[data-peek-camera]')
+				.evaluateAll((tiles) =>
+					tiles.map((tile) => tile.getAttribute('data-peek-camera')).toSorted()
+				)
+		)
+		.toEqual(cameraIds.toSorted());
+}
+
 test('enforces per-user group and camera access with Paper-grounded controls', async ({
 	page,
 	browser
@@ -68,8 +84,7 @@ test('enforces per-user group and camera access with Paper-grounded controls', a
 	try {
 		await userPage.goto('/');
 		await expect(userPage.getByRole('heading', { name: 'Remote sign-in' })).toBeVisible();
-		await userPage.getByLabel('Access key').fill(fixture.key);
-		await userPage.getByRole('button', { name: 'Sign in', exact: true }).click();
+		await signInUser(userPage, fixture.key, [fixture.cameraId]);
 		await startProbe(userPage, fixture.key);
 		expect(
 			await userPage.evaluate(async () =>
@@ -87,8 +102,7 @@ test('enforces per-user group and camera access with Paper-grounded controls', a
 			});
 		}, fixture.id);
 		await expect(userPage.getByRole('heading', { name: 'Remote sign-in' })).toBeVisible();
-		await userPage.getByLabel('Access key').fill(fixture.key);
-		await userPage.getByRole('button', { name: 'Sign in', exact: true }).click();
+		await signInUser(userPage, fixture.key, []);
 		await userPage.evaluate(
 			async (key) => (window as ProbeWindow).cameraAccessProbe.signIn(key),
 			fixture.key
@@ -149,8 +163,7 @@ test('enforces per-user group and camera access with Paper-grounded controls', a
 		await page.getByRole('button', { name: 'Save access', exact: true }).click();
 		await expect(page.getByRole('dialog', { name: 'User access' })).toHaveCount(0);
 		await expect(userPage.getByRole('heading', { name: 'Remote sign-in' })).toBeVisible();
-		await userPage.getByLabel('Access key').fill(fixture.key);
-		await userPage.getByRole('button', { name: 'Sign in', exact: true }).click();
+		await signInUser(userPage, fixture.key, [fixture.cameraId]);
 		await userPage.evaluate(
 			async (key) => (window as ProbeWindow).cameraAccessProbe.signIn(key),
 			fixture.key

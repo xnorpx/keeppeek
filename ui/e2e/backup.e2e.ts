@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ExecFileException } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -63,6 +63,15 @@ test('CLI exports a ZIP and requires confirmation before applying it', async ({
 		stdout: ''
 	});
 	expect((await request.get(`${backendURL}/api/backups`)).status()).toBe(404);
+});
+
+test('ZIP inspection rejects invalid archives with redacted process diagnostics', async () => {
+	const archivePath = test.info().outputPath('invalid-inspection.zip');
+	await writeFile(archivePath, 'synthetic private fixture contents');
+	await expect(inspectConfigurationZip(archivePath)).rejects.toMatchObject({
+		message:
+			'Configuration ZIP inspection failed: {"timeoutMs":10000,"code":1,"signal":null,"killed":false}'
+	});
 });
 
 test('Administrator exports and applies the two-file ZIP through the direct endpoints', async ({
@@ -243,6 +252,7 @@ async function inspectConfigurationZip(archivePath: string): Promise<{
 }> {
 	const python =
 		process.env.KEEPPEEK_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3.12');
+	const timeoutMs = 10_000;
 	const { stdout } = await execFileAsync(
 		python,
 		[
@@ -259,8 +269,18 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
     }))`,
 			archivePath
 		],
-		{ timeout: 10_000, maxBuffer: 64 * 1024 }
-	);
+		{ timeout: timeoutMs, maxBuffer: 64 * 1024 }
+	).catch((error: ExecFileException) => {
+		// Python failures can echo archive data; report only process status.
+		throw new Error(
+			`Configuration ZIP inspection failed: ${JSON.stringify({
+				timeoutMs,
+				code: error.code ?? null,
+				signal: error.signal ?? null,
+				killed: error.killed ?? false
+			})}`
+		);
+	});
 	return JSON.parse(stdout);
 }
 

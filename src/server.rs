@@ -560,7 +560,11 @@ impl ControlRequestHandler for ServerControlHandler {
     ) -> Result<(), ControlHandlerError> {
         self.authorize_request(session_id, request)
             .map(|_| ())
-            .map_err(|(error, _)| ControlHandlerError::new(error.code, error.message))
+            .map_err(|(error, close_session)| ControlHandlerError {
+                code: error.code,
+                message: error.message,
+                close_session,
+            })
     }
 
     fn handle_data_for_session(
@@ -574,7 +578,11 @@ impl ControlRequestHandler for ServerControlHandler {
             AccessRole::Administrator,
             "event_attachment_publish",
         )
-        .map_err(|(error, _)| ControlHandlerError::new(error.code, error.message))?;
+        .map_err(|(error, close_session)| ControlHandlerError {
+            code: error.code,
+            message: error.message,
+            close_session,
+        })?;
         event_publication::ingest(&self.state, session_id, channel, message)
             .map_err(|error| ControlHandlerError::new(error.code, error.message))
     }
@@ -12645,6 +12653,7 @@ fn service_error(status: u16, message: &str) -> Response {
 #[cfg(test)]
 mod tests {
     mod isapi_events;
+    mod session_authorization;
 
     use super::*;
     use crate::{
