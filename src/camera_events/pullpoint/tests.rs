@@ -23,6 +23,14 @@ fn soap(status: u16, body: &str) -> Reply {
     Reply::http(status, "application/soap+xml", envelope(body))
 }
 
+/// Fixed, non-secret credentials for the fake ONVIF device used only in these tests.
+fn test_credentials() -> Credentials {
+    Credentials {
+        username: "test".to_owned(),
+        password: "test".to_owned(),
+    }
+}
+
 fn envelope(body: &str) -> String {
     format!(
         "<s:Envelope xmlns:s='http://www.w3.org/2003/05/soap-envelope' xmlns:e='http://www.onvif.org/ver10/events/wsdl' xmlns:n='http://docs.oasis-open.org/wsn/b-2'><s:Body>{body}</s:Body></s:Envelope>"
@@ -67,14 +75,7 @@ fn finish(
 
 fn subscription(fake: &FakeOnvif) -> (Client, Subscription, Instant) {
     let endpoint = Endpoint::new(fake.events_endpoint()).unwrap();
-    let mut client = Client::new(
-        endpoint.clone(),
-        Credentials {
-            username: "test".to_owned(),
-            password: "test".to_owned(),
-        },
-    )
-    .unwrap();
+    let mut client = Client::new(endpoint.clone(), test_credentials()).unwrap();
     let started = Instant::now();
     let bytes = client
         .execute(
