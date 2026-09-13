@@ -94,7 +94,7 @@ protocol behavior, tests, or individual lines. If they cannot, the contribution 
 ## Pull request shape
 
 Use the repository's
-[pull request template](https://github.com/xnorpx/keeppeek/blob/master/.github/pull_request_template.md)
+[pull request template](https://github.com/xnorpx/keeppeek/blob/main/.github/pull_request_template.md)
 as the canonical shape for every pull request. Complete its summary, linked Discussion, acceptance
 criteria verification, performance evidence, validation, and review evidence before requesting
 review. A bug-fix pull request may link its reproducible bug issue instead of a feature Discussion.
@@ -119,11 +119,10 @@ versions live in `ui/.bun-version` and `examples/object_detection_service/.pytho
 
 Formatting and validation require the Python packages in
 `examples/object_detection_service/requirements.txt`, including Black. The root `fix` and `check`
-scripts resolve Python in this order:
-
-1. `KEEPPEEK_PYTHON`, when set;
-2. `python3.12`;
-3. `python3`.
+scripts use an absolute interpreter path from `KEEPPEEK_PYTHON` when set. Otherwise, macOS/Linux
+scripts try `python3.12` and then `python3`; Windows scripts resolve `python` from `PATH`. The
+selected interpreter must be Python 3.12. Set `KEEPPEEK_PYTHON` explicitly if another Python
+installation wins that lookup.
 
 Do not use a Python virtual environment. `fix.sh` and `fix.bat` install the requirements into the
 resolved interpreter, retrying with `--break-system-packages` when that interpreter is externally
@@ -156,6 +155,39 @@ that cannot run in the pull request and explain why.
 Camera changes should also be validated against the affected device and independent MP4 tooling.
 Passing a unit test does not prove that a real camera authenticates, advances frames and keyframes,
 finalizes recordings, and produces decodable output.
+
+## Update the book and design evidence
+
+The book lives in `book/src`; `SUMMARY.md` controls its navigation. Document the current behavior
+and the practical task it enables, including authorization, persistence, limits, and failure
+recovery. Update the [feature guide](./feature-guide.md) when adding a screen or changing where a
+task starts. Fill operational chapters with instructions rather than leaving empty placeholders.
+
+Keep serialized fields, defaults, and examples synchronized with the
+[configuration reference](./configuration-reference.md). Protocol declarations and engineering
+scenarios can describe capabilities that do not yet have a runtime handler. Check the server and
+client implementation before presenting those capabilities as available.
+
+From the repository root, validate documentation with:
+
+```sh
+bun run --cwd ui format:markdown:check
+mdbook build book
+```
+
+Install `mdbook` and `mdbook-mermaid` and make both available on `PATH`; the book's configuration
+uses the Mermaid preprocessor. After building, open the generated book, follow the changed
+navigation and cross-links, and check diagrams and long tables at desktop and narrow widths.
+These focused documentation checks complement the repository validation above.
+
+The first-party interface has versioned Paper references and scenario-based browser evidence under
+[`ui/design/paper`](https://github.com/xnorpx/keeppeek/tree/main/ui/design/paper). Use the active reference's
+README and manifests to identify its scope. The active NVR design is `keeppeek-nvr-alpha`;
+`keeppeek-nvr-v34` remains the historical input to the existing visual harness and Linux Loki
+baselines. A new Paper export does not approve a replacement baseline. A reference image records design intent; browser
+interaction tests prove working behavior. Keep unavailable, loading, denied, empty, and error
+states explicit, and preserve the actual evidence when updating a reference. Do not infer current
+feature availability from a mockup or a demonstration video.
 
 ## Licensing
 

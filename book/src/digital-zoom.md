@@ -48,6 +48,11 @@ transformed video. Timeline scrubbing still selects recording time, not an image
 pan when the zoomed image has focus; Keep's normal frame-stepping shortcuts remain available at
 full-frame view or outside the inspection surface.
 
+On a portrait phone, the Digital strip remains above the image while **Playback options** opens
+volume, speed and quality in a separate sheet. Opening that sheet does not replace the recording
+or move its playhead. Its quality choice can request different available media; the Digital strip
+only enlarges pixels already decoded. Close the sheet to inspect the horizontal recording history.
+
 The fullscreen button expands the whole recorded player, including its controls. Zoom bounds
 update when entering or leaving fullscreen. Browser-native Escape handling can leave fullscreen
 before the page receives the key. A disabled fullscreen button indicates that the browser does not
@@ -74,6 +79,9 @@ Digital zoom is labelled **Digital** and works for any media you can already vie
 recordings and offline-camera event images. It does not require PTZ permission or a PTZ-capable
 camera. Physical pan, tilt, and optical zoom remain separate camera commands with their existing
 capability and permission checks.
+
+See [Camera controls](./camera-controls.md) for physical PTZ, detector configuration and the
+current limits of browser Talk.
 
 Magnifying a low-resolution stream does not reveal detail that the camera did not send. Choose a
 higher available stream quality separately when you need more decoded pixels.

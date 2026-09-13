@@ -5,6 +5,57 @@ A connected camera or an MP4 filename alone does not prove that the requested in
 reviewed later. The underlying live evidence dimensions are defined in
 [Camera and stream health](./camera-health.md).
 
+## Find and play a recording
+
+Open **Keep**, choose the camera and recorded day, then select footage or an event on the timeline.
+The four modes serve different investigations:
+
+| Mode      | Use it for                                                                          |
+| --------- | ----------------------------------------------------------------------------------- |
+| Timeline  | Follow footage and event intervals around the selected playback time.               |
+| Stories   | Review available event stories and their associated media.                          |
+| Swimlanes | Compare the available camera histories around a common time.                        |
+| Export    | Prepare and inspect an evidence-export job; creation requires Administrator access. |
+
+Use play/pause, skip, the recording-position slider, volume/mute, speed and fullscreen controls
+below the image. Available stream quality depends on retained media and browser codec support.
+Changing the quality preference is separate from [digital zoom](./digital-zoom.md). Stored
+playback does not provide automatic transcoding for an unsupported codec; retain a compatible
+H.264 stream when your viewing devices need one.
+
+With the recorded player focused, Left and Right step frames. Space toggles playback; J, K and L
+provide shuttle/pause controls. `[` and `]` set export boundaries. Form fields keep their normal
+keyboard behavior, and arrow keys pan a focused digitally zoomed image instead of stepping frames.
+
+### Use Keep on a phone
+
+In portrait, Keep keeps a compact camera/date row, the player and a horizontal history timeline
+in the main view. Tap the camera name or date to open **Camera and date**. Search for a camera or
+use previous/next camera; camera navigation wraps at the ends. The recorded-day selector and its
+arrows choose available days, with unavailable directions disabled.
+
+Tap **Playback options** for volume, playback speed, quality, **Copy link to this moment**, and
+**Refresh recordings**. Changes apply immediately. **Done**, the close button, Escape or browser
+Back closes the sheet and returns focus to a visible control. Opening a sheet keeps the player
+open. In recording fullscreen, rate and volume remain available beside the player controls.
+
+The compact controls do not remove Timeline, Stories, Swimlanes or Export. Rotate the device or
+close the sheet to return to the history view. The timeline changes recording time; the separate
+Digital controls above the image change only the inspection crop.
+
+### Keep the requested UTC time explicit
+
+Recorded days and event time filters use UTC. Switching cameras preserves the selected absolute
+moment, including when the destination camera has no footage there. Choosing another recorded day
+keeps the UTC clock time on that chosen day. At midnight this means midnight of the selected day,
+not the following day.
+
+A gap stays visible until you explicitly choose available footage. Use **Previous recording** or
+**Next recording** when offered, or select a recorded interval on the timeline. KeepPeek does not
+silently move an unavailable requested moment to the latest clip. Loading, no recorded days,
+unavailable footage and decode failure are distinct states; use the displayed action or refresh
+after checking the camera's recording policy and retained coverage.
+
 ## Choose what each camera records
 
 Each camera has one recording policy:
@@ -60,15 +111,41 @@ exact totals.
 
 ## Review events consistently
 
+Open **Events** to search across authorized cameras. Choose the UTC date and optional start/end
+times, then narrow by camera, event kind, origin, zone, confidence, image availability or text.
+Review and bookmark filters compose with the same search. If a filter reports unavailable
+support, check the server capability instead of assuming that an empty result means no events.
+
+Select a card to inspect its canonical image, description, timestamps and revision. Use **Open at
+this moment** to investigate recorded footage or the export action to prepare a clip. The return
+link restores the selected event and supported filter context. For an empty result, check the
+effective filters and UTC date before broadening the search.
+
 Mark events reviewed or dismissed without deleting evidence. Those flags belong to your authenticated
 identity, or to a persistent **Local workspace** in trusted-LAN use. Event updates do not reset them.
 Use the visible or selected count on bulk actions; undo applies only to the acknowledged targets.
 Review and bookmark filters use server-computed counts, not the current page length.
 
+**Reviewed** and **Dismissed** are independent flags. **Unreviewed** means neither flag is set;
+dismissal removes an event from that review queue without deleting its attachments or recording.
+**Mark N visible reviewed** affects the rendered page, while **Mark N selected reviewed** sends
+the explicit selection, which may span pages. The selection limit is 128 events. A stale or
+unconfirmed write requires **Reload and retry**; note drafts and action intent remain available.
+
+Named credentials retain their review identity across credential rotation. A trusted-local
+browser uses a persistent Local workspace identity rather than attributing work to a person.
+Clearing that site's browser storage creates a new workspace; unavailable persistent storage
+disables its mutations instead of silently using a temporary identity.
+
 Bookmarks are shared with authorized camera viewers. Their creator or an Administrator can edit
 the bounded note or remove the bookmark. **Saved bookmarks** retains honest metadata-only references
 when media, events, or sources are unavailable. A bookmark does not pin video through retention.
 Exports keep their source event/bookmark revision relationship without creating a retention hold.
+
+Bookmark notes are plain text, limited to 1,024 UTF-8 bytes. The bookmark library has its own
+source, date and creator scope, independent of the main Events filters. Recording retention can
+remove footage without removing the bookmark. References for deleted events are retained for
+90 days and explicitly identify missing event, source or media.
 
 Events, Keep, notifications, MQTT, and export entry points use the same event revision and canonical
 preview. An authorized producer may name the canonical attachment. Otherwise KeepPeek chooses a
@@ -150,6 +227,12 @@ Ready files remain available for 24 hours. Bounded job history remains for 30 da
 so an expired or missing artifact can still explain what happened and support an explicit retry.
 History and files remain scoped to the Administrator identity that created them.
 
+Check the completed job's interval, stream and missing-range explanation before downloading. A
+partial artifact contains only its available intervals and must not be described as continuous
+coverage of the whole selection. Cancellation and retry are explicit actions; opening another
+page does not turn a running job into a completed download. Download integrity failure or an
+expired artifact requires a fresh job if the original recordings are still available.
+
 Timestamp burn-in requires a configured re-encoding worker and otherwise fails explicitly. The
 normal export path preserves source frames and timestamps without re-encoding.
 
@@ -158,7 +241,7 @@ see [Recording maintenance](./recording-maintenance.md). The Administrator workf
 is under qualification; confirmed jobs can remove selected recordings permanently.
 
 For the detailed coverage model and export lifecycle, see the
-[recording integrity](https://github.com/xnorpx/keeppeek/blob/master/docs/recording-integrity.md),
-[event presentation](https://github.com/xnorpx/keeppeek/blob/master/docs/event-presentation.md),
-and [evidence export](https://github.com/xnorpx/keeppeek/blob/master/docs/evidence-exports.md)
+[recording integrity](https://github.com/xnorpx/keeppeek/blob/main/docs/recording-integrity.md),
+[event presentation](https://github.com/xnorpx/keeppeek/blob/main/docs/event-presentation.md),
+and [evidence export](https://github.com/xnorpx/keeppeek/blob/main/docs/evidence-exports.md)
 references.

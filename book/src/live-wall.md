@@ -4,6 +4,41 @@ The Dashboard is KeepPeek's multi-camera live wall. Open **Wall display settings
 sliders icon in the upper-right corner to change its presentation and resource policy. These
 choices belong to the selected dashboard on the server, not to camera recording or detection.
 
+## Choose a dashboard or focus a camera
+
+Use the dashboard-name selector to choose a saved layout. **All cameras** is the automatic fleet
+view; changing camera configuration updates its generated grid. A saved dashboard can arrange a
+subset of cameras for a room, entrance or display.
+
+Select a camera tile to open the focused **Viewer**. Use its camera selector or filmstrip to
+change the focused camera. Live and History are viewing modes; pausing or leaving a browser view
+does not stop server recording. Open **Keep** for a recorded-day investigation, event context or
+evidence export. See [Recording and evidence](./recording-and-evidence.md).
+
+The information control on a tile opens camera evidence without making a paused browser preview
+look like a server outage. For detailed device settings and supported PTZ or detector operations,
+open the camera from **Cameras**. See [Camera controls](./camera-controls.md).
+
+## Arrange and share a dashboard
+
+An Administrator can create, duplicate and edit dashboards. In the layout editor, add available
+cameras, select a tile, and move or resize it in the grid. Keyboard controls support moving the
+selected tile; the editor's hints identify the available actions. Save the draft to publish the
+layout. Cancel or discard to leave the saved layout intact. The automatic All cameras grid cannot
+be rearranged like a custom dashboard; create a custom layout for that purpose.
+
+The dashboard audience determines who can see a saved layout. It does not grant access to the
+cameras in it. Camera groups are labels used for organization and access grants; the server
+filters each viewer's layout to the cameras that identity is allowed to see. A shared layout can
+therefore be empty for one User while containing cameras for another. Do not broaden camera
+permissions merely to make a layout match another person's screen.
+
+Layout export/import carries dashboard definitions, not camera credentials or media. Review the
+imported camera references and audience before use on another recorder. A stale save is rejected
+instead of overwriting a newer revision; reload the current saved layout before trying again.
+See [Authentication and access](./authentication.md) and
+[Configuration export and import](./configuration-export-import.md).
+
 ## Defaults and ownership
 
 | Setting            | Default                                     | Supported choices               |

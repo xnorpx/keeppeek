@@ -17,6 +17,12 @@ focus, and shared connections. It inherits Home Assistant theme colors and adapt
 width. Audio, PTZ, event ribbons, timeline playback, and Home Assistant entity discovery are not
 implemented in this card. Use the KeepPeek application for the corresponding supported features.
 
+The direct card and the MQTT event forwarder solve separate tasks. The card displays selected
+live cameras; MQTT lets an independently configured consumer react to events. Installing the card
+does not create Home Assistant camera entities, motion sensors or automation triggers. See
+[Notifications and integrations](./notifications-and-integrations.md) for the event envelope and
+delivery limits, and [Recording and evidence](./recording-and-evidence.md) for recorded playback.
+
 ## Prepare KeepPeek
 
 1. Confirm that the selected cameras play in KeepPeek.
@@ -119,6 +125,11 @@ using a YAML secret tag. The existing key is never read back into the form: an e
 field with a configured placeholder preserves it. Enter a replacement or use the clear action
 to change it explicitly.
 
+After saving, test from the actual dashboard browser and network used by the intended viewer.
+Confirm every selected source is visible to that credential and that an omitted or ungranted
+camera is not accessible. Start with one camera before increasing the grid size. A configuration
+that is valid for 16 sources does not guarantee the device can decode 16 streams smoothly.
+
 | Option              | Default           | Behavior                                                                                    |
 | ------------------- | ----------------- | ------------------------------------------------------------------------------------------- |
 | `sources`           | Required          | Between 1 and 16 unique source objects.                                                     |
@@ -155,6 +166,11 @@ changes that policy nor prevents a copied key from being used by another client.
 
 Rotating, disabling, revoking, or expiring the credential invalidates its sessions according to
 server policy. Authentication failure stops automatic card retries; update the key and reconnect.
+
+When changing camera grants, review the credential's access in KeepPeek as well as the card's
+display list. Sharing a saved KeepPeek dashboard or adding a camera to a group does not make the
+card an authorization boundary. Test restrictive grants from a client classified as remote;
+trusted-local Administrator access intentionally follows a different policy.
 
 ## Connections and troubleshooting
 
