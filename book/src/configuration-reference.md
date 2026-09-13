@@ -28,6 +28,11 @@ validated export and import.
 file is always named `secrets.toml` in the same directory. These flags do not create a second
 settings store.
 
+Default paths belong to the account running the process. A Windows service can resolve a different
+`%APPDATA%` from an interactive launch; the macOS package runs a per-user launch agent. Confirm the
+service identity and effective paths before transferring an installation. See
+[Upgrades and migrations](./upgrades-and-migrations.md).
+
 Use the UI and typed configuration operations while KeepPeek runs. Stop the server before manual
 edits so a concurrent settings update cannot overwrite them. Server writers validate candidates,
 preserve unrelated sections and secret references, and replace the file atomically under the shared
@@ -306,6 +311,12 @@ threshold is derived as critical plus hysteresis. Otherwise, warning must be at 
 Use the storage editor's validated path-migration workflow for moves; do not repoint a live
 recording catalog by editing a path alone.
 
+These values are policy defaults, not a capacity guarantee. Storage budgets and free-space thresholds
+must suit the actual disks and camera bitrates. A configuration ZIP preserves the target's existing
+storage paths on apply; it does not move a recording archive. See
+[storage migration](./upgrades-and-migrations.md#move-storage-deliberately) and
+[recording archive recovery](./recording-archive-recovery.md).
+
 ## Battery wake
 
 Type: `BatteryWakeConfig`, section `[battery_wake]`. This is the Reolink wake middleman service,
@@ -329,6 +340,14 @@ Type: `LoggingConfig`, section `[logging]`.
 | `service` | `ServiceLogDestination` | `"file"` | `"file"` or `"event_log"`; service logging destination, with Event Log relevant to Windows service operation. |
 
 This section does not define arbitrary tracing filters, log payloads, or a diagnostics archive.
+
+The existing diagnostic log-filter control uses a separate sibling file named `log-filter`, not
+another TOML section. The logging service saves and reloads that filter atomically. At startup a
+valid saved filter takes precedence over `RUST_LOG`; the built-in fallback is
+`info,keeppeek=debug`. A bad saved or environment filter is reported and falls back to the next
+usable source. This diagnostic setting is outside the two-file configuration ZIP. Preserve it with
+the configuration directory if you need it during a recovery rehearsal. Source:
+[logging service](https://github.com/xnorpx/keeppeek/blob/main/src/logging.rs).
 
 ## Operational events
 
@@ -381,8 +400,10 @@ Types: `EventForwarderConfig` has one field, `mqtt: MqttForwarderConfig`. Sectio
 | `retry_max_ms`  | `u64`              | `30000`                   | Retry maximum, at most `3600000` ms.                                                       |
 
 Client, instance, and forwarder IDs each contain 1 to 128 bytes without NUL, `/`, `+`, or `#`.
-Do not embed credentials in `broker_url`; use the dedicated fields. MQTT's durable outbox is
-runtime delivery data, not another settings file.
+Do not embed credentials in `broker_url`; use the dedicated fields. MQTT's bounded outbox and
+deduplication state are in memory and reset on restart. `outbox_max_mb` is a runtime memory budget;
+it does not enable persistence. The retired `mqtt-forwarder.db` is removed during startup and is
+not replayed. See [Notifications and integrations](./notifications-and-integrations.md).
 
 ## Credential records
 
@@ -739,3 +760,7 @@ of borrowed paths, not another TOML section.
   companion secret store.
 - When a serialized struct, section name, default, limit, enum, or migration changes, update this
   reference in the same change and verify both load and write paths with synthetic fixtures.
+
+For an upgrade from separate legacy stores, follow
+[What startup migrates](./upgrades-and-migrations.md#what-startup-migrates). For retention of runtime
+and recording data, see [Backup and restore](./backup-and-restore.md#what-survives-a-restart).

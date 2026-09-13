@@ -3,7 +3,7 @@
 GitHub Issues are for reproducible KeepPeek defects. The
 [bug report form](https://github.com/xnorpx/keeppeek/issues/new?template=bug.yml) is the canonical
 submission path, and
-[`.github/ISSUE_TEMPLATE/bug.yml`](https://github.com/xnorpx/keeppeek/blob/master/.github/ISSUE_TEMPLATE/bug.yml)
+[`.github/ISSUE_TEMPLATE/bug.yml`](https://github.com/xnorpx/keeppeek/blob/main/.github/ISSUE_TEMPLATE/bug.yml)
 is the source of truth for its required fields.
 
 ## Choose the right channel

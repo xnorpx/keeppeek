@@ -4,6 +4,28 @@ KeepPeek computes camera and stream health on the server. Peek, Cameras, Health,
 diagnosis, fleet counts, the control API, and Prometheus metrics consume that same projection.
 Clients do not infer health from display text, local video playback, or issue severity.
 
+## Investigate an unhealthy camera
+
+1. Open **Cameras** and use **Not healthy** to narrow the fleet. Select the camera for its current
+   state, primary reason, stream profiles and recording evidence.
+2. Open **Health** for fleet findings. Refresh to request a current snapshot, then follow a
+   finding's camera or timeline link to the affected source and time.
+3. Compare transport, advancing frames, keyframes and recording progress. A connected socket can
+   still deliver stale or undecodable video; a decoded live picture does not prove recording.
+4. Use **Recording integrity** when the question is whether footage was retained. Its historical
+   coverage and gaps answer a different question from current-process health counters.
+5. Check native event and external service status separately when only detections or alerts are
+   missing. Their failures do not make otherwise healthy camera media offline.
+
+An active health finding clears when new evidence shows recovery. It has no dismiss action that
+changes the underlying state. Acknowledging an alert or marking an event reviewed is a separate
+workflow. See [Notifications and integrations](./notifications-and-integrations.md) and
+[Recording and evidence](./recording-and-evidence.md).
+
+Health and administrative diagnostics depend on your role. If a User can view video but cannot
+load fleet health, check [access permissions](./authentication.md) before treating the unavailable
+diagnostic panel as a camera failure.
+
 The current health contract version is `1`. A client that cannot understand a state or reason must
 treat it as `unknown`, never as healthy.
 

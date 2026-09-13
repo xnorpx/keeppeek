@@ -122,7 +122,9 @@ browser keeps the key only in memory for the current page session. It is not pla
 rendered as hidden text, logged, or written to `localStorage` or `sessionStorage`.
 
 Reloading or closing the page discards the key and requires sign-in again. Expired or revoked
-sessions return to the sign-in screen without displaying the requested resource.
+sessions cannot retrieve protected resources. The browser normally returns to sign-in; if a
+session change during page initialization leaves an expired-session error visible, reload and
+sign in again. See [Session expired after a permission change](#session-expired-after-a-permission-change).
 
 API clients send the same credential in the HTTP header:
 
@@ -260,7 +262,10 @@ exact address in `trusted_proxies` and send only the supported `X-Forwarded-For`
 ### Remote access returns HTTP 426
 
 The request reached KeepPeek over unprotected direct HTTP while `require_secure_remote` is enabled.
-Use HTTPS through a configured trusted proxy or connect through a VPN.
+Use HTTPS through a configured trusted proxy. A VPN does not by itself change the server's address
+classification or secure-transport check. A VPN client kept outside `local_networks` still needs the
+supported secure boundary for remote sign-in; adding its range to `local_networks` instead grants
+Administrator access to that range.
 
 ### Remote sign-in is temporarily limited
 
@@ -273,7 +278,48 @@ revoked.
 It has the User role. Issue an Administrator credential only when that client must change recorder
 configuration or manage security.
 
+### Session expired after a permission change
+
+Saving User camera grants deliberately closes that credential's existing sessions. Rotation,
+disable, revoke, and expiry also invalidate authenticated work. If a dashboard opened during that
+change remains at **API session expired or was revoked**, reload the page and sign in again with
+the current key. The current UI can retain this error during initialization even though the server
+continues to deny requests from the invalid session.
+
+For a rotated credential, use the replacement key. A disabled, expired, or revoked credential will
+not work merely because the page was reloaded. Ask the recorder Administrator to inspect its status.
+
+### A shared dashboard is empty or has fewer cameras
+
+Check both the dashboard audience and the User's camera grants. Audience membership makes the
+dashboard visible; it does not grant cameras. Verify the intended group or individual cameras in
+**User access**, save the current revision, then sign the User in again. The Administrator's complete
+layout is retained even when the User sees fewer tiles.
+
+### A supposedly restricted person still has Administrator access
+
+Check their effective source address first. A trusted-local request receives Administrator access
+before a remote key is considered. Exclude that client's network from `local_networks` if it must
+use a restricted User credential, while retaining the local recovery access you need.
+
 ### A key was lost or exposed
 
 From a local Administrator session, rotate the affected credential. Store the replacement key
 before hiding it, then update only the client or integration that owns that named credential.
+
+## Verify access before deployment
+
+Create a disposable User credential and test from a genuinely remote-classified address. Check an
+allowed camera and a denied camera through live view, Keep, event images, and controls. Confirm that
+Settings, exports, and diagnostics remain unavailable to that User. Test a dashboard whose audience
+includes the User but whose tiles include a denied camera.
+
+Change the grants and confirm the old session loses access. Reconnect and verify the new scope,
+then disable or revoke the test credential when finished. A successful local browser check does
+not test remote restrictions. Record the proxy or VPN topology with your
+[release qualification evidence](./release-readiness.md#representative-deployment-matrix).
+
+Credentials and grants are included in configuration ZIPs. Before applying a ZIP from another
+recorder, ensure you can use its restored access policy and retain a local recovery path. Sessions,
+last-use activity, and audit history are not restored by that ZIP. See
+[what survives a restart](./backup-and-restore.md#what-survives-a-restart).

@@ -9,6 +9,11 @@ That narrow center is deliberate. Inference frameworks, models, accelerators, an
 much faster than a recorder should. KeepPeek therefore accepts camera-native events and makes media
 available through an open protocol instead of deciding which models every installation must run.
 
+This chapter records the product's users and rationale, including intended directions. Use the
+[feature guide](./feature-guide.md) for current screen availability and
+[release readiness](./release-readiness.md) for qualification limits. The
+[architecture overview](./how-it-works.md) connects these choices to the running service.
+
 ## At a glance
 
 | User                                        | Starting point                                                                                     | What they value                                                             | KeepPeek's role                                                          |
@@ -51,7 +56,8 @@ accelerator compatibility.
 The first-party experience must hide optional architecture until it matters, without removing the
 open interfaces that let other users go further.
 
-<!-- Add the shortest realistic path from download to a trusted first recording. -->
+Follow [Get started](./get-started.md) from installation to a first camera, then verify both
+[live stream health](./camera-health.md) and [recorded coverage](./recording-and-evidence.md).
 
 ## Small Business Security
 
@@ -341,7 +347,7 @@ KeepPeek supports three independent modes:
 3. **Camera-native analytics:** Use events produced by the camera without another inference service.
 
 The repository includes a
-[Python object-detection service demo](https://github.com/xnorpx/keeppeek/tree/master/examples/object_detection_service)
+[Python object-detection service demo](https://github.com/xnorpx/keeppeek/tree/main/examples/object_detection_service)
 for the external analytics path. It uses `aiortc` to subscribe to encoded KeepPeek video over
 WebRTC, decodes selected frames with the user-installed FFmpeg executable, runs inference, and
 publishes normalized events back to KeepPeek. It is a reference implementation and CI example,

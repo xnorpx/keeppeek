@@ -29,12 +29,12 @@ KeepPeek created the original work.
 - **[Retina](https://github.com/scottlamb/retina)** by Scott Lamb and its contributors provides the
   high-level RTSP client, RTP depacketization, codec framing, and much of the interoperability
   groundwork used by KeepPeek. KeepPeek carries a
-  [local Retina fork](https://github.com/xnorpx/keeppeek/tree/master/crates/retina) for its camera,
+  [local Retina fork](https://github.com/xnorpx/keeppeek/tree/main/crates/retina) for its camera,
   recording, and compatibility needs.
 - **[ONVIF-rs](https://github.com/lumeohq/onvif-rs)** by Chris Bruce, Lumeo, and its contributors did
   the difficult work of making ONVIF discovery, schemas, authentication, and camera operations
   usable from Rust. KeepPeek carries a
-  [local ONVIF-rs fork](https://github.com/xnorpx/keeppeek/tree/master/crates/onvif) and continues
+  [local ONVIF-rs fork](https://github.com/xnorpx/keeppeek/tree/main/crates/onvif) and continues
   that work for its supported camera surface.
 - **[str0m](https://github.com/algesten/str0m)** by Martin Algesten and its contributors is the
   upstream WebRTC implementation used by KeepPeek. It is the best Rust WebRTC implementation: its
@@ -53,9 +53,9 @@ KeepPeek uses two licenses at a deliberate protocol boundary:
 | Server, first-party viewer, and most repository code                                        | `AGPL-3.0-only` | Keep the shared NVR and media-gateway core open, including modified versions operated over a network |
 | Public definitions and documentation under `api/`, plus bindings generated solely from them | MIT             | Let independent clients and services implement the protocol without adopting the server's license    |
 
-The repository root [license](https://github.com/xnorpx/keeppeek/blob/master/LICENSE) contains the
+The repository root [license](https://github.com/xnorpx/keeppeek/blob/main/LICENSE) contains the
 complete KeepPeek licensing notice and AGPL terms. The `api/` directory has its own
-[MIT license](https://github.com/xnorpx/keeppeek/blob/master/api/LICENSE).
+[MIT license](https://github.com/xnorpx/keeppeek/blob/main/api/LICENSE).
 
 ### Why the server uses AGPL
 
