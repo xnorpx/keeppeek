@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ba9dba47.js";
+            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-1423543a.js"></script>
+        <script src="toc-8917b401.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,10 +175,12 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="release-readiness-and-known-limitations"><a class="header" href="#release-readiness-and-known-limitations">Release readiness and known limitations</a></h1>
-<p>KeepPeek has completed its proof-of-concept gate and is undergoing MVP qualification. Passing
-automated tests is necessary, but it is not enough to call a camera recorder production-ready. The
-MVP decision belongs to the tested release build and representative deployment recorded in
-<a href="https://github.com/xnorpx/keeppeek/issues/144">issue #144</a>.</p>
+<p>KeepPeek is in Alpha qualification. POC and MVP gates are complete; Alpha implementation issue
+closure does not establish the early-adopter matrix or a feature freeze. Passing automated tests
+is necessary, but it is not enough to call a camera recorder production-ready. The promotion
+decision belongs to the tested release build and representative deployment recorded in the active
+<a href="https://github.com/xnorpx/keeppeek/issues/145">Alpha gate #145</a>. The
+<a href="https://github.com/xnorpx/keeppeek/issues/147">roadmap</a> describes the subsequent release phases.</p>
 <h2 id="what-automated-validation-proves"><a class="header" href="#what-automated-validation-proves">What automated validation proves</a></h2>
 <p>The repository gate builds the Rust workspace and browser application, runs Rust, TypeScript,
 Svelte, browser, real-media, and Playwright tests, checks formatting and dependencies, and validates
@@ -228,12 +230,21 @@ camera reconnect, provider retry, and storage cleanup cycles. During the soak:</
 <li>verify primary recorded playback remains at source rate while timelines refresh and exports run;</li>
 <li>monitor memory, recording databases, thumbnails, export jobs, the in-memory notification outbox, MQTT outbox, logs,
 threads or tasks, file descriptors, sessions, and browser object URLs for bounded growth;</li>
-<li>restart and verify notification state resets while durable operational events, the MQTT outbox,
-export jobs, coverage summaries, and sessions recover according to their documented contracts;</li>
+<li>restart and verify that notification runtime state, the MQTT outbox and deduplication history,
+access audit/activity, and active sessions reset; credentials and grants, durable operational
+events, export jobs, and recording catalog state recover according to their documented contracts;</li>
 <li>rerun the complete workflow without manual database or recording-file edits.</li>
 </ul>
 <p>Stop qualification on any silent recording-loss path, remote authentication bypass, secret leak,
 indefinitely running job, or open release-blocking defect.</p>
+<h3 id="mqtt-restart-rehearsal"><a class="header" href="#mqtt-restart-rehearsal">MQTT restart rehearsal</a></h3>
+<p>Use a disposable broker and synthetic event on an isolated installation. Interrupt broker access,
+publish the event, and observe the pending count before restarting KeepPeek. After restart,
+verify that the pending outbox is empty. Restore broker access and confirm that the old pending
+publication is not replayed. Emit a new event and verify delivery and consumer deduplication by
+<code>(instance_id, event_id, revision)</code>. Confirm that the original durable event is still available
+in KeepPeek and that recording continued independently. QoS does not make this outbox durable;
+downstream recovery must not assume replay across a KeepPeek restart.</p>
 <h2 id="current-limitations"><a class="header" href="#current-limitations">Current limitations</a></h2>
 <h3 id="camera-support-is-evidence-based"><a class="header" href="#camera-support-is-evidence-based">Camera support is evidence-based</a></h3>
 <p>Discovery does not prove authentication, stable media, keyframes, or valid recordings. Validate
@@ -252,9 +263,15 @@ JPEGs remain a separate archive responsibility. A recovery rehearsal must test b
 KeepPeek configuration bundle and the recording archive. See
 <a href="./backup-and-restore.html">Backup and restore</a>.</p>
 <h3 id="access-roles-are-intentionally-fixed"><a class="header" href="#access-roles-are-intentionally-fixed">Access roles are intentionally fixed</a></h3>
-<p>Remote access supports Administrator and User. Custom roles and per-camera permissions are not
-available. Use network separation or separate servers when a person must not see every configured
-camera; hiding a control in the browser is not an authorization boundary.</p>
+<p>Remote access supports Administrator and User; custom roles are not available. Administrators can
+restrict a User credential to selected camera groups and individual cameras in <strong>Settings → Access
+&amp; roles → User access</strong>. The server enforces these grants for media, events, coverage, and camera
+controls. Dashboard audiences remain separate and do not grant camera access. Saving a grant
+change closes the affected User’s existing sessions; stale saves retain the draft and report a
+conflict. The default grant includes all current and future cameras.</p>
+<p>Trusted-local clients remain Administrators. Exclude an address from <code>access.local_networks</code> and
+require a User credential when that client needs camera restrictions. Hidden navigation is not
+an authorization boundary. See <a href="./authentication.html#camera-and-dashboard-access">Camera and dashboard access</a>.</p>
 <h3 id="detection-remains-external"><a class="header" href="#detection-remains-external">Detection remains external</a></h3>
 <p>KeepPeek records and presents camera-native or externally published events. It does not own object,
 face, or license-plate detection, model management, zones, masks, or training. Recording and health

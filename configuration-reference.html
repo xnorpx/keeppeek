@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ba9dba47.js";
+            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-1423543a.js"></script>
+        <script src="toc-8917b401.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -234,6 +234,7 @@ Root fields must appear before a table header or they belong to that table.</p>
 <tr><td><code>[event_forwarder.mqtt]</code></td><td><code>MqttForwarderConfig</code> inside <code>EventForwarderConfig</code></td><td>MQTT configuration; server-owned revision</td></tr>
 <tr><td><code>[camera_defaults]</code></td><td><code>CameraCredentialDefaults</code></td><td>Shared camera defaults</td></tr>
 <tr><td><code>[&lt;namespace&gt;.&lt;camera-key&gt;]</code></td><td><code>CameraConfig</code></td><td>Camera settings</td></tr>
+<tr><td><code>[&lt;namespace&gt;.&lt;camera-key&gt;.events]</code></td><td><code>EventConfig</code></td><td>Native camera event selection and filters</td></tr>
 <tr><td><code>[access_credentials]</code></td><td><code>PersistedAccessCatalog</code></td><td>Server-managed credential records</td></tr>
 <tr><td><code>[peek_layouts]</code></td><td><code>StoredRegistry</code></td><td>Server-managed layouts and per-user selection</td></tr>
 <tr><td><code>[configuration_templates]</code></td><td><code>StoredTemplateDocument</code></td><td>Server-managed camera templates</td></tr>
@@ -421,12 +422,46 @@ per-camera field is absent. Ports and RTSP URLs are not fields of <code>CameraCr
 <tr><td><code>record_generic_motion_events</code></td><td><code>bool</code></td><td>Shared default or <code>false</code></td><td>Opt in to supported generic motion events.</td></tr>
 <tr><td><code>recording_mode</code></td><td><code>CameraRecordingMode</code></td><td>Shared default or <code>"event-boost"</code></td><td><code>"off"</code>, <code>"sub"</code>, <code>"main"</code>, <code>"both"</code>, or <code>"event-boost"</code>.</td></tr>
 <tr><td><code>event_recording_duration_secs</code></td><td><code>u64</code></td><td>Shared default or <code>60</code></td><td>Event-triggered recording duration; typed configuration operations use <code>1..3600</code> seconds.</td></tr>
+<tr><td><code>events</code></td><td><code>EventConfig</code></td><td>Defaults below</td><td>Camera-native event policy, independent of video backend; configured through the file.</td></tr>
 </tbody>
 </table>
 </div>
 <p>These are stored configuration types, not promises that every camera supports every backend,
 transport, or recording capability. Discovery results such as <code>CameraCapabilities</code>, <code>CameraPorts</code>,
 <code>MediaProfile</code>, <code>VideoConfig</code>, and <code>AudioConfig</code> are not additional editable camera tables.</p>
+<h3 id="native-camera-events"><a class="header" href="#native-camera-events">Native camera events</a></h3>
+<p>Type: <code>EventConfig</code>, section <code>[&lt;namespace&gt;.&lt;camera-key&gt;.events]</code>, for example
+<code>[cameras.front_door.events]</code>. Source:
+<a href="https://github.com/xnorpx/keeppeek/blob/main/src/cameras/events.rs">camera event policy</a>.
+These settings are not part of <code>CameraCredentialDefaults</code> and are not exposed by the fixed
+protobuf camera-settings form. Ordinary camera API edits preserve the saved event table.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Default</th><th>Values and limits</th></tr>
+</thead>
+<tbody>
+<tr><td><code>mode</code></td><td><code>EventMode</code></td><td><code>"auto"</code></td><td><code>"auto"</code>, <code>"vendor"</code>, <code>"onvif-pullpoint"</code>, <code>"rtsp-metadata"</code>, or <code>"disabled"</code>.</td></tr>
+<tr><td><code>metadata_stream</code></td><td><code>MetadataMode</code></td><td><code>"auto"</code></td><td><code>"auto"</code>, <code>"enabled"</code>, or <code>"disabled"</code>. Enabling metadata does not override <code>vendor</code> or <code>disabled</code> event mode.</td></tr>
+<tr><td><code>event_service_url</code></td><td>Optional <code>String</code></td><td>None; discover service</td><td>HTTP(S) URL of at most 4,096 UTF-8 bytes using the exact configured camera IP. No hostname alias, wildcard/multicast address, port zero, credentials, query, fragment, backslash, whitespace, or control character.</td></tr>
+<tr><td><code>source_tokens</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td><td>At most 32 exact opaque tokens, each at most 256 UTF-8 bytes. Empty or control-character entries are rejected.</td></tr>
+<tr><td><code>include_topics</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td><td>Expanded namespace root plus slash-separated local path. Up to 32 filters combined with exclusions, each at most 1,024 UTF-8 bytes.</td></tr>
+<tr><td><code>exclude_topics</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>[]</code></td><td>Same syntax and shared count/byte limits as inclusions; exclusions take precedence.</td></tr>
+<tr><td><code>snapshots</code></td><td><code>bool</code></td><td><code>true</code></td><td>Allow optional camera snapshots; a missing or failed image does not discard the event.</td></tr>
+</tbody>
+</table>
+</div>
+<p>An empty inclusion list permits recognized topics. An example filter is
+<code>{http://www.onvif.org/ver10/topics}VideoSource/MotionAlarm</code>; unstable document prefixes such as
+<code>tns1:VideoSource/MotionAlarm</code> are rejected. Source tokens retain their exact text. Filters require
+nonempty namespace and path segments without whitespace, embedded prefixes, or control characters.</p>
+<p>The loader resolves supported <code>{secret:KEY}</code> and <code>{secret:KEY|url}</code> references in event strings
+before validation. Preserve those references in <code>config.toml</code> and keep reusable private values
+in <code>secrets.toml</code>; URL escaping does not relax endpoint restrictions. Direct file edits require
+the existing configuration activation/restart path; there is no automatic file watcher. Generic
+motion recording still requires <code>record_generic_motion_events = true</code>, independently of event mode.
+The <a href="https://github.com/xnorpx/keeppeek/blob/main/docs/onvif-events.md">native event operator guide</a>
+describes transport selection, health evidence, and verification.</p>
 <h2 id="recording-storage"><a class="header" href="#recording-storage">Recording storage</a></h2>
 <p>Type: <code>StorageToml</code>, section <code>[storage]</code>. Optional paths are resolved by the runtime when absent;
 inspect the effective settings instead of assuming an omitted path is the current directory.</p>

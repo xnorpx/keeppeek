@@ -35,10 +35,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-ba9dba47.js";
+            window.path_to_searchindex_js = "searchindex-3e4cf9ff.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-1423543a.js"></script>
+        <script src="toc-8917b401.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -176,11 +176,11 @@
                     <main>
                         <h1 id="recording-maintenance"><a class="header" href="#recording-maintenance">Recording maintenance</a></h1>
 <p>Recording maintenance provides Administrator previews, confirmed deletion jobs,
-and bounded catalog reconciliation over the WebRTC control connection. It is
-under qualification in <a href="https://github.com/xnorpx/keeppeek/issues/133">issue #133</a>,
-not yet a completed or production-qualified feature. The synthetic-media workflow
-and native Windows, macOS, and Linux checks have passed; remaining acceptance
-criteria are tracked in the issue.</p>
+and bounded catalog reconciliation over the WebRTC control connection.
+<a href="https://github.com/xnorpx/keeppeek/issues/133">Implementation issue #133</a> closed on
+2026-09-08. The synthetic-media workflow and native Windows, macOS, and Linux checks
+have passed. Deployment-specific recovery and the wider release decision remain
+part of the <a href="https://github.com/xnorpx/keeppeek/issues/145">Alpha gate #145</a>.</p>
 <p>Automatic storage retention remains separate from manual deletion. Manual claims
 exclude their recordings from retention and new playback/export resolution until
 the claim reaches a terminal outcome. Never delete recording files directly as a
@@ -425,11 +425,14 @@ or stronger process isolation must be resolved before this feature is qualified.
 directory flushes, and handle-based rename/disposition. Other filesystems,
 including ReFS, are rejected before source-file mutation. ReFS requires a full
 128-bit file identity and a separately justified namespace-durability strategy;
-a successful directory-flush call alone is not sufficient. Windows compilation,
-ACL/race tests, and crash-boundary execution remain unverified in the current
-local environment.</p>
+a successful directory-flush call alone is not sufficient. The
+<a href="https://github.com/xnorpx/keeppeek/actions/runs/34722005032">PR CI run</a> and
+<a href="https://github.com/xnorpx/keeppeek/actions/runs/34722240086">extended Main run</a>
+exercise the implementation, including Windows and synthetic deletion, on production
+tree <code>4df9a94e</code> (equivalent to <code>4bc3ab18</code>). This establishes automated coverage of
+the exercised fixtures, not every NTFS race, crash boundary, device, or deployment.</p>
 <h2 id="qualification-still-required"><a class="header" href="#qualification-still-required">Qualification still required</a></h2>
-<p>Before issue #133 can be completed, qualification must cover:</p>
+<p>For a deployment and final release candidate, retain explicit evidence for:</p>
 <ul>
 <li>exact object ownership and adversarial replacement at every mutation boundary;</li>
 <li>Windows NTFS and Linux runtime tests, plus supported-filesystem failure behavior;</li>
