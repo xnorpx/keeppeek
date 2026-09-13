@@ -41,6 +41,7 @@
 		type FocusedLivePreference
 	} from '$lib/playback-preferences';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import GaugeIcon from '@lucide/svelte/icons/gauge';
 	import Grid2X2Icon from '@lucide/svelte/icons/grid-2x2';
@@ -1172,10 +1173,26 @@
 				{error}
 			</div>
 		{:else if cameras.length === 0}
-			<div
-				class="grid size-full min-h-64 place-items-center border-y text-sm text-muted-foreground"
-			>
-				No cameras configured.
+			<div class="grid size-full min-h-64 place-items-center border-y px-6 py-8 text-center">
+				<div class="max-w-sm">
+					<CameraIcon class="mx-auto mb-4 size-8 text-muted-foreground" aria-hidden="true" />
+					<svelte:element
+						this={cameraViewActive ? 'h1' : 'h2'}
+						class="text-lg font-semibold text-foreground"
+					>
+						{administrator ? 'No cameras yet' : 'No cameras available'}
+					</svelte:element>
+					<p class="mt-2 text-sm text-muted-foreground">
+						{administrator
+							? 'Add your first camera to start viewing and recording.'
+							: 'Ask your administrator for access.'}
+					</p>
+					{#if administrator}
+						<Button href={resolve('/cameras/new')} class="mt-5 min-h-11 rounded-sm">
+							Add camera
+						</Button>
+					{/if}
+				</div>
 			</div>
 		{:else}
 			<div class="grid size-full min-h-0 md:flex-1">
