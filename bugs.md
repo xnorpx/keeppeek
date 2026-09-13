@@ -994,6 +994,41 @@ older recorded day, and checks that day's midnight and explicit gap. It failed b
 fix and passes afterward, alongside the existing date/navigation test (2/2 in 10.3 s).
 Evidence: `target/alpha-audit/mobile-midnight-red.log` and `mobile-midnight-green.log`.
 
+#### KP-QA-017 [P2] Revocation during request dispatch can leave an invalid API transport open
+
+**Status:** Fix implemented; focused regressions pass, full validation pending.
+**Owner area:** Access/session lifecycle and CI reliability.
+
+Changing camera grants or revoking a credential while its dashboard initializes can leave
+`API session expired or was revoked` visible without returning to sign-in. The server still
+denies the invalid session's requests; the defect is transport cleanup and client recovery,
+not an authorization bypass.
+
+A request can observe the new credential revision before the bulk session-close operation.
+Authorization removes the stale owner entry and requests transport closure, but the control
+preauthorization and data-message adapters discard that closure flag. Bulk cleanup then cannot
+find the removed owner, leaving the WebRTC worker connected until another lifecycle event.
+
+Preserve the terminal-close flag across both adapters. A control rejection queues closure through
+the existing after-send action; a data rejection has no response and signals worker shutdown
+immediately. Ordinary role or camera permission denials must leave a valid session connected.
+The camera-access browser test also waits for the expected dashboard and exact visible camera
+set before deliberately changing policy, keeping initialization and grant-change assertions distinct.
+
+Three new tests use accepted API sessions with real workers and binary control/data dispatch.
+They invalidate the credential in the exact interval before bulk cleanup, covering both revision
+changes and revocation. Before the fix, the control test has no deferred close action and the data
+worker fails the existing one-second completion bound. After the fix, all three pass in 0.48 s,
+including ordinary role, camera, and data permission denials that preserve the live session.
+Fourteen existing access and output-ordering tests also pass. These are focused regression
+results, not a statistical flake-rate or transport-latency benchmark.
+
+Evidence: `target/alpha-fixes/session-authorization-red-final.log`,
+`session-authorization-green.log`, `session-authorization-existing.log`, and
+`camera-access-isolated.log`. Main's separate ZIP-inspection timeout remains a diagnostic
+uncertainty: explicit Python selection and redacted process diagnostics improve reproducibility,
+while the ten-second timeout and archive-content assertions remain unchanged.
+
 ### Release-contract discrepancies requiring an owner decision
 
 These are not mislabelled runtime failures. Current behavior is intentionally documented, but

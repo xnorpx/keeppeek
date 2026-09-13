@@ -134,6 +134,9 @@ pub(crate) fn test_api_offer() -> SdpOffer {
         .0
 }
 
+#[cfg(test)]
+pub(crate) mod authorization_test_support;
+
 pub(crate) trait ControlRequestHandler: Send + Sync {
     fn handle(&self, request: crate::api::proto::Request) -> ControlDispatch;
 
@@ -210,6 +213,7 @@ pub(crate) struct MediaSubscriptionPlan {
 pub(crate) struct ControlHandlerError {
     pub(crate) code: ErrorCode,
     pub(crate) message: String,
+    pub(crate) close_session: bool,
 }
 
 impl ControlHandlerError {
@@ -217,6 +221,7 @@ impl ControlHandlerError {
         Self {
             code,
             message: message.into(),
+            close_session: false,
         }
     }
 }
@@ -1401,6 +1406,31 @@ fn subscription_result(
 }
 
 impl ApiSessionControl {
+    fn handle_data_message(
+        &self,
+        binary: bool,
+        payload: &[u8],
+        handler: Option<&dyn ControlRequestHandler>,
+        channel: crate::api::proto::DataChannelKind,
+    ) -> Result<(), ControlHandlerError> {
+        let result = api_data_message(binary, payload, handler, self.session_id, channel);
+        if result.as_ref().is_err_and(|error| error.close_session) {
+            // Data messages have no response to flush before closing the transport.
+            self.close();
+        }
+        result
+    }
+
+    fn close_after_send(&self) -> PostSendAction {
+        let inner = self.inner.clone();
+        let session_id = self.session_id;
+        Box::new(move || {
+            if let Some(control) = inner.sessions.remove_api(session_id) {
+                control.close();
+            }
+        })
+    }
+
     fn close(&self) {
         self.shutdown.store(true, Ordering::Release);
         if let Err(error) = self.poller.notify() {
@@ -3846,11 +3876,10 @@ fn drain_api_outputs(
                 } else {
                     crate::api::proto::DataChannelKind::UnreliableData
                 };
-                if let Err(error) = api_data_message(
+                if let Err(error) = control.handle_data_message(
                     data.binary,
                     &data.data,
                     handler.as_deref(),
-                    control.session_id,
                     channel,
                 ) {
                     tracing::debug!(
@@ -4261,11 +4290,7 @@ fn api_control_reply(
         return envelope_dispatch(unavailable_control_dispatch(request_id));
     };
     if let Err(error) = handler.authorize_session_command(control.session_id, &request) {
-        return envelope_dispatch(failed_control_dispatch(
-            request_id,
-            error.code,
-            error.message,
-        ));
+        return authorization_control_dispatch(request_id, error, control);
     }
     let dispatch = match request.command.as_ref() {
         Some(crate::api::proto::request::Command::SubscribeMedia(subscribe)) => {
@@ -4344,6 +4369,18 @@ fn api_control_reply(
             dispatch
         }
     };
+    envelope_dispatch(dispatch)
+}
+
+fn authorization_control_dispatch(
+    request_id: u64,
+    error: ControlHandlerError,
+    control: &ApiSessionControl,
+) -> EnvelopeDispatch {
+    let mut dispatch = failed_control_dispatch(request_id, error.code, error.message);
+    if error.close_session {
+        dispatch.after_send = Some(control.close_after_send());
+    }
     envelope_dispatch(dispatch)
 }
 
