@@ -54,15 +54,18 @@ jobs:
         run: |
           set -e -o pipefail
           audit_with_retry() {
-            for attempt in 1 2 3; do
-              if bun audit --audit-level high; then
+            for retry_delay_seconds in 5 10 20 40 60; do
+              audit_output="$(bun audit --audit-level high 2>&1)" && {
+                printf '%s\n' "$audit_output"
                 return 0
-              fi
-              if [ "$attempt" -lt 3 ]; then
-                sleep "$((attempt * 5))"
-              fi
+              }
+              printf '%s\n' "$audit_output"
+              case "$audit_output" in
+                *" - 503") sleep "$retry_delay_seconds" ;;
+                *) return 1 ;;
+              esac
             done
-            return 1
+            bun audit --audit-level high
           }
           audit_manifest() {
             manifest="$1"
