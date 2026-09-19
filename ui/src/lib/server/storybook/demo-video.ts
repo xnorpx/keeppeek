@@ -1,5 +1,8 @@
 import { rm } from 'node:fs/promises';
 
+const NARRATED_DEMO_FRAME_RATE = 25;
+const NARRATED_DEMO_FRAME_DURATION_MS = 1_000 / NARRATED_DEMO_FRAME_RATE;
+
 export type SilentDemoVideoMuxOptions = {
 	videoPath: string;
 	captionsPath?: string;
@@ -79,8 +82,18 @@ export function createNarratedDemoPlan(
 			throw new Error('Narration cue source times must increase within the source video');
 		}
 
-		const sourceSegmentDurationMs = nextSourceAtMs - cue.sourceAtMs;
-		const outputDurationMs = Math.max(sourceSegmentDurationMs, cue.audioDurationMs + pauseAfterMs);
+		// Match the frames selected by trim so concat cannot accumulate rounding drift.
+		const sourceFrameCount =
+			Math.ceil(nextSourceAtMs / NARRATED_DEMO_FRAME_DURATION_MS) -
+			Math.ceil(cue.sourceAtMs / NARRATED_DEMO_FRAME_DURATION_MS);
+		if (sourceFrameCount === 0) {
+			throw new Error('Each narration segment must contain a video frame');
+		}
+		const sourceSegmentDurationMs = sourceFrameCount * NARRATED_DEMO_FRAME_DURATION_MS;
+		const narrationDurationMs =
+			Math.ceil((cue.audioDurationMs + pauseAfterMs) / NARRATED_DEMO_FRAME_DURATION_MS) *
+			NARRATED_DEMO_FRAME_DURATION_MS;
+		const outputDurationMs = Math.max(sourceSegmentDurationMs, narrationDurationMs);
 		const segment = {
 			sourceStartMs: cue.sourceAtMs,
 			sourceEndMs: nextSourceAtMs,
@@ -99,12 +112,14 @@ export function createNarratedDemoPlan(
 export function createPacedDemoVideoMuxArgs(options: PacedDemoVideoMuxOptions): string[] {
 	const plan = createNarratedDemoPlan(options.sourceDurationMs, options.cues);
 	const filters = plan.segments.flatMap((segment, index) => {
+		const sourceStartFrame = Math.ceil(segment.sourceStartMs / NARRATED_DEMO_FRAME_DURATION_MS);
+		const sourceEndFrame = Math.ceil(segment.sourceEndMs / NARRATED_DEMO_FRAME_DURATION_MS);
 		const freeze =
 			segment.freezeDurationMs === 0
 				? ''
 				: `,tpad=stop_mode=clone:stop_duration=${formatSeconds(segment.freezeDurationMs)}`;
 		return [
-			`[0:v]trim=start=${formatSeconds(segment.sourceStartMs)}:end=${formatSeconds(segment.sourceEndMs)},setpts=PTS-STARTPTS${freeze}[v${index}]`,
+			`[0:v]fps=${NARRATED_DEMO_FRAME_RATE},trim=start_frame=${sourceStartFrame}:end_frame=${sourceEndFrame},setpts=PTS-STARTPTS${freeze}[v${index}]`,
 			`[${index + 1}:a]aresample=48000,apad,atrim=duration=${formatSeconds(segment.outputDurationMs)},asetpts=PTS-STARTPTS[a${index}]`
 		];
 	});

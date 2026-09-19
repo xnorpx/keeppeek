@@ -515,6 +515,13 @@ jobs:
           bun-version-file: ui/.bun-version
       - name: Install UI dependencies
         run: bun install --no-save --registry=https://registry.npmjs.org/
+      - name: Install FFmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            brew install ffmpeg
+          fi
+          ffmpeg -version
+          ffprobe -version
       - name: Run Bun-compatible unit tests
         run: bun run test:unit:bun
 

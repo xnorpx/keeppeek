@@ -96,7 +96,9 @@ await runProcess(
 );
 const outputDurationMs = await probeDurationMs(outputPath);
 if (Math.abs(outputDurationMs - plan.outputDurationMs) > 100) {
-	throw new Error('Narrated MP4 duration does not match the audio-led timeline');
+	throw new Error(
+		`Narrated MP4 duration ${outputDurationMs}ms does not match the audio-led timeline ${plan.outputDurationMs}ms`
+	);
 }
 assertH264AacVideo(
 	await runProcess('ffprobe', createFfprobeStreamsArgs(outputPath), true),
