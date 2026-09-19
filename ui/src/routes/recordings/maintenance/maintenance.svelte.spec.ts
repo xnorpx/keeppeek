@@ -256,7 +256,7 @@ describe('Recording maintenance recovery', () => {
 		const dialog = page.getByRole('dialog');
 		await dialog.getByRole('textbox', { name: 'Type DELETE 1' }).fill('DELETE 1');
 		await dialog.getByRole('button', { name: 'Delete permanently' }).click();
-		await expect.element(dialog.getByRole('alert')).toHaveTextContent('Catalog changed');
+		await expect.element(dialog.getByRole('alert')).toMatchTextContent('Catalog changed');
 		await expect.element(dialog.getByRole('button', { name: 'Delete permanently' })).toBeDisabled();
 		await dialog.getByRole('button', { name: 'Refresh preview' }).click();
 		await expect.element(dialog.getByRole('textbox', { name: 'Type DELETE 1' })).toHaveValue('');

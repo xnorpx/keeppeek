@@ -144,7 +144,7 @@ describe('Board 13 Storage and Retention story', () => {
 		});
 		await page.getByLabelText('Folder path').fill('/Volumes/KeepPeek Archive/recordings');
 		await page.getByLabelText('Maximum recording storage (GiB)').fill('2048');
-		await page.getByLabelText('Move existing storage during restart').click();
+		await page.getByLabelText('Move existing storage during restart', { exact: false }).click();
 
 		await expect
 			.element(page.getByText('KeepPeek Archive · 2.9 TiB free', { exact: true }).first())
