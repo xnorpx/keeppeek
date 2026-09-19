@@ -18,7 +18,9 @@ describe('Board 23 Camera configuration story', () => {
 		]).toEqual([1374, 806]);
 		await expect.element(page.getByRole('heading', { name: 'Edit camera settings' })).toBeVisible();
 		await expect.element(page.getByLabelText('Display name')).toHaveValue('Front Door');
-		await expect.element(page.getByLabelText('Recording mode')).toHaveValue('event-boost');
+		await expect
+			.element(page.getByRole('combobox', { name: 'Recording mode' }))
+			.toHaveValue('event-boost');
 		await expect.element(page.getByRole('button', { name: 'Save camera settings' })).toBeEnabled();
 		expect(frame!.textContent).not.toContain('write-only-password');
 	});

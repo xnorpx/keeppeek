@@ -147,7 +147,7 @@ describe('NotificationsRuntime', () => {
 			.element(page.getByLabelText('Webhook URL'))
 			.toHaveAttribute('placeholder', 'Configured');
 
-		await userEvent.selectOptions(page.getByLabelText('Channel').first(), 'push');
+		await userEvent.selectOptions(page.getByRole('combobox', { name: 'Channel' }).first(), 'push');
 		await expect
 			.element(page.getByLabelText('Application token'))
 			.toHaveAttribute('type', 'password');
@@ -157,7 +157,7 @@ describe('NotificationsRuntime', () => {
 		await expect.element(page.getByLabelText('Device names')).toBeVisible();
 		await expect.element(page.getByLabelText('Sound')).toBeVisible();
 		await expect.element(page.getByLabelText('Deep-link base URL')).toBeVisible();
-		await userEvent.selectOptions(page.getByLabelText('Priority'), '2');
+		await userEvent.selectOptions(page.getByRole('combobox', { name: 'Priority' }), '2');
 		await expect.element(page.getByLabelText('Emergency retry (seconds)')).toHaveValue(30);
 		await expect.element(page.getByLabelText('Emergency expiry (seconds)')).toHaveValue(300);
 

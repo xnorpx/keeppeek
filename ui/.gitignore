@@ -13,3 +13,4 @@ test-results
 
 # Tests
 /coverage
+/.vitest

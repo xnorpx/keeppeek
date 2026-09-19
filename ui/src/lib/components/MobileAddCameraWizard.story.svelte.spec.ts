@@ -48,7 +48,9 @@ describe('Board 25 mobile Add Camera stories', () => {
 
 	it('renders final review as the only save stage without retention claims', async () => {
 		const frame = await renderStage('review');
-		await expect.element(page.getByLabelText('CAMERA NAME')).toHaveValue('Side Gate');
+		await expect
+			.element(page.getByLabelText('CAMERA NAME', { exact: false }))
+			.toHaveValue('Side Gate');
 		await expect
 			.element(page.getByText('Retention impact unavailable', { exact: true }))
 			.toBeVisible();

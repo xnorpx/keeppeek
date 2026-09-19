@@ -84,7 +84,7 @@ describe('Camera access dialog', () => {
 		});
 		await page.getByRole('checkbox', { name: 'Back door', exact: true }).click();
 		await page.getByRole('button', { name: 'Save access', exact: true }).click();
-		await expect.element(page.getByRole('alert')).toHaveTextContent('reload before saving');
+		await expect.element(page.getByRole('alert')).toMatchTextContent('reload before saving');
 		await expect
 			.element(page.getByRole('checkbox', { name: 'Back door', exact: true }))
 			.toBeChecked();
