@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,91 @@ import {
 } from './demo-video';
 
 describe('demo video muxing', () => {
+	it.each([25, 30])(
+		'keeps %i fps source narration on the planned timeline across fractional-frame cues',
+		async (frameRate) => {
+			const root = await mkdtemp(join(tmpdir(), 'keeppeek-demo-timing-'));
+			const run = (command: string, args: string[]) =>
+				execFileSync(command, args, {
+					encoding: 'utf8',
+					timeout: 30_000,
+					stdio: ['ignore', 'pipe', 'pipe']
+				});
+			try {
+				const videoPath = join(root, 'source.mp4');
+				const outputPath = join(root, 'narrated.mp4');
+				run('ffmpeg', [
+					'-y',
+					'-f',
+					'lavfi',
+					'-i',
+					`color=size=64x64:rate=${frameRate}:duration=21`,
+					'-c:v',
+					'libx264',
+					videoPath
+				]);
+				const cues = [
+					[0, 4_850, 250],
+					[1_800, 7_000, 250],
+					[4_500, 7_650, 250],
+					[6_500, 5_550, 250],
+					[12_000, 9_600, 300],
+					[16_000, 6_400, 300]
+				].map(([sourceAtMs, audioDurationMs, pauseAfterMs], index) => {
+					const audioPath = join(root, `cue-${index}.wav`);
+					run('ffmpeg', [
+						'-y',
+						'-f',
+						'lavfi',
+						'-i',
+						`sine=sample_rate=24000:duration=${audioDurationMs / 1_000}`,
+						audioPath
+					]);
+					return { sourceAtMs, audioDurationMs, pauseAfterMs, audioPath };
+				});
+				const plan = createNarratedDemoPlan(21_000, cues);
+				run(
+					'ffmpeg',
+					createPacedDemoVideoMuxArgs({ videoPath, outputPath, sourceDurationMs: 21_000, cues })
+				);
+				const durationMs = parseFfprobeDurationMs(
+					run('ffprobe', createFfprobeDurationArgs(outputPath))
+				);
+				expect(Math.abs(durationMs - plan.outputDurationMs)).toBeLessThanOrEqual(40);
+				assertH264AacVideo(
+					run('ffprobe', createFfprobeStreamsArgs(outputPath)),
+					plan.outputDurationMs
+				);
+			} finally {
+				await rm(root, { recursive: true, force: true });
+			}
+		},
+		60_000
+	);
+
+	it('rounds narration up and partitions source frames without losing boundary frames', () => {
+		const cues = [
+			{ sourceAtMs: 0, audioPath: 'first.wav', audioDurationMs: 41, pauseAfterMs: 40 },
+			{ sourceAtMs: 50, audioPath: 'second.wav', audioDurationMs: 40 },
+			{ sourceAtMs: 100, audioPath: 'last.wav', audioDurationMs: 1 }
+		];
+		const plan = createNarratedDemoPlan(201, cues);
+		expect(plan.segments.map((segment) => segment.outputStartMs)).toEqual([0, 120, 160]);
+		expect(plan.segments.map((segment) => segment.outputDurationMs)).toEqual([120, 40, 120]);
+		expect(plan.segments.map((segment) => segment.freezeDurationMs)).toEqual([40, 0, 0]);
+		expect(plan.outputDurationMs).toBe(280);
+	});
+
+	it('rejects source segments that cannot supply a frame to freeze', () => {
+		expect(() =>
+			createNarratedDemoPlan(100, [
+				{ sourceAtMs: 0, audioPath: 'first.wav', audioDurationMs: 50 },
+				{ sourceAtMs: 1, audioPath: 'second.wav', audioDurationMs: 50 },
+				{ sourceAtMs: 2, audioPath: 'last.wav', audioDurationMs: 50 }
+			])
+		).toThrow('must contain a video frame');
+	});
+
 	it('retains failed recordings and removes successful raw captures', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'keeppeek-demo-recording-'));
 		const recordingDirectory = join(root, 'recordings');
@@ -70,7 +156,7 @@ describe('demo video muxing', () => {
 			expect.arrayContaining([
 				'first.wav',
 				'then.wav',
-				'[0:v]trim=start=0.000:end=2.000,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=1.000[v0];[1:a]aresample=48000,apad,atrim=duration=3.000,asetpts=PTS-STARTPTS[a0];[0:v]trim=start=2.000:end=5.000,setpts=PTS-STARTPTS[v1];[2:a]aresample=48000,apad,atrim=duration=3.000,asetpts=PTS-STARTPTS[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[video][narration]',
+				'[0:v]fps=25,trim=start_frame=0:end_frame=50,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=1.000[v0];[1:a]aresample=48000,apad,atrim=duration=3.000,asetpts=PTS-STARTPTS[a0];[0:v]fps=25,trim=start_frame=50:end_frame=125,setpts=PTS-STARTPTS[v1];[2:a]aresample=48000,apad,atrim=duration=3.000,asetpts=PTS-STARTPTS[a1];[v0][a0][v1][a1]concat=n=2:v=1:a=1[video][narration]',
 				'narrated.mp4'
 			])
 		);
