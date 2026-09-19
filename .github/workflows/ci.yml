@@ -822,6 +822,17 @@ jobs:
         shell: bash
         run: |
           set -e -o pipefail
+          audit_with_retry() {
+            for attempt in 1 2 3; do
+              if bun audit --audit-level high; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$((attempt * 5))"
+              fi
+            done
+            return 1
+          }
           audit_manifest() {
             manifest="$1"
             name="$2"
@@ -831,7 +842,7 @@ jobs:
             (
               cd "$audit_directory"
               bun install --lockfile-only --ignore-scripts --registry=https://registry.npmjs.org/
-              bun audit --audit-level high
+              audit_with_retry
             )
           }
           audit_manifest ui/package.json keeppeek-ui-audit
