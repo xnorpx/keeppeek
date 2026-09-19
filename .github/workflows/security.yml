@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2
+      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2
         with:
           tool: cargo-audit@0.22.2
       - name: Audit locked Rust dependencies
@@ -53,6 +53,20 @@ jobs:
         shell: bash
         run: |
           set -e -o pipefail
+          audit_with_retry() {
+            for retry_delay_seconds in 5 10 20 40 60; do
+              audit_output="$(bun audit --audit-level high 2>&1)" && {
+                printf '%s\n' "$audit_output"
+                return 0
+              }
+              printf '%s\n' "$audit_output"
+              case "$audit_output" in
+                *" - 503") sleep "$retry_delay_seconds" ;;
+                *) return 1 ;;
+              esac
+            done
+            bun audit --audit-level high
+          }
           audit_manifest() {
             manifest="$1"
             name="$2"
@@ -62,7 +76,7 @@ jobs:
             (
               cd "$audit_directory"
               bun install --lockfile-only --ignore-scripts --registry=https://registry.npmjs.org/
-              bun audit --audit-level high
+              audit_with_retry
             )
           }
           audit_manifest ui/package.json keeppeek-ui-audit
@@ -86,10 +100,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           submodules: recursive
-      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           languages: javascript-typescript
           build-mode: none
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           category: /language:javascript-typescript

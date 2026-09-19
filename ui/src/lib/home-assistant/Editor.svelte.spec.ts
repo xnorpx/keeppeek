@@ -61,7 +61,7 @@ describe('KeepPeek Lovelace visual editor', () => {
 
 	it('round-trips source titles and quality when changing the column count', async () => {
 		const { onchange } = editor();
-		await page.getByLabelText('Columns').selectOptions('3');
+		await page.getByRole('combobox', { name: 'Columns' }).selectOptions('3');
 		expect(onchange).toHaveBeenLastCalledWith({ ...config, columns: 3 });
 	});
 

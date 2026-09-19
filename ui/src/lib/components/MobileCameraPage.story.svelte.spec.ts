@@ -49,7 +49,9 @@ describe('Board 24 mobile Camera stories', () => {
 		await expect
 			.element(page.getByLabelText('Username'))
 			.toHaveAttribute('placeholder', 'Configured · enter to replace');
-		await expect.element(page.getByLabelText('Recording mode')).toHaveValue('event-boost');
+		await expect
+			.element(page.getByRole('combobox', { name: 'Recording mode' }))
+			.toHaveValue('event-boost');
 		await expect.element(page.getByRole('button', { name: 'Save camera settings' })).toBeEnabled();
 		expect(frame.textContent).not.toContain('write-only-password');
 	});
