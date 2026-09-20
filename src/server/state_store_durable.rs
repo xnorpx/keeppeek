@@ -309,6 +309,16 @@ impl DurableStore {
             if total_bytes > MAX_TOTAL_VALUE_BYTES {
                 return Err(Error::Invalid(Invalid::StoreFull).into());
             }
+            #[cfg(test)]
+            if super::state_store::commit_fault::take(
+                super::state_store::commit_fault::Path::Durable,
+                namespace,
+                key,
+            ) {
+                return Err(TransactionError::Storage(
+                    "injected commit failure".to_owned(),
+                ));
+            }
             let revision = self
                 .insert_entry(namespace, key, schema, value, expires_ms, owner_id, now_ms)
                 .await?;
@@ -364,6 +374,16 @@ impl DurableStore {
             check_expected(expected_revision, current)?;
             current.ok_or(Error::NotFound)?;
             let removed_bytes = self.entry_bytes(namespace, key).await?;
+            #[cfg(test)]
+            if super::state_store::commit_fault::take(
+                super::state_store::commit_fault::Path::Durable,
+                namespace,
+                key,
+            ) {
+                return Err(TransactionError::Storage(
+                    "injected commit failure".to_owned(),
+                ));
+            }
             self.connection
                 .execute(
                     "DELETE FROM entries WHERE namespace = ?1 AND key = ?2",
@@ -941,6 +961,136 @@ mod tests {
             )
             .expect("get must succeed");
         assert_eq!(read, entry);
+    }
+
+    #[test]
+    fn injected_commit_failure_changes_nothing() {
+        use super::super::state_store::{Error, commit_fault};
+        const FAULT_KEY: &str = "intents/fault-door";
+        let dir = TempDir::new();
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
+        let first = store
+            .put(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("baseline put must succeed");
+        assert_eq!(first.revision, 1);
+        store
+            .put(
+                "service/transcoder-a/",
+                "intents/fault-keep",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("delete target must exist");
+        let bytes_before = store.stored_bytes();
+        commit_fault::arm(
+            commit_fault::Path::Durable,
+            "service/transcoder-a/",
+            FAULT_KEY,
+        );
+        let Err(Error::Storage(_)) = store.put(
+            "service/transcoder-a/",
+            FAULT_KEY,
+            "keeppeek.media-intent.v1",
+            Some(media_intent_value("subscribe")),
+            None,
+            None,
+            "transcoder-a",
+            true,
+            NOW_MS,
+        ) else {
+            panic!("an injected commit failure must surface as a storage error");
+        };
+        assert!(
+            !commit_fault::take(
+                commit_fault::Path::Durable,
+                "service/transcoder-a/",
+                FAULT_KEY,
+            ),
+            "the hook fires exactly once",
+        );
+        assert!(
+            store
+                .get(
+                    "service/transcoder-a/",
+                    FAULT_KEY,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .is_err(),
+            "the failed mutation must leave no value behind",
+        );
+        let read = store
+            .get(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("the committed entry must be untouched");
+        assert_eq!(read, first);
+        assert_eq!(store.stored_bytes(), bytes_before);
+        let export = store.export(NOW_MS).expect("export must stay coherent");
+        assert_eq!(export.len(), 1);
+        assert_eq!(export[0].revision, 2);
+        assert_eq!(export[0].entries.len(), 2);
+        commit_fault::arm(
+            commit_fault::Path::Durable,
+            "service/transcoder-a/",
+            "intents/fault-keep",
+        );
+        let Err(Error::Storage(_)) = store.delete(
+            "service/transcoder-a/",
+            "intents/fault-keep",
+            None,
+            "transcoder-a",
+            true,
+            NOW_MS,
+        ) else {
+            panic!("an injected delete failure must surface as a storage error");
+        };
+        assert!(
+            store
+                .get(
+                    "service/transcoder-a/",
+                    "intents/fault-keep",
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .is_ok(),
+            "the failed delete must leave the entry behind",
+        );
+        let second = store
+            .put(
+                "service/transcoder-a/",
+                FAULT_KEY,
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("subscribe")),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("writes must resume after the fault clears");
+        assert_eq!(second.revision, 3);
     }
 
     #[test]
