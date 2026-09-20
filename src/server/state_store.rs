@@ -39,7 +39,6 @@ pub(super) struct StoredEntry {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
 pub(super) struct ExpiredEntry {
     pub(super) namespace: String,
     pub(super) key: String,
@@ -74,6 +73,7 @@ pub(super) enum Error {
 pub(super) struct Registry {
     namespaces: HashMap<String, NamespaceState>,
     pending: VecDeque<ExpiredEntry>,
+    pending_overflowed: bool,
     stored_bytes: u64,
 }
 
@@ -129,6 +129,18 @@ impl Registry {
             .and_then(|state| state.entries.get(key))
             .map(|record| record.revision);
         check_expected(expected_revision, current)?;
+        if current.is_none() {
+            if !self.namespaces.contains_key(namespace) {
+                if self.namespaces.len() >= MAX_NAMESPACES {
+                    return Err(Error::Invalid(Invalid::StoreFull));
+                }
+            } else {
+                self.reclaim_namespace(namespace, now_ms);
+                if self.namespaces[namespace].entries.len() >= MAX_ENTRIES_PER_NAMESPACE {
+                    return Err(Error::Invalid(Invalid::NamespaceFull));
+                }
+            }
+        }
         let old_bytes = self
             .namespaces
             .get(namespace)
@@ -141,18 +153,6 @@ impl Registry {
             .saturating_sub(old_bytes);
         if total_bytes > MAX_TOTAL_VALUE_BYTES {
             return Err(Error::Invalid(Invalid::StoreFull));
-        }
-        if current.is_none() {
-            if !self.namespaces.contains_key(namespace) {
-                if self.namespaces.len() >= MAX_NAMESPACES {
-                    return Err(Error::Invalid(Invalid::StoreFull));
-                }
-            } else if self.namespaces[namespace].entries.len() >= MAX_ENTRIES_PER_NAMESPACE {
-                self.reclaim_namespace(namespace, now_ms);
-                if self.namespaces[namespace].entries.len() >= MAX_ENTRIES_PER_NAMESPACE {
-                    return Err(Error::Invalid(Invalid::NamespaceFull));
-                }
-            }
         }
         let state = self.namespaces.entry(namespace.to_owned()).or_default();
         state.revision = state
@@ -249,17 +249,16 @@ impl Registry {
             }
         }
         due.sort_unstable();
-        let mut overflowed = false;
         for (namespace, key) in due {
-            overflowed |= self.expire_key_if_due(&namespace, &key, now_ms);
+            self.expire_key_if_due(&namespace, &key, now_ms);
         }
         ExpiredBatch {
             entries: self.pending.drain(..).collect(),
-            overflowed,
+            overflowed: std::mem::replace(&mut self.pending_overflowed, false),
         }
     }
 
-    fn expire_key_if_due(&mut self, namespace: &str, key: &str, now_ms: u64) -> bool {
+    fn expire_key_if_due(&mut self, namespace: &str, key: &str, now_ms: u64) {
         let due = self.namespaces.get(namespace).is_some_and(|state| {
             state
                 .entries
@@ -267,7 +266,7 @@ impl Registry {
                 .is_some_and(|record| is_expired(record, now_ms))
         });
         if !due {
-            return false;
+            return;
         }
         if let Some(state) = self.namespaces.get_mut(namespace)
             && let Some(record) = state.entries.remove(key)
@@ -277,20 +276,25 @@ impl Registry {
                 .checked_add(1)
                 .expect("namespace revision overflow");
             self.stored_bytes = self.stored_bytes.saturating_sub(value_bytes(&record.value));
-            return push_pending(
-                &mut self.pending,
-                ExpiredEntry {
-                    namespace: namespace.to_owned(),
-                    key: key.to_owned(),
-                    revision: state.revision,
-                    schema: record.schema,
-                    value: record.value,
-                    owner_id: record.owner_id,
-                    expires_ms: record.expires_ms.unwrap_or(now_ms),
-                },
-            );
+            let expired = ExpiredEntry {
+                namespace: namespace.to_owned(),
+                key: key.to_owned(),
+                revision: state.revision,
+                schema: record.schema,
+                value: record.value,
+                owner_id: record.owner_id,
+                expires_ms: record.expires_ms.unwrap_or(now_ms),
+            };
+            self.push_pending(expired);
         }
-        false
+    }
+
+    fn push_pending(&mut self, expired: ExpiredEntry) {
+        if self.pending.len() >= MAX_PENDING_EXPIRIES {
+            self.pending.pop_front();
+            self.pending_overflowed = true;
+        }
+        self.pending.push_back(expired);
     }
 
     fn reclaim_namespace(&mut self, namespace: &str, now_ms: u64) {
@@ -307,15 +311,7 @@ impl Registry {
             })
             .unwrap_or_default();
         for key in expired {
-            if let Some(state) = self.namespaces.get_mut(namespace)
-                && let Some(record) = state.entries.remove(&key)
-            {
-                state.revision = state
-                    .revision
-                    .checked_add(1)
-                    .expect("namespace revision overflow");
-                self.stored_bytes = self.stored_bytes.saturating_sub(value_bytes(&record.value));
-            }
+            self.expire_key_if_due(namespace, &key, now_ms);
         }
     }
 }
@@ -444,16 +440,6 @@ fn is_expired(record: &StoredRecord, now_ms: u64) -> bool {
 
 fn value_bytes(value: &Struct) -> u64 {
     u64::try_from(value.encoded_len()).unwrap_or(u64::MAX)
-}
-
-#[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
-fn push_pending(pending: &mut VecDeque<ExpiredEntry>, expired: ExpiredEntry) -> bool {
-    let evicted = pending.len() >= MAX_PENDING_EXPIRIES;
-    if evicted {
-        pending.pop_front();
-    }
-    pending.push_back(expired);
-    evicted
 }
 
 fn authorize_write(
@@ -1664,6 +1650,164 @@ mod tests {
                 .expect("fresh key must be readable")
                 .revision,
             entry.revision
+        );
+        assert_eq!(
+            registry.stored_bytes,
+            value_bytes(&struct_value(&[("role", "publish")])),
+            "reclaimed bytes must leave the counter"
+        );
+    }
+
+    #[test]
+    fn stored_byte_counter_tracks_live_values() {
+        let mut registry = Registry::default();
+        let first = struct_value(&[("role", "publish")]);
+        let second = struct_value(&[("role", "publish"), ("scope", "test")]);
+        registry
+            .put(
+                "service/transcoder-a/",
+                "intents/a",
+                "keeppeek.media-intent.v1",
+                Some(first.clone()),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("first write must succeed");
+        assert_eq!(registry.stored_bytes, value_bytes(&first));
+        registry
+            .put(
+                "service/transcoder-a/",
+                "intents/a",
+                "keeppeek.media-intent.v1",
+                Some(second.clone()),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("replacement must succeed");
+        assert_eq!(registry.stored_bytes, value_bytes(&second));
+        registry
+            .put(
+                "service/transcoder-a/",
+                "intents/b",
+                "keeppeek.media-intent.v1",
+                Some(first.clone()),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("second key must succeed");
+        assert_eq!(
+            registry.stored_bytes,
+            value_bytes(&second) + value_bytes(&first)
+        );
+        registry
+            .delete(
+                "service/transcoder-a/",
+                "intents/a",
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("delete must succeed");
+        assert_eq!(registry.stored_bytes, value_bytes(&first));
+        registry
+            .delete(
+                "service/transcoder-a/",
+                "intents/b",
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("delete must succeed");
+        assert_eq!(registry.stored_bytes, 0);
+    }
+
+    #[test]
+    fn lazy_get_overflow_is_signaled_on_drain() {
+        let mut registry = Registry::default();
+        for index in 0..=MAX_PENDING_EXPIRIES {
+            registry
+                .put(
+                    &format!("service/load-{}/", index % 5),
+                    &format!("leases/k-{index:04}"),
+                    "keeppeek.media-intent.v1",
+                    Some(struct_value(&[("role", "publish")])),
+                    None,
+                    Some(duration_ms(1_000)),
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("lease fill write must succeed");
+        }
+        for index in 0..=MAX_PENDING_EXPIRIES {
+            let error = registry
+                .get(
+                    &format!("service/load-{}/", index % 5),
+                    &format!("leases/k-{index:04}"),
+                    "transcoder-a",
+                    true,
+                    NOW_MS + 1_000,
+                )
+                .expect_err("expired lease must read as not found");
+            assert_eq!(error, Error::NotFound);
+        }
+        let batch = registry.expire_due(NOW_MS + 1_000);
+        assert_eq!(batch.entries.len(), MAX_PENDING_EXPIRIES);
+        assert!(
+            batch.overflowed,
+            "lazy-path eviction must be signaled on drain"
+        );
+    }
+
+    #[test]
+    fn lazy_put_overflow_is_signaled_on_drain() {
+        let mut registry = Registry::default();
+        for index in 0..=MAX_PENDING_EXPIRIES {
+            registry
+                .put(
+                    &format!("service/load-{}/", index % 5),
+                    &format!("leases/k-{index:04}"),
+                    "keeppeek.media-intent.v1",
+                    Some(struct_value(&[("role", "publish")])),
+                    None,
+                    Some(duration_ms(1_000)),
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("lease fill write must succeed");
+        }
+        for index in 0..=MAX_PENDING_EXPIRIES {
+            registry
+                .put(
+                    &format!("service/load-{}/", index % 5),
+                    &format!("leases/k-{index:04}"),
+                    "keeppeek.media-intent.v1",
+                    Some(struct_value(&[("role", "publish")])),
+                    None,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS + 1_000,
+                )
+                .expect("lease refresh must succeed");
+        }
+        let batch = registry.expire_due(NOW_MS + 1_000);
+        assert_eq!(batch.entries.len(), MAX_PENDING_EXPIRIES);
+        assert!(
+            batch.overflowed,
+            "lazy-path eviction must be signaled on drain"
         );
     }
 
