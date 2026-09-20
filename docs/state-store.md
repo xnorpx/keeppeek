@@ -193,6 +193,40 @@ media authorization decision.
 - KeepPeek restart restores durable state entries according to their TTL and namespace policy,
   while clients and services reestablish watches.
 
+## Backup lifecycle and recovery
+
+The configuration ZIP and the runtime store are two separate recovery sets.
+A format-3 configuration ZIP contains exactly `config.toml` and plaintext
+`secrets.toml`, with the manifest in the ZIP comment. It contains no database
+or media. Settings-backed state entries live in the `state_store` section of
+`config.toml`, so they travel inside the configuration ZIP and restore with
+it. Everything else in the state store needs its own archive.
+
+The generic runtime store is a separate consistent archive and recovery set.
+Back it up as one unit: the state database file plus any accompanying sidecar
+files, copied while KeepPeek is stopped, or through a tested snapshot
+procedure that covers every involved volume and writer. A live copy of the
+database file alone can disagree with its journal or sidecars, exactly as a
+live catalog copy can. The contract tests in `tests/state_store_contract.rs`
+pin the bundle half of this boundary; expiry, quota accounting, and reopen
+behavior are pinned by the `DurableStore` unit tests.
+
+Restore reinstates counters before watches. A runtime-store restore must bring
+back namespace revisions, entry revisions, and byte counters together before
+the server accepts new watches. Clients re-establish watches with a fresh
+snapshot after a restore and reconcile against current capabilities. No resume
+token crosses a restore boundary: a sequence gap, a closed watch, or a
+restored database always means a new snapshot, following the rules in
+"Watches without a snapshot gap".
+
+Quota, TTL, and full-disk behavior stay explicit. A TTL below one second is
+rejected; a TTL above 24 hours is clamped to 24 hours. Writes that would
+exceed the per-namespace entry bound or the total value-byte ceiling are
+rejected before allocation, so a failed write never reserves space. A storage
+or disk failure surfaces as a storage error on the mutating call and never
+reports a silent success, while previously committed entries stay readable.
+Settings-backed entries reject every TTL because configuration is not a lease.
+
 ## Acceptance scenarios
 
 The implementation is complete when these behaviors pass end to end:
