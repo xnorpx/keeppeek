@@ -203,13 +203,22 @@ or media. Settings-backed state entries live in the `state_store` section of
 it. Everything else in the state store needs its own archive.
 
 The generic runtime store is a separate consistent archive and recovery set.
-Back it up as one unit: the state database file plus any accompanying sidecar
-files, copied while KeepPeek is stopped, or through a tested snapshot
-procedure that covers every involved volume and writer. A live copy of the
-database file alone can disagree with its journal or sidecars, exactly as a
-live catalog copy can. The contract tests in `tests/state_store_contract.rs`
-pin the bundle half of this boundary; expiry, quota accounting, and reopen
-behavior are pinned by the `DurableStore` unit tests.
+The server keeps it in `state-store.db` inside the configured long-term
+storage directory and serves reads and watches from memory while committing
+every mutation to that file first. Back it up as one unit: the state database
+file plus any accompanying sidecar files, copied while KeepPeek is stopped,
+or through a tested snapshot procedure that covers every involved volume and
+writer. A live copy of the database file alone can disagree with its journal
+or sidecars, exactly as a live catalog copy can. The contract tests in
+`tests/state_store_contract.rs` pin the bundle half of this boundary; expiry,
+quota accounting, and reopen behavior are pinned by the `DurableStore` unit
+tests.
+
+Generic dispatch and the `keeppeek.state-store.v1` capability turn on only
+after the database opens and its namespaces, revisions, and entries load into
+memory. If the file cannot open, the server keeps running with an empty
+in-memory registry, generic commands stay rejected, and the capability stays
+unadvertised: no client ever sees durability the server cannot deliver.
 
 Restore reinstates counters before watches. A runtime-store restore must bring
 back namespace revisions, entry revisions, and byte counters together before
