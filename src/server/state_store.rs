@@ -496,7 +496,9 @@ pub(super) fn handles(command: &proto::StateStoreCommand) -> bool {
         Some(state_store_command::Action::Put(request)) => &request.namespace,
         Some(state_store_command::Action::Delete(request)) => &request.namespace,
         Some(state_store_command::Action::Watch(request)) => &request.namespace,
-        Some(state_store_command::Action::Unwatch(_)) | None => return false,
+        Some(state_store_command::Action::Unwatch(_))
+        | Some(state_store_command::Action::WatchAck(_))
+        | None => return false,
     };
     validate_namespace(namespace).is_ok()
 }
@@ -510,7 +512,11 @@ pub(super) fn dispatch(
         Some(state_store_command::Action::Get(request)) => get(state, principal, request)?,
         Some(state_store_command::Action::Put(request)) => put(state, principal, request)?,
         Some(state_store_command::Action::Delete(request)) => delete(state, principal, request)?,
-        Some(state_store_command::Action::Watch(_) | state_store_command::Action::Unwatch(_)) => {
+        Some(
+            state_store_command::Action::Watch(_)
+            | state_store_command::Action::Unwatch(_)
+            | state_store_command::Action::WatchAck(_),
+        ) => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::UnsupportedRequest,
                 501,

@@ -392,7 +392,9 @@ fn required_access_role(command: Option<&control_request::Command>) -> AccessRol
                 Some(proto::state_store_command::Action::Put(request)) => &request.namespace,
                 Some(proto::state_store_command::Action::Delete(request)) => &request.namespace,
                 Some(proto::state_store_command::Action::Watch(request)) => &request.namespace,
-                Some(proto::state_store_command::Action::Unwatch(_)) | None => "",
+                Some(proto::state_store_command::Action::Unwatch(_))
+                | Some(proto::state_store_command::Action::WatchAck(_))
+                | None => "",
             };
             if matches!(
                 namespace,

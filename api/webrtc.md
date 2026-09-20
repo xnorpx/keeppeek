@@ -446,10 +446,24 @@ discards its old local copy after installing the new snapshot. Broad snapshots a
 KeepPeek rejects a watch that exceeds configured entry or byte limits, and clients narrow the
 namespace or key prefix.
 
-Watch updates are server-originated control requests and require `Ok` or `Error`. A `PUT` update
-contains the complete replacement entry. `DELETE` and `EXPIRE` carry namespace, key, and revision
-without an entry. `UnwatchState` stops updates and returns `StateUnwatchResult`; it is harmless to
-unwatch a client-local already closed watch only when the server still recognizes its ID.
+Every update after the snapshot carries a per-watch `watch_sequence` starting at 1 and increasing
+by exactly one per delivered update. The namespace revision also covers keys outside a prefix
+filter, so only `watch_sequence` detects a gap on a filtered watch: the client applies an update
+only when its sequence is exactly one above the highest applied, and treats any skip as a gap
+requiring a fresh snapshot. The client acknowledges the highest contiguously applied sequence with
+`WatchStateAck`; the server replies `StateWatchAckResult` echoing the accepted sequence and may
+then release buffered updates at or below it. Duplicate acknowledgements are idempotent no-ops. An
+acknowledgement for an unknown watch fails with `WATCH_NOT_FOUND`, and one beyond the highest
+delivered sequence is rejected as an invalid request.
+
+A `PUT` update contains the complete replacement entry. `DELETE` and `EXPIRE` carry namespace,
+key, and revision without an entry.
+
+Watch delivery is bounded: the server buffers at most 32 unacknowledged updates per watch. A watch
+that exceeds its buffer, loses authorization, or fails snapshot delivery is terminated explicitly
+and stops receiving updates; the client must re-watch rather than assume continuity. `UnwatchState`
+stops updates and returns `StateUnwatchResult`; it is harmless to unwatch a client-local already
+closed watch only when the server still recognizes its ID.
 `StateStoreError.current_revision` is populated only for `CONFLICT`; all other errors omit it so
 authorization failures do not leak entry revision information.
 

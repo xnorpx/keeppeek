@@ -1817,6 +1817,7 @@ message StateStoreCommand {
     DeleteState delete = 3;
     WatchState watch = 4;
     UnwatchState unwatch = 5;
+    WatchStateAck watch_ack = 6;
   }
 }
 
@@ -2139,6 +2140,18 @@ message UnwatchState {
   string watch_id = 1;
 }
 
+// Cumulative acknowledgement for one watch's delivery sequence. The client
+// sends the highest watch_sequence it has applied contiguously; the server
+// may then release buffered updates at or below that sequence. Duplicate
+// acknowledgements are idempotent. An acknowledgement for an unknown watch
+// fails with STATE_STORE_ERROR_CODE_WATCH_NOT_FOUND, and an
+// applied_sequence beyond the highest delivered sequence is rejected as an
+// invalid request.
+message WatchStateAck {
+  string watch_id = 1;
+  uint64 applied_sequence = 2;
+}
+
 message StateEntry {
   string namespace = 1;
   string key = 2;
@@ -2156,6 +2169,7 @@ message StateStoreResult {
     StateDeleteResult deleted = 2;
     StateWatchSnapshot watch = 3;
     StateUnwatchResult unwatched = 4;
+    StateWatchAckResult watch_ack = 5;
   }
 }
 
@@ -2177,6 +2191,11 @@ message StateUnwatchResult {
   string watch_id = 1;
 }
 
+message StateWatchAckResult {
+  string watch_id = 1;
+  uint64 applied_sequence = 2;
+}
+
 message StateStoreWatchUpdate {
   string watch_id = 1;
   string namespace = 2;
@@ -2184,6 +2203,12 @@ message StateStoreWatchUpdate {
   uint64 revision = 4;
   StateStoreUpdateKind kind = 5;
   StateEntry entry = 6;
+  // Per-watch delivery sequence, starting at 1 for the first update after
+  // the snapshot. Strictly increasing per watch and independent of the
+  // namespace revision, which also covers keys outside a prefix filter and
+  // therefore cannot detect gaps on its own. The client acknowledges applied
+  // sequences with WatchStateAck.
+  uint64 watch_sequence = 7;
 }
 
 enum StateStoreUpdateKind {
