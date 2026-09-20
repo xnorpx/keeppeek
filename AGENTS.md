@@ -16,6 +16,14 @@ explicit failure handling.
 TigerBeetle's static-allocation policy is explicitly excluded. Follow KeepPeek's language-specific
 memory and performance rules instead.
 
+## Ponytail
+
+For every coding task in this repository, read and apply [the ponytail skill](.agents/skills/ponytail/SKILL.md)
+at full intensity alongside the other skills: reuse before writing, stdlib before dependencies,
+smallest correct diff, root-cause fixes. Mark deliberate simplifications with a `ponytail:` ceiling comment.
+Repository quality bars win on conflict: committed tests, verification gates, docs sync, and
+security/accessibility requirements still apply in full.
+
 ## Pragmatic Rust Guidelines
 
 For every Rust implementation, refactor, review, test, or API design task in this repository, read and follow [the Pragmatic Rust Guidelines](.github/instructions/rust_pragmatic_guidelines.md).
