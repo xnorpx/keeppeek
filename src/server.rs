@@ -106,6 +106,7 @@ pub(crate) mod state_store;
     reason = "server dispatch wiring lands in the next slice; covered by durable tests meanwhile"
 )]
 pub(crate) mod state_store_durable;
+pub(crate) mod state_store_settings;
 mod stored_media;
 
 pub(crate) fn migrate_peek_layout_configuration(

@@ -508,10 +508,109 @@ pub(super) fn dispatch(
     principal: &ApiPrincipal,
     command: proto::StateStoreCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
+    if let Some(namespace) = command_namespace(&command)
+        && super::state_store_settings::is_adapter_namespace(namespace)
+    {
+        return adapter_dispatch(state, principal, command);
+    }
     let result = match command.action {
         Some(state_store_command::Action::Get(request)) => get(state, principal, request)?,
         Some(state_store_command::Action::Put(request)) => put(state, principal, request)?,
         Some(state_store_command::Action::Delete(request)) => delete(state, principal, request)?,
+        Some(
+            state_store_command::Action::Watch(_)
+            | state_store_command::Action::Unwatch(_)
+            | state_store_command::Action::WatchAck(_),
+        ) => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::UnsupportedRequest,
+                501,
+                "this state store watch operation is not implemented",
+            ));
+        }
+        None => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "state store command has no action",
+            ));
+        }
+    };
+    Ok(control_ok::Result::StateStoreResult(result))
+}
+
+fn command_namespace(command: &proto::StateStoreCommand) -> Option<&str> {
+    match &command.action {
+        Some(state_store_command::Action::Get(request)) => Some(&request.namespace),
+        Some(state_store_command::Action::Put(request)) => Some(&request.namespace),
+        Some(state_store_command::Action::Delete(request)) => Some(&request.namespace),
+        Some(state_store_command::Action::Watch(request)) => Some(&request.namespace),
+        Some(state_store_command::Action::Unwatch(_))
+        | Some(state_store_command::Action::WatchAck(_))
+        | None => None,
+    }
+}
+
+fn adapter_dispatch(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    command: proto::StateStoreCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
+    use super::state_store_settings as adapter;
+    let Some(config_path) = state.camera_config_path.clone() else {
+        return Err(registry_error(
+            Error::Storage("state store settings are unavailable".to_owned()),
+            "",
+            "",
+        ));
+    };
+    let admin = principal.role == AccessRole::Administrator;
+    let result = match command.action {
+        Some(state_store_command::Action::Get(request)) => {
+            let entry = adapter::get(
+                &state.config_update,
+                &config_path,
+                &request.namespace,
+                &request.key,
+                &principal.id(),
+                admin,
+            )
+            .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+            entry_result(entry)
+        }
+        Some(state_store_command::Action::Put(request)) => {
+            let value = request
+                .value
+                .ok_or_else(|| invalid("state value is required"))?;
+            let entry = adapter::put(
+                &state.config_update,
+                &config_path,
+                &request.namespace,
+                &request.key,
+                &request.schema,
+                Some(value),
+                request.expected_revision,
+                request.ttl,
+                &principal.id(),
+                admin,
+                now_ms(),
+            )
+            .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+            entry_result(entry)
+        }
+        Some(state_store_command::Action::Delete(request)) => {
+            let revision = adapter::delete(
+                &state.config_update,
+                &config_path,
+                &request.namespace,
+                &request.key,
+                request.expected_revision,
+                &principal.id(),
+                admin,
+            )
+            .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+            deleted_result(request.namespace, request.key, revision)
+        }
         Some(
             state_store_command::Action::Watch(_)
             | state_store_command::Action::Unwatch(_)
@@ -590,15 +689,19 @@ fn delete(
             now_ms(),
         )
         .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
-    Ok(proto::StateStoreResult {
+    Ok(deleted_result(request.namespace, request.key, revision))
+}
+
+const fn deleted_result(namespace: String, key: String, revision: u64) -> proto::StateStoreResult {
+    proto::StateStoreResult {
         result: Some(state_store_result::Result::Deleted(
             proto::StateDeleteResult {
-                namespace: request.namespace,
-                key: request.key,
+                namespace,
+                key,
                 revision,
             },
         )),
-    })
+    }
 }
 
 fn lock_registry(state: &ServerState) -> std::sync::MutexGuard<'_, Registry> {
