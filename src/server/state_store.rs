@@ -1500,6 +1500,31 @@ mod tests {
     }
 
     #[test]
+    fn lease_expiry_boundary_is_inclusive() {
+        let mut registry = Registry::default();
+        put_lease(&mut registry, "leases/front-door", 1_000, NOW_MS);
+        registry
+            .get(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS + 999,
+            )
+            .expect("lease must survive before its deadline");
+        let error = registry
+            .get(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS + 1_000,
+            )
+            .expect_err("lease at its exact deadline must read as not found");
+        assert_eq!(error, Error::NotFound);
+    }
+
+    #[test]
     fn expired_leases_read_as_not_found() {
         let mut registry = Registry::default();
         put_lease(&mut registry, "leases/front-door", 1_000, NOW_MS);

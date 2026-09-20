@@ -60,11 +60,15 @@ On a mismatch, KeepPeek returns `STATE_STORE_ERROR_CODE_CONFLICT` and the curren
 writer rereads, merges its own domain-specific intent, and retries. A client never retries a
 blind write after a conflict because that would discard another writer's state.
 
-An optional nonzero TTL requests a liveness lease. KeepPeek clamps a value above the namespace
-maximum and returns the accepted `expires_at_ms` in the entry. A value below the namespace minimum
-is rejected with `STATE_STORE_ERROR_CODE_TTL_INVALID`. KeepPeek emits an `EXPIRE` update when an
-accepted TTL elapses. Services refresh their own lease with compare-and-set writes; they do not
-refresh another owner's entry.
+An optional nonzero TTL requests a liveness lease. A value below one second is rejected with
+`STATE_STORE_ERROR_CODE_TTL_INVALID`; a value above 24 hours is clamped to 24 hours, and the entry
+carries the accepted `expires_at_ms`. Expiry is inclusive: an entry whose deadline equals the
+current time already reads as not found. KeepPeek emits an `EXPIRE` update when an accepted TTL
+elapses. Services refresh their own lease with compare-and-set writes; they do not refresh another
+owner's entry. Restart purges overdue leases before serving: expired rows are deleted, their bytes
+leave the counter, and affected namespace revisions advance exactly as if the leases had expired
+lazily, so later writes stay monotonic. MQTT integration state and settings-backed entries are
+live configuration rather than leases and reject any TTL.
 
 ## Watches without a snapshot gap
 

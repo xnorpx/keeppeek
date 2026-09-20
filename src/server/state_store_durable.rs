@@ -15,7 +15,7 @@ pub struct DurableStore {
 }
 
 impl DurableStore {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
+    pub fn open(path: &Path, now_ms: u64) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -25,6 +25,7 @@ impl DurableStore {
         let database = pollster::block_on(turso::Builder::new_local(path).build())?;
         let connection = database.connect()?;
         pollster::block_on(initialize_schema(&connection))?;
+        pollster::block_on(purge_expired(&connection, now_ms))?;
         let stored_bytes = pollster::block_on(stored_value_bytes(&connection))?;
         Ok(Self {
             connection,
@@ -577,6 +578,53 @@ async fn schema_version(connection: &turso::Connection) -> anyhow::Result<i64> {
     Ok(row.get::<i64>(0)?)
 }
 
+async fn purge_expired(connection: &turso::Connection, now_ms: u64) -> anyhow::Result<()> {
+    let cutoff = to_i64(now_ms).map_err(|error| match error {
+        TransactionError::Storage(message) => anyhow::anyhow!("{message}"),
+        TransactionError::Domain(_) => anyhow::anyhow!("state-store clock is out of range"),
+    })?;
+    connection.execute_batch("BEGIN IMMEDIATE").await?;
+    let purged = async {
+        let mut rows = connection
+            .query(
+                "SELECT DISTINCT namespace FROM entries
+                 WHERE expires_ms IS NOT NULL AND expires_ms <= ?1",
+                turso::params![cutoff],
+            )
+            .await?;
+        let mut affected = Vec::new();
+        while let Some(row) = rows.next().await? {
+            affected.push(row.get::<String>(0)?);
+        }
+        drop(rows);
+        connection
+            .execute(
+                "DELETE FROM entries WHERE expires_ms IS NOT NULL AND expires_ms <= ?1",
+                turso::params![cutoff],
+            )
+            .await?;
+        for namespace in affected {
+            connection
+                .execute(
+                    "UPDATE namespaces SET revision = revision + 1 WHERE namespace = ?1",
+                    turso::params![namespace],
+                )
+                .await?;
+        }
+        Ok::<(), turso::Error>(())
+    }
+    .await;
+    if let Err(error) = purged {
+        let _ = connection.execute_batch("ROLLBACK").await;
+        return Err(error.into());
+    }
+    if let Err(error) = connection.execute_batch("COMMIT").await {
+        let _ = connection.execute_batch("ROLLBACK").await;
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 async fn stored_value_bytes(connection: &turso::Connection) -> anyhow::Result<u64> {
     let mut rows = connection
         .query("SELECT COALESCE(SUM(LENGTH(value)), 0) FROM entries", ())
@@ -675,7 +723,7 @@ mod tests {
     #[test]
     fn durable_put_get_roundtrip() {
         let dir = TempDir::new();
-        let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
         let entry = store
             .put(
                 "service/transcoder-a/",
@@ -706,7 +754,7 @@ mod tests {
     #[test]
     fn durable_competing_cas_writers_have_exactly_one_winner() {
         let dir = TempDir::new();
-        let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
         store
             .put(
                 "service/transcoder-a/",
@@ -768,7 +816,7 @@ mod tests {
     #[test]
     fn durable_create_only_delete_and_missing_paths() {
         let dir = TempDir::new();
-        let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
         store
             .put(
                 "service/transcoder-a/",
@@ -839,7 +887,7 @@ mod tests {
     fn durable_restart_restores_entries_and_counters() {
         let dir = TempDir::new();
         let stored_before = {
-            let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+            let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
             store
                 .put(
                     "service/transcoder-a/",
@@ -868,7 +916,7 @@ mod tests {
                 .expect("lease must succeed");
             store.stored_bytes()
         };
-        let mut store = DurableStore::open(&dir.db_path()).expect("reopen must succeed");
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("reopen must succeed");
         assert_eq!(
             store.stored_bytes(),
             stored_before,
@@ -915,7 +963,7 @@ mod tests {
     fn durable_counter_survives_empty_namespace() {
         let dir = TempDir::new();
         {
-            let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+            let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
             store
                 .put(
                     "service/transcoder-a/",
@@ -940,7 +988,7 @@ mod tests {
                 )
                 .expect("delete must succeed");
         }
-        let mut store = DurableStore::open(&dir.db_path()).expect("reopen must succeed");
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("reopen must succeed");
         let next = store
             .put(
                 "service/transcoder-a/",
@@ -969,7 +1017,7 @@ mod tests {
             pollster::block_on(connection.execute_batch("PRAGMA user_version = 999"))
                 .expect("version bump must succeed");
         }
-        let error = match DurableStore::open(&dir.db_path()) {
+        let error = match DurableStore::open(&dir.db_path(), NOW_MS) {
             Ok(_) => panic!("future version must fail"),
             Err(error) => error,
         };
@@ -982,7 +1030,7 @@ mod tests {
     #[test]
     fn durable_namespace_bound_rejects_before_allocation() {
         let dir = TempDir::new();
-        let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
         for index in 0..1_024 {
             store
                 .put(
@@ -1017,7 +1065,7 @@ mod tests {
     #[test]
     fn durable_expired_read_keeps_byte_accounting() {
         let dir = TempDir::new();
-        let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
         store
             .put(
                 "service/transcoder-a/",
@@ -1051,12 +1099,163 @@ mod tests {
             );
         }
         drop(store);
-        let store = DurableStore::open(&dir.db_path()).expect("reopen must succeed");
+        let store = DurableStore::open(&dir.db_path(), NOW_MS).expect("reopen must succeed");
         assert_eq!(
             store.stored_bytes(),
             stored,
             "counter must match persisted rows after restart"
         );
+    }
+
+    #[test]
+    fn durable_reopen_expires_overdue_leases() {
+        let dir = TempDir::new();
+        {
+            let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
+            store
+                .put(
+                    "service/transcoder-a/",
+                    "intents/persistent",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("put must succeed");
+            store
+                .put(
+                    "service/transcoder-a/",
+                    "intents/short",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("subscribe")),
+                    None,
+                    Some(duration_ms(1_000)),
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("lease must succeed");
+            store
+                .put(
+                    "service/transcoder-a/",
+                    "intents/long",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("subscribe")),
+                    None,
+                    Some(duration_ms(60_000)),
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("lease must succeed");
+        }
+        let mut store =
+            DurableStore::open(&dir.db_path(), NOW_MS + 5_000).expect("reopen must succeed");
+        let expired = store
+            .get(
+                "service/transcoder-a/",
+                "intents/short",
+                "transcoder-a",
+                true,
+                NOW_MS + 5_000,
+            )
+            .expect_err("overdue lease must not survive restart");
+        assert_eq!(expired, Error::NotFound);
+        store
+            .get(
+                "service/transcoder-a/",
+                "intents/persistent",
+                "transcoder-a",
+                true,
+                NOW_MS + 5_000,
+            )
+            .expect("persistent entry must survive restart");
+        store
+            .get(
+                "service/transcoder-a/",
+                "intents/long",
+                "transcoder-a",
+                true,
+                NOW_MS + 5_000,
+            )
+            .expect("live lease must survive restart");
+        let next = store
+            .put(
+                "service/transcoder-a/",
+                "intents/next",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS + 5_000,
+            )
+            .expect("put must succeed");
+        assert_eq!(
+            next.revision, 5,
+            "startup purge bumps the counter like lazy expiry, so revisions stay monotonic"
+        );
+        for key in ["intents/persistent", "intents/long", "intents/next"] {
+            store
+                .delete(
+                    "service/transcoder-a/",
+                    key,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS + 5_000,
+                )
+                .expect("delete must succeed");
+        }
+        assert_eq!(
+            store.stored_bytes(),
+            0,
+            "purged bytes must not linger in the counter"
+        );
+    }
+
+    #[test]
+    fn durable_reopen_with_all_expired_keeps_revision_monotonic() {
+        let dir = TempDir::new();
+        {
+            let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
+            for key in ["intents/a", "intents/b"] {
+                store
+                    .put(
+                        "service/transcoder-a/",
+                        key,
+                        "keeppeek.media-intent.v1",
+                        Some(media_intent_value("subscribe")),
+                        None,
+                        Some(duration_ms(1_000)),
+                        "transcoder-a",
+                        true,
+                        NOW_MS,
+                    )
+                    .expect("lease must succeed");
+            }
+        }
+        let mut store =
+            DurableStore::open(&dir.db_path(), NOW_MS + 60_000).expect("reopen must succeed");
+        assert_eq!(store.stored_bytes(), 0);
+        let next = store
+            .put(
+                "service/transcoder-a/",
+                "intents/next",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS + 60_000,
+            )
+            .expect("put must succeed");
+        assert_eq!(next.revision, 4);
     }
 
     #[test]
@@ -1089,7 +1288,8 @@ mod tests {
             pollster::block_on(connection.execute_batch("DROP TABLE entries"))
                 .expect("obstacle cleanup must succeed");
         }
-        let store = DurableStore::open(&dir.db_path()).expect("open after cleanup must succeed");
+        let store =
+            DurableStore::open(&dir.db_path(), NOW_MS).expect("open after cleanup must succeed");
         assert_eq!(store.stored_bytes(), 0);
     }
 }
