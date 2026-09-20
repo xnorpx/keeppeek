@@ -33,6 +33,7 @@ impl DurableStore {
         let connection = database.connect()?;
         pollster::block_on(initialize_schema(&connection))?;
         pollster::block_on(purge_expired(&connection, now_ms))?;
+        pollster::block_on(truncate_write_ahead_log(&connection))?;
         let stored_bytes = pollster::block_on(stored_value_bytes(&connection))?;
         Ok(Self {
             connection,
@@ -837,6 +838,14 @@ async fn purge_expired(connection: &turso::Connection, now_ms: u64) -> anyhow::R
     Ok(())
 }
 
+async fn truncate_write_ahead_log(connection: &turso::Connection) -> anyhow::Result<()> {
+    let mut rows = connection
+        .query("PRAGMA wal_checkpoint(TRUNCATE)", ())
+        .await?;
+    while rows.next().await?.is_some() {}
+    Ok(())
+}
+
 async fn stored_value_bytes(connection: &turso::Connection) -> anyhow::Result<u64> {
     let mut rows = connection
         .query("SELECT COALESCE(SUM(LENGTH(value)), 0) FROM entries", ())
@@ -1091,6 +1100,213 @@ mod tests {
             )
             .expect("writes must resume after the fault clears");
         assert_eq!(second.revision, 3);
+    }
+
+    fn max_size_value() -> Struct {
+        let mut value = media_intent_value("publish");
+        for name in ["source_id", "stream_id", "variant_id", "output_profile"] {
+            value.fields.insert(
+                name.to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("v".repeat(128))),
+                },
+            );
+        }
+        value
+    }
+
+    fn dir_bytes(dir: &TempDir) -> u64 {
+        dir_breakdown(dir).iter().map(|(_, bytes)| bytes).sum()
+    }
+
+    fn dir_breakdown(dir: &TempDir) -> Vec<(String, u64)> {
+        let mut files: Vec<(String, u64)> = std::fs::read_dir(&dir.path)
+            .expect("test dir must list")
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let metadata = entry.metadata().ok()?;
+                metadata.is_file().then(|| {
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        metadata.len(),
+                    )
+                })
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn churn_holds_a_steady_disk_ceiling_and_reclaims_quota() {
+        use super::super::state_store::{Error, Invalid};
+        const CYCLES: u32 = 3;
+        const ENTRIES: u32 = 1_024;
+        let dir = TempDir::new();
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
+        let empty_bytes = store.stored_bytes();
+        assert_eq!(empty_bytes, 0);
+        let mut full_sizes = Vec::new();
+        let mut empty_sizes = Vec::new();
+        for cycle in 0..CYCLES {
+            let namespace = format!("service/churn-{cycle}/");
+            for index in 0..ENTRIES {
+                store
+                    .put(
+                        &namespace,
+                        &format!("key-{index:04}"),
+                        "keeppeek.media-intent.v1",
+                        Some(max_size_value()),
+                        None,
+                        None,
+                        "transcoder-a",
+                        true,
+                        NOW_MS,
+                    )
+                    .expect("churn fill must succeed");
+            }
+            assert!(store.stored_bytes() > empty_bytes);
+            full_sizes.push(dir_bytes(&dir));
+            println!("cycle {cycle} full: {:?}", dir_breakdown(&dir));
+            for index in 0..ENTRIES {
+                store
+                    .delete(
+                        &namespace,
+                        &format!("key-{index:04}"),
+                        None,
+                        "transcoder-a",
+                        true,
+                        NOW_MS,
+                    )
+                    .expect("churn drain must succeed");
+            }
+            assert_eq!(
+                store.stored_bytes(),
+                empty_bytes,
+                "deletes must return every quota byte"
+            );
+            drop(store);
+            store =
+                DurableStore::open(&dir.db_path(), NOW_MS).expect("reopen must recover mid-churn");
+            empty_sizes.push(dir_bytes(&dir));
+            println!("cycle {cycle} rest: {:?}", dir_breakdown(&dir));
+            for (name, bytes) in dir_breakdown(&dir) {
+                if name != "state.db" {
+                    assert_eq!(
+                        bytes, 0,
+                        "reopen must truncate every sidecar, not just the log: {name}"
+                    );
+                }
+            }
+        }
+        println!("churn full-cycle bytes: {full_sizes:?}");
+        println!("churn empty-cycle bytes: {empty_sizes:?}");
+        println!(
+            "churn rest breakdown: {:?}",
+            dir_breakdown(&dir)
+                .iter()
+                .map(|(name, bytes)| format!("{name}={bytes}"))
+                .collect::<Vec<_>>()
+        );
+        for (cycle, size) in full_sizes.iter().enumerate() {
+            assert!(
+                *size <= full_sizes[0] * 11 / 10,
+                "cycle {cycle} must not grow the disk ceiling: {size} vs {}",
+                full_sizes[0]
+            );
+        }
+        for (cycle, size) in empty_sizes.iter().enumerate() {
+            assert!(
+                *size <= empty_sizes[0] * 11 / 10,
+                "rest cycle {cycle} must not accumulate sidecars: {size} vs {}",
+                empty_sizes[0]
+            );
+        }
+        assert!(
+            full_sizes[CYCLES as usize - 1] <= full_sizes[1] * 11 / 10,
+            "warmed cycles must reuse pages instead of growing: {full_sizes:?}"
+        );
+        for index in 0..ENTRIES {
+            store
+                .put(
+                    "service/churn-0/",
+                    &format!("key-{index:04}"),
+                    "keeppeek.media-intent.v1",
+                    Some(max_size_value()),
+                    None,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("reclaimed quota must accept a full refill");
+        }
+        let Err(Error::Invalid(Invalid::NamespaceFull)) = store.put(
+            "service/churn-0/",
+            "key-overflow",
+            "keeppeek.media-intent.v1",
+            Some(max_size_value()),
+            None,
+            None,
+            "transcoder-a",
+            true,
+            NOW_MS,
+        ) else {
+            panic!("the 1,025th entry in a refilled namespace must be rejected");
+        };
+        let pre_lease_bytes = store.stored_bytes();
+        for index in 0..50 {
+            store
+                .put(
+                    "service/churn-1/",
+                    &format!("lease-{index:02}"),
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    Some(duration_ms(3_600_000)),
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("expiry fill must succeed");
+        }
+        assert!(store.stored_bytes() > pre_lease_bytes);
+        drop(store);
+        store = DurableStore::open(&dir.db_path(), NOW_MS + 2 * 3_600_000)
+            .expect("reopen must purge overdue leases");
+        assert_eq!(
+            store.stored_bytes(),
+            pre_lease_bytes,
+            "purged leases must return their quota bytes"
+        );
+        for namespace_id in 0..253 {
+            store
+                .put(
+                    &format!("service/cap-{namespace_id}/"),
+                    "key-0",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("namespace admission must succeed below the cap");
+        }
+        let Err(Error::Invalid(Invalid::StoreFull)) = store.put(
+            "service/cap-overflow/",
+            "key-0",
+            "keeppeek.media-intent.v1",
+            Some(media_intent_value("publish")),
+            None,
+            None,
+            "transcoder-a",
+            true,
+            NOW_MS,
+        ) else {
+            panic!("the 257th namespace must be rejected");
+        };
     }
 
     #[test]
