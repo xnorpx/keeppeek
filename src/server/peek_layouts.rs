@@ -211,7 +211,8 @@ pub(super) fn dispatch(
         Some(
             state_store_command::Action::Delete(_)
             | state_store_command::Action::Watch(_)
-            | state_store_command::Action::Unwatch(_),
+            | state_store_command::Action::Unwatch(_)
+            | state_store_command::Action::WatchAck(_),
         ) => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::UnsupportedRequest,
@@ -236,7 +237,9 @@ pub(super) fn handles(command: &proto::StateStoreCommand) -> bool {
         Some(state_store_command::Action::Put(request)) => request.namespace == NAMESPACE,
         Some(state_store_command::Action::Delete(request)) => request.namespace == NAMESPACE,
         Some(state_store_command::Action::Watch(request)) => request.namespace == NAMESPACE,
-        Some(state_store_command::Action::Unwatch(_)) | None => false,
+        Some(state_store_command::Action::Unwatch(_))
+        | Some(state_store_command::Action::WatchAck(_))
+        | None => false,
     }
 }
 

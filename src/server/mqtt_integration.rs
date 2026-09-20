@@ -79,7 +79,8 @@ pub(super) fn dispatch(
         Some(
             state_store_command::Action::Delete(_)
             | state_store_command::Action::Watch(_)
-            | state_store_command::Action::Unwatch(_),
+            | state_store_command::Action::Unwatch(_)
+            | state_store_command::Action::WatchAck(_),
         ) => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::UnsupportedRequest,
