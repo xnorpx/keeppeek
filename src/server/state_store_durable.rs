@@ -584,39 +584,67 @@ async fn purge_expired(connection: &turso::Connection, now_ms: u64) -> anyhow::R
         TransactionError::Domain(_) => anyhow::anyhow!("state-store clock is out of range"),
     })?;
     connection.execute_batch("BEGIN IMMEDIATE").await?;
-    let purged = async {
+    let purged: Result<(), anyhow::Error> = async {
         let mut rows = connection
             .query(
-                "SELECT DISTINCT namespace FROM entries
-                 WHERE expires_ms IS NOT NULL AND expires_ms <= ?1",
+                "SELECT namespace, COUNT(*) FROM entries
+                 WHERE expires_ms IS NOT NULL AND expires_ms <= ?1
+                 GROUP BY namespace",
                 turso::params![cutoff],
             )
             .await?;
-        let mut affected = Vec::new();
+        let mut expired = Vec::new();
         while let Some(row) = rows.next().await? {
-            affected.push(row.get::<String>(0)?);
+            expired.push((row.get::<String>(0)?, row.get::<i64>(1)?));
         }
         drop(rows);
+        let mut bumps = Vec::new();
+        for (namespace, count) in expired {
+            let mut current = connection
+                .query(
+                    "SELECT revision FROM namespaces WHERE namespace = ?1",
+                    turso::params![namespace.as_str()],
+                )
+                .await?;
+            let row = current
+                .next()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("state-store namespace is missing"))?;
+            let revision = row.get::<i64>(0)?;
+            drop(current);
+            let count = u64::try_from(count)
+                .map_err(|_| anyhow::anyhow!("state-store expired count is out of range"))?;
+            let next = to_u64(revision)
+                .map_err(|_| anyhow::anyhow!("state-store revision is corrupt"))?
+                .checked_add(count)
+                .ok_or_else(|| anyhow::anyhow!("state-store revision overflows u64"))?;
+            bumps.push((
+                namespace,
+                to_i64(next).map_err(|_| {
+                    anyhow::anyhow!("state-store revision exceeds the persisted range")
+                })?,
+            ));
+        }
         connection
             .execute(
                 "DELETE FROM entries WHERE expires_ms IS NOT NULL AND expires_ms <= ?1",
                 turso::params![cutoff],
             )
             .await?;
-        for namespace in affected {
+        for (namespace, revision) in bumps {
             connection
                 .execute(
-                    "UPDATE namespaces SET revision = revision + 1 WHERE namespace = ?1",
-                    turso::params![namespace],
+                    "UPDATE namespaces SET revision = ?1 WHERE namespace = ?2",
+                    turso::params![revision, namespace],
                 )
                 .await?;
         }
-        Ok::<(), turso::Error>(())
+        Ok(())
     }
     .await;
     if let Err(error) = purged {
         let _ = connection.execute_batch("ROLLBACK").await;
-        return Err(error.into());
+        return Err(error);
     }
     if let Err(error) = connection.execute_batch("COMMIT").await {
         let _ = connection.execute_batch("ROLLBACK").await;
@@ -1255,7 +1283,175 @@ mod tests {
                 NOW_MS + 60_000,
             )
             .expect("put must succeed");
-        assert_eq!(next.revision, 4);
+        assert_eq!(
+            next.revision, 5,
+            "two purged leases must advance the counter by two"
+        );
+    }
+
+    #[test]
+    fn durable_reopen_counts_every_expired_entry_per_namespace() {
+        let dir = TempDir::new();
+        {
+            let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
+            for key in ["intents/a", "intents/b"] {
+                store
+                    .put(
+                        "service/transcoder-a/",
+                        key,
+                        "keeppeek.media-intent.v1",
+                        Some(media_intent_value("subscribe")),
+                        None,
+                        Some(duration_ms(1_000)),
+                        "transcoder-a",
+                        true,
+                        NOW_MS,
+                    )
+                    .expect("lease must succeed");
+            }
+            store
+                .put(
+                    "service/transcoder-a/",
+                    "intents/live",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("put must succeed");
+            store
+                .put(
+                    "user/viewer-a/",
+                    "subscriptions/front-door",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("subscribe")),
+                    None,
+                    Some(duration_ms(60_000)),
+                    "viewer-a",
+                    false,
+                    NOW_MS,
+                )
+                .expect("lease must succeed");
+        }
+        let mut store =
+            DurableStore::open(&dir.db_path(), NOW_MS + 5_000).expect("reopen must succeed");
+        for key in ["intents/a", "intents/b"] {
+            let expired = store
+                .get(
+                    "service/transcoder-a/",
+                    key,
+                    "transcoder-a",
+                    true,
+                    NOW_MS + 5_000,
+                )
+                .expect_err("overdue leases must not survive restart");
+            assert_eq!(expired, Error::NotFound);
+        }
+        let service_next = store
+            .put(
+                "service/transcoder-a/",
+                "intents/next",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS + 5_000,
+            )
+            .expect("put must succeed");
+        assert_eq!(
+            service_next.revision, 6,
+            "two expired entries must advance the counter by two, like lazy expiry"
+        );
+        let user_next = store
+            .put(
+                "user/viewer-a/",
+                "subscriptions/back-door",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("subscribe")),
+                None,
+                None,
+                "viewer-a",
+                false,
+                NOW_MS + 5_000,
+            )
+            .expect("put must succeed");
+        assert_eq!(
+            user_next.revision, 2,
+            "namespaces without expired entries must keep their counter"
+        );
+    }
+
+    #[test]
+    fn durable_reopen_rolls_back_purge_on_revision_overflow() {
+        let dir = TempDir::new();
+        {
+            let database = pollster::block_on(
+                turso::Builder::new_local(dir.db_path().to_str().unwrap()).build(),
+            )
+            .expect("raw open must succeed");
+            let connection = database.connect().expect("connect must succeed");
+            pollster::block_on(initialize_schema(&connection)).expect("schema must initialize");
+            let value = media_intent_value("subscribe");
+            pollster::block_on(connection.execute(
+                "INSERT INTO namespaces(namespace, revision) VALUES(?1, ?2)",
+                turso::params!["service/transcoder-a/", i64::MAX],
+            ))
+            .expect("namespace must be seeded");
+            pollster::block_on(connection.execute(
+                "INSERT INTO entries(namespace, key, schema, value, revision, updated_ms, expires_ms, owner_id)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                turso::params![
+                    "service/transcoder-a/",
+                    "intents/doomed",
+                    "keeppeek.media-intent.v1",
+                    prost::Message::encode_to_vec(&value),
+                    1i64,
+                    NOW_MS as i64,
+                    NOW_MS as i64,
+                    "transcoder-a",
+                ],
+            ))
+            .expect("expired entry must be seeded");
+        }
+        let failed = match DurableStore::open(&dir.db_path(), NOW_MS + 60_000) {
+            Ok(_) => panic!("purge past the persisted range must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            failed.to_string().contains("exceeds the persisted range"),
+            "unexpected error: {failed}"
+        );
+        let database =
+            pollster::block_on(turso::Builder::new_local(dir.db_path().to_str().unwrap()).build())
+                .expect("raw open must succeed");
+        let connection = database.connect().expect("connect must succeed");
+        let mut rows = pollster::block_on(connection.query(
+            "SELECT revision FROM namespaces WHERE namespace = 'service/transcoder-a/'",
+            (),
+        ))
+        .expect("revision must be readable");
+        let row = pollster::block_on(rows.next())
+            .expect("row read must succeed")
+            .expect("namespace must still exist");
+        assert_eq!(row.get::<i64>(0).expect("revision must read"), i64::MAX);
+        drop(rows);
+        let mut rows = pollster::block_on(connection.query(
+            "SELECT key FROM entries WHERE namespace = 'service/transcoder-a/'",
+            (),
+        ))
+        .expect("entries must be readable");
+        let row = pollster::block_on(rows.next())
+            .expect("row read must succeed")
+            .expect("expired row must survive the rolled-back purge");
+        assert_eq!(
+            row.get::<String>(0).expect("key must read"),
+            "intents/doomed"
+        );
     }
 
     #[test]
