@@ -713,8 +713,9 @@ fn adapter_dispatch(
                 .value
                 .ok_or_else(|| invalid("state value is required"))?;
             let now = now_ms();
-            let entry = adapter::put(
-                &state.config_update,
+            let _guard = adapter::lock_config(&state.config_update)
+                .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+            let entry = adapter::put_locked(
                 &config_path,
                 &request.namespace,
                 &request.key,
@@ -737,8 +738,9 @@ fn adapter_dispatch(
             entry_result(entry)
         }
         Some(state_store_command::Action::Delete(request)) => {
-            let revision = adapter::delete(
-                &state.config_update,
+            let _guard = adapter::lock_config(&state.config_update)
+                .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+            let revision = adapter::delete_locked(
                 &config_path,
                 &request.namespace,
                 &request.key,

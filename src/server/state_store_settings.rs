@@ -57,8 +57,43 @@ pub(super) fn get(
     clippy::too_many_arguments,
     reason = "adapter put mirrors the validated registry inputs one-to-one"
 )]
+#[cfg(test)]
 pub(super) fn put(
     config_lock: &Mutex<()>,
+    config_path: &Path,
+    namespace: &str,
+    key: &str,
+    schema: &str,
+    value: Option<Struct>,
+    expected_revision: Option<u64>,
+    ttl: Option<Duration>,
+    owner_id: &str,
+    writer_admin: bool,
+    now_ms: u64,
+) -> Result<StoredEntry, Error> {
+    let _guard = lock_config(config_lock)?;
+    put_locked(
+        config_path,
+        namespace,
+        key,
+        schema,
+        value,
+        expected_revision,
+        ttl,
+        owner_id,
+        writer_admin,
+        now_ms,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "adapter put mirrors the validated registry inputs one-to-one"
+)]
+/// Commit body behind the locking wrapper. The caller must hold the config
+/// guard across this call and the surrounding watch publication so commit
+/// and delivery stay serialized with snapshots and registrations.
+pub(super) fn put_locked(
     config_path: &Path,
     namespace: &str,
     key: &str,
@@ -81,7 +116,6 @@ pub(super) fn put(
     }
     let profile = TestProfile::from_struct(&value)?;
     authorize_write(&layout, owner_id, writer_admin)?;
-    let _guard = lock_config(config_lock)?;
     let mut root = load_table(config_path)?;
     let mut section = load_section(&root, namespace)?;
     let current = section.entries.get(key).map(|entry| entry.revision);
@@ -109,8 +143,29 @@ pub(super) fn put(
     Ok(stored_entry(namespace, key, entry))
 }
 
+#[cfg(test)]
 pub(super) fn delete(
     config_lock: &Mutex<()>,
+    config_path: &Path,
+    namespace: &str,
+    key: &str,
+    expected_revision: Option<u64>,
+    owner_id: &str,
+    writer_admin: bool,
+) -> Result<u64, Error> {
+    let _guard = lock_config(config_lock)?;
+    delete_locked(
+        config_path,
+        namespace,
+        key,
+        expected_revision,
+        owner_id,
+        writer_admin,
+    )
+}
+
+/// Commit body behind the locking wrapper. Same guard contract as `put_locked`.
+pub(super) fn delete_locked(
     config_path: &Path,
     namespace: &str,
     key: &str,
@@ -121,7 +176,6 @@ pub(super) fn delete(
     let layout = validate_namespace(namespace)?;
     validate_key(key)?;
     authorize_write(&layout, owner_id, writer_admin)?;
-    let _guard = lock_config(config_lock)?;
     let mut root = load_table(config_path)?;
     let mut section = load_section(&root, namespace)?;
     let current = section.entries.get(key).map(|entry| entry.revision);
@@ -728,7 +782,32 @@ mod tests {
     }
 
     #[test]
-    fn adapter_concurrent_puts_and_watches_stay_consistent() {
+    fn adapter_sequential_replacements_publish_in_commit_order() {
+        use crate::webrtc::SessionId;
+        let fixture = Fixture::new();
+        let state = dispatch_state(&fixture);
+        let session = SessionId::from_u64(5107);
+        admin_session(&state, session);
+        dispatch_watch(&state, session, "w");
+        for _ in 0..2 {
+            super::super::state_store::dispatch(
+                &state,
+                session,
+                &local_principal(),
+                put_command("wall", None),
+            )
+            .expect("sequential replacement must succeed");
+        }
+        assert_eq!(
+            state.state_store_watches.unacked_revisions(session, "w"),
+            vec![1, 2],
+            "delivery order must match commit order",
+        );
+        assert_eq!(dispatch_ack(&state, session, "w", 2), 2);
+    }
+
+    #[test]
+    fn adapter_concurrent_puts_publish_in_commit_order() {
         use crate::webrtc::SessionId;
         use std::sync::Arc;
         let fixture = Fixture::new();
@@ -737,10 +816,10 @@ mod tests {
         admin_session(&state, session);
         dispatch_watch(&state, session, "w");
         let mut handles = Vec::new();
-        for worker in 0..4 {
+        for worker in 0..2 {
             let state = Arc::clone(&state);
             handles.push(std::thread::spawn(move || {
-                for index in 0..7 {
+                for index in 0..10 {
                     let key = format!("wall-{worker}-{index}");
                     super::super::state_store::dispatch(
                         &state,
@@ -755,14 +834,20 @@ mod tests {
         for handle in handles {
             handle.join().expect("worker must finish");
         }
-        assert_eq!(dispatch_ack(&state, session, "w", 28), 28);
+        let revisions = state.state_store_watches.unacked_revisions(session, "w");
+        let expected: Vec<u64> = (1..=20).collect();
+        assert_eq!(
+            revisions, expected,
+            "commit and publication share one serialization point, so delivery order matches commit order on every schedule",
+        );
+        assert_eq!(dispatch_ack(&state, session, "w", 20), 20);
         let snapshot = dispatch_watch(&state, session, "w2");
-        assert_eq!(snapshot.entries.len(), 28);
-        assert_eq!(snapshot.snapshot_revision, 28);
+        assert_eq!(snapshot.entries.len(), 20);
+        assert_eq!(snapshot.snapshot_revision, 20);
     }
 
     #[test]
-    fn adapter_readonly_config_rejects_put_without_publishing() {
+    fn adapter_unwritable_config_rejects_put_without_publishing() {
         use crate::webrtc::SessionId;
         let fixture = Fixture::new();
         let state = dispatch_state(&fixture);
@@ -770,19 +855,17 @@ mod tests {
         admin_session(&state, session);
         dispatch_watch(&state, session, "w");
         let path = fixture.config_path();
-        let writable = std::fs::metadata(&path)
-            .expect("config must exist")
-            .permissions();
-        let mut readonly = writable.clone();
-        readonly.set_readonly(true);
-        std::fs::set_permissions(&path, readonly).expect("config must become read-only");
+        let before = fixture.file_bytes();
+        let staging = path.with_extension("live");
+        std::fs::rename(&path, &staging).expect("config must stage aside");
+        std::fs::create_dir(&path).expect("directory must stand in for the config file");
         super::super::state_store::dispatch(
             &state,
             session,
             &local_principal(),
             put_command("wall", None),
         )
-        .expect_err("put on a read-only config must fail");
+        .expect_err("put on an unreadable config must fail");
         super::super::state_store::dispatch(
             &state,
             session,
@@ -790,7 +873,21 @@ mod tests {
             ack_command("w", 1),
         )
         .expect_err("a rejected put publishes nothing");
-        std::fs::set_permissions(&path, writable).expect("config must become writable");
+        std::fs::remove_dir(&path).expect("directory stand-in must be removable");
+        std::fs::rename(&staging, &path).expect("config must be restored");
+        assert_eq!(
+            fixture.file_bytes(),
+            before,
+            "a rejected mutation leaves the persisted table untouched",
+        );
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            put_command("wall", None),
+        )
+        .expect("put must succeed once the config is writable again");
+        assert_eq!(dispatch_ack(&state, session, "w", 1), 1);
     }
 
     #[test]

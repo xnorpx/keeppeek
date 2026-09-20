@@ -58,6 +58,8 @@ struct Watch {
 #[derive(Clone, Copy, Debug)]
 struct PendingUpdate {
     sequence: u64,
+    #[cfg(test)]
+    revision: u64,
     sent_ms: u64,
 }
 
@@ -210,6 +212,20 @@ impl WatchRegistry {
         self.lock().retain(|(owner, _), _| *owner != session_id);
     }
 
+    #[cfg(test)]
+    pub(super) fn unacked_revisions(&self, session_id: SessionId, watch_id: &str) -> Vec<u64> {
+        self.lock()
+            .get(&(session_id, watch_id.to_owned()))
+            .map(|watch| {
+                watch
+                    .unacked
+                    .iter()
+                    .map(|pending| pending.revision)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub(super) fn publish(
         &self,
         state: &ServerState,
@@ -247,6 +263,8 @@ impl WatchRegistry {
                 let sequence = watch.delivered;
                 watch.unacked.push_back(PendingUpdate {
                     sequence,
+                    #[cfg(test)]
+                    revision: event.revision,
                     sent_ms: now_ms,
                 });
                 if watch.unacked.len() > MAX_IN_FLIGHT_UPDATES {
