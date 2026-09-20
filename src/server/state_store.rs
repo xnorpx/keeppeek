@@ -27,6 +27,34 @@ pub(super) const MAX_WATCH_SNAPSHOT_BYTES: usize = 64 * 1_024;
 pub(super) const MIN_TTL_MS: u64 = 1_000;
 pub(super) const MAX_TTL_MS: u64 = 86_400_000;
 
+#[cfg(test)]
+pub(in crate::server) mod commit_fault {
+    use std::sync::{Mutex, PoisonError};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::server) enum Path {
+        Durable,
+        Settings,
+    }
+
+    static ARMED: Mutex<Option<(Path, String, String)>> = Mutex::new(None);
+
+    pub(in crate::server) fn arm(path: Path, namespace: &str, key: &str) {
+        *ARMED.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((path, namespace.to_owned(), key.to_owned()));
+    }
+
+    pub(in crate::server) fn take(path: Path, namespace: &str, key: &str) -> bool {
+        let mut armed = ARMED.lock().unwrap_or_else(PoisonError::into_inner);
+        let matches = matches!(&*armed, Some((armed_path, armed_ns, armed_key))
+            if *armed_path == path && armed_ns == namespace && armed_key == key);
+        if matches {
+            *armed = None;
+        }
+        matches
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StoredEntry {
     pub namespace: String,

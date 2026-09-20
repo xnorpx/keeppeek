@@ -135,6 +135,14 @@ pub(super) fn put_locked(
         },
     );
     store_section(&mut root, namespace, &section)?;
+    #[cfg(test)]
+    if super::state_store::commit_fault::take(
+        super::state_store::commit_fault::Path::Settings,
+        namespace,
+        key,
+    ) {
+        return Err(Error::Storage("injected commit failure".to_owned()));
+    }
     write_table(config_path, &root)?;
     let entry = section
         .entries
@@ -186,6 +194,14 @@ pub(super) fn delete_locked(
     let revision = section.bump_revision()?;
     section.entries.remove(key);
     store_section(&mut root, namespace, &section)?;
+    #[cfg(test)]
+    if super::state_store::commit_fault::take(
+        super::state_store::commit_fault::Path::Settings,
+        namespace,
+        key,
+    ) {
+        return Err(Error::Storage("injected commit failure".to_owned()));
+    }
     write_table(config_path, &root)?;
     Ok(revision)
 }
@@ -888,6 +904,113 @@ mod tests {
         )
         .expect("put must succeed once the config is writable again");
         assert_eq!(dispatch_ack(&state, session, "w", 1), 1);
+    }
+
+    fn fault_put_command(key: &str) -> proto::StateStoreCommand {
+        proto::StateStoreCommand {
+            action: Some(state_store_command::Action::Put(proto::PutState {
+                namespace: SETTINGS_TEST_NAMESPACE.to_owned(),
+                key: key.to_owned(),
+                schema: SETTINGS_TEST_SCHEMA.to_owned(),
+                value: Some(profile_struct("Fault panel", true)),
+                expected_revision: None,
+                ttl: None,
+            })),
+        }
+    }
+
+    #[test]
+    fn adapter_injected_write_failure_publishes_nothing() {
+        use super::super::state_store::commit_fault;
+        use crate::webrtc::SessionId;
+        let fixture = Fixture::new();
+        let state = dispatch_state(&fixture);
+        let session = SessionId::from_u64(5109);
+        admin_session(&state, session);
+        dispatch_watch(&state, session, "w");
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            put_command("wall", None),
+        )
+        .expect("baseline put must succeed");
+        let bytes_before = fixture.file_bytes();
+        commit_fault::arm(
+            commit_fault::Path::Settings,
+            SETTINGS_TEST_NAMESPACE,
+            "fault-door",
+        );
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            fault_put_command("fault-door"),
+        )
+        .expect_err("an injected write failure must reject the mutation");
+        assert!(
+            !commit_fault::take(
+                commit_fault::Path::Settings,
+                SETTINGS_TEST_NAMESPACE,
+                "fault-door",
+            ),
+            "the hook fires exactly once",
+        );
+        assert_eq!(dispatch_ack(&state, session, "w", 1), 1);
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            ack_command("w", 2),
+        )
+        .expect_err("a rejected mutation publishes no update");
+        assert_eq!(
+            fixture.file_bytes(),
+            bytes_before,
+            "a rejected mutation leaves the persisted table untouched",
+        );
+        let snapshot = dispatch_watch(&state, session, "w2");
+        assert_eq!(snapshot.snapshot_revision, 1);
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            fault_put_command("fault-door"),
+        )
+        .expect("writes must resume after the fault clears");
+        assert_eq!(dispatch_ack(&state, session, "w", 2), 2);
+    }
+
+    #[test]
+    fn adapter_injected_delete_failure_keeps_entry() {
+        use super::super::state_store::commit_fault;
+        let fixture = Fixture::new();
+        fixture
+            .put("fault-wall", "Wall panel", true, None, NOW_MS)
+            .expect("baseline put must succeed");
+        let bytes_before = fixture.file_bytes();
+        commit_fault::arm(
+            commit_fault::Path::Settings,
+            SETTINGS_TEST_NAMESPACE,
+            "fault-wall",
+        );
+        super::delete(
+            &fixture.lock,
+            &fixture.config_path(),
+            SETTINGS_TEST_NAMESPACE,
+            "fault-wall",
+            None,
+            "local-administrator",
+            true,
+        )
+        .expect_err("an injected delete failure must reject the mutation");
+        assert_eq!(
+            fixture.file_bytes(),
+            bytes_before,
+            "a rejected delete leaves the persisted table untouched",
+        );
+        let read = fixture.get("fault-wall").expect("the entry must survive");
+        assert_eq!(read.revision, 1);
     }
 
     #[test]
