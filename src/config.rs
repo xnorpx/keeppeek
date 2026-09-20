@@ -1809,6 +1809,7 @@ pub(crate) fn is_reserved_section(namespace: &str) -> bool {
             | "configuration_templates"
             | "isapi_callbacks"
             | "camera_defaults"
+            | "state_store"
             | STORAGE_MIGRATION_SECTION
     )
 }
