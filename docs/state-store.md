@@ -220,6 +220,15 @@ memory. If the file cannot open, the server keeps running with an empty
 in-memory registry, generic commands stay rejected, and the capability stays
 unadvertised: no client ever sees durability the server cannot deliver.
 
+Every mutation commits to the database before it applies in memory, and the
+database is the sole revision authority: watch snapshots expire due leases in
+the database first and replay the exact committed revisions, so disk and cache
+never report different revisions for the same key. A watch snapshot is
+additionally bounded to 64 entries and a 64 KiB encoded response; broader
+watches are rejected so the client can narrow the prefix. When the database is
+attached, a full store fails the mutation instead of silently evicting the
+oldest entries.
+
 Restore reinstates counters before watches. A runtime-store restore must bring
 back namespace revisions, entry revisions, and byte counters together before
 the server accepts new watches. Clients re-establish watches with a fresh

@@ -22,6 +22,8 @@ pub(super) const MAX_ENTRIES_PER_NAMESPACE: usize = 1_024;
 const MAX_PENDING_EXPIRIES: usize = 4_096;
 pub(super) const MAX_NAMESPACES: usize = 256;
 pub(super) const MAX_TOTAL_VALUE_BYTES: u64 = 64 * 1_024 * 1_024;
+pub(super) const MAX_WATCH_SNAPSHOT_ENTRIES: usize = 64;
+pub(super) const MAX_WATCH_SNAPSHOT_BYTES: usize = 64 * 1_024;
 pub(super) const MIN_TTL_MS: u64 = 1_000;
 pub(super) const MAX_TTL_MS: u64 = 86_400_000;
 
@@ -305,6 +307,48 @@ impl Registry {
             self.pending.drain(..).collect(),
             std::mem::replace(&mut self.pending_overflowed, false),
         )
+    }
+
+    pub(super) fn due_keys(&self, namespace: &str, key_prefix: &str, now_ms: u64) -> Vec<String> {
+        let mut due: Vec<String> = self
+            .namespaces
+            .get(namespace)
+            .map(|state| {
+                state
+                    .entries
+                    .iter()
+                    .filter(|(key, record)| {
+                        key.starts_with(key_prefix)
+                            && record
+                                .expires_ms
+                                .is_some_and(|expires_ms| expires_ms <= now_ms)
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        due.sort_unstable();
+        due
+    }
+
+    pub(super) fn apply_expirations(&mut self, entries: Vec<ExpiredEntry>) {
+        for expired in entries {
+            let removed_bytes = {
+                let state = self
+                    .namespaces
+                    .entry(expired.namespace.clone())
+                    .or_default();
+                state.revision = state.revision.max(expired.revision);
+                state
+                    .entries
+                    .remove(&expired.key)
+                    .map(|record| value_bytes(&record.value))
+            };
+            if let Some(freed) = removed_bytes {
+                self.stored_bytes = self.stored_bytes.saturating_sub(freed);
+            }
+            self.push_pending(expired);
+        }
     }
 
     pub(super) fn import_namespace(
@@ -864,33 +908,57 @@ fn watch(
     let now = now_ms();
     let result = {
         let mut registry = lock_registry(state);
+        let mut durable = lock_durable(state);
         let (stale, stale_overflowed) = registry.drain_pending();
         publish_events(state, None, stale, stale_overflowed, now);
-        let (revision, entries) = registry.snapshot(&namespace, &key_prefix, now);
+        if let Some(durable) = durable.as_mut() {
+            let due = registry.due_keys(&namespace, &key_prefix, now);
+            let committed = durable
+                .expire_keys(&namespace, &due, now)
+                .map_err(|error| registry_error(error, &namespace, &watch_id))?;
+            registry.apply_expirations(committed);
+        }
         let (fresh, fresh_overflowed) = registry.drain_pending();
         publish_events(state, None, fresh, fresh_overflowed, now);
+        let (revision, entries) = registry.snapshot(&namespace, &key_prefix, now);
+        let message = proto::StateWatchSnapshot {
+            watch_id: watch_id.clone(),
+            namespace: namespace.clone(),
+            key_prefix: key_prefix.clone(),
+            snapshot_revision: revision,
+            entries: entries.iter().map(proto_entry).collect(),
+        };
+        check_snapshot_bounds(
+            message.entries.len(),
+            message.encoded_len(),
+            &namespace,
+            &watch_id,
+        )?;
         state
             .state_store_watches
-            .register(
-                session_id,
-                namespace.clone(),
-                key_prefix.clone(),
-                watch_id.clone(),
-            )
+            .register(session_id, namespace.clone(), key_prefix, watch_id.clone())
             .map_err(|error| registry_error(error, &namespace, &watch_id))?;
         proto::StateStoreResult {
-            result: Some(state_store_result::Result::Watch(
-                proto::StateWatchSnapshot {
-                    watch_id,
-                    namespace,
-                    key_prefix,
-                    snapshot_revision: revision,
-                    entries: entries.iter().map(proto_entry).collect(),
-                },
-            )),
+            result: Some(state_store_result::Result::Watch(message)),
         }
     };
     Ok(result)
+}
+
+fn check_snapshot_bounds(
+    entry_count: usize,
+    encoded_bytes: usize,
+    namespace: &str,
+    watch_id: &str,
+) -> Result<(), ControlCommandError> {
+    if entry_count > MAX_WATCH_SNAPSHOT_ENTRIES || encoded_bytes > MAX_WATCH_SNAPSHOT_BYTES {
+        return Err(registry_error(
+            Error::Invalid(Invalid::ValueTooLarge),
+            namespace,
+            watch_id,
+        ));
+    }
+    Ok(())
 }
 
 fn unwatch(
@@ -950,8 +1018,9 @@ pub(super) fn expire_leases(state: &ServerState, now_ms: u64) {
     {
         tracing::warn!(
             ?error,
-            "state-store durable expiry failed; memory expiry proceeds"
+            "state-store durable expiry failed; memory expiry skipped"
         );
+        return;
     }
     let batch = registry.expire_due(now_ms);
     publish_events(state, None, batch.entries, batch.overflowed, now_ms);
@@ -2238,6 +2307,217 @@ mod tests {
             !state.state_store_generic_enabled,
             "the generic gate must stay shut without durability"
         );
+    }
+
+    #[test]
+    fn watch_triggered_expiry_keeps_disk_and_cache_in_step() {
+        let dir = TempDir::new();
+        let mut state = ServerState::empty();
+        attach_durable(&mut state, &dir);
+        {
+            let mut registry = lock_registry(&state);
+            let mut durable = lock_durable(&state).expect("durable must be attached");
+            for (key, ttl) in [
+                ("leases/front-door", Some(duration_ms(1_000))),
+                ("intents/front-door", None),
+            ] {
+                registry
+                    .put(
+                        "service/transcoder-a/",
+                        key,
+                        "keeppeek.media-intent.v1",
+                        Some(media_intent_value("publish")),
+                        None,
+                        ttl,
+                        "transcoder-a",
+                        true,
+                        1_000,
+                    )
+                    .expect("memory setup put must succeed");
+                durable
+                    .put(
+                        "service/transcoder-a/",
+                        key,
+                        "keeppeek.media-intent.v1",
+                        Some(media_intent_value("publish")),
+                        None,
+                        ttl,
+                        "transcoder-a",
+                        true,
+                        1_000,
+                    )
+                    .expect("durable setup put must succeed");
+            }
+        }
+        let result = watch(
+            &state,
+            SessionId::from_u64(4245),
+            &local_principal(),
+            proto::WatchState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key_prefix: String::new(),
+                watch_id: "w".to_owned(),
+            },
+        )
+        .expect("watch must succeed");
+        let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+            panic!("watch must return a snapshot");
+        };
+        assert_eq!(snapshot.snapshot_revision, 3);
+        let replaced = put(
+            &state,
+            &local_principal(),
+            proto::PutState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key: "intents/front-door".to_owned(),
+                schema: "keeppeek.media-intent.v1".to_owned(),
+                value: Some(media_intent_value("publish")),
+                expected_revision: None,
+                ttl: None,
+            },
+        )
+        .expect("replacement put must succeed");
+        let Some(state_store_result::Result::Entry(replaced)) = replaced.result else {
+            panic!("put must return the stored entry");
+        };
+        assert_eq!(replaced.revision, 4);
+        let durable_revision = lock_durable(&state)
+            .expect("durable must be attached")
+            .get(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("durable read must succeed")
+            .revision;
+        assert_eq!(
+            durable_revision, replaced.revision,
+            "disk and cache must report the same revision"
+        );
+        put(
+            &state,
+            &local_principal(),
+            proto::PutState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key: "intents/front-door".to_owned(),
+                schema: "keeppeek.media-intent.v1".to_owned(),
+                value: Some(media_intent_value("publish")),
+                expected_revision: Some(replaced.revision),
+                ttl: None,
+            },
+        )
+        .expect("CAS with the returned revision must succeed");
+        drop(state);
+        let reopened = DurableStore::open(&dir.db_path(), NOW_MS).expect("reopen must succeed");
+        let exports = reopened.export(NOW_MS).expect("export must succeed");
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].namespace, "service/transcoder-a/");
+        assert_eq!(exports[0].revision, 5);
+        assert_eq!(exports[0].entries.len(), 1);
+        assert_eq!(exports[0].entries[0].key, "intents/front-door");
+        assert_eq!(exports[0].entries[0].revision, 5);
+    }
+
+    #[test]
+    fn watch_rejects_snapshot_beyond_entry_bound() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(4246);
+        {
+            let mut registry = lock_registry(&state);
+            for index in 0..=MAX_WATCH_SNAPSHOT_ENTRIES {
+                registry
+                    .put(
+                        "service/transcoder-a/",
+                        &format!("intents/k-{index:02}"),
+                        "keeppeek.media-intent.v1",
+                        Some(media_intent_value("publish")),
+                        None,
+                        None,
+                        "transcoder-a",
+                        true,
+                        NOW_MS,
+                    )
+                    .expect("fixture document must fit");
+            }
+        }
+        let error = watch(
+            &state,
+            session,
+            &local_principal(),
+            proto::WatchState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key_prefix: String::new(),
+                watch_id: "w".to_owned(),
+            },
+        )
+        .expect_err("a 65-document snapshot must be rejected");
+        assert!(
+            format!("{error:?}").contains("too large"),
+            "rejection must name the size bound, got {error:?}"
+        );
+        assert!(
+            !state.state_store_watches.owns_watch(session, "w"),
+            "a rejected snapshot must not register the watch"
+        );
+    }
+
+    #[test]
+    fn watch_accepts_full_size_snapshot_with_valid_documents() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(4247);
+        {
+            let mut registry = lock_registry(&state);
+            for index in 0..MAX_WATCH_SNAPSHOT_ENTRIES {
+                let mut value = media_intent_value("publish");
+                for name in ["source_id", "stream_id", "variant_id", "output_profile"] {
+                    value.fields.insert(
+                        name.to_owned(),
+                        Value {
+                            kind: Some(Kind::StringValue("x".repeat(128))),
+                        },
+                    );
+                }
+                registry
+                    .put(
+                        "service/transcoder-a/",
+                        &format!("intents/k-{index:02}"),
+                        "keeppeek.media-intent.v1",
+                        Some(value),
+                        None,
+                        None,
+                        "transcoder-a",
+                        true,
+                        NOW_MS,
+                    )
+                    .expect("max-size fixture document must fit");
+            }
+        }
+        let result = watch(
+            &state,
+            session,
+            &local_principal(),
+            proto::WatchState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key_prefix: String::new(),
+                watch_id: "w".to_owned(),
+            },
+        )
+        .expect("64 max-size documents must stay within the wire budget");
+        let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+            panic!("watch must return a snapshot");
+        };
+        assert_eq!(snapshot.entries.len(), MAX_WATCH_SNAPSHOT_ENTRIES);
+        assert!(state.state_store_watches.owns_watch(session, "w"));
+    }
+
+    #[test]
+    fn snapshot_bounds_reject_overflowing_counts_and_bytes() {
+        assert!(check_snapshot_bounds(64, 0, "service/transcoder-a/", "w").is_ok());
+        assert!(check_snapshot_bounds(0, 65_536, "service/transcoder-a/", "w").is_ok());
+        assert!(check_snapshot_bounds(65, 0, "service/transcoder-a/", "w").is_err());
+        assert!(check_snapshot_bounds(0, 65_537, "service/transcoder-a/", "w").is_err());
     }
 
     #[test]

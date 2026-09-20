@@ -126,6 +126,16 @@ impl DurableStore {
         pollster::block_on(self.expire_due_transaction(now_ms)).map_err(storage_error)
     }
 
+    pub(super) fn expire_keys(
+        &mut self,
+        namespace: &str,
+        keys: &[String],
+        now_ms: u64,
+    ) -> Result<Vec<ExpiredEntry>, Error> {
+        pollster::block_on(self.expire_keys_transaction(namespace, keys, now_ms))
+            .map_err(storage_error)
+    }
+
     async fn export_all(&self, now_ms: u64) -> Result<Vec<NamespaceExport>, TransactionError> {
         let mut namespaces = Vec::new();
         let mut namespace_rows = self
@@ -197,31 +207,72 @@ impl DurableStore {
             let mut expired = Vec::new();
             let mut freed_bytes = 0u64;
             for (namespace, key) in due {
-                let Some(entry) = self.read_entry(&namespace, &key).await? else {
+                let Some((entry, freed)) = self.expire_one(&namespace, &key, now_ms).await? else {
                     continue;
                 };
-                freed_bytes = freed_bytes.saturating_add(encoded_bytes(&entry.value)?);
-                self.connection
-                    .execute(
-                        "DELETE FROM entries WHERE namespace = ?1 AND key = ?2",
-                        turso::params![namespace.as_str(), key.as_str()],
-                    )
-                    .await?;
-                let revision = self.bump_namespace_revision(&namespace).await?;
-                expired.push(ExpiredEntry {
-                    namespace,
-                    key,
-                    revision,
-                    schema: entry.schema,
-                    value: entry.value,
-                    owner_id: entry.owner_id,
-                    expires_ms: entry.expires_ms.unwrap_or(now_ms),
-                });
+                freed_bytes = freed_bytes.saturating_add(freed);
+                expired.push(entry);
             }
             Ok((expired, self.stored_bytes.saturating_sub(freed_bytes)))
         }
         .await;
         self.finish_transaction(result).await
+    }
+
+    async fn expire_keys_transaction(
+        &mut self,
+        namespace: &str,
+        keys: &[String],
+        now_ms: u64,
+    ) -> Result<Vec<ExpiredEntry>, TransactionError> {
+        self.connection.execute_batch("BEGIN IMMEDIATE").await?;
+        let result = async {
+            let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
+            sorted.sort_unstable();
+            let mut expired = Vec::new();
+            let mut freed_bytes = 0u64;
+            for key in sorted {
+                let Some((entry, freed)) = self.expire_one(namespace, key, now_ms).await? else {
+                    continue;
+                };
+                freed_bytes = freed_bytes.saturating_add(freed);
+                expired.push(entry);
+            }
+            Ok((expired, self.stored_bytes.saturating_sub(freed_bytes)))
+        }
+        .await;
+        self.finish_transaction(result).await
+    }
+
+    async fn expire_one(
+        &self,
+        namespace: &str,
+        key: &str,
+        now_ms: u64,
+    ) -> Result<Option<(ExpiredEntry, u64)>, TransactionError> {
+        let Some(entry) = self.read_entry(namespace, key).await? else {
+            return Ok(None);
+        };
+        let freed_bytes = encoded_bytes(&entry.value)?;
+        self.connection
+            .execute(
+                "DELETE FROM entries WHERE namespace = ?1 AND key = ?2",
+                turso::params![namespace, key],
+            )
+            .await?;
+        let revision = self.bump_namespace_revision(namespace).await?;
+        Ok(Some((
+            ExpiredEntry {
+                namespace: namespace.to_owned(),
+                key: key.to_owned(),
+                revision,
+                schema: entry.schema,
+                value: entry.value,
+                owner_id: entry.owner_id,
+                expires_ms: entry.expires_ms.unwrap_or(now_ms),
+            },
+            freed_bytes,
+        )))
     }
 
     #[allow(
