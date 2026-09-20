@@ -493,6 +493,18 @@ authoritative. It names stable identities only; a worker resolves current source
 input to normal media commands, then publish their observed result separately if needed. They never
 assume that an intent means a stream is active or authorized.
 
+Generic namespaces accept only approved schemas, currently just `keeppeek.media-intent.v1`; any
+other schema is rejected with `SCHEMA_INVALID` after authorization, so rejected documents never
+reach persistence. A valid intent requires `role`, `desired`, `source_id`, and `media_kind`
+(`audio` or `video`); `recording_mode` (`inherit`, `disabled`, or `required`) is required for
+`publish` and forbidden for `subscribe`. Optional `stream_id`, `variant_id`, `output_profile`,
+finite `priority` between 0 and 1,000,000, and a `parameters` object are allowed and nothing else
+is. Identifier strings hold at most 128 characters without control characters. `parameters` keys
+must be namespaced with a dot or slash, must not contain secret markers such as password, secret,
+token, or credential, and nest at most three levels deep; only string, boolean, finite-number, or
+nested-object values are accepted. There is no field that can carry credentials, media bytes, SDP,
+or logs.
+
 For example, a transcode coordinator can write a desired `browser-h264-720p` publication under a
 service namespace; a transcoder watches it, starts or stops the actual publication, and viewers
 watch corresponding subscription intent. The actual output becomes usable only after KeepPeek

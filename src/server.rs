@@ -106,6 +106,7 @@ pub(crate) mod state_store;
     reason = "server dispatch wiring lands in the next slice; covered by durable tests meanwhile"
 )]
 pub(crate) mod state_store_durable;
+pub(crate) mod state_store_schema;
 pub(crate) mod state_store_settings;
 mod stored_media;
 
@@ -669,6 +670,8 @@ impl ControlRequestHandler for ServerControlHandler {
                             peek_layouts::dispatch(&self.state, &principal, command).map(Some)
                         } else if camera_permissions::handles(&command) {
                             camera_permissions::dispatch(self, &principal, command).map(Some)
+                        } else if mqtt_integration::handles(&command) {
+                            mqtt_integration::dispatch(&self.state, command).map(Some)
                         } else if self.state.state_store_generic_enabled
                             && state_store::handles(&command)
                         {
@@ -13340,6 +13343,43 @@ mod tests {
         state
     }
 
+    fn media_intent_test_value() -> prost_types::Struct {
+        use prost_types::{Value, value::Kind};
+        let fields = std::collections::BTreeMap::from([
+            (
+                "role".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("publish".to_owned())),
+                },
+            ),
+            (
+                "source_id".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("front-door".to_owned())),
+                },
+            ),
+            (
+                "media_kind".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("video".to_owned())),
+                },
+            ),
+            (
+                "desired".to_owned(),
+                Value {
+                    kind: Some(Kind::BoolValue(true)),
+                },
+            ),
+            (
+                "recording_mode".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("disabled".to_owned())),
+                },
+            ),
+        ]);
+        prost_types::Struct { fields }
+    }
+
     #[test]
     fn connected_stream_identities_remain_unknown_when_router_omits_them() {
         let aggregate_only = CameraStatus {
@@ -15178,31 +15218,11 @@ mod tests {
 
     #[test]
     fn generic_state_store_put_get_delete_roundtrip() {
-        use prost_types::{Struct, Value, value::Kind};
         let mut state = media_test_state();
         state.state_store_generic_enabled = true;
         let handler = test_control_handler(state);
         let admin = SessionId::from_u64(0);
-        let value = || {
-            Some(Struct {
-                fields: [
-                    (
-                        "mode".to_owned(),
-                        Value {
-                            kind: Some(Kind::StringValue("smoke".to_owned())),
-                        },
-                    ),
-                    (
-                        "scope".to_owned(),
-                        Value {
-                            kind: Some(Kind::StringValue("test".to_owned())),
-                        },
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            })
-        };
+        let value = || Some(media_intent_test_value());
         let saved = handler.handle_for_session(
             admin,
             proto::Request {
@@ -15212,7 +15232,7 @@ mod tests {
                         action: Some(proto::state_store_command::Action::Put(proto::PutState {
                             namespace: "service/test-recorder/".to_owned(),
                             key: "state/smoke".to_owned(),
-                            schema: "keeppeek.test-state.v1".to_owned(),
+                            schema: "keeppeek.media-intent.v1".to_owned(),
                             value: value(),
                             expected_revision: None,
                             ..Default::default()
@@ -15305,7 +15325,6 @@ mod tests {
 
     #[test]
     fn generic_state_store_conflict_reports_current_revision() {
-        use prost_types::{Struct, Value, value::Kind};
         let mut state = media_test_state();
         state.state_store_generic_enabled = true;
         let handler = test_control_handler(state);
@@ -15321,27 +15340,8 @@ mod tests {
                                 proto::PutState {
                                     namespace: "service/test-recorder/".to_owned(),
                                     key: "state/conflict".to_owned(),
-                                    schema: "keeppeek.test-state.v1".to_owned(),
-                                    value: Some(Struct {
-                                        fields: [
-                                            (
-                                                "mode".to_owned(),
-                                                Value {
-                                                    kind: Some(Kind::StringValue("x".to_owned())),
-                                                },
-                                            ),
-                                            (
-                                                "scope".to_owned(),
-                                                Value {
-                                                    kind: Some(Kind::StringValue(
-                                                        "test".to_owned(),
-                                                    )),
-                                                },
-                                            ),
-                                        ]
-                                        .into_iter()
-                                        .collect(),
-                                    }),
+                                    schema: "keeppeek.media-intent.v1".to_owned(),
+                                    value: Some(media_intent_test_value()),
                                     expected_revision,
                                     ..Default::default()
                                 },
@@ -15371,7 +15371,6 @@ mod tests {
 
     #[test]
     fn generic_state_store_user_namespace_requires_owner_or_admin() {
-        use prost_types::{Struct, Value, value::Kind};
         let mut state = media_test_state();
         state.state_store_generic_enabled = true;
         let issued = restricted_test_user(&state);
@@ -15389,27 +15388,8 @@ mod tests {
                                 proto::PutState {
                                     namespace: namespace.to_owned(),
                                     key: "subscriptions/front-door".to_owned(),
-                                    schema: "keeppeek.test-state.v1".to_owned(),
-                                    value: Some(Struct {
-                                        fields: [
-                                            (
-                                                "mode".to_owned(),
-                                                Value {
-                                                    kind: Some(Kind::StringValue("x".to_owned())),
-                                                },
-                                            ),
-                                            (
-                                                "scope".to_owned(),
-                                                Value {
-                                                    kind: Some(Kind::StringValue(
-                                                        "test".to_owned(),
-                                                    )),
-                                                },
-                                            ),
-                                        ]
-                                        .into_iter()
-                                        .collect(),
-                                    }),
+                                    schema: "keeppeek.media-intent.v1".to_owned(),
+                                    value: Some(media_intent_test_value()),
                                     expected_revision: None,
                                     ..Default::default()
                                 },
@@ -15439,7 +15419,6 @@ mod tests {
 
     #[test]
     fn generic_state_store_route_stays_gated_until_enabled() {
-        use prost_types::{Struct, Value, value::Kind};
         let state = media_test_state();
         let handler = test_control_handler(state);
         let gated = handler.handle_for_session(
@@ -15451,25 +15430,8 @@ mod tests {
                         action: Some(proto::state_store_command::Action::Put(proto::PutState {
                             namespace: "service/test-recorder/".to_owned(),
                             key: "state/gated".to_owned(),
-                            schema: "keeppeek.test-state.v1".to_owned(),
-                            value: Some(Struct {
-                                fields: [
-                                    (
-                                        "mode".to_owned(),
-                                        Value {
-                                            kind: Some(Kind::StringValue("x".to_owned())),
-                                        },
-                                    ),
-                                    (
-                                        "scope".to_owned(),
-                                        Value {
-                                            kind: Some(Kind::StringValue("test".to_owned())),
-                                        },
-                                    ),
-                                ]
-                                .into_iter()
-                                .collect(),
-                            }),
+                            schema: "keeppeek.media-intent.v1".to_owned(),
+                            value: Some(media_intent_test_value()),
                             expected_revision: None,
                             ..Default::default()
                         })),
@@ -15485,7 +15447,6 @@ mod tests {
 
     #[test]
     fn generic_state_store_cross_owner_reads_are_denied() {
-        use prost_types::{Struct, Value, value::Kind};
         let mut state = media_test_state();
         state.state_store_generic_enabled = true;
         let issued = restricted_test_user(&state);
@@ -15502,25 +15463,8 @@ mod tests {
                         action: Some(proto::state_store_command::Action::Put(proto::PutState {
                             namespace: "user/victim-a/".to_owned(),
                             key: "subscriptions/front-door".to_owned(),
-                            schema: "keeppeek.test-state.v1".to_owned(),
-                            value: Some(Struct {
-                                fields: [
-                                    (
-                                        "mode".to_owned(),
-                                        Value {
-                                            kind: Some(Kind::StringValue("x".to_owned())),
-                                        },
-                                    ),
-                                    (
-                                        "scope".to_owned(),
-                                        Value {
-                                            kind: Some(Kind::StringValue("test".to_owned())),
-                                        },
-                                    ),
-                                ]
-                                .into_iter()
-                                .collect(),
-                            }),
+                            schema: "keeppeek.media-intent.v1".to_owned(),
+                            value: Some(media_intent_test_value()),
                             expected_revision: None,
                             ..Default::default()
                         })),
@@ -15581,6 +15525,170 @@ mod tests {
             rejected.response.result,
             Some(control_response::Result::Error(_))
         ));
+    }
+
+    #[test]
+    fn mqtt_namespace_keeps_specialized_dispatch_with_generic_enabled() {
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
+        let handler = test_control_handler(state);
+        let deleted = handler.handle_for_session(
+            SessionId::from_u64(0),
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Delete(
+                            proto::DeleteState {
+                                namespace: mqtt_integration::NAMESPACE.to_owned(),
+                                key: "configuration".to_owned(),
+                                expected_revision: None,
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(error)) = deleted.response.result else {
+            panic!("MQTT delete must reach the specialized handler");
+        };
+        assert_eq!(error.code, proto::ErrorCode::UnsupportedRequest as i32);
+        assert!(
+            error.message.contains("not implemented by the server"),
+            "unexpected handler: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn generic_dispatch_rejects_unknown_schemas_without_persisting() {
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
+        let handler = test_control_handler(state);
+        let admin = SessionId::from_u64(0);
+        let rejected = handler.handle_for_session(
+            admin,
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/unknown".to_owned(),
+                            schema: "keeppeek.unknown.v1".to_owned(),
+                            value: Some(media_intent_test_value()),
+                            expected_revision: None,
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(error)) = rejected.response.result else {
+            panic!("unknown schemas must fail");
+        };
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::StateStoreErrorCode::SchemaInvalid as i32
+        );
+        let missing = handler.handle_for_session(
+            admin,
+            proto::Request {
+                request_id: 2,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Get(proto::GetState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/unknown".to_owned(),
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(error)) = missing.response.result else {
+            panic!("rejected writes must not persist");
+        };
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, proto::StateStoreErrorCode::NotFound as i32);
+    }
+
+    #[test]
+    fn generic_dispatch_rejects_malformed_media_intent() {
+        use prost_types::{Struct, Value, value::Kind};
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
+        let handler = test_control_handler(state);
+        let rejected = handler.handle_for_session(
+            SessionId::from_u64(0),
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/malformed".to_owned(),
+                            schema: "keeppeek.media-intent.v1".to_owned(),
+                            value: Some(Struct {
+                                fields: std::collections::BTreeMap::from([(
+                                    "role".to_owned(),
+                                    Value {
+                                        kind: Some(Kind::StringValue("publish".to_owned())),
+                                    },
+                                )]),
+                            }),
+                            expected_revision: None,
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(error)) = rejected.response.result else {
+            panic!("malformed intents must fail");
+        };
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::StateStoreErrorCode::SchemaInvalid as i32
+        );
+    }
+
+    #[test]
+    fn generic_service_namespaces_reject_non_admin_writes() {
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(721);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let handler = test_control_handler(state);
+        let denied = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/smoke".to_owned(),
+                            schema: "keeppeek.media-intent.v1".to_owned(),
+                            value: Some(media_intent_test_value()),
+                            expected_revision: None,
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(error)) = denied.response.result else {
+            panic!("non-admin service writes must fail");
+        };
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::StateStoreErrorCode::NotAuthorized as i32
+        );
     }
 
     #[test]

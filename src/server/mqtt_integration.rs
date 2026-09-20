@@ -8,7 +8,7 @@ use prost_types::{ListValue, Struct, Timestamp, Value, value::Kind};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, time::SystemTime};
 
-const NAMESPACE: &str = "keeppeek.integrations.mqtt";
+pub(super) const NAMESPACE: &str = "keeppeek.integrations.mqtt";
 const CONFIGURATION_KEY: &str = "configuration";
 const TEST_KEY: &str = "test";
 const CONFIGURATION_SCHEMA: &str = "keeppeek.mqtt-configuration.v1";
@@ -67,6 +67,18 @@ struct MqttTestResponse {
     ok: bool,
     kind: Option<BrokerFailureKind>,
     detail: String,
+}
+
+pub(super) fn handles(command: &proto::StateStoreCommand) -> bool {
+    match &command.action {
+        Some(state_store_command::Action::Get(request)) => request.namespace == NAMESPACE,
+        Some(state_store_command::Action::Put(request)) => request.namespace == NAMESPACE,
+        Some(state_store_command::Action::Delete(request)) => request.namespace == NAMESPACE,
+        Some(state_store_command::Action::Watch(request)) => request.namespace == NAMESPACE,
+        Some(state_store_command::Action::Unwatch(_))
+        | Some(state_store_command::Action::WatchAck(_))
+        | None => false,
+    }
 }
 
 pub(super) fn dispatch(
