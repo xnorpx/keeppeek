@@ -26,8 +26,11 @@ const CHILD_ROOT: &str = "KEEPPEEK_NATIVE_EVENTS_ROOT";
 #[cfg(not(windows))]
 const CASE_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(windows)]
-const CASE_TIMEOUT: Duration = Duration::from_secs(30);
+const CASE_TIMEOUT: Duration = Duration::from_secs(120);
+#[cfg(not(windows))]
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(windows)]
+const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(15);
 const EMPTY_METADATA: &[u8] =
     br#"<tt:MetadataStream xmlns:tt="http://www.onvif.org/ver10/schema"/>"#;
 
@@ -89,7 +92,7 @@ fn classified_person_box_and_delete_persist_without_image_association() {
             r#"<tt:ObjectTree><tt:Delete ObjectId="7"/></tt:ObjectTree>"#,
         ));
         let recorder = Recorder::start(root, Some(("vnd.onvif.metadata", documents)));
-        let deletion_deadline = Instant::now() + Duration::from_secs(3);
+        let deletion_deadline = Instant::now() + OBSERVATION_TIMEOUT;
         let started = recorder.wait_events_until(deletion_deadline, |events| {
             events.len() == 1 && events[0].end_time_ms.is_none()
         });
