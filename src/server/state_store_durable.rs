@@ -1310,6 +1310,66 @@ mod tests {
     }
 
     #[test]
+    fn control_plane_latency_reports_budgets() {
+        use super::super::state_store::Registry;
+        use std::time::{Duration, Instant};
+        const OPS: u32 = 200;
+        const SNAPSHOTS: u32 = 50;
+        let mut registry = Registry::default();
+        let start = Instant::now();
+        for index in 0..OPS {
+            registry
+                .put(
+                    "service/latency-a/",
+                    &format!("key-{index:03}"),
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("baseline put must succeed");
+        }
+        let baseline = start.elapsed();
+        let start = Instant::now();
+        for _ in 0..SNAPSHOTS {
+            registry.snapshot("service/latency-a/", "", NOW_MS);
+        }
+        let snapshots = start.elapsed();
+        let dir = TempDir::new();
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
+        let start = Instant::now();
+        for index in 0..OPS {
+            store
+                .put(
+                    "service/latency-a/",
+                    &format!("key-{index:03}"),
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("durable put must succeed");
+        }
+        let durable = start.elapsed();
+        println!(
+            "latency ops={OPS}: registry put/op = {:?}, snapshot/op = {:?}, durable put/op = {:?}",
+            baseline.checked_div(OPS).unwrap_or_default(),
+            snapshots.checked_div(SNAPSHOTS).unwrap_or_default(),
+            durable.checked_div(OPS).unwrap_or_default(),
+        );
+        assert!(
+            durable < Duration::from_secs(60),
+            "the durable batch must complete without stalling"
+        );
+    }
+
+    #[test]
     fn export_restores_revisions_and_skips_due_leases() {
         let dir = TempDir::new();
         let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");

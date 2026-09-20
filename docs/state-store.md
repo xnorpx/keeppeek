@@ -249,6 +249,28 @@ or disk failure surfaces as a storage error on the mutating call and never
 reports a silent success, while previously committed entries stay readable.
 Settings-backed entries reject every TTL because configuration is not a lease.
 
+## Measured performance
+
+Control-plane costs only; no media path is touched. Opening the database
+purges overdue leases, then truncates the write-ahead log, so an idle store
+holds no sidecar residue: after three fill/drain cycles of 1,024 maximum-size
+documents, every rest state measured exactly 897,024 bytes in `state-store.db`
+with a zero-byte WAL, and warmed refills reused pages (about 1.0 MB) instead
+of regrowing the cold-fill peak (about 4.1 MB).
+
+Per-operation averages over 200 operations on Windows 11 Pro (AMD Ryzen 5
+5600G, rustc 1.98.1), reproducible with
+`cargo test -p keeppeek --lib server::state_store_durable::tests::control_plane_latency -- --nocapture`:
+
+- memory-only registry put: about 17 microseconds per op (pre-durable baseline),
+- watch snapshot over 200 entries: about 654 microseconds per op,
+- durable write-through put (one SQLite commit per mutation): about 4.3
+  milliseconds per op.
+
+The durable commit dominates mutation cost; snapshots stay sub-millisecond at
+the 64-entry wire bound. Re-run the test on the target machine before treating
+these figures as budgets.
+
 ## Acceptance scenarios
 
 The implementation is complete when these behaviors pass end to end:
