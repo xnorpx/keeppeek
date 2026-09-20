@@ -100,6 +100,7 @@ mod peek_layouts;
 pub(crate) mod recording_coverage;
 mod recording_maintenance;
 mod runtime_configuration;
+mod state_store;
 mod stored_media;
 
 pub(crate) fn migrate_peek_layout_configuration(
