@@ -1,7 +1,9 @@
+use super::state_store_watch::{WatchEvent, WatchEventKind};
 use super::{ApiPrincipal, ControlCommandError, ServerState};
 use crate::{
     access::AccessRole,
     api::proto::{self, ok as control_ok, state_store_command, state_store_result},
+    webrtc::SessionId,
 };
 use prost::Message as _;
 use prost_types::{Duration, Struct, Timestamp};
@@ -59,6 +61,9 @@ pub enum Invalid {
     NamespaceFull,
     StoreFull,
     Ttl,
+    WatchNotFound,
+    WatchLimitExceeded,
+    AckAhead,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,6 +304,61 @@ impl Registry {
         self.pending.push_back(expired);
     }
 
+    pub(super) fn drain_pending(&mut self) -> (Vec<ExpiredEntry>, bool) {
+        (
+            self.pending.drain(..).collect(),
+            std::mem::replace(&mut self.pending_overflowed, false),
+        )
+    }
+
+    pub(super) fn snapshot(
+        &mut self,
+        namespace: &str,
+        key_prefix: &str,
+        now_ms: u64,
+    ) -> (u64, Vec<StoredEntry>) {
+        let revision = self
+            .namespaces
+            .get(namespace)
+            .map(|state| state.revision)
+            .unwrap_or(0);
+        let mut keys: Vec<String> = self
+            .namespaces
+            .get(namespace)
+            .map(|state| {
+                state
+                    .entries
+                    .keys()
+                    .filter(|key| key.starts_with(key_prefix))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        keys.sort_unstable();
+        for key in &keys {
+            self.expire_key_if_due(namespace, key, now_ms);
+        }
+        let entries = keys
+            .into_iter()
+            .filter_map(|key| {
+                self.namespaces
+                    .get(namespace)
+                    .and_then(|state| state.entries.get(&key))
+                    .map(|record| StoredEntry {
+                        namespace: namespace.to_owned(),
+                        key,
+                        schema: record.schema.clone(),
+                        value: record.value.clone(),
+                        revision: record.revision,
+                        updated_ms: record.updated_ms,
+                        expires_ms: record.expires_ms,
+                        owner_id: record.owner_id.clone(),
+                    })
+            })
+            .collect();
+        (revision, entries)
+    }
+
     fn reclaim_namespace(&mut self, namespace: &str, now_ms: u64) {
         let expired: Vec<String> = self
             .namespaces
@@ -504,8 +564,17 @@ pub(super) fn handles(command: &proto::StateStoreCommand) -> bool {
     validate_namespace(namespace).is_ok()
 }
 
+pub(super) const fn is_watch_lifecycle(command: &proto::StateStoreCommand) -> bool {
+    matches!(
+        command.action,
+        Some(state_store_command::Action::Unwatch(_))
+            | Some(state_store_command::Action::WatchAck(_))
+    )
+}
+
 pub(super) fn dispatch(
     state: &ServerState,
+    session_id: SessionId,
     principal: &ApiPrincipal,
     command: proto::StateStoreCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
@@ -518,16 +587,12 @@ pub(super) fn dispatch(
         Some(state_store_command::Action::Get(request)) => get(state, principal, request)?,
         Some(state_store_command::Action::Put(request)) => put(state, principal, request)?,
         Some(state_store_command::Action::Delete(request)) => delete(state, principal, request)?,
-        Some(
-            state_store_command::Action::Watch(_)
-            | state_store_command::Action::Unwatch(_)
-            | state_store_command::Action::WatchAck(_),
-        ) => {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::UnsupportedRequest,
-                501,
-                "this state store watch operation is not implemented",
-            ));
+        Some(state_store_command::Action::Watch(request)) => {
+            watch(state, session_id, principal, request)?
+        }
+        Some(state_store_command::Action::Unwatch(request)) => unwatch(state, session_id, request)?,
+        Some(state_store_command::Action::WatchAck(request)) => {
+            acknowledge(state, session_id, request)?
         }
         None => {
             return Err(ControlCommandError::new(
@@ -639,15 +704,19 @@ fn get(
     principal: &ApiPrincipal,
     request: proto::GetState,
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
-    let entry = lock_registry(state)
+    let now = now_ms();
+    let mut registry = lock_registry(state);
+    let entry = registry
         .get(
             &request.namespace,
             &request.key,
             &principal.id(),
             principal.role == AccessRole::Administrator,
-            now_ms(),
+            now,
         )
         .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    let (expired, overflowed) = registry.drain_pending();
+    publish_events(state, None, expired, overflowed, now);
     Ok(entry_result(entry))
 }
 
@@ -659,7 +728,9 @@ fn put(
     let value = request
         .value
         .ok_or_else(|| invalid("state value is required"))?;
-    let entry = lock_registry(state)
+    let now = now_ms();
+    let mut registry = lock_registry(state);
+    let entry = registry
         .put(
             &request.namespace,
             &request.key,
@@ -669,9 +740,17 @@ fn put(
             request.ttl,
             &principal.id(),
             principal.role == AccessRole::Administrator,
-            now_ms(),
+            now,
         )
         .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    let direct = WatchEvent {
+        namespace: entry.namespace.clone(),
+        key: entry.key.clone(),
+        revision: entry.revision,
+        kind: WatchEventKind::Put(entry.clone()),
+    };
+    let (expired, overflowed) = registry.drain_pending();
+    publish_events(state, Some(direct), expired, overflowed, now);
     Ok(entry_result(entry))
 }
 
@@ -680,17 +759,150 @@ fn delete(
     principal: &ApiPrincipal,
     request: proto::DeleteState,
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
-    let revision = lock_registry(state)
+    let now = now_ms();
+    let mut registry = lock_registry(state);
+    let revision = registry
         .delete(
             &request.namespace,
             &request.key,
             request.expected_revision,
             &principal.id(),
             principal.role == AccessRole::Administrator,
-            now_ms(),
+            now,
         )
         .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    let direct = WatchEvent {
+        namespace: request.namespace.clone(),
+        key: request.key.clone(),
+        revision,
+        kind: WatchEventKind::Delete,
+    };
+    let (expired, overflowed) = registry.drain_pending();
+    publish_events(state, Some(direct), expired, overflowed, now);
     Ok(deleted_result(request.namespace, request.key, revision))
+}
+
+fn watch(
+    state: &ServerState,
+    session_id: SessionId,
+    principal: &ApiPrincipal,
+    request: proto::WatchState,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    super::validate_client_id(&request.watch_id, "watch ID")?;
+    let layout = validate_namespace(&request.namespace)
+        .map_err(|error| registry_error(error, &request.namespace, ""))?;
+    if !request.key_prefix.is_empty() {
+        validate_key_prefix(&request.key_prefix)
+            .map_err(|error| registry_error(error, &request.namespace, ""))?;
+    }
+    let admin = principal.role == AccessRole::Administrator;
+    authorize_read(&layout, &principal.id(), admin)
+        .map_err(|error| registry_error(error, &request.namespace, ""))?;
+    let proto::WatchState {
+        namespace,
+        key_prefix,
+        watch_id,
+    } = request;
+    let result = {
+        let mut registry = lock_registry(state);
+        let (revision, entries) = registry.snapshot(&namespace, &key_prefix, now_ms());
+        state
+            .state_store_watches
+            .register(
+                session_id,
+                namespace.clone(),
+                key_prefix.clone(),
+                watch_id.clone(),
+            )
+            .map_err(|error| registry_error(error, &namespace, &watch_id))?;
+        proto::StateStoreResult {
+            result: Some(state_store_result::Result::Watch(
+                proto::StateWatchSnapshot {
+                    watch_id,
+                    namespace,
+                    key_prefix,
+                    snapshot_revision: revision,
+                    entries: entries.iter().map(proto_entry).collect(),
+                },
+            )),
+        }
+    };
+    Ok(result)
+}
+
+fn unwatch(
+    state: &ServerState,
+    session_id: SessionId,
+    request: proto::UnwatchState,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    state
+        .state_store_watches
+        .unregister(session_id, &request.watch_id)
+        .map_err(|error| registry_error(error, "", &request.watch_id))?;
+    Ok(proto::StateStoreResult {
+        result: Some(state_store_result::Result::Unwatched(
+            proto::StateUnwatchResult {
+                watch_id: request.watch_id,
+            },
+        )),
+    })
+}
+
+fn acknowledge(
+    state: &ServerState,
+    session_id: SessionId,
+    request: proto::WatchStateAck,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    let accepted = state
+        .state_store_watches
+        .acknowledge(session_id, &request.watch_id, request.applied_sequence)
+        .map_err(|(namespace, error)| registry_error(error, &namespace, &request.watch_id))?;
+    Ok(proto::StateStoreResult {
+        result: Some(state_store_result::Result::WatchAck(
+            proto::StateWatchAckResult {
+                watch_id: request.watch_id,
+                applied_sequence: accepted,
+            },
+        )),
+    })
+}
+
+fn validate_key_prefix(prefix: &str) -> Result<(), Error> {
+    let stripped = prefix.strip_suffix('/').unwrap_or(prefix);
+    if stripped.is_empty() {
+        return Err(Error::Invalid(Invalid::Key));
+    }
+    validate_key(stripped)
+}
+
+fn publish_events(
+    state: &ServerState,
+    direct: Option<WatchEvent>,
+    expired: Vec<ExpiredEntry>,
+    pending_overflowed: bool,
+    now_ms: u64,
+) {
+    let mut events: Vec<WatchEvent> = expired
+        .into_iter()
+        .map(|entry| WatchEvent {
+            namespace: entry.namespace,
+            key: entry.key,
+            revision: entry.revision,
+            kind: WatchEventKind::Expire,
+        })
+        .collect();
+    if let Some(event) = direct {
+        events.push(event);
+    }
+    state.state_store_watches.publish(
+        state,
+        &events,
+        pending_overflowed,
+        now_ms,
+        |session_id, notification| {
+            super::state_store_watch::enqueue_notification(state, session_id, notification)
+        },
+    );
 }
 
 const fn deleted_result(namespace: String, key: String, revision: u64) -> proto::StateStoreResult {
@@ -731,16 +943,20 @@ fn timestamp_ms(millis: u64) -> Timestamp {
 
 fn entry_result(entry: StoredEntry) -> proto::StateStoreResult {
     proto::StateStoreResult {
-        result: Some(state_store_result::Result::Entry(proto::StateEntry {
-            namespace: entry.namespace,
-            key: entry.key,
-            schema: entry.schema,
-            value: Some(entry.value),
-            revision: entry.revision,
-            updated_at: Some(timestamp_ms(entry.updated_ms)),
-            expires_at: entry.expires_ms.map(timestamp_ms),
-            owner_id: entry.owner_id,
-        })),
+        result: Some(state_store_result::Result::Entry(proto_entry(&entry))),
+    }
+}
+
+pub(super) fn proto_entry(entry: &StoredEntry) -> proto::StateEntry {
+    proto::StateEntry {
+        namespace: entry.namespace.clone(),
+        key: entry.key.clone(),
+        schema: entry.schema.clone(),
+        value: Some(entry.value.clone()),
+        revision: entry.revision,
+        updated_at: Some(timestamp_ms(entry.updated_ms)),
+        expires_at: entry.expires_ms.map(timestamp_ms),
+        owner_id: entry.owner_id.clone(),
     }
 }
 
@@ -838,6 +1054,33 @@ fn registry_error(error: Error, namespace: &str, key: &str) -> ControlCommandErr
             namespace,
             key,
             proto::StateStoreErrorCode::TtlInvalid,
+            None,
+        ),
+        Error::Invalid(Invalid::WatchNotFound) => state_store_error(
+            proto::ErrorCode::NotFound,
+            404,
+            "state watch was not found",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::WatchNotFound,
+            None,
+        ),
+        Error::Invalid(Invalid::WatchLimitExceeded) => state_store_error(
+            proto::ErrorCode::Rejected,
+            429,
+            "state watch limit reached",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::WatchLimitExceeded,
+            None,
+        ),
+        Error::Invalid(Invalid::AckAhead) => state_store_error(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "watch acknowledgement is ahead of delivery",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::Unspecified,
             None,
         ),
     }
