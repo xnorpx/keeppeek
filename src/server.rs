@@ -661,6 +661,8 @@ impl ControlRequestHandler for ServerControlHandler {
                             peek_layouts::dispatch(&self.state, &principal, command).map(Some)
                         } else if camera_permissions::handles(&command) {
                             camera_permissions::dispatch(self, &principal, command).map(Some)
+                        } else if state_store::handles(&command) {
+                            state_store::dispatch(&self.state, &principal, command).map(Some)
                         } else {
                             mqtt_integration::dispatch(&self.state, command).map(Some)
                         }
@@ -1017,6 +1019,7 @@ fn server_capabilities(
     }
     capability_ids.push("keeppeek.identity.v1".to_owned());
     capability_ids.push(camera_permissions::CAPABILITY_ID.to_owned());
+    capability_ids.push(state_store::CAPABILITY_ID.to_owned());
     proto::ServerCapabilities {
         revision: 2,
         cameras,
@@ -8550,6 +8553,7 @@ pub struct ServerState {
     camera_discovery_tasks: camera_discovery::Registry,
     camera_metadata: Arc<camera_metadata::Queue>,
     configuration_plans: configuration::Registry,
+    state_store: Arc<Mutex<state_store::Registry>>,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
@@ -8620,6 +8624,7 @@ impl ServerState {
             camera_discovery_tasks: camera_discovery::Registry::default(),
             camera_metadata: Arc::new(camera_metadata::Queue::default()),
             configuration_plans: configuration::Registry::default(),
+            state_store: Arc::new(Mutex::new(state_store::Registry::default())),
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
             recording_demand,
