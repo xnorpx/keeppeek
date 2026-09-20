@@ -661,7 +661,9 @@ impl ControlRequestHandler for ServerControlHandler {
                             peek_layouts::dispatch(&self.state, &principal, command).map(Some)
                         } else if camera_permissions::handles(&command) {
                             camera_permissions::dispatch(self, &principal, command).map(Some)
-                        } else if state_store::handles(&command) {
+                        } else if self.state.state_store_generic_enabled
+                            && state_store::handles(&command)
+                        {
                             state_store::dispatch(&self.state, &principal, command).map(Some)
                         } else {
                             mqtt_integration::dispatch(&self.state, command).map(Some)
@@ -1019,7 +1021,6 @@ fn server_capabilities(
     }
     capability_ids.push("keeppeek.identity.v1".to_owned());
     capability_ids.push(camera_permissions::CAPABILITY_ID.to_owned());
-    capability_ids.push(state_store::CAPABILITY_ID.to_owned());
     proto::ServerCapabilities {
         revision: 2,
         cameras,
@@ -8554,6 +8555,7 @@ pub struct ServerState {
     camera_metadata: Arc<camera_metadata::Queue>,
     configuration_plans: configuration::Registry,
     state_store: Arc<Mutex<state_store::Registry>>,
+    state_store_generic_enabled: bool,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
     events: Option<EventStore>,
     recording_demand: RecordingDemand,
@@ -8625,6 +8627,7 @@ impl ServerState {
             camera_metadata: Arc::new(camera_metadata::Queue::default()),
             configuration_plans: configuration::Registry::default(),
             state_store: Arc::new(Mutex::new(state_store::Registry::default())),
+            state_store_generic_enabled: false,
             cameras: Arc::new(RwLock::new(entries)),
             events: None,
             recording_demand,
@@ -14636,8 +14639,7 @@ mod tests {
                 "keeppeek.event-publication.v1",
                 "stored-media-keyframe-preview.v1",
                 "keeppeek.identity.v1",
-                "keeppeek.camera-access.v1",
-                "keeppeek.state-store.v1"
+                "keeppeek.camera-access.v1"
             ]
         );
         assert_eq!(
@@ -15169,7 +15171,8 @@ mod tests {
     #[test]
     fn generic_state_store_put_get_delete_roundtrip() {
         use prost_types::{Struct, Value, value::Kind};
-        let state = media_test_state();
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
         let handler = test_control_handler(state);
         let admin = SessionId::from_u64(0);
         let value = || {
@@ -15295,7 +15298,8 @@ mod tests {
     #[test]
     fn generic_state_store_conflict_reports_current_revision() {
         use prost_types::{Struct, Value, value::Kind};
-        let state = media_test_state();
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
         let handler = test_control_handler(state);
         let admin = SessionId::from_u64(0);
         let put = |request_id: u64, expected_revision: Option<u64>| {
@@ -15360,7 +15364,8 @@ mod tests {
     #[test]
     fn generic_state_store_user_namespace_requires_owner_or_admin() {
         use prost_types::{Struct, Value, value::Kind};
-        let state = media_test_state();
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
         let issued = restricted_test_user(&state);
         let session_id = SessionId::from_u64(718);
         bind_credential_test_session(&state, session_id, issued.access_key);
@@ -15422,6 +15427,128 @@ mod tests {
                 .result,
             Some(control_response::Result::Ok(_))
         ));
+    }
+
+    #[test]
+    fn generic_state_store_route_stays_gated_until_enabled() {
+        use prost_types::{Struct, Value, value::Kind};
+        let state = media_test_state();
+        let handler = test_control_handler(state);
+        let gated = handler.handle_for_session(
+            SessionId::from_u64(0),
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/gated".to_owned(),
+                            schema: "keeppeek.test-state.v1".to_owned(),
+                            value: Some(Struct {
+                                fields: [
+                                    (
+                                        "mode".to_owned(),
+                                        Value {
+                                            kind: Some(Kind::StringValue("x".to_owned())),
+                                        },
+                                    ),
+                                    (
+                                        "scope".to_owned(),
+                                        Value {
+                                            kind: Some(Kind::StringValue("test".to_owned())),
+                                        },
+                                    ),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            }),
+                            expected_revision: None,
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            gated.response.result,
+            Some(control_response::Result::Error(_))
+        ));
+    }
+
+    #[test]
+    fn generic_state_store_cross_owner_reads_are_denied() {
+        use prost_types::{Struct, Value, value::Kind};
+        let mut state = media_test_state();
+        state.state_store_generic_enabled = true;
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(720);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let handler = test_control_handler(state);
+        let admin = SessionId::from_u64(0);
+        let stored = handler.handle_for_session(
+            admin,
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: "user/victim-a/".to_owned(),
+                            key: "subscriptions/front-door".to_owned(),
+                            schema: "keeppeek.test-state.v1".to_owned(),
+                            value: Some(Struct {
+                                fields: [
+                                    (
+                                        "mode".to_owned(),
+                                        Value {
+                                            kind: Some(Kind::StringValue("x".to_owned())),
+                                        },
+                                    ),
+                                    (
+                                        "scope".to_owned(),
+                                        Value {
+                                            kind: Some(Kind::StringValue("test".to_owned())),
+                                        },
+                                    ),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            }),
+                            expected_revision: None,
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            stored.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+
+        let denied = handler.handle_for_session(
+            session_id,
+            proto::Request {
+                request_id: 2,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Get(proto::GetState {
+                            namespace: "user/victim-a/".to_owned(),
+                            key: "subscriptions/front-door".to_owned(),
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(error)) = denied.response.result else {
+            panic!("cross-owner reads must fail");
+        };
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::StateStoreErrorCode::NotAuthorized as i32
+        );
+        assert_eq!(detail.current_revision, None);
     }
 
     #[test]

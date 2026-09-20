@@ -10,6 +10,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[allow(
+    dead_code,
+    reason = "advertised once the durable registry contract lands"
+)]
 pub(super) const CAPABILITY_ID: &str = "keeppeek.state-store.v1";
 const MAX_NAMESPACE_CHARS: usize = 128;
 const MAX_KEY_CHARS: usize = 256;
@@ -17,6 +21,8 @@ const MAX_SCHEMA_CHARS: usize = 128;
 const MAX_VALUE_BYTES: usize = 64 * 1_024;
 const MAX_ENTRIES_PER_NAMESPACE: usize = 1_024;
 const MAX_PENDING_EXPIRIES: usize = 4_096;
+const MAX_NAMESPACES: usize = 256;
+const MAX_TOTAL_VALUE_BYTES: u64 = 64 * 1_024 * 1_024;
 const MIN_TTL_MS: u64 = 1_000;
 const MAX_TTL_MS: u64 = 86_400_000;
 
@@ -52,6 +58,7 @@ pub(super) enum Invalid {
     ValueMissing,
     ValueTooLarge,
     NamespaceFull,
+    StoreFull,
     Ttl,
 }
 
@@ -67,6 +74,7 @@ pub(super) enum Error {
 pub(super) struct Registry {
     namespaces: HashMap<String, NamespaceState>,
     pending: VecDeque<ExpiredEntry>,
+    stored_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -114,19 +122,39 @@ impl Registry {
             .map(|ttl| ttl_expiry_ms(ttl, now_ms))
             .transpose()?;
         authorize_write(&layout, owner_id, writer_admin)?;
-        expire_key_if_due(
-            &mut self.namespaces,
-            &mut self.pending,
-            namespace,
-            key,
-            now_ms,
-        );
-        let state = self.namespaces.entry(namespace.to_owned()).or_default();
-        let current = state.entries.get(key).map(|record| record.revision);
+        self.expire_key_if_due(namespace, key, now_ms);
+        let current = self
+            .namespaces
+            .get(namespace)
+            .and_then(|state| state.entries.get(key))
+            .map(|record| record.revision);
         check_expected(expected_revision, current)?;
-        if current.is_none() && state.entries.len() >= MAX_ENTRIES_PER_NAMESPACE {
-            return Err(Error::Invalid(Invalid::NamespaceFull));
+        let old_bytes = self
+            .namespaces
+            .get(namespace)
+            .and_then(|state| state.entries.get(key))
+            .map(|record| value_bytes(&record.value))
+            .unwrap_or(0);
+        let total_bytes = self
+            .stored_bytes
+            .saturating_add(value_bytes(&value))
+            .saturating_sub(old_bytes);
+        if total_bytes > MAX_TOTAL_VALUE_BYTES {
+            return Err(Error::Invalid(Invalid::StoreFull));
         }
+        if current.is_none() {
+            if !self.namespaces.contains_key(namespace) {
+                if self.namespaces.len() >= MAX_NAMESPACES {
+                    return Err(Error::Invalid(Invalid::StoreFull));
+                }
+            } else if self.namespaces[namespace].entries.len() >= MAX_ENTRIES_PER_NAMESPACE {
+                self.reclaim_namespace(namespace, now_ms);
+                if self.namespaces[namespace].entries.len() >= MAX_ENTRIES_PER_NAMESPACE {
+                    return Err(Error::Invalid(Invalid::NamespaceFull));
+                }
+            }
+        }
+        let state = self.namespaces.entry(namespace.to_owned()).or_default();
         state.revision = state
             .revision
             .checked_add(1)
@@ -143,6 +171,7 @@ impl Registry {
                 owner_id: owner_id.to_owned(),
             },
         );
+        self.stored_bytes = total_bytes;
         Ok(StoredEntry {
             namespace: namespace.to_owned(),
             key: key.to_owned(),
@@ -159,17 +188,14 @@ impl Registry {
         &mut self,
         namespace: &str,
         key: &str,
+        owner_id: &str,
+        reader_admin: bool,
         now_ms: u64,
     ) -> Result<StoredEntry, Error> {
-        validate_namespace(namespace)?;
+        let layout = validate_namespace(namespace)?;
+        authorize_read(&layout, owner_id, reader_admin)?;
         validate_key(key)?;
-        expire_key_if_due(
-            &mut self.namespaces,
-            &mut self.pending,
-            namespace,
-            key,
-            now_ms,
-        );
+        self.expire_key_if_due(namespace, key, now_ms);
         let state = self.namespaces.get(namespace).ok_or(Error::NotFound)?;
         let record = state.entries.get(key).ok_or(Error::NotFound)?;
         Ok(StoredEntry {
@@ -196,18 +222,15 @@ impl Registry {
         let layout = validate_namespace(namespace)?;
         validate_key(key)?;
         authorize_write(&layout, owner_id, writer_admin)?;
-        expire_key_if_due(
-            &mut self.namespaces,
-            &mut self.pending,
-            namespace,
-            key,
-            now_ms,
-        );
+        self.expire_key_if_due(namespace, key, now_ms);
         let state = self.namespaces.get_mut(namespace).ok_or(Error::NotFound)?;
         let current = state.entries.get(key).map(|record| record.revision);
         check_expected(expected_revision, current)?;
         current.ok_or(Error::NotFound)?;
-        state.entries.remove(key);
+        let removed = state.entries.remove(key).expect("checked key presence");
+        self.stored_bytes = self
+            .stored_bytes
+            .saturating_sub(value_bytes(&removed.value));
         state.revision = state
             .revision
             .checked_add(1)
@@ -216,7 +239,7 @@ impl Registry {
     }
 
     #[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
-    pub(super) fn expire_due(&mut self, now_ms: u64) -> Vec<ExpiredEntry> {
+    pub(super) fn expire_due(&mut self, now_ms: u64) -> ExpiredBatch {
         let mut due = Vec::new();
         for (namespace, state) in &self.namespaces {
             for (key, record) in &state.entries {
@@ -226,17 +249,82 @@ impl Registry {
             }
         }
         due.sort_unstable();
+        let mut overflowed = false;
         for (namespace, key) in due {
-            expire_key_if_due(
-                &mut self.namespaces,
+            overflowed |= self.expire_key_if_due(&namespace, &key, now_ms);
+        }
+        ExpiredBatch {
+            entries: self.pending.drain(..).collect(),
+            overflowed,
+        }
+    }
+
+    fn expire_key_if_due(&mut self, namespace: &str, key: &str, now_ms: u64) -> bool {
+        let due = self.namespaces.get(namespace).is_some_and(|state| {
+            state
+                .entries
+                .get(key)
+                .is_some_and(|record| is_expired(record, now_ms))
+        });
+        if !due {
+            return false;
+        }
+        if let Some(state) = self.namespaces.get_mut(namespace)
+            && let Some(record) = state.entries.remove(key)
+        {
+            state.revision = state
+                .revision
+                .checked_add(1)
+                .expect("namespace revision overflow");
+            self.stored_bytes = self.stored_bytes.saturating_sub(value_bytes(&record.value));
+            return push_pending(
                 &mut self.pending,
-                &namespace,
-                &key,
-                now_ms,
+                ExpiredEntry {
+                    namespace: namespace.to_owned(),
+                    key: key.to_owned(),
+                    revision: state.revision,
+                    schema: record.schema,
+                    value: record.value,
+                    owner_id: record.owner_id,
+                    expires_ms: record.expires_ms.unwrap_or(now_ms),
+                },
             );
         }
-        self.pending.drain(..).collect()
+        false
     }
+
+    fn reclaim_namespace(&mut self, namespace: &str, now_ms: u64) {
+        let expired: Vec<String> = self
+            .namespaces
+            .get(namespace)
+            .map(|state| {
+                state
+                    .entries
+                    .iter()
+                    .filter(|(_, record)| is_expired(record, now_ms))
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for key in expired {
+            if let Some(state) = self.namespaces.get_mut(namespace)
+                && let Some(record) = state.entries.remove(&key)
+            {
+                state.revision = state
+                    .revision
+                    .checked_add(1)
+                    .expect("namespace revision overflow");
+                self.stored_bytes = self.stored_bytes.saturating_sub(value_bytes(&record.value));
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
+pub(super) struct ExpiredBatch {
+    pub(super) entries: Vec<ExpiredEntry>,
+    pub(super) overflowed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -354,50 +442,18 @@ fn is_expired(record: &StoredRecord, now_ms: u64) -> bool {
         .is_some_and(|expires_ms| expires_ms <= now_ms)
 }
 
-fn expire_key_if_due(
-    namespaces: &mut HashMap<String, NamespaceState>,
-    pending: &mut VecDeque<ExpiredEntry>,
-    namespace: &str,
-    key: &str,
-    now_ms: u64,
-) {
-    let due = namespaces.get(namespace).is_some_and(|state| {
-        state
-            .entries
-            .get(key)
-            .is_some_and(|record| is_expired(record, now_ms))
-    });
-    if !due {
-        return;
-    }
-    if let Some(state) = namespaces.get_mut(namespace)
-        && let Some(record) = state.entries.remove(key)
-    {
-        state.revision = state
-            .revision
-            .checked_add(1)
-            .expect("namespace revision overflow");
-        push_pending(
-            pending,
-            ExpiredEntry {
-                namespace: namespace.to_owned(),
-                key: key.to_owned(),
-                revision: state.revision,
-                schema: record.schema,
-                value: record.value,
-                owner_id: record.owner_id,
-                expires_ms: record.expires_ms.unwrap_or(now_ms),
-            },
-        );
-    }
+fn value_bytes(value: &Struct) -> u64 {
+    u64::try_from(value.encoded_len()).unwrap_or(u64::MAX)
 }
 
 #[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
-fn push_pending(pending: &mut VecDeque<ExpiredEntry>, expired: ExpiredEntry) {
-    if pending.len() >= MAX_PENDING_EXPIRIES {
+fn push_pending(pending: &mut VecDeque<ExpiredEntry>, expired: ExpiredEntry) -> bool {
+    let evicted = pending.len() >= MAX_PENDING_EXPIRIES;
+    if evicted {
         pending.pop_front();
     }
     pending.push_back(expired);
+    evicted
 }
 
 fn authorize_write(
@@ -407,9 +463,38 @@ fn authorize_write(
 ) -> Result<(), Error> {
     match layout {
         NamespaceLayout::System => Err(Error::NotAuthorized),
-        NamespaceLayout::Service | NamespaceLayout::Group => Ok(()),
+        NamespaceLayout::Service | NamespaceLayout::Group => {
+            if writer_admin {
+                Ok(())
+            } else {
+                Err(Error::NotAuthorized)
+            }
+        }
         NamespaceLayout::User { owner } => {
             if owner_id == owner || writer_admin {
+                Ok(())
+            } else {
+                Err(Error::NotAuthorized)
+            }
+        }
+    }
+}
+
+fn authorize_read(
+    layout: &NamespaceLayout,
+    owner_id: &str,
+    reader_admin: bool,
+) -> Result<(), Error> {
+    match layout {
+        NamespaceLayout::System | NamespaceLayout::Service | NamespaceLayout::Group => {
+            if reader_admin {
+                Ok(())
+            } else {
+                Err(Error::NotAuthorized)
+            }
+        }
+        NamespaceLayout::User { owner } => {
+            if owner_id == owner || reader_admin {
                 Ok(())
             } else {
                 Err(Error::NotAuthorized)
@@ -435,7 +520,7 @@ pub(super) fn dispatch(
     command: proto::StateStoreCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
     let result = match command.action {
-        Some(state_store_command::Action::Get(request)) => get(state, request)?,
+        Some(state_store_command::Action::Get(request)) => get(state, principal, request)?,
         Some(state_store_command::Action::Put(request)) => put(state, principal, request)?,
         Some(state_store_command::Action::Delete(request)) => delete(state, principal, request)?,
         Some(state_store_command::Action::Watch(_) | state_store_command::Action::Unwatch(_)) => {
@@ -458,10 +543,17 @@ pub(super) fn dispatch(
 
 fn get(
     state: &ServerState,
+    principal: &ApiPrincipal,
     request: proto::GetState,
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     let entry = lock_registry(state)
-        .get(&request.namespace, &request.key, now_ms())
+        .get(
+            &request.namespace,
+            &request.key,
+            &principal.id(),
+            principal.role == AccessRole::Administrator,
+            now_ms(),
+        )
         .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
     Ok(entry_result(entry))
 }
@@ -630,6 +722,15 @@ fn registry_error(error: Error, namespace: &str, key: &str) -> ControlCommandErr
             proto::StateStoreErrorCode::NamespaceInvalid,
             None,
         ),
+        Error::Invalid(Invalid::StoreFull) => state_store_error(
+            proto::ErrorCode::Rejected,
+            409,
+            "state store is full",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::NamespaceInvalid,
+            None,
+        ),
         Error::Invalid(Invalid::Ttl) => state_store_error(
             proto::ErrorCode::InvalidRequest,
             400,
@@ -723,7 +824,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect("fixture put must succeed")
@@ -739,7 +840,7 @@ mod tests {
                 None,
                 Some(duration_ms(ttl_ms)),
                 "transcoder-a",
-                false,
+                true,
                 now_ms,
             )
             .expect("fixture lease must succeed")
@@ -771,7 +872,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS + 1,
             )
             .expect("blind replacement must succeed");
@@ -793,7 +894,7 @@ mod tests {
                 Some(0),
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("create-only write over an existing key must fail");
@@ -819,7 +920,7 @@ mod tests {
                 Some(1),
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect("matching revision must succeed");
@@ -834,7 +935,7 @@ mod tests {
                 Some(1),
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("stale revision must fail");
@@ -852,7 +953,13 @@ mod tests {
         let mut registry = Registry::default();
         put_fixture(&mut registry);
         let entry = registry
-            .get("service/transcoder-a/", "intents/front-door", NOW_MS)
+            .get(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
             .expect("existing key must be readable");
 
         assert_eq!(entry.revision, 1);
@@ -863,7 +970,13 @@ mod tests {
     fn get_missing_key_returns_not_found() {
         let mut registry = Registry::default();
         let error = registry
-            .get("service/transcoder-a/", "intents/front-door", NOW_MS)
+            .get(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
             .expect_err("missing key must fail");
 
         assert_eq!(error, Error::NotFound);
@@ -879,14 +992,20 @@ mod tests {
                 "intents/front-door",
                 Some(1),
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect("matching delete must succeed");
 
         assert_eq!(deleted_revision, 2);
         assert_eq!(
-            registry.get("service/transcoder-a/", "intents/front-door", NOW_MS),
+            registry.get(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS
+            ),
             Err(Error::NotFound)
         );
     }
@@ -900,7 +1019,7 @@ mod tests {
                 "intents/front-door",
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("missing key delete must fail");
@@ -918,7 +1037,7 @@ mod tests {
                 "intents/front-door",
                 Some(7),
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("stale delete revision must fail");
@@ -944,7 +1063,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-b",
-                false,
+                true,
                 NOW_MS,
             )
             .expect("first write in a new namespace must succeed");
@@ -1024,7 +1143,7 @@ mod tests {
                     None,
                     None,
                     "transcoder-a",
-                    false,
+                    true,
                     NOW_MS,
                 )
                 .expect_err("malformed key must fail");
@@ -1044,7 +1163,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("missing value must fail");
@@ -1059,7 +1178,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("empty schema must fail");
@@ -1079,7 +1198,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("oversized value must fail");
@@ -1164,6 +1283,8 @@ mod tests {
             .get(
                 "service/transcoder-a/",
                 "leases/front-door",
+                "transcoder-a",
+                true,
                 NOW_MS + 59_999,
             )
             .expect("unexpired lease must be readable");
@@ -1202,7 +1323,7 @@ mod tests {
                     None,
                     Some(ttl),
                     "transcoder-a",
-                    false,
+                    true,
                     NOW_MS,
                 )
                 .expect_err("invalid lease must fail");
@@ -1225,7 +1346,7 @@ mod tests {
                     nanos: 0,
                 }),
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("overflowing lease must fail");
@@ -1238,14 +1359,32 @@ mod tests {
         let mut registry = Registry::default();
         put_lease(&mut registry, "leases/front-door", 1_000, NOW_MS);
         registry
-            .get("service/transcoder-a/", "leases/front-door", NOW_MS + 999)
+            .get(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS + 999,
+            )
             .expect("lease inside its TTL must be readable");
         let error = registry
-            .get("service/transcoder-a/", "leases/front-door", NOW_MS + 1_000)
+            .get(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS + 1_000,
+            )
             .expect_err("lease at its expiry instant must be gone");
         assert_eq!(error, Error::NotFound);
         assert_eq!(
-            registry.get("service/transcoder-a/", "leases/front-door", NOW_MS + 2_000),
+            registry.get(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS + 2_000
+            ),
             Err(Error::NotFound)
         );
     }
@@ -1257,27 +1396,27 @@ mod tests {
         put_lease(&mut registry, "leases/z-back-door", 3_600_000, NOW_MS);
 
         let expired = registry.expire_due(NOW_MS + 1_000);
-        assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0].namespace, "service/transcoder-a/");
-        assert_eq!(expired[0].key, "leases/a-front-door");
-        assert_eq!(expired[0].revision, 3);
-        assert_eq!(expired[0].schema, "keeppeek.media-intent.v1");
-        assert_eq!(expired[0].owner_id, "transcoder-a");
-        assert_eq!(expired[0].expires_ms, NOW_MS + 1_000);
+        assert_eq!(expired.entries.len(), 1);
+        assert_eq!(expired.entries[0].namespace, "service/transcoder-a/");
+        assert_eq!(expired.entries[0].key, "leases/a-front-door");
+        assert_eq!(expired.entries[0].revision, 3);
+        assert_eq!(expired.entries[0].schema, "keeppeek.media-intent.v1");
+        assert_eq!(expired.entries[0].owner_id, "transcoder-a");
+        assert_eq!(expired.entries[0].expires_ms, NOW_MS + 1_000);
 
-        assert!(registry.expire_due(NOW_MS + 2_000).is_empty());
+        assert!(registry.expire_due(NOW_MS + 2_000).entries.is_empty());
 
         let expired = registry.expire_due(NOW_MS + 3_600_000);
-        assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0].key, "leases/z-back-door");
-        assert_eq!(expired[0].revision, 4);
+        assert_eq!(expired.entries.len(), 1);
+        assert_eq!(expired.entries[0].key, "leases/z-back-door");
+        assert_eq!(expired.entries[0].revision, 4);
     }
 
     #[test]
     fn expired_key_accepts_create_only_write() {
         let mut registry = Registry::default();
         put_lease(&mut registry, "leases/front-door", 1_000, NOW_MS);
-        assert_eq!(registry.expire_due(NOW_MS + 1_000).len(), 1);
+        assert_eq!(registry.expire_due(NOW_MS + 1_000).entries.len(), 1);
 
         let entry = registry
             .put(
@@ -1288,7 +1427,7 @@ mod tests {
                 Some(0),
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS + 1_000,
             )
             .expect("create-only write after expiry must succeed");
@@ -1301,7 +1440,7 @@ mod tests {
     fn compare_and_set_on_expired_key_returns_not_found() {
         let mut registry = Registry::default();
         put_lease(&mut registry, "leases/front-door", 1_000, NOW_MS);
-        assert_eq!(registry.expire_due(NOW_MS + 1_000).len(), 1);
+        assert_eq!(registry.expire_due(NOW_MS + 1_000).entries.len(), 1);
 
         let error = registry
             .put(
@@ -1312,7 +1451,7 @@ mod tests {
                 Some(1),
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS + 1_000,
             )
             .expect_err("stale write on an expired key must fail");
@@ -1330,15 +1469,15 @@ mod tests {
                 "leases/front-door",
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS + 2_000,
             )
             .expect_err("delete of an expired key must fail");
 
         assert_eq!(error, Error::NotFound);
         let expired = registry.expire_due(NOW_MS + 2_000);
-        assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0].key, "leases/front-door");
+        assert_eq!(expired.entries.len(), 1);
+        assert_eq!(expired.entries[0].key, "leases/front-door");
     }
 
     #[test]
@@ -1354,17 +1493,17 @@ mod tests {
                 Some(1),
                 Some(duration_ms(3_600_000)),
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS + 500,
             )
             .expect("lease refresh must succeed");
 
         assert_eq!(entry.revision, 2);
         assert_eq!(entry.expires_ms, Some(NOW_MS + 500 + 3_600_000));
-        assert!(registry.expire_due(NOW_MS + 1_000).is_empty());
+        assert!(registry.expire_due(NOW_MS + 1_000).entries.is_empty());
         let expired = registry.expire_due(NOW_MS + 500 + 3_600_000);
-        assert_eq!(expired.len(), 1);
-        assert_eq!(expired[0].revision, 3);
+        assert_eq!(expired.entries.len(), 1);
+        assert_eq!(expired.entries[0].revision, 3);
     }
 
     #[test]
@@ -1380,7 +1519,7 @@ mod tests {
                     None,
                     None,
                     "transcoder-a",
-                    false,
+                    true,
                     NOW_MS,
                 )
                 .expect("fill write must succeed");
@@ -1395,7 +1534,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect_err("new key past the namespace bound must fail");
@@ -1410,7 +1549,7 @@ mod tests {
                 None,
                 None,
                 "transcoder-a",
-                false,
+                true,
                 NOW_MS,
             )
             .expect("replacement inside a full namespace must succeed");
@@ -1418,7 +1557,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_overflow_evicts_oldest_expiry() {
+    fn pending_overflow_signals_recovery_instead_of_silent_loss() {
         let mut registry = Registry::default();
         for index in 0..=MAX_PENDING_EXPIRIES {
             registry
@@ -1430,21 +1569,274 @@ mod tests {
                     None,
                     Some(duration_ms(1_000)),
                     "transcoder-a",
-                    false,
+                    true,
                     NOW_MS,
                 )
                 .expect("overflow fill write must succeed");
         }
 
-        let expired = registry.expire_due(NOW_MS + 1_000);
-        assert_eq!(expired.len(), MAX_PENDING_EXPIRIES);
+        let batch = registry.expire_due(NOW_MS + 1_000);
+        assert_eq!(batch.entries.len(), MAX_PENDING_EXPIRIES);
         assert!(
-            expired.iter().all(|entry| entry.key != "leases/k-0000"),
+            batch.overflowed,
+            "queue overflow must be signaled for watch resynchronization"
+        );
+        assert!(
+            batch
+                .entries
+                .iter()
+                .all(|entry| entry.key != "leases/k-0000"),
             "oldest expiry must be evicted"
         );
-        assert_eq!(expired[0].namespace, "service/load-0/");
-        assert_eq!(expired[0].key, "leases/k-0005");
-        assert_eq!(expired[MAX_PENDING_EXPIRIES - 1].key, "leases/k-4094");
-        assert!(registry.expire_due(NOW_MS + 1_000).is_empty());
+        assert_eq!(batch.entries[0].namespace, "service/load-0/");
+        assert_eq!(batch.entries[0].key, "leases/k-0005");
+        assert_eq!(batch.entries[MAX_PENDING_EXPIRIES - 1].key, "leases/k-4094");
+        let drained = registry.expire_due(NOW_MS + 1_000);
+        assert!(drained.entries.is_empty());
+        assert!(!drained.overflowed);
+    }
+
+    #[test]
+    fn rejected_writes_allocate_no_namespaces() {
+        let mut registry = Registry::default();
+        for index in 0..10_000 {
+            let error = registry
+                .put(
+                    &format!("service/n-{index}/"),
+                    "intents/front-door",
+                    "keeppeek.media-intent.v1",
+                    Some(struct_value(&[("role", "publish")])),
+                    Some(1),
+                    None,
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect_err("compare-and-set on an absent key must fail");
+            assert_eq!(error, Error::NotFound);
+        }
+        assert!(registry.namespaces.is_empty());
+        assert_eq!(registry.stored_bytes, 0);
+    }
+
+    #[test]
+    fn expired_entries_are_reclaimed_before_namespace_full() {
+        let mut registry = Registry::default();
+        for index in 0..MAX_ENTRIES_PER_NAMESPACE {
+            registry
+                .put(
+                    "service/transcoder-a/",
+                    &format!("leases/k-{index:04}"),
+                    "keeppeek.media-intent.v1",
+                    Some(struct_value(&[("role", "publish")])),
+                    None,
+                    Some(duration_ms(1_000)),
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("lease fill write must succeed");
+        }
+
+        let entry = registry
+            .put(
+                "service/transcoder-a/",
+                "leases/fresh",
+                "keeppeek.media-intent.v1",
+                Some(struct_value(&[("role", "publish")])),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS + 1_000,
+            )
+            .expect("reclamation must admit a fresh key after every lease expires");
+        assert_eq!(entry.expires_ms, None);
+        assert_eq!(
+            registry
+                .get(
+                    "service/transcoder-a/",
+                    "leases/fresh",
+                    "transcoder-a",
+                    true,
+                    NOW_MS + 1_000
+                )
+                .expect("fresh key must be readable")
+                .revision,
+            entry.revision
+        );
+    }
+
+    #[test]
+    fn unrelated_reads_of_private_entries_are_denied() {
+        let mut registry = Registry::default();
+        registry
+            .put(
+                "user/viewer-a/",
+                "subscriptions/front-door",
+                "keeppeek.media-intent.v1",
+                Some(struct_value(&[("role", "subscribe")])),
+                None,
+                None,
+                "viewer-a",
+                false,
+                NOW_MS,
+            )
+            .expect("owner write must succeed");
+
+        let error = registry
+            .get(
+                "user/viewer-a/",
+                "subscriptions/front-door",
+                "viewer-b",
+                false,
+                NOW_MS,
+            )
+            .expect_err("cross-owner reads must fail");
+        assert_eq!(error, Error::NotAuthorized);
+        let error = registry
+            .get(
+                "user/viewer-a/",
+                "subscriptions/missing",
+                "viewer-b",
+                false,
+                NOW_MS,
+            )
+            .expect_err("cross-owner reads of missing keys must fail");
+        assert_eq!(error, Error::NotAuthorized);
+        registry
+            .get(
+                "user/viewer-a/",
+                "subscriptions/front-door",
+                "viewer-a",
+                false,
+                NOW_MS,
+            )
+            .expect("owner read must succeed");
+        registry
+            .get(
+                "user/viewer-a/",
+                "subscriptions/front-door",
+                "operator",
+                true,
+                NOW_MS,
+            )
+            .expect("administrator read must succeed");
+    }
+
+    #[test]
+    fn denied_reads_leave_expiry_state_untouched() {
+        let mut registry = Registry::default();
+        registry
+            .put(
+                "user/viewer-a/",
+                "leases/front-door",
+                "keeppeek.media-intent.v1",
+                Some(struct_value(&[("role", "subscribe")])),
+                None,
+                Some(duration_ms(1_000)),
+                "viewer-a",
+                false,
+                NOW_MS,
+            )
+            .expect("owner lease must succeed");
+
+        let error = registry
+            .get(
+                "user/viewer-a/",
+                "leases/front-door",
+                "viewer-b",
+                false,
+                NOW_MS + 1_000,
+            )
+            .expect_err("expired cross-owner reads must fail closed");
+        assert_eq!(error, Error::NotAuthorized);
+        let batch = registry.expire_due(NOW_MS + 1_000);
+        assert_eq!(batch.entries.len(), 1);
+        assert!(!batch.overflowed);
+    }
+
+    #[test]
+    fn service_and_group_operations_require_administrator() {
+        let mut registry = Registry::default();
+        for (namespace, owner) in [
+            ("service/transcoder-a/", "transcoder-a"),
+            ("group/operators/", "operator"),
+        ] {
+            let error = registry
+                .put(
+                    namespace,
+                    "intents/front-door",
+                    "keeppeek.media-intent.v1",
+                    Some(struct_value(&[("role", "publish")])),
+                    None,
+                    None,
+                    owner,
+                    false,
+                    NOW_MS,
+                )
+                .expect_err("non-administrator shared writes must fail");
+            assert_eq!(error, Error::NotAuthorized, "{namespace}");
+        }
+
+        registry
+            .put(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "keeppeek.media-intent.v1",
+                Some(struct_value(&[("role", "publish")])),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("administrator write must succeed");
+        let error = registry
+            .delete(
+                "service/transcoder-a/",
+                "intents/front-door",
+                None,
+                "transcoder-a",
+                false,
+                NOW_MS,
+            )
+            .expect_err("non-administrator shared deletes must fail");
+        assert_eq!(error, Error::NotAuthorized);
+        registry
+            .delete(
+                "service/transcoder-a/",
+                "intents/front-door",
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("administrator delete must succeed");
+    }
+
+    #[test]
+    fn system_reads_require_administrator() {
+        let mut registry = Registry::default();
+        let error = registry
+            .get(
+                "system/",
+                "health/transcoder-a",
+                "transcoder-a",
+                false,
+                NOW_MS,
+            )
+            .expect_err("non-administrator system reads must fail");
+        assert_eq!(error, Error::NotAuthorized);
+        let error = registry
+            .get(
+                "system/",
+                "health/transcoder-a",
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect_err("missing system entries read as not found");
+        assert_eq!(error, Error::NotFound);
     }
 }
