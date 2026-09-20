@@ -14636,7 +14636,8 @@ mod tests {
                 "keeppeek.event-publication.v1",
                 "stored-media-keyframe-preview.v1",
                 "keeppeek.identity.v1",
-                "keeppeek.camera-access.v1"
+                "keeppeek.camera-access.v1",
+                "keeppeek.state-store.v1"
             ]
         );
         assert_eq!(
@@ -15163,6 +15164,288 @@ mod tests {
         let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
         assert_eq!(detail.code, proto::StateStoreErrorCode::Conflict as i32);
         assert_eq!(detail.current_revision, Some(updated.revision));
+    }
+
+    #[test]
+    fn generic_state_store_put_get_delete_roundtrip() {
+        use prost_types::{Struct, Value, value::Kind};
+        let state = media_test_state();
+        let handler = test_control_handler(state);
+        let admin = SessionId::from_u64(0);
+        let value = || {
+            Some(Struct {
+                fields: [
+                    (
+                        "mode".to_owned(),
+                        Value {
+                            kind: Some(Kind::StringValue("smoke".to_owned())),
+                        },
+                    ),
+                    (
+                        "scope".to_owned(),
+                        Value {
+                            kind: Some(Kind::StringValue("test".to_owned())),
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            })
+        };
+        let saved = handler.handle_for_session(
+            admin,
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Put(proto::PutState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/smoke".to_owned(),
+                            schema: "keeppeek.test-state.v1".to_owned(),
+                            value: value(),
+                            expected_revision: None,
+                            ..Default::default()
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(proto::Ok {
+            result:
+                Some(control_ok::Result::StateStoreResult(proto::StateStoreResult {
+                    result: Some(proto::state_store_result::Result::Entry(entry)),
+                })),
+        })) = saved.response.result
+        else {
+            panic!("registry put must return an entry");
+        };
+        assert_eq!(entry.revision, 1);
+        assert_eq!(entry.owner_id, "local-administrator");
+        assert!(entry.updated_at.is_some());
+
+        let read = handler.handle_for_session(
+            admin,
+            proto::Request {
+                request_id: 2,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Get(proto::GetState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/smoke".to_owned(),
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            read.response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+
+        let deleted = handler.handle_for_session(
+            admin,
+            proto::Request {
+                request_id: 3,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Delete(
+                            proto::DeleteState {
+                                namespace: "service/test-recorder/".to_owned(),
+                                key: "state/smoke".to_owned(),
+                                expected_revision: Some(1),
+                            },
+                        )),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Ok(proto::Ok {
+            result:
+                Some(control_ok::Result::StateStoreResult(proto::StateStoreResult {
+                    result: Some(proto::state_store_result::Result::Deleted(deleted)),
+                })),
+        })) = deleted.response.result
+        else {
+            panic!("registry delete must return a revision");
+        };
+        assert_eq!(deleted.revision, 2);
+
+        let missing = handler.handle_for_session(
+            admin,
+            proto::Request {
+                request_id: 4,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Get(proto::GetState {
+                            namespace: "service/test-recorder/".to_owned(),
+                            key: "state/smoke".to_owned(),
+                        })),
+                    },
+                )),
+            },
+        );
+        let Some(control_response::Result::Error(error)) = missing.response.result else {
+            panic!("deleted registry entries must read as not found");
+        };
+        assert_eq!(error.code, proto::ErrorCode::NotFound as i32);
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, proto::StateStoreErrorCode::NotFound as i32);
+    }
+
+    #[test]
+    fn generic_state_store_conflict_reports_current_revision() {
+        use prost_types::{Struct, Value, value::Kind};
+        let state = media_test_state();
+        let handler = test_control_handler(state);
+        let admin = SessionId::from_u64(0);
+        let put = |request_id: u64, expected_revision: Option<u64>| {
+            handler.handle_for_session(
+                admin,
+                proto::Request {
+                    request_id,
+                    command: Some(control_request::Command::StateStoreCommand(
+                        proto::StateStoreCommand {
+                            action: Some(proto::state_store_command::Action::Put(
+                                proto::PutState {
+                                    namespace: "service/test-recorder/".to_owned(),
+                                    key: "state/conflict".to_owned(),
+                                    schema: "keeppeek.test-state.v1".to_owned(),
+                                    value: Some(Struct {
+                                        fields: [
+                                            (
+                                                "mode".to_owned(),
+                                                Value {
+                                                    kind: Some(Kind::StringValue("x".to_owned())),
+                                                },
+                                            ),
+                                            (
+                                                "scope".to_owned(),
+                                                Value {
+                                                    kind: Some(Kind::StringValue(
+                                                        "test".to_owned(),
+                                                    )),
+                                                },
+                                            ),
+                                        ]
+                                        .into_iter()
+                                        .collect(),
+                                    }),
+                                    expected_revision,
+                                    ..Default::default()
+                                },
+                            )),
+                        },
+                    )),
+                },
+            )
+        };
+        assert!(matches!(
+            put(1, None).response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        assert!(matches!(
+            put(2, Some(1)).response.result,
+            Some(control_response::Result::Ok(_))
+        ));
+        let stale = put(3, Some(1));
+        let Some(control_response::Result::Error(error)) = stale.response.result else {
+            panic!("stale registry writes must fail");
+        };
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(detail.code, proto::StateStoreErrorCode::Conflict as i32);
+        assert_eq!(detail.current_revision, Some(2));
+    }
+
+    #[test]
+    fn generic_state_store_user_namespace_requires_owner_or_admin() {
+        use prost_types::{Struct, Value, value::Kind};
+        let state = media_test_state();
+        let issued = restricted_test_user(&state);
+        let session_id = SessionId::from_u64(718);
+        bind_credential_test_session(&state, session_id, issued.access_key);
+        let handler = test_control_handler(state);
+        let put = |session: SessionId, request_id: u64, namespace: &str| {
+            handler.handle_for_session(
+                session,
+                proto::Request {
+                    request_id,
+                    command: Some(control_request::Command::StateStoreCommand(
+                        proto::StateStoreCommand {
+                            action: Some(proto::state_store_command::Action::Put(
+                                proto::PutState {
+                                    namespace: namespace.to_owned(),
+                                    key: "subscriptions/front-door".to_owned(),
+                                    schema: "keeppeek.test-state.v1".to_owned(),
+                                    value: Some(Struct {
+                                        fields: [
+                                            (
+                                                "mode".to_owned(),
+                                                Value {
+                                                    kind: Some(Kind::StringValue("x".to_owned())),
+                                                },
+                                            ),
+                                            (
+                                                "scope".to_owned(),
+                                                Value {
+                                                    kind: Some(Kind::StringValue(
+                                                        "test".to_owned(),
+                                                    )),
+                                                },
+                                            ),
+                                        ]
+                                        .into_iter()
+                                        .collect(),
+                                    }),
+                                    expected_revision: None,
+                                    ..Default::default()
+                                },
+                            )),
+                        },
+                    )),
+                },
+            )
+        };
+        let denied = put(session_id, 1, "user/someone-else/");
+        let Some(control_response::Result::Error(error)) = denied.response.result else {
+            panic!("cross-owner private writes must fail");
+        };
+        assert_eq!(error.code, proto::ErrorCode::Rejected as i32);
+        let detail = proto::StateStoreError::decode(error.details[0].value.as_slice()).unwrap();
+        assert_eq!(
+            detail.code,
+            proto::StateStoreErrorCode::NotAuthorized as i32
+        );
+        assert!(matches!(
+            put(session_id, 2, &format!("user/{}/", issued.metadata.id),)
+                .response
+                .result,
+            Some(control_response::Result::Ok(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_state_store_namespaces_keep_mqtt_fallthrough() {
+        let state = media_test_state();
+        let handler = test_control_handler(state);
+        let rejected = handler.handle_for_session(
+            SessionId::from_u64(0),
+            proto::Request {
+                request_id: 1,
+                command: Some(control_request::Command::StateStoreCommand(
+                    proto::StateStoreCommand {
+                        action: Some(proto::state_store_command::Action::Get(proto::GetState {
+                            namespace: "archive/camera-a/".to_owned(),
+                            key: "state/smoke".to_owned(),
+                        })),
+                    },
+                )),
+            },
+        );
+        assert!(matches!(
+            rejected.response.result,
+            Some(control_response::Result::Error(_))
+        ));
     }
 
     #[test]
