@@ -1014,6 +1014,77 @@ mod tests {
     }
 
     #[test]
+    fn adapter_restore_older_config_serves_snapshot_and_cas() {
+        use crate::webrtc::SessionId;
+        let fixture = Fixture::new();
+        let secrets_path = fixture.dir.join("secrets.toml");
+        std::fs::write(&secrets_path, "OLDER_KEY = \"older\"\n")
+            .expect("test secrets must be created");
+        let secrets_before = std::fs::read(&secrets_path).expect("test secrets must be readable");
+        let state = dispatch_state(&fixture);
+        let session = SessionId::from_u64(5110);
+        admin_session(&state, session);
+        for key in ["wall", "door"] {
+            super::super::state_store::dispatch(
+                &state,
+                session,
+                &local_principal(),
+                put_command(key, None),
+            )
+            .expect("baseline put must succeed");
+        }
+        let config_v2 = fixture.file_bytes();
+        super::super::state_store::dispatch(
+            &state,
+            session,
+            &local_principal(),
+            put_command("gate", None),
+        )
+        .expect("newer put must succeed");
+        std::fs::write(fixture.config_path(), &config_v2).expect("older config must restore");
+        std::fs::write(&secrets_path, &secrets_before).expect("older secrets must restore");
+        let restarted = dispatch_state(&fixture);
+        let revived = SessionId::from_u64(5111);
+        admin_session(&restarted, revived);
+        let snapshot = dispatch_watch(&restarted, revived, "w");
+        assert_eq!(snapshot.snapshot_revision, 2);
+        assert_eq!(snapshot.entries.len(), 2);
+        let wall = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.key == "wall")
+            .expect("restored snapshot must carry wall");
+        super::super::state_store::dispatch(
+            &restarted,
+            revived,
+            &local_principal(),
+            put_command("wall", Some(wall.revision)),
+        )
+        .expect("CAS against the restored revision must succeed");
+        super::super::state_store::dispatch(
+            &restarted,
+            revived,
+            &local_principal(),
+            put_command("wall", Some(wall.revision)),
+        )
+        .expect_err("a stale CAS against the restored revision must conflict");
+        super::super::state_store::dispatch(
+            &restarted,
+            revived,
+            &local_principal(),
+            put_command("gate", None),
+        )
+        .expect("the chain must continue past the restore");
+        let latest = dispatch_watch(&restarted, revived, "w2");
+        assert_eq!(latest.snapshot_revision, 4);
+        assert_eq!(
+            std::fs::read(&secrets_path).expect("test secrets must be readable"),
+            secrets_before,
+            "the paired secrets file must survive the restore",
+        );
+    }
+
+    #[test]
     fn settings_section_is_reserved_from_camera_parsing() {
         assert!(crate::config::is_reserved_section("state_store"));
     }
