@@ -4661,6 +4661,47 @@ fn write_frame(
 }
 
 #[cfg(test)]
+impl WebRtc {
+    pub(crate) fn stage_api_session_pump(
+        &self,
+        session_id: SessionId,
+    ) -> impl FnMut() -> Vec<Vec<u8>> {
+        let (data_tx, data_rx) = bounded(API_DATA_QUEUE_CAPACITY);
+        let control = Arc::new(ApiSessionControl {
+            session_id,
+            inner: self.live.inner.clone(),
+            recording_demand: None,
+            poller: Arc::new(Poller::new().expect("test poller must build")),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            completion: SessionCompletion::default(),
+            control_handler: Arc::new(RwLock::new(None)),
+            data_tx,
+            pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
+            media_camera_ips: Mutex::new(HashSet::new()),
+            background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        self.live.inner.sessions.insert_api(session_id, control);
+        let mut media = ApiMediaRuntime::default();
+        move || {
+            drain_api_session_commands(&data_rx, &mut media);
+            let mut payloads = Vec::new();
+            media
+                .flush_control_notifications(|bytes: &[u8]| {
+                    payloads.push(bytes.to_vec());
+                    Ok(true)
+                })
+                .expect("test flush must succeed");
+            payloads
+        }
+    }
+
+    pub(crate) fn remove_api_session(&self, session_id: SessionId) {
+        self.live.inner.sessions.remove_api(session_id);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
