@@ -1,5 +1,5 @@
 use super::state_store::{
-    Error, Invalid, MAX_ENTRIES_PER_NAMESPACE, MAX_NAMESPACES, MAX_TOTAL_VALUE_BYTES,
+    Error, ExpiredEntry, Invalid, MAX_ENTRIES_PER_NAMESPACE, MAX_NAMESPACES, MAX_TOTAL_VALUE_BYTES,
     MAX_VALUE_BYTES, StoredEntry, authorize_read, authorize_write, check_expected, ttl_expiry_ms,
     validate_key, validate_namespace, validate_schema,
 };
@@ -12,6 +12,13 @@ const SCHEMA_VERSION: i64 = 1;
 pub struct DurableStore {
     connection: turso::Connection,
     stored_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct NamespaceExport {
+    pub namespace: String,
+    pub revision: u64,
+    pub entries: Vec<StoredEntry>,
 }
 
 impl DurableStore {
@@ -109,6 +116,112 @@ impl DurableStore {
 
     pub const fn stored_bytes(&self) -> u64 {
         self.stored_bytes
+    }
+
+    pub fn export(&self, now_ms: u64) -> Result<Vec<NamespaceExport>, Error> {
+        pollster::block_on(self.export_all(now_ms)).map_err(storage_error)
+    }
+
+    pub(super) fn expire_due(&mut self, now_ms: u64) -> Result<Vec<ExpiredEntry>, Error> {
+        pollster::block_on(self.expire_due_transaction(now_ms)).map_err(storage_error)
+    }
+
+    async fn export_all(&self, now_ms: u64) -> Result<Vec<NamespaceExport>, TransactionError> {
+        let mut namespaces = Vec::new();
+        let mut namespace_rows = self
+            .connection
+            .query(
+                "SELECT namespace, revision FROM namespaces ORDER BY namespace",
+                (),
+            )
+            .await?;
+        while let Some(row) = namespace_rows.next().await? {
+            namespaces.push((row.get::<String>(0)?, to_u64(row.get::<i64>(1)?)?));
+        }
+        let mut exports = Vec::new();
+        for (namespace, revision) in namespaces {
+            let mut keys = Vec::new();
+            let mut key_rows = self
+                .connection
+                .query(
+                    "SELECT key FROM entries WHERE namespace = ?1 ORDER BY key",
+                    turso::params![namespace.as_str()],
+                )
+                .await?;
+            while let Some(row) = key_rows.next().await? {
+                keys.push(row.get::<String>(0)?);
+            }
+            let mut entries = Vec::new();
+            for key in keys {
+                let Some(entry) = self.read_entry(&namespace, &key).await? else {
+                    continue;
+                };
+                if entry
+                    .expires_ms
+                    .is_some_and(|expires_ms| expires_ms <= now_ms)
+                {
+                    continue;
+                }
+                entries.push(entry);
+            }
+            exports.push(NamespaceExport {
+                namespace,
+                revision,
+                entries,
+            });
+        }
+        Ok(exports)
+    }
+
+    async fn expire_due_transaction(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<Vec<ExpiredEntry>, TransactionError> {
+        self.connection.execute_batch("BEGIN IMMEDIATE").await?;
+        let result = async {
+            let mut namespaces = Vec::new();
+            let mut namespace_rows = self
+                .connection
+                .query("SELECT namespace FROM namespaces ORDER BY namespace", ())
+                .await?;
+            while let Some(row) = namespace_rows.next().await? {
+                namespaces.push(row.get::<String>(0)?);
+            }
+            let mut due = Vec::new();
+            for namespace in namespaces {
+                for key in self.expired_keys(&namespace, now_ms).await? {
+                    due.push((namespace.clone(), key));
+                }
+            }
+            due.sort_unstable();
+            let mut expired = Vec::new();
+            let mut freed_bytes = 0u64;
+            for (namespace, key) in due {
+                let Some(entry) = self.read_entry(&namespace, &key).await? else {
+                    continue;
+                };
+                freed_bytes = freed_bytes.saturating_add(encoded_bytes(&entry.value)?);
+                self.connection
+                    .execute(
+                        "DELETE FROM entries WHERE namespace = ?1 AND key = ?2",
+                        turso::params![namespace.as_str(), key.as_str()],
+                    )
+                    .await?;
+                let revision = self.bump_namespace_revision(&namespace).await?;
+                expired.push(ExpiredEntry {
+                    namespace,
+                    key,
+                    revision,
+                    schema: entry.schema,
+                    value: entry.value,
+                    owner_id: entry.owner_id,
+                    expires_ms: entry.expires_ms.unwrap_or(now_ms),
+                });
+            }
+            Ok((expired, self.stored_bytes.saturating_sub(freed_bytes)))
+        }
+        .await;
+        self.finish_transaction(result).await
     }
 
     #[allow(
@@ -777,6 +890,43 @@ mod tests {
             )
             .expect("get must succeed");
         assert_eq!(read, entry);
+    }
+
+    #[test]
+    fn export_restores_revisions_and_skips_due_leases() {
+        let dir = TempDir::new();
+        let mut store = DurableStore::open(&dir.db_path(), NOW_MS).expect("open must succeed");
+        let live = store
+            .put(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                None,
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("live put must succeed");
+        store
+            .put(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                Some(duration_ms(1_000)),
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("lease put must succeed");
+        let exports = store.export(NOW_MS + 5_000).expect("export must succeed");
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].namespace, "service/transcoder-a/");
+        assert_eq!(exports[0].revision, 2);
+        assert_eq!(exports[0].entries, vec![live]);
     }
 
     #[test]

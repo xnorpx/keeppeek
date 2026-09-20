@@ -1,3 +1,4 @@
+use super::state_store_durable::DurableStore;
 use super::state_store_watch::{WatchEvent, WatchEventKind};
 use super::{ApiPrincipal, ControlCommandError, ServerState};
 use crate::{
@@ -12,10 +13,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[allow(
-    dead_code,
-    reason = "advertised once the durable registry contract lands"
-)]
 pub(super) const CAPABILITY_ID: &str = "keeppeek.state-store.v1";
 const MAX_NAMESPACE_CHARS: usize = 128;
 const MAX_KEY_CHARS: usize = 256;
@@ -308,6 +305,30 @@ impl Registry {
             self.pending.drain(..).collect(),
             std::mem::replace(&mut self.pending_overflowed, false),
         )
+    }
+
+    pub(super) fn import_namespace(
+        &mut self,
+        namespace: String,
+        revision: u64,
+        entries: Vec<StoredEntry>,
+    ) {
+        let state = self.namespaces.entry(namespace).or_default();
+        state.revision = state.revision.max(revision);
+        for entry in entries {
+            self.stored_bytes = self.stored_bytes.saturating_add(value_bytes(&entry.value));
+            state.entries.insert(
+                entry.key.clone(),
+                StoredRecord {
+                    schema: entry.schema,
+                    value: entry.value,
+                    revision: entry.revision,
+                    updated_ms: entry.updated_ms,
+                    expires_ms: entry.expires_ms,
+                    owner_id: entry.owner_id,
+                },
+            );
+        }
     }
 
     pub(super) fn snapshot(
@@ -704,6 +725,17 @@ fn get(
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     let now = now_ms();
     let mut registry = lock_registry(state);
+    if let Some(mut durable) = lock_durable(state) {
+        durable
+            .get(
+                &request.namespace,
+                &request.key,
+                &principal.id(),
+                principal.role == AccessRole::Administrator,
+                now,
+            )
+            .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    }
     let outcome = registry
         .get(
             &request.namespace,
@@ -728,6 +760,21 @@ fn put(
         .ok_or_else(|| invalid("state value is required"))?;
     let now = now_ms();
     let mut registry = lock_registry(state);
+    if let Some(mut durable) = lock_durable(state) {
+        durable
+            .put(
+                &request.namespace,
+                &request.key,
+                &request.schema,
+                Some(value.clone()),
+                request.expected_revision,
+                request.ttl,
+                &principal.id(),
+                principal.role == AccessRole::Administrator,
+                now,
+            )
+            .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    }
     let outcome = registry
         .put(
             &request.namespace,
@@ -759,6 +806,18 @@ fn delete(
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     let now = now_ms();
     let mut registry = lock_registry(state);
+    if let Some(mut durable) = lock_durable(state) {
+        durable
+            .delete(
+                &request.namespace,
+                &request.key,
+                request.expected_revision,
+                &principal.id(),
+                principal.role == AccessRole::Administrator,
+                now,
+            )
+            .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    }
     let outcome = registry
         .delete(
             &request.namespace,
@@ -885,7 +944,16 @@ fn validate_key_prefix(prefix: &str) -> Result<(), Error> {
 }
 
 pub(super) fn expire_leases(state: &ServerState, now_ms: u64) {
-    let batch = lock_registry(state).expire_due(now_ms);
+    let mut registry = lock_registry(state);
+    if let Some(mut durable) = lock_durable(state)
+        && let Err(error) = durable.expire_due(now_ms)
+    {
+        tracing::warn!(
+            ?error,
+            "state-store durable expiry failed; memory expiry proceeds"
+        );
+    }
+    let batch = registry.expire_due(now_ms);
     publish_events(state, None, batch.entries, batch.overflowed, now_ms);
 }
 
@@ -936,6 +1004,14 @@ fn lock_registry(state: &ServerState) -> std::sync::MutexGuard<'_, Registry> {
         .state_store
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn lock_durable(state: &ServerState) -> Option<std::sync::MutexGuard<'_, DurableStore>> {
+    state.durable_state_store.as_ref().map(|store| {
+        store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    })
 }
 
 fn now_ms() -> u64 {
@@ -1247,6 +1323,28 @@ mod tests {
                 now_ms,
             )
             .expect("fixture lease must succeed")
+    }
+
+    #[test]
+    fn import_restores_entries_and_revisions_verbatim() {
+        let mut registry = Registry::default();
+        let entry = put_fixture(&mut registry);
+        let exported = vec![entry.clone()];
+        let mut restarted = Registry::default();
+        restarted.import_namespace("service/transcoder-a/".to_owned(), 7, exported);
+        let read = restarted
+            .get(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("imported entry must serve");
+        assert_eq!(read, entry);
+        let (revision, entries) = restarted.snapshot("service/transcoder-a/", "", NOW_MS);
+        assert_eq!(revision, 7);
+        assert_eq!(entries.len(), 1);
     }
 
     #[test]
@@ -1837,6 +1935,39 @@ mod tests {
         ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST))
     }
 
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "keeppeek-state-store-dispatch-test-{}-{id}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("test temp dir must be created");
+            Self { path }
+        }
+
+        fn db_path(&self) -> std::path::PathBuf {
+            self.path.join("state.db")
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn attach_durable(state: &mut ServerState, dir: &TempDir) {
+        use std::sync::{Arc, Mutex};
+        let durable = DurableStore::open(&dir.db_path(), NOW_MS).expect("test database must open");
+        state.durable_state_store = Some(Arc::new(Mutex::new(durable)));
+    }
+
     fn admin_session(state: &ServerState, session: SessionId) {
         use super::super::ApiSessionRecord;
         use crate::access::{ClientClassification, ClientClassificationReason};
@@ -2030,6 +2161,82 @@ mod tests {
         assert!(
             state.state_store_watches.owns_watch(session, "w"),
             "a buffered expiry must not terminate the watch"
+        );
+    }
+
+    #[test]
+    fn durable_write_through_survives_reopen() {
+        let dir = TempDir::new();
+        let revision = {
+            let mut state = ServerState::empty();
+            attach_durable(&mut state, &dir);
+            let result = put(
+                &state,
+                &local_principal(),
+                proto::PutState {
+                    namespace: "service/transcoder-a/".to_owned(),
+                    key: "intents/front-door".to_owned(),
+                    schema: "keeppeek.media-intent.v1".to_owned(),
+                    value: Some(media_intent_value("publish")),
+                    expected_revision: None,
+                    ttl: None,
+                },
+            )
+            .expect("durable put must succeed");
+            let Some(state_store_result::Result::Entry(entry)) = result.result else {
+                panic!("put must return the stored entry");
+            };
+            assert_eq!(entry.revision, 1);
+            let durable_entry = lock_durable(&state)
+                .expect("durable store must be attached")
+                .get(
+                    "service/transcoder-a/",
+                    "intents/front-door",
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("durable read must see the write");
+            assert_eq!(durable_entry.revision, 1);
+            entry.revision
+        };
+        let mut reopened = Registry::default();
+        let durable = super::super::state_store_durable::DurableStore::open(&dir.db_path(), NOW_MS)
+            .expect("reopen must succeed");
+        let exports = durable.export(NOW_MS).expect("export must succeed");
+        assert_eq!(exports.len(), 1);
+        for export in exports {
+            reopened.import_namespace(export.namespace, export.revision, export.entries);
+        }
+        let read = reopened
+            .get(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("reopened entry must serve");
+        assert_eq!(read.revision, revision);
+        let (snapshot_revision, _) = reopened.snapshot("service/transcoder-a/", "", NOW_MS);
+        assert_eq!(snapshot_revision, revision);
+    }
+
+    #[test]
+    fn durable_open_failure_keeps_gate_shut() {
+        let dir = TempDir::new();
+        let marker = dir.path.join("not-a-directory");
+        std::fs::write(&marker, b"blocking file").expect("marker file must exist");
+        let mut state = ServerState::empty();
+        state.storage_config.long_term_path = marker;
+        state.open_state_store();
+        assert!(
+            state.durable_state_store.is_none(),
+            "an unusable path must not attach a store"
+        );
+        assert!(
+            !state.state_store_generic_enabled,
+            "the generic gate must stay shut without durability"
         );
     }
 

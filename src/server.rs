@@ -1035,6 +1035,9 @@ fn server_capabilities(
     if state.backup_manager.is_some() {
         capability_ids.push("keeppeek.backup.v1".to_owned());
     }
+    if state.state_store_generic_enabled {
+        capability_ids.push(state_store::CAPABILITY_ID.to_owned());
+    }
     capability_ids.push("keeppeek.identity.v1".to_owned());
     capability_ids.push(camera_permissions::CAPABILITY_ID.to_owned());
     proto::ServerCapabilities {
@@ -8571,6 +8574,7 @@ pub struct ServerState {
     camera_metadata: Arc<camera_metadata::Queue>,
     configuration_plans: configuration::Registry,
     state_store: Arc<Mutex<state_store::Registry>>,
+    durable_state_store: Option<Arc<Mutex<state_store_durable::DurableStore>>>,
     state_store_watches: Arc<state_store_watch::WatchRegistry>,
     state_store_generic_enabled: bool,
     cameras: Arc<RwLock<Vec<CameraEntry>>>,
@@ -8644,6 +8648,7 @@ impl ServerState {
             camera_metadata: Arc::new(camera_metadata::Queue::default()),
             configuration_plans: configuration::Registry::default(),
             state_store: Arc::new(Mutex::new(state_store::Registry::default())),
+            durable_state_store: None,
             state_store_watches: Arc::new(state_store_watch::WatchRegistry::default()),
             state_store_generic_enabled: false,
             cameras: Arc::new(RwLock::new(entries)),
@@ -8669,6 +8674,39 @@ impl ServerState {
             event_forwarder: None,
             started_at: Instant::now(),
         }
+    }
+
+    pub(crate) fn open_state_store(&mut self) {
+        let path = self.storage_config.long_term_path.join("state-store.db");
+        let now = unix_time_ms();
+        let durable = match state_store_durable::DurableStore::open(&path, now) {
+            Ok(durable) => durable,
+            Err(error) => {
+                tracing::warn!(%error, "state-store database unavailable; generic dispatch stays disabled");
+                return;
+            }
+        };
+        let namespaces = match durable.export(now) {
+            Ok(namespaces) => namespaces,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "state-store restore failed; generic dispatch stays disabled"
+                );
+                return;
+            }
+        };
+        {
+            let mut registry = self
+                .state_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for export in namespaces {
+                registry.import_namespace(export.namespace, export.revision, export.entries);
+            }
+        }
+        self.durable_state_store = Some(Arc::new(Mutex::new(durable)));
+        self.state_store_generic_enabled = true;
     }
 
     fn empty() -> Self {
@@ -14760,6 +14798,24 @@ mod tests {
                 .any(|capability| capability == "keeppeek.backup.v1")
         );
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn state_store_capability_tracks_the_generic_gate() {
+        let mut state = ServerState::empty();
+        assert!(
+            !server_capabilities(&state, &[])
+                .capability_ids
+                .contains(&state_store::CAPABILITY_ID.to_owned()),
+            "the capability must stay hidden while the gate is shut"
+        );
+        state.state_store_generic_enabled = true;
+        assert!(
+            server_capabilities(&state, &[])
+                .capability_ids
+                .contains(&state_store::CAPABILITY_ID.to_owned()),
+            "the capability must appear once durable backing enables the gate"
+        );
     }
 
     #[test]

@@ -177,7 +177,7 @@ pub fn run(
     let recording_health = storage_engine.health();
     let webrtc = WebRtc::with_recording_demand(recording_demand.clone());
     let health_registry = HealthRegistry::new();
-    let server_state = ServerState::new(
+    let mut server_state = ServerState::new(
         &cfg,
         &camera_configs,
         &cameras,
@@ -185,6 +185,7 @@ pub fn run(
         recording_demand,
         webrtc.clone(),
     );
+    server_state.open_state_store();
     let backup_manager = BackupManager::open_with_config_update(
         config_path.to_path_buf(),
         server_state.configuration_update_lock(),
