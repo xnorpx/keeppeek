@@ -644,7 +644,7 @@ pub(super) fn dispatch(
     if let Some(namespace) = command_namespace(&command)
         && super::state_store_settings::is_adapter_namespace(namespace)
     {
-        return adapter_dispatch(state, principal, command);
+        return adapter_dispatch(state, session_id, principal, command);
     }
     let result = match command.action {
         Some(state_store_command::Action::Get(request)) => get(state, principal, request)?,
@@ -682,6 +682,7 @@ fn command_namespace(command: &proto::StateStoreCommand) -> Option<&str> {
 
 fn adapter_dispatch(
     state: &ServerState,
+    session_id: SessionId,
     principal: &ApiPrincipal,
     command: proto::StateStoreCommand,
 ) -> Result<control_ok::Result, ControlCommandError> {
@@ -711,6 +712,7 @@ fn adapter_dispatch(
             let value = request
                 .value
                 .ok_or_else(|| invalid("state value is required"))?;
+            let now = now_ms();
             let entry = adapter::put(
                 &state.config_update,
                 &config_path,
@@ -722,9 +724,16 @@ fn adapter_dispatch(
                 request.ttl,
                 &principal.id(),
                 admin,
-                now_ms(),
+                now,
             )
             .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+            let direct = WatchEvent {
+                namespace: entry.namespace.clone(),
+                key: entry.key.clone(),
+                revision: entry.revision,
+                kind: WatchEventKind::Put(entry.clone()),
+            };
+            publish_events(state, Some(direct), Vec::new(), false, now);
             entry_result(entry)
         }
         Some(state_store_command::Action::Delete(request)) => {
@@ -738,18 +747,61 @@ fn adapter_dispatch(
                 admin,
             )
             .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+            let direct = WatchEvent {
+                namespace: request.namespace.clone(),
+                key: request.key.clone(),
+                revision,
+                kind: WatchEventKind::Delete,
+            };
+            publish_events(state, Some(direct), Vec::new(), false, now_ms());
             deleted_result(request.namespace, request.key, revision)
         }
-        Some(
-            state_store_command::Action::Watch(_)
-            | state_store_command::Action::Unwatch(_)
-            | state_store_command::Action::WatchAck(_),
-        ) => {
-            return Err(ControlCommandError::new(
-                proto::ErrorCode::UnsupportedRequest,
-                501,
-                "this state store watch operation is not implemented",
-            ));
+        Some(state_store_command::Action::Watch(request)) => {
+            super::validate_client_id(&request.watch_id, "watch ID")?;
+            if !request.key_prefix.is_empty() {
+                validate_key_prefix(&request.key_prefix)
+                    .map_err(|error| registry_error(error, &request.namespace, ""))?;
+            }
+            let admin = principal.role == AccessRole::Administrator;
+            let _guard = adapter::lock_config(&state.config_update)
+                .map_err(|error| registry_error(error, &request.namespace, &request.watch_id))?;
+            let (revision, entries) = adapter::snapshot(
+                &config_path,
+                &request.namespace,
+                &request.key_prefix,
+                &principal.id(),
+                admin,
+            )
+            .map_err(|error| registry_error(error, &request.namespace, &request.watch_id))?;
+            let message = proto::StateWatchSnapshot {
+                watch_id: request.watch_id.clone(),
+                namespace: request.namespace.clone(),
+                key_prefix: request.key_prefix.clone(),
+                snapshot_revision: revision,
+                entries: entries.iter().map(proto_entry).collect(),
+            };
+            check_snapshot_bounds(
+                message.entries.len(),
+                message.encoded_len(),
+                &request.namespace,
+                &request.watch_id,
+            )?;
+            state
+                .state_store_watches
+                .register(
+                    session_id,
+                    request.namespace.clone(),
+                    request.key_prefix.clone(),
+                    request.watch_id.clone(),
+                )
+                .map_err(|error| registry_error(error, &request.namespace, &request.watch_id))?;
+            proto::StateStoreResult {
+                result: Some(state_store_result::Result::Watch(message)),
+            }
+        }
+        Some(state_store_command::Action::Unwatch(request)) => unwatch(state, session_id, request)?,
+        Some(state_store_command::Action::WatchAck(request)) => {
+            acknowledge(state, session_id, request)?
         }
         None => {
             return Err(ControlCommandError::new(
@@ -1003,7 +1055,7 @@ fn acknowledge(
     })
 }
 
-fn validate_key_prefix(prefix: &str) -> Result<(), Error> {
+pub(super) fn validate_key_prefix(prefix: &str) -> Result<(), Error> {
     let stripped = prefix.strip_suffix('/').unwrap_or(prefix);
     if stripped.is_empty() {
         return Err(Error::Invalid(Invalid::Key));

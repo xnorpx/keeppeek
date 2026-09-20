@@ -6206,6 +6206,137 @@ mod tests {
         webrtc.live.inner.sessions.remove_api(unrelated.session_id);
     }
 
+    fn stage_watch_session(webrtc: &WebRtc, session_id: SessionId) -> Receiver<ApiSessionCommand> {
+        let (data_tx, data_rx) = bounded(1);
+        let control = Arc::new(ApiSessionControl {
+            session_id,
+            inner: webrtc.live.inner.clone(),
+            recording_demand: None,
+            poller: Arc::new(Poller::new().unwrap()),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            completion: SessionCompletion::default(),
+            control_handler: Arc::new(RwLock::new(None)),
+            data_tx,
+            pending_event_bytes: Arc::new(AtomicUsize::new(0)),
+            pending_event_count: Arc::new(AtomicUsize::new(0)),
+            media_camera_ips: Mutex::new(HashSet::new()),
+            background_operation_in_flight: Arc::new(AtomicBool::new(false)),
+        });
+        webrtc.live.inner.sessions.insert_api(session_id, control);
+        data_rx
+    }
+
+    fn watch_update_notification(sequence: u64, revision: u64) -> crate::api::proto::Notification {
+        use crate::api::proto::{
+            Notification, StateStoreUpdateKind, StateStoreWatchUpdate, notification::Event,
+        };
+        Notification {
+            event: Some(Event::StateStoreWatchUpdate(StateStoreWatchUpdate {
+                watch_id: "w".to_owned(),
+                namespace: "service/transcoder-a/".to_owned(),
+                key: "intents/front-door".to_owned(),
+                revision,
+                watch_sequence: sequence,
+                kind: StateStoreUpdateKind::Put as i32,
+                entry: None,
+            })),
+        }
+    }
+
+    fn watch_close_notification() -> crate::api::proto::Notification {
+        use crate::api::proto::{
+            Notification, StateStoreWatchCloseReason, StateStoreWatchClosed, notification::Event,
+        };
+        Notification {
+            event: Some(Event::StateStoreWatchClosed(StateStoreWatchClosed {
+                watch_id: "w".to_owned(),
+                namespace: "service/transcoder-a/".to_owned(),
+                reason: StateStoreWatchCloseReason::AckTimeout as i32,
+            })),
+        }
+    }
+
+    #[test]
+    fn watch_update_reaches_the_session_channel() {
+        let webrtc = WebRtc::new();
+        let session_id = SessionId::from_u64(9101);
+        let data_rx = stage_watch_session(&webrtc, session_id);
+        assert!(
+            webrtc
+                .try_enqueue_api_notification(session_id, watch_update_notification(7, 4))
+                .expect("enqueue must succeed")
+        );
+        let command = data_rx.try_recv().expect("update must arrive");
+        let ApiSessionCommand::Notification(notification) = command else {
+            panic!("channel must carry a watch update");
+        };
+        let crate::api::proto::notification::Event::StateStoreWatchUpdate(update) = notification
+            .event
+            .as_ref()
+            .expect("update must have an event")
+        else {
+            panic!("channel must carry a watch update");
+        };
+        assert_eq!(update.watch_sequence, 7);
+        assert_eq!(update.revision, 4);
+        webrtc.live.inner.sessions.remove_api(session_id);
+    }
+
+    #[test]
+    fn watch_close_reaches_the_session_channel() {
+        let webrtc = WebRtc::new();
+        let session_id = SessionId::from_u64(9102);
+        let data_rx = stage_watch_session(&webrtc, session_id);
+        assert!(
+            webrtc
+                .try_enqueue_api_notification(session_id, watch_close_notification())
+                .expect("enqueue must succeed")
+        );
+        let command = data_rx.try_recv().expect("close must arrive");
+        let ApiSessionCommand::Notification(notification) = command else {
+            panic!("channel must carry a watch close");
+        };
+        let crate::api::proto::notification::Event::StateStoreWatchClosed(closed) = notification
+            .event
+            .as_ref()
+            .expect("close must have an event")
+        else {
+            panic!("channel must carry a watch close");
+        };
+        assert_eq!(closed.watch_id, "w");
+        webrtc.live.inner.sessions.remove_api(session_id);
+    }
+
+    #[test]
+    fn saturated_session_channel_reports_backpressure() {
+        let webrtc = WebRtc::new();
+        let session_id = SessionId::from_u64(9103);
+        let _data_rx = stage_watch_session(&webrtc, session_id);
+        assert!(
+            webrtc
+                .try_enqueue_api_notification(session_id, watch_update_notification(1, 1))
+                .expect("first enqueue must succeed")
+        );
+        assert!(
+            !webrtc
+                .try_enqueue_api_notification(session_id, watch_update_notification(2, 2))
+                .expect("a full channel must report instead of failing"),
+            "the saturated channel must signal backpressure"
+        );
+        webrtc.live.inner.sessions.remove_api(session_id);
+    }
+
+    #[test]
+    fn missing_session_reports_unavailable() {
+        let webrtc = WebRtc::new();
+        webrtc
+            .try_enqueue_api_notification(
+                SessionId::from_u64(9199),
+                watch_update_notification(1, 1),
+            )
+            .expect_err("a missing session must not accept notifications");
+    }
+
     #[test]
     fn background_camera_operations_dispatch_without_blocking_the_api_session() {
         use crate::api::proto::{
