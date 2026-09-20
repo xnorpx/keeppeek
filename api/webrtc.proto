@@ -71,6 +71,7 @@ message Notification {
     EventPublicationState event_publication_state = 7;
     GroupState group_state = 8;
     StateStoreWatchUpdate state_store_watch_update = 9;
+    StateStoreWatchClosed state_store_watch_closed = 10;
 
     PublicationControl publication_control = 15;
     SubscriptionStreamState subscription_stream_state = 16;
@@ -2216,6 +2217,30 @@ enum StateStoreUpdateKind {
   STATE_STORE_UPDATE_KIND_PUT = 1;
   STATE_STORE_UPDATE_KIND_DELETE = 2;
   STATE_STORE_UPDATE_KIND_EXPIRE = 3;
+}
+
+// Terminal signal for one watch. The server sends it when it stops a watch
+// outside a client UnwatchState: the in-flight buffer overflowed, an
+// acknowledgement deadline expired, authorization was revoked, or snapshot
+// delivery failed. The watch is closed; no further updates or
+// acknowledgements for its watch_id are accepted, and the client must
+// re-watch for current state. The close notification travels through the
+// same bounded outbound queue as other notifications: if it cannot be
+// enqueued because the queue is full, the server closes the control channel
+// instead, and the client treats channel closure as termination of all its
+// watches.
+message StateStoreWatchClosed {
+  string watch_id = 1;
+  string namespace = 2;
+  StateStoreWatchCloseReason reason = 3;
+}
+
+enum StateStoreWatchCloseReason {
+  STATE_STORE_WATCH_CLOSE_REASON_UNSPECIFIED = 0;
+  STATE_STORE_WATCH_CLOSE_REASON_BUFFER_OVERFLOW = 1;
+  STATE_STORE_WATCH_CLOSE_REASON_ACK_TIMEOUT = 2;
+  STATE_STORE_WATCH_CLOSE_REASON_AUTHORIZATION_REVOKED = 3;
+  STATE_STORE_WATCH_CLOSE_REASON_SNAPSHOT_SEND_FAILED = 4;
 }
 
 message EventPublicationCommand {

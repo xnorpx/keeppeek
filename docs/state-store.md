@@ -70,8 +70,8 @@ refresh another owner's entry.
 
 `WatchState` atomically registers a watch and captures all current matching keys. Its
 `StateStoreResult.watch` response contains the complete initial snapshot exactly as it existed at
-`snapshot_revision`. Only updates with higher revisions follow that snapshot on the reliable
-ordered control channel.
+`snapshot_revision`. Later updates follow that snapshot as `StateStoreWatchUpdate` notifications on
+the reliable ordered control channel, each carrying a per-watch `watch_sequence` starting at 1.
 
 ```mermaid
 sequenceDiagram
@@ -80,20 +80,27 @@ sequenceDiagram
 
     C->>K: WatchState { request_id: 41, watch_id: transcode-intents, namespace: service/transcoder-a, key_prefix: intents/ }
     K-->>C: StateStoreResult { request_id: 41, snapshot_revision: 120, entries }
-    K-->>C: StateStoreWatchUpdate { request_id: 2, revision: 121, kind: PUT, entry }
-    K-->>C: StateStoreWatchUpdate { request_id: 4, revision: 122, kind: EXPIRE, key }
+    K-->>C: StateStoreWatchUpdate { watch_sequence: 1, revision: 121, kind: PUT, entry }
+    C->>K: WatchStateAck { request_id: 42, watch_id: transcode-intents, applied_sequence: 1 }
+    K-->>C: StateWatchAckResult { request_id: 42, watch_id: transcode-intents, applied_sequence: 1 }
+    K-->>C: StateStoreWatchUpdate { watch_sequence: 2, revision: 122, kind: EXPIRE, key }
 ```
 
-A client installs the snapshot first, then applies updates only in revision order. A revision gap,
-control-channel disconnect, rejected update, or local state corruption requires a new watch
-snapshot. The client sends `UnwatchState` when possible, creates a replacement watch, and replaces
-its cached matching keys only after installing the new snapshot. There is no resume token that lets
-a client invent missing state. Broad snapshots are bounded by entry count and byte size; a
-rejected broad watch must be narrowed by namespace or key prefix.
+A client installs the snapshot first, then applies an update only when its `watch_sequence` is
+exactly one above the highest applied. The namespace revision also covers keys outside a prefix
+filter, so a revision skip without a sequence skip is harmless, while a sequence skip is a gap. A
+sequence gap, `StateStoreWatchClosed` termination, control-channel disconnect or closure, rejected
+update, or local state corruption requires a new watch snapshot. The client sends `UnwatchState`
+when possible, creates a replacement watch, and replaces its cached matching keys only after
+installing the new snapshot. There is no resume token that lets a client invent missing state.
+Broad snapshots are bounded by entry count and byte size; a rejected broad watch must be narrowed
+by namespace or key prefix.
 
-`UnwatchState` removes a registered watch. A watch update is an ordinary server-originated control
-request and must receive `Ok` or `Error`; acknowledgement confirms receipt by the client, not
-successful external work.
+`UnwatchState` removes a registered watch. A watch update is a notification the client acknowledges
+with `WatchStateAck` naming the highest contiguously applied `watch_sequence`; acknowledgement
+confirms receipt by the client, not successful external work. The server terminates a watch that
+overflows its bounded update buffer, misses its acknowledgement deadline, loses authorization, or
+fails snapshot delivery, and reports the reason in `StateStoreWatchClosed`.
 
 ## Media intent
 
