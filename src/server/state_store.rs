@@ -1,11 +1,15 @@
+use super::{ApiPrincipal, ControlCommandError, ServerState};
+use crate::{
+    access::AccessRole,
+    api::proto::{self, ok as control_ok, state_store_command, state_store_result},
+};
 use prost::Message as _;
-use prost_types::{Duration, Struct};
-use std::collections::{HashMap, VecDeque};
+use prost_types::{Duration, Struct, Timestamp};
+use std::{
+    collections::{HashMap, VecDeque},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-#[expect(
-    dead_code,
-    reason = "advertised by server capabilities in the dispatch slice"
-)]
 pub(super) const CAPABILITY_ID: &str = "keeppeek.state-store.v1";
 const MAX_NAMESPACE_CHARS: usize = 128;
 const MAX_KEY_CHARS: usize = 256;
@@ -29,6 +33,7 @@ pub(super) struct StoredEntry {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
 pub(super) struct ExpiredEntry {
     pub(super) namespace: String,
     pub(super) key: String,
@@ -206,6 +211,7 @@ impl Registry {
         Ok(state.revision)
     }
 
+    #[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
     pub(super) fn expire_due(&mut self, now_ms: u64) -> Vec<ExpiredEntry> {
         let mut due = Vec::new();
         for (namespace, state) in &self.namespaces {
@@ -382,6 +388,7 @@ fn expire_key_if_due(
     }
 }
 
+#[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
 fn push_pending(pending: &mut VecDeque<ExpiredEntry>, expired: ExpiredEntry) {
     if pending.len() >= MAX_PENDING_EXPIRIES {
         pending.pop_front();
@@ -405,6 +412,258 @@ fn authorize_write(
             }
         }
     }
+}
+
+pub(super) fn handles(command: &proto::StateStoreCommand) -> bool {
+    let namespace = match &command.action {
+        Some(state_store_command::Action::Get(request)) => &request.namespace,
+        Some(state_store_command::Action::Put(request)) => &request.namespace,
+        Some(state_store_command::Action::Delete(request)) => &request.namespace,
+        Some(state_store_command::Action::Watch(request)) => &request.namespace,
+        Some(state_store_command::Action::Unwatch(_)) | None => return false,
+    };
+    validate_namespace(namespace).is_ok()
+}
+
+pub(super) fn dispatch(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    command: proto::StateStoreCommand,
+) -> Result<control_ok::Result, ControlCommandError> {
+    let result = match command.action {
+        Some(state_store_command::Action::Get(request)) => get(state, request)?,
+        Some(state_store_command::Action::Put(request)) => put(state, principal, request)?,
+        Some(state_store_command::Action::Delete(request)) => delete(state, principal, request)?,
+        Some(
+            state_store_command::Action::Watch(_)
+            | state_store_command::Action::Unwatch(_),
+        ) => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::UnsupportedRequest,
+                501,
+                "this state store watch operation is not implemented",
+            ));
+        }
+        None => {
+            return Err(ControlCommandError::new(
+                proto::ErrorCode::InvalidRequest,
+                400,
+                "state store command has no action",
+            ));
+        }
+    };
+    Ok(control_ok::Result::StateStoreResult(result))
+}
+
+fn get(
+    state: &ServerState,
+    request: proto::GetState,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    let entry = lock_registry(state)
+        .get(&request.namespace, &request.key, now_ms())
+        .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    Ok(entry_result(entry))
+}
+
+fn put(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    request: proto::PutState,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    let value = request
+        .value
+        .ok_or_else(|| invalid("state value is required"))?;
+    let entry = lock_registry(state)
+        .put(
+            &request.namespace,
+            &request.key,
+            &request.schema,
+            Some(value),
+            request.expected_revision,
+            request.ttl,
+            &principal.id(),
+            principal.role == AccessRole::Administrator,
+            now_ms(),
+        )
+        .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    Ok(entry_result(entry))
+}
+
+fn delete(
+    state: &ServerState,
+    principal: &ApiPrincipal,
+    request: proto::DeleteState,
+) -> Result<proto::StateStoreResult, ControlCommandError> {
+    let revision = lock_registry(state)
+        .delete(
+            &request.namespace,
+            &request.key,
+            request.expected_revision,
+            &principal.id(),
+            principal.role == AccessRole::Administrator,
+            now_ms(),
+        )
+        .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+    Ok(proto::StateStoreResult {
+        result: Some(state_store_result::Result::Deleted(
+            proto::StateDeleteResult {
+                namespace: request.namespace,
+                key: request.key,
+                revision,
+            },
+        )),
+    })
+}
+
+fn lock_registry(state: &ServerState) -> std::sync::MutexGuard<'_, Registry> {
+    state
+        .state_store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn now_ms() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
+fn timestamp_ms(millis: u64) -> Timestamp {
+    Timestamp {
+        seconds: i64::try_from(millis / 1_000).unwrap_or(i64::MAX),
+        nanos: i32::try_from((millis % 1_000) * 1_000_000).unwrap_or_default(),
+    }
+}
+
+fn entry_result(entry: StoredEntry) -> proto::StateStoreResult {
+    proto::StateStoreResult {
+        result: Some(state_store_result::Result::Entry(proto::StateEntry {
+            namespace: entry.namespace,
+            key: entry.key,
+            schema: entry.schema,
+            value: Some(entry.value),
+            revision: entry.revision,
+            updated_at: Some(timestamp_ms(entry.updated_ms)),
+            expires_at: entry.expires_ms.map(timestamp_ms),
+            owner_id: entry.owner_id,
+        })),
+    }
+}
+
+fn registry_error(error: Error, namespace: &str, key: &str) -> ControlCommandError {
+    match error {
+        Error::NotFound => state_store_error(
+            proto::ErrorCode::NotFound,
+            404,
+            "state entry was not found",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::NotFound,
+            None,
+        ),
+        Error::Conflict { current_revision } => state_store_error(
+            proto::ErrorCode::Rejected,
+            409,
+            "state entry changed; reload before saving",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::Conflict,
+            Some(current_revision),
+        ),
+        Error::NotAuthorized => state_store_error(
+            proto::ErrorCode::Rejected,
+            403,
+            "state write is not permitted",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::NotAuthorized,
+            None,
+        ),
+        Error::Invalid(Invalid::Namespace) => state_store_error(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "state namespace is invalid",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::NamespaceInvalid,
+            None,
+        ),
+        Error::Invalid(Invalid::Key) => state_store_error(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "state key is invalid",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::KeyInvalid,
+            None,
+        ),
+        Error::Invalid(Invalid::Schema) => state_store_error(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "state schema is invalid",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::SchemaInvalid,
+            None,
+        ),
+        Error::Invalid(Invalid::ValueMissing) => invalid("state value is required"),
+        Error::Invalid(Invalid::ValueTooLarge) => state_store_error(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "state value is too large",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::ValueTooLarge,
+            None,
+        ),
+        Error::Invalid(Invalid::NamespaceFull) => state_store_error(
+            proto::ErrorCode::Rejected,
+            409,
+            "state namespace is full",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::NamespaceInvalid,
+            None,
+        ),
+        Error::Invalid(Invalid::Ttl) => state_store_error(
+            proto::ErrorCode::InvalidRequest,
+            400,
+            "state TTL is invalid",
+            namespace,
+            key,
+            proto::StateStoreErrorCode::TtlInvalid,
+            None,
+        ),
+    }
+}
+
+fn state_store_error(
+    code: proto::ErrorCode,
+    status: u16,
+    message: &str,
+    namespace: &str,
+    key: &str,
+    detail_code: proto::StateStoreErrorCode,
+    current_revision: Option<u64>,
+) -> ControlCommandError {
+    ControlCommandError::new(code, status, message).with_detail(prost_types::Any {
+        type_url: "type.googleapis.com/keeppeek.webrtc.v1.StateStoreError".to_owned(),
+        value: proto::StateStoreError {
+            namespace: namespace.to_owned(),
+            key: key.to_owned(),
+            code: detail_code as i32,
+            current_revision,
+        }
+        .encode_to_vec(),
+    })
+}
+
+fn invalid(message: &str) -> ControlCommandError {
+    ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, message)
 }
 
 const fn check_expected(expected: Option<u64>, current: Option<u64>) -> Result<(), Error> {
