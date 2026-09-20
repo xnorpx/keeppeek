@@ -86,6 +86,10 @@ struct StoredRecord {
 }
 
 impl Registry {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "put mirrors the wire, auth, and time-injection inputs one-to-one"
+    )]
     pub(super) fn put(
         &mut self,
         namespace: &str,
@@ -434,10 +438,7 @@ pub(super) fn dispatch(
         Some(state_store_command::Action::Get(request)) => get(state, request)?,
         Some(state_store_command::Action::Put(request)) => put(state, principal, request)?,
         Some(state_store_command::Action::Delete(request)) => delete(state, principal, request)?,
-        Some(
-            state_store_command::Action::Watch(_)
-            | state_store_command::Action::Unwatch(_),
-        ) => {
+        Some(state_store_command::Action::Watch(_) | state_store_command::Action::Unwatch(_)) => {
             return Err(ControlCommandError::new(
                 proto::ErrorCode::UnsupportedRequest,
                 501,
