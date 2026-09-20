@@ -174,6 +174,7 @@ impl WatchRegistry {
         session_id: SessionId,
         watch_id: &str,
         applied_sequence: u64,
+        now_ms: u64,
     ) -> Result<u64, (String, Error)> {
         let mut watches = self.lock();
         let Some(watch) = watches.get_mut(&(session_id, watch_id.to_owned())) else {
@@ -187,8 +188,22 @@ impl WatchRegistry {
             watch
                 .unacked
                 .retain(|pending| pending.sequence > applied_sequence);
+            if let Some(oldest) = watch.unacked.front_mut() {
+                oldest.sent_ms = now_ms;
+            }
         }
         Ok(watch.applied)
+    }
+
+    #[cfg(test)]
+    pub(super) fn oldest_unacked_sent_ms(
+        &self,
+        session_id: SessionId,
+        watch_id: &str,
+    ) -> Option<u64> {
+        self.lock()
+            .get(&(session_id, watch_id.to_owned()))
+            .and_then(|watch| watch.unacked.front().map(|pending| pending.sent_ms))
     }
 
     pub(super) fn close_session(&self, session_id: SessionId) {
@@ -510,7 +525,7 @@ mod tests {
         assert_eq!(update.kind, proto::StateStoreUpdateKind::Put as i32);
         assert!(update.entry.is_some());
         let accepted = watches
-            .acknowledge(session, "w", 1)
+            .acknowledge(session, "w", 1, NOW_MS)
             .expect("ack must succeed");
         assert_eq!(accepted, 1);
     }
@@ -522,12 +537,12 @@ mod tests {
         admin_session(&state, session);
         let watches = &state.state_store_watches;
         let (_, error) = watches
-            .acknowledge(session, "missing", 1)
+            .acknowledge(session, "missing", 1, NOW_MS)
             .expect_err("unknown watch must fail");
         assert_eq!(error, Error::Invalid(Invalid::WatchNotFound));
         register(&state, session, "w", "service/transcoder-a/", "");
         let (namespace, error) = watches
-            .acknowledge(session, "w", 1)
+            .acknowledge(session, "w", 1, NOW_MS)
             .expect_err("ack ahead of delivery must fail");
         assert_eq!(namespace, "service/transcoder-a/");
         assert_eq!(error, Error::Invalid(Invalid::AckAhead));
@@ -540,13 +555,83 @@ mod tests {
             enqueue,
         );
         assert_eq!(sent.borrow().len(), 1);
-        assert_eq!(watches.acknowledge(session, "w", 1), Ok(1));
+        assert_eq!(watches.acknowledge(session, "w", 1, NOW_MS), Ok(1));
         assert_eq!(
-            watches.acknowledge(session, "w", 1),
+            watches.acknowledge(session, "w", 1, NOW_MS),
             Ok(1),
             "duplicate acks are idempotent"
         );
-        assert_eq!(watches.acknowledge(session, "w", 0), Ok(1));
+        assert_eq!(watches.acknowledge(session, "w", 0, NOW_MS), Ok(1));
+    }
+
+    #[test]
+    fn advancing_ack_restarts_oldest_deadline() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(22);
+        admin_session(&state, session);
+        register(&state, session, "w", "service/transcoder-a/", "");
+        let watches = &state.state_store_watches;
+        let (_, enqueue) = recorder();
+        watches.publish(
+            &state,
+            &[put_event("service/transcoder-a/", "a", 1)],
+            false,
+            NOW_MS,
+            &enqueue,
+        );
+        watches.publish(
+            &state,
+            &[put_event("service/transcoder-a/", "b", 2)],
+            false,
+            NOW_MS + 1_000,
+            &enqueue,
+        );
+        assert_eq!(watches.oldest_unacked_sent_ms(session, "w"), Some(NOW_MS));
+        let ack_at = NOW_MS + 29_000;
+        assert_eq!(watches.acknowledge(session, "w", 1, ack_at), Ok(1));
+        assert_eq!(
+            watches.oldest_unacked_sent_ms(session, "w"),
+            Some(ack_at),
+            "an advancing ack restarts the deadline for the new oldest"
+        );
+    }
+
+    #[test]
+    fn duplicate_ack_keeps_oldest_deadline() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(23);
+        admin_session(&state, session);
+        register(&state, session, "w", "service/transcoder-a/", "");
+        let watches = &state.state_store_watches;
+        let (_, enqueue) = recorder();
+        watches.publish(
+            &state,
+            &[put_event("service/transcoder-a/", "a", 1)],
+            false,
+            NOW_MS,
+            &enqueue,
+        );
+        watches.publish(
+            &state,
+            &[put_event("service/transcoder-a/", "b", 2)],
+            false,
+            NOW_MS + 1_000,
+            &enqueue,
+        );
+        let ack_at = NOW_MS + 29_000;
+        assert_eq!(watches.acknowledge(session, "w", 1, ack_at), Ok(1));
+        assert_eq!(watches.acknowledge(session, "w", 1, ack_at + 500), Ok(1));
+        assert_eq!(
+            watches.oldest_unacked_sent_ms(session, "w"),
+            Some(ack_at),
+            "duplicate acks must not move the deadline"
+        );
+        assert_eq!(watches.acknowledge(session, "w", 0, ack_at + 500), Ok(1));
+        assert_eq!(
+            watches.oldest_unacked_sent_ms(session, "w"),
+            Some(ack_at),
+            "stale acks must not move the deadline"
+        );
     }
 
     #[test]
@@ -607,6 +692,34 @@ mod tests {
                 proto::StateStoreWatchCloseReason::BufferOverflow as i32
             );
         }
+    }
+
+    #[test]
+    fn expire_event_publishes_without_entry() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(21);
+        admin_session(&state, session);
+        register(&state, session, "w", "service/transcoder-a/", "");
+        let watches = &state.state_store_watches;
+        let (sent, enqueue) = recorder();
+        let delivered = watches.publish(
+            &state,
+            &[WatchEvent {
+                namespace: "service/transcoder-a/".to_owned(),
+                key: "leases/front-door".to_owned(),
+                revision: 2,
+                kind: WatchEventKind::Expire,
+            }],
+            false,
+            NOW_MS,
+            &enqueue,
+        );
+        assert_eq!(delivered.len(), 1);
+        let borrowed = sent.borrow();
+        let update = update_of(&borrowed[0].1);
+        assert_eq!(update.kind, proto::StateStoreUpdateKind::Expire as i32);
+        assert_eq!(update.revision, 2);
+        assert!(update.entry.is_none());
     }
 
     #[test]
@@ -764,7 +877,7 @@ mod tests {
         assert_eq!(update.key, "b/2");
         assert_eq!(
             watches
-                .acknowledge(session, "w", 5)
+                .acknowledge(session, "w", 5, NOW_MS)
                 .map_err(|(_, error)| error),
             Err(Error::Invalid(Invalid::AckAhead))
         );
@@ -778,7 +891,7 @@ mod tests {
         register(&state, session, "w", "service/transcoder-a/", "");
         let watches = &state.state_store_watches;
         let (_, error) = watches
-            .acknowledge(session, "missing", 0)
+            .acknowledge(session, "missing", 0, NOW_MS)
             .expect_err("unknown watch must fail");
         assert_eq!(error, Error::Invalid(Invalid::WatchNotFound));
         assert_eq!(

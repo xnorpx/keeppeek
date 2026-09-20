@@ -9597,9 +9597,11 @@ fn serve_with_state_on_listener_inner(
 }
 
 fn expire_state_store_watches(state: &ServerState) {
+    let now = unix_time_ms();
+    state_store::expire_leases(state, now);
     state
         .state_store_watches
-        .expire_watches(state, unix_time_ms(), |session_id, notification| {
+        .expire_watches(state, now, |session_id, notification| {
             state_store_watch::enqueue_notification(state, session_id, notification)
         });
 }
