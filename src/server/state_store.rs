@@ -123,6 +123,7 @@ impl Registry {
             .map(|ttl| ttl_expiry_ms(ttl, now_ms))
             .transpose()?;
         authorize_write(&layout, owner_id, writer_admin)?;
+        super::state_store_schema::validate_value(schema, &value)?;
         self.expire_key_if_due(namespace, key, now_ms);
         let current = self
             .namespaces
@@ -909,6 +910,48 @@ mod tests {
         }
     }
 
+    fn bool_field(fields: &mut BTreeMap<String, Value>, name: &str, value: bool) {
+        fields.insert(
+            name.to_owned(),
+            Value {
+                kind: Some(Kind::BoolValue(value)),
+            },
+        );
+    }
+
+    fn media_intent_value(role: &str) -> Struct {
+        let mut fields = BTreeMap::from([
+            (
+                "role".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue(role.to_owned())),
+                },
+            ),
+            (
+                "source_id".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("front-door".to_owned())),
+                },
+            ),
+            (
+                "media_kind".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("video".to_owned())),
+                },
+            ),
+        ]);
+        bool_field(&mut fields, "desired", true);
+        if role == "publish" {
+            fields.insert(
+                "recording_mode".to_owned(),
+                Value {
+                    kind: Some(Kind::StringValue("disabled".to_owned())),
+                },
+            );
+        }
+        Struct { fields }
+    }
+
     fn duration_ms(millis: u64) -> Duration {
         Duration {
             seconds: (millis / 1_000) as i64,
@@ -922,7 +965,7 @@ mod tests {
                 "service/transcoder-a/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 None,
                 "transcoder-a",
@@ -938,7 +981,7 @@ mod tests {
                 "service/transcoder-a/",
                 key,
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 Some(duration_ms(ttl_ms)),
                 "transcoder-a",
@@ -970,7 +1013,7 @@ mod tests {
                 "service/transcoder-a/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 None,
                 None,
                 "transcoder-a",
@@ -992,7 +1035,7 @@ mod tests {
                 "service/transcoder-a/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 Some(0),
                 None,
                 "transcoder-a",
@@ -1018,7 +1061,7 @@ mod tests {
                 "service/transcoder-a/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 Some(1),
                 None,
                 "transcoder-a",
@@ -1033,7 +1076,7 @@ mod tests {
                 "service/transcoder-a/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 Some(1),
                 None,
                 "transcoder-a",
@@ -1161,7 +1204,7 @@ mod tests {
                 "service/transcoder-b/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 None,
                 "transcoder-b",
@@ -1192,7 +1235,7 @@ mod tests {
                     namespace,
                     "intents/front-door",
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     None,
                     "transcoder-a",
@@ -1212,7 +1255,7 @@ mod tests {
                 "archive/camera-a/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 None,
                 "camera-a",
@@ -1241,7 +1284,7 @@ mod tests {
                     "service/transcoder-a/",
                     key,
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     None,
                     "transcoder-a",
@@ -1276,7 +1319,7 @@ mod tests {
                 "service/transcoder-a/",
                 "intents/front-door",
                 "",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 None,
                 "transcoder-a",
@@ -1316,7 +1359,7 @@ mod tests {
                 "user/viewer-a/",
                 "subscriptions/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 None,
                 None,
                 "viewer-b",
@@ -1331,7 +1374,7 @@ mod tests {
                 "user/viewer-a/",
                 "subscriptions/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 None,
                 None,
                 "viewer-a",
@@ -1344,7 +1387,7 @@ mod tests {
                 "user/viewer-a/",
                 "subscriptions/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 None,
                 None,
                 "operator",
@@ -1421,7 +1464,7 @@ mod tests {
                     "service/transcoder-a/",
                     "leases/front-door",
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     Some(ttl),
                     "transcoder-a",
@@ -1441,7 +1484,7 @@ mod tests {
                 "service/transcoder-a/",
                 "leases/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 Some(Duration {
                     seconds: i64::MAX,
@@ -1525,7 +1568,7 @@ mod tests {
                 "service/transcoder-a/",
                 "leases/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 Some(0),
                 None,
                 "transcoder-a",
@@ -1549,7 +1592,7 @@ mod tests {
                 "service/transcoder-a/",
                 "leases/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 Some(1),
                 None,
                 "transcoder-a",
@@ -1591,7 +1634,7 @@ mod tests {
                 "service/transcoder-a/",
                 "leases/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 Some(1),
                 Some(duration_ms(3_600_000)),
                 "transcoder-a",
@@ -1617,7 +1660,7 @@ mod tests {
                     "service/transcoder-a/",
                     &format!("keys/k-{index:04}"),
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     None,
                     "transcoder-a",
@@ -1632,7 +1675,7 @@ mod tests {
                 "service/transcoder-a/",
                 "keys/overflow",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 None,
                 "transcoder-a",
@@ -1647,7 +1690,7 @@ mod tests {
                 "service/transcoder-a/",
                 "keys/k-0000",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 None,
                 None,
                 "transcoder-a",
@@ -1667,7 +1710,7 @@ mod tests {
                     &format!("service/load-{}/", index % 5),
                     &format!("leases/k-{index:04}"),
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     Some(duration_ms(1_000)),
                     "transcoder-a",
@@ -1707,7 +1750,7 @@ mod tests {
                     &format!("service/n-{index}/"),
                     "intents/front-door",
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     Some(1),
                     None,
                     "transcoder-a",
@@ -1730,7 +1773,7 @@ mod tests {
                     "service/transcoder-a/",
                     &format!("leases/k-{index:04}"),
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     Some(duration_ms(1_000)),
                     "transcoder-a",
@@ -1745,7 +1788,7 @@ mod tests {
                 "service/transcoder-a/",
                 "leases/fresh",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 None,
                 "transcoder-a",
@@ -1769,7 +1812,7 @@ mod tests {
         );
         assert_eq!(
             registry.stored_bytes,
-            value_bytes(&struct_value(&[("role", "publish")])),
+            value_bytes(&media_intent_value("publish")),
             "reclaimed bytes must leave the counter"
         );
     }
@@ -1777,8 +1820,8 @@ mod tests {
     #[test]
     fn stored_byte_counter_tracks_live_values() {
         let mut registry = Registry::default();
-        let first = struct_value(&[("role", "publish")]);
-        let second = struct_value(&[("role", "publish"), ("scope", "test")]);
+        let first = media_intent_value("publish");
+        let second = media_intent_value("subscribe");
         registry
             .put(
                 "service/transcoder-a/",
@@ -1857,7 +1900,7 @@ mod tests {
                     &format!("service/load-{}/", index % 5),
                     &format!("leases/k-{index:04}"),
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     Some(duration_ms(1_000)),
                     "transcoder-a",
@@ -1895,7 +1938,7 @@ mod tests {
                     &format!("service/load-{}/", index % 5),
                     &format!("leases/k-{index:04}"),
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     Some(duration_ms(1_000)),
                     "transcoder-a",
@@ -1910,7 +1953,7 @@ mod tests {
                     &format!("service/load-{}/", index % 5),
                     &format!("leases/k-{index:04}"),
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     None,
                     "transcoder-a",
@@ -1935,7 +1978,7 @@ mod tests {
                 "user/viewer-a/",
                 "subscriptions/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 None,
                 None,
                 "viewer-a",
@@ -1992,7 +2035,7 @@ mod tests {
                 "user/viewer-a/",
                 "leases/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "subscribe")])),
+                Some(media_intent_value("subscribe")),
                 None,
                 Some(duration_ms(1_000)),
                 "viewer-a",
@@ -2028,7 +2071,7 @@ mod tests {
                     namespace,
                     "intents/front-door",
                     "keeppeek.media-intent.v1",
-                    Some(struct_value(&[("role", "publish")])),
+                    Some(media_intent_value("publish")),
                     None,
                     None,
                     owner,
@@ -2044,7 +2087,7 @@ mod tests {
                 "service/transcoder-a/",
                 "intents/front-door",
                 "keeppeek.media-intent.v1",
-                Some(struct_value(&[("role", "publish")])),
+                Some(media_intent_value("publish")),
                 None,
                 None,
                 "transcoder-a",
