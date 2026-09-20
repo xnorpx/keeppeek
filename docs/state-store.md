@@ -66,9 +66,9 @@ carries the accepted `expires_at_ms`. Expiry is inclusive: an entry whose deadli
 current time already reads as not found. KeepPeek emits an `EXPIRE` update when an accepted TTL
 elapses. Services refresh their own lease with compare-and-set writes; they do not refresh another
 owner's entry. Restart purges overdue leases before serving: expired rows are deleted, their bytes
-leave the counter, and affected namespace revisions advance exactly as if the leases had expired
-lazily, so later writes stay monotonic. MQTT integration state and settings-backed entries are
-live configuration rather than leases and reject any TTL.
+leave the counter, and each affected namespace revision advances by one per expired entry, exactly
+as if the leases had expired lazily, so later writes stay monotonic. MQTT integration state and
+settings-backed entries are live configuration rather than leases and reject any TTL.
 
 ## Watches without a snapshot gap
 
