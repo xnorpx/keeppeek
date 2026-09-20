@@ -28,6 +28,7 @@ import type {
 import { NotificationControlClient } from './control-client-notifications';
 import { SystemControlClient, healthProfile, numeric } from './control-client-system';
 import { ConfigurationControlClient } from './control-client-configuration';
+import { ControlClientStateStore } from './control-client-state-store';
 import {
 	EventWorkflowControlClient,
 	decodeEventWorkflowError,
@@ -494,6 +495,11 @@ export class ControlClient {
 		(command) => this.request(command),
 		(event) => recordingEvent(event, new Map<string, ChunkAccumulator>(), () => {})
 	);
+	#stateStore = new ControlClientStateStore((command) => this.request(command));
+
+	get stateStore(): ControlClientStateStore {
+		return this.#stateStore;
+	}
 
 	onCapabilities(listener: CapabilityListener): () => void {
 		this.#capabilityListeners.add(listener);
@@ -2320,6 +2326,7 @@ export class ControlClient {
 			if (envelope.message.value.event.case === 'initialCapabilities') {
 				const capabilities = envelope.message.value.event.value;
 				this.#serverCapabilities = capabilities;
+				void this.#stateStore.handleConnectionOpened();
 				for (const waiter of this.#capabilityWaiters) {
 					clearTimeout(waiter.timeout);
 					waiter.resolve(capabilities);
@@ -2337,6 +2344,12 @@ export class ControlClient {
 			if (envelope.message.value.event.case === 'storedMediaState') {
 				const state = envelope.message.value.event.value;
 				this.#playbacks.get(state.storedMediaId)?.configure(state);
+			}
+			if (envelope.message.value.event.case === 'stateStoreWatchUpdate') {
+				void this.#stateStore.handleWatchUpdate(envelope.message.value.event.value);
+			}
+			if (envelope.message.value.event.case === 'stateStoreWatchClosed') {
+				void this.#stateStore.handleWatchClosed(envelope.message.value.event.value);
 			}
 			return;
 		}
@@ -2851,6 +2864,7 @@ export class ControlClient {
 			this.#objectUrls.clear();
 		}
 		this.publishCapabilities([]);
+		this.#stateStore.handleConnectionClosed();
 		this.failPending('WebRTC control connection closed.');
 		return sessionId;
 	}

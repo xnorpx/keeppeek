@@ -13,15 +13,17 @@ Open the storage settings as an Administrator and record the effective paths. De
 from a custom `--config` directory, and catalog or thumbnail paths can sit outside recording roots.
 Record the operating-system account that owns and runs the recorder.
 
-| Item                                                                                                     | Why it matters                                                                                                                               |
-| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config.toml` and sibling `secrets.toml`                                                                 | Cameras, stable identities, policies, credentials, grants, dashboards, and integration settings. A configuration ZIP can preserve this pair. |
-| The configured recording catalog, normally `recordings.db`, and any accompanying `-wal` and `-shm` files | Recording identities, paths, indexes, event data, coverage/deletion evidence, and maintenance intent. Copy the database family consistently. |
-| Both medium-term and long-term recording roots                                                           | The MP4 bytes referenced by the catalog. The roots may be the same directory. Preserve relative structure and file names.                    |
-| The configured event-thumbnail directory                                                                 | Event-image bytes. It may be outside the recording root.                                                                                     |
-| Hidden `.exports` under the long-term root                                                               | Export history and artifacts, if you need to retain that local history. Artifacts still have independent expiry rules.                       |
-| Service definitions, environment-only secrets, certificates, and external service configuration          | Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.                         |
-| The existing sibling `log-filter` and retained service logs                                              | Diagnostic configuration and investigation evidence outside the configuration ZIP.                                                           |
+| Item                                                                                                     | Why it matters                                                                                                                                                |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.toml` and sibling `secrets.toml`                                                                 | Cameras, stable identities, policies, credentials, grants, dashboards, and integration settings. A configuration ZIP can preserve this pair.                  |
+| The configured recording catalog, normally `recordings.db`, and any accompanying `-wal` and `-shm` files | Recording identities, paths, indexes, event data, coverage/deletion evidence, and maintenance intent. Copy the database family consistently.                  |
+| The runtime state-store database file and any accompanying sidecars                                      | Desired-state documents, leases, namespace and entry revisions. A separate consistent set; excluded from the configuration ZIP. Copy the family consistently. |
+| Settings-backed state entries                                                                            | Stored in the `state_store` section of `config.toml`; already covered by the configuration ZIP. Generic runtime entries are not.                              |
+| Both medium-term and long-term recording roots                                                           | The MP4 bytes referenced by the catalog. The roots may be the same directory. Preserve relative structure and file names.                                     |
+| The configured event-thumbnail directory                                                                 | Event-image bytes. It may be outside the recording root.                                                                                                      |
+| Hidden `.exports` under the long-term root                                                               | Export history and artifacts, if you need to retain that local history. Artifacts still have independent expiry rules.                                        |
+| Service definitions, environment-only secrets, certificates, and external service configuration          | Deployment dependencies outside the two TOML files. Preserve them through your existing protected operations system.                                          |
+| The existing sibling `log-filter` and retained service logs                                              | Diagnostic configuration and investigation evidence outside the configuration ZIP.                                                                            |
 
 Copy the entire selected recording roots, including hidden and interrupted-work entries, rather than
 selecting only files ending in `.mp4`. Maintenance checkpoints can depend on private staging entries.
@@ -40,7 +42,8 @@ clip as a full recording backup. Clips cover selected ranges and do not contain 
 2. Stop KeepPeek through its normal service manager. Confirm the process has exited and no second
    recorder is using the same paths. Recording stops for this maintenance window.
 3. Copy the configuration directory and complete archive set while they remain stopped. Include any
-   database sidecars that exist; do not manually delete them to make the copy simpler.
+   database sidecars that exist, for both the recording catalog and the runtime state store;
+   do not manually delete them to make the copy simpler.
 4. Preserve ownership and access restrictions, record the source version and paths, and verify the
    copied files using your backup tool's integrity checks. Keep the copy separately from the source
    disk.
@@ -51,6 +54,18 @@ configuration export lock does not create an atomic snapshot of the catalog, med
 If you use storage snapshots instead of a stopped copy, establish and test a consistent capture
 procedure for every involved volume and writer. This book does not claim that an arbitrary live
 filesystem copy is recoverable.
+
+## Restore the runtime state store before accepting watches
+
+Restore the state-store database family together with its counters: namespace
+revisions, entry revisions, and byte counts must return as one unit before the
+server accepts new watches. Restoring entries without their counters would let
+a fresh write reuse a revision that a previous writer already consumed, which
+breaks compare-and-set ordering. After the restore, clients establish fresh
+watches and reconcile the new snapshots against current capabilities; there is
+no resume across a restore. A configuration ZIP alone does not restore generic
+runtime state: it carries only the settings-backed entries stored in
+`config.toml`.
 
 ## Rehearse on an isolated host
 
@@ -106,6 +121,7 @@ See [Recording maintenance](./recording-maintenance.md) for exact mutation and r
 | Symptom                                                       | Next action                                                                                                                                  |
 | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Settings returned, recordings did not                         | Confirm that a catalog and media archive were restored. The configuration ZIP excludes both.                                                 |
+| Settings returned, runtime state did not                      | Confirm that the state-store database family was restored with its counters. Re-establish watches with a fresh snapshot afterwards.          |
 | Recordings appear missing after a path change                 | Check mount availability, service identity, effective paths, and the catalog's original locations before changing files.                     |
 | MP4 files exist but do not appear in Keep                     | Inspect reconciliation. Unknown files are not automatically adopted; **Rebuild index** only applies to eligible existing catalog recordings. |
 | A cataloged recording has a valid container but a wrong index | Use the previewed **Rebuild index** remedy if offered. It changes indexes, not media bytes.                                                  |
