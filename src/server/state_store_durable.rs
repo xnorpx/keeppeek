@@ -127,34 +127,38 @@ impl DurableStore {
     ) -> Result<StoredEntry, TransactionError> {
         self.connection.execute_batch("BEGIN IMMEDIATE").await?;
         let result = async {
-            self.expire_key_if_due(namespace, key, now_ms).await?;
+            let mut freed_bytes = self.expire_key_if_due(namespace, key, now_ms).await?;
             let current = self.entry_revision(namespace, key).await?;
             check_expected(expected_revision, current)?;
             let old_bytes = self.entry_bytes(namespace, key).await?;
             if current.is_none() {
-                self.admit_namespace(namespace, now_ms).await?;
+                freed_bytes =
+                    freed_bytes.saturating_add(self.admit_namespace(namespace, now_ms).await?);
             }
             let total_bytes = self
                 .stored_bytes
                 .saturating_add(value_bytes)
-                .saturating_sub(old_bytes);
+                .saturating_sub(old_bytes)
+                .saturating_sub(freed_bytes);
             if total_bytes > MAX_TOTAL_VALUE_BYTES {
                 return Err(Error::Invalid(Invalid::StoreFull).into());
             }
             let revision = self
                 .insert_entry(namespace, key, schema, value, expires_ms, owner_id, now_ms)
                 .await?;
-            self.stored_bytes = total_bytes;
-            Ok(StoredEntry {
-                namespace: namespace.to_owned(),
-                key: key.to_owned(),
-                schema: schema.to_owned(),
-                value: value.clone(),
-                revision,
-                updated_ms: now_ms,
-                expires_ms,
-                owner_id: owner_id.to_owned(),
-            })
+            Ok((
+                StoredEntry {
+                    namespace: namespace.to_owned(),
+                    key: key.to_owned(),
+                    schema: schema.to_owned(),
+                    value: value.clone(),
+                    revision,
+                    updated_ms: now_ms,
+                    expires_ms,
+                    owner_id: owner_id.to_owned(),
+                },
+                total_bytes,
+            ))
         }
         .await;
         self.finish_transaction(result).await
@@ -168,11 +172,13 @@ impl DurableStore {
     ) -> Result<StoredEntry, TransactionError> {
         self.connection.execute_batch("BEGIN IMMEDIATE").await?;
         let result = async {
-            self.expire_key_if_due(namespace, key, now_ms).await?;
-            self.read_entry(namespace, key)
+            let freed_bytes = self.expire_key_if_due(namespace, key, now_ms).await?;
+            let entry = self
+                .read_entry(namespace, key)
                 .await?
                 .ok_or(Error::NotFound)
-                .map_err(TransactionError::from)
+                .map_err(TransactionError::from)?;
+            Ok((entry, self.stored_bytes.saturating_sub(freed_bytes)))
         }
         .await;
         self.finish_transaction(result).await
@@ -187,7 +193,7 @@ impl DurableStore {
     ) -> Result<u64, TransactionError> {
         self.connection.execute_batch("BEGIN IMMEDIATE").await?;
         let result = async {
-            self.expire_key_if_due(namespace, key, now_ms).await?;
+            let freed_bytes = self.expire_key_if_due(namespace, key, now_ms).await?;
             let current = self.entry_revision(namespace, key).await?;
             check_expected(expected_revision, current)?;
             current.ok_or(Error::NotFound)?;
@@ -198,20 +204,28 @@ impl DurableStore {
                     turso::params![namespace, key],
                 )
                 .await?;
-            self.stored_bytes = self.stored_bytes.saturating_sub(removed_bytes);
-            self.bump_namespace_revision(namespace).await
+            let revision = self.bump_namespace_revision(namespace).await?;
+            let total_bytes = self
+                .stored_bytes
+                .saturating_sub(freed_bytes)
+                .saturating_sub(removed_bytes);
+            Ok((revision, total_bytes))
         }
         .await;
         self.finish_transaction(result).await
     }
 
     async fn finish_transaction<T>(
-        &self,
-        result: Result<T, TransactionError>,
+        &mut self,
+        result: Result<(T, u64), TransactionError>,
     ) -> Result<T, TransactionError> {
         match result {
-            Ok(value) => {
-                self.connection.execute_batch("COMMIT").await?;
+            Ok((value, staged_bytes)) => {
+                if let Err(error) = self.connection.execute_batch("COMMIT").await {
+                    let _ = self.connection.execute_batch("ROLLBACK").await;
+                    return Err(TransactionError::Storage(error.to_string()));
+                }
+                self.stored_bytes = staged_bytes;
                 Ok(value)
             }
             Err(error) => {
@@ -222,11 +236,11 @@ impl DurableStore {
     }
 
     async fn expire_key_if_due(
-        &mut self,
+        &self,
         namespace: &str,
         key: &str,
         now_ms: u64,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<u64, TransactionError> {
         let expired = self.entry_expires_ms(namespace, key).await?;
         if expired.is_some_and(|expires_ms| expires_ms <= now_ms) {
             let removed_bytes = self.entry_bytes(namespace, key).await?;
@@ -236,17 +250,13 @@ impl DurableStore {
                     turso::params![namespace, key],
                 )
                 .await?;
-            self.stored_bytes = self.stored_bytes.saturating_sub(removed_bytes);
             self.bump_namespace_revision(namespace).await?;
+            return Ok(removed_bytes);
         }
-        Ok(())
+        Ok(0)
     }
 
-    async fn admit_namespace(
-        &mut self,
-        namespace: &str,
-        now_ms: u64,
-    ) -> Result<(), TransactionError> {
+    async fn admit_namespace(&self, namespace: &str, now_ms: u64) -> Result<u64, TransactionError> {
         if self.namespace_revision(namespace).await?.is_none() {
             let count = self.namespace_count().await?;
             if count >= MAX_NAMESPACES as u64 {
@@ -258,25 +268,27 @@ impl DurableStore {
                     turso::params![namespace],
                 )
                 .await?;
-            return Ok(());
+            return Ok(0);
         }
-        self.reclaim_namespace(namespace, now_ms).await?;
+        let freed_bytes = self.reclaim_namespace(namespace, now_ms).await?;
         if self.entry_count(namespace).await? >= MAX_ENTRIES_PER_NAMESPACE as u64 {
             return Err(Error::Invalid(Invalid::NamespaceFull).into());
         }
-        Ok(())
+        Ok(freed_bytes)
     }
 
     async fn reclaim_namespace(
-        &mut self,
+        &self,
         namespace: &str,
         now_ms: u64,
-    ) -> Result<(), TransactionError> {
+    ) -> Result<u64, TransactionError> {
         let expired = self.expired_keys(namespace, now_ms).await?;
+        let mut freed_bytes = 0u64;
         for key in expired {
-            self.expire_key_if_due(namespace, &key, now_ms).await?;
+            freed_bytes =
+                freed_bytes.saturating_add(self.expire_key_if_due(namespace, &key, now_ms).await?);
         }
-        Ok(())
+        Ok(freed_bytes)
     }
 
     #[allow(
@@ -516,7 +528,8 @@ async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()>
         anyhow::bail!("unsupported state-store schema version {version}");
     }
     if version == 0 {
-        connection
+        connection.execute_batch("BEGIN IMMEDIATE").await?;
+        let created = connection
             .execute_batch(
                 "CREATE TABLE namespaces(
                     namespace TEXT PRIMARY KEY,
@@ -535,7 +548,15 @@ async fn initialize_schema(connection: &turso::Connection) -> anyhow::Result<()>
                 );
                 PRAGMA user_version = 1;",
             )
-            .await?;
+            .await;
+        if let Err(error) = created {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            return Err(error.into());
+        }
+        if let Err(error) = connection.execute_batch("COMMIT").await {
+            let _ = connection.execute_batch("ROLLBACK").await;
+            return Err(error.into());
+        }
         return Ok(());
     }
     let mut rows = connection
@@ -968,5 +989,84 @@ mod tests {
             )
             .expect_err("1025th key must fail");
         assert_eq!(error, Error::Invalid(Invalid::NamespaceFull));
+    }
+
+    #[test]
+    fn durable_expired_read_keeps_byte_accounting() {
+        let dir = TempDir::new();
+        let mut store = DurableStore::open(&dir.db_path()).expect("open must succeed");
+        store
+            .put(
+                "service/transcoder-a/",
+                "intents/front-door",
+                "keeppeek.media-intent.v1",
+                Some(struct_value(&[("role", "publish")])),
+                None,
+                Some(duration_ms(1_000)),
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("lease must succeed");
+        let stored = store.stored_bytes();
+        assert!(stored > 0, "seeded lease must occupy bytes");
+        for now_ms in [NOW_MS + 1_000, NOW_MS + 2_000] {
+            let error = store
+                .get(
+                    "service/transcoder-a/",
+                    "intents/front-door",
+                    "transcoder-a",
+                    true,
+                    now_ms,
+                )
+                .expect_err("expired lease must read as not found");
+            assert_eq!(error, Error::NotFound);
+            assert_eq!(
+                store.stored_bytes(),
+                stored,
+                "rolled-back expiry must not move the byte counter"
+            );
+        }
+        drop(store);
+        let store = DurableStore::open(&dir.db_path()).expect("reopen must succeed");
+        assert_eq!(
+            store.stored_bytes(),
+            stored,
+            "counter must match persisted rows after restart"
+        );
+    }
+
+    #[test]
+    fn durable_failed_schema_init_leaves_no_partial_tables() {
+        let dir = TempDir::new();
+        {
+            let database = pollster::block_on(
+                turso::Builder::new_local(dir.db_path().to_str().unwrap()).build(),
+            )
+            .expect("raw open must succeed");
+            let connection = database.connect().expect("connect must succeed");
+            pollster::block_on(connection.execute_batch("CREATE TABLE entries(id INTEGER)"))
+                .expect("obstacle table must be created");
+            assert!(
+                pollster::block_on(initialize_schema(&connection)).is_err(),
+                "conflicting table must fail init"
+            );
+            let mut rows = pollster::block_on(connection.query(
+                "SELECT name FROM sqlite_master WHERE name = 'namespaces'",
+                (),
+            ))
+            .expect("schema query must succeed");
+            assert!(
+                pollster::block_on(rows.next())
+                    .expect("row read must succeed")
+                    .is_none(),
+                "failed init must not leave the namespaces table behind"
+            );
+            drop(rows);
+            pollster::block_on(connection.execute_batch("DROP TABLE entries"))
+                .expect("obstacle cleanup must succeed");
+        }
+        let store = DurableStore::open(&dir.db_path()).expect("open after cleanup must succeed");
+        assert_eq!(store.stored_bytes(), 0);
     }
 }
