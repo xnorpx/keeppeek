@@ -18,24 +18,24 @@ pub(super) const CAPABILITY_ID: &str = "keeppeek.state-store.v1";
 const MAX_NAMESPACE_CHARS: usize = 128;
 const MAX_KEY_CHARS: usize = 256;
 const MAX_SCHEMA_CHARS: usize = 128;
-const MAX_VALUE_BYTES: usize = 64 * 1_024;
-const MAX_ENTRIES_PER_NAMESPACE: usize = 1_024;
+pub(super) const MAX_VALUE_BYTES: usize = 64 * 1_024;
+pub(super) const MAX_ENTRIES_PER_NAMESPACE: usize = 1_024;
 const MAX_PENDING_EXPIRIES: usize = 4_096;
-const MAX_NAMESPACES: usize = 256;
-const MAX_TOTAL_VALUE_BYTES: u64 = 64 * 1_024 * 1_024;
-const MIN_TTL_MS: u64 = 1_000;
-const MAX_TTL_MS: u64 = 86_400_000;
+pub(super) const MAX_NAMESPACES: usize = 256;
+pub(super) const MAX_TOTAL_VALUE_BYTES: u64 = 64 * 1_024 * 1_024;
+pub(super) const MIN_TTL_MS: u64 = 1_000;
+pub(super) const MAX_TTL_MS: u64 = 86_400_000;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct StoredEntry {
-    pub(super) namespace: String,
-    pub(super) key: String,
-    pub(super) schema: String,
-    pub(super) value: Struct,
-    pub(super) revision: u64,
-    pub(super) updated_ms: u64,
-    pub(super) expires_ms: Option<u64>,
-    pub(super) owner_id: String,
+pub struct StoredEntry {
+    pub namespace: String,
+    pub key: String,
+    pub schema: String,
+    pub value: Struct,
+    pub revision: u64,
+    pub updated_ms: u64,
+    pub expires_ms: Option<u64>,
+    pub owner_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -50,7 +50,7 @@ pub(super) struct ExpiredEntry {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Invalid {
+pub enum Invalid {
     Namespace,
     Key,
     Schema,
@@ -62,11 +62,12 @@ pub(super) enum Invalid {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Error {
+pub enum Error {
     NotFound,
     Conflict { current_revision: u64 },
     NotAuthorized,
     Invalid(Invalid),
+    Storage(String),
 }
 
 #[derive(Debug, Default)]
@@ -324,14 +325,14 @@ pub(super) struct ExpiredBatch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum NamespaceLayout {
+pub(super) enum NamespaceLayout {
     System,
     Service,
     Group,
     User { owner: String },
 }
 
-fn validate_namespace(namespace: &str) -> Result<NamespaceLayout, Error> {
+pub(super) fn validate_namespace(namespace: &str) -> Result<NamespaceLayout, Error> {
     if namespace.len() > MAX_NAMESPACE_CHARS {
         return Err(Error::Invalid(Invalid::Namespace));
     }
@@ -370,7 +371,7 @@ fn is_namespace_segment(segment: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-fn validate_key(key: &str) -> Result<(), Error> {
+pub(super) fn validate_key(key: &str) -> Result<(), Error> {
     if key.is_empty() || key.len() > MAX_KEY_CHARS {
         return Err(Error::Invalid(Invalid::Key));
     }
@@ -396,7 +397,7 @@ fn is_key_segment(segment: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-fn validate_schema(schema: &str) -> Result<(), Error> {
+pub(super) fn validate_schema(schema: &str) -> Result<(), Error> {
     if schema.is_empty() || schema.len() > MAX_SCHEMA_CHARS {
         return Err(Error::Invalid(Invalid::Schema));
     }
@@ -410,7 +411,7 @@ fn validate_schema(schema: &str) -> Result<(), Error> {
     }
 }
 
-fn ttl_expiry_ms(ttl: &Duration, now_ms: u64) -> Result<u64, Error> {
+pub(super) fn ttl_expiry_ms(ttl: &Duration, now_ms: u64) -> Result<u64, Error> {
     if ttl.nanos < 0 || ttl.nanos > 999_999_999 {
         return Err(Error::Invalid(Invalid::Ttl));
     }
@@ -442,7 +443,7 @@ fn value_bytes(value: &Struct) -> u64 {
     u64::try_from(value.encoded_len()).unwrap_or(u64::MAX)
 }
 
-fn authorize_write(
+pub(super) fn authorize_write(
     layout: &NamespaceLayout,
     owner_id: &str,
     writer_admin: bool,
@@ -466,7 +467,7 @@ fn authorize_write(
     }
 }
 
-fn authorize_read(
+pub(super) fn authorize_read(
     layout: &NamespaceLayout,
     owner_id: &str,
     reader_admin: bool,
@@ -717,6 +718,9 @@ fn registry_error(error: Error, namespace: &str, key: &str) -> ControlCommandErr
             proto::StateStoreErrorCode::NamespaceInvalid,
             None,
         ),
+        Error::Storage(message) => {
+            ControlCommandError::new(proto::ErrorCode::Internal, 500, message)
+        }
         Error::Invalid(Invalid::Ttl) => state_store_error(
             proto::ErrorCode::InvalidRequest,
             400,
@@ -754,7 +758,10 @@ fn invalid(message: &str) -> ControlCommandError {
     ControlCommandError::new(proto::ErrorCode::InvalidRequest, 400, message)
 }
 
-const fn check_expected(expected: Option<u64>, current: Option<u64>) -> Result<(), Error> {
+pub(super) const fn check_expected(
+    expected: Option<u64>,
+    current: Option<u64>,
+) -> Result<(), Error> {
     match (expected, current) {
         (None, _) => Ok(()),
         (Some(0), None) => Ok(()),
