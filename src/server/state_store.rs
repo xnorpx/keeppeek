@@ -245,7 +245,6 @@ impl Registry {
         Ok(state.revision)
     }
 
-    #[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
     pub(super) fn expire_due(&mut self, now_ms: u64) -> ExpiredBatch {
         let mut due = Vec::new();
         for (namespace, state) in &self.namespaces {
@@ -317,11 +316,6 @@ impl Registry {
         key_prefix: &str,
         now_ms: u64,
     ) -> (u64, Vec<StoredEntry>) {
-        let revision = self
-            .namespaces
-            .get(namespace)
-            .map(|state| state.revision)
-            .unwrap_or(0);
         let mut keys: Vec<String> = self
             .namespaces
             .get(namespace)
@@ -338,6 +332,11 @@ impl Registry {
         for key in &keys {
             self.expire_key_if_due(namespace, key, now_ms);
         }
+        let revision = self
+            .namespaces
+            .get(namespace)
+            .map(|state| state.revision)
+            .unwrap_or(0);
         let entries = keys
             .into_iter()
             .filter_map(|key| {
@@ -379,7 +378,6 @@ impl Registry {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code, reason = "expiry fan-out lands with watch delivery")]
 pub(super) struct ExpiredBatch {
     pub(super) entries: Vec<ExpiredEntry>,
     pub(super) overflowed: bool,
@@ -706,7 +704,7 @@ fn get(
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     let now = now_ms();
     let mut registry = lock_registry(state);
-    let entry = registry
+    let outcome = registry
         .get(
             &request.namespace,
             &request.key,
@@ -714,10 +712,10 @@ fn get(
             principal.role == AccessRole::Administrator,
             now,
         )
-        .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
+        .map_err(|error| registry_error(error, &request.namespace, &request.key));
     let (expired, overflowed) = registry.drain_pending();
     publish_events(state, None, expired, overflowed, now);
-    Ok(entry_result(entry))
+    Ok(entry_result(outcome?))
 }
 
 fn put(
@@ -730,7 +728,7 @@ fn put(
         .ok_or_else(|| invalid("state value is required"))?;
     let now = now_ms();
     let mut registry = lock_registry(state);
-    let entry = registry
+    let outcome = registry
         .put(
             &request.namespace,
             &request.key,
@@ -742,16 +740,16 @@ fn put(
             principal.role == AccessRole::Administrator,
             now,
         )
-        .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
-    let direct = WatchEvent {
+        .map_err(|error| registry_error(error, &request.namespace, &request.key));
+    let (expired, overflowed) = registry.drain_pending();
+    let direct = outcome.as_ref().ok().map(|entry| WatchEvent {
         namespace: entry.namespace.clone(),
         key: entry.key.clone(),
         revision: entry.revision,
         kind: WatchEventKind::Put(entry.clone()),
-    };
-    let (expired, overflowed) = registry.drain_pending();
-    publish_events(state, Some(direct), expired, overflowed, now);
-    Ok(entry_result(entry))
+    });
+    publish_events(state, direct, expired, overflowed, now);
+    Ok(entry_result(outcome?))
 }
 
 fn delete(
@@ -761,7 +759,7 @@ fn delete(
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     let now = now_ms();
     let mut registry = lock_registry(state);
-    let revision = registry
+    let outcome = registry
         .delete(
             &request.namespace,
             &request.key,
@@ -770,15 +768,16 @@ fn delete(
             principal.role == AccessRole::Administrator,
             now,
         )
-        .map_err(|error| registry_error(error, &request.namespace, &request.key))?;
-    let direct = WatchEvent {
+        .map_err(|error| registry_error(error, &request.namespace, &request.key));
+    let (expired, overflowed) = registry.drain_pending();
+    let direct = outcome.as_ref().ok().map(|revision| WatchEvent {
         namespace: request.namespace.clone(),
         key: request.key.clone(),
-        revision,
+        revision: *revision,
         kind: WatchEventKind::Delete,
-    };
-    let (expired, overflowed) = registry.drain_pending();
-    publish_events(state, Some(direct), expired, overflowed, now);
+    });
+    publish_events(state, direct, expired, overflowed, now);
+    let revision = outcome?;
     Ok(deleted_result(request.namespace, request.key, revision))
 }
 
@@ -803,9 +802,14 @@ fn watch(
         key_prefix,
         watch_id,
     } = request;
+    let now = now_ms();
     let result = {
         let mut registry = lock_registry(state);
-        let (revision, entries) = registry.snapshot(&namespace, &key_prefix, now_ms());
+        let (stale, stale_overflowed) = registry.drain_pending();
+        publish_events(state, None, stale, stale_overflowed, now);
+        let (revision, entries) = registry.snapshot(&namespace, &key_prefix, now);
+        let (fresh, fresh_overflowed) = registry.drain_pending();
+        publish_events(state, None, fresh, fresh_overflowed, now);
         state
             .state_store_watches
             .register(
@@ -855,7 +859,12 @@ fn acknowledge(
 ) -> Result<proto::StateStoreResult, ControlCommandError> {
     let accepted = state
         .state_store_watches
-        .acknowledge(session_id, &request.watch_id, request.applied_sequence)
+        .acknowledge(
+            session_id,
+            &request.watch_id,
+            request.applied_sequence,
+            now_ms(),
+        )
         .map_err(|(namespace, error)| registry_error(error, &namespace, &request.watch_id))?;
     Ok(proto::StateStoreResult {
         result: Some(state_store_result::Result::WatchAck(
@@ -873,6 +882,11 @@ fn validate_key_prefix(prefix: &str) -> Result<(), Error> {
         return Err(Error::Invalid(Invalid::Key));
     }
     validate_key(stripped)
+}
+
+pub(super) fn expire_leases(state: &ServerState, now_ms: u64) {
+    let batch = lock_registry(state).expire_due(now_ms);
+    publish_events(state, None, batch.entries, batch.overflowed, now_ms);
 }
 
 fn publish_events(
@@ -1134,6 +1148,7 @@ mod tests {
     use super::*;
     use prost_types::{Value, value::Kind};
     use std::collections::BTreeMap;
+    use std::net::{IpAddr, Ipv4Addr};
 
     const NOW_MS: u64 = 1_787_000_000_000;
 
@@ -1799,6 +1814,268 @@ mod tests {
                 NOW_MS + 2_000
             ),
             Err(Error::NotFound)
+        );
+    }
+
+    fn expired_fixture(state: &ServerState) {
+        lock_registry(state)
+            .put(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                Some(duration_ms(1_000)),
+                "transcoder-a",
+                true,
+                1_000,
+            )
+            .expect("fixture lease must succeed");
+    }
+
+    fn local_principal() -> ApiPrincipal {
+        ApiPrincipal::local(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+
+    fn admin_session(state: &ServerState, session: SessionId) {
+        use super::super::ApiSessionRecord;
+        use crate::access::{ClientClassification, ClientClassificationReason};
+        use std::time::Instant;
+        state
+            .api_session_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                session,
+                ApiSessionRecord {
+                    principal: local_principal(),
+                    classification: ClientClassification {
+                        peer_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        effective_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                        local: true,
+                        reason: ClientClassificationReason::DirectLocal,
+                    },
+                    created_at_ms: 0,
+                    last_activity_at_ms: 0,
+                    absolute_expires_at_ms: i64::MAX,
+                    last_activity: Instant::now(),
+                },
+            );
+    }
+
+    #[test]
+    fn failed_get_still_drains_observed_expiry() {
+        let state = ServerState::empty();
+        expired_fixture(&state);
+        get(
+            &state,
+            &local_principal(),
+            proto::GetState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key: "leases/front-door".to_owned(),
+            },
+        )
+        .expect_err("expired get must still report not found");
+        assert!(
+            lock_registry(&state).pending.is_empty(),
+            "observed expiry must publish even though get failed"
+        );
+    }
+
+    #[test]
+    fn failed_put_still_drains_observed_expiry() {
+        let state = ServerState::empty();
+        expired_fixture(&state);
+        put(
+            &state,
+            &local_principal(),
+            proto::PutState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key: "leases/front-door".to_owned(),
+                schema: "keeppeek.media-intent.v1".to_owned(),
+                value: Some(media_intent_value("publish")),
+                expected_revision: Some(99),
+                ttl: None,
+            },
+        )
+        .expect_err("guarded put on an expired key must fail");
+        assert!(
+            lock_registry(&state).pending.is_empty(),
+            "observed expiry must publish even though put failed"
+        );
+    }
+
+    #[test]
+    fn failed_delete_still_drains_observed_expiry() {
+        let state = ServerState::empty();
+        expired_fixture(&state);
+        delete(
+            &state,
+            &local_principal(),
+            proto::DeleteState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key: "leases/front-door".to_owned(),
+                expected_revision: None,
+            },
+        )
+        .expect_err("delete on an expired key must fail");
+        assert!(
+            lock_registry(&state).pending.is_empty(),
+            "observed expiry must publish even though delete failed"
+        );
+    }
+
+    #[test]
+    fn snapshot_reports_post_expiry_revision() {
+        let mut registry = Registry::default();
+        put_lease(&mut registry, "leases/front-door", 1_000, NOW_MS);
+        let (revision, entries) =
+            registry.snapshot("service/transcoder-a/", "leases/", NOW_MS + 1_000);
+        assert_eq!(
+            revision, 2,
+            "expiring the lease advances the namespace revision"
+        );
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn watch_registers_after_draining_stale_expiry() {
+        let state = ServerState::empty();
+        let principal = local_principal();
+        let session = SessionId::from_u64(4242);
+        {
+            let mut registry = lock_registry(&state);
+            registry
+                .put(
+                    "service/transcoder-a/",
+                    "leases/front-door",
+                    "keeppeek.media-intent.v1",
+                    Some(media_intent_value("publish")),
+                    None,
+                    Some(duration_ms(1_000)),
+                    "transcoder-a",
+                    true,
+                    NOW_MS,
+                )
+                .expect("fixture lease must succeed");
+            registry
+                .get(
+                    "service/transcoder-a/",
+                    "leases/front-door",
+                    "transcoder-a",
+                    true,
+                    NOW_MS + 1_000,
+                )
+                .expect_err("expired get queues the expiry");
+        }
+        let result = watch(
+            &state,
+            session,
+            &principal,
+            proto::WatchState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key_prefix: "leases/".to_owned(),
+                watch_id: "w".to_owned(),
+            },
+        )
+        .expect("watch must succeed");
+        let Some(state_store_result::Result::Watch(snapshot)) = result.result else {
+            panic!("watch must return a snapshot");
+        };
+        assert_eq!(snapshot.snapshot_revision, 2);
+        assert!(
+            lock_registry(&state).pending.is_empty(),
+            "stale expiry must publish before the new barrier"
+        );
+    }
+
+    fn watch_fixture(state: &ServerState, session: SessionId, watch_id: &str) {
+        watch(
+            state,
+            session,
+            &local_principal(),
+            proto::WatchState {
+                namespace: "service/transcoder-a/".to_owned(),
+                key_prefix: String::new(),
+                watch_id: watch_id.to_owned(),
+            },
+        )
+        .expect("fixture watch must register");
+    }
+
+    #[test]
+    fn sweeper_publishes_idle_expiry_without_terminating() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(4243);
+        lock_registry(&state)
+            .put(
+                "service/transcoder-a/",
+                "leases/front-door",
+                "keeppeek.media-intent.v1",
+                Some(media_intent_value("publish")),
+                None,
+                Some(duration_ms(1_000)),
+                "transcoder-a",
+                true,
+                NOW_MS,
+            )
+            .expect("fixture lease must succeed");
+        admin_session(&state, session);
+        watch_fixture(&state, session, "w");
+        expire_leases(&state, NOW_MS + 5_000);
+        assert!(
+            lock_registry(&state).pending.is_empty(),
+            "idle expiry must run without subsequent writes"
+        );
+        assert!(
+            state.state_store_watches.owns_watch(session, "w"),
+            "a buffered expiry must not terminate the watch"
+        );
+    }
+
+    #[test]
+    fn sweeper_overflow_terminates_every_watch() {
+        let state = ServerState::empty();
+        let session = SessionId::from_u64(4244);
+        {
+            let mut registry = lock_registry(&state);
+            for namespace_no in 0..5 {
+                let namespace = format!("service/s{namespace_no}/");
+                for key_no in 0..820 {
+                    registry
+                        .put(
+                            &namespace,
+                            &format!("leases/k-{key_no}"),
+                            "keeppeek.media-intent.v1",
+                            Some(media_intent_value("publish")),
+                            None,
+                            Some(duration_ms(1_000)),
+                            "transcoder-a",
+                            true,
+                            NOW_MS,
+                        )
+                        .expect("overflow lease must fit its namespace");
+                }
+            }
+        }
+        for watch_id in ["a", "b"] {
+            watch(
+                &state,
+                session,
+                &local_principal(),
+                proto::WatchState {
+                    namespace: "service/transcoder-a/".to_owned(),
+                    key_prefix: String::new(),
+                    watch_id: watch_id.to_owned(),
+                },
+            )
+            .expect("fixture watch must register");
+        }
+        expire_leases(&state, NOW_MS + 5_000);
+        assert!(
+            !state.state_store_watches.owns_watch(session, "a")
+                && !state.state_store_watches.owns_watch(session, "b"),
+            "an overflowing sweeper batch must end every watch"
         );
     }
 
